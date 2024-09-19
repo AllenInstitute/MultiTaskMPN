@@ -1,0 +1,225 @@
+Rules: ['delaygo']
+  Input size 20, Output size 3
+Using CUDA...
+MultiPlastic Net:
+  output neurons: 3
+  Act: tanh
+
+=== Layer Universal Setup ===
+  MP Layer0 parameters:
+    n_neurons - input: 20, output: 100
+    M matrix parameters:    update bounds - Max mult: 1.0, Min mult: -1.0
+      type: mult // Update - type: hebb_assoc // Act fn: linear
+      Eta: scalar (fixed) // Lambda: scalar (fixed) // Lambda_max: 0.90 (tau: 4.0e+02)
+Train parameters:
+  Loss: MSE // LR: 1.00e-03 // Optim: adam
+  Grad type: backprop // Gradient clip: 1.0e+01
+Weight reg: None
+Iter: 0, LR: 1.000e-03 - train_loss:2.591e-01, rounded train_acc:0.781, valid_loss:2.655e-01, rounded valid_acc:0.776
+Iter: 100, LR: 1.000e-03 - train_loss:1.417e-01, rounded train_acc:0.971, valid_loss:1.431e-01, rounded valid_acc:0.969
+Iter: 200, LR: 1.000e-03 - train_loss:1.152e-01, rounded train_acc:0.971, valid_loss:1.172e-01, rounded valid_acc:0.968
+Iter: 300, LR: 1.000e-03 - train_loss:3.970e-02, rounded train_acc:0.977, valid_loss:3.950e-02, rounded valid_acc:0.979
+Iter: 400, LR: 1.000e-03 - train_loss:1.634e-02, rounded train_acc:0.982, valid_loss:1.669e-02, rounded valid_acc:0.981
+Iter: 500, LR: 1.000e-03 - train_loss:9.708e-03, rounded train_acc:0.990, valid_loss:1.119e-02, rounded valid_acc:0.989
+Iter: 600, LR: 1.000e-03 - train_loss:6.833e-03, rounded train_acc:0.992, valid_loss:8.492e-03, rounded valid_acc:0.991
+Iter: 700, LR: 1.000e-03 - train_loss:5.461e-03, rounded train_acc:0.993, valid_loss:6.327e-03, rounded valid_acc:0.992
+Iter: 800, LR: 1.000e-03 - train_loss:4.570e-03, rounded train_acc:0.993, valid_loss:5.440e-03, rounded valid_acc:0.993
+Iter: 900, LR: 1.000e-03 - train_loss:4.090e-03, rounded train_acc:0.993, valid_loss:4.860e-03, rounded valid_acc:0.994
+Iter: 1000, LR: 1.000e-03 - train_loss:3.564e-03, rounded train_acc:0.994, valid_loss:4.450e-03, rounded valid_acc:0.994
+Iter: 1100, LR: 1.000e-03 - train_loss:3.697e-03, rounded train_acc:0.994, valid_loss:3.886e-03, rounded valid_acc:0.994
+Iter: 1200, LR: 1.000e-03 - train_loss:3.405e-03, rounded train_acc:0.994, valid_loss:3.620e-03, rounded valid_acc:0.994
+Iter: 1300, LR: 1.000e-03 - train_loss:2.705e-03, rounded train_acc:0.995, valid_loss:3.561e-03, rounded valid_acc:0.995
+Iter: 1400, LR: 1.000e-03 - train_loss:2.558e-03, rounded train_acc:0.995, valid_loss:3.472e-03, rounded valid_acc:0.995
+Iter: 1500, LR: 1.000e-03 - train_loss:2.804e-03, rounded train_acc:0.995, valid_loss:3.397e-03, rounded valid_acc:0.995
+Iter: 1600, LR: 1.000e-03 - train_loss:2.683e-03, rounded train_acc:0.995, valid_loss:3.314e-03, rounded valid_acc:0.995
+Iter: 1700, LR: 1.000e-03 - train_loss:2.827e-03, rounded train_acc:0.995, valid_loss:3.257e-03, rounded valid_acc:0.995
+Iter: 1800, LR: 1.000e-03 - train_loss:2.708e-03, rounded train_acc:0.995, valid_loss:3.173e-03, rounded valid_acc:0.995
+Iter: 1900, LR: 1.000e-03 - train_loss:2.568e-03, rounded train_acc:0.995, valid_loss:3.177e-03, rounded valid_acc:0.995
+Iter: 2000, LR: 1.000e-03 - train_loss:2.458e-03, rounded train_acc:0.995, valid_loss:3.127e-03, rounded valid_acc:0.996
+Iter: 2100, LR: 1.000e-03 - train_loss:2.308e-03, rounded train_acc:0.995, valid_loss:2.859e-03, rounded valid_acc:0.996
+Iter: 2200, LR: 1.000e-03 - train_loss:2.225e-03, rounded train_acc:0.995, valid_loss:2.762e-03, rounded valid_acc:0.996
+Iter: 2300, LR: 1.000e-03 - train_loss:2.345e-03, rounded train_acc:0.996, valid_loss:2.898e-03, rounded valid_acc:0.996
+Iter: 2400, LR: 1.000e-03 - train_loss:2.249e-03, rounded train_acc:0.996, valid_loss:2.856e-03, rounded valid_acc:0.996
+Iter: 2500, LR: 1.000e-03 - train_loss:1.985e-03, rounded train_acc:0.996, valid_loss:2.657e-03, rounded valid_acc:0.996
+Iter: 2600, LR: 1.000e-03 - train_loss:1.913e-03, rounded train_acc:0.996, valid_loss:2.652e-03, rounded valid_acc:0.996
+Iter: 2700, LR: 1.000e-03 - train_loss:2.137e-03, rounded train_acc:0.996, valid_loss:2.591e-03, rounded valid_acc:0.997
+Iter: 2800, LR: 1.000e-03 - train_loss:2.057e-03, rounded train_acc:0.996, valid_loss:2.511e-03, rounded valid_acc:0.997
+Iter: 2900, LR: 1.000e-03 - train_loss:1.667e-03, rounded train_acc:0.997, valid_loss:2.438e-03, rounded valid_acc:0.996
+Iter: 3000, LR: 1.000e-03 - train_loss:1.616e-03, rounded train_acc:0.997, valid_loss:2.401e-03, rounded valid_acc:0.997
+Iter: 3100, LR: 1.000e-03 - train_loss:1.937e-03, rounded train_acc:0.997, valid_loss:2.461e-03, rounded valid_acc:0.997
+Iter: 3200, LR: 1.000e-03 - train_loss:1.832e-03, rounded train_acc:0.997, valid_loss:2.233e-03, rounded valid_acc:0.997
+Iter: 3300, LR: 1.000e-03 - train_loss:1.861e-03, rounded train_acc:0.997, valid_loss:2.284e-03, rounded valid_acc:0.997
+Iter: 3400, LR: 1.000e-03 - train_loss:1.782e-03, rounded train_acc:0.997, valid_loss:2.192e-03, rounded valid_acc:0.997
+Iter: 3500, LR: 1.000e-03 - train_loss:1.451e-03, rounded train_acc:0.997, valid_loss:2.546e-03, rounded valid_acc:0.997
+Iter: 3600, LR: 1.000e-03 - train_loss:1.388e-03, rounded train_acc:0.997, valid_loss:2.414e-03, rounded valid_acc:0.997
+Iter: 3700, LR: 1.000e-03 - train_loss:1.609e-03, rounded train_acc:0.996, valid_loss:2.201e-03, rounded valid_acc:0.997
+Iter: 3800, LR: 1.000e-03 - train_loss:1.562e-03, rounded train_acc:0.997, valid_loss:2.167e-03, rounded valid_acc:0.997
+Iter: 3900, LR: 1.000e-03 - train_loss:1.496e-03, rounded train_acc:0.997, valid_loss:2.124e-03, rounded valid_acc:0.997
+Iter: 4000, LR: 1.000e-03 - train_loss:1.443e-03, rounded train_acc:0.997, valid_loss:2.143e-03, rounded valid_acc:0.997
+Iter: 4100, LR: 1.000e-03 - train_loss:1.360e-03, rounded train_acc:0.997, valid_loss:1.953e-03, rounded valid_acc:0.997
+Iter: 4200, LR: 1.000e-03 - train_loss:1.306e-03, rounded train_acc:0.998, valid_loss:1.948e-03, rounded valid_acc:0.997
+Iter: 4300, LR: 1.000e-03 - train_loss:1.341e-03, rounded train_acc:0.997, valid_loss:1.893e-03, rounded valid_acc:0.997
+Iter: 4400, LR: 1.000e-03 - train_loss:1.290e-03, rounded train_acc:0.997, valid_loss:1.836e-03, rounded valid_acc:0.997
+Iter: 4500, LR: 1.000e-03 - train_loss:1.256e-03, rounded train_acc:0.998, valid_loss:1.736e-03, rounded valid_acc:0.998
+Iter: 4600, LR: 1.000e-03 - train_loss:1.202e-03, rounded train_acc:0.998, valid_loss:1.726e-03, rounded valid_acc:0.998
+Iter: 4700, LR: 1.000e-03 - train_loss:1.383e-03, rounded train_acc:0.997, valid_loss:1.928e-03, rounded valid_acc:0.997
+Iter: 4800, LR: 1.000e-03 - train_loss:1.327e-03, rounded train_acc:0.997, valid_loss:1.988e-03, rounded valid_acc:0.997
+Iter: 4900, LR: 1.000e-03 - train_loss:1.341e-03, rounded train_acc:0.998, valid_loss:1.650e-03, rounded valid_acc:0.998
+Iter: 5000, LR: 1.000e-03 - train_loss:1.280e-03, rounded train_acc:0.998, valid_loss:1.611e-03, rounded valid_acc:0.998
+Iter: 5100, LR: 1.000e-03 - train_loss:1.018e-03, rounded train_acc:0.998, valid_loss:1.853e-03, rounded valid_acc:0.997
+Iter: 5200, LR: 1.000e-03 - train_loss:9.728e-04, rounded train_acc:0.998, valid_loss:1.916e-03, rounded valid_acc:0.997
+Iter: 5300, LR: 1.000e-03 - train_loss:9.681e-04, rounded train_acc:0.998, valid_loss:1.934e-03, rounded valid_acc:0.997
+Iter: 5400, LR: 1.000e-03 - train_loss:9.177e-04, rounded train_acc:0.998, valid_loss:1.726e-03, rounded valid_acc:0.998
+Iter: 5500, LR: 1.000e-03 - train_loss:1.014e-03, rounded train_acc:0.998, valid_loss:1.632e-03, rounded valid_acc:0.998
+Iter: 5600, LR: 1.000e-03 - train_loss:9.667e-04, rounded train_acc:0.999, valid_loss:1.601e-03, rounded valid_acc:0.998
+Iter: 5700, LR: 1.000e-03 - train_loss:8.809e-04, rounded train_acc:0.998, valid_loss:1.526e-03, rounded valid_acc:0.998
+Iter: 5800, LR: 1.000e-03 - train_loss:8.446e-04, rounded train_acc:0.998, valid_loss:1.528e-03, rounded valid_acc:0.998
+Iter: 5900, LR: 1.000e-03 - train_loss:8.471e-04, rounded train_acc:0.998, valid_loss:1.420e-03, rounded valid_acc:0.998
+Iter: 6000, LR: 1.000e-03 - train_loss:8.095e-04, rounded train_acc:0.998, valid_loss:1.478e-03, rounded valid_acc:0.998
+Iter: 6100, LR: 1.000e-03 - train_loss:8.529e-04, rounded train_acc:0.998, valid_loss:1.242e-03, rounded valid_acc:0.998
+Iter: 6200, LR: 1.000e-03 - train_loss:8.131e-04, rounded train_acc:0.998, valid_loss:1.219e-03, rounded valid_acc:0.998
+Iter: 6300, LR: 1.000e-03 - train_loss:8.580e-04, rounded train_acc:0.998, valid_loss:9.741e-04, rounded valid_acc:0.998
+Iter: 6400, LR: 1.000e-03 - train_loss:8.223e-04, rounded train_acc:0.998, valid_loss:9.432e-04, rounded valid_acc:0.998
+Iter: 6500, LR: 1.000e-03 - train_loss:8.600e-04, rounded train_acc:0.999, valid_loss:1.233e-03, rounded valid_acc:0.998
+Iter: 6600, LR: 1.000e-03 - train_loss:7.724e-04, rounded train_acc:0.999, valid_loss:1.186e-03, rounded valid_acc:0.998
+Iter: 6700, LR: 1.000e-03 - train_loss:8.044e-04, rounded train_acc:0.999, valid_loss:8.522e-04, rounded valid_acc:0.998
+Iter: 6800, LR: 1.000e-03 - train_loss:7.021e-04, rounded train_acc:0.999, valid_loss:8.383e-04, rounded valid_acc:0.998
+Iter: 6900, LR: 1.000e-03 - train_loss:7.513e-04, rounded train_acc:0.998, valid_loss:9.520e-04, rounded valid_acc:0.999
+Iter: 7000, LR: 1.000e-03 - train_loss:7.193e-04, rounded train_acc:0.998, valid_loss:9.522e-04, rounded valid_acc:0.999
+Iter: 7100, LR: 1.000e-03 - train_loss:6.330e-04, rounded train_acc:0.999, valid_loss:8.613e-04, rounded valid_acc:0.998
+Iter: 7200, LR: 1.000e-03 - train_loss:6.158e-04, rounded train_acc:0.999, valid_loss:8.566e-04, rounded valid_acc:0.998
+Iter: 7300, LR: 1.000e-03 - train_loss:6.691e-04, rounded train_acc:0.999, valid_loss:7.550e-04, rounded valid_acc:0.999
+Iter: 7400, LR: 1.000e-03 - train_loss:6.483e-04, rounded train_acc:0.999, valid_loss:7.464e-04, rounded valid_acc:0.999
+Iter: 7500, LR: 1.000e-03 - train_loss:5.654e-04, rounded train_acc:0.999, valid_loss:9.566e-04, rounded valid_acc:0.998
+Iter: 7600, LR: 1.000e-03 - train_loss:5.472e-04, rounded train_acc:0.999, valid_loss:9.642e-04, rounded valid_acc:0.998
+Iter: 7700, LR: 1.000e-03 - train_loss:5.873e-04, rounded train_acc:0.999, valid_loss:8.756e-04, rounded valid_acc:0.999
+Iter: 7800, LR: 1.000e-03 - train_loss:5.529e-04, rounded train_acc:0.999, valid_loss:8.206e-04, rounded valid_acc:0.999
+Iter: 7900, LR: 1.000e-03 - train_loss:6.496e-04, rounded train_acc:0.999, valid_loss:1.043e-03, rounded valid_acc:0.998
+Iter: 8000, LR: 1.000e-03 - train_loss:6.199e-04, rounded train_acc:0.999, valid_loss:1.030e-03, rounded valid_acc:0.998
+Iter: 8100, LR: 1.000e-03 - train_loss:4.859e-04, rounded train_acc:0.999, valid_loss:1.127e-03, rounded valid_acc:0.999
+Iter: 8200, LR: 1.000e-03 - train_loss:4.717e-04, rounded train_acc:0.999, valid_loss:1.160e-03, rounded valid_acc:0.999
+Iter: 8300, LR: 1.000e-03 - train_loss:4.810e-04, rounded train_acc:0.999, valid_loss:7.189e-04, rounded valid_acc:0.999
+Iter: 8400, LR: 1.000e-03 - train_loss:4.661e-04, rounded train_acc:0.999, valid_loss:7.167e-04, rounded valid_acc:0.999
+Iter: 8500, LR: 1.000e-03 - train_loss:5.759e-04, rounded train_acc:0.999, valid_loss:7.065e-04, rounded valid_acc:0.999
+Iter: 8600, LR: 1.000e-03 - train_loss:5.501e-04, rounded train_acc:0.999, valid_loss:7.049e-04, rounded valid_acc:0.999
+Iter: 8700, LR: 1.000e-03 - train_loss:4.197e-04, rounded train_acc:0.999, valid_loss:6.690e-04, rounded valid_acc:0.999
+Iter: 8800, LR: 1.000e-03 - train_loss:4.061e-04, rounded train_acc:0.999, valid_loss:6.615e-04, rounded valid_acc:0.999
+Iter: 8900, LR: 1.000e-03 - train_loss:4.637e-04, rounded train_acc:0.999, valid_loss:6.755e-04, rounded valid_acc:0.999
+Iter: 9000, LR: 1.000e-03 - train_loss:4.453e-04, rounded train_acc:0.999, valid_loss:6.457e-04, rounded valid_acc:0.999
+Iter: 9100, LR: 1.000e-03 - train_loss:4.187e-04, rounded train_acc:0.999, valid_loss:1.157e-03, rounded valid_acc:0.999
+Iter: 9200, LR: 1.000e-03 - train_loss:4.202e-04, rounded train_acc:0.999, valid_loss:1.290e-03, rounded valid_acc:0.999
+Iter: 9300, LR: 1.000e-03 - train_loss:5.174e-04, rounded train_acc:0.999, valid_loss:5.512e-04, rounded valid_acc:0.999
+Iter: 9400, LR: 1.000e-03 - train_loss:5.016e-04, rounded train_acc:0.999, valid_loss:5.401e-04, rounded valid_acc:0.999
+Iter: 9500, LR: 1.000e-03 - train_loss:4.729e-04, rounded train_acc:0.999, valid_loss:4.988e-04, rounded valid_acc:0.999
+Iter: 9600, LR: 1.000e-03 - train_loss:5.358e-04, rounded train_acc:0.999, valid_loss:5.937e-04, rounded valid_acc:0.999
+Iter: 9700, LR: 1.000e-03 - train_loss:3.771e-04, rounded train_acc:0.999, valid_loss:6.228e-04, rounded valid_acc:0.999
+Iter: 9800, LR: 1.000e-03 - train_loss:3.655e-04, rounded train_acc:0.999, valid_loss:6.243e-04, rounded valid_acc:0.999
+Iter: 9900, LR: 1.000e-03 - train_loss:3.691e-04, rounded train_acc:0.999, valid_loss:7.937e-04, rounded valid_acc:0.999
+Iter: 10000, LR: 1.000e-03 - train_loss:3.551e-04, rounded train_acc:1.000, valid_loss:7.183e-04, rounded valid_acc:0.999
+Iter: 10100, LR: 1.000e-03 - train_loss:3.318e-04, rounded train_acc:1.000, valid_loss:6.057e-04, rounded valid_acc:0.999
+Iter: 10200, LR: 1.000e-03 - train_loss:3.222e-04, rounded train_acc:1.000, valid_loss:6.065e-04, rounded valid_acc:0.999
+Iter: 10300, LR: 1.000e-03 - train_loss:4.132e-04, rounded train_acc:0.999, valid_loss:5.693e-04, rounded valid_acc:0.999
+Iter: 10400, LR: 1.000e-03 - train_loss:4.026e-04, rounded train_acc:0.999, valid_loss:5.738e-04, rounded valid_acc:0.999
+Iter: 10500, LR: 1.000e-03 - train_loss:3.469e-04, rounded train_acc:1.000, valid_loss:6.401e-04, rounded valid_acc:0.999
+Iter: 10600, LR: 1.000e-03 - train_loss:3.403e-04, rounded train_acc:1.000, valid_loss:7.460e-04, rounded valid_acc:0.999
+Iter: 10700, LR: 1.000e-03 - train_loss:4.233e-04, rounded train_acc:0.999, valid_loss:5.423e-04, rounded valid_acc:0.999
+Iter: 10800, LR: 1.000e-03 - train_loss:4.001e-04, rounded train_acc:0.999, valid_loss:5.839e-04, rounded valid_acc:0.999
+Iter: 10900, LR: 1.000e-03 - train_loss:3.907e-04, rounded train_acc:0.999, valid_loss:4.517e-04, rounded valid_acc:0.999
+Iter: 11000, LR: 1.000e-03 - train_loss:3.752e-04, rounded train_acc:0.999, valid_loss:4.444e-04, rounded valid_acc:0.999
+Iter: 11100, LR: 1.000e-03 - train_loss:3.575e-04, rounded train_acc:0.999, valid_loss:4.440e-04, rounded valid_acc:1.000
+Iter: 11200, LR: 1.000e-03 - train_loss:3.449e-04, rounded train_acc:0.999, valid_loss:4.468e-04, rounded valid_acc:1.000
+Iter: 11300, LR: 1.000e-03 - train_loss:3.720e-04, rounded train_acc:1.000, valid_loss:6.907e-04, rounded valid_acc:0.999
+Iter: 11400, LR: 1.000e-03 - train_loss:3.200e-04, rounded train_acc:1.000, valid_loss:6.829e-04, rounded valid_acc:0.999
+Iter: 11500, LR: 1.000e-03 - train_loss:3.160e-04, rounded train_acc:1.000, valid_loss:7.413e-04, rounded valid_acc:0.999
+Iter: 11600, LR: 1.000e-03 - train_loss:3.085e-04, rounded train_acc:1.000, valid_loss:7.644e-04, rounded valid_acc:0.999
+Iter: 11700, LR: 1.000e-03 - train_loss:3.063e-04, rounded train_acc:1.000, valid_loss:9.515e-04, rounded valid_acc:0.999
+Iter: 11800, LR: 1.000e-03 - train_loss:2.984e-04, rounded train_acc:1.000, valid_loss:9.866e-04, rounded valid_acc:0.999
+Iter: 11900, LR: 1.000e-03 - train_loss:3.314e-04, rounded train_acc:1.000, valid_loss:4.575e-04, rounded valid_acc:0.999
+Iter: 12000, LR: 1.000e-03 - train_loss:3.225e-04, rounded train_acc:1.000, valid_loss:4.719e-04, rounded valid_acc:0.999
+Iter: 12100, LR: 1.000e-03 - train_loss:3.074e-04, rounded train_acc:1.000, valid_loss:6.425e-04, rounded valid_acc:0.999
+Iter: 12200, LR: 1.000e-03 - train_loss:2.986e-04, rounded train_acc:1.000, valid_loss:6.072e-04, rounded valid_acc:0.999
+Iter: 12300, LR: 1.000e-03 - train_loss:2.987e-04, rounded train_acc:0.999, valid_loss:6.798e-04, rounded valid_acc:0.999
+Iter: 12400, LR: 1.000e-03 - train_loss:2.896e-04, rounded train_acc:1.000, valid_loss:6.554e-04, rounded valid_acc:0.999
+Iter: 12500, LR: 1.000e-03 - train_loss:3.000e-04, rounded train_acc:1.000, valid_loss:4.038e-04, rounded valid_acc:0.999
+Iter: 12600, LR: 1.000e-03 - train_loss:2.946e-04, rounded train_acc:1.000, valid_loss:4.445e-04, rounded valid_acc:0.999
+Iter: 12700, LR: 1.000e-03 - train_loss:3.004e-04, rounded train_acc:1.000, valid_loss:7.157e-04, rounded valid_acc:0.999
+Iter: 12800, LR: 1.000e-03 - train_loss:2.973e-04, rounded train_acc:0.999, valid_loss:7.515e-04, rounded valid_acc:0.999
+Iter: 12900, LR: 1.000e-03 - train_loss:2.997e-04, rounded train_acc:0.999, valid_loss:8.567e-04, rounded valid_acc:0.999
+Iter: 13000, LR: 1.000e-03 - train_loss:2.945e-04, rounded train_acc:1.000, valid_loss:8.588e-04, rounded valid_acc:0.999
+Iter: 13100, LR: 1.000e-03 - train_loss:4.775e-04, rounded train_acc:1.000, valid_loss:8.970e-04, rounded valid_acc:0.999
+Iter: 13200, LR: 1.000e-03 - train_loss:2.943e-04, rounded train_acc:1.000, valid_loss:7.753e-04, rounded valid_acc:0.999
+Iter: 13300, LR: 1.000e-03 - train_loss:3.011e-04, rounded train_acc:1.000, valid_loss:7.769e-04, rounded valid_acc:0.999
+Iter: 13400, LR: 1.000e-03 - train_loss:2.919e-04, rounded train_acc:1.000, valid_loss:7.866e-04, rounded valid_acc:0.999
+Iter: 13500, LR: 1.000e-03 - train_loss:2.627e-04, rounded train_acc:1.000, valid_loss:7.005e-04, rounded valid_acc:0.999
+Iter: 13600, LR: 1.000e-03 - train_loss:2.565e-04, rounded train_acc:1.000, valid_loss:7.194e-04, rounded valid_acc:0.999
+Iter: 13700, LR: 1.000e-03 - train_loss:2.538e-04, rounded train_acc:1.000, valid_loss:6.458e-04, rounded valid_acc:1.000
+Iter: 13800, LR: 1.000e-03 - train_loss:2.581e-04, rounded train_acc:1.000, valid_loss:6.657e-04, rounded valid_acc:0.999
+Iter: 13900, LR: 1.000e-03 - train_loss:2.634e-04, rounded train_acc:1.000, valid_loss:4.759e-04, rounded valid_acc:0.999
+Iter: 14000, LR: 1.000e-03 - train_loss:2.520e-04, rounded train_acc:1.000, valid_loss:4.885e-04, rounded valid_acc:0.999
+Iter: 14100, LR: 1.000e-03 - train_loss:2.534e-04, rounded train_acc:1.000, valid_loss:8.192e-04, rounded valid_acc:0.999
+Iter: 14200, LR: 1.000e-03 - train_loss:2.476e-04, rounded train_acc:1.000, valid_loss:9.370e-04, rounded valid_acc:0.999
+Iter: 14300, LR: 1.000e-03 - train_loss:2.768e-04, rounded train_acc:1.000, valid_loss:7.065e-04, rounded valid_acc:1.000
+Iter: 14400, LR: 1.000e-03 - train_loss:2.458e-04, rounded train_acc:1.000, valid_loss:6.751e-04, rounded valid_acc:1.000
+Iter: 14500, LR: 1.000e-03 - train_loss:2.572e-04, rounded train_acc:1.000, valid_loss:5.355e-04, rounded valid_acc:0.999
+Iter: 14600, LR: 1.000e-03 - train_loss:2.560e-04, rounded train_acc:1.000, valid_loss:5.306e-04, rounded valid_acc:0.999
+Iter: 14700, LR: 1.000e-03 - train_loss:2.214e-04, rounded train_acc:1.000, valid_loss:4.203e-04, rounded valid_acc:0.999
+Iter: 14800, LR: 1.000e-03 - train_loss:2.150e-04, rounded train_acc:1.000, valid_loss:4.207e-04, rounded valid_acc:0.999
+Iter: 14900, LR: 1.000e-03 - train_loss:2.356e-04, rounded train_acc:1.000, valid_loss:5.162e-04, rounded valid_acc:0.999
+Iter: 15000, LR: 1.000e-03 - train_loss:2.279e-04, rounded train_acc:1.000, valid_loss:5.177e-04, rounded valid_acc:0.999
+Iter: 15100, LR: 1.000e-03 - train_loss:2.242e-04, rounded train_acc:1.000, valid_loss:4.397e-04, rounded valid_acc:0.999
+Iter: 15200, LR: 1.000e-03 - train_loss:2.202e-04, rounded train_acc:1.000, valid_loss:4.706e-04, rounded valid_acc:0.999
+Iter: 15300, LR: 1.000e-03 - train_loss:2.665e-04, rounded train_acc:1.000, valid_loss:3.178e-04, rounded valid_acc:1.000
+Iter: 15400, LR: 1.000e-03 - train_loss:2.608e-04, rounded train_acc:1.000, valid_loss:3.205e-04, rounded valid_acc:1.000
+Iter: 15500, LR: 1.000e-03 - train_loss:2.335e-04, rounded train_acc:1.000, valid_loss:4.471e-04, rounded valid_acc:0.999
+Iter: 15600, LR: 1.000e-03 - train_loss:2.267e-04, rounded train_acc:1.000, valid_loss:4.660e-04, rounded valid_acc:0.999
+Iter: 15700, LR: 1.000e-03 - train_loss:2.260e-04, rounded train_acc:1.000, valid_loss:7.712e-04, rounded valid_acc:0.999
+Iter: 15800, LR: 1.000e-03 - train_loss:2.214e-04, rounded train_acc:1.000, valid_loss:8.141e-04, rounded valid_acc:0.999
+Iter: 15900, LR: 1.000e-03 - train_loss:2.997e-04, rounded train_acc:1.000, valid_loss:5.391e-04, rounded valid_acc:1.000
+Iter: 16000, LR: 1.000e-03 - train_loss:2.418e-04, rounded train_acc:1.000, valid_loss:6.461e-04, rounded valid_acc:0.999
+Iter: 16100, LR: 1.000e-03 - train_loss:2.525e-04, rounded train_acc:1.000, valid_loss:8.469e-04, rounded valid_acc:0.999
+Iter: 16200, LR: 1.000e-03 - train_loss:2.470e-04, rounded train_acc:1.000, valid_loss:9.036e-04, rounded valid_acc:0.999
+Iter: 16300, LR: 1.000e-03 - train_loss:2.518e-04, rounded train_acc:1.000, valid_loss:4.033e-04, rounded valid_acc:0.999
+Iter: 16400, LR: 1.000e-03 - train_loss:2.438e-04, rounded train_acc:1.000, valid_loss:4.518e-04, rounded valid_acc:0.999
+Iter: 16500, LR: 1.000e-03 - train_loss:2.156e-04, rounded train_acc:1.000, valid_loss:4.825e-04, rounded valid_acc:0.999
+Iter: 16600, LR: 1.000e-03 - train_loss:2.123e-04, rounded train_acc:1.000, valid_loss:5.438e-04, rounded valid_acc:0.999
+Iter: 16700, LR: 1.000e-03 - train_loss:2.297e-04, rounded train_acc:1.000, valid_loss:4.335e-04, rounded valid_acc:1.000
+Iter: 16800, LR: 1.000e-03 - train_loss:2.234e-04, rounded train_acc:1.000, valid_loss:4.885e-04, rounded valid_acc:1.000
+Iter: 16900, LR: 1.000e-03 - train_loss:2.084e-04, rounded train_acc:1.000, valid_loss:6.470e-04, rounded valid_acc:0.999
+Iter: 17000, LR: 1.000e-03 - train_loss:2.046e-04, rounded train_acc:1.000, valid_loss:6.341e-04, rounded valid_acc:0.999
+Iter: 17100, LR: 1.000e-03 - train_loss:2.203e-04, rounded train_acc:1.000, valid_loss:4.425e-04, rounded valid_acc:0.999
+Iter: 17200, LR: 1.000e-03 - train_loss:2.144e-04, rounded train_acc:1.000, valid_loss:4.477e-04, rounded valid_acc:0.999
+Iter: 17300, LR: 1.000e-03 - train_loss:2.117e-04, rounded train_acc:1.000, valid_loss:4.386e-04, rounded valid_acc:0.999
+Iter: 17400, LR: 1.000e-03 - train_loss:2.067e-04, rounded train_acc:1.000, valid_loss:5.685e-04, rounded valid_acc:0.999
+Iter: 17500, LR: 1.000e-03 - train_loss:2.296e-04, rounded train_acc:1.000, valid_loss:3.485e-04, rounded valid_acc:0.999
+Iter: 17600, LR: 1.000e-03 - train_loss:2.264e-04, rounded train_acc:1.000, valid_loss:3.377e-04, rounded valid_acc:1.000
+Iter: 17700, LR: 1.000e-03 - train_loss:2.066e-04, rounded train_acc:1.000, valid_loss:5.463e-04, rounded valid_acc:0.999
+Iter: 17800, LR: 1.000e-03 - train_loss:2.019e-04, rounded train_acc:1.000, valid_loss:5.684e-04, rounded valid_acc:0.999
+Iter: 17900, LR: 1.000e-03 - train_loss:1.904e-04, rounded train_acc:1.000, valid_loss:5.845e-04, rounded valid_acc:0.999
+Iter: 18000, LR: 1.000e-03 - train_loss:1.864e-04, rounded train_acc:1.000, valid_loss:6.316e-04, rounded valid_acc:0.999
+Iter: 18100, LR: 1.000e-03 - train_loss:2.070e-04, rounded train_acc:1.000, valid_loss:7.830e-04, rounded valid_acc:0.999
+Iter: 18200, LR: 1.000e-03 - train_loss:2.021e-04, rounded train_acc:1.000, valid_loss:8.055e-04, rounded valid_acc:0.999
+Iter: 18300, LR: 1.000e-03 - train_loss:2.055e-04, rounded train_acc:1.000, valid_loss:5.267e-04, rounded valid_acc:0.999
+Iter: 18400, LR: 1.000e-03 - train_loss:1.992e-04, rounded train_acc:1.000, valid_loss:4.685e-04, rounded valid_acc:0.999
+Iter: 18500, LR: 1.000e-03 - train_loss:2.292e-04, rounded train_acc:1.000, valid_loss:2.882e-04, rounded valid_acc:0.999
+Iter: 18600, LR: 1.000e-03 - train_loss:2.233e-04, rounded train_acc:1.000, valid_loss:3.100e-04, rounded valid_acc:0.999
+Iter: 18700, LR: 1.000e-03 - train_loss:2.099e-04, rounded train_acc:1.000, valid_loss:5.189e-04, rounded valid_acc:0.999
+Iter: 18800, LR: 1.000e-03 - train_loss:2.016e-04, rounded train_acc:1.000, valid_loss:6.075e-04, rounded valid_acc:0.999
+Iter: 18900, LR: 1.000e-03 - train_loss:2.010e-04, rounded train_acc:1.000, valid_loss:4.033e-04, rounded valid_acc:0.999
+Iter: 19000, LR: 1.000e-03 - train_loss:1.966e-04, rounded train_acc:1.000, valid_loss:3.803e-04, rounded valid_acc:0.999
+Iter: 19100, LR: 1.000e-03 - train_loss:2.137e-04, rounded train_acc:1.000, valid_loss:2.746e-04, rounded valid_acc:1.000
+Iter: 19200, LR: 1.000e-03 - train_loss:2.110e-04, rounded train_acc:1.000, valid_loss:2.744e-04, rounded valid_acc:0.999
+Iter: 19300, LR: 1.000e-03 - train_loss:1.853e-04, rounded train_acc:1.000, valid_loss:3.216e-04, rounded valid_acc:0.999
+Iter: 19400, LR: 1.000e-03 - train_loss:1.871e-04, rounded train_acc:1.000, valid_loss:3.281e-04, rounded valid_acc:0.999
+Iter: 19500, LR: 1.000e-03 - train_loss:2.290e-04, rounded train_acc:1.000, valid_loss:4.123e-04, rounded valid_acc:0.999
+Iter: 19600, LR: 1.000e-03 - train_loss:1.925e-04, rounded train_acc:1.000, valid_loss:3.841e-04, rounded valid_acc:0.999
+Iter: 19700, LR: 1.000e-03 - train_loss:1.908e-04, rounded train_acc:1.000, valid_loss:3.411e-04, rounded valid_acc:0.999
+Iter: 19800, LR: 1.000e-03 - train_loss:1.706e-04, rounded train_acc:1.000, valid_loss:3.354e-04, rounded valid_acc:0.999
+Iter: 19900, LR: 1.000e-03 - train_loss:2.048e-04, rounded train_acc:1.000, valid_loss:3.489e-04, rounded valid_acc:0.999
+Iter: 20000, LR: 1.000e-03 - train_loss:1.884e-04, rounded train_acc:1.000, valid_loss:3.835e-04, rounded valid_acc:0.999
+Done!
+delaygo
+test_input: torch.Size([200, 39, 20])
+test.py:585: VisibleDeprecationWarning: Creating an ndarray from ragged nested sequences (which is a list-or-tuple of lists-or-tuples-or ndarrays with different lengths or shapes) is deprecated. If you meant to do this, you must specify 'dtype=object' when creating the ndarray.
+  res_all = np.array(res_all)
+done
+slurmstepd: error: *** JOB 20951455 ON z3001 CANCELLED AT 2024-09-18T13:32:06 ***
