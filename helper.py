@@ -5,6 +5,11 @@ from scipy.linalg import null_space
 
 import time
 
+def to_unit_vector(arr):
+    """Convert a vector to a unit vector."""
+    norm = np.linalg.norm(arr)
+    return arr / norm if norm != 0 else arr
+
 def participation_ratio_vector(C):
     """Computes the participation ratio of a vector of variances."""
     return np.sum(C) ** 2 / np.sum(C*C)

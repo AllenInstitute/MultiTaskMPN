@@ -132,7 +132,7 @@ def current_basic_params():
         'gradient_clip': 10,
         'valid_n_batch': 200,
         'n_datasets': 100, # Number of distinct batches
-        'n_epochs_per_set': 1, # longer/shorter training
+        'n_epochs_per_set': 130, # longer/shorter training
         'task_mask': None, # None, task
         # 'weight_reg': 'L2',
         # 'reg_lambda': 1e-4,
@@ -567,110 +567,94 @@ for sindex in range(0,len(recordkyle[0])-1):
     session_breakdown.append([recordkyle[0][sindex], recordkyle[0][sindex+1]]) # all sessions should be the same
 session_breakdown.append([recordkyle[0][0], recordkyle[0][-1]])
 
+def to_unit_vector(arr):
+    norm = np.linalg.norm(arr)
+    
+    if norm == 0:
+        return arr
+    
+    unit_vector = arr / norm
+    return unit_vector
+
 # break down time
 breaks = [cut[1] for cut in session_breakdown[:-1]]
 print(f"breaks: {breaks}")
 
-# MODIFY BY ZIHAN -- systematic analysis
-
-
 # Sanity check from Equation 2-7
-fig26 = plt.figure(figsize=(5*3,5))  
-axs26 = [fig26.add_subplot(131), fig26.add_subplot(132), fig26.add_subplot(133, projection='3d')]
+figexh1, axsexh1 = plt.subplots(3,3,figsize=(4*3,4*3))  
+figexh2, axsexh2 = plt.subplots(3,3,figsize=(4*3,4*3))  
 
-fig8 = plt.figure(figsize=(5*3,5))  
-axs8 = [fig8.add_subplot(131), fig8.add_subplot(132, projection='3d'), fig8.add_subplot(133)]
-
-fig11, axs11 = plt.subplots(1,2,figsize=(5*2,5))  
-axs11 = np.atleast_1d(axs11)
 
 for batch_iter in range(test_input.shape[0]):
     res_eq26, res_eq8, res_eq11 = [], [], []
+    res_meta = []
 
     # analyze the change of M
     M_beforestim = Ms_orig[batch_iter, breaks[0], :, :]
     M_afterstim = Ms_orig[batch_iter, breaks[0]+1, :, :]
     h_s_beforesstim = hs[batch_iter, breaks[0], :].reshape(-1,1)
 
+    saver_shape = (3,3)
+    saver1 = np.empty((saver_shape[0], saver_shape[1]), dtype=object)
+    saver2 = np.empty((saver_shape[0], saver_shape[1]), dtype=object)
+
+    for i in range(saver_shape[0]):
+        for j in range(saver_shape[1]):
+            saver1[i, j] = np.array([])
+            saver2[i, j] = np.array([])
+
+
     for time_iter in range(test_input.shape[1]):
         x = test_input[batch_iter, time_iter, :].cpu().numpy().reshape(-1,1)
-        x_fix = np.zeros_like(x) + [x[0],0,0,0,0,0,x[-1]] # one-hot encoded vector for fixation
+        
+        x_fixon = np.array([x[0,0],0,0,0,0,0,0]).reshape(-1,1) # one-hot encoded vector for fixation
+        x_fixoff = np.array([0,x[1,0],0,0,0,0,0]).reshape(-1,1) # one-hot encoded vector for fixation off
+        x_stimulus = np.array([0,0,x[2,0],x[3,0],x[4,0],x[5,0],0]).reshape(-1,1) # one-hot encoded vector for stimulus
+        x_task = np.array([0,0,0,0,0,0,x[6,0]]).reshape(-1,1) # one-hot encoded vector for task
         
         Mt = Ms_orig[batch_iter, time_iter, :, :]
-
-        # Mt = M_beforestim if time_iter <= breaks[0] else M_afterstim
-
-        middle =  W_ + W_ * Mt
-        y_fix = W_output[0,:].reshape(1,-1)
-        y_resp = W_output[1:,:]
-        rest = middle @ x_fix
-        [res1_ang] = (y_fix @ rest)
-        [res2_ang1, res2_ang2] = (y_resp @ rest)
-        res_eq26.append([time_iter, res1_ang[0], res2_ang1[0], res2_ang2[0],])
-
-        if time_iter > breaks[0]:
-            M_change = Mt - M_beforestim
-            h_change = hs[batch_iter, time_iter, :].reshape(-1,1) - h_s_beforesstim
-            res11 = (W_ + W_ * M_change) @ x_fix
-            norm_res11 = np.linalg.norm(res11)
-            # [h_align] = res11.T @ h_change
-            h_align = subspace_angles(res11, h_change)
-            norm_WMchange = np.linalg.norm(W_ * M_change)
-            res_eq11.append([time_iter, h_align[0], norm_res11, norm_WMchange])
-
-
-        # the following "does not make sense" -> just for sanity check
-        # Equation 8-9
-        if time_iter > breaks[-2]: # fixation off period
-            M_beforestim = Ms_orig[batch_iter, breaks[0]:breaks[1], :, :] # stimulus will be given at the end of fixation
-            M_beforestim = M_beforestim.mean(axis=0) # choose M at middle time
-            [res1_angeq8] = y_fix @ ((W_ + W_ * M_beforestim) @ x_fix)
-            [res2_ang1eq8, res2_ang2eq8] = y_resp @ ((W_ + W_ * M_beforestim) @ x_fix)
-            res_eq8.append([time_iter, res1_angeq8[0], res2_ang1eq8[0], res2_ang2eq8[0]])
-
-
-
-    res_eq26 = np.array(res_eq26)
-    axs26[0].plot(res_eq26[0:breaks[2],0], res_eq26[0:breaks[2],1], color=c_vals[labels[batch_iter]])
-    axs26[1].plot(res_eq26[breaks[2]:,0], res_eq26[breaks[2]:,1], color=c_vals[labels[batch_iter]])
-    axs26[2].plot(res_eq26[:,0], res_eq26[:,2], res_eq26[:,3], color=c_vals[labels[batch_iter]])
-
-    res_eq8 = np.array(res_eq8)
-    axs8[0].plot(res_eq8[:,0], res_eq8[:,1], color=c_vals[labels[batch_iter]])
-    axs8[1].plot(res_eq8[:,0], res_eq8[:,2], res_eq8[:,3], color=c_vals[labels[batch_iter]])
-    axs8[2].plot(res_eq8[:,2], res_eq8[:,3], color=c_vals[labels[batch_iter]])
-
-    res_eq11 = np.array(res_eq11)
-    axs11[0].plot(res_eq11[:,0], res_eq11[:,1], color=c_vals[labels[batch_iter]])
-    axs11[1].plot(res_eq11[:,0], res_eq11[:,2], color=c_vals[labels[batch_iter]])
-    
-
-axs26[0].set_xlabel('Time', fontsize=14)
-axs26[0].set_ylabel('Proj', fontsize=14)
-
-axs26[2].set_xlabel('Time', fontsize=14)
-axs26[2].set_ylabel('Proj 1', fontsize=14)
-axs26[2].set_zlabel('Proj 2', fontsize=14)
-
-for axs in (axs26, axs8, axs11):
-    for ax in axs:
-        ax.tick_params(axis='both', which='major', labelsize=14)
-
-for bb in breaks:
-    for ax in (axs26[0], axs11[0]):
-        ax.axvline(bb, color='r', linestyle="--")
         
+        middle =  W_ + W_ * Mt
+        
+        y_fix = W_output[0,:].reshape(1,-1)
+        Y_resp1 = W_output[1,:].reshape(1,-1)
+        Y_resp2 = W_output[2,:].reshape(1,-1)
+
+        allX1 = [x_fixon+x_task, x_fixoff+x_task, x_stimulus+x_fixon+x_task]
+        allX1name = ["x_fixon+x_task", "x_fixoff+x_task", "x_stimulus+x_fixon+x_task"]
+        allX2 = [x_fixon, x_fixoff, x_stimulus]
+        allX2name = ["x_fixon", "x_fixoff", "x_stimulus"]
+        allY = [y_fix, Y_resp1, Y_resp2]
+        allYname = ["y_fix", "Y_resp1", "Y_resp2"]
+
+        for yiter in range(len(allY)):
+            for xiter in range(len(allX1)):
+
+                res1 = to_unit_vector(allY[yiter]) @ to_unit_vector(middle @ allX1[xiter])
+                saver1[xiter, yiter] = np.append(saver1[xiter, yiter], res1[0,0])
+
+                res2 = to_unit_vector(allY[yiter]) @ to_unit_vector(middle @ allX2[xiter])
+                saver2[xiter, yiter] = np.append(saver2[xiter, yiter], res2[0,0])
+
+    # plot single batch result, colored based on the response
+    for i in range(saver_shape[0]):
+        for j in range(saver_shape[1]):
+            axsexh1[i,j].plot(saver1[i,j], color=c_vals[labels[batch_iter]])
+            axsexh2[i,j].plot(saver2[i,j], color=c_vals[labels[batch_iter]])
+
+for i in range(saver_shape[0]):
+    for j in range(saver_shape[1]):
+        axsexh1[i,j].set_title(f"{allX1name[i]} & {allYname[j]}")
+        axsexh2[i,j].set_title(f"{allX2name[i]} & {allYname[j]}")
+
+for ax in np.concatenate((axsexh1.flatten(), axsexh2.flatten())):
+    for bb in breaks:
+        ax.axvline(bb, linestyle="--")
+
+figexh1.savefig(f"./results/exhaustive1_{lag}_{ruleset}_{chosen_network}_{addon_name}.png")
+figexh2.savefig(f"./results/exhaustive2_{lag}_{ruleset}_{chosen_network}_{addon_name}.png")
+
 print("done")
-fig26.tight_layout()
-fig26.savefig(f"./results/eq2_{lag}_{ruleset}_{chosen_network}_{addon_name}.png")
-
-fig8.tight_layout()
-fig8.savefig(f"./results/eq8_{lag}_{ruleset}_{chosen_network}_{addon_name}.png")
-
-fig11.tight_layout()
-fig11.savefig(f"./results/eq11_{lag}_{ruleset}_{chosen_network}_{addon_name}.png")
-
-
 time.sleep(10000)
 
 
