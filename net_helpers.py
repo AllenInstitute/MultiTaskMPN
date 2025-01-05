@@ -101,8 +101,9 @@ def net_eta_lambda_analysis(net, net_params, hyp_dict=None, verbose=False):
         if net.mp_layers[mpl_idx].eta_type not in ('pre_vector', 'post_vector', 'matrix',):
             ax1.legend()
             ax2.legend()
-    
-        fig.savefig(f"./results/eta_lambda_{hyp_dict['ruleset']}_{hyp_dict['chosen_network']}_{hyp_dict['addon_name']}.png")
+
+        if verbose:
+            fig.savefig(f"./results/eta_lambda_{hyp_dict['ruleset']}_{hyp_dict['chosen_network']}_{hyp_dict['addon_name']}.png")
     
         # only for deep mpn with multiple layers
         n_mplayers = len(net.mp_layers)

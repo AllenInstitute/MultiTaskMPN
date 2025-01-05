@@ -293,7 +293,7 @@ def delaygo_(config, mode, anti_response, fix, **kwargs):
     rng = config['rng']
 
     if fix:
-        print("rng reset")
+        print(f"rng reset with seed {seed}")
         rng = np.random.RandomState(seed)
     
     if mode == 'random': # Randomly generate parameters, but uniform times/modalities across batch
@@ -597,7 +597,7 @@ def reactgo_(config, mode, anti_response, fix, **kwargs):
     rng = config['rng']
 
     if fix:
-        print("rng reset")
+        print(f"rng reset with seed {seed}")
         rng = np.random.RandomState(seed)
 
     if mode == 'random': # Randomly generate parameters
@@ -1946,8 +1946,8 @@ def generate_trials(rule, hp, mode, noise_on=True, fix=False, **kwargs):
 
     return trial
 
-# seed = random.randint(1,1000)
-seed = 1000
+seed = random.randint(1,10000)
+# seed = 1000
 np.random.RandomState(seed)
 
 def convert_and_init_multitask_params(params):
