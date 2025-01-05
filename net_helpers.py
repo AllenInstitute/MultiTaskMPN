@@ -9,7 +9,6 @@ from torch.nn import functional as F
 from scipy.stats import lognorm
 
 import tasks 
-import mpn 
 
 # 0 Red, 1 blue, 2 green, 3 purple, 4 orange, 5 teal, 6 gray, 7 pink, 8 yellow
 c_vals = ['#e53e3e', '#3182ce', '#38a169', '#805ad5','#dd6b20', '#319795', '#718096', '#d53f8c', '#d69e2e',]
@@ -18,7 +17,7 @@ c_vals_d = ['#9b2c2c', '#2c5282', '#276749', '#553c9a', '#9c4221', '#285e61', '#
 l_vals = ['solid', 'dashed', 'dotted', 'dashdot', '-', '--', '-.', ':', (0, (3, 1, 1, 1)), (0, (5, 10))]
 markers_vals = ['.', 'o', 'v', '^', '<', '>', '1', '2', '3', '4', 's', 'p', '*', 'h', 'H', '+', 'x', 'D', 'd', '|', '_']
 
-def train_network(params, net=None, device=torch.device('cuda'), verbose=False, train=True, hyp_dict=None):
+def train_network(params, net=None, device=torch.device('cuda'), verbose=False, train=True, hyp_dict=None, netFunction=None):
     """
     """
     task_params, train_params, net_params = params
@@ -37,7 +36,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
             else:
                 print("=== Mess with generating training data ===")
                 train_data, _ = tasks.generate_trials_wrap(
-                    task_params, train_params['n_batches'], rules=task_params['rules'], device=device, verbose=False, mode_input=mode_for_all, mess_with_training=True
+                    task_params, train_params['n_batches'], rules=task_params['rules'], device=device, verbose=False, mode_input=hyp_dict['mode_for_all'], mess_with_training=True
                 )
 
             return train_data
@@ -52,15 +51,6 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
         raise ValueError('Task type not recognized.')
 
     if net is None: # Create a new network
-        if net_params['net_type'] == 'mpn1':
-            netFunction = mpn.MultiPlasticNet
-        elif net_params['net_type'] == 'dmpn':
-            netFunction = mpn.DeepMultiPlasticNet
-        elif net_params['net_type'] == 'vanilla':
-            netFunction = nets.VanillaRNN
-        elif net_params['net_type'] == 'gru':
-            netFunction = nets.GRU
-
         net = netFunction(net_params, verbose=verbose)
 
     # Puts network on device
@@ -79,7 +69,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
     
     return net, (train_data, valid_data)
 
-def net_eta_lambda_analysis(net, net_params, hyp_dict=None):
+def net_eta_lambda_analysis(net, net_params, hyp_dict=None, verbose=False):
     """
     """
     # only make sense for dmpn for eta and lambda information extraction
@@ -135,8 +125,9 @@ def net_eta_lambda_analysis(net, net_params, hyp_dict=None):
                 ax.set_ylabel('Count')
                 ax.set_xlabel('Eta value')
                 ax.legend()
-    
-            fig.savefig(f"./results/eta_distribution_{hyp_dict['ruleset']}_{hyp_dict['chosen_network']}_{hyp_dict['addon_name']}.png")
+
+            if verbose:
+                fig.savefig(f"./results/eta_distribution_{hyp_dict['ruleset']}_{hyp_dict['chosen_network']}_{hyp_dict['addon_name']}.png")
 
 
 def rand_weight_init(n_inputs, n_outputs=None, init_type='gaussian', cell_types=None,

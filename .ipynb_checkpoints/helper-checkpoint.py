@@ -14,7 +14,7 @@ def participation_ratio_vector(C):
     """Computes the participation ratio of a vector of variances."""
     return np.sum(C) ** 2 / np.sum(C*C)
 
-def plot_some_ouputs(params, net, mode_for_all="random_batch", n_outputs=4, nameadd=""):
+def plot_some_ouputs(params, net, mode_for_all="random_batch", n_outputs=4, nameadd="", verbose=False):
     """
     """
     # in case out of range
@@ -27,7 +27,7 @@ def plot_some_ouputs(params, net, mode_for_all="random_batch", n_outputs=4, name
     if task_params['task_type'] in ('multitask',):
         test_data, test_trials_extra = tasks.generate_trials_wrap(task_params, n_outputs, mode_input=mode_for_all)
         # figure out sessions
-        assert mode_for_all == "random_batch" # lazy...
+        # assert mode_for_all == "random_batch" # lazy...
         _, test_trials, test_rule_idxs = test_trials_extra
         recordkyle_all = []
         for test_subtrial in test_trials:
@@ -41,9 +41,7 @@ def plot_some_ouputs(params, net, mode_for_all="random_batch", n_outputs=4, name
             recordkyle = np.array(recordkyle).T.tolist()
             # print(recordkyle)
             recordkyle_all.extend(recordkyle)
-            
-        # print(recordkyle_all)
-        
+                    
     elif task_params['task_type'] in ('NeuroGym',):
         test_data, _ = convert_ngym_dataset(
                     task_params, set_size=n_outputs, device=device,
@@ -94,7 +92,8 @@ def plot_some_ouputs(params, net, mode_for_all="random_batch", n_outputs=4, name
                 for session_break in session_period:
                     axs[outputind, axind].axvline(session_break, linestyle="--")
 
-    fig.savefig(f"./results/results_{nameadd}.png")
+    if verbose:
+        fig.savefig(f"./results/results_{nameadd}.png")
 
 def find_consecutive_zero_indices(arr):
     zero_indices = []

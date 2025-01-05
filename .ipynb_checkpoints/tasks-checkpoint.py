@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import net_helpers
 import time
-
+import random
 
 def get_rules(ruleset):
     return rules_dict[ruleset]
@@ -291,6 +291,9 @@ def delaygo_(config, mode, anti_response, **kwargs):
     '''
     dt = config['dt']
     rng = config['rng']
+
+    print(rng)
+    
     if mode == 'random': # Randomly generate parameters, but uniform times/modalities across batch
         batch_size = kwargs['batch_size']
 
@@ -1937,7 +1940,8 @@ def generate_trials(rule, hp, mode, noise_on=True, **kwargs):
 
     return trial
 
-seed = 1
+# seed = random.randint(1,1000)
+seed = 1000
 np.random.RandomState(seed)
 
 def convert_and_init_multitask_params(params):
@@ -1950,11 +1954,13 @@ def convert_and_init_multitask_params(params):
 
     # task_params['rules'] = get_rules(task_params['ruleset'])
     num_ring = 2 if 'oic' not in task_params['rules'] else 3
-    n_rule = len(task_params['rules']) # 20 rules for 'all', 15 for 'low_dim'
+    n_rule = len(task_params['rules']) 
     task_params['n_rules'] = n_rule
 
     fixate_off = task_params.get('fixate_off', False) # Signal for when fixation turns off (go signal)
+    task_info = task_params.get('task_info', True) 
     n_fixate = 2 if fixate_off else 1
+    n_rule_revise = n_rule if not task_info else 0
 
     if task_params['in_out_mode'] in ('high_dim',):
         n_input = n_fixate + num_ring * task_params['n_eachring'] + n_rule # fix, ring inputs, rule inputs
@@ -1973,17 +1979,17 @@ def convert_and_init_multitask_params(params):
         task_params['n_input'] = input_size
 
     if 'n_neurons' in net_params:
-        net_params['n_neurons'][0] = input_size
+        net_params['n_neurons'][0] = input_size - n_rule_revise # ***
         net_params['n_neurons'][-1] = n_output
     else:
-        net_params['n_input'] = input_size
+        net_params['n_input'] = input_size - n_rule_revise # ***
         net_params['n_output'] = n_output
     task_params['n_output'] = n_output
 
     net_params['tau'] = 200 # Time constant (ms), default is 100 ms, only used to set noise scale for task
     net_params['dt'] = task_params['dt'] # Default is 20 ms
     net_params['alpha'] = net_params['dt'] / net_params['tau'] # Default is 0.2
-
+    
     hp = {
         'seed': seed,
         'rng': np.random.RandomState(seed),
@@ -2008,7 +2014,7 @@ def convert_and_init_multitask_params(params):
         # number of output units
         'n_output': n_output,
         'fixate_off': fixate_off,
-
+        'task_info': task_info,
         'get_meta': True, # Collect metadata for easier labelling
     }
 
@@ -2022,7 +2028,7 @@ def convert_and_init_multitask_params(params):
     if task_params['randomize_inputs']:
         # If the conversion is not already generated, create it
         if 'randomize_matrix' not in task_params:
-            task_params['randomize_matrix'] = net_helpers.rand_weight_init(task_params['n_input'], n_input)
+            task_params['randomize_matrix'] = net_helpers.rand_weight_init(task_params['n_input'], n_input - n_rule_revise)
 
     params = task_params, train_params, net_params
 
@@ -2030,7 +2036,7 @@ def convert_and_init_multitask_params(params):
 
 def generate_trials_wrap(task_params, n_batches, device='cuda', rules=None,
                          verbose=False, mode_input="random_batch",
-                         mess_with_training=False
+                         mess_with_training=False,
                          ):
     """
     Wrapper to generate the raw datasets, including the inputs, labels, and masks.
@@ -2050,8 +2056,6 @@ def generate_trials_wrap(task_params, n_batches, device='cuda', rules=None,
             a batch of this size.
         rule: See above
     """
-    # print(f"==== Mode: {mode_input} ====")
-
     if rules is None: # Draw a rule randomly, create tuple with single rule in it
         rule_idx = np.random.choice(task_params['n_rules'], p=task_params['rules_probs'])
         rules = (task_params['rules'][rule_idx],)
@@ -2095,8 +2099,6 @@ def generate_trials_wrap(task_params, n_batches, device='cuda', rules=None,
 
     if mess_with_training:
         batch_distribution = allocate_integer_to_divisions(n_batches, len(rules))
-        # print(batch_distribution)
-
 
     for rule, rule_idx in zip(rules, rule_idxs):
         if not mess_with_training: # normal
@@ -2106,6 +2108,8 @@ def generate_trials_wrap(task_params, n_batches, device='cuda', rules=None,
             trial = generate_trials(rule, task_params['hp'], mode_input,
                                     batch_size=batch_distribution[rule_idx])
 
+        trial.x = trial.x[:,:,:-1] if not task_params["task_info"] else trial.x # ***
+        
         # Transposes batch and sequence dimensions
         inputs.append(np.transpose(trial.x, (1, 0, 2)))
         labels.append(np.transpose(trial.y, (1, 0, 2)))
