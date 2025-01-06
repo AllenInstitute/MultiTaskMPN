@@ -681,7 +681,7 @@ def reactanti(config, mode, fix, **kwargs):
     return reactgo_(config, mode, True, fix, **kwargs)
 
 
-def fdgo_(config, mode, anti_response, **kwargs):
+def fdgo_(config, mode, fix, anti_response, **kwargs):
     '''
     Go with inhibitory control. Important difference with Go task is that
     the stimulus is presented from the beginning.
@@ -783,12 +783,12 @@ def fdgo_(config, mode, anti_response, **kwargs):
 
     return trial
 
-def fdgo(config, mode, **kwargs):
-    return fdgo_(config, mode, False, **kwargs)
+def fdgo(config, mode, fix, **kwargs):
+    return fdgo_(config, mode, False, fix, **kwargs)
 
 
-def fdanti(config, mode, **kwargs):
-    return fdgo_(config, mode, True, **kwargs)
+def fdanti(config, mode, fix, **kwargs):
+    return fdgo_(config, mode, True, fix, **kwargs)
 
 
 def delayanti(config, mode, fix, **kwargs):

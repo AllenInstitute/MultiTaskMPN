@@ -1,5 +1,5 @@
 import time # For debugging
-
+import copy 
 import numpy as np
 import matplotlib.pyplot as plt 
 
@@ -17,7 +17,7 @@ c_vals_d = ['#9b2c2c', '#2c5282', '#276749', '#553c9a', '#9c4221', '#285e61', '#
 l_vals = ['solid', 'dashed', 'dotted', 'dashdot', '-', '--', '-.', ':', (0, (3, 1, 1, 1)), (0, (5, 10))]
 markers_vals = ['.', 'o', 'v', '^', '<', '>', '1', '2', '3', '4', 's', 'p', '*', 'h', 'H', '+', 'x', 'D', 'd', '|', '_']
 
-def train_network(params, net=None, device=torch.device('cuda'), verbose=False, train=True, hyp_dict=None, netFunction=None):
+def train_network(params, net=None, device=torch.device('cuda'), verbose=False, train=True, hyp_dict=None, netFunction=None, test_input=None):
     """
     """
     task_params, train_params, net_params = params
@@ -60,14 +60,24 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
 
     valid_data = generate_valid_data(device=device)
 
+    netout_lst, db_lst, Woutput_lst = [], [], []
+
     for dataset_idx in range(train_params['n_datasets']):
         # Regenerate new data
         train_data = generate_train_data(device=device)
         new_thresh = True if dataset_idx == 0 else False
         if train: 
             _ = net.fit(train_params, train_data, valid_batch=valid_data, new_thresh=new_thresh, run_mode=hyp_dict['run_mode'])
-    
-    return net, (train_data, valid_data)
+            if test_input is not None:
+                # test data for each stage
+                net_out, db = net.iterate_sequence_batch(test_input, run_mode='track_states')
+				W_output = net.W_output.detach().cpu().numpy()
+				# load the info for each learning stage
+                netout_lst.append(net_out)
+                db_lst.append(db)
+				Woutput_lst.append(W_output)
+		
+    return net, (train_data, valid_data), (netout_lst, db_lst)
 
 def net_eta_lambda_analysis(net, net_params, hyp_dict=None, verbose=False):
     """
@@ -588,7 +598,7 @@ class BaseNetwork(BaseNetworkFunctions):
 		self.train() # put in train mode (doesn't really do anything unless we are using dropout/batch norm)
 		db = train_fn(train_params, train_data, valid_batch=valid_batch, 
 					  new_thresh=new_thresh, run_mode=run_mode)
-
+        
 		self.eval() # return to eval mode
 
 		return db
@@ -663,7 +673,6 @@ class BaseNetwork(BaseNetworkFunctions):
 			assert train_inputs.shape[1] == train_masks.shape[1]
 		
 		for epoch_idx in range(train_params['n_epochs_per_set']):
-
 			for b in range(0, train_inputs.shape[0], B):
 				train_inputs_batch = train_inputs[b:b+B, :, :]
 				train_labels_batch = train_labels[b:b+B, :]
@@ -708,7 +717,7 @@ class BaseNetwork(BaseNetworkFunctions):
 			train_inputs, train_labels, train_masks = shuffle_dataset(
 				train_inputs, train_labels, train_masks
 			)
-
+            
 		return db
 
 	def iterate_sequence_batch(self, batch_inputs, batch_labels=None, batch_masks=None, run_mode='minimal'):
