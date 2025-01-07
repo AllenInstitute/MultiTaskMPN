@@ -60,7 +60,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
 
     valid_data = generate_valid_data(device=device)
 
-    netout_lst, db_lst, Woutput_lst = [], [], []
+    netout_lst, db_lst, Woutput_lst, Wall_lst, marker_lst = [], [], [], [], []
 
     for dataset_idx in range(train_params['n_datasets']):
         # Regenerate new data
@@ -68,16 +68,24 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
         new_thresh = True if dataset_idx == 0 else False
         if train: 
             _ = net.fit(train_params, train_data, valid_batch=valid_data, new_thresh=new_thresh, run_mode=hyp_dict['run_mode'])
-            if test_input is not None:
+            if test_input is not None and (dataset_idx % 10 == 0 or dataset_idx == train_params['n_datasets'] - 1):
+                print(f"How about Test Data at dataset {dataset_idx}")
                 # test data for each stage
                 net_out, db = net.iterate_sequence_batch(test_input, run_mode='track_states')
-				W_output = net.W_output.detach().cpu().numpy()
+                W_output = net.W_output.detach().cpu().numpy()
 				# load the info for each learning stage
                 netout_lst.append(net_out)
                 db_lst.append(db)
-				Woutput_lst.append(W_output)
+                Woutput_lst.append(W_output)
+
+                W_all_ = []
+                for i in range(len(net.mp_layers)):
+                    W_ = net.mp_layers[i].W.detach().cpu().numpy()
+                    W_all_.append(W_)
+                Wall_lst.append(W_all_)
+                marker_lst.append(dataset_idx)
 		
-    return net, (train_data, valid_data), (netout_lst, db_lst)
+    return net, (train_data, valid_data), (netout_lst, db_lst, Woutput_lst, Wall_lst, marker_lst)
 
 def net_eta_lambda_analysis(net, net_params, hyp_dict=None, verbose=False):
     """
