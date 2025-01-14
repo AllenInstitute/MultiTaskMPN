@@ -72,6 +72,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
                 print(f"How about Test Data at dataset {dataset_idx}")
                 # test data for each stage
                 net_out, db = net.iterate_sequence_batch(test_input, run_mode='track_states')
+                net_out = net_out.detach().cpu().numpy()
                 W_output = net.W_output.detach().cpu().numpy()
 				# load the info for each learning stage
                 netout_lst.append(net_out)

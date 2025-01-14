@@ -1,9 +1,31 @@
 import tasks
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import numpy as np 
 from scipy.linalg import null_space
-
 import time
+
+def generate_rainbow_colors(length):
+    """
+    Generate a list of colors transitioning from red to purple in a rainbow-like gradient.
+
+    Args:
+        length (int): Number of colors to generate.
+
+    Returns:
+        list: List of RGB color strings.
+    """
+    if length <= 0:
+        raise ValueError("Length must be greater than 0.")
+
+    # Generate evenly spaced values for hue (red to purple in HSV space)
+    hues = np.linspace(0, 0.8, length)  # Hue from 0 (red) to ~0.8 (purple)
+    colors = [mcolors.hsv_to_rgb((hue, 1, 1)) for hue in hues]
+
+    # Convert RGB values to hex for easier visualization
+    hex_colors = [mcolors.to_hex(color) for color in colors]
+
+    return hex_colors
 
 def to_unit_vector(arr):
     """Convert a vector to a unit vector."""

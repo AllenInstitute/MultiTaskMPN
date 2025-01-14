@@ -795,7 +795,7 @@ def delayanti(config, mode, fix, **kwargs):
     return delaygo_(config, mode, True, fix, **kwargs)
 
 
-def _dm(config, mode, stim_mod, **kwargs):
+def _dm(config, mode, stim_mod, fix, **kwargs):
     '''
     Fixate whenever fixation point is shown.
     Two stimuluss are shown, saccade to the one with higher intensity
@@ -918,15 +918,15 @@ def _dm(config, mode, stim_mod, **kwargs):
     return trial
 
 
-def dm1(config, mode, **kwargs):
-    return _dm(config, mode, 1, **kwargs)
+def dm1(config, mode, fix, **kwargs):
+    return _dm(config, mode, 1, fix, **kwargs)
 
 
-def dm2(config, mode, **kwargs):
-    return _dm(config, mode, 2, **kwargs)
+def dm2(config, mode, fix, **kwargs):
+    return _dm(config, mode, 2, fix, **kwargs)
 
 
-def _delaydm(config, mode, stim_mod, **kwargs):
+def _delaydm(config, mode, stim_mod, fix, **kwargs):
     '''
     Fixate whenever fixation point is shown.
     Two stimuluss are shown at different time, with different intensities
@@ -1082,12 +1082,12 @@ def _delaydm(config, mode, stim_mod, **kwargs):
     return trial
 
 
-def delaydm1(config, mode, **kwargs):
-    return _delaydm(config, mode, 1, **kwargs)
+def delaydm1(config, mode, fix, **kwargs):
+    return _delaydm(config, mode, 1, fix, **kwargs)
 
 
-def delaydm2(config, mode, **kwargs):
-    return _delaydm(config, mode, 2, **kwargs)
+def delaydm2(config, mode, fix, **kwargs):
+    return _delaydm(config, mode, 2, fix, **kwargs)
 
 
 def _contextdelaydm(config, mode, attend_mod, **kwargs):
