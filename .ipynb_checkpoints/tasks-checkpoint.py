@@ -269,7 +269,7 @@ def test_init(config, mode, **kwargs):
     return trial
 
 
-def delaygo_(config, mode, anti_response, **kwargs):
+def delaygo_(config, mode, anti_response, fix, **kwargs):
     '''
     Fixate whenever fixation point is shown,
     saccade to the location of the previously shown stimulus
@@ -292,12 +292,13 @@ def delaygo_(config, mode, anti_response, **kwargs):
     dt = config['dt']
     rng = config['rng']
 
-    print(rng)
+    if fix:
+        print(f"rng reset with seed {seed}")
+        rng = np.random.RandomState(seed)
     
     if mode == 'random': # Randomly generate parameters, but uniform times/modalities across batch
         batch_size = kwargs['batch_size']
-
-        # A list of locations of stimuluss and on/off time
+        # A list of locations of stimulus and on/off time
         stim_locs = rng.rand(batch_size)*2*np.pi
         # stim_ons  = int(500/dt)
         stim_ons  = int(rng.choice([300, 500, 700])/dt)
@@ -379,8 +380,8 @@ def delaygo_(config, mode, anti_response, **kwargs):
     return trial
 
 
-def delaygo(config, mode, **kwargs):
-    return delaygo_(config, mode, False, **kwargs)
+def delaygo(config, mode, fix, **kwargs):
+    return delaygo_(config, mode, False, fix, **kwargs)
 
 
 def contextdm_genstim(batch_size, rng, stim_coh_range=None):
@@ -573,7 +574,7 @@ def multidm(config, mode, **kwargs):
     return _contextdm(config, mode, 'both', **kwargs)
 
 
-def reactgo_(config, mode, anti_response, **kwargs):
+def reactgo_(config, mode, anti_response, fix, **kwargs):
     '''
     Fixate when fixation point is shown,
     A stimulus will be shown, and the output should saccade to the stimulus location
@@ -594,6 +595,10 @@ def reactgo_(config, mode, anti_response, **kwargs):
     '''
     dt = config['dt']
     rng = config['rng']
+
+    if fix:
+        print(f"rng reset with seed {seed}")
+        rng = np.random.RandomState(seed)
 
     if mode == 'random': # Randomly generate parameters
         batch_size = kwargs['batch_size']
@@ -668,15 +673,15 @@ def reactgo_(config, mode, anti_response, **kwargs):
     return trial
 
 
-def reactgo(config, mode, **kwargs):
-    return reactgo_(config, mode, False, **kwargs)
+def reactgo(config, mode, fix, **kwargs):
+    return reactgo_(config, mode, False, fix, **kwargs)
 
 
-def reactanti(config, mode, **kwargs):
-    return reactgo_(config, mode, True, **kwargs)
+def reactanti(config, mode, fix, **kwargs):
+    return reactgo_(config, mode, True, fix, **kwargs)
 
 
-def fdgo_(config, mode, anti_response, **kwargs):
+def fdgo_(config, mode, fix, anti_response, **kwargs):
     '''
     Go with inhibitory control. Important difference with Go task is that
     the stimulus is presented from the beginning.
@@ -778,16 +783,16 @@ def fdgo_(config, mode, anti_response, **kwargs):
 
     return trial
 
-def fdgo(config, mode, **kwargs):
-    return fdgo_(config, mode, False, **kwargs)
+def fdgo(config, mode, fix, **kwargs):
+    return fdgo_(config, mode, False, fix, **kwargs)
 
 
-def fdanti(config, mode, **kwargs):
-    return fdgo_(config, mode, True, **kwargs)
+def fdanti(config, mode, fix, **kwargs):
+    return fdgo_(config, mode, True, fix, **kwargs)
 
 
-def delayanti(config, mode, **kwargs):
-    return delaygo_(config, mode, True, **kwargs)
+def delayanti(config, mode, fix, **kwargs):
+    return delaygo_(config, mode, True, fix, **kwargs)
 
 
 def _dm(config, mode, stim_mod, **kwargs):
@@ -1111,6 +1116,7 @@ def _contextdelaydm(config, mode, attend_mod, **kwargs):
     '''
     dt = config['dt']
     rng = config['rng']
+    
     if mode == 'random': # Randomly generate parameters
         batch_size = kwargs['batch_size']
 
@@ -1884,7 +1890,7 @@ rule_name    = {'reactgo': 'RT Go',
                 }
 
 
-def generate_trials(rule, hp, mode, noise_on=True, **kwargs):
+def generate_trials(rule, hp, mode, noise_on=True, fix=False, **kwargs):
     """Generate one batch of data.
 
     Args:
@@ -1897,7 +1903,7 @@ def generate_trials(rule, hp, mode, noise_on=True, **kwargs):
         trial: Trial class instance, containing input and target output
     """
     config = hp
-    trial = rule_mapping[rule](config, mode, **kwargs)
+    trial = rule_mapping[rule](config, mode, fix, **kwargs)
 
     # Add rule input to every task
     if 'rule_on' in kwargs:
@@ -1940,8 +1946,8 @@ def generate_trials(rule, hp, mode, noise_on=True, **kwargs):
 
     return trial
 
-# seed = random.randint(1,1000)
-seed = 1000
+seed = random.randint(1,10000)
+# seed = 1000
 np.random.RandomState(seed)
 
 def convert_and_init_multitask_params(params):
@@ -2036,7 +2042,7 @@ def convert_and_init_multitask_params(params):
 
 def generate_trials_wrap(task_params, n_batches, device='cuda', rules=None,
                          verbose=False, mode_input="random_batch",
-                         mess_with_training=False,
+                         mess_with_training=False, fix=False, 
                          ):
     """
     Wrapper to generate the raw datasets, including the inputs, labels, and masks.
@@ -2103,10 +2109,10 @@ def generate_trials_wrap(task_params, n_batches, device='cuda', rules=None,
     for rule, rule_idx in zip(rules, rule_idxs):
         if not mess_with_training: # normal
             trial = generate_trials(rule, task_params['hp'], mode_input,
-                                    batch_size=n_batches)
+                                    batch_size=n_batches, fix=fix)
         else: # mixup
             trial = generate_trials(rule, task_params['hp'], mode_input,
-                                    batch_size=batch_distribution[rule_idx])
+                                    batch_size=batch_distribution[rule_idx], fix=fix)
 
         trial.x = trial.x[:,:,:-1] if not task_params["task_info"] else trial.x # ***
         

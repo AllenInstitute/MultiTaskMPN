@@ -101,8 +101,9 @@ def net_eta_lambda_analysis(net, net_params, hyp_dict=None, verbose=False):
         if net.mp_layers[mpl_idx].eta_type not in ('pre_vector', 'post_vector', 'matrix',):
             ax1.legend()
             ax2.legend()
-    
-        fig.savefig(f"./results/eta_lambda_{hyp_dict['ruleset']}_{hyp_dict['chosen_network']}_{hyp_dict['addon_name']}.png")
+
+        if verbose:
+            fig.savefig(f"./results/eta_lambda_{hyp_dict['ruleset']}_{hyp_dict['chosen_network']}_{hyp_dict['addon_name']}.png")
     
         # only for deep mpn with multiple layers
         n_mplayers = len(net.mp_layers)
@@ -587,7 +588,7 @@ class BaseNetwork(BaseNetworkFunctions):
 		self.train() # put in train mode (doesn't really do anything unless we are using dropout/batch norm)
 		db = train_fn(train_params, train_data, valid_batch=valid_batch, 
 					  new_thresh=new_thresh, run_mode=run_mode)
-
+        
 		self.eval() # return to eval mode
 
 		return db
@@ -662,7 +663,6 @@ class BaseNetwork(BaseNetworkFunctions):
 			assert train_inputs.shape[1] == train_masks.shape[1]
 		
 		for epoch_idx in range(train_params['n_epochs_per_set']):
-
 			for b in range(0, train_inputs.shape[0], B):
 				train_inputs_batch = train_inputs[b:b+B, :, :]
 				train_labels_batch = train_labels[b:b+B, :]
@@ -707,7 +707,7 @@ class BaseNetwork(BaseNetworkFunctions):
 			train_inputs, train_labels, train_masks = shuffle_dataset(
 				train_inputs, train_labels, train_masks
 			)
-
+            
 		return db
 
 	def iterate_sequence_batch(self, batch_inputs, batch_labels=None, batch_masks=None, run_mode='minimal'):
