@@ -62,13 +62,15 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
 
     netout_lst, db_lst, Woutput_lst, Wall_lst, marker_lst = [], [], [], [], []
 
+    def is_power_of_2_or_zero(n):
+        return n == 0 or (n > 0 and (n & (n - 1)) == 0)
+
     for dataset_idx in range(train_params['n_datasets']):
         # Regenerate new data
         train_data = generate_train_data(device=device)
         new_thresh = True if dataset_idx == 0 else False
         if train: 
-            _ = net.fit(train_params, train_data, valid_batch=valid_data, new_thresh=new_thresh, run_mode=hyp_dict['run_mode'])
-            if test_input is not None and (dataset_idx % 10 == 0 or dataset_idx == train_params['n_datasets'] - 1):
+            if test_input is not None and (is_power_of_2_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
                 print(f"How about Test Data at dataset {dataset_idx}")
                 # test data for each stage
                 net_out, db = net.iterate_sequence_batch(test_input, run_mode='track_states')
@@ -85,6 +87,8 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
                     W_all_.append(W_)
                 Wall_lst.append(W_all_)
                 marker_lst.append(dataset_idx)
+
+            _ = net.fit(train_params, train_data, valid_batch=valid_data, new_thresh=new_thresh, run_mode=hyp_dict['run_mode'])
 		
     return net, (train_data, valid_data), (netout_lst, db_lst, Woutput_lst, Wall_lst, marker_lst)
 
