@@ -2,6 +2,7 @@ import torch
 from torch import nn
 from torch.utils.data import TensorDataset
 import torch.nn.functional as F
+from torch.nn.init import orthogonal_
 
 import math
 
@@ -20,7 +21,7 @@ class MultiPlasticLayer(BaseNetworkFunctions):
     and "update_M_matrix" functions. The latter needs to be called after every
     forward pass where the modulations should be updated.
     """
-    def __init__(self, ml_params, verbose=True):
+    def __init__(self, ml_params, output_matrix, verbose=True):
         super().__init__()
 
         init_string=''
@@ -400,7 +401,7 @@ class MultiPlasticNetBase(BaseNetwork):
     MPNs, no matter the connections that lead from input to output.
     """
 
-    def __init__(self, net_params, n_output_pre, verbose=False):
+    def __init__(self, net_params, n_output_pre, output_matrix="", verbose=False):
         # Note that this assumes self.output has already been set in child
         assert hasattr(self, 'n_output')
 
@@ -446,6 +447,23 @@ class MultiPlasticNetBase(BaseNetwork):
                              cell_types=self.hidden_cell_types),
             dtype=torch.float)
         )
+
+        # overwrite 
+        if output_matrix == "":
+            pass
+        elif output_matrix == "untrained":
+            print("Output Matrix Untrained")
+            self.W_output.requires_grad = False
+        elif output_matrix == "orthogonal":
+            print("Output Matrix Orthogonal and Untrained")
+            W_output_init = torch.empty(self.n_output, n_output_pre)  # Create a matrix of size (n_output, n_output_pre)
+            orthogonal_(W_output_init)  # In-place orthogonal initialization
+            W_output_init = W_output_init.T
+            self.parameter_or_buffer('W_output', torch.tensor(W_output_init, dtype=torch.float))
+            self.W_output.requires_grad = False
+        else:
+            raise Exception("Output Matrix not recognized")
+        
 
         self.parameter_or_buffer('b_output', torch.tensor(
             rand_weight_init(self.n_output, init_type=self.b_output_init),
@@ -520,7 +538,7 @@ class MultiPlasticNet(MultiPlasticNetBase):
         net_params['ml_params']['n_input'] = self.n_input
         net_params['ml_params']['n_output'] = self.n_hidden
         net_params['ml_params']['dt'] = self.dt
-        self.mp_layer = MultiPlasticLayer(net_params['ml_params'], verbose=verbose)
+        self.mp_layer = MultiPlasticLayer(net_params['ml_params'], output_matrix=self.output_matrix, verbose=verbose)
         self.params.extend(self.mp_layer.params)
 
         self.mp_layers = [self.mp_layer,] # List of all mp_layers in this network
@@ -577,7 +595,9 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
         self.n_input = net_params['n_neurons'][0]
         self.n_output = net_params['n_neurons'][-1]
 
-        super().__init__(net_params, net_params['n_neurons'][-2], verbose=verbose)
+        self.output_matrix = net_params['output_matrix']
+
+        super().__init__(net_params, net_params['n_neurons'][-2], output_matrix=self.output_matrix, verbose=verbose)
 
         # Creates all the MP layers
         self.param_clamping = True # Always have param clamping for MP layers because lam bounds
@@ -599,7 +619,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
             net_params[ml_params_key]['n_output'] = net_params['n_neurons'][mpl_idx + 1]
 
             setattr(self, 'mp_layer{}'.format(mpl_idx),
-                    MultiPlasticLayer(net_params[ml_params_key], verbose=verbose))
+                    MultiPlasticLayer(net_params[ml_params_key], output_matrix=self.output_matrix, verbose=verbose))
 
             self.mp_layers.append(getattr(self, 'mp_layer{}'.format(mpl_idx)))
             self.params.extend([param+str(mpl_idx) for param in self.mp_layers[-1].params])

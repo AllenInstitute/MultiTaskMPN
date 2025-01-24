@@ -60,7 +60,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
 
     valid_data = generate_valid_data(device=device)
 
-    netout_lst, db_lst, Woutput_lst, Wall_lst, marker_lst = [], [], [], [], []
+    netout_lst, db_lst, Woutput_lst, Wall_lst, marker_lst, loss_lst = [], [], [], [], [], []
 
     def is_power_of_2_or_zero(n):
         return n == 0 or (n > 0 and (n & (n - 1)) == 0)
@@ -88,9 +88,13 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
                 Wall_lst.append(W_all_)
                 marker_lst.append(dataset_idx)
 
-            _ = net.fit(train_params, train_data, valid_batch=valid_data, new_thresh=new_thresh, run_mode=hyp_dict['run_mode'])
+            _, monitor_loss = net.fit(train_params, train_data, valid_batch=valid_data, new_thresh=new_thresh, run_mode=hyp_dict['run_mode'])
+
+            if test_input is not None and (is_power_of_2_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
+                print(f"monitor_loss: {monitor_loss}")
+                loss_lst.append(monitor_loss)
 		
-    return net, (train_data, valid_data), (netout_lst, db_lst, Woutput_lst, Wall_lst, marker_lst)
+    return net, (train_data, valid_data), (netout_lst, db_lst, Woutput_lst, Wall_lst, marker_lst, loss_lst)
 
 def net_eta_lambda_analysis(net, net_params, hyp_dict=None, verbose=False):
     """
@@ -609,12 +613,12 @@ class BaseNetwork(BaseNetworkFunctions):
 
 
 		self.train() # put in train mode (doesn't really do anything unless we are using dropout/batch norm)
-		db = train_fn(train_params, train_data, valid_batch=valid_batch, 
+		db, monitor_loss = train_fn(train_params, train_data, valid_batch=valid_batch, 
 					  new_thresh=new_thresh, run_mode=run_mode)
         
 		self.eval() # return to eval mode
 
-		return db
+		return db, monitor_loss
 			 
 	
 	def train_base(self, train_params, train_data, valid_batch=None, new_thresh=True, 
@@ -685,6 +689,7 @@ class BaseNetwork(BaseNetworkFunctions):
 			assert train_inputs.shape[0] == train_masks.shape[0]
 			assert train_inputs.shape[1] == train_masks.shape[1]
 		
+		losses = []
 		for epoch_idx in range(train_params['n_epochs_per_set']):
 			for b in range(0, train_inputs.shape[0], B):
 				train_inputs_batch = train_inputs[b:b+B, :, :]
@@ -701,6 +706,7 @@ class BaseNetwork(BaseNetworkFunctions):
 				)
 				
 				loss, loss_components, error_term = self.compute_loss(output, train_labels_batch, train_masks_batch)
+				losses.append(loss.cpu().detach().numpy())
 
 				if self.run_mode in ('timing',): 
 					self.hist['forward_times'].append(time.time() - t0) # Forward end
@@ -731,7 +737,7 @@ class BaseNetwork(BaseNetworkFunctions):
 				train_inputs, train_labels, train_masks
 			)
             
-		return db
+		return db, np.mean(losses)
 
 	def iterate_sequence_batch(self, batch_inputs, batch_labels=None, batch_masks=None, run_mode='minimal'):
 		"""
@@ -848,12 +854,11 @@ class BaseNetwork(BaseNetworkFunctions):
 
 	def compute_acc(self, output, labels, output_mask, round_type='prefs'):
 		"""
-		output shape: (batches, seq_len, outut_size)
+		output shape: (batches, seq_len, output_size)
 		labels shape: (batches, seq_len)
-		output_mask shape: (batches, seq_len, outut_size)
+		output_mask shape: (batches, seq_len, output_size)
 
 		"""
-
 		assert self.loss_type in ('XE', 'MSE',)
 
 		if self.loss_type in ('XE',):
@@ -863,9 +868,6 @@ class BaseNetwork(BaseNetworkFunctions):
 
 			return (torch.argmax(masked_output, dim=-1) == masked_labels).float().mean() 
 		elif self.loss_type in ('MSE',):
-			# print('out:', output.shape)
-			# print('labels:', labels.shape)
-
 			if output_mask.dtype == torch.bool:
 				# Modify output by the mask (note just uses first output idx to mask)   
 				masked_output = output[output_mask[:, :, 0]] # [B, T, 1] -> [B*T_mask, 1]
@@ -875,9 +877,6 @@ class BaseNetwork(BaseNetworkFunctions):
 				masked_labels = (output_mask * labels).reshape((-1, output.shape[-1])) # [B, T, label_size] -> [B*T, label_size]
 			else:
 				raise ValueError('Mask type {} not recognized.'.format(output_mask.dtype))
-
-			# print('masked out:', masked_output.shape)
-			# print('masked labels:', masked_labels.shape)
 
 			if round_type in ('prefs',) and self.prefs is not None: # Round both the labels and the ouputs to self.prefs
 				masked_output_round = round_to_values_torch(masked_output, self.prefs) 
