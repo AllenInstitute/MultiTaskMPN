@@ -302,7 +302,7 @@ class VanillaRNN(BaseNetwork):
 	# 		self.W_output.data.clamp_(self.W_output_bounds[0], self.W_output_bounds[1])
 
 	@torch.no_grad()
-	def _monitor_init(self, train_params, train_data, valid_batch=None):
+	def _monitor_init(self, train_params, train_data, train_trails=None, valid_batch=None, valid_trails=None):
 
 		# Additional quantities to track during training, note initializes these first so that _monitor call
 		# inside super()._monitor_init can append additional quantities.
@@ -323,14 +323,14 @@ class VanillaRNN(BaseNetwork):
 				self.hist['positive_grad_ratio'] = []
 				self.hist['local_deviation_mag'] = []
 
-		super()._monitor_init(train_params, train_data, valid_batch=valid_batch)
+		super()._monitor_init(train_params, train_data, train_trails=train_trails, valid_batch=valid_batch, valid_trails=valid_trails)
 
 
 	@torch.no_grad()
-	def _monitor(self, train_batch, train_type='supervised', output=None, loss=None, loss_components=None, 
+	def _monitor(self, train_batch, train_go_info_batch, valid_go_info_batch, train_type='supervised', output=None, loss=None, loss_components=None, 
 				 acc=None, valid_batch=None): 
 
-		super()._monitor(train_batch, output=output, loss=loss, loss_components=loss_components,
+		super()._monitor(train_batch, train_go_info_batch, valid_go_info_batch, output=output, loss=loss, loss_components=loss_components,
 						 valid_batch=valid_batch)
 
 

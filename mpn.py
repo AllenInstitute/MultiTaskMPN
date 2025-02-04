@@ -485,7 +485,7 @@ class MultiPlasticNetBase(BaseNetwork):
             mp_layer.param_clamp()
 
     @torch.no_grad()
-    def _monitor_init(self, train_params, train_data, valid_batch=None):
+    def _monitor_init(self, train_params, train_data, train_trails=None, valid_batch=None, valid_trails=None):
 
         # Additional quantities to track during training, note initializes these first so that _monitor call
         # inside super()._monitor_init can append additional quantities.
@@ -497,13 +497,13 @@ class MultiPlasticNetBase(BaseNetwork):
                 self.hist['eta{}'.format(mp_layer.mp_layer_name)] = []
                 self.hist['lam{}'.format(mp_layer.mp_layer_name)] = []
 
-        super()._monitor_init(train_params, train_data, valid_batch=valid_batch)
+        super()._monitor_init(train_params, train_data, train_trails=train_trails, valid_batch=valid_batch, valid_trails=valid_trails)
 
     @torch.no_grad()
-    def _monitor(self, train_batch, train_type='supervised', output=None, loss=None, loss_components=None,
+    def _monitor(self, train_batch, train_go_info_batch, valid_go_info_batch, train_type='supervised', output=None, loss=None, loss_components=None,
                  acc=None, valid_batch=None):
 
-        super()._monitor(train_batch, output=output, loss=loss, loss_components=loss_components,
+        super()._monitor(train_batch, train_go_info_batch, valid_go_info_batch, output=output, loss=loss, loss_components=loss_components,
                          valid_batch=valid_batch)
 
         for mpl_idx, mp_layer in enumerate(self.mp_layers):

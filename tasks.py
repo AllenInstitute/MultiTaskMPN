@@ -354,6 +354,7 @@ def delaygo_(config, mode, anti_response, fix, **kwargs):
 
     # Response locations
     stim_locs = np.array(stim_locs)
+
     if not anti_response:
         response_locs = stim_locs
     else:
@@ -2128,9 +2129,6 @@ def generate_trials_wrap(task_params, n_batches, device='cuda', rules=None,
         n_batches_all += trial.x.shape[1]
 
         if task_params['mask_type'] in (None,):
-            print(np.transpose(trial.c_mask, (1, 0, 2)).shape)
-            print(labels[-1].shape)
-            print(np.ones_like(labels[-1]).shape)
             masks.append(np.ones_like(labels[-1]))
         elif task_params['mask_type'] in ('cost',):
             masks.append(np.transpose(trial.c_mask, (1, 0, 2)))

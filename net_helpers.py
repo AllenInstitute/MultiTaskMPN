@@ -9,6 +9,7 @@ from torch.nn import functional as F
 from scipy.stats import lognorm
 
 import tasks 
+import helper 
 
 # 0 Red, 1 blue, 2 green, 3 purple, 4 orange, 5 teal, 6 gray, 7 pink, 8 yellow
 c_vals = ['#e53e3e', '#3182ce', '#38a169', '#805ad5','#dd6b20', '#319795', '#718096', '#d53f8c', '#d69e2e',]
@@ -30,22 +31,22 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
             # "training batches should only be over one rule"
             # "but validation should mix them"
             if not hyp_dict['mess_with_training']:
-                train_data, _ = tasks.generate_trials_wrap(
+                train_data, (_, train_trails, _ ) = tasks.generate_trials_wrap(
                     task_params, train_params['n_batches'], device=device, verbose=False, mode_input=hyp_dict['mode_for_all']
                 )
             else:
                 print("=== Mess with generating training data ===")
-                train_data, _ = tasks.generate_trials_wrap(
+                train_data, (_, train_trails, _) = tasks.generate_trials_wrap(
                     task_params, train_params['n_batches'], rules=task_params['rules'], device=device, verbose=False, mode_input=hyp_dict['mode_for_all'], mess_with_training=True
                 )
 
-            return train_data
+            return train_data, train_trails
             
         def generate_valid_data(device='cuda'):
-            valid_data, _ = tasks.generate_trials_wrap(
+            valid_data, (_, valid_trails, _) = tasks.generate_trials_wrap(
                 task_params, train_params['valid_n_batch'], rules=task_params['rules'], device=device, mode_input=hyp_dict['mode_for_all']
             )
-            return valid_data
+            return valid_data, valid_trails
             
     else:
         raise ValueError('Task type not recognized.')
@@ -58,7 +59,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
 
     # check_net_cell_types(net) # Pre-train cell types check
 
-    valid_data = generate_valid_data(device=device)
+    valid_data, valid_trails = generate_valid_data(device=device)
 
     netout_lst, db_lst, Woutput_lst, Wall_lst, marker_lst, loss_lst = [], [], [], [], [], []
 
@@ -67,7 +68,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
 
     for dataset_idx in range(train_params['n_datasets']):
         # Regenerate new data
-        train_data = generate_train_data(device=device)
+        train_data, train_trails = generate_train_data(device=device)
         new_thresh = True if dataset_idx == 0 else False
         if train: 
             if test_input is not None and (is_power_of_2_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
@@ -88,7 +89,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
                 Wall_lst.append(W_all_)
                 marker_lst.append(dataset_idx)
 
-            _, monitor_loss = net.fit(train_params, train_data, valid_batch=valid_data, new_thresh=new_thresh, run_mode=hyp_dict['run_mode'])
+            _, monitor_loss = net.fit(train_params, train_data, train_trails, valid_batch=valid_data, valid_trails=valid_trails, new_thresh=new_thresh, run_mode=hyp_dict['run_mode'])
 
             if test_input is not None and (is_power_of_2_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
                 print(f"monitor_loss: {monitor_loss}")
@@ -545,7 +546,7 @@ class BaseNetwork(BaseNetworkFunctions):
 		self.monitor_freq = net_params.get('monitor_freq', 1000)
 		self.monitor_valid_out = net_params.get('monitor_valid_out', 10)   
 
-	def fit(self, train_params, train_data, valid_batch=None, new_thresh=True, run_mode='minimal'):
+	def fit(self, train_params, train_data, train_trails, valid_batch=None, valid_trails=None,new_thresh=True, run_mode='minimal'):
 		"""
 		Fit a network to the train_data using the train_parameters. 
 
@@ -613,7 +614,7 @@ class BaseNetwork(BaseNetworkFunctions):
 
 
 		self.train() # put in train mode (doesn't really do anything unless we are using dropout/batch norm)
-		db, monitor_loss = train_fn(train_params, train_data, valid_batch=valid_batch, 
+		db, monitor_loss = train_fn(train_params, train_data, train_trails, valid_batch=valid_batch, valid_trails=valid_trails,
 					  new_thresh=new_thresh, run_mode=run_mode)
         
 		self.eval() # return to eval mode
@@ -621,7 +622,7 @@ class BaseNetwork(BaseNetworkFunctions):
 		return db, monitor_loss
 			 
 	
-	def train_base(self, train_params, train_data, valid_batch=None, new_thresh=True, 
+	def train_base(self, train_params, train_data, train_trails=None, valid_batch=None, valid_trails=None, new_thresh=True, 
 				   monitor=True, run_mode='minimal'):
 		"""
 		Some training attributes and checks that are shared across different train types 
@@ -651,14 +652,14 @@ class BaseNetwork(BaseNetworkFunctions):
 		self.end_monitor = train_params.get('end_monitor', False)
 
 		if new_thresh or self.hist is None:
-			self._monitor_init(train_params, train_data, valid_batch=valid_batch)
+			self._monitor_init(train_params, train_data, train_trails, valid_batch=valid_batch, valid_trails=valid_trails)
 
 		# A quick pre-training check to make sure all parameters are named
 		# (named parameters are used in regularization, so this can be removed if not regularizing)
 		assert sum(1 for _ in self.named_parameters()) == sum(1 for _ in self.parameters())
 
 	# @torch.no_grad()
-	def train_epochs(self, train_params, train_data, valid_batch=None, new_thresh=True, 
+	def train_epochs(self, train_params, train_data, train_trails, valid_batch=None, valid_trails=None, new_thresh=True, 
 					 monitor=True, run_mode='minimal'):
 		"""
 		This will either perform supervised/unsupervised training on the train_data. In both cases, the input data represents 
@@ -676,11 +677,15 @@ class BaseNetwork(BaseNetworkFunctions):
 		valid_batch = 
 		"""
 
-		self.train_base(train_params, train_data, valid_batch=valid_batch, new_thresh=new_thresh, 
+		self.train_base(train_params, train_data, train_trails=train_trails, valid_batch=valid_batch, valid_trails=valid_trails, new_thresh=new_thresh, 
 						monitor=monitor, run_mode=run_mode)
 
 		assert len(train_data) == 3
 		train_inputs, train_labels, train_masks = train_data
+		# assert len(train_trails) == 1 # let's do single trail first...
+		train_go_info = train_trails[0].epochs['go1']
+		valid_go_info = valid_trails[0].epochs['go1']
+
 		B = train_params['batch_size']
 
 		if self.train_type in ('supervised',): # Checks to matke sure labels and inputs are same size
@@ -695,6 +700,8 @@ class BaseNetwork(BaseNetworkFunctions):
 				train_inputs_batch = train_inputs[b:b+B, :, :]
 				train_labels_batch = train_labels[b:b+B, :]
 				train_masks_batch = train_masks[b:b+B, :, :]
+
+				train_go_info_batch = [train_go_info[0][b:b+B], train_go_info[1][b:b+B]]
 				
 				self.optimizer.zero_grad()
 
@@ -725,10 +732,10 @@ class BaseNetwork(BaseNetworkFunctions):
 					self.param_clamp()
 
 				self.hist['iter'] += 1 # Note this will always be one more than corresponding seq_idx
-
+				
 				if monitor and ((self.hist['iter'] % self.monitor_freq == 0) or # Do a monitor for a set amount of iterations
 								(self.end_monitor and seq_idx == train_inputs.shape[1]-1)): # Do one monitor at the end of train set
-					self._monitor((train_inputs_batch, train_labels_batch, train_masks_batch), 
+					self._monitor((train_inputs_batch, train_labels_batch, train_masks_batch), train_go_info_batch, valid_go_info,
 								  output=output, loss=loss, loss_components=loss_components, 
 								  valid_batch=valid_batch)
 
@@ -828,19 +835,9 @@ class BaseNetwork(BaseNetworkFunctions):
 		if self.loss_type == 'XE':
 			masked_labels = masked_labels.squeeze(-1) # [B*T_mask, 1] -> [B*T_mask]
 
-		# print('out:', output.shape)
-		# print('masked out:', masked_output.shape)
-		# print('labels:', labels.shape)
-		# print('masked labels:', masked_labels.shape)
-
 		output_label_term = self.loss_fn(masked_output, masked_labels)
 
 		loss_components = (output_label_term.item(), reg_term.item(),)
-
-		# print('Full loss dtype:', (self.loss_fn(masked_output, masked_labels) + reg_term).type())
-		# print('Output dtype:', masked_output.type())
-		# print('Labels dtype:', masked_labels.type())
-		# print('reg_term dtype:', reg_term.type())
 
 		with torch.no_grad():
 			error_term = None
@@ -852,35 +849,120 @@ class BaseNetwork(BaseNetworkFunctions):
 
 		return self.loss_fn(masked_output, masked_labels) + reg_term, loss_components, error_term
 
-	def compute_acc(self, output, labels, output_mask, round_type='prefs'):
+	# def compute_acc(self, output, labels, output_mask, round_type='prefs'):
+	# 	"""
+	# 	output shape: (batches, seq_len, output_size)
+	# 	labels shape: (batches, seq_len)
+	# 	output_mask shape: (batches, seq_len, output_size)
+
+	# 	"""
+	# 	assert self.loss_type in ('XE', 'MSE',)
+
+	# 	if self.loss_type in ('XE',):
+	# 		# Modify output by the mask (note just uses first output idx to mask)   
+	# 		masked_output = output[output_mask[:, :, 0]] # [B, T, out] -> [B*T_mask, out]
+	# 		masked_labels = labels[output_mask[:, :, 0]].squeeze(-1) # [B, T, 1] -> [B*T_mask, 1] -> [B*T_mask]
+
+	# 		return (torch.argmax(masked_output, dim=-1) == masked_labels).float().mean() 
+	# 	elif self.loss_type in ('MSE',):
+	# 		if output_mask.dtype == torch.bool:
+	# 			# Modify output by the mask (note just uses first output idx to mask)   
+	# 			masked_output = output[output_mask[:, :, 0]] # [B, T, 1] -> [B*T_mask, 1]
+	# 			masked_labels = labels[output_mask[:, :, 0]] # [B, T, 1] -> [B*T_mask, 1]
+	# 		elif output_mask.dtype == torch.float32:# Mask by some cost function instead
+	# 			masked_output = (output_mask * output).reshape((-1, output.shape[-1])) # [B, T, out] -> [B*T, out]
+	# 			masked_labels = (output_mask * labels).reshape((-1, output.shape[-1])) # [B, T, label_size] -> [B*T, label_size]
+	# 		else:
+	# 			raise ValueError('Mask type {} not recognized.'.format(output_mask.dtype))
+
+	# 		if round_type in ('prefs',) and self.prefs is not None: # Round both the labels and the ouputs to self.prefs
+	# 			masked_output_round = round_to_values_torch(masked_output, self.prefs) 
+	# 			masked_labels_round = round_to_values_torch(masked_labels, self.prefs)
+	# 		elif round_type in ('int',):
+	# 			masked_output_round = torch.round(masked_output)
+	# 			masked_labels_round = masked_labels
+	# 		else:
+	# 			raise ValueError(f'Round type {round_type} not recognized or invalid.')
+
+	# 		return (masked_output_round == masked_labels_round).float().mean() 
+
+
+	def compute_acc(self, output, labels, output_mask, go_info_batch, round_type='prefs'):
 		"""
 		output shape: (batches, seq_len, output_size)
 		labels shape: (batches, seq_len)
 		output_mask shape: (batches, seq_len, output_size)
 
+		[Zihan]: Jan 24th: the calculation of accuracy may be wrong -- should we focusing on response period only
+		-- also see tasks.add_c_mask() about how the output mask is set
+		-- this only affects how the final accuracy is calculated, not affecting the rest training process
 		"""
+		output_mask_alter = torch.full(output_mask.shape, float('nan'), device=output_mask.device) # batches * seq_len * output_size
+
+		for batch_iter in range(output_mask.shape[0]-1):
+			# identify chunks of zeros 
+			# 1st: first 100ms; 2nd: ideally fix_offs and check_ons; 3rd: end of trail (paddling)
+			ll = helper.find_zero_chunks(output_mask[batch_iter, :, :].clone().cpu().detach().numpy())
+			if len(ll) < 3: # for delay task...
+				ll.append([output_mask.shape[1], output_mask.shape[1]])
+			# only focusing on the alignment during response (go) period; always placed at the final
+			response_start, response_end = ll[-2][1] + 1, ll[-1][0]
+			
+			# print(f"response_start: {response_start}, response_end: {response_end}")
+
+			# try:
+			# 	go_info_response_start = go_info_batch[0][batch_iter], go_info_batch[1][batch_iter]
+
+
+			# except Exception as e: 
+			# 	group_size = len((go_info_batch[0].epochs['go1'])[0]) # how many batch/trials in each set
+
+			# 	which_subgroup = batch_iter // group_size # which set the current batch belong to
+
+			# 	go_info_batch_c = go_info_batch[which_subgroup].epochs['go1'] # extract the correct "go" information from the designated batch
+				
+			# 	go_info_response_start = go_info_batch_c[0][batch_iter - group_size * which_subgroup], go_info_batch_c[1][batch_iter - group_size * which_subgroup]
+
+			# go_response_start, go_response_end = go_info_response_start[0] + 1, go_info_response_start[1]
+
+			# print(f"go_info_response_start: {go_response_start}, go_info_response_start: {go_response_end}")
+
+			output_part = output_mask[batch_iter, response_start:response_end, :]
+			# originally the mask is not binary, but scaled based on different period to let the cost function work properly
+			# that makes sense since we do not want to over-emphasize on periods e.g. fixon and delay
+			# when calculating MSE loss
+			output_part = (output_part > 0).int()
+
+			output_mask_alter[batch_iter, response_start:response_end, :] = output_part
+
 		assert self.loss_type in ('XE', 'MSE',)
 
 		if self.loss_type in ('XE',):
 			# Modify output by the mask (note just uses first output idx to mask)   
 			masked_output = output[output_mask[:, :, 0]] # [B, T, out] -> [B*T_mask, out]
 			masked_labels = labels[output_mask[:, :, 0]].squeeze(-1) # [B, T, 1] -> [B*T_mask, 1] -> [B*T_mask]
-
 			return (torch.argmax(masked_output, dim=-1) == masked_labels).float().mean() 
+
 		elif self.loss_type in ('MSE',):
 			if output_mask.dtype == torch.bool:
 				# Modify output by the mask (note just uses first output idx to mask)   
 				masked_output = output[output_mask[:, :, 0]] # [B, T, 1] -> [B*T_mask, 1]
 				masked_labels = labels[output_mask[:, :, 0]] # [B, T, 1] -> [B*T_mask, 1]
 			elif output_mask.dtype == torch.float32:# Mask by some cost function instead
-				masked_output = (output_mask * output).reshape((-1, output.shape[-1])) # [B, T, out] -> [B*T, out]
-				masked_labels = (output_mask * labels).reshape((-1, output.shape[-1])) # [B, T, label_size] -> [B*T, label_size]
+				masked_output = (output_mask_alter * output).reshape((-1, output.shape[-1])) # [B, T, out] -> [B*T, out]
+				masked_labels = (output_mask_alter * labels).reshape((-1, output.shape[-1])) # [B, T, label_size] -> [B*T, label_size]
 			else:
 				raise ValueError('Mask type {} not recognized.'.format(output_mask.dtype))
 
 			if round_type in ('prefs',) and self.prefs is not None: # Round both the labels and the ouputs to self.prefs
-				masked_output_round = round_to_values_torch(masked_output, self.prefs) 
-				masked_labels_round = round_to_values_torch(masked_labels, self.prefs)
+				mo = masked_output[~torch.all(torch.isnan(masked_output), dim=1)]
+				ml = masked_labels[~torch.all(torch.isnan(masked_labels), dim=1)]
+				# project to 1D
+				mo = (torch.sqrt(mo[:,0] ** 2 + mo[:,1] ** 2)).reshape(-1,1) 
+				ml = (torch.sqrt(ml[:,0] ** 2 + ml[:,1] ** 2)).reshape(-1,1)
+
+				masked_output_round = round_to_values_torch(mo, self.prefs) 
+				masked_labels_round = round_to_values_torch(ml, self.prefs)
 			elif round_type in ('int',):
 				masked_output_round = torch.round(masked_output)
 				masked_labels_round = masked_labels
@@ -925,7 +1007,7 @@ class BaseNetwork(BaseNetworkFunctions):
 			), dim=0))
 
 	@torch.no_grad()
-	def _monitor_init(self, train_params, train_data, valid_batch=None,):
+	def _monitor_init(self, train_params, train_data, train_trails, valid_batch=None, valid_trails=None):
 
 		if self.hist is None: # Initialize self.hist if needed (can be initialized by children or previous training)
 			self.hist = {
@@ -971,11 +1053,10 @@ class BaseNetwork(BaseNetworkFunctions):
 				train_masks[:train_params['batch_size'], :, :], 
 			)
 			
-			self._monitor(train_batch, valid_batch=valid_batch)
+			self._monitor(train_batch, train_trails, valid_trails, valid_batch=valid_batch)
 
 	@torch.no_grad()
-	def _monitor(self, train_batch, output=None, loss=None, loss_components=None, valid_batch=None):  
-		
+	def _monitor(self, train_batch, train_go_info_batch, valid_go_info, output=None, loss=None, loss_components=None, valid_batch=None):  		
 		train_inputs_batch, train_labels_batch, train_masks_batch = train_batch # (seq_lens assumed not to matter since these are only used for init monitor)
  
 		# Stores iterations where monitor was called
@@ -1001,7 +1082,7 @@ class BaseNetwork(BaseNetworkFunctions):
 			moitor_str = 'Iter: {}, LR: {:.3e} - train_loss:{:.3e}'.format(self.hist['iter'], lr, loss)
 
 			if self.loss_type in ('XE', 'MSE',): # Accuracy computations if relevant
-				acc = self.compute_acc(output, train_labels_batch, train_masks_batch)
+				acc = self.compute_acc(output, train_labels_batch, train_masks_batch, train_go_info_batch)
 				self.hist['train_acc'].append(acc.item())
 				if self.loss_type in ('XE',):
 					moitor_str += ', train_acc:{:.3f}'.format(acc)
@@ -1039,7 +1120,7 @@ class BaseNetwork(BaseNetworkFunctions):
 				moitor_str += ', valid_loss:{:.3e}'.format(valid_loss)
 
 				if self.loss_type in ('XE', 'MSE',): # Accuracy computations if relevant
-					valid_acc = self.compute_acc(valid_output, valid_labels_batch, valid_masks_batch) 
+					valid_acc = self.compute_acc(valid_output, valid_labels_batch, valid_masks_batch, valid_go_info) 
 					self.hist['valid_acc'].append(valid_acc.item())
 					self.hist['avg_valid_acc'].append(np.mean(self.hist['valid_acc'][-avg_window:]))
 					if self.loss_type in ('XE',):
