@@ -61,7 +61,8 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
 
     valid_data, valid_trails = generate_valid_data(device=device)
 
-    netout_lst, db_lst, Woutput_lst, Wall_lst, marker_lst, loss_lst = [], [], [], [], [], []
+    counter_lst = []
+    netout_lst, db_lst, Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst = [], [], [], [], [], [], []
 
     def is_power_of_2_or_zero(n):
         return n == 0 or (n > 0 and (n & (n - 1)) == 0)
@@ -73,6 +74,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
         if train: 
             if test_input is not None and (is_power_of_2_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
                 print(f"How about Test Data at dataset {dataset_idx}")
+                counter_lst.append(dataset_idx)
                 # test data for each stage
                 net_out, db = net.iterate_sequence_batch(test_input, run_mode='track_states')
                 net_out = net_out.detach().cpu().numpy()
@@ -83,19 +85,22 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
                 Woutput_lst.append(W_output)
 
                 W_all_ = []
-                for i in range(len(net.mp_layers)):
-                    W_ = net.mp_layers[i].W.detach().cpu().numpy()
-                    W_all_.append(W_)
+                if params[2]["net_type"] == "dmpn":
+                    for i in range(len(net.mp_layers)):
+                        W_ = net.mp_layers[i].W.detach().cpu().numpy()
+                        W_all_.append(W_)
                 Wall_lst.append(W_all_)
+
                 marker_lst.append(dataset_idx)
 
-            _, monitor_loss = net.fit(train_params, train_data, train_trails, valid_batch=valid_data, valid_trails=valid_trails, new_thresh=new_thresh, run_mode=hyp_dict['run_mode'])
+            _, monitor_loss, monitor_acc = net.fit(train_params, train_data, train_trails, valid_batch=valid_data, valid_trails=valid_trails, new_thresh=new_thresh, run_mode=hyp_dict['run_mode'])
 
             if test_input is not None and (is_power_of_2_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
-                print(f"monitor_loss: {monitor_loss}")
+                # print(f"monitor_loss: {monitor_loss}")
                 loss_lst.append(monitor_loss)
+                acc_lst.append(monitor_acc)
 		
-    return net, (train_data, valid_data), (netout_lst, db_lst, Woutput_lst, Wall_lst, marker_lst, loss_lst)
+    return net, (train_data, valid_data), (counter_lst, netout_lst, db_lst, Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst)
 
 def net_eta_lambda_analysis(net, net_params, hyp_dict=None, verbose=False):
     """
@@ -103,24 +108,27 @@ def net_eta_lambda_analysis(net, net_params, hyp_dict=None, verbose=False):
     # only make sense for dmpn for eta and lambda information extraction
     if net_params['net_type'] in ("dmpn",):
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
-    
+
+        start = 1 if net_params["input_layers_add"] else 0
+
         for mpl_idx, mp_layer in enumerate(net.mp_layers):
-            if net.mp_layers[mpl_idx].eta_type in ('pre_vector', 'post_vector', 'matrix',):
-                full_eta = np.concatenate([
-                    eta.flatten()[np.newaxis, :] for eta in net.hist['eta{}'.format(mpl_idx)]
-                ], axis=0)
-            else:
-                full_eta = net.hist['eta{}'.format(mpl_idx)]
-    
-            if net.mp_layers[mpl_idx].lam_type in ('pre_vector', 'post_vector', 'matrix',):
-                full_lam = np.concatenate([
-                    lam.flatten()[np.newaxis, :] for lam in net.hist['lam{}'.format(mpl_idx)]
-                ], axis=0)
-            else:
-                full_lam = net.hist['lam{}'.format(mpl_idx)]
-            ax1.plot(net.hist['iters_monitor'], full_eta, color=c_vals[mpl_idx], label='MPL{}'.format(mpl_idx))
-            ax2.plot(net.hist['iters_monitor'], full_lam, color=c_vals[mpl_idx], label='MPL{}'.format(mpl_idx))
-    
+            if mpl_idx >= start: 
+                if net.mp_layers[mpl_idx].eta_type in ('pre_vector', 'post_vector', 'matrix',):
+                    full_eta = np.concatenate([
+                        eta.flatten()[np.newaxis, :] for eta in net.hist['eta{}'.format(mpl_idx)]
+                    ], axis=0)
+                else:
+                    full_eta = net.hist['eta{}'.format(mpl_idx)]
+        
+                if net.mp_layers[mpl_idx].lam_type in ('pre_vector', 'post_vector', 'matrix',):
+                    full_lam = np.concatenate([
+                        lam.flatten()[np.newaxis, :] for lam in net.hist['lam{}'.format(mpl_idx)]
+                    ], axis=0)
+                else:
+                    full_lam = net.hist['lam{}'.format(mpl_idx)]
+                ax1.plot(net.hist['iters_monitor'], full_eta, color=c_vals[mpl_idx], label='MPL{}'.format(mpl_idx))
+                ax2.plot(net.hist['iters_monitor'], full_lam, color=c_vals[mpl_idx], label='MPL{}'.format(mpl_idx))
+
         ax1.axhline(0.0, color='k', linestyle='dashed')
     
         ax1.set_ylabel('Eta')
@@ -614,12 +622,12 @@ class BaseNetwork(BaseNetworkFunctions):
 
 
 		self.train() # put in train mode (doesn't really do anything unless we are using dropout/batch norm)
-		db, monitor_loss = train_fn(train_params, train_data, train_trails, valid_batch=valid_batch, valid_trails=valid_trails,
+		db, monitor_loss, monitor_acc = train_fn(train_params, train_data, train_trails, valid_batch=valid_batch, valid_trails=valid_trails,
 					  new_thresh=new_thresh, run_mode=run_mode)
         
 		self.eval() # return to eval mode
 
-		return db, monitor_loss
+		return db, monitor_loss, monitor_acc
 			 
 	
 	def train_base(self, train_params, train_data, train_trails=None, valid_batch=None, valid_trails=None, new_thresh=True, 
@@ -695,13 +703,15 @@ class BaseNetwork(BaseNetworkFunctions):
 			assert train_inputs.shape[1] == train_masks.shape[1]
 		
 		losses = []
+		accs = []
 		for epoch_idx in range(train_params['n_epochs_per_set']):
 			for b in range(0, train_inputs.shape[0], B):
 				train_inputs_batch = train_inputs[b:b+B, :, :]
 				train_labels_batch = train_labels[b:b+B, :]
 				train_masks_batch = train_masks[b:b+B, :, :]
 
-				train_go_info_batch = [train_go_info[0][b:b+B], train_go_info[1][b:b+B]]
+				# train_go_info_batch = [train_go_info[0][b:b+B], train_go_info[1][b:b+B]]
+				train_go_info_batch = None
 				
 				self.optimizer.zero_grad()
 
@@ -713,7 +723,9 @@ class BaseNetwork(BaseNetworkFunctions):
 				)
 				
 				loss, loss_components, error_term = self.compute_loss(output, train_labels_batch, train_masks_batch)
+				acc = self.compute_acc(output, train_labels_batch, train_masks_batch, train_go_info_batch) 
 				losses.append(loss.cpu().detach().numpy())
+				accs.append(acc.cpu().detach().numpy())
 
 				if self.run_mode in ('timing',): 
 					self.hist['forward_times'].append(time.time() - t0) # Forward end
@@ -744,7 +756,7 @@ class BaseNetwork(BaseNetworkFunctions):
 				train_inputs, train_labels, train_masks
 			)
             
-		return db, np.mean(losses)
+		return db, np.mean(losses), np.mean(accs)
 
 	def iterate_sequence_batch(self, batch_inputs, batch_labels=None, batch_masks=None, run_mode='minimal'):
 		"""

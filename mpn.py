@@ -11,6 +11,8 @@ from net_helpers import rand_weight_init, get_activation_function
 
 import numpy as np
 
+import time 
+
 class MultiPlasticLayer(BaseNetworkFunctions):
     """
     Fully-connected layer with multi-plasticity.
@@ -105,7 +107,9 @@ class MultiPlasticLayer(BaseNetworkFunctions):
             self.params.append('eta')
             eta_train_str = 'train'
         self.eta_type = ml_params.get('eta_type', 'scalar')
-        self.eta_init = ml_params.get('eta_init', 'gaussian')
+        self.eta_init = ml_params.get('eta_init', 'eta_clamp')
+
+        self.eta_clamp = ml_params.get('eta_clamp', 1.00)
 
         self.parameter_or_buffer('eta', torch.tensor(
             self.init_M_parameter(param_type=self.eta_type, init_type=self.eta_init),
@@ -183,21 +187,29 @@ class MultiPlasticLayer(BaseNetworkFunctions):
             if param_type == 'scalar':
                 if init_type in ('lam_clamp',):
                     param = self.lam_clamp
+                elif init_type in ('eta_clamp',):
+                    param = self.eta_clamp
                 else:
                     param = rand_weight_init(1, init_type=init_type, weight_norm=1.0)
             elif param_type == 'pre_vector':
                 if init_type in ('lam_clamp',):
                     param = self.lam_clamp * np.ones((self.n_input,))
+                elif init_type in ('eta_clamp',):
+                    param = self.eta_clamp * np.ones((self.n_input,))
                 else:
                     param = rand_weight_init(self.n_input, init_type=init_type, weight_norm=1.0)
             elif param_type == 'post_vector':
                 if init_type in ('lam_clamp',):
                     param = self.lam_clamp * np.ones((self.n_output,))
+                elif init_type in ('eta_clamp',):
+                    param = self.eta_clamp * np.ones((self.n_output,))
                 else:
                     param = rand_weight_init(self.n_output, init_type=init_type, weight_norm=1.0)
             elif param_type == 'matrix':
                 if init_type in ('lam_clamp',):
                     param = self.lam_clamp * np.random.rand(self.n_output, self.n_input,)
+                elif init_type in ('eta_clamp',):
+                    param = self.eta_clamp * np.random.rand(self.n_output, self.n_input,)
                 else:
                     param = rand_weight_init(self.n_input, self.n_output, init_type=init_type, weight_norm=1.0)
         else:
@@ -377,7 +389,6 @@ class MultiPlasticLayer(BaseNetworkFunctions):
         """
 
         modulated_weights = self.get_modulated_weights()
-
         pre_act_no_bias =  torch.einsum('BiI, BI -> Bi', modulated_weights, x)
 
         pre_act = pre_act_no_bias + self.b.unsqueeze(0)
@@ -386,6 +397,7 @@ class MultiPlasticLayer(BaseNetworkFunctions):
             db = {
                 'pre_act_no_bias': pre_act_no_bias.detach(),
                 'M': self.M.detach(),
+                'b': self.b.detach().unsqueeze(0), # record bias information as well 
             }
             if self.m_act:
                 db['M_pre'] = self.M_pre.detach()
@@ -590,7 +602,15 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
 
     def __init__(self, net_params, verbose=False):
 
-        n_layers = len(net_params['n_neurons']) - 1
+        # Mar 16th: add input layer
+        self.input_layer_active = net_params.get('input_layer_add', False)
+
+        if self.input_layer_active:
+            net_params['n_neurons'].insert(1, net_params['n_neurons'][1])
+
+        print(net_params['n_neurons'])
+
+        n_layers = len(net_params['n_neurons']) - 1        
 
         self.n_input = net_params['n_neurons'][0]
         self.n_output = net_params['n_neurons'][-1]
@@ -602,8 +622,27 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
         # Creates all the MP layers
         self.param_clamping = True # Always have param clamping for MP layers because lam bounds
 
+        
+        if self.input_layer_active:
+            self.initial_linear = nn.Linear(net_params['n_neurons'][0], net_params['n_neurons'][1])
+
+            self.initial_linear.weight.data = torch.tensor(
+                rand_weight_init(net_params['n_neurons'][0], net_params['n_neurons'][1], init_type=net_params.get('W_init', 'xavier')),
+                dtype=torch.float
+            )
+
+            if net_params.get('input_layer_bias', False):
+                self.initial_linear.bias.data = torch.tensor(
+                    rand_weight_init(net_params['n_neurons'][1], init_type='gaussian'),
+                    dtype=torch.float
+                )
+            else:
+                self.initial_linear.bias = None
+
         self.mp_layers = []
-        for mpl_idx in range(n_layers - 1): # (e.g. three-layer has two MP layers)
+        
+        start_layer_count = 1 if self.input_layer_active else 0
+        for mpl_idx in range(start_layer_count, n_layers - 1): # (e.g. three-layer has two MP layers)
             # Can specify layer with either layer-specific 'ml_params' or just a single set of parameters
             if f'ml_params{mpl_idx}' in net_params.keys():
                 print("=== Layer Specific Setup ===")
@@ -625,10 +664,16 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
             self.params.extend([param+str(mpl_idx) for param in self.mp_layers[-1].params])
 
     def forward(self, inputs, run_mode='minimal', verbose=False):
+    
+        if self.input_layer_active:
+            x = self.initial_linear(inputs)
+            x = self.act_fn(x)
+        else:
+            x = layer_input
 
-        layer_input = torch.clone(inputs)
+        layer_input = torch.clone(x)
 
-        mpl_activities = [layer_input,] # Used for updating the M matrices
+        mpl_activities = [x,] # Used for updating the M matrices
 
         db = {} if run_mode in ('track_states',) else None
 
@@ -648,6 +693,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
                 db['hidden_pre{}'.format(mp_layer.mp_layer_name)] = hidden_pre.detach()
                 db['hidden{}'.format(mp_layer.mp_layer_name)] = layer_input.detach()
                 db['M{}'.format(mp_layer.mp_layer_name)] = db_mp['M']
+                db['b{}'.format(mp_layer.mp_layer_name)] = db_mp['b']
 
         if run_mode in ('debug',): print(f'  Output layer forward.')
         output_hidden = torch.einsum('iI, BI -> Bi', self.W_output, layer_input)
