@@ -269,7 +269,7 @@ def test_init(config, mode, **kwargs):
     return trial
 
 
-def delaygo_(config, mode, anti_response, fix, **kwargs):
+def delaygo_(config, mode, anti_response, fix, separate_input, **kwargs):
     '''
     Fixate whenever fixation point is shown,
     saccade to the location of the previously shown stimulus
@@ -381,8 +381,8 @@ def delaygo_(config, mode, anti_response, fix, **kwargs):
     return trial
 
 
-def delaygo(config, mode, fix, **kwargs):
-    return delaygo_(config, mode, False, fix, **kwargs)
+def delaygo(config, mode, fix, separate_input, **kwargs):
+    return delaygo_(config, mode, False, fix, separate_input, **kwargs)
 
 
 def contextdm_genstim(batch_size, rng, stim_coh_range=None):
@@ -834,8 +834,8 @@ def fdanti(config, mode, fix, **kwargs):
     return fdgo_(config, mode, True, fix, **kwargs)
 
 
-def delayanti(config, mode, fix, **kwargs):
-    return delaygo_(config, mode, True, fix, **kwargs)
+def delayanti(config, mode, fix, separate_input, **kwargs):
+    return delaygo_(config, mode, True, fix, separate_input, **kwargs)
 
 
 def _dm(config, mode, stim_mod, fix, separate_input, **kwargs):

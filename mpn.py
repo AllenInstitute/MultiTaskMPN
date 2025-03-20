@@ -55,11 +55,20 @@ class MultiPlasticLayer(BaseNetworkFunctions):
         ### Weight/bias initialization ###
         # Input weights
         self.W_init = ml_params.get('W_init', 'xavier')
-        self.parameter_or_buffer('W', torch.tensor(
-            rand_weight_init(self.n_input, self.n_output, init_type=self.W_init,
-                             cell_types=None),
-            dtype=torch.float)
+        W_freeze = ml_params.get('W_freeze', False)
+
+        # Initialize the weight tensor once.
+        W_tensor = torch.tensor(
+            rand_weight_init(self.n_input, self.n_output, init_type=self.W_init, cell_types=None),
+            dtype=torch.float
         )
+
+        if W_freeze:
+            print("MPN Layer W Frozen")
+            self.register_buffer('W', W_tensor)
+        else:
+            self.parameter_or_buffer('W', W_tensor)
+
 
         # Bias term
         if self.layer_bias:
@@ -475,7 +484,6 @@ class MultiPlasticNetBase(BaseNetwork):
             self.W_output.requires_grad = False
         else:
             raise Exception("Output Matrix not recognized")
-        
 
         self.parameter_or_buffer('b_output', torch.tensor(
             rand_weight_init(self.n_output, init_type=self.b_output_init),
@@ -606,7 +614,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
         self.input_layer_active = net_params.get('input_layer_add', False)
 
         if self.input_layer_active:
-            net_params['n_neurons'].insert(1, net_params['n_neurons'][1])
+            net_params['n_neurons'].insert(1, net_params['n_neurons'][1] * 2)
 
         print(net_params['n_neurons'])
 
@@ -624,20 +632,20 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
 
         
         if self.input_layer_active:
-            self.initial_linear = nn.Linear(net_params['n_neurons'][0], net_params['n_neurons'][1])
+            self.W_initial_linear = nn.Linear(net_params['n_neurons'][0], net_params['n_neurons'][1])
 
-            self.initial_linear.weight.data = torch.tensor(
+            self.W_initial_linear.weight.data = torch.tensor(
                 rand_weight_init(net_params['n_neurons'][0], net_params['n_neurons'][1], init_type=net_params.get('W_init', 'xavier')),
                 dtype=torch.float
             )
 
             if net_params.get('input_layer_bias', False):
-                self.initial_linear.bias.data = torch.tensor(
+                self.W_initial_linear.bias.data = torch.tensor(
                     rand_weight_init(net_params['n_neurons'][1], init_type='gaussian'),
                     dtype=torch.float
                 )
             else:
-                self.initial_linear.bias = None
+                self.W_initial_linear.bias = None
 
         self.mp_layers = []
         
@@ -666,10 +674,10 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
     def forward(self, inputs, run_mode='minimal', verbose=False):
     
         if self.input_layer_active:
-            x = self.initial_linear(inputs)
+            x = self.W_initial_linear(inputs)
             x = self.act_fn(x)
         else:
-            x = layer_input
+            x = inputs
 
         layer_input = torch.clone(x)
 

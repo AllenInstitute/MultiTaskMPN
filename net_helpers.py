@@ -62,7 +62,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
     valid_data, valid_trails = generate_valid_data(device=device)
 
     counter_lst = []
-    netout_lst, db_lst, Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst = [], [], [], [], [], [], []
+    netout_lst, db_lst, Winput_lst, Woutput_lst, Winputbias_lst, Wall_lst, marker_lst, loss_lst, acc_lst = [], [], [], [], [], [], [], [], []
 
     def is_power_of_2_or_zero(n):
         return n == 0 or (n > 0 and (n & (n - 1)) == 0)
@@ -78,17 +78,22 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
                 # test data for each stage
                 net_out, db = net.iterate_sequence_batch(test_input, run_mode='track_states')
                 net_out = net_out.detach().cpu().numpy()
-                W_output = net.W_output.detach().cpu().numpy()
 				# load the info for each learning stage
                 netout_lst.append(net_out)
                 db_lst.append(db)
-                Woutput_lst.append(W_output)
+                
+                Woutput_lst.append(net.W_output.detach().cpu().numpy())
+                
+                if net_params["input_layer_add"]:
+                    Winput_lst.append(net.W_initial_linear.weight.detach().cpu().numpy())
+                    
+                    if net_params["input_layer_bias"]:
+                        Winputbias_lst.append(net.W_initial_linear.bias.detach().cpu().numpy())
 
                 W_all_ = []
                 if params[2]["net_type"] == "dmpn":
                     for i in range(len(net.mp_layers)):
-                        W_ = net.mp_layers[i].W.detach().cpu().numpy()
-                        W_all_.append(W_)
+                        W_all_.append(net.mp_layers[i].W.detach().cpu().numpy())
                 Wall_lst.append(W_all_)
 
                 marker_lst.append(dataset_idx)
@@ -100,34 +105,36 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
                 loss_lst.append(monitor_loss)
                 acc_lst.append(monitor_acc)
 		
-    return net, (train_data, valid_data), (counter_lst, netout_lst, db_lst, Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst)
+    return net, (train_data, valid_data), (counter_lst, netout_lst, db_lst, Winput_lst, Winputbias_lst, \
+        		Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst)
 
 def net_eta_lambda_analysis(net, net_params, hyp_dict=None, verbose=False):
     """
     """
+    layer_index = 0 # 1 layer MPN 
+    if net_params["input_layer_add"]:
+        layer_index += 1 # 2 layer MPN
+  
     # only make sense for dmpn for eta and lambda information extraction
     if net_params['net_type'] in ("dmpn",):
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
 
-        start = 1 if net_params["input_layers_add"] else 0
-
         for mpl_idx, mp_layer in enumerate(net.mp_layers):
-            if mpl_idx >= start: 
-                if net.mp_layers[mpl_idx].eta_type in ('pre_vector', 'post_vector', 'matrix',):
-                    full_eta = np.concatenate([
-                        eta.flatten()[np.newaxis, :] for eta in net.hist['eta{}'.format(mpl_idx)]
-                    ], axis=0)
-                else:
-                    full_eta = net.hist['eta{}'.format(mpl_idx)]
-        
-                if net.mp_layers[mpl_idx].lam_type in ('pre_vector', 'post_vector', 'matrix',):
-                    full_lam = np.concatenate([
-                        lam.flatten()[np.newaxis, :] for lam in net.hist['lam{}'.format(mpl_idx)]
-                    ], axis=0)
-                else:
-                    full_lam = net.hist['lam{}'.format(mpl_idx)]
-                ax1.plot(net.hist['iters_monitor'], full_eta, color=c_vals[mpl_idx], label='MPL{}'.format(mpl_idx))
-                ax2.plot(net.hist['iters_monitor'], full_lam, color=c_vals[mpl_idx], label='MPL{}'.format(mpl_idx))
+            if net.mp_layers[mpl_idx].eta_type in ('pre_vector', 'post_vector', 'matrix',):
+                full_eta = np.concatenate([
+                    eta.flatten()[np.newaxis, :] for eta in net.hist['eta{}'.format(mpl_idx+layer_index)]
+                ], axis=0)
+            else:
+                full_eta = net.hist['eta{}'.format(mpl_idx+layer_index)]
+    
+            if net.mp_layers[mpl_idx].lam_type in ('pre_vector', 'post_vector', 'matrix',):
+                full_lam = np.concatenate([
+                    lam.flatten()[np.newaxis, :] for lam in net.hist['lam{}'.format(mpl_idx)]
+                ], axis=0)
+            else:
+                full_lam = net.hist['lam{}'.format(mpl_idx+layer_index)]
+            ax1.plot(net.hist['iters_monitor'], full_eta, color=c_vals[mpl_idx], label='MPL{}'.format(mpl_idx+layer_index))
+            ax2.plot(net.hist['iters_monitor'], full_lam, color=c_vals[mpl_idx], label='MPL{}'.format(mpl_idx+layer_index))
 
         ax1.axhline(0.0, color='k', linestyle='dashed')
     
@@ -165,7 +172,6 @@ def net_eta_lambda_analysis(net, net_params, hyp_dict=None, verbose=False):
 
             if verbose:
                 fig.savefig(f"./results/eta_distribution_{hyp_dict['ruleset']}_{hyp_dict['chosen_network']}_{hyp_dict['addon_name']}.png")
-
 
 def rand_weight_init(n_inputs, n_outputs=None, init_type='gaussian', cell_types=None,
 					 ei_balance_val=None, sparsity=None, weight_norm=None, self_couplings=True):
