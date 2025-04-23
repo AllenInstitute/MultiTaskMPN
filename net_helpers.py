@@ -84,11 +84,15 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
                 
                 Woutput_lst.append(net.W_output.detach().cpu().numpy())
                 
-                if net_params["input_layer_add"]:
+                if net_params["input_layer_add"] and net_params["net_type"] == "dmpn":
                     Winput_lst.append(net.W_initial_linear.weight.detach().cpu().numpy())
                     
                     if net_params["input_layer_bias"]:
                         Winputbias_lst.append(net.W_initial_linear.bias.detach().cpu().numpy())
+                        
+                elif net_params["input_layer"] and net_params["net_type"] == "vanilla":
+                    Winput_lst.append(net.W_input.detach().cpu().numpy())
+                    # no input bias is set for vanilla RNN in kyle's original design
 
                 W_all_ = []
                 if params[2]["net_type"] == "dmpn":

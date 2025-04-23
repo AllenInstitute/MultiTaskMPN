@@ -614,7 +614,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
         self.input_layer_active = net_params.get('input_layer_add', False)
 
         if self.input_layer_active:
-            net_params['n_neurons'].insert(1, net_params['n_neurons'][1] * 2)
+            net_params['n_neurons'].insert(1, net_params['n_neurons'][1])
 
         print(net_params['n_neurons'])
 

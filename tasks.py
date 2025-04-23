@@ -485,7 +485,7 @@ def _contextdm(config, mode, attend_mod, **kwargs):
         # - Make sure output turns off
         # - Return tdim in self.epochs
 
-        print("Implementation by Zihan")
+        # print("Implementation by Zihan")
 
         batch_size = kwargs['batch_size']
 
@@ -996,7 +996,7 @@ def dm2(config, mode, fix, separate_input, **kwargs):
     return _dm(config, mode, 2, fix, separate_input, **kwargs)
 
 
-def _delaydm(config, mode, stim_mod, separate_input, fix, **kwargs):
+def _delaydm(config, mode, stim_mod, fix, separate_input, **kwargs):
     '''
     Fixate whenever fixation point is shown.
     Two stimuluss are shown at different time, with different intensities
@@ -1046,9 +1046,9 @@ def _delaydm(config, mode, stim_mod, separate_input, fix, **kwargs):
         stim1_offs = stim1_ons + int(rng.choice([200, 400, 600])/dt)
         stim2_ons  = stim1_offs + int(rng.choice([200, 400, 800, 1600])/dt)
         stim2_offs = stim2_ons + int(rng.choice([200, 400, 600])/dt)
-        # stim2_offs = stim2_ons + int(rng.choice([100])/dt)
+        # stim2_offs = stim2_ons + int(rng.choice([100,150,200])/dt)
         fix_offs  = stim2_offs + int(rng.uniform(100,300)/dt)
-        # fix_offs  = stim2_offs + int(rng.uniform(100,100)/dt)
+        # fix_offs  = stim2_offs + int(rng.uniform(100,150)/dt)
 
         # stim2_ons  = (np.ones(batch_size)*rng.choice([400,500,600,700,1400])/dt).astype(int)
         # stim2_ons  = (np.ones(batch_size)*rng.choice([400,600,1000,1400,2000])/dt).astype(int)
@@ -1084,7 +1084,9 @@ def _delaydm(config, mode, stim_mod, separate_input, fix, **kwargs):
         stim1_offs = stim1_ons + batch_choice([200, 400, 600], batch_size, rng, dt)
         stim2_ons  = stim1_offs + batch_choice([200, 400, 800, 1600], batch_size, rng, dt)
         stim2_offs = stim2_ons + batch_choice([200, 400, 600], batch_size, rng, dt)
+        # stim2_offs = stim2_ons + batch_choice([100,150,200], batch_size, rng, dt)
         fix_offs  = stim2_offs + (rng.uniform(100,300, size=(batch_size,))/dt).astype(np.int32)
+        # fix_offs  = stim2_offs + (rng.uniform(100,150, size=(batch_size,))/dt).astype(np.int32)
 
         tdim = fix_offs + int(500/dt) # longest trial
 
@@ -1163,7 +1165,7 @@ def delaydm2(config, mode, fix, separate_input, **kwargs):
     return _delaydm(config, mode, 2, fix, separate_input, **kwargs)
 
 
-def _contextdelaydm(config, mode, attend_mod, **kwargs):
+def _contextdelaydm(config, mode, attend_mod, fix, separate_input, **kwargs):
     '''
     Fixate whenever fixation point is shown.
     Two stimuluss are shown in each ring,
@@ -1246,7 +1248,7 @@ def _contextdelaydm(config, mode, attend_mod, **kwargs):
         # - Make sure output turns off
         # - Return tdim in self.epochs
 
-        print("Implementation by Zihan")
+        # print("Implementation by Zihan")
 
         batch_size = kwargs['batch_size']
 
@@ -1375,12 +1377,12 @@ def _contextdelaydm(config, mode, attend_mod, **kwargs):
     return trial
 
 
-def contextdelaydm1(config, mode, **kwargs):
-    return _contextdelaydm(config, mode, 1, **kwargs)
+def contextdelaydm1(config, mode, fix, separate_input, **kwargs):
+    return _contextdelaydm(config, mode, 1, fix, separate_input, **kwargs)
 
 
-def contextdelaydm2(config, mode, **kwargs):
-    return _contextdelaydm(config, mode, 2, **kwargs)
+def contextdelaydm2(config, mode, fix, separate_input, **kwargs):
+    return _contextdelaydm(config, mode, 2, fix, separate_input, **kwargs)
 
 
 def multidelaydm(config, mode, **kwargs):
@@ -1594,7 +1596,7 @@ def dmc_(config, mode, matchnogo, **kwargs):
         # - Make sure fixation turns off
         # - Make sure output turns off
         # - Return tdim in self.epochs
-        print("Implementation by Zihan")
+        # print("Implementation by Zihan")
         batch_size = kwargs['batch_size']
 
         # Generate modality per trial for stimulus 1 and 2
@@ -1753,7 +1755,7 @@ def oic(config, mode, **kwargs):
         # - Make sure output turns off
         # - Return tdim in self.epochs
         
-        print("Implementation by Zihan")
+        # print("Implementation by Zihan")
         batch_size = kwargs['batch_size']
         # Stimulus 1 locations sampled per trial from the same fixed set
         stim1_locs = rng.choice(np.array([0.1, 0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9]) * np.pi,
