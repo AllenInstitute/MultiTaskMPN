@@ -935,7 +935,6 @@ class BaseNetwork(BaseNetworkFunctions):
 			# try:
 			# 	go_info_response_start = go_info_batch[0][batch_iter], go_info_batch[1][batch_iter]
 
-
 			# except Exception as e: 
 			# 	group_size = len((go_info_batch[0].epochs['go1'])[0]) # how many batch/trials in each set
 

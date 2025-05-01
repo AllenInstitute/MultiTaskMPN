@@ -269,7 +269,7 @@ def test_init(config, mode, **kwargs):
     return trial
 
 
-def delaygo_(config, mode, anti_response, fix, separate_input, **kwargs):
+def delaygo_(config, mode, anti_response, fix, separate_input, label_strength, **kwargs):
     '''
     Fixate whenever fixation point is shown,
     saccade to the location of the previously shown stimulus
@@ -381,8 +381,8 @@ def delaygo_(config, mode, anti_response, fix, separate_input, **kwargs):
     return trial
 
 
-def delaygo(config, mode, fix, separate_input, **kwargs):
-    return delaygo_(config, mode, False, fix, separate_input, **kwargs)
+def delaygo(config, mode, fix, separate_input, label_strength, **kwargs):
+    return delaygo_(config, mode, False, fix, separate_input, label_strength, **kwargs)
 
 
 def contextdm_genstim(batch_size, rng, stim_coh_range=None):
@@ -834,8 +834,8 @@ def fdanti(config, mode, fix, **kwargs):
     return fdgo_(config, mode, True, fix, **kwargs)
 
 
-def delayanti(config, mode, fix, separate_input, **kwargs):
-    return delaygo_(config, mode, True, fix, separate_input, **kwargs)
+def delayanti(config, mode, fix, separate_input, label_strength, **kwargs):
+    return delaygo_(config, mode, True, fix, separate_input, label_strength, **kwargs)
 
 
 def _dm(config, mode, stim_mod, fix, separate_input, **kwargs):
@@ -996,7 +996,7 @@ def dm2(config, mode, fix, separate_input, **kwargs):
     return _dm(config, mode, 2, fix, separate_input, **kwargs)
 
 
-def _delaydm(config, mode, stim_mod, fix, separate_input, **kwargs):
+def _delaydm(config, mode, stim_mod, fix, separate_input, label_strength, **kwargs):
     '''
     Fixate whenever fixation point is shown.
     Two stimuluss are shown at different time, with different intensities
@@ -1084,9 +1084,7 @@ def _delaydm(config, mode, stim_mod, fix, separate_input, **kwargs):
         stim1_offs = stim1_ons + batch_choice([200, 400, 600], batch_size, rng, dt)
         stim2_ons  = stim1_offs + batch_choice([200, 400, 800, 1600], batch_size, rng, dt)
         stim2_offs = stim2_ons + batch_choice([200, 400, 600], batch_size, rng, dt)
-        # stim2_offs = stim2_ons + batch_choice([100,150,200], batch_size, rng, dt)
         fix_offs  = stim2_offs + (rng.uniform(100,300, size=(batch_size,))/dt).astype(np.int32)
-        # fix_offs  = stim2_offs + (rng.uniform(100,150, size=(batch_size,))/dt).astype(np.int32)
 
         tdim = fix_offs + int(500/dt) # longest trial
 
@@ -1123,6 +1121,11 @@ def _delaydm(config, mode, stim_mod, fix, separate_input, **kwargs):
 
     else:
         raise ValueError('Unknown mode: ' + str(mode))
+    
+    if label_strength:
+        chosen_strengths = np.where(stim1_strengths > stim2_strengths,
+                            stim1_strengths,
+                            stim2_strengths)
 
     # time to check the saccade location
     check_ons  = fix_offs + int(100/dt)
@@ -1134,7 +1137,11 @@ def _delaydm(config, mode, stim_mod, fix, separate_input, **kwargs):
     trial.add('fix_out', offs=fix_offs)
     stim_locs = [stim1_locs[i] if (stim1_strengths[i]>stim2_strengths[i])
                 else stim2_locs[i] for i in range(batch_size)]
-    trial.add('out', stim_locs, ons=fix_offs, offs=tdim)
+
+    if label_strength:
+        trial.add('out', stim_locs, ons=fix_offs, offs=tdim, strengths=chosen_strengths)
+    else:
+        trial.add('out', stim_locs, ons=fix_offs, offs=tdim)
 
     trial.add_c_mask(pre_offs=fix_offs, post_ons=check_ons, post_offs=tdim)
 
@@ -1157,12 +1164,12 @@ def _delaydm(config, mode, stim_mod, fix, separate_input, **kwargs):
     return trial
 
 
-def delaydm1(config, mode, fix, separate_input, **kwargs):
-    return _delaydm(config, mode, 1, fix, separate_input, **kwargs)
+def delaydm1(config, mode, fix, separate_input, label_strength, **kwargs):
+    return _delaydm(config, mode, 1, fix, separate_input, label_strength, **kwargs)
 
 
-def delaydm2(config, mode, fix, separate_input, **kwargs):
-    return _delaydm(config, mode, 2, fix, separate_input, **kwargs)
+def delaydm2(config, mode, fix, separate_input, label_strength, **kwargs):
+    return _delaydm(config, mode, 2, fix, separate_input, label_strength, **kwargs)
 
 
 def _contextdelaydm(config, mode, attend_mod, fix, separate_input, **kwargs):
@@ -1984,7 +1991,7 @@ rule_name    = {'reactgo': 'RT Go',
                 }
 
 
-def generate_trials(rule, hp, mode, noise_on=True, fix=False, separate_input=False, **kwargs):
+def generate_trials(rule, hp, mode, noise_on=True, fix=False, separate_input=False, label_strength=False, **kwargs):
     """Generate one batch of data.
 
     Args:
@@ -1997,7 +2004,7 @@ def generate_trials(rule, hp, mode, noise_on=True, fix=False, separate_input=Fal
         trial: Trial class instance, containing input and target output
     """
     config = hp
-    trial = rule_mapping[rule](config, mode, fix, separate_input, **kwargs)
+    trial = rule_mapping[rule](config, mode, fix, separate_input, label_strength, **kwargs)
 
     # Add rule input to every task
     if 'rule_on' in kwargs:
@@ -2137,7 +2144,7 @@ def convert_and_init_multitask_params(params):
 
 def generate_trials_wrap(task_params, n_batches, device='cuda', rules=None,
                          verbose=False, mode_input="random_batch",
-                         mess_with_training=False, fix=False, 
+                         mess_with_training=False, fix=False, label_strength=True, 
                          ):
     """
     Wrapper to generate the raw datasets, including the inputs, labels, and masks.
@@ -2203,11 +2210,13 @@ def generate_trials_wrap(task_params, n_batches, device='cuda', rules=None,
 
     for rule, rule_idx in zip(rules, rule_idxs):
         if not mess_with_training: # normal
-            trial = generate_trials(rule, task_params['hp'], mode_input,
-                                    batch_size=n_batches, fix=fix, separate_input=task_params['modality_diff'])
+            trial = generate_trials(rule, task_params['hp'], mode_input, \
+                                    batch_size=n_batches, fix=fix, separate_input=task_params['modality_diff'], \
+                                        label_strength=label_strength)
         else: # mixup
             trial = generate_trials(rule, task_params['hp'], mode_input,
-                                    batch_size=batch_distribution[rule_idx], fix=fix, separate_input=task_params['modality_diff'])
+                                    batch_size=batch_distribution[rule_idx], fix=fix, separate_input=task_params['modality_diff'], \
+                                        label_strength=label_strength)
 
         trial.x = trial.x[:,:,:-1] if not task_params["task_info"] else trial.x # ***
         
