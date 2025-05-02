@@ -838,7 +838,7 @@ def delayanti(config, mode, fix, separate_input, label_strength, **kwargs):
     return delaygo_(config, mode, True, fix, separate_input, label_strength, **kwargs)
 
 
-def _dm(config, mode, stim_mod, fix, separate_input, **kwargs):
+def _dm(config, mode, stim_mod, fix, separate_input, label_strength, **kwargs):
     '''
     Fixate whenever fixation point is shown.
     Two stimuluss are shown, saccade to the one with higher intensity
@@ -958,6 +958,11 @@ def _dm(config, mode, stim_mod, fix, separate_input, **kwargs):
 
     # time to check the saccade location
     check_ons  = fix_offs + int(100/dt)
+    
+    if label_strength:
+        chosen_strengths = np.where(stim1_strengths > stim2_strengths,
+                            stim1_strengths,
+                            stim2_strengths)
 
 
     trial = Trial(config, tdim, batch_size)
@@ -967,7 +972,12 @@ def _dm(config, mode, stim_mod, fix, separate_input, **kwargs):
     trial.add('fix_out', offs=fix_offs)
     stim_locs = [stim1_locs[i] if (stim1_strengths[i]>stim2_strengths[i])
                 else stim2_locs[i] for i in range(batch_size)]
-    trial.add('out', stim_locs, ons=fix_offs)
+    # trial.add('out', stim_locs, ons=fix_offs)
+    
+    if label_strength:
+        trial.add('out', stim_locs, ons=fix_offs, offs=tdim, strengths=chosen_strengths)
+    else:
+        trial.add('out', stim_locs, ons=fix_offs, offs=tdim)
 
     trial.add_c_mask(pre_offs=fix_offs, post_ons=check_ons)
 
@@ -988,12 +998,12 @@ def _dm(config, mode, stim_mod, fix, separate_input, **kwargs):
     return trial
 
 
-def dm1(config, mode, fix, separate_input, **kwargs):
-    return _dm(config, mode, 1, fix, separate_input, **kwargs)
+def dm1(config, mode, fix, separate_input, label_strength, **kwargs):
+    return _dm(config, mode, 1, fix, separate_input, label_strength, **kwargs)
 
 
-def dm2(config, mode, fix, separate_input, **kwargs):
-    return _dm(config, mode, 2, fix, separate_input, **kwargs)
+def dm2(config, mode, fix, separate_input, label_strength, **kwargs):
+    return _dm(config, mode, 2, fix, separate_input, label_strength, **kwargs)
 
 
 def _delaydm(config, mode, stim_mod, fix, separate_input, label_strength, **kwargs):

@@ -650,6 +650,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
         self.mp_layers = []
         
         start_layer_count = 1 if self.input_layer_active else 0
+        # if additional input layer is added, shift the starting index of layer counting from 1
         for mpl_idx in range(start_layer_count, n_layers - 1): # (e.g. three-layer has two MP layers)
             # Can specify layer with either layer-specific 'ml_params' or just a single set of parameters
             if f'ml_params{mpl_idx}' in net_params.keys():

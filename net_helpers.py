@@ -133,7 +133,7 @@ def net_eta_lambda_analysis(net, net_params, hyp_dict=None, verbose=False):
     
             if net.mp_layers[mpl_idx].lam_type in ('pre_vector', 'post_vector', 'matrix',):
                 full_lam = np.concatenate([
-                    lam.flatten()[np.newaxis, :] for lam in net.hist['lam{}'.format(mpl_idx)]
+                    lam.flatten()[np.newaxis, :] for lam in net.hist['lam{}'.format(mpl_idx+layer_index)]
                 ], axis=0)
             else:
                 full_lam = net.hist['lam{}'.format(mpl_idx+layer_index)]
@@ -160,8 +160,8 @@ def net_eta_lambda_analysis(net, net_params, hyp_dict=None, verbose=False):
     
             for mpl_idx, (mp_layer, ax) in enumerate(zip(net.mp_layers, axs)):
     
-                init_eta = net.hist['eta{}'.format(mpl_idx)][0].flatten()
-                final_eta = net.hist['eta{}'.format(mpl_idx)][-1].flatten()
+                init_eta = net.hist['eta{}'.format(mpl_idx+layer_index)][0].flatten()
+                final_eta = net.hist['eta{}'.format(mpl_idx+layer_index)][-1].flatten()
     
                 max_eta = np.max((np.max(np.abs(init_eta)), np.max(np.abs(final_eta))))
     
