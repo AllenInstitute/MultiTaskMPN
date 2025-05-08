@@ -183,7 +183,8 @@ class Trial(object):
 
             # self.c_mask[:, :, 0] *= self.n_eachring # Fixation is important
             # c_mask[:, :, :self.n_fixate] *= 2. # Fixation is important
-            c_mask[:, :, :self.n_fixate] *= 0.5 # Fixation is trivial
+            # c_mask[:, :, :self.n_fixate] *= 0.5 # Fixation is trivial
+            c_mask[:,:,0] *= 0.5
 
             # Reshaping is done in code, so not needed here.
             # self.c_mask = c_mask.reshape((self.tdim_max*self.batch_size, self.n_output))

@@ -2,6 +2,8 @@ import time # For debugging
 import copy 
 import numpy as np
 import matplotlib.pyplot as plt 
+import math 
+import seaborn as sns 
 
 import torch
 from torch import nn
@@ -31,13 +33,17 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
             # "training batches should only be over one rule"
             # "but validation should mix them"
             if not hyp_dict['mess_with_training']:
+                print(f"Task Output with Strength: {task_params['label_strength']}")
                 train_data, (_, train_trails, _ ) = tasks.generate_trials_wrap(
-                    task_params, train_params['n_batches'], device=device, verbose=False, mode_input=hyp_dict['mode_for_all']
+                    task_params, train_params['n_batches'], device=device, verbose=False, mode_input=hyp_dict['mode_for_all'],
+                    label_strength=task_params['label_strength']
                 )
             else:
                 print("=== Mess with generating training data ===")
                 train_data, (_, train_trails, _) = tasks.generate_trials_wrap(
-                    task_params, train_params['n_batches'], rules=task_params['rules'], device=device, verbose=False, mode_input=hyp_dict['mode_for_all'], mess_with_training=True
+                    task_params, train_params['n_batches'], rules=task_params['rules'], device=device, verbose=False, \
+                        mode_input=hyp_dict['mode_for_all'], mess_with_training=True, 
+                        label_strength=task_params['label_strength']
                 )
 
             return train_data, train_trails
@@ -733,7 +739,7 @@ class BaseNetwork(BaseNetworkFunctions):
 				)
 				
 				loss, loss_components, error_term = self.compute_loss(output, train_labels_batch, train_masks_batch)
-				acc = self.compute_acc(output, train_labels_batch, train_masks_batch, train_go_info_batch) 
+				acc = self.compute_acc(output, train_labels_batch, train_masks_batch) 
 				losses.append(loss.cpu().detach().numpy())
 				accs.append(acc.cpu().detach().numpy())
 
@@ -871,83 +877,35 @@ class BaseNetwork(BaseNetworkFunctions):
 
 		return self.loss_fn(masked_output, masked_labels) + reg_term, loss_components, error_term
 
-	# def compute_acc(self, output, labels, output_mask, round_type='prefs'):
-	# 	"""
-	# 	output shape: (batches, seq_len, output_size)
-	# 	labels shape: (batches, seq_len)
-	# 	output_mask shape: (batches, seq_len, output_size)
-
-	# 	"""
-	# 	assert self.loss_type in ('XE', 'MSE',)
-
-	# 	if self.loss_type in ('XE',):
-	# 		# Modify output by the mask (note just uses first output idx to mask)   
-	# 		masked_output = output[output_mask[:, :, 0]] # [B, T, out] -> [B*T_mask, out]
-	# 		masked_labels = labels[output_mask[:, :, 0]].squeeze(-1) # [B, T, 1] -> [B*T_mask, 1] -> [B*T_mask]
-
-	# 		return (torch.argmax(masked_output, dim=-1) == masked_labels).float().mean() 
-	# 	elif self.loss_type in ('MSE',):
-	# 		if output_mask.dtype == torch.bool:
-	# 			# Modify output by the mask (note just uses first output idx to mask)   
-	# 			masked_output = output[output_mask[:, :, 0]] # [B, T, 1] -> [B*T_mask, 1]
-	# 			masked_labels = labels[output_mask[:, :, 0]] # [B, T, 1] -> [B*T_mask, 1]
-	# 		elif output_mask.dtype == torch.float32:# Mask by some cost function instead
-	# 			masked_output = (output_mask * output).reshape((-1, output.shape[-1])) # [B, T, out] -> [B*T, out]
-	# 			masked_labels = (output_mask * labels).reshape((-1, output.shape[-1])) # [B, T, label_size] -> [B*T, label_size]
-	# 		else:
-	# 			raise ValueError('Mask type {} not recognized.'.format(output_mask.dtype))
-
-	# 		if round_type in ('prefs',) and self.prefs is not None: # Round both the labels and the ouputs to self.prefs
-	# 			masked_output_round = round_to_values_torch(masked_output, self.prefs) 
-	# 			masked_labels_round = round_to_values_torch(masked_labels, self.prefs)
-	# 		elif round_type in ('int',):
-	# 			masked_output_round = torch.round(masked_output)
-	# 			masked_labels_round = masked_labels
-	# 		else:
-	# 			raise ValueError(f'Round type {round_type} not recognized or invalid.')
-
-	# 		return (masked_output_round == masked_labels_round).float().mean() 
-
-
-	def compute_acc(self, output, labels, output_mask, go_info_batch, round_type='prefs'):
+	def compute_acc(self, output, labels, output_mask, round_type='prefs', verbose=False):
 		"""
 		output shape: (batches, seq_len, output_size)
 		labels shape: (batches, seq_len)
 		output_mask shape: (batches, seq_len, output_size)
-
-		[Zihan]: Jan 24th: the calculation of accuracy may be wrong -- should we focusing on response period only
-		-- also see tasks.add_c_mask() about how the output mask is set
-		-- this only affects how the final accuracy is calculated, not affecting the rest training process
 		"""
+		if verbose: 
+			fig, ax = plt.subplots(1,5,figsize=(10*5,4))
+			for i in range(5): 
+				sns.heatmap(output_mask[i].cpu().detach().numpy(), ax=ax[i], cbar=True)
+			fig.savefig("output_mask.png")
+
 		output_mask_alter = torch.full(output_mask.shape, float('nan'), device=output_mask.device) # batches * seq_len * output_size
 
 		for batch_iter in range(output_mask.shape[0]-1):
 			# identify chunks of zeros 
 			# 1st: first 100ms; 2nd: ideally fix_offs and check_ons; 3rd: end of trail (paddling)
 			ll = helper.find_zero_chunks(output_mask[batch_iter, :, :].clone().cpu().detach().numpy())
+
 			if len(ll) < 3: # for delay task...
 				ll.append([output_mask.shape[1], output_mask.shape[1]])
 			# only focusing on the alignment during response (go) period; always placed at the final
 			response_start, response_end = ll[-2][1] + 1, ll[-1][0]
-			
-			# print(f"response_start: {response_start}, response_end: {response_end}")
 
-			# try:
-			# 	go_info_response_start = go_info_batch[0][batch_iter], go_info_batch[1][batch_iter]
-
-			# except Exception as e: 
-			# 	group_size = len((go_info_batch[0].epochs['go1'])[0]) # how many batch/trials in each set
-
-			# 	which_subgroup = batch_iter // group_size # which set the current batch belong to
-
-			# 	go_info_batch_c = go_info_batch[which_subgroup].epochs['go1'] # extract the correct "go" information from the designated batch
-				
-			# 	go_info_response_start = go_info_batch_c[0][batch_iter - group_size * which_subgroup], go_info_batch_c[1][batch_iter - group_size * which_subgroup]
-
-			# go_response_start, go_response_end = go_info_response_start[0] + 1, go_info_response_start[1]
-
-			# print(f"go_info_response_start: {go_response_start}, go_info_response_start: {go_response_end}")
-
+			cut_proportion = 1/8 
+			response_duration = response_end - response_start
+			response_end = response_end - int(response_duration * cut_proportion)
+			response_start = response_start + int(response_duration * cut_proportion)
+   
 			output_part = output_mask[batch_iter, response_start:response_end, :]
 			# originally the mask is not binary, but scaled based on different period to let the cost function work properly
 			# that makes sense since we do not want to over-emphasize on periods e.g. fixon and delay
@@ -978,12 +936,32 @@ class BaseNetwork(BaseNetworkFunctions):
 			if round_type in ('prefs',) and self.prefs is not None: # Round both the labels and the ouputs to self.prefs
 				mo = masked_output[~torch.all(torch.isnan(masked_output), dim=1)]
 				ml = masked_labels[~torch.all(torch.isnan(masked_labels), dim=1)]
-				# project to 1D
-				mo = (torch.sqrt(mo[:,0] ** 2 + mo[:,1] ** 2)).reshape(-1,1) 
-				ml = (torch.sqrt(ml[:,0] ** 2 + ml[:,1] ** 2)).reshape(-1,1)
+    
+				mo_angle = torch.remainder(
+					torch.atan2(mo[:, 1], mo[:, 2]),            
+					2 * math.pi                              
+				).reshape(-1, 1)
+    
+				ml_angle = torch.remainder(
+					torch.atan2(ml[:, 1], ml[:, 2]),            
+					2 * math.pi                              
+				).reshape(-1, 1)
+				
+				append_pref = torch.tensor([2 * math.pi], device=self.prefs.device)
+				temp_prefs = torch.cat((self.prefs, append_pref), dim=0)
 
-				masked_output_round = round_to_values_torch(mo, self.prefs) 
-				masked_labels_round = round_to_values_torch(ml, self.prefs)
+				masked_output_round = round_to_values_torch(mo_angle, temp_prefs) 
+				masked_labels_round = round_to_values_torch(ml_angle, temp_prefs)
+    
+				def clean(x: torch.Tensor, tol: float = 1e-6):
+					"""Replace entries equal (within tol) to 2π with 0, in-place."""
+					two_pi = torch.tensor(2 * math.pi, device=x.device, dtype=x.dtype)
+					x.masked_fill_(torch.isclose(x, two_pi, atol=tol), 0.)
+					return x   
+     
+				masked_output_round = clean(masked_output_round)
+				masked_labels_round = clean(masked_labels_round)
+
 			elif round_type in ('int',):
 				masked_output_round = torch.round(masked_output)
 				masked_labels_round = masked_labels
@@ -1103,7 +1081,7 @@ class BaseNetwork(BaseNetworkFunctions):
 			moitor_str = 'Iter: {}, LR: {:.3e} - train_loss:{:.3e}'.format(self.hist['iter'], lr, loss)
 
 			if self.loss_type in ('XE', 'MSE',): # Accuracy computations if relevant
-				acc = self.compute_acc(output, train_labels_batch, train_masks_batch, train_go_info_batch)
+				acc = self.compute_acc(output, train_labels_batch, train_masks_batch)
 				self.hist['train_acc'].append(acc.item())
 				if self.loss_type in ('XE',):
 					moitor_str += ', train_acc:{:.3f}'.format(acc)
@@ -1141,7 +1119,7 @@ class BaseNetwork(BaseNetworkFunctions):
 				moitor_str += ', valid_loss:{:.3e}'.format(valid_loss)
 
 				if self.loss_type in ('XE', 'MSE',): # Accuracy computations if relevant
-					valid_acc = self.compute_acc(valid_output, valid_labels_batch, valid_masks_batch, valid_go_info) 
+					valid_acc = self.compute_acc(valid_output, valid_labels_batch, valid_masks_batch, verbose=False) 
 					self.hist['valid_acc'].append(valid_acc.item())
 					self.hist['avg_valid_acc'].append(np.mean(self.hist['valid_acc'][-avg_window:]))
 					if self.loss_type in ('XE',):
