@@ -2155,8 +2155,7 @@ def convert_and_init_multitask_params(params):
 
 def generate_trials_wrap(task_params, n_batches, device='cuda', rules=None,
                          verbose=False, mode_input="random_batch",
-                         mess_with_training=False, fix=False, label_strength=True, 
-                         ):
+                         mess_with_training=False, fix=False):
     """
     Wrapper to generate the raw datasets, including the inputs, labels, and masks.
 
@@ -2223,11 +2222,11 @@ def generate_trials_wrap(task_params, n_batches, device='cuda', rules=None,
         if not mess_with_training: # normal
             trial = generate_trials(rule, task_params['hp'], mode_input, \
                                     batch_size=n_batches, fix=fix, separate_input=task_params['modality_diff'], \
-                                        label_strength=label_strength)
+                                        label_strength=task_params['label_strength'])
         else: # mixup
             trial = generate_trials(rule, task_params['hp'], mode_input,
                                     batch_size=batch_distribution[rule_idx], fix=fix, separate_input=task_params['modality_diff'], \
-                                        label_strength=label_strength)
+                                        label_strength=task_params['label_strength'])
 
         trial.x = trial.x[:,:,:-1] if not task_params["task_info"] else trial.x # ***
         

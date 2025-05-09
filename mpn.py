@@ -617,6 +617,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
             net_params['n_neurons'].insert(1, net_params['n_neurons'][1])
 
         print(net_params['n_neurons'])
+        self.n_hidden = net_params['n_neurons'][1]
 
         n_layers = len(net_params['n_neurons']) - 1        
 
@@ -736,4 +737,4 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
 
             _ = mp_layer.update_M_matrix(mpl_activities[mpl_idx], mpl_activities[mpl_idx + 1])
 
-        return output, db
+        return output, mpl_activities, db

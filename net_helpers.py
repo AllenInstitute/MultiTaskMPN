@@ -33,17 +33,15 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
             # "training batches should only be over one rule"
             # "but validation should mix them"
             if not hyp_dict['mess_with_training']:
-                print(f"Task Output with Strength: {task_params['label_strength']}")
+                # print(f"Task Output with Strength: {task_params['label_strength']}")
                 train_data, (_, train_trails, _ ) = tasks.generate_trials_wrap(
-                    task_params, train_params['n_batches'], device=device, verbose=False, mode_input=hyp_dict['mode_for_all'],
-                    label_strength=task_params['label_strength']
+                    task_params, train_params['n_batches'], device=device, verbose=False, mode_input=hyp_dict['mode_for_all']
                 )
             else:
                 print("=== Mess with generating training data ===")
                 train_data, (_, train_trails, _) = tasks.generate_trials_wrap(
                     task_params, train_params['n_batches'], rules=task_params['rules'], device=device, verbose=False, \
-                        mode_input=hyp_dict['mode_for_all'], mess_with_training=True, 
-                        label_strength=task_params['label_strength']
+                        mode_input=hyp_dict['mode_for_all'], mess_with_training=True
                 )
 
             return train_data, train_trails
@@ -82,7 +80,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
                 print(f"How about Test Data at dataset {dataset_idx}")
                 counter_lst.append(dataset_idx)
                 # test data for each stage
-                net_out, db = net.iterate_sequence_batch(test_input, run_mode='track_states')
+                net_out, net_hidden, db = net.iterate_sequence_batch(test_input, run_mode='track_states')
                 net_out = net_out.detach().cpu().numpy()
 				# load the info for each learning stage
                 netout_lst.append(net_out)
@@ -601,6 +599,7 @@ class BaseNetwork(BaseNetworkFunctions):
 		# Regularization
 		self.weight_reg = train_params.get('weight_reg', None)
 		self.reg_lambda = train_params.get('reg_lambda', 0.0)
+		self.activity_reg = train_params.get('activity_reg', None) # Activity regularization
 		self.reg_omit = train_params.get('reg_omit', []) # List of named parameters to omit from regularization
 
 		if new_thresh or self.hist is None:
@@ -632,10 +631,16 @@ class BaseNetwork(BaseNetworkFunctions):
 				)
 			else:
 				init_string += '\nWeight reg: None'
+    
+			if self.activity_reg is not None:
+				init_string += '\nActivity reg: {}, coef: {:.1e}'.format(
+					self.weight_reg, self.reg_lambda
+				)
+			else:
+				init_string += '\nActivity reg: None'
 
 			if self.verbose:
 				print(init_string) 
-
 
 		self.train() # put in train mode (doesn't really do anything unless we are using dropout/batch norm)
 		db, monitor_loss, monitor_acc = train_fn(train_params, train_data, train_trails, valid_batch=valid_batch, valid_trails=valid_trails,
@@ -734,11 +739,11 @@ class BaseNetwork(BaseNetworkFunctions):
 				if self.run_mode in ('timing',): t0 = time.time() # Forward start
 
 				# Note that labels and masks are only used for special types of gradient calculations
-				output, db = self.iterate_sequence_batch(
+				output, hidden, db = self.iterate_sequence_batch(
 					train_inputs_batch, batch_labels=train_labels_batch, batch_masks=train_masks_batch, run_mode=self.run_mode
 				)
 				
-				loss, loss_components, error_term = self.compute_loss(output, train_labels_batch, train_masks_batch)
+				loss, loss_components, error_term = self.compute_loss(output, train_labels_batch, train_masks_batch, hidden=hidden)
 				acc = self.compute_acc(output, train_labels_batch, train_masks_batch) 
 				losses.append(loss.cpu().detach().numpy())
 				accs.append(acc.cpu().detach().numpy())
@@ -785,7 +790,8 @@ class BaseNetwork(BaseNetworkFunctions):
 
 		batch_output = torch.zeros((B, batch_inputs.shape[1], self.n_output), 
 									dtype=torch.float, device=batch_inputs.device)
-
+		batch_hidden = torch.zeros((B, batch_inputs.shape[1], self.n_hidden),
+									dtype=torch.float, device=batch_inputs.device)
 		self.reset_state(B=B)
 
 		if run_mode in ('track_states',): 
@@ -799,9 +805,10 @@ class BaseNetwork(BaseNetworkFunctions):
 		# update the internal state unless told otherwise. 
 		for seq_idx in range(batch_inputs.shape[1]):
 
-			step_output, db = self.network_step(batch_inputs[:, seq_idx, :], run_mode=run_mode)
+			step_output, step_activity, db = self.network_step(batch_inputs[:, seq_idx, :], run_mode=run_mode)
 			
 			batch_output[:, seq_idx, :] = step_output
+			batch_hidden[:, seq_idx, :] = step_activity[-1] # assume 1-layer MPN for now
 
 			if run_mode in ('track_states',):
 				if seq_idx == 0: # Initializes db_seq based off of first db return
@@ -813,7 +820,7 @@ class BaseNetwork(BaseNetworkFunctions):
 					if type(db[key]) == torch.Tensor:
 						db_seq[key][:, seq_idx] = db[key]
 
-		return batch_output, db_seq
+		return batch_output, batch_hidden, db_seq
 
 
 	def compute_reg_term(self):
@@ -822,6 +829,7 @@ class BaseNetwork(BaseNetworkFunctions):
 		p_reg = []
 		
 		for p_name, p in self.named_parameters():
+			# print(p_name)
 			# if torch.prod(torch.tensor(p.shape)) > 1:
 			# 	p_reg.append(p)
 			if p_name not in self.reg_omit:
@@ -838,7 +846,7 @@ class BaseNetwork(BaseNetworkFunctions):
 			# print('Batch size: {}, L1 Norm {:0.5f}, Reg Term {:0.5f}'.format(B, l1_norm, reg_term))
 		return reg_term
 
-	def compute_loss(self, output, labels, output_mask):
+	def compute_loss(self, output, labels, output_mask, hidden):
 		"""
 		Seperate function here for additional contributions to loss such as regularization terms
 		"""
@@ -848,6 +856,11 @@ class BaseNetwork(BaseNetworkFunctions):
 			reg_term = self.compute_reg_term()
 		else:
 			reg_term = torch.tensor(0.0)
+   
+		activity_reg_term = torch.tensor(0.0, device=output.device)
+		if self.activity_reg in ('L2',): 
+			activity_reg_term = torch.mean(hidden ** 2) * self.reg_lambda 
+			reg_term += activity_reg_term
 
 		if output_mask.dtype == torch.bool:
 			# Modify output by the mask (note just uses first output idx to mask)   
@@ -1066,8 +1079,8 @@ class BaseNetwork(BaseNetworkFunctions):
 
 			if output is None: # If output is not passed (e.g. in _monitor_init), just does the first example in the sequence
 				assert train_inputs_batch.shape[0] == train_labels_batch.shape[0]	
-				output, _ = self.iterate_sequence_batch(train_inputs_batch)
-				loss, loss_components, _ = self.compute_loss(output, train_labels_batch, train_masks_batch)                
+				output, hidden, _ = self.iterate_sequence_batch(train_inputs_batch)
+				loss, loss_components, _ = self.compute_loss(output, train_labels_batch, train_masks_batch, hidden=hidden)                
 			if loss is None or loss_components is None:
 				raise NotImplementedError('Cannot have output without a loss computed.')
 
@@ -1096,7 +1109,7 @@ class BaseNetwork(BaseNetworkFunctions):
 
 		if valid_batch is not None:
 			
-			valid_output, _ = self.iterate_sequence_batch(valid_inputs_batch)
+			valid_output, valid_hidden, _ = self.iterate_sequence_batch(valid_inputs_batch)
 
 			if self.monitor_valid_out: # Saves validation output if needed
 				self.hist['valid_output'].append(valid_output.cpu().numpy())
@@ -1104,7 +1117,7 @@ class BaseNetwork(BaseNetworkFunctions):
 				self.hist['valid_output'].append(None)
 			
 			if self.train_type in ('supervised',): # For supervised, gets valid loss and accuracies
-				valid_loss, valid_loss_components, _ = self.compute_loss(valid_output, valid_labels_batch, valid_masks_batch)  
+				valid_loss, valid_loss_components, _ = self.compute_loss(valid_output, valid_labels_batch, valid_masks_batch, hidden=valid_hidden)  
 				
 				self.hist['valid_loss'].append(valid_loss.item())
 				self.hist['valid_loss_output_label'].append(valid_loss_components[0]) 

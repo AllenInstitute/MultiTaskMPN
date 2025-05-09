@@ -62,7 +62,7 @@ def participation_ratio_vector(C):
     """Computes the participation ratio of a vector of variances."""
     return np.sum(C) ** 2 / np.sum(C*C)
 
-def plot_some_ouputs(params, net, mode_for_all="random_batch", n_outputs=4, nameadd="", verbose=False):
+def plot_some_outputs(params, net, mode_for_all="random_batch", n_outputs=4, nameadd="", verbose=False):
     """
     """
     # in case out of range
