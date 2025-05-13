@@ -4,13 +4,14 @@ import numpy as np
 import matplotlib.pyplot as plt 
 import math 
 import seaborn as sns 
+import copy 
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 from scipy.stats import lognorm
 
-import tasks 
+import mpn_tasks 
 import helper 
 
 # 0 Red, 1 blue, 2 green, 3 purple, 4 orange, 5 teal, 6 gray, 7 pink, 8 yellow
@@ -20,9 +21,12 @@ c_vals_d = ['#9b2c2c', '#2c5282', '#276749', '#553c9a', '#9c4221', '#285e61', '#
 l_vals = ['solid', 'dashed', 'dotted', 'dashdot', '-', '--', '-.', ':', (0, (3, 1, 1, 1)), (0, (5, 10))]
 markers_vals = ['.', 'o', 'v', '^', '<', '>', '1', '2', '3', '4', 's', 'p', '*', 'h', 'H', '+', 'x', 'D', 'd', '|', '_']
 
-def train_network(params, net=None, device=torch.device('cuda'), verbose=False, train=True, hyp_dict=None, netFunction=None, test_input=None):
+def train_network(params, net=None, device=torch.device('cuda'), verbose=False, \
+    train=True, hyp_dict=None, netFunction=None, test_input=None):
     """
     """
+    assert isinstance(test_input, list), "test_input must be a list"
+
     task_params, train_params, net_params = params
 
     if task_params['task_type'] in ('multitask',):
@@ -34,12 +38,13 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
             # "but validation should mix them"
             if not hyp_dict['mess_with_training']:
                 # print(f"Task Output with Strength: {task_params['label_strength']}")
-                train_data, (_, train_trails, _ ) = tasks.generate_trials_wrap(
-                    task_params, train_params['n_batches'], device=device, verbose=False, mode_input=hyp_dict['mode_for_all']
+                train_data, (_, train_trails, _ ) = mpn_tasks.generate_trials_wrap(
+                    task_params, train_params['n_batches'], device=device, verbose=False, \
+                        mode_input=hyp_dict['mode_for_all']
                 )
             else:
                 print("=== Mess with generating training data ===")
-                train_data, (_, train_trails, _) = tasks.generate_trials_wrap(
+                train_data, (_, train_trails, _) = mpn_tasks.generate_trials_wrap(
                     task_params, train_params['n_batches'], rules=task_params['rules'], device=device, verbose=False, \
                         mode_input=hyp_dict['mode_for_all'], mess_with_training=True
                 )
@@ -47,7 +52,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
             return train_data, train_trails
             
         def generate_valid_data(device='cuda'):
-            valid_data, (_, valid_trails, _) = tasks.generate_trials_wrap(
+            valid_data, (_, valid_trails, _) = mpn_tasks.generate_trials_wrap(
                 task_params, train_params['valid_n_batch'], rules=task_params['rules'], device=device, mode_input=hyp_dict['mode_for_all']
             )
             return valid_data, valid_trails
@@ -66,7 +71,10 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
     valid_data, valid_trails = generate_valid_data(device=device)
 
     counter_lst = []
-    netout_lst, db_lst, Winput_lst, Woutput_lst, Winputbias_lst, Wall_lst, marker_lst, loss_lst, acc_lst = [], [], [], [], [], [], [], [], []
+    # to customize if multiple test data are used
+    netout_lst, db_lst  = [[] for _ in range(len(test_input))], [[] for _ in range(len(test_input))]
+    Winput_lst, Woutput_lst, Winputbias_lst, Wall_lst, marker_lst, loss_lst, acc_lst = [], [], [], [], [], [], []
+    net_lst = []
 
     def is_power_of_2_or_zero(n):
         return n == 0 or (n > 0 and (n & (n - 1)) == 0)
@@ -80,11 +88,11 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
                 print(f"How about Test Data at dataset {dataset_idx}")
                 counter_lst.append(dataset_idx)
                 # test data for each stage
-                net_out, net_hidden, db = net.iterate_sequence_batch(test_input, run_mode='track_states')
-                net_out = net_out.detach().cpu().numpy()
-				# load the info for each learning stage
-                netout_lst.append(net_out)
-                db_lst.append(db)
+                for test_input_index, test_input_ in enumerate(test_input): 
+                    net_out, net_hidden, db = net.iterate_sequence_batch(test_input_, run_mode='track_states')
+                    net_out = net_out.detach().cpu().numpy()
+                    netout_lst[test_input_index].append(net_out)
+                    db_lst[test_input_index].append(db)
                 
                 Woutput_lst.append(net.W_output.detach().cpu().numpy())
                 
@@ -895,7 +903,7 @@ class BaseNetwork(BaseNetworkFunctions):
 		output shape: (batches, seq_len, output_size)
 		labels shape: (batches, seq_len)
 		output_mask shape: (batches, seq_len, output_size)
-		"""
+		"""			
 		if verbose: 
 			fig, ax = plt.subplots(1,5,figsize=(10*5,4))
 			for i in range(5): 
@@ -916,7 +924,7 @@ class BaseNetwork(BaseNetworkFunctions):
 
 			cut_proportion = 1/8 
 			response_duration = response_end - response_start
-			response_end = response_end - int(response_duration * cut_proportion)
+			response_end = response_end
 			response_start = response_start + int(response_duration * cut_proportion)
    
 			output_part = output_mask[batch_iter, response_start:response_end, :]

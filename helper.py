@@ -1,9 +1,47 @@
-import tasks
+import mpn_tasks
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np 
 from scipy.linalg import null_space
 import time
+
+import torch
+
+def to_ndarray(x):
+    """
+    Return *x* as a NumPy ndarray.
+    
+    • If x is a PyTorch tensor, move it to CPU (if needed),
+      detach it from the autograd graph, and convert to ndarray.
+    • If x is already an ndarray, return it untouched.
+    • Otherwise fall back to np.asarray for scalars, lists, etc.
+    """
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy()
+    elif isinstance(x, np.ndarray):
+        return x
+    else:
+        return np.asarray(x)
+    
+def sample_upper_means(mat, k=8, n_iter=1000, seed=None):
+    """
+    """
+    rng = np.random.default_rng(seed)
+
+    # 1. Pull out only the finite (non-NaN) entries once.
+    valid_vals = mat[~np.isnan(mat)].ravel()
+
+    # 2. Sanity check.
+    if valid_vals.size < k:
+        raise ValueError(f"Need at least {k} finite values, got {valid_vals.size}")
+
+    # 3. Repeat: sample k numbers → take their mean.
+    means = np.array([
+        rng.choice(valid_vals, size=k, replace=False).mean()
+        for _ in range(n_iter)
+    ])
+
+    return [np.mean(means), np.std(means)]
 
 def find_zero_chunks(array):
     """
@@ -73,7 +111,7 @@ def plot_some_outputs(params, net, mode_for_all="random_batch", n_outputs=4, nam
     task_params, train_params, net_params = params
 
     if task_params['task_type'] in ('multitask',):
-        test_data, test_trials_extra = tasks.generate_trials_wrap(task_params, n_outputs, mode_input=mode_for_all)
+        test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params, n_outputs, mode_input=mode_for_all)
         # figure out sessions
         # assert mode_for_all == "random_batch" # lazy...
         _, test_trials, test_rule_idxs = test_trials_extra

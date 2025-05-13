@@ -612,6 +612,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
 
         # Mar 16th: add input layer
         self.input_layer_active = net_params.get('input_layer_add', False)
+        self.input_layer_active_trainable = net_params.get('input_layer_add_trainable', False)
 
         if self.input_layer_active:
             net_params['n_neurons'].insert(1, net_params['n_neurons'][1])
@@ -639,6 +640,10 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
                 rand_weight_init(net_params['n_neurons'][0], net_params['n_neurons'][1], init_type=net_params.get('W_init', 'xavier')),
                 dtype=torch.float
             )
+            
+            if not self.input_layer_active_trainable:
+                print("Input Layer Frozen")
+                self.W_initial_linear.weight.requires_grad = False
 
             if net_params.get('input_layer_bias', False):
                 self.W_initial_linear.bias.data = torch.tensor(
