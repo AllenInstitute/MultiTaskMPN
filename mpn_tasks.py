@@ -310,7 +310,7 @@ def delaygo_(config, mode, anti_response, fix, separate_input, label_strength, l
         if long_delay == "normal":
             fix_offs = stim_offs + int(rng.choice([200, 400, 800, 1600])/dt)
         elif long_delay == "long":
-            fix_offs = stim_offs + int(rng.choice([3000, 3500, 4000, 4500])/dt)
+            fix_offs = stim_offs + int(rng.choice([30000])/dt)
             
         # fix_offs = stim_offs + int(rng.choice([1600])/dt)
         tdim     = fix_offs + int(500/dt)
@@ -328,7 +328,7 @@ def delaygo_(config, mode, anti_response, fix, separate_input, label_strength, l
         if long_delay == "normal": 
             fix_offs = stim_offs + batch_choice([200, 400, 800, 1600], batch_size, rng, dt)
         elif long_delay == "long":
-            fix_offs = stim_offs + batch_choice([3000, 3500, 4000, 4500], batch_size, rng, dt)
+            fix_offs = stim_offs + batch_choice([30000], batch_size, rng, dt)
 
         # fix_offs = stim_offs + int(rng.choice([1600])/dt)
         tdim     = fix_offs + int(500/dt)
@@ -409,7 +409,7 @@ def contextdm_genstim(batch_size, rng, stim_coh_range=None):
     return stim1_strengths, stim2_strengths
 
 
-def _contextdm(config, mode, attend_mod, **kwargs):
+def _contextdm(config, mode, attend_mod, fix, separate_input, label_strength, long_delay, **kwargs):
     '''
     Fixate whenever fixation point is shown.
     Two stimuluss are shown in each ring,
@@ -618,16 +618,16 @@ def _contextdm(config, mode, attend_mod, **kwargs):
     return trial
 
 
-def contextdm1(config, mode, **kwargs):
-    return _contextdm(config, mode, 1, **kwargs)
+def contextdm1(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
+    return _contextdm(config, mode, 1, fix, separate_input, label_strength, long_delay, **kwargs)
 
 
-def contextdm2(config, mode, **kwargs):
-    return _contextdm(config, mode, 2, **kwargs)
+def contextdm2(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
+    return _contextdm(config, mode, 2, fix, separate_input, label_strength, long_delay, **kwargs)
 
 
-def multidm(config, mode, **kwargs):
-    return _contextdm(config, mode, 'both', **kwargs)
+def multidm(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
+    return _contextdm(config, mode, 'both',fix, separate_input, label_strength, long_delay,  **kwargs)
 
 
 def reactgo_(config, mode, anti_response, fix, **kwargs):
@@ -737,7 +737,7 @@ def reactanti(config, mode, fix, **kwargs):
     return reactgo_(config, mode, True, fix, **kwargs)
 
 
-def fdgo_(config, mode, fix, anti_response, **kwargs):
+def fdgo_(config, mode, anti_response, fix, **kwargs):
     '''
     Go with inhibitory control. Important difference with Go task is that
     the stimulus is presented from the beginning.
@@ -839,11 +839,11 @@ def fdgo_(config, mode, fix, anti_response, **kwargs):
 
     return trial
 
-def fdgo(config, mode, fix, **kwargs):
+def fdgo(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
     return fdgo_(config, mode, False, fix, **kwargs)
 
 
-def fdanti(config, mode, fix, **kwargs):
+def fdanti(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
     return fdgo_(config, mode, True, fix, **kwargs)
 
 
@@ -1403,11 +1403,11 @@ def _contextdelaydm(config, mode, attend_mod, fix, separate_input, **kwargs):
     return trial
 
 
-def contextdelaydm1(config, mode, fix, separate_input, **kwargs):
+def contextdelaydm1(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
     return _contextdelaydm(config, mode, 1, fix, separate_input, **kwargs)
 
 
-def contextdelaydm2(config, mode, fix, separate_input, **kwargs):
+def contextdelaydm2(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
     return _contextdelaydm(config, mode, 2, fix, separate_input, **kwargs)
 
 
@@ -1415,7 +1415,7 @@ def multidelaydm(config, mode, **kwargs):
     return _contextdelaydm(config, mode, 'both', **kwargs)
 
 
-def dms_(config, mode, matchnogo, **kwargs):
+def dms_(config, mode, matchnogo, fix, separate_input, label_strength, long_delay, **kwargs):
     '''
     Delay-match-to-sample
 
@@ -1560,15 +1560,15 @@ def dms_(config, mode, matchnogo, **kwargs):
     return trial
 
 
-def dmsgo(config, mode, **kwargs):
-    return dms_(config, mode, 0, **kwargs)
+def dmsgo(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
+    return dms_(config, mode, 0, fix, separate_input, label_strength, long_delay, **kwargs)
 
 
-def dmsnogo(config, mode, **kwargs):
-    return dms_(config, mode, 1, **kwargs)
+def dmsnogo(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
+    return dms_(config, mode, 1, fix, separate_input, label_strength, long_delay, **kwargs)
 
 
-def dmc_(config, mode, matchnogo, **kwargs):
+def dmc_(config, mode, matchnogo, fix, separate_input, label_strength, long_delay, **kwargs):
     '''
     Delay-match-to-category
 
@@ -1731,12 +1731,12 @@ def dmc_(config, mode, matchnogo, **kwargs):
     return trial
 
 
-def dmcgo(config, mode, **kwargs):
-    return dmc_(config, mode, 0, **kwargs)
+def dmcgo(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
+    return dmc_(config, mode, 0, fix, separate_input, label_strength, long_delay, **kwargs)
 
 
-def dmcnogo(config, mode, **kwargs):
-    return dmc_(config, mode, 1, **kwargs)
+def dmcnogo(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
+    return dmc_(config, mode, 1, fix, separate_input, label_strength, long_delay, **kwargs)
 
 
 def oic(config, mode, **kwargs):

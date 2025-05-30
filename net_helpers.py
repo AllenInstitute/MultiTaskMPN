@@ -75,16 +75,27 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
     netout_lst, db_lst  = [[] for _ in range(len(test_input))], [[] for _ in range(len(test_input))]
     Winput_lst, Woutput_lst, Winputbias_lst, Wall_lst, marker_lst, loss_lst, acc_lst = [], [], [], [], [], [], []
     net_lst = []
+    
+    def is_power_of_4_or_zero(n: int) -> bool:
+        """
+        Returns True if n is 0 **or** an exact power of 4 (1, 4, 16, 64, …).
+        """
+        return (
+            n == 0
+            or (
+                n > 0
+                and (n & (n - 1)) == 0      # power-of-2 check
+                and (n & 0x55555555) != 0    # even-bit position  ➜ power-of-4
+                )
+            )
 
-    def is_power_of_2_or_zero(n):
-        return n == 0 or (n > 0 and (n & (n - 1)) == 0)
 
     for dataset_idx in range(train_params['n_datasets']):
         # Regenerate new data
         train_data, train_trails = generate_train_data(device=device)
         new_thresh = True if dataset_idx == 0 else False
         if train: 
-            if test_input is not None and (is_power_of_2_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
+            if test_input is not None and (is_power_of_4_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
                 print(f"How about Test Data at dataset {dataset_idx}")
                 counter_lst.append(dataset_idx)
                 # test data for each stage
@@ -116,7 +127,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
 
             _, monitor_loss, monitor_acc = net.fit(train_params, train_data, train_trails, valid_batch=valid_data, valid_trails=valid_trails, new_thresh=new_thresh, run_mode=hyp_dict['run_mode'])
 
-            if test_input is not None and (is_power_of_2_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
+            if test_input is not None and (is_power_of_4_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
                 # print(f"monitor_loss: {monitor_loss}")
                 loss_lst.append(monitor_loss)
                 acc_lst.append(monitor_acc)
@@ -898,7 +909,7 @@ class BaseNetwork(BaseNetworkFunctions):
 
 		return self.loss_fn(masked_output, masked_labels) + reg_term, loss_components, error_term
 
-	def compute_acc(self, output, labels, output_mask, round_type='prefs', verbose=False):
+	def compute_acc(self, output, labels, output_mask, round_type='prefs', mode="angle", verbose=False):
 		"""
 		output shape: (batches, seq_len, output_size)
 		labels shape: (batches, seq_len)
@@ -912,7 +923,7 @@ class BaseNetwork(BaseNetworkFunctions):
 
 		output_mask_alter = torch.full(output_mask.shape, float('nan'), device=output_mask.device) # batches * seq_len * output_size
 
-		for batch_iter in range(output_mask.shape[0]-1):
+		for batch_iter in range(output_mask.shape[0]):
 			# identify chunks of zeros 
 			# 1st: first 100ms; 2nd: ideally fix_offs and check_ons; 3rd: end of trail (paddling)
 			ll = helper.find_zero_chunks(output_mask[batch_iter, :, :].clone().cpu().detach().numpy())
@@ -955,33 +966,65 @@ class BaseNetwork(BaseNetworkFunctions):
 				raise ValueError('Mask type {} not recognized.'.format(output_mask.dtype))
 
 			if round_type in ('prefs',) and self.prefs is not None: # Round both the labels and the ouputs to self.prefs
-				mo = masked_output[~torch.all(torch.isnan(masked_output), dim=1)]
-				ml = masked_labels[~torch.all(torch.isnan(masked_labels), dim=1)]
-    
-				mo_angle = torch.remainder(
-					torch.atan2(mo[:, 1], mo[:, 2]),            
-					2 * math.pi                              
-				).reshape(-1, 1)
-    
-				ml_angle = torch.remainder(
-					torch.atan2(ml[:, 1], ml[:, 2]),            
-					2 * math.pi                              
-				).reshape(-1, 1)
-				
-				append_pref = torch.tensor([2 * math.pi], device=self.prefs.device)
-				temp_prefs = torch.cat((self.prefs, append_pref), dim=0)
+				# compare the alignment by angle (relative position between two stimulus)
+				if mode == "angle": 
+					mo = masked_output[~torch.all(torch.isnan(masked_output), dim=1)]
+					ml = masked_labels[~torch.all(torch.isnan(masked_labels), dim=1)]
+		
+					mo_angle = torch.remainder(
+						torch.atan2(mo[:, 1], mo[:, 2]),            
+						2 * math.pi                              
+					).reshape(-1, 1)
+		
+					ml_angle = torch.remainder(
+						torch.atan2(ml[:, 1], ml[:, 2]),            
+						2 * math.pi                              
+					).reshape(-1, 1)
+					
+					append_pref = torch.tensor([2 * math.pi], device=self.prefs.device)
+					temp_prefs = torch.cat((self.prefs, append_pref), dim=0)
 
-				masked_output_round = round_to_values_torch(mo_angle, temp_prefs) 
-				masked_labels_round = round_to_values_torch(ml_angle, temp_prefs)
-    
-				def clean(x: torch.Tensor, tol: float = 1e-6):
-					"""Replace entries equal (within tol) to 2π with 0, in-place."""
-					two_pi = torch.tensor(2 * math.pi, device=x.device, dtype=x.dtype)
-					x.masked_fill_(torch.isclose(x, two_pi, atol=tol), 0.)
-					return x   
+					masked_output_round = round_to_values_torch(mo_angle, temp_prefs) 
+					masked_labels_round = round_to_values_torch(ml_angle, temp_prefs)
+		
+					def clean(x: torch.Tensor, tol: float = 1e-6):
+						"""Replace entries equal (within tol) to 2π with 0, in-place."""
+						two_pi = torch.tensor(2 * math.pi, device=x.device, dtype=x.dtype)
+						x.masked_fill_(torch.isclose(x, two_pi, atol=tol), 0.)
+						return x   
+		
+					masked_output_round = clean(masked_output_round)
+					masked_labels_round = clean(masked_labels_round)
      
-				masked_output_round = clean(masked_output_round)
-				masked_labels_round = clean(masked_labels_round)
+					result_acc = (masked_output_round == masked_labels_round).float().mean() 
+
+				# compare the alignment directly by stimulus 
+				# this is technically a "unnecessarily stricter" version of the angle comparison
+				# and is expected to be sensitive to noise 
+				elif mode == "stimulus": 
+					mo = masked_output[~torch.all(torch.isnan(masked_output), dim=1)]
+					ml = masked_labels[~torch.all(torch.isnan(masked_labels), dim=1)]
+
+					ml_norms = torch.norm(ml, p=2, dim=1, keepdim=True)
+					assert torch.allclose(ml_norms, torch.ones_like(ml_norms), rtol=1e-5, atol=1e-8)
+
+					# this function is needed since self.prefs is rounded to decimals
+					def unique_with_tolerance(tensor, tolerance=1e-5):
+						# Scale by tolerance, round, then divide back to avoid floating-point precision issues
+						scaled = torch.round(tensor / tolerance) * tolerance
+						return torch.unique(scaled)
+
+					sines, cosines = unique_with_tolerance(torch.sin(self.prefs)), unique_with_tolerance(torch.cos(self.prefs))
+					output_stimulus1, output_stimulus2 = round_to_values_torch(mo[:, 1], sines), round_to_values_torch(mo[:, 2], cosines)
+					labels_stimulus1, labels_stimulus2 = round_to_values_torch(ml[:, 1], sines), round_to_values_torch(ml[:, 2], cosines) 
+     
+					match1 = (output_stimulus1 == labels_stimulus1).int()
+					match2 = (output_stimulus2 == labels_stimulus2).int()
+					# only correct if both stimulus are matched with the label
+					result_acc = ((match1 == 1) & (match2 == 1)).float().mean()
+     
+				else: 
+					raise ValueError('Mode {} not recognized.'.format(mode))
 
 			elif round_type in ('int',):
 				masked_output_round = torch.round(masked_output)
@@ -989,7 +1032,7 @@ class BaseNetwork(BaseNetworkFunctions):
 			else:
 				raise ValueError(f'Round type {round_type} not recognized or invalid.')
 
-			return (masked_output_round == masked_labels_round).float().mean() 
+			return result_acc
 
 	def compute_gradients(self):
 		raise NotImplementedError('Should be implemented in children.')
