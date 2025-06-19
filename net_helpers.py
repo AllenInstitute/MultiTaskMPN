@@ -36,18 +36,11 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
             # correct thing to do
             # "training batches should only be over one rule"
             # "but validation should mix them"
-            if not hyp_dict['mess_with_training']:
-                # print(f"Task Output with Strength: {task_params['label_strength']}")
-                train_data, (_, train_trails, _ ) = mpn_tasks.generate_trials_wrap(
-                    task_params, train_params['n_batches'], device=device, verbose=False, \
-                        mode_input=hyp_dict['mode_for_all']
-                )
-            else:
-                print("=== Mess with generating training data ===")
-                train_data, (_, train_trails, _) = mpn_tasks.generate_trials_wrap(
-                    task_params, train_params['n_batches'], rules=task_params['rules'], device=device, verbose=False, \
-                        mode_input=hyp_dict['mode_for_all'], mess_with_training=True
-                )
+            
+            # print(f"Task Output with Strength: {task_params['label_strength']}")
+            train_data, (_, train_trails, _ ) = mpn_tasks.generate_trials_wrap(
+                task_params, train_params['n_batches'], device=device, verbose=False, mode_input=hyp_dict['mode_for_all']
+            )
 
             return train_data, train_trails
             
@@ -113,7 +106,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
                     if net_params["input_layer_bias"]:
                         Winputbias_lst.append(net.W_initial_linear.bias.detach().cpu().numpy())
                         
-                elif net_params["input_layer"] and net_params["net_type"] == "vanilla":
+                elif net_params["input_layer_add"] and net_params["net_type"] == "vanilla":
                     Winput_lst.append(net.W_input.detach().cpu().numpy())
                     # no input bias is set for vanilla RNN in kyle's original design
 
@@ -848,10 +841,7 @@ class BaseNetwork(BaseNetworkFunctions):
 		p_reg = []
 		
 		for p_name, p in self.named_parameters():
-			# print(p_name)
-			# if torch.prod(torch.tensor(p.shape)) > 1:
-			# 	p_reg.append(p)
-			if p_name not in self.reg_omit:
+			if p_name not in self.reg_omit and "W" in p_name: # Only regularize weights
 				p_reg.append(p)
 
 		if self.weight_reg == 'L2':

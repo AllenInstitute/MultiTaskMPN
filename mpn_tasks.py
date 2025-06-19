@@ -728,12 +728,11 @@ def reactgo_(config, mode, anti_response, fix, **kwargs):
 
     return trial
 
-
-def reactgo(config, mode, fix, **kwargs):
+def reactgo(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
     return reactgo_(config, mode, False, fix, **kwargs)
 
 
-def reactanti(config, mode, fix, **kwargs):
+def reactanti(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
     return reactgo_(config, mode, True, fix, **kwargs)
 
 
@@ -762,6 +761,11 @@ def fdgo_(config, mode, anti_response, fix, **kwargs):
     '''
     dt = config['dt']
     rng = config['rng']
+    
+    if fix:
+        print(f"rng reset with seed {seed}")
+        rng = np.random.RandomState(seed)
+        
     if mode == 'random': # Randomly generate parameters
         batch_size = kwargs['batch_size']
         # each batch consists of sequences of equal length
@@ -2163,8 +2167,7 @@ def convert_and_init_multitask_params(params):
     return params
 
 def generate_trials_wrap(task_params, n_batches, device='cuda', rules=None,
-                         verbose=False, mode_input="random_batch",
-                         mess_with_training=False, fix=False):
+                         verbose=False, mode_input="random_batch", fix=False):
     """
     Wrapper to generate the raw datasets, including the inputs, labels, and masks.
 
@@ -2224,18 +2227,10 @@ def generate_trials_wrap(task_params, n_batches, device='cuda', rules=None,
         
         return result
 
-    if mess_with_training:
-        batch_distribution = allocate_integer_to_divisions(n_batches, len(rules))
-
     for rule, rule_idx in zip(rules, rule_idxs):
-        if not mess_with_training: # normal
-            trial = generate_trials(rule, task_params['hp'], mode_input, \
-                                    batch_size=n_batches, fix=fix, separate_input=task_params['modality_diff'], \
-                                        label_strength=task_params['label_strength'], long_delay=task_params['long_delay'])
-        else: # mixup
-            trial = generate_trials(rule, task_params['hp'], mode_input,
-                                    batch_size=batch_distribution[rule_idx], fix=fix, separate_input=task_params['modality_diff'], \
-                                        label_strength=task_params['label_strength'], long_delay=task_params['long_delay'])
+        trial = generate_trials(rule, task_params['hp'], mode_input, \
+                                batch_size=n_batches, fix=fix, separate_input=task_params['modality_diff'], \
+                                    label_strength=task_params['label_strength'], long_delay=task_params['long_delay'])
 
         trial.x = trial.x[:,:,:-1] if not task_params["task_info"] else trial.x # ***
         
