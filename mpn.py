@@ -632,7 +632,6 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
         # Creates all the MP layers
         self.param_clamping = True # Always have param clamping for MP layers because lam bounds
 
-        
         if self.input_layer_active:
             self.W_initial_linear = nn.Linear(net_params['n_neurons'][0], net_params['n_neurons'][1])
 
@@ -670,6 +669,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
             net_params[ml_params_key]['dt'] = self.dt
             net_params[ml_params_key]['mpl_name'] = str(mpl_idx)
             net_params[ml_params_key]['n_input'] = net_params['n_neurons'][mpl_idx]
+            print(net_params['n_neurons'][mpl_idx])
             net_params[ml_params_key]['n_output'] = net_params['n_neurons'][mpl_idx + 1]
 
             setattr(self, 'mp_layer{}'.format(mpl_idx),

@@ -1195,7 +1195,7 @@ def delaydm2(config, mode, fix, separate_input, label_strength, long_delay, **kw
     return _delaydm(config, mode, 2, fix, separate_input, label_strength, long_delay, **kwargs)
 
 
-def _contextdelaydm(config, mode, attend_mod, fix, separate_input, **kwargs):
+def _contextdelaydm(config, mode, attend_mod, fix, separate_input, label_strength, long_delay, **kwargs):
     '''
     Fixate whenever fixation point is shown.
     Two stimuluss are shown in each ring,
@@ -1408,15 +1408,15 @@ def _contextdelaydm(config, mode, attend_mod, fix, separate_input, **kwargs):
 
 
 def contextdelaydm1(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
-    return _contextdelaydm(config, mode, 1, fix, separate_input, **kwargs)
+    return _contextdelaydm(config, mode, 1, fix, separate_input, label_strength, long_delay, **kwargs)
 
 
 def contextdelaydm2(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
-    return _contextdelaydm(config, mode, 2, fix, separate_input, **kwargs)
+    return _contextdelaydm(config, mode, 2, fix, separate_input, label_strength, long_delay, **kwargs)
 
 
-def multidelaydm(config, mode, **kwargs):
-    return _contextdelaydm(config, mode, 'both', **kwargs)
+def multidelaydm(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
+    return _contextdelaydm(config, mode, 'both', fix, separate_input, label_strength, long_delay, **kwargs)
 
 
 def dms_(config, mode, matchnogo, fix, separate_input, label_strength, long_delay, **kwargs):

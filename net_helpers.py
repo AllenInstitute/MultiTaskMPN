@@ -35,11 +35,10 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
             # ZIHAN
             # correct thing to do
             # "training batches should only be over one rule"
-            # "but validation should mix them"
-            
-            # print(f"Task Output with Strength: {task_params['label_strength']}")
+            # "but validation should mix them"            
             train_data, (_, train_trails, _ ) = mpn_tasks.generate_trials_wrap(
-                task_params, train_params['n_batches'], device=device, verbose=False, mode_input=hyp_dict['mode_for_all']
+                task_params, train_params['n_batches'], device=device, mode_input=hyp_dict['mode_for_all'], \
+                    verbose=True
             )
 
             return train_data, train_trails
@@ -59,8 +58,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
     # Puts network on device
     net.to(device)
 
-    # check_net_cell_types(net) # Pre-train cell types check
-
+	# generate valid data
     valid_data, valid_trails = generate_valid_data(device=device)
 
     counter_lst = []
@@ -82,9 +80,8 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
                 )
             )
 
-
     for dataset_idx in range(train_params['n_datasets']):
-        # Regenerate new data
+        # generate training data
         train_data, train_trails = generate_train_data(device=device)
         new_thresh = True if dataset_idx == 0 else False
         if train: 
@@ -121,7 +118,6 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
             _, monitor_loss, monitor_acc = net.fit(train_params, train_data, train_trails, valid_batch=valid_data, valid_trails=valid_trails, new_thresh=new_thresh, run_mode=hyp_dict['run_mode'])
 
             if test_input is not None and (is_power_of_4_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
-                # print(f"monitor_loss: {monitor_loss}")
                 loss_lst.append(monitor_loss)
                 acc_lst.append(monitor_acc)
 		
@@ -650,9 +646,36 @@ class BaseNetwork(BaseNetworkFunctions):
 				)
 			else:
 				init_string += '\nActivity reg: None'
+    
+			# initialize scheduler if specified
 
 			if self.verbose:
 				print(init_string) 
+    
+			scheduler_params = train_params.get('scheduler', None)
+			if scheduler_params:
+				scheduler_type = scheduler_params.get('type', 'ReduceLROnPlateau')
+				
+				if scheduler_type == 'ReduceLROnPlateau':
+					self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+						self.optimizer,
+						mode=scheduler_params.get('mode', 'min'),
+						factor=scheduler_params.get('factor', 0.1),
+						patience=scheduler_params.get('patience', 10),
+						verbose=self.verbose
+					)
+				elif scheduler_type == 'StepLR':
+					self.scheduler = torch.optim.lr_scheduler.StepLR(
+						self.optimizer,
+						step_size=scheduler_params.get('step_size', 30),
+						gamma=scheduler_params.get('gamma', 0.1)
+					)
+				# Add other schedulers as needed
+				else:
+					self.scheduler = None
+			else:
+				self.scheduler = None
+
 
 		self.train() # put in train mode (doesn't really do anything unless we are using dropout/batch norm)
 		db, monitor_loss, monitor_acc = train_fn(train_params, train_data, train_trails, valid_batch=valid_batch, valid_trails=valid_trails,
@@ -788,6 +811,16 @@ class BaseNetwork(BaseNetworkFunctions):
 			train_inputs, train_labels, train_masks = shuffle_dataset(
 				train_inputs, train_labels, train_masks
 			)
+   
+		if valid_batch is not None and self.scheduler is not None:
+			# Use latest validation loss for ReduceLROnPlateau
+			if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+				if self.hist['valid_loss']:
+					last_valid_loss = self.hist['valid_loss'][-1]
+					self.scheduler.step(last_valid_loss)
+			# Step-based schedulers (e.g., StepLR)
+			else:
+				self.scheduler.step()
             
 		return db, np.mean(losses), np.mean(accs)
 
@@ -841,7 +874,7 @@ class BaseNetwork(BaseNetworkFunctions):
 		p_reg = []
 		
 		for p_name, p in self.named_parameters():
-			if p_name not in self.reg_omit and "W" in p_name: # Only regularize weights
+			if p_name not in self.reg_omit and "W" in p_name: # Only regularize weights	
 				p_reg.append(p)
 
 		if self.weight_reg == 'L2':
