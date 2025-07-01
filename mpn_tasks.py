@@ -1452,6 +1452,7 @@ def dms_(config, mode, matchnogo, fix, separate_input, label_strength, long_dela
     rng = config['rng']
     if mode == 'random': # Randomly generate parameters
         batch_size = kwargs['batch_size']
+        # print(f"random: {batch_size}")
 
         stim1_mod  = rng.choice([1,2])
         stim2_mod  = rng.choice([1,2])
@@ -1470,6 +1471,7 @@ def dms_(config, mode, matchnogo, fix, separate_input, label_strength, long_dela
         tdim       = stim2_ons + int(500/dt)
     elif mode == 'random_batch': # Randomly generate parameters, times/modalities different across batch
         batch_size = kwargs['batch_size']
+        # print(f"random_batch: {batch_size}")
 
         stim1_mod  = batch_choice([1,2], batch_size, rng)
         stim2_mod  = batch_choice([1,2], batch_size, rng)
@@ -1485,6 +1487,7 @@ def dms_(config, mode, matchnogo, fix, separate_input, label_strength, long_dela
         stim1_ons  = batch_choice([200, 400, 600], batch_size, rng, dt)
         stim1_offs = stim1_ons + batch_choice([200, 400, 600], batch_size, rng, dt)
         stim2_ons  = stim1_offs + batch_choice([200, 400, 800, 1600], batch_size, rng, dt)
+        # print(stim2_ons)
         tdim       = stim2_ons + int(500/dt)
     elif mode == 'test':
         # Set this test so the model always respond
@@ -1528,7 +1531,7 @@ def dms_(config, mode, matchnogo, fix, separate_input, label_strength, long_dela
 
     trial.add('fix_in', offs=tdim)
     trial.add('stim', stim1_locs, ons=stim1_ons, offs=stim1_offs, mods=stim1_mod)
-    trial.add('stim', stim2_locs, ons=stim2_ons, offs=tdim, mods=stim2_mod)
+    trial.add('stim', stim2_locs, ons=stim2_ons, offs=tdim, mods=stim2_mod if not separate_input else 3 - stim1_mod)
 
     if hasattr(stim2_ons, '__iter__'):
         fix_out_offs = list(stim2_ons)
@@ -1540,7 +1543,6 @@ def dms_(config, mode, matchnogo, fix, separate_input, label_strength, long_dela
         if matchs[i] == matchnogo: # If match
             fix_out_offs[i] = None # Keep fixation
             out_offs[i] = 0 # And don't go to stimulus location
-
 
     trial.add('fix_out', offs=fix_out_offs)
     trial.add('out', stim2_locs, ons=stim2_ons, offs=out_offs)
@@ -1647,8 +1649,6 @@ def dmc_(config, mode, matchnogo, fix, separate_input, label_strength, long_dela
         # And use the maximum across trials as the overall trial length
         tdim = np.max(stim2_ons + stim2_dur)
 
-
-
     elif mode == 'test':
         # Set this test so the model always respond
         n_stim_loc, n_mod1, n_mod2 = batch_shape = 20, 2, 2
@@ -1697,7 +1697,7 @@ def dmc_(config, mode, matchnogo, fix, separate_input, label_strength, long_dela
 
     trial.add('fix_in', offs=tdim)
     trial.add('stim', stim1_locs, ons=stim1_ons, offs=stim1_offs, mods=stim1_mod)
-    trial.add('stim', stim2_locs, ons=stim2_ons, mods=stim2_mod)
+    trial.add('stim', stim2_locs, ons=stim2_ons, mods=stim2_mod if not separate_input else 3 - stim1_mod)
 
     if hasattr(stim2_ons, '__iter__'):
         fix_out_offs = list(stim2_ons)
@@ -2166,6 +2166,14 @@ def convert_and_init_multitask_params(params):
 
     return params
 
+def normalize_to_one(x, axis=None):
+    """
+    Return an array whose entries sum to 1.
+    """
+    x = np.asarray(x, dtype=float)
+    s = x.sum(axis=axis, keepdims=True)
+    return np.divide(x, s, where=s != 0, out=np.full_like(x, np.nan))
+
 def generate_trials_wrap(task_params, n_batches, device='cuda', rules=None,
                          verbose=False, mode_input="random_batch", fix=False):
     """
@@ -2187,6 +2195,7 @@ def generate_trials_wrap(task_params, n_batches, device='cuda', rules=None,
         rule: See above
     """
     if rules is None: # Draw a rule randomly, create tuple with single rule in it
+        task_params['rules_probs'] = normalize_to_one(task_params['rules_probs'])
         rule_idx = np.random.choice(task_params['n_rules'], p=task_params['rules_probs'])
         rules = (task_params['rules'][rule_idx],)
         rule_idxs = (rule_idx,) # Corresponding rule_idx in task_params['rules']
