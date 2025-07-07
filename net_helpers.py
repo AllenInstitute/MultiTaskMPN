@@ -10,6 +10,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from scipy.stats import lognorm
+from typing import Dict
 
 import mpn_tasks 
 import helper 
@@ -38,7 +39,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
             # "but validation should mix them"            
             train_data, (_, train_trails, _ ) = mpn_tasks.generate_trials_wrap(
                 task_params, train_params['n_batches'], device=device, mode_input=hyp_dict['mode_for_all'], \
-                    verbose=False
+                    verbose=True
             )
 
             return train_data, train_trails
@@ -116,7 +117,29 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
 
                 marker_lst.append(dataset_idx)
 
-            _, monitor_loss, monitor_acc = net.fit(train_params, train_data, train_trails, valid_batch=valid_data, valid_trails=valid_trails, new_thresh=new_thresh, run_mode=hyp_dict['run_mode'])
+            _, monitor_loss, monitor_acc, goodness_history = net.fit(train_params, train_data, train_trails, valid_batch=valid_data, 
+                                                                        valid_trails=valid_trails, new_thresh=new_thresh,
+                                                                        run_mode=hyp_dict['run_mode'])
+
+            # calculate the change of task sampling proportion
+            # --- inputs ---------------------------------------------------------------
+            df   = task_params["adjust_task_decay"]          # scalar decay factor
+            g    = np.asarray(goodness_history, dtype=float)   # shape (R, C)
+            # print(f"goodness_history: {goodness_history}")
+            
+            # sanity-check: every row must have the same length
+            if len({len(row) for row in goodness_history}) != 1:
+                raise ValueError("`last_group_goodness` rows have unequal lengths.")
+            
+            # --- compute weighted sum --------------------------------------------------
+            # exponent sequence: R, R-1, … , 1  (replicates original i_ = len-adji)
+            exp = np.arange(g.shape[0], 0, -1)[:, None]      # shape (R,1) for broadcasting
+            weights = df ** exp                              # shape (R,1)
+            all_adjust = (g * weights).sum(axis=0)           # shape (C,)
+
+            # update the sampling probability
+            assert len(all_adjust) == len(task_params["rules"]) 
+            task_params['rules_probs'] = mpn_tasks.normalize_to_one(all_adjust)
 
             if test_input is not None and (is_power_of_4_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
                 loss_lst.append(monitor_loss)
@@ -480,6 +503,74 @@ def round_to_values_torch(array, round_vals):
 
     return round_vals[torch.argmin(dists, axis=-1)]
 
+def one_hot_argidx(x: torch.Tensor) -> torch.Tensor:
+    """
+    """
+    if x.dim() != 3:
+        raise ValueError(f'Input must be 3-D, got {x.shape}')
+
+    # Verify one-hot condition
+    hits_per_slice = (x == 1).sum(dim=-1)
+
+    # argmax gives the index of the sole “1” along D
+    return torch.argmax(x, dim=-1)
+
+def unique_nonzero_value(x: torch.Tensor):
+    """
+    """
+    # allow (N,1) input
+    if x.ndim == 2 and x.shape[1] == 1:
+        x = x.squeeze(1)
+
+    u = torch.unique(x)
+
+    # must be exactly two distinct values, one of them 0
+    if u.numel() != 2 or not (u == 0).any():
+        return 0 
+        
+    # return the non-zero entry
+    return u[u != 0].item()
+
+def mean_by_group(A: torch.Tensor, B: torch.Tensor) -> Dict[int, float]:
+    """
+    Compute the mean of A for each integer label in B.
+
+    Parameters
+    ----------
+    A : (N,) or (N,1) tensor
+        Numeric values whose means you want.
+    B : (N,) or (N,1) tensor of ints
+        Integer labels; same length as A.
+
+    Returns
+    -------
+    dict {label: mean_A_for_that_label}
+    """
+    # --- sanity checks ------------------------------------------------------
+    if A.numel() != B.numel():
+        raise ValueError(f"A and B must have the same number of elements "
+                         f"(got {A.numel()} vs {B.numel()}).")
+    # flatten to 1-D
+    A = A.squeeze()
+    B = B.squeeze().to(torch.int64)
+
+    # --- fast vectorised solution using torch.bincount ----------------------
+    # works if labels are non-negative ints (they don’t have to be contiguous)
+    max_label = int(B.max())
+    if B.min() < 0:
+        raise ValueError("B must contain non-negative integers for bincount-based method.")
+
+    sums   = torch.bincount(B, weights=A, minlength=max_label + 1)
+    counts = torch.bincount(B, minlength=max_label + 1)
+
+    # Avoid division by zero: mask out labels that never occur
+    valid = counts > 0
+    means = torch.zeros_like(sums, dtype=A.dtype)
+    means[valid] = sums[valid] / counts[valid]
+
+    # Build dict only for labels present in B
+    return {int(label): float(means[label]) for label in torch.unique(B)}
+
 ##############################################################################################
 ##############################################################################################
 ##############################################################################################
@@ -682,10 +773,19 @@ class BaseNetwork(BaseNetworkFunctions):
         self.train() # put in train mode (doesn't really do anything unless we are using dropout/batch norm)
         db, monitor_loss, monitor_acc = train_fn(train_params, train_data, train_trails, valid_batch=valid_batch, valid_trails=valid_trails,
                       new_thresh=new_thresh, run_mode=run_mode)
+        
+        last_group_acc = list(self.hist['group_valid_acc'][-1].values())
+        # print(f"last_group_acc: {last_group_acc}")
+        # print(len(last_group_acc))
+        last_group_goodness = mpn_tasks.normalize_to_one([1 - acc for acc in last_group_acc])
+        
+        self.hist['group_valid_acc_batch'].append(last_group_goodness)
     
         self.eval() # return to eval mode
 
-        return db, monitor_loss, monitor_acc
+        self.hist['group_valid_acc'] = [] # registeration holder WITHIN one dataset (batch)
+
+        return db, monitor_loss, monitor_acc, self.hist['group_valid_acc_batch']
          
 
     def train_base(self, train_params, train_data, train_trails=None, valid_batch=None, valid_trails=None, new_thresh=True, 
@@ -781,7 +881,7 @@ class BaseNetwork(BaseNetworkFunctions):
                 )
             
                 loss, loss_components, error_term = self.compute_loss(output, train_labels_batch, train_masks_batch, hidden=hidden)
-                acc = self.compute_acc(output, train_labels_batch, train_masks_batch, train_inputs_batch) 
+                acc, _ = self.compute_acc(output, train_labels_batch, train_masks_batch, train_inputs_batch, isvalid=False) 
                 losses.append(loss.cpu().detach().numpy())
                 accs.append(acc.cpu().detach().numpy())
 
@@ -805,7 +905,7 @@ class BaseNetwork(BaseNetworkFunctions):
             
                 if monitor and ((self.hist['iter'] % self.monitor_freq == 0) or # Do a monitor for a set amount of iterations
                                 (self.end_monitor and seq_idx == train_inputs.shape[1]-1)): # Do one monitor at the end of train set
-                    self._monitor((train_inputs_batch, train_labels_batch, train_masks_batch), train_go_info_batch, valid_go_info,
+                    self._monitor((train_inputs_batch, train_labels_batch, train_masks_batch), train_go_info_batch, valid_go_info, 
                                   output=output, loss=loss, loss_components=loss_components, 
                                   valid_batch=valid_batch)
 
@@ -934,7 +1034,8 @@ class BaseNetwork(BaseNetworkFunctions):
 
         return self.loss_fn(masked_output, masked_labels) + reg_term, loss_components, error_term
 
-    def compute_acc(self, output, labels, output_mask, input_, round_type='prefs', mode="angle", verbose=False):
+    def compute_acc(self, output, labels, output_mask, input_, round_type='prefs', mode="angle", verbose=False, 
+                    isvalid=False):
         """
         output shape: (batches, seq_len, output_size)
         labels shape: (batches, seq_len)
@@ -951,7 +1052,21 @@ class BaseNetwork(BaseNetworkFunctions):
         # batches * seq_len * output_size
         output_mask_alter = torch.full(output_mask.shape, float('nan'), device=output_mask.device) 
 
+        if isvalid:
+            task_mask_truc = input_[:,:,6:] # select the input part that is task related
 
+            task_mask = one_hot_argidx(task_mask_truc)
+            
+            output_mask_alter_taskalign = torch.full(output_mask_alter.shape, float('nan'), 
+                                                     device=output_mask_alter.device)
+            
+            assert task_mask.shape[0] == output_mask_alter_taskalign.shape[0]
+            for batch_iter in range(task_mask.shape[0]):
+                # initial timestamp (definitely no paddling)
+                task_label = task_mask[:,0][batch_iter]
+                # broadcast the task information according to the output mask label
+                output_mask_alter_taskalign[batch_iter,:,:] = task_label
+                
         for batch_iter in range(output_mask.shape[0]):
             # identify chunks of zeros 
             # 1st: first 100ms; 2nd: ideally fix_offs and check_ons; 3rd: end of trail (paddling)
@@ -975,9 +1090,6 @@ class BaseNetwork(BaseNetworkFunctions):
 
             output_mask_alter[batch_iter, response_start:response_end, :] = output_part
 
-        # directly working on GPU -- not sure why it is even slower...
-        # output_mask_alter = helper.build_altered_mask(output_mask) 
-
         assert self.loss_type in ('XE', 'MSE',)
 
         if self.loss_type in ('XE',):
@@ -994,6 +1106,9 @@ class BaseNetwork(BaseNetworkFunctions):
             elif output_mask.dtype == torch.float32:# Mask by some cost function instead
                 masked_output = (output_mask_alter * output).reshape((-1, output.shape[-1])) # [B, T, out] -> [B*T, out]
                 masked_labels = (output_mask_alter * labels).reshape((-1, output.shape[-1])) # [B, T, label_size] -> [B*T, label_size]
+                if isvalid:
+                    masked_tasks = (output_mask_alter * output_mask_alter_taskalign).reshape((-1, output.shape[-1]))
+                    
             else:
                 raise ValueError('Mask type {} not recognized.'.format(output_mask.dtype))
 
@@ -1005,6 +1120,10 @@ class BaseNetwork(BaseNetworkFunctions):
                     
                     mo = masked_output[~torch.all(torch.isnan(masked_output), dim=1)]
                     ml = masked_labels[~torch.all(torch.isnan(masked_labels), dim=1)]
+                    
+                    if isvalid:
+                        mtask = masked_tasks[~torch.all(torch.isnan(masked_tasks), dim=1)][:,0]
+                        # print(torch.unique(mtask))
 
                     # round small magnitude
                     sin_vals = mo[:, 1]
@@ -1037,7 +1156,8 @@ class BaseNetwork(BaseNetworkFunctions):
                     masked_output_round = clean(masked_output_round, tol=1e-3)
                     masked_labels_round = clean(masked_labels_round, tol=1e-3)
  
-                    result_acc = (masked_output_round == masked_labels_round).float().mean() 
+                    result_acc_ = (masked_output_round == masked_labels_round).float()
+                    result_acc = result_acc_.mean() 
 
                 # compare the alignment directly by stimulus 
                 # this is technically a "unnecessarily stricter" version of the angle comparison
@@ -1047,16 +1167,16 @@ class BaseNetwork(BaseNetworkFunctions):
                     mo = masked_output[~torch.all(torch.isnan(masked_output), dim=1)]
                     ml = masked_labels[~torch.all(torch.isnan(masked_labels), dim=1)]
 
+                    if isvalid:
+                        mtask = masked_tasks[~torch.all(torch.isnan(masked_tasks), dim=1)][:,0]
+
                     # sanity check
                     # make sure the angle between response during the truncated response period has a perfect 
                     # match with the pool 
                     append_pref = torch.tensor([2 * math.pi], device=self.prefs.device)
                     temp_prefs = torch.cat((self.prefs, append_pref), dim=0)
                     
-                    ml_angle = torch.remainder(
-                        torch.atan2(ml[:, 1], ml[:, 2]),            
-                        2 * math.pi                              
-                    ).reshape(-1, 1)
+                    ml_angle = torch.remainder(torch.atan2(ml[:, 1], ml[:, 2]), 2 * math.pi).reshape(-1, 1)
 
                     ml_angle = ml_angle.to(temp_prefs.dtype)
 
@@ -1075,7 +1195,8 @@ class BaseNetwork(BaseNetworkFunctions):
                         scaled = torch.round(tensor / tolerance) * tolerance
                         return torch.unique(scaled)
 
-                    sines, cosines = unique_with_tolerance(torch.sin(self.prefs)), unique_with_tolerance(torch.cos(self.prefs))
+                    sines  = unique_with_tolerance(torch.sin(self.prefs)) 
+                    cosines = unique_with_tolerance(torch.cos(self.prefs))
                     # round the output response to the possible decomposed stimulus 
                     # though 8 angles, only 5 possible stimuli for sin & cos (+-1, 0, +-\sqrt{2}/2)
                     output_stimulus1, output_stimulus2 = round_to_values_torch(mo[:, 1], sines), round_to_values_torch(mo[:, 2], cosines)
@@ -1084,7 +1205,9 @@ class BaseNetwork(BaseNetworkFunctions):
                     match1 = (output_stimulus1 == labels_stimulus1).int()
                     match2 = (output_stimulus2 == labels_stimulus2).int()
                     # only correct if both stimulus are matched with the label, therefore equivalent to the angle comparison
-                    result_acc = ((match1 == 1) & (match2 == 1)).float().mean()
+                    result_acc_ = ((match1 == 1) & (match2 == 1)).float()
+  
+                    result_acc = result_acc_.mean()
  
                 else: 
                     raise ValueError('Mode {} not recognized.'.format(mode))
@@ -1098,8 +1221,12 @@ class BaseNetwork(BaseNetworkFunctions):
             end_time = time.time() 
             if verbose:
                 print(f"Accuracy calculation: {end_time - start_time}s")
+
+            acc_per_task = None 
+            if isvalid:
+                acc_per_task = mean_by_group(result_acc_, mtask)
                 
-            return result_acc
+            return result_acc, acc_per_task
 
     def compute_gradients(self):
         raise NotImplementedError('Should be implemented in children.')
@@ -1160,6 +1287,8 @@ class BaseNetwork(BaseNetworkFunctions):
                 self.hist['valid_acc']  = []
                 self.hist['avg_valid_loss'] = []
                 self.hist['avg_valid_acc']  = []
+                self.hist['group_valid_acc'] = []
+                self.hist['group_valid_acc_batch'] = [] 
             if self.train_type in ('rl', 'rl_test',):
                 self.hist['running_reward'] = 0. 
                 self.hist['running_return'] = 0. 
@@ -1212,7 +1341,7 @@ class BaseNetwork(BaseNetworkFunctions):
             moitor_str = 'Iter: {}, LR: {:.3e} - train_loss:{:.3e}'.format(self.hist['iter'], lr, loss)
 
             if self.loss_type in ('XE', 'MSE',): # Accuracy computations if relevant
-                acc = self.compute_acc(output, train_labels_batch, train_masks_batch, train_inputs_batch)
+                acc, _ = self.compute_acc(output, train_labels_batch, train_masks_batch, train_inputs_batch, isvalid=False)
                 self.hist['train_acc'].append(acc.item())
                 if self.loss_type in ('XE',):
                     moitor_str += ', train_acc:{:.3f}'.format(acc)
@@ -1224,6 +1353,7 @@ class BaseNetwork(BaseNetworkFunctions):
         ### Validation Set ###
         # Assumes validation set is already in batches
         valid_inputs_batch, valid_labels_batch, valid_masks_batch = valid_batch if valid_batch else (None, None, None)
+        # print(f"valid_inputs_batch.shape: {valid_inputs_batch.shape}")
 
         if valid_batch is not None:
         
@@ -1235,7 +1365,8 @@ class BaseNetwork(BaseNetworkFunctions):
                 self.hist['valid_output'].append(None)
         
             if self.train_type in ('supervised',): # For supervised, gets valid loss and accuracies
-                valid_loss, valid_loss_components, _ = self.compute_loss(valid_output, valid_labels_batch, valid_masks_batch, hidden=valid_hidden)  
+                valid_loss, valid_loss_components, _ = self.compute_loss(valid_output, valid_labels_batch, valid_masks_batch, 
+                                                                         hidden=valid_hidden)  
             
                 self.hist['valid_loss'].append(valid_loss.item())
                 self.hist['valid_loss_output_label'].append(valid_loss_components[0]) 
@@ -1250,10 +1381,15 @@ class BaseNetwork(BaseNetworkFunctions):
                 moitor_str += ', valid_loss:{:.3e}'.format(valid_loss)
 
                 if self.loss_type in ('XE', 'MSE',): # Accuracy computations if relevant
-                    valid_acc = self.compute_acc(valid_output, valid_labels_batch, valid_masks_batch, valid_inputs_batch, 
-                                                 verbose=False) 
+                    valid_acc, valid_acc_group = self.compute_acc(valid_output, valid_labels_batch, valid_masks_batch, valid_inputs_batch, 
+                                                 isvalid=True) 
+                    
                     self.hist['valid_acc'].append(valid_acc.item())
+                    self.hist['group_valid_acc'].append(valid_acc_group)
+                    # print(valid_acc_group)
+                    # print(len(valid_acc_group))
                     self.hist['avg_valid_acc'].append(np.mean(self.hist['valid_acc'][-avg_window:]))
+                    
                     if self.loss_type in ('XE',):
                         moitor_str += ', valid_acc:{:.3f}'.format(valid_acc)
                     else:

@@ -1,9 +1,143 @@
-import tasks
+import mpn_tasks
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import numpy as np 
 from scipy.linalg import null_space
-
 import time
+
+import torch
+
+def to_ndarray(x):
+    """
+    Return *x* as a NumPy ndarray.
+    
+    • If x is a PyTorch tensor, move it to CPU (if needed),
+      detach it from the autograd graph, and convert to ndarray.
+    • If x is already an ndarray, return it untouched.
+    • Otherwise fall back to np.asarray for scalars, lists, etc.
+    """
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy()
+    elif isinstance(x, np.ndarray):
+        return x
+    else:
+        return np.asarray(x)
+    
+def sample_upper_means(mat, k=8, n_iter=1000, seed=None):
+    """
+    """
+    rng = np.random.default_rng(seed)
+
+    # 1. Pull out only the finite (non-NaN) entries once.
+    valid_vals = mat[~np.isnan(mat)].ravel()
+
+    # 2. Sanity check.
+    if valid_vals.size < k:
+        raise ValueError(f"Need at least {k} finite values, got {valid_vals.size}")
+
+    # 3. Repeat: sample k numbers → take their mean.
+    means = np.array([
+        rng.choice(valid_vals, size=k, replace=False).mean()
+        for _ in range(n_iter)
+    ])
+
+    return [np.mean(means), np.std(means)]
+
+def find_zero_chunks(array):
+    """
+    Find consecutive rows of all zeros in an N*3 array.
+    
+    Args:
+        array (numpy.ndarray): Input N*3 array.
+    
+    Returns:
+        list: List of [start_index, end_index] for each chunk of consecutive zero rows.
+    """
+    zero_rows = np.all(array == 0, axis=1)  # Identify rows that are all zero
+    chunks = []
+    start = None
+    
+    for i, is_zero in enumerate(zero_rows):
+        if is_zero and start is None: 
+            start = i
+        elif not is_zero and start is not None: 
+            chunks.append([start, i - 1])
+            start = None
+    
+    if start is not None:
+        chunks.append([start, len(zero_rows) - 1])
+    
+    return chunks
+
+def find_zero_chunks_torch(x: torch.Tensor) -> torch.Tensor:
+    """
+    x : (T, C) tensor
+    returns an (n_chunks, 2) LongTensor with [start, end] (inclusive) indices,
+    ordered from earliest to latest.  If no zero rows, returns empty tensor.
+    """
+    zero_rows = (x == 0).all(dim=1)                     # (T,) bool
+    if not torch.any(zero_rows):
+        return torch.empty(0, 2, dtype=torch.long, device=x.device)
+
+    # prepend/append False so diff catches edges
+    padded = torch.cat([zero_rows.new_zeros(1), zero_rows, zero_rows.new_zeros(1)])
+    diff   = padded[1:].int() - padded[:-1].int()        # +1 at starts, −1 at ends-1
+    starts = (diff ==  1).nonzero(as_tuple=False).squeeze(1)
+    ends   = (diff == -1).nonzero(as_tuple=False).squeeze(1) - 1
+    return torch.stack([starts, ends], dim=1)            # (n_chunks, 2)
+
+def build_altered_mask(output_mask: torch.Tensor,
+                       cut_proportion: float = 0.25) -> torch.Tensor:
+    """
+    output_mask : (B, T, C)  *non-binary* mask with task-period scaling
+    returns     : (B, T, C)  binary mask limited to late-response period
+    """
+    B, T, C = output_mask.shape
+    device  = output_mask.device
+    # out_bin = torch.zeros_like(output_mask, dtype=torch.int8, device=device)
+    out_bin = torch.full_like(output_mask, float('nan'))
+
+    for b in range(B):
+        # --- locate zero chunks along time for this trial ----------------------
+        chunks = find_zero_chunks_torch(output_mask[b])
+        if chunks.shape[0] < 3:                          # delay tasks etc.
+            # append dummy “padding” chunk at the end
+            chunks = torch.cat([chunks,
+                                torch.as_tensor([[T, T]], device=device)])
+
+        # response period = chunk −2 (zeros) → chunk −1 (zeros)
+        response_start = chunks[-2, 1] + 1
+        response_end   = chunks[-1, 0]
+        dur            = response_end - response_start
+        response_start = response_start + int(dur * cut_proportion)
+
+        # --- slice, binarise, write back --------------------------------------
+        seg = output_mask[b, response_start:response_end] > 0
+        out_bin[b, response_start:response_end] = seg.int()
+
+    return out_bin
+
+def generate_rainbow_colors(length):
+    """
+    Generate a list of colors transitioning from red to purple in a rainbow-like gradient.
+
+    Args:
+        length (int): Number of colors to generate.
+
+    Returns:
+        list: List of RGB color strings.
+    """
+    if length <= 0:
+        raise ValueError("Length must be greater than 0.")
+
+    # Generate evenly spaced values for hue (red to purple in HSV space)
+    hues = np.linspace(0, 0.8, length)  # Hue from 0 (red) to ~0.8 (purple)
+    colors = [mcolors.hsv_to_rgb((hue, 1, 1)) for hue in hues]
+
+    # Convert RGB values to hex for easier visualization
+    hex_colors = [mcolors.to_hex(color) for color in colors]
+
+    return hex_colors
 
 def to_unit_vector(arr):
     """Convert a vector to a unit vector."""
@@ -14,7 +148,7 @@ def participation_ratio_vector(C):
     """Computes the participation ratio of a vector of variances."""
     return np.sum(C) ** 2 / np.sum(C*C)
 
-def plot_some_ouputs(params, net, mode_for_all="random_batch", n_outputs=4, nameadd="", verbose=False):
+def plot_some_outputs(params, net, mode_for_all="random_batch", n_outputs=4, nameadd="", verbose=False):
     """
     """
     # in case out of range
@@ -25,7 +159,7 @@ def plot_some_ouputs(params, net, mode_for_all="random_batch", n_outputs=4, name
     task_params, train_params, net_params = params
 
     if task_params['task_type'] in ('multitask',):
-        test_data, test_trials_extra = tasks.generate_trials_wrap(task_params, n_outputs, mode_input=mode_for_all)
+        test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params, n_outputs, mode_input=mode_for_all)
         # figure out sessions
         # assert mode_for_all == "random_batch" # lazy...
         _, test_trials, test_rule_idxs = test_trials_extra
