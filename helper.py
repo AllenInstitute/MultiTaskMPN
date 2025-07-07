@@ -69,6 +69,54 @@ def find_zero_chunks(array):
     
     return chunks
 
+def find_zero_chunks_torch(x: torch.Tensor) -> torch.Tensor:
+    """
+    x : (T, C) tensor
+    returns an (n_chunks, 2) LongTensor with [start, end] (inclusive) indices,
+    ordered from earliest to latest.  If no zero rows, returns empty tensor.
+    """
+    zero_rows = (x == 0).all(dim=1)                     # (T,) bool
+    if not torch.any(zero_rows):
+        return torch.empty(0, 2, dtype=torch.long, device=x.device)
+
+    # prepend/append False so diff catches edges
+    padded = torch.cat([zero_rows.new_zeros(1), zero_rows, zero_rows.new_zeros(1)])
+    diff   = padded[1:].int() - padded[:-1].int()        # +1 at starts, −1 at ends-1
+    starts = (diff ==  1).nonzero(as_tuple=False).squeeze(1)
+    ends   = (diff == -1).nonzero(as_tuple=False).squeeze(1) - 1
+    return torch.stack([starts, ends], dim=1)            # (n_chunks, 2)
+
+def build_altered_mask(output_mask: torch.Tensor,
+                       cut_proportion: float = 0.25) -> torch.Tensor:
+    """
+    output_mask : (B, T, C)  *non-binary* mask with task-period scaling
+    returns     : (B, T, C)  binary mask limited to late-response period
+    """
+    B, T, C = output_mask.shape
+    device  = output_mask.device
+    # out_bin = torch.zeros_like(output_mask, dtype=torch.int8, device=device)
+    out_bin = torch.full_like(output_mask, float('nan'))
+
+    for b in range(B):
+        # --- locate zero chunks along time for this trial ----------------------
+        chunks = find_zero_chunks_torch(output_mask[b])
+        if chunks.shape[0] < 3:                          # delay tasks etc.
+            # append dummy “padding” chunk at the end
+            chunks = torch.cat([chunks,
+                                torch.as_tensor([[T, T]], device=device)])
+
+        # response period = chunk −2 (zeros) → chunk −1 (zeros)
+        response_start = chunks[-2, 1] + 1
+        response_end   = chunks[-1, 0]
+        dur            = response_end - response_start
+        response_start = response_start + int(dur * cut_proportion)
+
+        # --- slice, binarise, write back --------------------------------------
+        seg = output_mask[b, response_start:response_end] > 0
+        out_bin[b, response_start:response_end] = seg.int()
+
+    return out_bin
+
 def generate_rainbow_colors(length):
     """
     Generate a list of colors transitioning from red to purple in a rainbow-like gradient.

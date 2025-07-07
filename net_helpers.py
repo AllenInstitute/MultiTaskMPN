@@ -38,14 +38,15 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
             # "but validation should mix them"            
             train_data, (_, train_trails, _ ) = mpn_tasks.generate_trials_wrap(
                 task_params, train_params['n_batches'], device=device, mode_input=hyp_dict['mode_for_all'], \
-                    verbose=True
+                    verbose=False
             )
 
             return train_data, train_trails
         
         def generate_valid_data(device='cuda'):
             valid_data, (_, valid_trails, _) = mpn_tasks.generate_trials_wrap(
-                task_params, train_params['valid_n_batch'], rules=task_params['rules'], device=device, mode_input=hyp_dict['mode_for_all']
+                task_params, train_params['valid_n_batch'], rules=task_params['rules'], device=device,
+                mode_input=hyp_dict['mode_for_all']
             )
             return valid_data, valid_trails
         
@@ -780,7 +781,7 @@ class BaseNetwork(BaseNetworkFunctions):
                 )
             
                 loss, loss_components, error_term = self.compute_loss(output, train_labels_batch, train_masks_batch, hidden=hidden)
-                acc = self.compute_acc(output, train_labels_batch, train_masks_batch) 
+                acc = self.compute_acc(output, train_labels_batch, train_masks_batch, train_inputs_batch) 
                 losses.append(loss.cpu().detach().numpy())
                 accs.append(acc.cpu().detach().numpy())
 
@@ -933,19 +934,23 @@ class BaseNetwork(BaseNetworkFunctions):
 
         return self.loss_fn(masked_output, masked_labels) + reg_term, loss_components, error_term
 
-    def compute_acc(self, output, labels, output_mask, round_type='prefs', mode="angle", verbose=False):
+    def compute_acc(self, output, labels, output_mask, input_, round_type='prefs', mode="angle", verbose=False):
         """
         output shape: (batches, seq_len, output_size)
         labels shape: (batches, seq_len)
         output_mask shape: (batches, seq_len, output_size)
-        """			
+        """		
+        start_time = time.time()
+        
         if verbose: 
             fig, ax = plt.subplots(1,5,figsize=(10*5,4))
             for i in range(5): 
                 sns.heatmap(output_mask[i].cpu().detach().numpy(), ax=ax[i], cbar=True)
             fig.savefig("output_mask.png")
+            
+        # batches * seq_len * output_size
+        output_mask_alter = torch.full(output_mask.shape, float('nan'), device=output_mask.device) 
 
-        output_mask_alter = torch.full(output_mask.shape, float('nan'), device=output_mask.device) # batches * seq_len * output_size
 
         for batch_iter in range(output_mask.shape[0]):
             # identify chunks of zeros 
@@ -960,7 +965,6 @@ class BaseNetwork(BaseNetworkFunctions):
 
             cut_proportion = 1/4
             response_duration = response_end - response_start
-            response_end = response_end
             response_start = response_start + int(response_duration * cut_proportion)
 
             output_part = output_mask[batch_iter, response_start:response_end, :]
@@ -970,6 +974,9 @@ class BaseNetwork(BaseNetworkFunctions):
             output_part = (output_part > 0).int()
 
             output_mask_alter[batch_iter, response_start:response_end, :] = output_part
+
+        # directly working on GPU -- not sure why it is even slower...
+        # output_mask_alter = helper.build_altered_mask(output_mask) 
 
         assert self.loss_type in ('XE', 'MSE',)
 
@@ -993,26 +1000,33 @@ class BaseNetwork(BaseNetworkFunctions):
             if round_type in ('prefs',) and self.prefs is not None: # Round both the labels and the ouputs to self.prefs
                 # compare the alignment by angle (relative position between two stimulus)
                 if mode == "angle": 
+                    # July 6th: this value is chosen based on testing dmsgo/dmcgo
+                    mag_eps = 5e-2
+                    
                     mo = masked_output[~torch.all(torch.isnan(masked_output), dim=1)]
                     ml = masked_labels[~torch.all(torch.isnan(masked_labels), dim=1)]
-    
-                    mo_angle = torch.remainder(
-                        torch.atan2(mo[:, 1], mo[:, 2]),            
-                        2 * math.pi                              
-                    ).reshape(-1, 1)
-    
-                    ml_angle = torch.remainder(
-                        torch.atan2(ml[:, 1], ml[:, 2]),            
-                        2 * math.pi                              
-                    ).reshape(-1, 1)
+
+                    # round small magnitude
+                    sin_vals = mo[:, 1]
+                    cos_vals = mo[:, 2]
+                    
+                    tiny_sin = torch.abs(sin_vals) < mag_eps
+                    tiny_cos = torch.abs(cos_vals) < mag_eps
+
+                    # rounding to 0 only happens during calculating the accuracy
+                    # so the training process will not be impacted
+                    mo[:, 1] = torch.where(tiny_sin, torch.zeros_like(sin_vals), sin_vals)
+                    mo[:, 2] = torch.where(tiny_cos, torch.zeros_like(cos_vals), cos_vals)
+
+                    # 
+                    mo_angle = torch.remainder(torch.atan2(mo[:, 1], mo[:, 2]), 2 * math.pi).reshape(-1, 1)
+                    ml_angle = torch.remainder(torch.atan2(ml[:, 1], ml[:, 2]), 2 * math.pi).reshape(-1, 1)
                 
                     append_pref = torch.tensor([2 * math.pi], device=self.prefs.device)
                     temp_prefs = torch.cat((self.prefs, append_pref), dim=0)
 
                     masked_output_round = round_to_values_torch(mo_angle, temp_prefs) 
                     masked_labels_round = round_to_values_torch(ml_angle, temp_prefs)
-                    # print(masked_output_round.shape)
-                    # print(masked_labels_round.shape)
     
                     def clean(x: torch.Tensor, tol: float = 1e-6):
                         """Replace entries equal (within tol) to 2π with 0, in-place."""
@@ -1020,21 +1034,41 @@ class BaseNetwork(BaseNetworkFunctions):
                         x.masked_fill_(torch.isclose(x, two_pi, atol=tol), 0.)
                         return x   
     
-                    masked_output_round = clean(masked_output_round)
-                    masked_labels_round = clean(masked_labels_round)
+                    masked_output_round = clean(masked_output_round, tol=1e-3)
+                    masked_labels_round = clean(masked_labels_round, tol=1e-3)
  
                     result_acc = (masked_output_round == masked_labels_round).float().mean() 
 
                 # compare the alignment directly by stimulus 
                 # this is technically a "unnecessarily stricter" version of the angle comparison
                 # and is expected to be sensitive to noise 
+                # July 1st: this might be more stable for tasks with overwhelmed 0 response, like dmsgo & dmcgo
                 elif mode == "stimulus": 
                     mo = masked_output[~torch.all(torch.isnan(masked_output), dim=1)]
                     ml = masked_labels[~torch.all(torch.isnan(masked_labels), dim=1)]
 
-                    ml_norms = torch.norm(ml, p=2, dim=1, keepdim=True)
-                    assert torch.allclose(ml_norms, torch.ones_like(ml_norms), rtol=1e-5, atol=1e-8)
+                    # sanity check
+                    # make sure the angle between response during the truncated response period has a perfect 
+                    # match with the pool 
+                    append_pref = torch.tensor([2 * math.pi], device=self.prefs.device)
+                    temp_prefs = torch.cat((self.prefs, append_pref), dim=0)
+                    
+                    ml_angle = torch.remainder(
+                        torch.atan2(ml[:, 1], ml[:, 2]),            
+                        2 * math.pi                              
+                    ).reshape(-1, 1)
 
+                    ml_angle = ml_angle.to(temp_prefs.dtype)
+
+                    tol = 1e-6
+                    matches = torch.isclose(                   
+                        ml_angle.unsqueeze(-1),                 
+                        temp_prefs,                              
+                        atol=tol, rtol=0.0
+                    )
+                    
+                    assert matches.any(dim=-1).all(), "Some angles are not within tol of any preference value"
+                    
                     # this function is needed since self.prefs is rounded to decimals
                     def unique_with_tolerance(tensor, tolerance=1e-5):
                         # Scale by tolerance, round, then divide back to avoid floating-point precision issues
@@ -1042,12 +1076,14 @@ class BaseNetwork(BaseNetworkFunctions):
                         return torch.unique(scaled)
 
                     sines, cosines = unique_with_tolerance(torch.sin(self.prefs)), unique_with_tolerance(torch.cos(self.prefs))
+                    # round the output response to the possible decomposed stimulus 
+                    # though 8 angles, only 5 possible stimuli for sin & cos (+-1, 0, +-\sqrt{2}/2)
                     output_stimulus1, output_stimulus2 = round_to_values_torch(mo[:, 1], sines), round_to_values_torch(mo[:, 2], cosines)
                     labels_stimulus1, labels_stimulus2 = round_to_values_torch(ml[:, 1], sines), round_to_values_torch(ml[:, 2], cosines) 
  
                     match1 = (output_stimulus1 == labels_stimulus1).int()
                     match2 = (output_stimulus2 == labels_stimulus2).int()
-                    # only correct if both stimulus are matched with the label
+                    # only correct if both stimulus are matched with the label, therefore equivalent to the angle comparison
                     result_acc = ((match1 == 1) & (match2 == 1)).float().mean()
  
                 else: 
@@ -1059,6 +1095,10 @@ class BaseNetwork(BaseNetworkFunctions):
             else:
                 raise ValueError(f'Round type {round_type} not recognized or invalid.')
 
+            end_time = time.time() 
+            if verbose:
+                print(f"Accuracy calculation: {end_time - start_time}s")
+                
             return result_acc
 
     def compute_gradients(self):
@@ -1172,7 +1212,7 @@ class BaseNetwork(BaseNetworkFunctions):
             moitor_str = 'Iter: {}, LR: {:.3e} - train_loss:{:.3e}'.format(self.hist['iter'], lr, loss)
 
             if self.loss_type in ('XE', 'MSE',): # Accuracy computations if relevant
-                acc = self.compute_acc(output, train_labels_batch, train_masks_batch)
+                acc = self.compute_acc(output, train_labels_batch, train_masks_batch, train_inputs_batch)
                 self.hist['train_acc'].append(acc.item())
                 if self.loss_type in ('XE',):
                     moitor_str += ', train_acc:{:.3f}'.format(acc)
@@ -1210,7 +1250,8 @@ class BaseNetwork(BaseNetworkFunctions):
                 moitor_str += ', valid_loss:{:.3e}'.format(valid_loss)
 
                 if self.loss_type in ('XE', 'MSE',): # Accuracy computations if relevant
-                    valid_acc = self.compute_acc(valid_output, valid_labels_batch, valid_masks_batch, verbose=False) 
+                    valid_acc = self.compute_acc(valid_output, valid_labels_batch, valid_masks_batch, valid_inputs_batch, 
+                                                 verbose=False) 
                     self.hist['valid_acc'].append(valid_acc.item())
                     self.hist['avg_valid_acc'].append(np.mean(self.hist['valid_acc'][-avg_window:]))
                     if self.loss_type in ('XE',):
