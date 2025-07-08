@@ -121,7 +121,8 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
                                                                         valid_trails=valid_trails, new_thresh=new_thresh,
                                                                         run_mode=hyp_dict['run_mode'])
 
-            # calculate the change of task sampling proportion
+            # calculate the change of task sampling proportion 
+            # aim for multi-task training (but clearly work for single-task)
             # --- inputs ---------------------------------------------------------------
             df   = task_params["adjust_task_decay"]          # scalar decay factor
             g    = np.asarray(goodness_history, dtype=float)   # shape (R, C)
@@ -1053,7 +1054,9 @@ class BaseNetwork(BaseNetworkFunctions):
         output_mask_alter = torch.full(output_mask.shape, float('nan'), device=output_mask.device) 
 
         if isvalid:
-            task_mask_truc = input_[:,:,6:] # select the input part that is task related
+            # select the input part that is task related
+            # under assumption for which the fixation off signal is provided (task_params)
+            task_mask_truc = input_[:,:,6:] 
 
             task_mask = one_hot_argidx(task_mask_truc)
             
