@@ -366,9 +366,6 @@ class MultiPlasticLayer(BaseNetworkFunctions):
         W = self.W
         if M is None:
             M = self.M
-        # print('W mag: {:.2e}, M mag: {:.2e}'.format(
-        #     np.linalg.norm(W.detach().cpu().numpy()), np.linalg.norm(M.detach().cpu().numpy())
-        # ))
 
         # Fixed weights and M matrix, either multiplicative or additive
         if self.mp_type == 'mult':

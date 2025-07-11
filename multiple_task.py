@@ -41,12 +41,14 @@ from scipy.linalg import subspace_angles
 from scipy.spatial.distance import cosine
 from sklearn.metrics.pairwise import cosine_similarity
 from scipy.stats import pearsonr
+from scipy.cluster.hierarchy import dendrogram
 
 import networks as nets  # Contains RNNs
 import net_helpers
 import mpn_tasks
 import helper
 import mpn
+import clustering
 
 import scienceplots
 plt.style.use('science')
@@ -72,495 +74,736 @@ linestyles = ["-", "--", "-."]
 
 # In[3]:
 
-for _ in range(3):
-    
-    hyp_dict = {}
-    
-    
-    # In[4]:
-    
-    
-    # Reload modules if changes have been made to them
-    from importlib import reload
-    
-    reload(nets)
-    reload(net_helpers)
-    
-    fixseed = False # randomize setting the seed may lead to not perfectly solved results
-    seed = random.randint(1,1000) if not fixseed else 8 # random set the seed to test robustness by default
-    print(f"Set seed {seed}")
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    
-    hyp_dict['task_type'] = 'multitask' # int, NeuroGym, multitask
-    hyp_dict['mode_for_all'] = "random_batch"
-    hyp_dict['ruleset'] = 'contextdelaydm1' # low_dim, all, test
-    
-    accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti', 
-                    'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 'dmsnogo', 'dmcnogo')
-    
-    
-    rules_dict = \
-        {'all' : ['fdgo', 'reactgo', 'delaygo', 'fdanti', 'reactanti', 'delayanti',
-                  'dm1', 'dm2', 'contextdm1', 'contextdm2', 'multidm',
-                  'delaydm1', 'delaydm2', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm',
-                  'dmsgo', 'dmsnogo', 'dmcgo', 'dmcnogo'],
-         'low_dim' : ['fdgo', 'reactgo', 'delaygo', 'fdanti', 'reactanti', 'delayanti',
-                     'delaydm1', 'delaydm2', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm',
-                     'dmsgo', 'dmsnogo', 'dmcgo', 'dmcnogo'],
-         'delayfamily': ['delaygo', 'delayanti'], 
-         'dmsgo': ['dmsgo'],
-         'dmcgo': ['dmcgo'], 
-         'contextdelaydm1': ['contextdelaydm1'], 
-         'delaygo': ['delaygo'],
-         'delaydm1': ['delaydm1'], 
-         'simplegofamily': ['fdgo', 'fdanti', 'reactgo', 'reactanti'],
-         'gofamily': ['fdgo', 'fdanti', 'reactgo', 'reactanti', 'delaygo', 'delayanti'],
-         'gofamily_delaydm': ['fdgo', 'fdanti', 'reactgo', 'reactanti', 'delaygo', 'delayanti', 'delaydm1', 'delaydm2'],
-         'dm_family': ['delaydm1', 'delaydm2', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm'],
-         'go_dm_family': ['fdgo', 'fdanti', 'reactgo', 'reactanti', 'delaygo', 'delayanti', \
-                          'delaydm1', 'delaydm2', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm'],
-         'everything': ['fdgo', 'fdanti', 'reactgo', 'reactanti', 'delaygo', 'delayanti', \
-                          'delaydm1', 'delaydm2', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 
-                           'dmsgo', 'dmsnogo', 'dmcgo', 'dmcnogo'],
-        }
-    
-    # only work if adjust_task_prop == False, otherwise will be overwritten
-    rules_dict_frequency = {
-        'delaygo': np.array([1]),
-        'dmsgo': np.array([1]), 
-        'dmcgo': np.array([1]),
-        'contextdelaydm1': np.array([1]), 
-        'delaydm1': np.array([1]), 
-        'go_dm_family': np.array([1, 1, 1, 1, 1, 1, 
-                                  3, 3, 3, 3, 3,
-        ]), 
-        'everything': np.array([1, 1, 1, 1, 1, 1, 
-                                  3, 3, 3, 3, 3,
-                                  1, 1, 1, 1
-        ])
+
+hyp_dict = {}
+
+
+# In[4]:
+
+
+# Reload modules if changes have been made to them
+from importlib import reload
+
+reload(nets)
+reload(net_helpers)
+
+fixseed = False # randomize setting the seed may lead to not perfectly solved results
+seed = random.randint(1,1000) if not fixseed else 8 # random set the seed to test robustness by default
+print(f"Set seed {seed}")
+np.random.seed(seed)
+torch.manual_seed(seed)
+
+hyp_dict['task_type'] = 'multitask' # int, NeuroGym, multitask
+hyp_dict['mode_for_all'] = "random_batch"
+hyp_dict['ruleset'] = 'contextdelaydm1' # low_dim, all, test
+
+accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti', 
+                'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 'dmsnogo', 'dmcnogo')
+
+
+rules_dict = \
+    {'all' : ['fdgo', 'reactgo', 'delaygo', 'fdanti', 'reactanti', 'delayanti',
+              'dm1', 'dm2', 'contextdm1', 'contextdm2', 'multidm',
+              'delaydm1', 'delaydm2', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm',
+              'dmsgo', 'dmsnogo', 'dmcgo', 'dmcnogo'],
+     'low_dim' : ['fdgo', 'reactgo', 'delaygo', 'fdanti', 'reactanti', 'delayanti',
+                 'delaydm1', 'delaydm2', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm',
+                 'dmsgo', 'dmsnogo', 'dmcgo', 'dmcnogo'],
+     'delayfamily': ['delaygo', 'delayanti'], 
+     'dmsgo': ['dmsgo'],
+     'dmcgo': ['dmcgo'], 
+     'contextdelaydm1': ['contextdelaydm1'], 
+     'delaygo': ['delaygo'],
+     'delaydm1': ['delaydm1'], 
+     'simplegofamily': ['fdgo', 'fdanti', 'reactgo', 'reactanti'],
+     'gofamily': ['fdgo', 'fdanti', 'reactgo', 'reactanti', 'delaygo', 'delayanti'],
+     'gofamily_delaydm': ['fdgo', 'fdanti', 'reactgo', 'reactanti', 'delaygo', 'delayanti', 'delaydm1', 'delaydm2'],
+     'dm_family': ['delaydm1', 'delaydm2', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm'],
+     'go_dm_family': ['fdgo', 'fdanti', 'reactgo', 'reactanti', 'delaygo', 'delayanti', \
+                      'delaydm1', 'delaydm2', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm'],
+     'everything': ['fdgo', 'fdanti', 'reactgo', 'reactanti', 'delaygo', 'delayanti', \
+                      'delaydm1', 'delaydm2', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 
+                       'dmsgo', 'dmsnogo', 'dmcgo', 'dmcnogo'],
     }
+
+# only work if adjust_task_prop == False, otherwise will be overwritten
+rules_dict_frequency = {
+    'delaygo': np.array([1]),
+    'dmsgo': np.array([1]), 
+    'dmcgo': np.array([1]),
+    'contextdelaydm1': np.array([1]), 
+    'delaydm1': np.array([1]), 
+    'go_dm_family': np.array([1, 1, 1, 1, 1, 1, 
+                              3, 3, 3, 3, 3,
+    ]), 
+    'everything': np.array([1, 1, 1, 1, 1, 1, 
+                              1, 1, 1, 1, 1,
+                              1, 1, 1, 1
+    ])
+}
+
     
-        
-    
-    # This can either be used to set parameters OR set parameters and train
-    train = True # whether or not to train the network
-    verbose = True
-    hyp_dict['run_mode'] = 'minimal' # minimal, debug
-    hyp_dict['chosen_network'] = "dmpn"
-    
-    # suffix for saving images
-    # inputadd, Wfix, WL2, hL2
-    # inputrandom, Wtrain
-    # noise001
-    # largeregularization
-    # trainetalambda
-    
+
+# This can either be used to set parameters OR set parameters and train
+train = True # whether or not to train the network
+verbose = True
+hyp_dict['run_mode'] = 'minimal' # minimal, debug
+hyp_dict['chosen_network'] = "dmpn"
+
+# suffix for saving images
+# inputadd, Wfix, WL2, hL2
+# inputrandom, Wtrain
+# noise001
+# largeregularization
+# trainetalambda
+
+mpn_depth = 1
+n_hidden = 100
+
+hyp_dict['addon_name'] = "inputtrain+Wtrain+yesoversample"
+hyp_dict['addon_name'] += f"+hidden{n_hidden}"
+
+# for coding 
+if hyp_dict['chosen_network'] in ("gru", "vanilla"):
     mpn_depth = 1
-    n_hidden = 150
-    
-    hyp_dict['addon_name'] = "inputtrain+Wtrain+yesoversample"
-    hyp_dict['addon_name'] += f"+hidden{n_hidden}"
-    
-    # for coding 
+
+def current_basic_params():
+    task_params = {
+        'task_type': hyp_dict['task_type'],
+        'rules': rules_dict[hyp_dict['ruleset']],
+        'rules_probs': rules_dict_frequency[hyp_dict['ruleset']], 
+        'dt': 40, # ms, directly influence sequence lengths,
+        'ruleset': hyp_dict['ruleset'],
+        'n_eachring': 8, # Number of distinct possible inputs on each ring
+        'in_out_mode': 'low_dim',  # high_dim or low_dim or low_dim_pos (Robert vs. Laura's paper, resp)
+        'sigma_x': 0.00, # Laura raised to 0.1 to prevent overfitting (Robert uses 0.01)
+        'mask_type': 'cost', # 'cost', None
+        'fixate_off': True, # Second fixation signal goes on when first is off
+        'task_info': True, 
+        'randomize_inputs': False,
+        'n_input': 20, # Only used if inputs are randomized,
+        'modality_diff': True,
+        'label_strength': True, 
+        'long_delay': 'normal',
+        'adjust_task_prop': True,
+        'adjust_task_decay': 0.9, 
+    }
+
+    assert task_params["fixate_off"], "Accuracy calculation is partially depended on that"
+
+    print(f"Fixation_off: {task_params['fixate_off']}; Task_info: {task_params['task_info']}")
+
+    train_params = {
+        'lr': 1e-3,
+        'n_batches': 640,
+        'batch_size': 640,
+        'gradient_clip': 10,
+        'valid_n_batch': 20,
+        'n_datasets': 2, 
+        'n_epochs_per_set': 100, 
+        # 'weight_reg': 'L2',
+        # 'activity_reg': 'L2', 
+        # 'reg_lambda': 1e-4,
+        
+        'scheduler': {
+            'type': 'ReduceLROnPlateau',  # or 'StepLR'
+            'mode': 'min',                # for ReduceLROnPlateau
+            'factor': 0.5,                # factor to reduce LR
+            'patience': 20,                # epochs to wait before reducing LR
+            'min_lr': 1e-6,
+            'step_size': 30,              # for StepLR (step every 30 datasets)
+            'gamma': 0.1                  # for StepLR (multiply LR by 0.1)
+        },
+    }
+
+    if not train: # some 
+        assert train_params['n_epochs_per_set'] == 0
+
+    net_params = {
+        'net_type': hyp_dict['chosen_network'], # mpn1, dmpn, vanilla
+        'n_neurons': [1] + [n_hidden] * mpn_depth + [1],
+        'output_bias': False, # Turn off biases for easier interpretation
+        'loss_type': 'MSE', # XE, MSE
+        'activation': 'tanh', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside
+        'cuda': True,
+        'monitor_freq': 100,
+        'monitor_valid_out': True, # Whether or not to save validation output throughout training
+        'output_matrix': '',# "" (default); "untrained", or "orthogonal"
+        'input_layer_add': True, 
+        'input_layer_add_trainable': True, # revise this is effectively to [randomize_inputs], tune this
+        'input_layer_bias': False, 
+        'input_layer': "trainable", # for RNN only
+        
+        # for one-layer MPN, GRU or Vanilla
+        'ml_params': {
+            'bias': True, # Bias of layer
+            'mp_type': 'mult',
+            'm_update_type': 'hebb_assoc', # hebb_assoc, hebb_pre
+            'eta_type': 'scalar', # scalar, pre_vector, post_vector, matrix
+            'eta_train': True,
+            # 'eta_init': 'mirror_gaussian', #0.0,
+            'lam_type': 'scalar', # scalar, pre_vector, post_vector, matrix
+            'm_time_scale': 4000, # ms, sets lambda
+            'lam_train': False,
+            'W_freeze': False, # different combination with [input_layer_add_trainable]
+        },
+
+        # Vanilla RNN params
+        'leaky': True,
+        'alpha': 0.2,
+    }
+
+    # Ensure the two options are *not* activated at the same time
+    assert not (task_params["randomize_inputs"] and net_params["input_layer_add"]), (
+        "task_params['randomize_inputs'] and net_params['input_layer_add'] cannot both be True."
+    )
+
+    # for multiple MPN layers, assert 
+    if mpn_depth > 1:
+        for mpl_idx in range(mpn_depth - 1):
+            assert f'ml_params{mpl_idx}' in net_params.keys()
+
+    # actually I don't think it is needed
+    # putting here to warn the parameter checking every time 
+    # when switching network
     if hyp_dict['chosen_network'] in ("gru", "vanilla"):
-        mpn_depth = 1
-    
-    def current_basic_params():
-        task_params = {
-            'task_type': hyp_dict['task_type'],
-            'rules': rules_dict[hyp_dict['ruleset']],
-            'rules_probs': rules_dict_frequency[hyp_dict['ruleset']], 
-            'dt': 40, # ms, directly influence sequence lengths,
-            'ruleset': hyp_dict['ruleset'],
-            'n_eachring': 8, # Number of distinct possible inputs on each ring
-            'in_out_mode': 'low_dim',  # high_dim or low_dim or low_dim_pos (Robert vs. Laura's paper, resp)
-            'sigma_x': 0.00, # Laura raised to 0.1 to prevent overfitting (Robert uses 0.01)
-            'mask_type': 'cost', # 'cost', None
-            'fixate_off': True, # Second fixation signal goes on when first is off
-            'task_info': True, 
-            'randomize_inputs': False,
-            'n_input': 20, # Only used if inputs are randomized,
-            'modality_diff': True,
-            'label_strength': True, 
-            'long_delay': 'normal',
-            'adjust_task_prop': True,
-            'adjust_task_decay': 0.9, 
-        }
-    
-        assert task_params["fixate_off"], "Accuracy calculation is partially depended on that"
-    
-        print(f"Fixation_off: {task_params['fixate_off']}; Task_info: {task_params['task_info']}")
-    
-        train_params = {
-            'lr': 1e-3,
-            'n_batches': 640,
-            'batch_size': 640,
-            'gradient_clip': 10,
-            'valid_n_batch': 20,
-            'n_datasets': 50, 
-            'n_epochs_per_set': 1000, 
-            # 'weight_reg': 'L2',
-            # 'activity_reg': 'L2', 
-            # 'reg_lambda': 1e-4,
-            
-            'scheduler': {
-                'type': 'ReduceLROnPlateau',  # or 'StepLR'
-                'mode': 'min',                # for ReduceLROnPlateau
-                'factor': 0.5,                # factor to reduce LR
-                'patience': 10,                # epochs to wait before reducing LR
-                'min_lr': 1e-6,
-                'step_size': 30,              # for StepLR (step every 30 datasets)
-                'gamma': 0.1                  # for StepLR (multiply LR by 0.1)
-            },
-        }
-    
-        if not train: # some 
-            assert train_params['n_epochs_per_set'] == 0
-    
-        net_params = {
-            'net_type': hyp_dict['chosen_network'], # mpn1, dmpn, vanilla
-            'n_neurons': [1] + [n_hidden] * mpn_depth + [1],
-            'output_bias': False, # Turn off biases for easier interpretation
-            'loss_type': 'MSE', # XE, MSE
-            'activation': 'tanh', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside
-            'cuda': True,
-            'monitor_freq': 100,
-            'monitor_valid_out': True, # Whether or not to save validation output throughout training
-            'output_matrix': '',# "" (default); "untrained", or "orthogonal"
-            'input_layer_add': True, 
-            'input_layer_add_trainable': True, # revise this is effectively to [randomize_inputs], tune this
-            'input_layer_bias': False, 
-            'input_layer': "trainable", # for RNN only
-            
-            # for one-layer MPN, GRU or Vanilla
-            'ml_params': {
-                'bias': True, # Bias of layer
-                'mp_type': 'mult',
-                'm_update_type': 'hebb_assoc', # hebb_assoc, hebb_pre
-                'eta_type': 'scalar', # scalar, pre_vector, post_vector, matrix
-                'eta_train': True,
-                # 'eta_init': 'mirror_gaussian', #0.0,
-                'lam_type': 'scalar', # scalar, pre_vector, post_vector, matrix
-                'm_time_scale': 4000, # ms, sets lambda
-                'lam_train': False,
-                'W_freeze': False, # different combination with [input_layer_add_trainable]
-            },
-    
-            # Vanilla RNN params
-            'leaky': True,
-            'alpha': 0.2,
-        }
-    
-        # Ensure the two options are *not* activated at the same time
-        assert not (task_params["randomize_inputs"] and net_params["input_layer_add"]), (
-            "task_params['randomize_inputs'] and net_params['input_layer_add'] cannot both be True."
-        )
-    
-        # for multiple MPN layers, assert 
-        if mpn_depth > 1:
-            for mpl_idx in range(mpn_depth - 1):
-                assert f'ml_params{mpl_idx}' in net_params.keys()
-    
-        # actually I don't think it is needed
-        # putting here to warn the parameter checking every time 
-        # when switching network
-        if hyp_dict['chosen_network'] in ("gru", "vanilla"):
-            assert f'ml_params' in net_params.keys()
-    
-        return task_params, train_params, net_params
-    
-    task_params, train_params, net_params = current_basic_params()
-    hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}"
-    
-    shift_index = 1 if not task_params['fixate_off'] else 0
-    
-    if hyp_dict['task_type'] in ('multitask',):
-        task_params, train_params, net_params = mpn_tasks.convert_and_init_multitask_params(
-            (task_params, train_params, net_params)
-        )
-    
-        net_params['prefs'] = mpn_tasks.get_prefs(task_params['hp'])
-    
-        print('Rules: {}'.format(task_params['rules']))
-        print('  Input size {}, Output size {}'.format(
-            task_params['n_input'], task_params['n_output'],
-        ))
+        assert f'ml_params' in net_params.keys()
+
+    return task_params, train_params, net_params
+
+task_params, train_params, net_params = current_basic_params()
+hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}"
+
+shift_index = 1 if not task_params['fixate_off'] else 0
+
+if hyp_dict['task_type'] in ('multitask',):
+    task_params, train_params, net_params = mpn_tasks.convert_and_init_multitask_params(
+        (task_params, train_params, net_params)
+    )
+
+    net_params['prefs'] = mpn_tasks.get_prefs(task_params['hp'])
+
+    print('Rules: {}'.format(task_params['rules']))
+    print('  Input size {}, Output size {}'.format(
+        task_params['n_input'], task_params['n_output'],
+    ))
+else:
+    raise NotImplementedError()
+
+if net_params['cuda']:
+    print('Using CUDA...')
+    device = torch.device('cuda')
+else:
+    print('Using CPU...')
+    device = torch.device('cpu')
+
+# how many epoch each dataset will be trained on
+epoch_multiply = train_params["n_epochs_per_set"]
+
+
+# In[5]:
+
+
+params = task_params, train_params, net_params
+
+if net_params['net_type'] == 'mpn1':
+    netFunction = mpn.MultiPlasticNet
+elif net_params['net_type'] == 'dmpn':
+    netFunction = mpn.DeepMultiPlasticNet
+elif net_params['net_type'] == 'vanilla':
+    netFunction = nets.VanillaRNN
+elif net_params['net_type'] == 'gru':
+    netFunction = nets.GRU
+
+
+# In[6]:
+
+
+test_n_batch = train_params["valid_n_batch"]
+color_by = "stim" # or "resp" 
+
+task_random_fix = True
+if task_random_fix:
+    print(f"Align {task_params['rules']} With Same Time")
+
+if task_params['task_type'] in ('multitask',): # Test batch consists of all the rules
+    task_params['hp']['batch_size_train'] = test_n_batch
+    # using homogeneous cutting off if multiple tasks are presented in the pool
+    # if single task, using inhomogeneous cutoff to show diversity & robustness
+    # test_mode_for_all = "random" if len(rules_dict[hyp_dict['ruleset']]) > 1 else "random_batch"
+    test_mode_for_all = "random"
+    # ZIHAN
+    # generate test data using "random"
+    test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params, test_n_batch, \
+                rules=task_params['rules'], mode_input=test_mode_for_all, fix=task_random_fix
+    )
+    _, test_trials, test_rule_idxs = test_trials_extra
+    task_params['dataset_name'] = 'multitask'
+
+    if task_params['in_out_mode'] in ('low_dim_pos',):
+        output_dim_labels = ('Fixate', 'Cos', '-Cos', 'Sin', '-Sin')
+    elif task_params['in_out_mode'] in ('low_dim',):
+        output_dim_labels = ('Fixate', 'Cos', 'Sin')
     else:
         raise NotImplementedError()
-    
-    if net_params['cuda']:
-        print('Using CUDA...')
-        device = torch.device('cuda')
-    else:
-        print('Using CPU...')
-        device = torch.device('cpu')
-    
-    # how many epoch each dataset will be trained on
-    epoch_multiply = train_params["n_epochs_per_set"]
-    
-    
-    # In[5]:
-    
-    
-    params = task_params, train_params, net_params
-    
-    if net_params['net_type'] == 'mpn1':
-        netFunction = mpn.MultiPlasticNet
-    elif net_params['net_type'] == 'dmpn':
-        netFunction = mpn.DeepMultiPlasticNet
-    elif net_params['net_type'] == 'vanilla':
-        netFunction = nets.VanillaRNN
-    elif net_params['net_type'] == 'gru':
-        netFunction = nets.GRU
-    
-    
-    # In[6]:
-    
-    
-    test_n_batch = train_params["valid_n_batch"]
-    color_by = "stim" # or "resp" 
-    
-    task_random_fix = True
-    if task_random_fix:
-        print(f"Align {task_params['rules']} With Same Time")
-    
-    if task_params['task_type'] in ('multitask',): # Test batch consists of all the rules
-        task_params['hp']['batch_size_train'] = test_n_batch
-        # using homogeneous cutting off if multiple tasks are presented in the pool
-        # if single task, using inhomogeneous cutoff to show diversity & robustness
-        # test_mode_for_all = "random" if len(rules_dict[hyp_dict['ruleset']]) > 1 else "random_batch"
-        test_mode_for_all = "random"
-        # ZIHAN
-        # generate test data using "random"
-        test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params, test_n_batch, \
-                    rules=task_params['rules'], mode_input=test_mode_for_all, fix=task_random_fix
-        )
-        _, test_trials, test_rule_idxs = test_trials_extra
-        task_params['dataset_name'] = 'multitask'
-    
-        if task_params['in_out_mode'] in ('low_dim_pos',):
-            output_dim_labels = ('Fixate', 'Cos', '-Cos', 'Sin', '-Sin')
-        elif task_params['in_out_mode'] in ('low_dim',):
-            output_dim_labels = ('Fixate', 'Cos', 'Sin')
-        else:
-            raise NotImplementedError()
-    
-        def generate_response_stimulus(task_params, test_trials): 
-            """
-            """
-            labels_resp, labels_stim = [], []
-            rules_epochs = {} 
-            for rule_idx, rule in enumerate(task_params['rules']):
-                print(rule)
-                if rule in accept_rules:
-                    rules_epochs[rule] = test_trials[rule_idx].epochs
-                    if hyp_dict['ruleset'] in ('dmsgo','dmcgo',):
-                        labels_resp.append(test_trials[rule_idx].meta['matches'])
-                        labels_stim.append(test_trials[rule_idx].meta['stim1']) 
-                    else:
-                        try: 
-                            labels_resp.append(test_trials[rule_idx].meta['resp1'])
-                        except Exception as e:
-                            labels_resp.append(test_trials[rule_idx].meta['matches'])
-                        labels_stim.append(test_trials[rule_idx].meta['stim1']) 
-        
+
+    def generate_response_stimulus(task_params, test_trials): 
+        """
+        """
+        labels_resp, labels_stim = [], []
+        rules_epochs = {} 
+        for rule_idx, rule in enumerate(task_params['rules']):
+            print(rule)
+            if rule in accept_rules:
+                rules_epochs[rule] = test_trials[rule_idx].epochs
+                if hyp_dict['ruleset'] in ('dmsgo','dmcgo',):
+                    labels_resp.append(test_trials[rule_idx].meta['matches'])
+                    labels_stim.append(test_trials[rule_idx].meta['stim1']) 
                 else:
-                    raise NotImplementedError()
+                    try: 
+                        labels_resp.append(test_trials[rule_idx].meta['resp1'])
+                    except Exception as e:
+                        labels_resp.append(test_trials[rule_idx].meta['matches'])
+                    labels_stim.append(test_trials[rule_idx].meta['stim1']) 
     
-            print(rules_epochs)
-            
-            labels_resp = np.concatenate(labels_resp, axis=0).reshape(-1,1)
-            labels_stim = np.concatenate(labels_stim, axis=0).reshape(-1,1)
-    
-            return labels_resp, labels_stim, rules_epochs
-    
-        labels_resp, labels_stim, rules_epochs = generate_response_stimulus(task_params, test_trials)
-    
-    
-    labels = labels_stim if color_by == "stim" else labels_resp
-        
-    test_input, test_output, test_mask = test_data
-    
-    permutation = np.random.permutation(test_input.shape[0])
-    test_input = test_input[permutation]
-    test_output = test_output[permutation]
-    test_mask = test_mask[permutation]
-    labels = labels[permutation]
-    
-    test_input_np = test_input.detach().cpu().numpy()
-    test_output_np = test_output.detach().cpu().numpy()
-    
-    # Total number of batches, might be different than test_n_batch
-    # this should be the same regardless of variety of test_input
-    n_batch_all = test_input_np.shape[0] 
-    
-    def find_task(task_params, test_input_np, shift_index):
-        """
-        """
-        test_task = [] # which task
-        for batch_idx in range(test_input_np.shape[0]):
-            
-            if task_params["randomize_inputs"]: 
-                test_input_np_ = test_input_np @ np.linalg.pinv(task_params["randomize_matrix"])
-            else: 
-                test_input_np_ = test_input_np
-                
-            task_label = test_input_np_[batch_idx, 0, 6-shift_index:]
-            
-            task_label = np.asarray(task_label)       
-            dist = np.abs(task_label - 1)     
-            mask = dist == dist.min() 
-            
-            indices = np.where(mask)[0]
-            
-            if indices.size:                
-                task_label_index = indices[0]   
             else:
-                raise ValueError("No entry close enough to 1 found")
-                
-            test_task.append(task_label_index)
-    
-        return test_task  
-    
-    test_task = find_task(task_params, test_input_np, shift_index)
-    
-    
-    # In[7]:
-    
-    
-    # we use net at different training stage on the same test_input
-    net, _, (counter_lst, netout_lst, db_lst, Winput_lst, Winputbias_lst,\
-             Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst) = net_helpers.train_network(params, device=device, verbose=verbose,\
-                                                                                               train=train, hyp_dict=hyp_dict,\
-                                                                                               netFunction=netFunction,\
-                                                                                               test_input=[test_input])
-    counter_lst = [x * epoch_multiply + 1 for x in counter_lst] # avoid log plot issue    
-    
-    
-    # In[ ]:
-    
-    
-    if hyp_dict['chosen_network'] == "dmpn":
-        if net_params["input_layer_add"]:
-            fignorm, axsnorm = plt.subplots(1,1,figsize=(4,4))
-            axsnorm.plot(counter_lst, [np.linalg.norm(Winput_matrix) for Winput_matrix in Winput_lst], "-o")
-            axsnorm.set_xscale("log")
-            axsnorm.set_ylabel("Frobenius Norm")
-    
-    
-    # In[ ]:
-    
-    
-    # sanity check, if W_freeze, then the recorded W matrix for the modulation layer should not be changed
-    if net_params["ml_params"]["W_freeze"]: 
-        assert np.allclose(Wall_lst[-1][0], Wall_lst[0][0])
-    
-    if net_params["input_layer_bias"]: 
-        assert net_params["input_layer_add"] is True 
-    
-    
-    # In[ ]:
-    
-    
-    if train:
-        fig, ax = plt.subplots(1,1,figsize=(3,3))
-        ax.plot(net.hist['iters_monitor'][1:], net.hist['train_acc'][1:], color=c_vals[0], label='Full train accuracy')
-        ax.plot(net.hist['iters_monitor'][1:], net.hist['valid_acc'][1:], color=c_vals[1], label='Full valid accuracy')
-        if net.weight_reg is not None:
-            ax.plot(net.hist['iters_monitor'], net.hist['train_loss_output_label'], color=c_vals_l[0], zorder=-1, label='Output label')
-            ax.plot(net.hist['iters_monitor'], net.hist['train_loss_reg_term'], color=c_vals_l[0], zorder=-1, label='Reg term', linestyle='dashed')
-            ax.plot(net.hist['iters_monitor'], net.hist['valid_loss_output_label'], color=c_vals_l[1], zorder=-1, label='Output valid label')
-            ax.plot(net.hist['iters_monitor'], net.hist['valid_loss_reg_term'], color=c_vals_l[1], zorder=-1, label='Reg valid term', linestyle='dashed')
+                raise NotImplementedError()
+
+        print(rules_epochs)
         
-        # ax.set_yscale('log')
-        ax.legend()
-        ax.set_ylim([0.5, 1.05])
-        # ax.set_ylabel('Loss ({})'.format(net.loss_type))
-        ax.set_ylabel('Accuracy')
-        ax.set_xlabel('# Batches')
-        plt.savefig(f"./multiple_tasks/loss_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=1000)
+        labels_resp = np.concatenate(labels_resp, axis=0).reshape(-1,1)
+        labels_stim = np.concatenate(labels_stim, axis=0).reshape(-1,1)
+
+        return labels_resp, labels_stim, rules_epochs
+
+    labels_resp, labels_stim, rules_epochs = generate_response_stimulus(task_params, test_trials)
+
+
+labels = labels_stim if color_by == "stim" else labels_resp
+    
+test_input, test_output, test_mask = test_data
+
+permutation = np.random.permutation(test_input.shape[0])
+test_input = test_input[permutation]
+test_output = test_output[permutation]
+test_mask = test_mask[permutation]
+labels = labels[permutation]
+
+test_input_np = test_input.detach().cpu().numpy()
+test_output_np = test_output.detach().cpu().numpy()
+
+# Total number of batches, might be different than test_n_batch
+# this should be the same regardless of variety of test_input
+n_batch_all = test_input_np.shape[0] 
+
+def find_task(task_params, test_input_np, shift_index):
+    """
+    """
+    test_task = [] # which task
+    for batch_idx in range(test_input_np.shape[0]):
         
-    print('Done!')
-    
-    
-    # In[ ]:
-    
-    
-    if train:
-        net_helpers.net_eta_lambda_analysis(net, net_params, hyp_dict)
-    
-    
-    # In[ ]:
-    
-    
-    use_finalstage = False
-    if use_finalstage:
-        # plotting output in the validation set
-        net_out, db = net.iterate_sequence_batch(test_input, run_mode='track_states')
-        W_output = net.W_output.detach().cpu().numpy()
-    
-        W_all_ = []
-        for i in range(len(net.mp_layers)):
-            W_all_.append(net.mp_layers[i].W.detach().cpu().numpy())
-        W_ = W_all_[0]
+        if task_params["randomize_inputs"]: 
+            test_input_np_ = test_input_np @ np.linalg.pinv(task_params["randomize_matrix"])
+        else: 
+            test_input_np_ = test_input_np
+            
+        task_label = test_input_np_[batch_idx, 0, 6-shift_index:]
         
-    else:
-        ind = len(marker_lst)-1 
-        # ind = 0
-        network_at_percent = (marker_lst[ind]+1)/train_params['n_datasets']*100
-        print(f"Using network at {network_at_percent}%")
-        # by default using the first test_input 
-        net_out = netout_lst[0][ind]
-        db = db_lst[0][ind]
-        W_output = Woutput_lst[ind]
-        W_ = Wall_lst[ind][0]
-    
-    
-    # In[ ]:
-    
-    
-    def plot_input_output(test_input_np, net_out, test_output_np, test_task=None, tag="", batch_num=5):
-        """
-        """
-        test_input_np = helper.to_ndarray(test_input_np)
-        net_out = helper.to_ndarray(net_out)
-        test_output_np = helper.to_ndarray(test_output_np)
+        task_label = np.asarray(task_label)       
+        dist = np.abs(task_label - 1)     
+        mask = dist == dist.min() 
         
-        fig_all, axs_all = plt.subplots(batch_num,2,figsize=(4*2,batch_num*2))
+        indices = np.where(mask)[0]
         
-        if test_output_np.shape[-1] == 1:
-            for batch_idx, ax in enumerate(axs):
-                ax.plot(net_out[batch_idx, :, 0], color=c_vals[batch_idx])
-                ax.plot(test_output_np[batch_idx, :, 0], color=c_vals_l[batch_idx])
-        
+        if indices.size:                
+            task_label_index = indices[0]   
         else:
-            for batch_idx in range(batch_num):
-                for out_idx in range(test_output_np.shape[-1]):
-                    axs_all[batch_idx,0].plot(net_out[batch_idx, :, out_idx], color=c_vals[out_idx], label=out_idx)
-                    axs_all[batch_idx,0].plot(test_output_np[batch_idx, :, out_idx], color=c_vals_l[out_idx], linewidth=5, alpha=0.3)
-                    if test_task is not None: 
-                        axs_all[batch_idx,0].set_title(f"{task_params['rules'][test_task[batch_idx]]}")
-                    # axs_all[batch_idx,0].legend()
+            raise ValueError("No entry close enough to 1 found")
+            
+        test_task.append(task_label_index)
+
+    return test_task  
+
+test_task = find_task(task_params, test_input_np, shift_index)
+
+
+# In[7]:
+
+
+# we use net at different training stage on the same test_input
+net, _, (counter_lst, netout_lst, db_lst, Winput_lst, Winputbias_lst,\
+         Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst) = net_helpers.train_network(params, device=device, verbose=verbose,\
+                                                                                           train=train, hyp_dict=hyp_dict,\
+                                                                                           netFunction=netFunction,\
+                                                                                           test_input=[test_input])
+counter_lst = [x * epoch_multiply + 1 for x in counter_lst] # avoid log plot issue    
+
+
+# In[ ]:
+
+
+if hyp_dict['chosen_network'] == "dmpn":
+    if net_params["input_layer_add"]:
+        fignorm, axsnorm = plt.subplots(1,1,figsize=(4,4))
+        axsnorm.plot(counter_lst, [np.linalg.norm(Winput_matrix) for Winput_matrix in Winput_lst], "-o")
+        axsnorm.set_xscale("log")
+        axsnorm.set_ylabel("Frobenius Norm")
+
+
+# In[ ]:
+
+
+# sanity check, if W_freeze, then the recorded W matrix for the modulation layer should not be changed
+if net_params["ml_params"]["W_freeze"]: 
+    assert np.allclose(Wall_lst[-1][0], Wall_lst[0][0])
+
+if net_params["input_layer_bias"]: 
+    assert net_params["input_layer_add"] is True 
+
+
+# In[ ]:
+
+
+if train:
+    fig, ax = plt.subplots(1,1,figsize=(3,3))
+    ax.plot(net.hist['iters_monitor'][1:], net.hist['train_acc'][1:], color=c_vals[0], label='Full train accuracy')
+    ax.plot(net.hist['iters_monitor'][1:], net.hist['valid_acc'][1:], color=c_vals[1], label='Full valid accuracy')
+    if net.weight_reg is not None:
+        ax.plot(net.hist['iters_monitor'], net.hist['train_loss_output_label'], color=c_vals_l[0], zorder=-1, label='Output label')
+        ax.plot(net.hist['iters_monitor'], net.hist['train_loss_reg_term'], color=c_vals_l[0], zorder=-1, label='Reg term', linestyle='dashed')
+        ax.plot(net.hist['iters_monitor'], net.hist['valid_loss_output_label'], color=c_vals_l[1], zorder=-1, label='Output valid label')
+        ax.plot(net.hist['iters_monitor'], net.hist['valid_loss_reg_term'], color=c_vals_l[1], zorder=-1, label='Reg valid term', linestyle='dashed')
+    
+    # ax.set_yscale('log')
+    ax.legend()
+    ax.set_ylim([0.5, 1.05])
+    # ax.set_ylabel('Loss ({})'.format(net.loss_type))
+    ax.set_ylabel('Accuracy')
+    ax.set_xlabel('# Batches')
+    plt.savefig(f"./multiple_tasks/loss_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)
+    
+print('Done!')
+
+
+# In[ ]:
+
+
+if train:
+    net_helpers.net_eta_lambda_analysis(net, net_params, hyp_dict)
+
+
+# In[ ]:
+
+
+use_finalstage = False
+if use_finalstage:
+    # plotting output in the validation set
+    net_out, db = net.iterate_sequence_batch(test_input, run_mode='track_states')
+    W_output = net.W_output.detach().cpu().numpy()
+
+    W_all_ = []
+    for i in range(len(net.mp_layers)):
+        W_all_.append(net.mp_layers[i].W.detach().cpu().numpy())
+    W_ = W_all_[0]
+    
+else:
+    ind = len(marker_lst)-1 
+    # ind = 0
+    network_at_percent = (marker_lst[ind]+1)/train_params['n_datasets']*100
+    print(f"Using network at {network_at_percent}%")
+    # by default using the first test_input 
+    net_out = netout_lst[0][ind]
+    db = db_lst[0][ind]
+    W_output = Woutput_lst[ind]
+    W_ = Wall_lst[ind][0]
+
+
+# In[ ]:
+
+
+def plot_input_output(test_input_np, net_out, test_output_np, test_task=None, tag="", batch_num=5):
+    """
+    """
+    test_input_np = helper.to_ndarray(test_input_np)
+    net_out = helper.to_ndarray(net_out)
+    test_output_np = helper.to_ndarray(test_output_np)
+    
+    fig_all, axs_all = plt.subplots(batch_num,2,figsize=(4*2,batch_num*2))
+    
+    if test_output_np.shape[-1] == 1:
+        for batch_idx, ax in enumerate(axs):
+            ax.plot(net_out[batch_idx, :, 0], color=c_vals[batch_idx])
+            ax.plot(test_output_np[batch_idx, :, 0], color=c_vals_l[batch_idx])
+    
+    else:
+        for batch_idx in range(batch_num):
+            for out_idx in range(test_output_np.shape[-1]):
+                axs_all[batch_idx,0].plot(net_out[batch_idx, :, out_idx], color=c_vals[out_idx], label=out_idx)
+                axs_all[batch_idx,0].plot(test_output_np[batch_idx, :, out_idx], color=c_vals_l[out_idx], linewidth=5, alpha=0.3)
+                if test_task is not None: 
+                    axs_all[batch_idx,0].set_title(f"{task_params['rules'][test_task[batch_idx]]}")
+                # axs_all[batch_idx,0].legend()
+    
+            input_batch = test_input_np[batch_idx,:,:]
+            if task_params["randomize_inputs"]: 
+                input_batch = input_batch @ np.linalg.pinv(task_params["randomize_matrix"])
+            for inp_idx in range(input_batch.shape[-1]):
+                axs_all[batch_idx,1].plot(input_batch[:,inp_idx], color=c_vals[inp_idx], label=inp_idx, alpha=1.0)
+                if test_task is not None: 
+                    axs_all[batch_idx,1].set_title(f"{task_params['rules'][test_task[batch_idx]]}")
+                # axs_all[batch_idx,1].legend()
+
+    for ax in axs_all.flatten(): 
+        ax.set_ylim([-2, 2])
+    fig_all.tight_layout()
+    fig_all.savefig(f"./multiple_tasks/lowD_{hyp_dict['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}_{tag}.png", dpi=100)
+
+plot_input_output(test_input_np, net_out, test_output_np, test_task, tag="", batch_num=20 if len(rules_dict[hyp_dict['ruleset']]) > 1 else 10)
+
+
+# In[ ]:
+
+
+# here db is selected based on learning stage selection 
+
+layer_index = 0 # 1 layer MPN 
+if net_params["input_layer_add"]:
+    layer_index += 1 
+    
+def modulation_extraction(test_input, db, layer_index):
+    """
+    """
+    max_seq_len = test_input.shape[1] 
+    n_batch_all_ = test_input.shape[0]
+    
+    Ms = np.concatenate((
+        db[f'M{layer_index}'].detach().cpu().numpy().reshape(n_batch_all_, max_seq_len, -1),
+    ), axis=-1)
+
+    Ms_orig = np.concatenate((
+        db[f'M{layer_index}'].detach().cpu().numpy(),
+    ), axis=-1)
+
+    bs = np.concatenate((
+        db[f'b{layer_index}'].detach().cpu().numpy(),
+    ), axis=-1) 
+
+    hs = np.concatenate((
+        db[f'hidden{layer_index}'].detach().cpu().numpy().reshape(n_batch_all_, max_seq_len, -1),
+    ), axis=-1)
+
+    return Ms, Ms_orig, hs, bs
+
+
+# In[ ]:
+
+
+print(rules_epochs)
+all_rules = task_params["rules"]
+print(all_rules)
+test_task = np.array(test_task)
+
+
+# In[ ]:
+Ms, Ms_orig, hs, bs = modulation_extraction(test_input, db_lst[0][-1], layer_index)
+
+clustering_data_analysis = [hs, Ms_orig, Ms_orig, Ms_orig]
+clustering_data_analysis_names = ["hidden", "modulation_pre", "modulation_post", "modulation_all"]
+
+for clustering_index in range(len(clustering_data_analysis)): 
+    clustering_data = clustering_data_analysis[clustering_index]
+    clustering_name = clustering_data_analysis_names[clustering_index]
+    print(f"clustering_name: {clustering_name}")
+    
+    if hyp_dict['ruleset'] == "everything": 
+        phase_to_indices = [
+            ("stim1",  [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]),
+            ("stim2",  [6, 7, 8, 9, 10]),
+            ("delay1", [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]),
+            ("delay2", [6, 7, 8, 9, 10]),
+            ("go1",    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
+        ]
+    elif hyp_dict['ruleset'] == "contextdelaydm1":
+        phase_to_indices = [
+            ("stim1", [0]), 
+            ("stim2", [0]), 
+            ("delay1", [0]), 
+            ("delay2", [0]), 
+            ("go1", [0]), 
+        ]
+    
+    tb_break = [
+        [idx, rules_epochs[all_rules[idx]][phase]]
+        for phase, indices in phase_to_indices
+        for idx in indices
+    ]
+    
+    tb_break_name = [
+        f"{all_rules[idx]}-{phase}"
+        for phase, indices in phase_to_indices
+        for idx in indices
+    ]
+    
+    tb_break_name = np.array(tb_break_name)
+    
+    cell_vars_rules = [] 
+    
+    for el in range(len(tb_break)):
+        n_rules = len(task_params['rules'])
+        n_cells = clustering_data.shape[-1]
+            
+        rule_idx, period_time = tb_break[el][0], tb_break[el][1]
         
-                input_batch = test_input_np[batch_idx,:,:]
-                if task_params["randomize_inputs"]: 
-                    input_batch = input_batch @ np.linalg.pinv(task_params["randomize_matrix"])
-                for inp_idx in range(input_batch.shape[-1]):
-                    axs_all[batch_idx,1].plot(input_batch[:,inp_idx], color=c_vals[inp_idx], label=inp_idx, alpha=1.0)
-                    if test_task is not None: 
-                        axs_all[batch_idx,1].set_title(f"{task_params['rules'][test_task[batch_idx]]}")
-                    # axs_all[batch_idx,1].legend()
+        # print('Rule {} (idx {})'.format(all_rules[rule_idx], rule_idx))
+        if len(clustering_data.shape) == 3:
+            rule_cluster = clustering_data[test_task == rule_idx, period_time[0]:period_time[1], :]
+            cell_vars_rules.append(np.var(rule_cluster, axis=(0, 1))) 
+        else:
+            clustering_data_old = clustering_data
+            # calculate the mean value based on input
+            if "pre" in clustering_name:
+                rule_cluster = clustering_data[test_task == rule_idx, period_time[0]:period_time[1]]
+                mean_var = np.var(rule_cluster, axis=(0, 1)).mean(axis=0)
+                cell_vars_rules.append(mean_var)
+                
+            elif "post" in clustering_name: 
+                rule_cluster = clustering_data[test_task == rule_idx, period_time[0]:period_time[1]]
+                mean_var = np.var(rule_cluster, axis=(0, 1)).mean(axis=1)
+                cell_vars_rules.append(mean_var)
+                
+            elif "all" in clustering_name: 
+                clustering_data = clustering_data.reshape(clustering_data.shape[0], clustering_data.shape[1], -1)
+                rule_cluster = clustering_data[test_task == rule_idx, period_time[0]:period_time[1], :]
+                cell_vars_rules.append(np.var(rule_cluster, axis=(0, 1))) 
+                    
+    cell_vars_rules = np.array(cell_vars_rules)
     
-        for ax in axs_all.flatten(): 
-            ax.set_ylim([-2, 2])
-        fig_all.tight_layout()
-        fig_all.savefig(f"./multiple_tasks/lowD_{hyp_dict['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}_{tag}.png", dpi=1000)
+    cell_vars_rules_norm = np.zeros_like(cell_vars_rules)
     
-    plot_input_output(test_input_np, net_out, test_output_np, test_task, tag="", batch_num=20 if len(rules_dict[hyp_dict['ruleset']]) > 1 else 10)
+    # normalize
+    cell_max_var = np.max(cell_vars_rules, axis=0) # Across rules
+    for period_idx in range(len(tb_break)):
+        cell_vars_rules_norm[period_idx] = np.where(
+            cell_max_var > 0., cell_vars_rules[period_idx] / cell_max_var, 0.
+        )
     
+    # build rule-wise value lists and corresponding field names dynamically
+    rule_vals  = [cell_vars_rules_norm[i].tolist() for i in range(n_rules)]
+    rule_names = [f"rule{i}" for i in range(n_rules)]
     
+    # structured array whose fields are rule0, rule1, …, rule{n_rules-1}
+    dtype = np.dtype([(name, float) for name in rule_names])
+    rules_struct = np.array(list(zip(*rule_vals)), dtype=dtype)
     
+    # descending lexicographic sort across all rule columns
+    sort_idxs = np.argsort(rules_struct, order=rule_names)[::-1]
     
+    # sort it 
+    cell_vars_rules_sorted_norm = cell_vars_rules_norm[:, sort_idxs]
+
+    # plot 
+    fig, ax = plt.subplots(2,1,figsize=(24,8*2))
+    for period_idx in range(cell_vars_rules_sorted_norm.shape[0]): 
+        ax[0].plot(cell_vars_rules_sorted_norm[period_idx], color=c_vals[period_idx],
+                label=tb_break_name[period_idx])
+    # ax[0].legend()
+    ax[0].set_xlabel('Cell_idx')
+    ax[0].set_ylabel('Normalized task variance')
     
+    sns.heatmap(cell_vars_rules_sorted_norm, ax=ax[1], cmap="coolwarm", cbar=True, vmin=0, vmax=1)
+    ax[1].set_xlabel('Cell idx')
+    ax[1].set_ylabel('Rule / Break-name', fontsize=12, labelpad=12)
+    ax[1].set_yticks(np.arange(len(tb_break_name)))
+    ax[1].set_yticklabels(tb_break_name, rotation=0, ha='right', va='center', fontsize=9)
+    fig.tight_layout()
+    fig.savefig(f"./multiple_tasks/{clustering_name}_variance_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)   
+
+    if not ("all" in clustering_name): 
+        # clustering & grouping & re-ordering
+        result = clustering.cluster_variance_matrix(cell_vars_rules_sorted_norm)
+        cell_vars_rules_sorted_norm_ordered = cell_vars_rules_sorted_norm[np.ix_(result["row_order"], result["col_order"])]
     
+        # pearson correlation matrix
+        figcorr, axcorr = plt.subplots(1,1,figsize=(8,8))
+        cell_vars_rules_sorted_norm_ordered_corr = np.corrcoef(cell_vars_rules_sorted_norm_ordered, rowvar=True)
+        sns.heatmap(cell_vars_rules_sorted_norm_ordered_corr, cmap="coolwarm")
+        axcorr.set_xticks(np.arange(len(tb_break_name)))
+        axcorr.set_xticklabels(tb_break_name[result["row_order"]], rotation=270, ha='right', va='center', fontsize=9)    
+        axcorr.set_yticks(np.arange(len(tb_break_name)))
+        axcorr.set_yticklabels(tb_break_name[result["row_order"]], rotation=0, ha='right', va='center', fontsize=9) 
+        figcorr.tight_layout()
+        figcorr.savefig(f"./multiple_tasks/{clustering_name}_variance_cluster_corr_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)
+
+    # # plot the effect of grouping & ordering through the feature axis
+    # fig, ax = plt.subplots(2,1,figsize=(24,8*2))
+    # sns.heatmap(cell_vars_rules_sorted_norm, ax=ax[0], cmap="coolwarm", cbar=True, vmin=0, vmax=1)
+    # sns.heatmap(cell_vars_rules_sorted_norm_ordered, ax=ax[1], cmap="coolwarm", cbar=True, vmin=0, vmax=1)
+    # ax[0].set_ylabel('Rule / Break-name', fontsize=12, labelpad=12)
+    # ax[0].set_yticks(np.arange(len(tb_break_name)))
+    # ax[0].set_yticklabels(
+    #     tb_break_name,
+    #     rotation=0,              
+    #     ha='right',              
+    #     va='center',
+    #     fontsize=9,              
+    # )
+    # ax[1].set_ylabel('Rule / Break-name', fontsize=12, labelpad=12)
+    # ax[1].set_yticks(np.arange(len(tb_break_name)))
+    # ax[1].set_yticklabels(
+    #     tb_break_name[result["row_order"]],
+    #     rotation=0,              
+    #     ha='right',              
+    #     va='center',
+    #     fontsize=9,              
+    # )    
+    # fig.savefig(f"./multiple_tasks/{clustering_name}_variance_cluster_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)
+        
+    # # plot hierarchy of grouping 
+    # fig, axs = plt.subplots(1,2,figsize=(15*2,4))
+    # dendrogram(result["row_linkage"], ax=axs[0], labels=tb_break_name, leaf_rotation=45)
+    # axs[0].set_title(f"Row hierarchy (k = {result['row_k']})")
+    # dendrogram(result["col_linkage"], ax=axs[1], labels=np.array([i for i in range(cell_vars_rules_sorted_norm_ordered.shape[1])]), leaf_rotation=45)
+    # axs[1].set_title(f"Col hierarchy (k = {result['col_k']})")
+    # fig.savefig(f"./multiple_tasks/{clustering_name}_variance_hierarchy_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)
+    
+    # plot the conditional grouping
+    if ("all" in clustering_name): 
+        assert len(clustering_data_old.shape) == 4
+        pre_num, post_num = clustering_data_old.shape[2], clustering_data_old.shape[3]
+        feature_group_pre = [] 
+        for i in range(post_num):
+            feature_group_pre.append([i + j * post_num for j in range(pre_num)])
+        feature_group_post = []
+        for i in range(pre_num):
+            feature_group_post.append([j for j in range(post_num * i, post_num * (i+1))])
+
+        # print(f"feature_group_pre: {feature_group_pre}")
+        # print(f"feature_group_post: {feature_group_post}")
+        print(f"cell_vars_rules_sorted_norm: {cell_vars_rules_sorted_norm.shape}")
+
+        result_pre = clustering.cluster_variance_matrix_forgroup(cell_vars_rules_sorted_norm, row_groups=None, col_groups=feature_group_pre)
+        cell_vars_rules_sorted_norm_pre = cell_vars_rules_sorted_norm[np.ix_(result_pre["row_order"], result_pre["col_order"])]
+        result_post = clustering.cluster_variance_matrix_forgroup(cell_vars_rules_sorted_norm, row_groups=None, col_groups=feature_group_post)
+        cell_vars_rules_sorted_norm_post = cell_vars_rules_sorted_norm[np.ix_(result_post["row_order"], result_post["col_order"])]
+
+        figprepost, axprepost = plt.subplots(3,1,figsize=(24,8*3))
+        sns.heatmap(cell_vars_rules_sorted_norm, ax=axprepost[0], cmap="coolwarm", cbar=True, vmin=0, vmax=1)
+        sns.heatmap(cell_vars_rules_sorted_norm_pre, ax=axprepost[1], cmap="coolwarm", cbar=True, vmin=0, vmax=1)
+        sns.heatmap(cell_vars_rules_sorted_norm_post, ax=axprepost[2], cmap="coolwarm", cbar=True, vmin=0, vmax=1)
+        axprepost[0].set_yticklabels(tb_break_name, rotation=0, ha='right', va='center', fontsize=9)
+        axprepost[1].set_yticklabels(tb_break_name[result_pre["row_order"]], rotation=0, ha='right', va='center', fontsize=9)
+        axprepost[2].set_yticklabels(tb_break_name[result_post["row_order"]], rotation=0, ha='right', va='center', fontsize=9)
+        axprepost[0].set_title("Original")
+        axprepost[1].set_title("Group by Pre")
+        axprepost[2].set_title("Group by Post")
+        figprepost.tight_layout()
+        figprepost.savefig(f"./multiple_tasks/{clustering_name}_bygroup_variance_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)  
+        
+        
+
+            
+
+
+
+
+

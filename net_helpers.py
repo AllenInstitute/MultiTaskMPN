@@ -1074,13 +1074,13 @@ class BaseNetwork(BaseNetworkFunctions):
             # identify chunks of zeros 
             # 1st: first 100ms; 2nd: ideally fix_offs and check_ons; 3rd: end of trail (paddling)
             ll = helper.find_zero_chunks(output_mask[batch_iter, :, :].clone().cpu().detach().numpy())
-            # print(ll)
         
             if len(ll) < 3: # for delay task...
                 ll.append([output_mask.shape[1], output_mask.shape[1]])
             # only focusing on the alignment during response (go) period; always placed at the final
             response_start, response_end = ll[-2][1] + 1, ll[-1][0]
 
+            # ignore cut_proportion at the beginning of the response period
             cut_proportion = 1/4
             response_duration = response_end - response_start
             response_start = response_start + int(response_duration * cut_proportion)
