@@ -13,6 +13,8 @@ import copy
 from mpl_toolkits.mplot3d import Axes3D
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import json 
+from pathlib import Path 
 
 # PyTorch Libraries
 import torch
@@ -60,7 +62,6 @@ torch.cuda.empty_cache()
 torch.cuda.ipc_collect()
 
 
-# In[2]:
 
 
 # 0 Red, 1 blue, 2 green, 3 purple, 4 orange, 5 teal, 6 gray, 7 pink, 8 yellow
@@ -71,15 +72,7 @@ l_vals = ['solid', 'dashed', 'dotted', 'dashdot', '-', '--', '-.', ':', (0, (3, 
 markers_vals = ['o', 'v', '*', '+', '>', '1', '2', '3', '4', 's', 'p', '*', 'h', 'H', '+', 'x', 'D', 'd', '|', '_']
 linestyles = ["-", "--", "-."]
 
-
-# In[3]:
-
-
 hyp_dict = {}
-
-
-# In[4]:
-
 
 # Reload modules if changes have been made to them
 from importlib import reload
@@ -95,11 +88,10 @@ torch.manual_seed(seed)
 
 hyp_dict['task_type'] = 'multitask' # int, NeuroGym, multitask
 hyp_dict['mode_for_all'] = "random_batch"
-hyp_dict['ruleset'] = 'contextdelaydm1' # low_dim, all, test
+hyp_dict['ruleset'] = 'delaydm1' # low_dim, all, test
 
 accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti', 
                 'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 'dmsnogo', 'dmcnogo')
-
 
 rules_dict = \
     {'all' : ['fdgo', 'reactgo', 'delaygo', 'fdanti', 'reactanti', 'delayanti',
@@ -198,7 +190,7 @@ def current_basic_params():
         'n_batches': 640,
         'batch_size': 640,
         'gradient_clip': 10,
-        'valid_n_batch': 20,
+        'valid_n_batch': min(max(20, int(200/len(rules_dict[hyp_dict['ruleset']]))), 50),
         'n_datasets': 2, 
         'n_epochs_per_set': 100, 
         # 'weight_reg': 'L2',
@@ -215,6 +207,8 @@ def current_basic_params():
             'gamma': 0.1                  # for StepLR (multiply LR by 0.1)
         },
     }
+
+    print(f"valid_n_batch: {train_params['valid_n_batch']}")
 
     if not train: # some 
         assert train_params['n_epochs_per_set'] == 0
@@ -272,7 +266,21 @@ def current_basic_params():
     return task_params, train_params, net_params
 
 task_params, train_params, net_params = current_basic_params()
+# add batch information to the parameters
 hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}"
+
+# save the setting result
+config = {
+    "task_params": task_params, 
+    "train_params": train_params, 
+    "net_params": net_params,
+}
+
+out_path = Path(f"./multiple_tasks/param_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}_param.json")
+with out_path.open("w") as f: 
+    json.dump(config, f, indent=4, default=helper.as_jsonable)
+
+
 
 shift_index = 1 if not task_params['fixate_off'] else 0
 
@@ -436,6 +444,7 @@ net, _, (counter_lst, netout_lst, db_lst, Winput_lst, Winputbias_lst,\
                                                                                            train=train, hyp_dict=hyp_dict,\
                                                                                            netFunction=netFunction,\
                                                                                            test_input=[test_input])
+
 counter_lst = [x * epoch_multiply + 1 for x in counter_lst] # avoid log plot issue    
 
 
@@ -466,13 +475,19 @@ if net_params["input_layer_bias"]:
 
 if train:
     fig, ax = plt.subplots(1,1,figsize=(3,3))
-    ax.plot(net.hist['iters_monitor'][1:], net.hist['train_acc'][1:], color=c_vals[0], label='Full train accuracy')
-    ax.plot(net.hist['iters_monitor'][1:], net.hist['valid_acc'][1:], color=c_vals[1], label='Full valid accuracy')
+    ax.plot(net.hist['iters_monitor'][1:], net.hist['train_acc'][1:], 
+            color=c_vals[0], label='Full train accuracy')
+    ax.plot(net.hist['iters_monitor'][1:], net.hist['valid_acc'][1:], 
+            color=c_vals[1], label='Full valid accuracy')
     if net.weight_reg is not None:
-        ax.plot(net.hist['iters_monitor'], net.hist['train_loss_output_label'], color=c_vals_l[0], zorder=-1, label='Output label')
-        ax.plot(net.hist['iters_monitor'], net.hist['train_loss_reg_term'], color=c_vals_l[0], zorder=-1, label='Reg term', linestyle='dashed')
-        ax.plot(net.hist['iters_monitor'], net.hist['valid_loss_output_label'], color=c_vals_l[1], zorder=-1, label='Output valid label')
-        ax.plot(net.hist['iters_monitor'], net.hist['valid_loss_reg_term'], color=c_vals_l[1], zorder=-1, label='Reg valid term', linestyle='dashed')
+        ax.plot(net.hist['iters_monitor'], net.hist['train_loss_output_label'], 
+                color=c_vals_l[0], zorder=-1, label='Output label')
+        ax.plot(net.hist['iters_monitor'], net.hist['train_loss_reg_term'], 
+                color=c_vals_l[0], zorder=-1, label='Reg term', linestyle='dashed')
+        ax.plot(net.hist['iters_monitor'], net.hist['valid_loss_output_label'], 
+                color=c_vals_l[1], zorder=-1, label='Output valid label')
+        ax.plot(net.hist['iters_monitor'], net.hist['valid_loss_reg_term'], 
+                color=c_vals_l[1], zorder=-1, label='Reg valid term', linestyle='dashed')
     
     # ax.set_yscale('log')
     ax.legend()
@@ -542,7 +557,6 @@ def plot_input_output(test_input_np, net_out, test_output_np, test_task=None, ta
                 axs_all[batch_idx,0].plot(test_output_np[batch_idx, :, out_idx], color=c_vals_l[out_idx], linewidth=5, alpha=0.3)
                 if test_task is not None: 
                     axs_all[batch_idx,0].set_title(f"{task_params['rules'][test_task[batch_idx]]}")
-                # axs_all[batch_idx,0].legend()
     
             input_batch = test_input_np[batch_idx,:,:]
             if task_params["randomize_inputs"]: 
@@ -551,14 +565,14 @@ def plot_input_output(test_input_np, net_out, test_output_np, test_task=None, ta
                 axs_all[batch_idx,1].plot(input_batch[:,inp_idx], color=c_vals[inp_idx], label=inp_idx, alpha=1.0)
                 if test_task is not None: 
                     axs_all[batch_idx,1].set_title(f"{task_params['rules'][test_task[batch_idx]]}")
-                # axs_all[batch_idx,1].legend()
 
     for ax in axs_all.flatten(): 
         ax.set_ylim([-2, 2])
     fig_all.tight_layout()
     fig_all.savefig(f"./multiple_tasks/lowD_{hyp_dict['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}_{tag}.png", dpi=100)
 
-plot_input_output(test_input_np, net_out, test_output_np, test_task, tag="", batch_num=20 if len(rules_dict[hyp_dict['ruleset']]) > 1 else 10)
+plot_input_output(test_input_np, net_out, test_output_np, test_task, tag="", \
+                  batch_num=20 if len(rules_dict[hyp_dict['ruleset']]) > 1 else 10)
 
 
 # In[ ]:
@@ -569,11 +583,12 @@ plot_input_output(test_input_np, net_out, test_output_np, test_task, tag="", bat
 layer_index = 0 # 1 layer MPN 
 if net_params["input_layer_add"]:
     layer_index += 1 
+
+max_seq_len = test_input.shape[1]
     
-def modulation_extraction(test_input, db, layer_index):
+def modulation_extraction(db, max_seq_len, layer_index):
     """
     """
-    max_seq_len = test_input.shape[1] 
     n_batch_all_ = test_input.shape[0]
     
     Ms = np.concatenate((
@@ -592,218 +607,33 @@ def modulation_extraction(test_input, db, layer_index):
         db[f'hidden{layer_index}'].detach().cpu().numpy().reshape(n_batch_all_, max_seq_len, -1),
     ), axis=-1)
 
+    # xs = 
+
     return Ms, Ms_orig, hs, bs
 
-
-# In[ ]:
-
-
-print(rules_epochs)
-all_rules = task_params["rules"]
-print(all_rules)
+print(f"rules_epochs: {rules_epochs}")
+all_rules = np.array(task_params["rules"])
+print(f"all_rules: {all_rules}")
 test_task = np.array(test_task)
+print(f"test_task: {test_task}")
 
+Ms, Ms_orig, hs, bs = modulation_extraction(db_lst[0][-1], max_seq_len, layer_index)
 
-# In[ ]:
-Ms, Ms_orig, hs, bs = modulation_extraction(test_input, db_lst[0][-1], layer_index)
+# information that need to be saved
+config = {
+    "rules_epochs": rules_epochs, 
+    "hyp_dict": hyp_dict, 
+    "all_rules": all_rules, 
+    "test_task": test_task, 
+    "Ms": Ms, 
+    "Ms_orig": Ms_orig, 
+    "hs": hs, 
+    "bs": bs
+}
 
-clustering_data_analysis = [hs, Ms_orig, Ms_orig, Ms_orig]
-clustering_data_analysis_names = ["hidden", "modulation_pre", "modulation_post", "modulation_all"]
-
-for clustering_index in range(len(clustering_data_analysis)): 
-    clustering_data = clustering_data_analysis[clustering_index]
-    clustering_name = clustering_data_analysis_names[clustering_index]
-    print(f"clustering_name: {clustering_name}")
-    
-    if hyp_dict['ruleset'] == "everything": 
-        phase_to_indices = [
-            ("stim1",  [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]),
-            ("stim2",  [6, 7, 8, 9, 10]),
-            ("delay1", [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]),
-            ("delay2", [6, 7, 8, 9, 10]),
-            ("go1",    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
-        ]
-    elif hyp_dict['ruleset'] == "contextdelaydm1":
-        phase_to_indices = [
-            ("stim1", [0]), 
-            ("stim2", [0]), 
-            ("delay1", [0]), 
-            ("delay2", [0]), 
-            ("go1", [0]), 
-        ]
-    
-    tb_break = [
-        [idx, rules_epochs[all_rules[idx]][phase]]
-        for phase, indices in phase_to_indices
-        for idx in indices
-    ]
-    
-    tb_break_name = [
-        f"{all_rules[idx]}-{phase}"
-        for phase, indices in phase_to_indices
-        for idx in indices
-    ]
-    
-    tb_break_name = np.array(tb_break_name)
-    
-    cell_vars_rules = [] 
-    
-    for el in range(len(tb_break)):
-        n_rules = len(task_params['rules'])
-        n_cells = clustering_data.shape[-1]
-            
-        rule_idx, period_time = tb_break[el][0], tb_break[el][1]
-        
-        # print('Rule {} (idx {})'.format(all_rules[rule_idx], rule_idx))
-        if len(clustering_data.shape) == 3:
-            rule_cluster = clustering_data[test_task == rule_idx, period_time[0]:period_time[1], :]
-            cell_vars_rules.append(np.var(rule_cluster, axis=(0, 1))) 
-        else:
-            clustering_data_old = clustering_data
-            # calculate the mean value based on input
-            if "pre" in clustering_name:
-                rule_cluster = clustering_data[test_task == rule_idx, period_time[0]:period_time[1]]
-                mean_var = np.var(rule_cluster, axis=(0, 1)).mean(axis=0)
-                cell_vars_rules.append(mean_var)
-                
-            elif "post" in clustering_name: 
-                rule_cluster = clustering_data[test_task == rule_idx, period_time[0]:period_time[1]]
-                mean_var = np.var(rule_cluster, axis=(0, 1)).mean(axis=1)
-                cell_vars_rules.append(mean_var)
-                
-            elif "all" in clustering_name: 
-                clustering_data = clustering_data.reshape(clustering_data.shape[0], clustering_data.shape[1], -1)
-                rule_cluster = clustering_data[test_task == rule_idx, period_time[0]:period_time[1], :]
-                cell_vars_rules.append(np.var(rule_cluster, axis=(0, 1))) 
-                    
-    cell_vars_rules = np.array(cell_vars_rules)
-    
-    cell_vars_rules_norm = np.zeros_like(cell_vars_rules)
-    
-    # normalize
-    cell_max_var = np.max(cell_vars_rules, axis=0) # Across rules
-    for period_idx in range(len(tb_break)):
-        cell_vars_rules_norm[period_idx] = np.where(
-            cell_max_var > 0., cell_vars_rules[period_idx] / cell_max_var, 0.
-        )
-    
-    # build rule-wise value lists and corresponding field names dynamically
-    rule_vals  = [cell_vars_rules_norm[i].tolist() for i in range(n_rules)]
-    rule_names = [f"rule{i}" for i in range(n_rules)]
-    
-    # structured array whose fields are rule0, rule1, …, rule{n_rules-1}
-    dtype = np.dtype([(name, float) for name in rule_names])
-    rules_struct = np.array(list(zip(*rule_vals)), dtype=dtype)
-    
-    # descending lexicographic sort across all rule columns
-    sort_idxs = np.argsort(rules_struct, order=rule_names)[::-1]
-    
-    # sort it 
-    cell_vars_rules_sorted_norm = cell_vars_rules_norm[:, sort_idxs]
-
-    # plot 
-    fig, ax = plt.subplots(2,1,figsize=(24,8*2))
-    for period_idx in range(cell_vars_rules_sorted_norm.shape[0]): 
-        ax[0].plot(cell_vars_rules_sorted_norm[period_idx], color=c_vals[period_idx],
-                label=tb_break_name[period_idx])
-    # ax[0].legend()
-    ax[0].set_xlabel('Cell_idx')
-    ax[0].set_ylabel('Normalized task variance')
-    
-    sns.heatmap(cell_vars_rules_sorted_norm, ax=ax[1], cmap="coolwarm", cbar=True, vmin=0, vmax=1)
-    ax[1].set_xlabel('Cell idx')
-    ax[1].set_ylabel('Rule / Break-name', fontsize=12, labelpad=12)
-    ax[1].set_yticks(np.arange(len(tb_break_name)))
-    ax[1].set_yticklabels(tb_break_name, rotation=0, ha='right', va='center', fontsize=9)
-    fig.tight_layout()
-    fig.savefig(f"./multiple_tasks/{clustering_name}_variance_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)   
-
-    if not ("all" in clustering_name): 
-        # clustering & grouping & re-ordering
-        result = clustering.cluster_variance_matrix(cell_vars_rules_sorted_norm)
-        cell_vars_rules_sorted_norm_ordered = cell_vars_rules_sorted_norm[np.ix_(result["row_order"], result["col_order"])]
-    
-        # pearson correlation matrix
-        figcorr, axcorr = plt.subplots(1,1,figsize=(8,8))
-        cell_vars_rules_sorted_norm_ordered_corr = np.corrcoef(cell_vars_rules_sorted_norm_ordered, rowvar=True)
-        sns.heatmap(cell_vars_rules_sorted_norm_ordered_corr, cmap="coolwarm")
-        axcorr.set_xticks(np.arange(len(tb_break_name)))
-        axcorr.set_xticklabels(tb_break_name[result["row_order"]], rotation=270, ha='right', va='center', fontsize=9)    
-        axcorr.set_yticks(np.arange(len(tb_break_name)))
-        axcorr.set_yticklabels(tb_break_name[result["row_order"]], rotation=0, ha='right', va='center', fontsize=9) 
-        figcorr.tight_layout()
-        figcorr.savefig(f"./multiple_tasks/{clustering_name}_variance_cluster_corr_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)
-
-    # # plot the effect of grouping & ordering through the feature axis
-    # fig, ax = plt.subplots(2,1,figsize=(24,8*2))
-    # sns.heatmap(cell_vars_rules_sorted_norm, ax=ax[0], cmap="coolwarm", cbar=True, vmin=0, vmax=1)
-    # sns.heatmap(cell_vars_rules_sorted_norm_ordered, ax=ax[1], cmap="coolwarm", cbar=True, vmin=0, vmax=1)
-    # ax[0].set_ylabel('Rule / Break-name', fontsize=12, labelpad=12)
-    # ax[0].set_yticks(np.arange(len(tb_break_name)))
-    # ax[0].set_yticklabels(
-    #     tb_break_name,
-    #     rotation=0,              
-    #     ha='right',              
-    #     va='center',
-    #     fontsize=9,              
-    # )
-    # ax[1].set_ylabel('Rule / Break-name', fontsize=12, labelpad=12)
-    # ax[1].set_yticks(np.arange(len(tb_break_name)))
-    # ax[1].set_yticklabels(
-    #     tb_break_name[result["row_order"]],
-    #     rotation=0,              
-    #     ha='right',              
-    #     va='center',
-    #     fontsize=9,              
-    # )    
-    # fig.savefig(f"./multiple_tasks/{clustering_name}_variance_cluster_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)
-        
-    # # plot hierarchy of grouping 
-    # fig, axs = plt.subplots(1,2,figsize=(15*2,4))
-    # dendrogram(result["row_linkage"], ax=axs[0], labels=tb_break_name, leaf_rotation=45)
-    # axs[0].set_title(f"Row hierarchy (k = {result['row_k']})")
-    # dendrogram(result["col_linkage"], ax=axs[1], labels=np.array([i for i in range(cell_vars_rules_sorted_norm_ordered.shape[1])]), leaf_rotation=45)
-    # axs[1].set_title(f"Col hierarchy (k = {result['col_k']})")
-    # fig.savefig(f"./multiple_tasks/{clustering_name}_variance_hierarchy_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)
-    
-    # plot the conditional grouping
-    if ("all" in clustering_name): 
-        assert len(clustering_data_old.shape) == 4
-        pre_num, post_num = clustering_data_old.shape[2], clustering_data_old.shape[3]
-        feature_group_pre = [] 
-        for i in range(post_num):
-            feature_group_pre.append([i + j * post_num for j in range(pre_num)])
-        feature_group_post = []
-        for i in range(pre_num):
-            feature_group_post.append([j for j in range(post_num * i, post_num * (i+1))])
-
-        # print(f"feature_group_pre: {feature_group_pre}")
-        # print(f"feature_group_post: {feature_group_post}")
-        print(f"cell_vars_rules_sorted_norm: {cell_vars_rules_sorted_norm.shape}")
-
-        result_pre = clustering.cluster_variance_matrix_forgroup(cell_vars_rules_sorted_norm, row_groups=None, col_groups=feature_group_pre)
-        cell_vars_rules_sorted_norm_pre = cell_vars_rules_sorted_norm[np.ix_(result_pre["row_order"], result_pre["col_order"])]
-        result_post = clustering.cluster_variance_matrix_forgroup(cell_vars_rules_sorted_norm, row_groups=None, col_groups=feature_group_post)
-        cell_vars_rules_sorted_norm_post = cell_vars_rules_sorted_norm[np.ix_(result_post["row_order"], result_post["col_order"])]
-
-        figprepost, axprepost = plt.subplots(3,1,figsize=(24,8*3))
-        sns.heatmap(cell_vars_rules_sorted_norm, ax=axprepost[0], cmap="coolwarm", cbar=True, vmin=0, vmax=1)
-        sns.heatmap(cell_vars_rules_sorted_norm_pre, ax=axprepost[1], cmap="coolwarm", cbar=True, vmin=0, vmax=1)
-        sns.heatmap(cell_vars_rules_sorted_norm_post, ax=axprepost[2], cmap="coolwarm", cbar=True, vmin=0, vmax=1)
-        axprepost[0].set_yticklabels(tb_break_name, rotation=0, ha='right', va='center', fontsize=9)
-        axprepost[1].set_yticklabels(tb_break_name[result_pre["row_order"]], rotation=0, ha='right', va='center', fontsize=9)
-        axprepost[2].set_yticklabels(tb_break_name[result_post["row_order"]], rotation=0, ha='right', va='center', fontsize=9)
-        axprepost[0].set_title("Original")
-        axprepost[1].set_title("Group by Pre")
-        axprepost[2].set_title("Group by Post")
-        figprepost.tight_layout()
-        figprepost.savefig(f"./multiple_tasks/{clustering_name}_bygroup_variance_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)  
+# save information
+out_path = Path(f"./multiple_tasks/param_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}_result.json")
+with out_path.open("w") as f: 
+    json.dump(config, f, indent=4, default=helper.as_jsonable)
         
         
-
-            
-
-
-
-
-

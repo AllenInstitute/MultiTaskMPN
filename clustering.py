@@ -226,7 +226,6 @@ def cluster_variance_matrix_forgroup(
     # rebuild full feature order: block-by-block following dendrogram
     row_order = [idx for g in row_res["leaf_order"] for idx in row_blocks[g]]
 
-    # ---------- columns ----------------------------------------------
     col_blocks, col_map = _build_groups(V.shape[1], col_groups)
     V_col_grp = _aggregate_along_axis(V, col_blocks, axis=1)
     col_res = _hierarchical_clustering_forgroup(V_col_grp.T, k_min, k_max)
@@ -234,7 +233,6 @@ def cluster_variance_matrix_forgroup(
     col_labels = np.take(col_res["labels"], col_map)
     col_order = [idx for g in col_res["leaf_order"] for idx in col_blocks[g]]
 
-    # ---------- wrap-up ----------------------------------------------
     return dict(
         # fine-grained ordering / labels
         row_order=row_order,

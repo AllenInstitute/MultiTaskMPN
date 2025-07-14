@@ -577,6 +577,7 @@ class MultiPlasticNet(MultiPlasticNetBase):
                 'M': db_mp['M'],
                 'hidden_pre': hidden_pre.detach(),
                 'hidden': hidden.detach(),
+                "input": x.detach(), 
             }
         else:
             db = None
@@ -691,8 +692,14 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
 
         for mpl_idx, mp_layer in enumerate(self.mp_layers):
             # Returns pre-activation
+            layer_input_old = copy.deepcopy(layer_input)
             hidden_pre, db_mp = mp_layer(layer_input, run_mode=run_mode)
             layer_input = self.act_fn(hidden_pre)
+
+            print(layer_input_old.shape)
+            print(hidden_pre.shape)
+            print(layer_input.shape)
+            time.sleep(1000)
 
             if run_mode in ('debug',):
                 print(f'  MP Layer {mpl_idx} forward.')
@@ -711,6 +718,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
         output_hidden = torch.einsum('iI, BI -> Bi', self.W_output, layer_input)
         output = output_hidden + self.b_output.unsqueeze(0)
 
+        
         return output, mpl_activities, db
 
     def network_step(self, current_input, run_mode='minimal', verbose=False):
