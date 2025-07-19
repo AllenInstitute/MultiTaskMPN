@@ -10,7 +10,7 @@ from net_helpers import BaseNetwork, BaseNetworkFunctions
 from net_helpers import rand_weight_init, get_activation_function
 
 import numpy as np
-
+import copy 
 import time 
 
 class MultiPlasticLayer(BaseNetworkFunctions):
@@ -692,14 +692,9 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
 
         for mpl_idx, mp_layer in enumerate(self.mp_layers):
             # Returns pre-activation
-            layer_input_old = copy.deepcopy(layer_input)
+            layer_input_old = layer_input.clone()
             hidden_pre, db_mp = mp_layer(layer_input, run_mode=run_mode)
             layer_input = self.act_fn(hidden_pre)
-
-            print(layer_input_old.shape)
-            print(hidden_pre.shape)
-            print(layer_input.shape)
-            time.sleep(1000)
 
             if run_mode in ('debug',):
                 print(f'  MP Layer {mpl_idx} forward.')
@@ -713,6 +708,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
                 db['hidden{}'.format(mp_layer.mp_layer_name)] = layer_input.detach()
                 db['M{}'.format(mp_layer.mp_layer_name)] = db_mp['M']
                 db['b{}'.format(mp_layer.mp_layer_name)] = db_mp['b']
+                db['input{}'.format(mp_layer.mp_layer_name)] = layer_input_old.detach()
 
         if run_mode in ('debug',): print(f'  Output layer forward.')
         output_hidden = torch.einsum('iI, BI -> Bi', self.W_output, layer_input)

@@ -2224,10 +2224,25 @@ def normalize_to_one(x, axis=None, eps=1e-12):
 
     # Safe division: where s==0 can no longer happen, but keep guard
     return np.divide(x, s, where=s != 0, out=np.full_like(x, np.nan))
-    
 
-def generate_trials_wrap(task_params, n_batches, device='cuda', rules=None,
-                         verbose=False, mode_input="random_batch", fix=False):
+def insert_zeros_after_channel(x, K, after=6):
+    """
+    """
+    if x.ndim != 3:
+        raise ValueError("Input must be 3‑D (H, W, C).")
+    if not (0 <= after < x.shape[2]):
+        raise ValueError("'after' index out of range.")
+
+    # split once, no copies
+    first  = x[..., :after + 1]          # channels 0 … `after`
+    second = x[..., after + 1 :]         # remaining channels
+
+    zeros  = np.zeros((*x.shape[:2], K), dtype=x.dtype)
+
+    return np.concatenate([first, zeros, second], axis=2)
+
+def generate_trials_wrap(task_params, n_batches, device='cuda', verbose=False, rules=None,
+                         mode_input="random_batch", fix=False, pretraining_shift=0):
     """
     Wrapper to generate the raw datasets, including the inputs, labels, and masks.
 
@@ -2348,6 +2363,11 @@ def generate_trials_wrap(task_params, n_batches, device='cuda', rules=None,
 
     if task_params['randomize_inputs']: # Multiplies all inputs by fixed random matrix (needed for MPNs sometimes)
         inputs_all = np.matmul(inputs_all, task_params['randomize_matrix'])
+
+    # Jul 18th: pretraining purprose, paddling the input based on the number of pretrained tasks 
+    # mask and output should not be affected
+    inputs_all = insert_zeros_after_channel(inputs_all, K=pretraining_shift, after=6)
+    print(f"inputs_all paddled: {inputs_all.shape}")
 
     # Converts the data to be passed to network to torch form
     inputs_all = torch.from_numpy(inputs_all).type(torch.float).to(device) # inputs.shape

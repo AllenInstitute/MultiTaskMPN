@@ -24,13 +24,14 @@ from torch.utils.data import DataLoader
 # Data Handling and Image Processing
 from torchvision import datasets, transforms
 
-# Visualization Libraries
-import matplotlib.pyplot as plt
 import seaborn as sns
 from mpl_toolkits.mplot3d import Axes3D
 from skimage.metrics import structural_similarity as ssim
+import h5py
+from hdf5plugin import Blosc 
 
 # Style for Matplotlib
+import matplotlib.pyplot as plt
 import scienceplots
 plt.style.use('science')
 plt.style.use(['no-latex'])
@@ -61,9 +62,6 @@ gc.collect()
 torch.cuda.empty_cache()
 torch.cuda.ipc_collect()
 
-
-
-
 # 0 Red, 1 blue, 2 green, 3 purple, 4 orange, 5 teal, 6 gray, 7 pink, 8 yellow
 c_vals = ['#e53e3e', '#3182ce', '#38a169', '#805ad5','#dd6b20', '#319795', '#718096', '#d53f8c', '#d69e2e',] * 10
 c_vals_l = ['#feb2b2', '#90cdf4', '#9ae6b4', '#d6bcfa', '#fbd38d', '#81e6d9', '#e2e8f0', '#fbb6ce', '#faf089',] * 10
@@ -88,7 +86,7 @@ torch.manual_seed(seed)
 
 hyp_dict['task_type'] = 'multitask' # int, NeuroGym, multitask
 hyp_dict['mode_for_all'] = "random_batch"
-hyp_dict['ruleset'] = 'delaydm1' # low_dim, all, test
+hyp_dict['ruleset'] = 'everything' # low_dim, all, test
 
 accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti', 
                 'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 'dmsnogo', 'dmcnogo')
@@ -150,7 +148,7 @@ hyp_dict['chosen_network'] = "dmpn"
 # trainetalambda
 
 mpn_depth = 1
-n_hidden = 100
+n_hidden = 300
 
 hyp_dict['addon_name'] = "inputtrain+Wtrain+yesoversample"
 hyp_dict['addon_name'] += f"+hidden{n_hidden}"
@@ -187,12 +185,12 @@ def current_basic_params():
 
     train_params = {
         'lr': 1e-3,
-        'n_batches': 640,
-        'batch_size': 640,
+        'n_batches': 128,
+        'batch_size': 128,
         'gradient_clip': 10,
         'valid_n_batch': min(max(20, int(200/len(rules_dict[hyp_dict['ruleset']]))), 50),
-        'n_datasets': 2, 
-        'n_epochs_per_set': 100, 
+        'n_datasets': 500, 
+        'n_epochs_per_set': 1000, 
         # 'weight_reg': 'L2',
         # 'activity_reg': 'L2', 
         # 'reg_lambda': 1e-4,
@@ -200,9 +198,9 @@ def current_basic_params():
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'
             'mode': 'min',                # for ReduceLROnPlateau
-            'factor': 0.5,                # factor to reduce LR
+            'factor': 0.75,                # factor to reduce LR
             'patience': 20,                # epochs to wait before reducing LR
-            'min_lr': 1e-6,
+            'min_lr': 1e-7,
             'step_size': 30,              # for StepLR (step every 30 datasets)
             'gamma': 0.1                  # for StepLR (multiply LR by 0.1)
         },
@@ -389,16 +387,19 @@ if task_params['task_type'] in ('multitask',): # Test batch consists of all the 
 
 labels = labels_stim if color_by == "stim" else labels_resp
     
-test_input, test_output, test_mask = test_data
+test_input, test_output, _ = test_data
+print(f"test_input.device: {test_input.device}")
 
 permutation = np.random.permutation(test_input.shape[0])
 test_input = test_input[permutation]
 test_output = test_output[permutation]
-test_mask = test_mask[permutation]
+# test_mask = test_mask[permutation]
 labels = labels[permutation]
 
 test_input_np = test_input.detach().cpu().numpy()
 test_output_np = test_output.detach().cpu().numpy()
+
+del test_output
 
 # Total number of batches, might be different than test_n_batch
 # this should be the same regardless of variety of test_input
@@ -437,7 +438,7 @@ test_task = find_task(task_params, test_input_np, shift_index)
 
 # In[7]:
 
-
+# actual fitting
 # we use net at different training stage on the same test_input
 net, _, (counter_lst, netout_lst, db_lst, Winput_lst, Winputbias_lst,\
          Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst) = net_helpers.train_network(params, device=device, verbose=verbose,\
@@ -445,14 +446,12 @@ net, _, (counter_lst, netout_lst, db_lst, Winput_lst, Winputbias_lst,\
                                                                                            netFunction=netFunction,\
                                                                                            test_input=[test_input])
 
-counter_lst = [x * epoch_multiply + 1 for x in counter_lst] # avoid log plot issue    
-
-
 # In[ ]:
 
 
 if hyp_dict['chosen_network'] == "dmpn":
     if net_params["input_layer_add"]:
+        counter_lst = [x * epoch_multiply + 1 for x in counter_lst] # avoid log plot issue    
         fignorm, axsnorm = plt.subplots(1,1,figsize=(4,4))
         axsnorm.plot(counter_lst, [np.linalg.norm(Winput_matrix) for Winput_matrix in Winput_lst], "-o")
         axsnorm.set_xscale("log")
@@ -592,24 +591,26 @@ def modulation_extraction(db, max_seq_len, layer_index):
     n_batch_all_ = test_input.shape[0]
     
     Ms = np.concatenate((
-        db[f'M{layer_index}'].detach().cpu().numpy().reshape(n_batch_all_, max_seq_len, -1),
+        db[f'M{layer_index}'].reshape(n_batch_all_, max_seq_len, -1),
     ), axis=-1)
 
     Ms_orig = np.concatenate((
-        db[f'M{layer_index}'].detach().cpu().numpy(),
+        db[f'M{layer_index}'],
     ), axis=-1)
 
     bs = np.concatenate((
-        db[f'b{layer_index}'].detach().cpu().numpy(),
+        db[f'b{layer_index}'],
     ), axis=-1) 
 
     hs = np.concatenate((
-        db[f'hidden{layer_index}'].detach().cpu().numpy().reshape(n_batch_all_, max_seq_len, -1),
+        db[f'hidden{layer_index}'].reshape(n_batch_all_, max_seq_len, -1),
     ), axis=-1)
 
-    # xs = 
+    xs = np.concatenate((
+        db[f'input{layer_index}'].reshape(n_batch_all_, max_seq_len, -1),
+    ), axis=-1)
 
-    return Ms, Ms_orig, hs, bs
+    return Ms, Ms_orig, hs, bs, xs
 
 print(f"rules_epochs: {rules_epochs}")
 all_rules = np.array(task_params["rules"])
@@ -617,23 +618,34 @@ print(f"all_rules: {all_rules}")
 test_task = np.array(test_task)
 print(f"test_task: {test_task}")
 
-Ms, Ms_orig, hs, bs = modulation_extraction(db_lst[0][-1], max_seq_len, layer_index)
+Ms, Ms_orig, hs, bs, xs = modulation_extraction(db_lst[0][-1], max_seq_len, layer_index)
+print(f"Ms.shape:{Ms.shape}")
+print(f"Ms_orig.shape:{Ms_orig.shape}")
+print(f"hs.shape:{hs.shape}")
+print(f"bs.shape:{bs.shape}")
+print(f"xs.shape:{xs.shape}")
 
-# information that need to be saved
-config = {
-    "rules_epochs": rules_epochs, 
-    "hyp_dict": hyp_dict, 
-    "all_rules": all_rules, 
-    "test_task": test_task, 
-    "Ms": Ms, 
-    "Ms_orig": Ms_orig, 
-    "hs": hs, 
-    "bs": bs
-}
+# save
+pathname = f"./multiple_tasks/param_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}_result.npz"
+np.savez_compressed(pathname, \
+                    rules_epochs=rules_epochs, \
+                    hyp_dict=hyp_dict, \
+                    all_rules=all_rules, \
+                    test_task=test_task, \
+                    # Ms=Ms, 
+                    Ms_orig=Ms_orig, \
+                    hs=hs, \
+                    bs=bs, \
+                    xs=xs)
 
-# save information
-out_path = Path(f"./multiple_tasks/param_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}_result.json")
-with out_path.open("w") as f: 
-    json.dump(config, f, indent=4, default=helper.as_jsonable)
-        
-        
+
+
+
+
+
+
+
+
+
+
+

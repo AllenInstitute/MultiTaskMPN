@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import math 
 import seaborn as sns 
 import copy 
+import math, os, gc 
+import sys 
 
 import torch
 from torch import nn
@@ -22,13 +24,59 @@ c_vals_d = ['#9b2c2c', '#2c5282', '#276749', '#553c9a', '#9c4221', '#285e61', '#
 l_vals = ['solid', 'dashed', 'dotted', 'dashdot', '-', '--', '-.', ':', (0, (3, 1, 1, 1)), (0, (5, 10))]
 markers_vals = ['.', 'o', 'v', '^', '<', '>', '1', '2', '3', '4', 's', 'p', '*', 'h', 'H', '+', 'x', 'D', 'd', '|', '_']
 
+def expand_and_freeze(net):
+    """
+    """
+    # --- 1. sanity checks ----------------------------------------------------
+    assert getattr(net, "input_layer_active", False), \
+        "This network was built without W_initial_linear."
+    old_linear = net.W_initial_linear
+    in_f, out_f = old_linear.in_features, old_linear.out_features
+    bias_flag   = old_linear.bias is not None
+
+    # --- 2. build a replacement Linear --------------------------------------
+    new_linear = nn.Linear(in_f + 1, out_f, bias=bias_flag)
+
+    with torch.no_grad():
+        # copy old weights                     (out_f,  in_f)
+        new_linear.weight[:, :in_f] = old_linear.weight.data
+        # init the extra column (out_f, 1)
+        nn.init.kaiming_uniform_(new_linear.weight[:, -1:].t(), a=math.sqrt(5))
+        if bias_flag:
+            new_linear.bias[:] = old_linear.bias.data
+
+    # swap into the network
+    net.W_initial_linear = new_linear
+
+    # --- 3. freeze everything by default ------------------------------------
+    for p in net.parameters():
+        p.requires_grad = False
+
+    # make *entire* weight tensor trainable, but mask gradients later
+    net.W_initial_linear.weight.requires_grad = True
+
+    # --- 4. mask grads for frozen block -------------------------------------
+    def freeze_left_cols(grad):
+        # zero‑out columns 0…(in_f‑1)
+        grad[:, :in_f] = 0
+        return grad
+    net.W_initial_linear.weight.register_hook(freeze_left_cols)
+
+    # optional: leave bias frozen (comment out if you want it trainable)
+    # net.W_initial_linear.bias.requires_grad = True
+
+    return net
+    
 def train_network(params, net=None, device=torch.device('cuda'), verbose=False, \
-    train=True, hyp_dict=None, netFunction=None, test_input=None):
+    train=True, hyp_dict=None, netFunction=None, test_input=None, pretraining_shift=0):
     """
     """
     assert isinstance(test_input, list), "test_input must be a list"
 
     task_params, train_params, net_params = params
+
+    if net is not None and pretraining_shift != 0: 
+        net = expand_and_freeze(net)
 
     if task_params['task_type'] in ('multitask',):
     
@@ -38,16 +86,17 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
             # "training batches should only be over one rule"
             # "but validation should mix them"            
             train_data, (_, train_trails, _ ) = mpn_tasks.generate_trials_wrap(
-                task_params, train_params['n_batches'], device=device, mode_input=hyp_dict['mode_for_all'], \
-                    verbose=True
+                task_params, train_params['n_batches'], device=device, verbose=True, mode_input=hyp_dict['mode_for_all'], \
+                pretraining_shift=pretraining_shift
+                    
             )
 
             return train_data, train_trails
         
         def generate_valid_data(device='cuda'):
             valid_data, (_, valid_trails, _) = mpn_tasks.generate_trials_wrap(
-                task_params, train_params['valid_n_batch'], rules=task_params['rules'], device=device,
-                mode_input=hyp_dict['mode_for_all']
+                task_params, train_params['valid_n_batch'], rules=task_params['rules'], device=device, mode_input=hyp_dict['mode_for_all'], \
+                pretraining_shift=pretraining_shift
             )
             return valid_data, valid_trails
         
@@ -86,16 +135,40 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
         # generate training data
         train_data, train_trails = generate_train_data(device=device)
         new_thresh = True if dataset_idx == 0 else False
+
         if train: 
-            if test_input is not None and (is_power_of_4_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
+            if test_input is not None and (dataset_idx == train_params['n_datasets'] - 1):
                 print(f"How about Test Data at dataset {dataset_idx}")
                 counter_lst.append(dataset_idx)
                 # test data for each stage
                 for test_input_index, test_input_ in enumerate(test_input): 
-                    net_out, net_hidden, db = net.iterate_sequence_batch(test_input_, run_mode='track_states')
-                    net_out = net_out.detach().cpu().numpy()
-                    netout_lst[test_input_index].append(net_out)
-                    db_lst[test_input_index].append(db)
+                    # jul 16th: should we separate and load the input, and stack the output later 
+                    print(f"test_input_: {test_input_.shape}")
+                    minibatch = 64 
+                    net_out_np = [] 
+                    db = [] 
+                    for start in range(0, test_input_.shape[0], minibatch): 
+                        end = min(start + minibatch, test_input_.shape[0])
+                        test_input_batch = test_input_[start:end]
+                        # both are in cuda
+                        net_out_batch, _, db_batch = net.iterate_sequence_batch(test_input_batch, run_mode='track_states')
+                        # register the values
+                        net_out_np.append(net_out_batch.detach().cpu().numpy())
+                        db.append({k: v.detach().cpu().numpy() for k, v in db_batch.items()})
+
+                        del net_out_batch, db_batch
+                        gc.collect(); torch.cuda.empty_cache()
+
+                    # stack
+                    net_out_np = np.concatenate(net_out_np, axis=0)
+                    
+                    db_all = {}
+                    for key in db[0].keys():
+                        db_key = np.concatenate([db_[key] for db_ in db], axis=0)
+                        db_all[key] = db_key
+                    
+                    netout_lst[test_input_index].append(net_out_np)
+                    db_lst[test_input_index].append(db_all)
             
                 Woutput_lst.append(net.W_output.detach().cpu().numpy())
             
@@ -114,33 +187,48 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
                     for i in range(len(net.mp_layers)):
                         W_all_.append(net.mp_layers[i].W.detach().cpu().numpy())
                 Wall_lst.append(W_all_)
-
                 marker_lst.append(dataset_idx)
 
             _, monitor_loss, monitor_acc, goodness_history = net.fit(train_params, train_data, train_trails, valid_batch=valid_data, 
                                                                         valid_trails=valid_trails, new_thresh=new_thresh,
                                                                         run_mode=hyp_dict['run_mode'])
 
+            
             # calculate the change of task sampling proportion 
             # aim for multi-task training (but clearly work for single-task)
             # --- inputs ---------------------------------------------------------------
             df   = task_params["adjust_task_decay"]          # scalar decay factor
-            g    = np.asarray(goodness_history, dtype=float)   # shape (R, C)
-            # print(f"goodness_history: {goodness_history}")
+
+            # Jul 19th: for pretraining
+            max_len = max(len(a) for a in goodness_history)
+            goodness_history = [
+                np.pad(a.astype(float),                     # ensure float → can hold NaN
+                       (0, max_len - len(a)),              # (pad_left, pad_right)
+                       constant_values=np.nan)              # fill value
+                for a in goodness_history
+            ]
+            
+            print(f"goodness_history: {goodness_history}")
+            g = np.vstack(goodness_history)
+            
+            # g    = np.asarray(goodness_history, dtype=float)   # shape (R, C)
             
             # sanity-check: every row must have the same length
             if len({len(row) for row in goodness_history}) != 1:
                 raise ValueError("`last_group_goodness` rows have unequal lengths.")
-            
-            # --- compute weighted sum --------------------------------------------------
-            # exponent sequence: R, R-1, … , 1  (replicates original i_ = len-adji)
-            exp = np.arange(g.shape[0], 0, -1)[:, None]      # shape (R,1) for broadcasting
-            weights = df ** exp                              # shape (R,1)
-            all_adjust = (g * weights).sum(axis=0)           # shape (C,)
 
-            # update the sampling probability
-            assert len(all_adjust) == len(task_params["rules"]) 
-            task_params['rules_probs'] = mpn_tasks.normalize_to_one(all_adjust)
+            if pretraining_shift == 0: 
+                # --- compute weighted sum --------------------------------------------------
+                # exponent sequence: R, R-1, … , 1  (replicates original i_ = len-adji)
+                exp = np.arange(g.shape[0], 0, -1)[:, None]      # shape (R,1) for broadcasting
+                weights = df ** exp                              # shape (R,1)
+                all_adjust = (g * weights).sum(axis=0)           # shape (C,)
+    
+                # update the sampling probability
+                assert len(all_adjust) == len(task_params["rules"]) 
+                task_params['rules_probs'] = mpn_tasks.normalize_to_one(all_adjust)
+            else: # by default only one task, so probability trivally to 1
+                task_params['rules_probs'] = np.array([1])
 
             if test_input is not None and (is_power_of_4_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
                 loss_lst.append(monitor_loss)
@@ -711,7 +799,8 @@ class BaseNetwork(BaseNetworkFunctions):
             self.optim_type = train_params.get('optimizer', 'adam')
             if list(self.parameters()) != []:
                 if self.optim_type in ('adam',):
-                    self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)      
+                    # self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)    
+                    self.optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr=self.lr)
                 elif self.optim_type in ('sgd',):
                     self.optimizer = torch.optim.SGD(self.parameters(), lr=self.lr) 
 
