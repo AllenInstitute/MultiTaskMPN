@@ -8,6 +8,13 @@ import time
 import torch
 
 
+def permutation_indices_b_to_a(a, b):
+    """
+    Return indices p such that [b[i] for i in p] == a (no duplicates).
+    """
+    pos = {v: i for i, v in enumerate(b)}
+    return [pos[v] for v in a]
+    
 def as_jsonable(obj):
     """
     Convert *obj* into something json-serialisable.

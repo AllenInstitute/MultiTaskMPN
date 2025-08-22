@@ -4,23 +4,25 @@ from scipy.spatial.distance import pdist, squareform
 from sklearn.metrics import silhouette_score
 from typing import List, Sequence, Optional, Tuple, Dict, Any
 
-def _hierarchical_clustering(data, k_min=3, k_max=40, metric="euclidean"):
+def _hierarchical_clustering(data, k_min=3, k_max=40, metric="euclidean", method="ward"):
     """
     Hierarchical Ward clustering on `data` (observations × features).
     """
     n_obs = data.shape[0]
 
     pairwise_dists = pdist(data, metric=metric)
-    Z = linkage(pairwise_dists, method="ward")
+    Z = linkage(pairwise_dists, method=method)
     Z = optimal_leaf_ordering(Z, pairwise_dists)
 
     best_k, best_score, best_labels = None, -np.inf, None
     k_range = range(max(k_min, 2), min(k_max, n_obs - 1) + 1)
     D_square = squareform(pairwise_dists)
 
+    score_recording = {}
     for k in k_range:
         labels = fcluster(Z, k, criterion="maxclust")
         score = silhouette_score(D_square, labels, metric="precomputed")
+        score_recording[k] = score # register
         if score > best_score:
             best_k, best_score, best_labels = k, score, labels
 
@@ -32,18 +34,19 @@ def _hierarchical_clustering(data, k_min=3, k_max=40, metric="euclidean"):
         labels=best_labels,
         k=best_k,
         silhouette=best_score,
+        score_recording=score_recording
     )
 
 
-def cluster_variance_matrix(V, k_min=3, k_max=40):
+def cluster_variance_matrix(V, k_min=3, k_max=40, metric="euclidean", method="ward"):
     """
     Cluster a variance matrix V (shape: N features × M neurons)
     for both rows and columns.
     """
     V = np.asarray(V)
 
-    row_res = _hierarchical_clustering(V,  k_min, k_max)
-    col_res = _hierarchical_clustering(V.T, k_min, k_max)
+    row_res = _hierarchical_clustering(V,  k_min, k_max, metric, method)
+    col_res = _hierarchical_clustering(V.T, k_min, k_max, metric, method)
 
     return dict(
         row_order=row_res["leaf_order"],
@@ -52,12 +55,13 @@ def cluster_variance_matrix(V, k_min=3, k_max=40):
         col_labels=col_res["labels"],
         row_k=row_res["k"],
         col_k=col_res["k"],
-        row_linkage=row_res["linkage"],   # full row hierarchy
-        col_linkage=col_res["linkage"],   # full column hierarchy
+        row_linkage=row_res["linkage"],   
+        col_linkage=col_res["linkage"],   
+        row_score_recording=row_res["score_recording"], 
+        col_score_recording=col_res["score_recording"]
     )
 
 # ---------------------------------------------------------------------
-#  ---------------------------------------------------
 # ---------------------------------------------------------------------
 
 def _hierarchical_clustering_forgroup(
