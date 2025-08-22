@@ -148,9 +148,9 @@ hyp_dict['chosen_network'] = "dmpn"
 # trainetalambda
 
 mpn_depth = 1
-n_hidden = 300
+n_hidden = 200
 
-hyp_dict['addon_name'] = "inputtrain+Wtrain+yesoversample"
+hyp_dict['addon_name'] = "L2"
 hyp_dict['addon_name'] += f"+hidden{n_hidden}"
 
 # for coding 
@@ -189,18 +189,18 @@ def current_basic_params():
         'batch_size': 128,
         'gradient_clip': 10,
         'valid_n_batch': min(max(20, int(200/len(rules_dict[hyp_dict['ruleset']]))), 50),
-        'n_datasets': 500, 
-        'n_epochs_per_set': 1000, 
-        # 'weight_reg': 'L2',
-        # 'activity_reg': 'L2', 
-        # 'reg_lambda': 1e-4,
+        'n_datasets': 4000, 
+        'n_epochs_per_set': 100, 
+        'weight_reg': 'L2',
+        'activity_reg': 'L2', 
+        'reg_lambda': 1e-4,
         
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'
             'mode': 'min',                # for ReduceLROnPlateau
             'factor': 0.75,                # factor to reduce LR
             'patience': 20,                # epochs to wait before reducing LR
-            'min_lr': 1e-7,
+            'min_lr': 1e-6,
             'step_size': 30,              # for StepLR (step every 30 datasets)
             'gamma': 0.1                  # for StepLR (multiply LR by 0.1)
         },

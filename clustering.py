@@ -217,7 +217,7 @@ def cluster_variance_matrix_forgroup(
 
     # ---------- rows --------------------------------------------------
     row_blocks, row_map = _build_groups(V.shape[0], row_groups)
-    V_row_grp = _aggregate_along_axis(V, row_blocks, axis=0)
+    V_row_grp = _aggregate_along_axis(V, row_blocks, axis=0, reduce="median")
     row_res = _hierarchical_clustering_forgroup(V_row_grp, k_min, k_max)
 
     # expand group labels → per-feature
@@ -227,7 +227,7 @@ def cluster_variance_matrix_forgroup(
     row_order = [idx for g in row_res["leaf_order"] for idx in row_blocks[g]]
 
     col_blocks, col_map = _build_groups(V.shape[1], col_groups)
-    V_col_grp = _aggregate_along_axis(V, col_blocks, axis=1)
+    V_col_grp = _aggregate_along_axis(V, col_blocks, axis=1, reduce="median")
     col_res = _hierarchical_clustering_forgroup(V_col_grp.T, k_min, k_max)
 
     col_labels = np.take(col_res["labels"], col_map)

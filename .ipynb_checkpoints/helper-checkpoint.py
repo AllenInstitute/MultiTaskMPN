@@ -7,6 +7,40 @@ import time
 
 import torch
 
+
+def as_jsonable(obj):
+    """
+    Convert *obj* into something json-serialisable.
+
+    Handles:
+    • np.ndarray      → nested Python list
+    • np.integer/float→ plain int/float
+    • list/tuple      → element-wise conversion (keeps same type as list)
+    • dict            → value-wise conversion (keys left untouched)
+    Falls back to the original object if it is already JSON-friendly,
+    otherwise raises TypeError so json can try its own default.
+    """
+    # --- NumPy types --------------------------------------------------
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.integer, np.floating)):
+        return obj.item()
+
+    # --- Container types ----------------------------------------------
+    if isinstance(obj, (list, tuple)):
+        return [as_jsonable(el) for el in obj]         # keep outer list
+    if isinstance(obj, dict):
+        return {k: as_jsonable(v) for k, v in obj.items()}
+
+    # --- Anything JSON already understands (str, int, float, bool, None) ----
+    # Leave it unchanged; json.dumps can handle it.
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+
+    # --- Unknown type: let json default handler decide -----------------
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serialisable")
+    
+        
 def to_ndarray(x):
     """
     Return *x* as a NumPy ndarray.

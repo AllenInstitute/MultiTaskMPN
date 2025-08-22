@@ -57,13 +57,11 @@ def expand_and_freeze(net):
 
     # --- 4. mask grads for frozen block -------------------------------------
     def freeze_left_cols(grad):
-        # zero‑out columns 0…(in_f‑1)
-        grad[:, :in_f] = 0
-        return grad
+        mask = torch.zeros_like(grad)
+        mask[:, -1] = 1 
+        return grad * mask
+        
     net.W_initial_linear.weight.register_hook(freeze_left_cols)
-
-    # optional: leave bias frozen (comment out if you want it trainable)
-    # net.W_initial_linear.bias.requires_grad = True
 
     return net
     
@@ -82,7 +80,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
     
         def generate_train_data(device='cuda'):
             # ZIHAN
-            # correct thing to do
+            # correct thing to dox
             # "training batches should only be over one rule"
             # "but validation should mix them"            
             train_data, (_, train_trails, _ ) = mpn_tasks.generate_trials_wrap(
@@ -137,8 +135,10 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
         new_thresh = True if dataset_idx == 0 else False
 
         if train: 
-            if test_input is not None and (dataset_idx == train_params['n_datasets'] - 1):
-                print(f"How about Test Data at dataset {dataset_idx}")
+            # Jul 19th: test the network's output on the testing dataset at the different stage of the network
+            # save and register the network's parameter and output
+            if test_input is not None and (is_power_of_4_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
+                # print(f"How about Test Data at dataset {dataset_idx}")
                 counter_lst.append(dataset_idx)
                 # test data for each stage
                 for test_input_index, test_input_ in enumerate(test_input): 
@@ -208,7 +208,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
                 for a in goodness_history
             ]
             
-            print(f"goodness_history: {goodness_history}")
+            # print(f"goodness_history: {goodness_history}")
             g = np.vstack(goodness_history)
             
             # g    = np.asarray(goodness_history, dtype=float)   # shape (R, C)

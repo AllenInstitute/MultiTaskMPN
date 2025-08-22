@@ -2225,7 +2225,7 @@ def normalize_to_one(x, axis=None, eps=1e-12):
     # Safe division: where s==0 can no longer happen, but keep guard
     return np.divide(x, s, where=s != 0, out=np.full_like(x, np.nan))
 
-def insert_zeros_after_channel(x, K, after=6):
+def insert_zeros_after_channel(x, K, after=5):
     """
     """
     if x.ndim != 3:
@@ -2236,6 +2236,8 @@ def insert_zeros_after_channel(x, K, after=6):
     # split once, no copies
     first  = x[..., :after + 1]          # channels 0 … `after`
     second = x[..., after + 1 :]         # remaining channels
+    # print(f"first.shape: {first.shape}")
+    # print(f"second.shape: {second.shape}")
 
     zeros  = np.zeros((*x.shape[:2], K), dtype=x.dtype)
 
@@ -2366,7 +2368,7 @@ def generate_trials_wrap(task_params, n_batches, device='cuda', verbose=False, r
 
     # Jul 18th: pretraining purprose, paddling the input based on the number of pretrained tasks 
     # mask and output should not be affected
-    inputs_all = insert_zeros_after_channel(inputs_all, K=pretraining_shift, after=6)
+    inputs_all = insert_zeros_after_channel(inputs_all, K=pretraining_shift, after=5)
     print(f"inputs_all paddled: {inputs_all.shape}")
 
     # Converts the data to be passed to network to torch form

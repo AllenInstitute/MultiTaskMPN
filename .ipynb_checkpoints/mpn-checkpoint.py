@@ -2,6 +2,7 @@ import torch
 from torch import nn
 from torch.utils.data import TensorDataset
 import torch.nn.functional as F
+from torch.nn.init import orthogonal_
 
 import math
 
@@ -9,6 +10,8 @@ from net_helpers import BaseNetwork, BaseNetworkFunctions
 from net_helpers import rand_weight_init, get_activation_function
 
 import numpy as np
+import copy 
+import time 
 
 class MultiPlasticLayer(BaseNetworkFunctions):
     """
@@ -20,7 +23,7 @@ class MultiPlasticLayer(BaseNetworkFunctions):
     and "update_M_matrix" functions. The latter needs to be called after every
     forward pass where the modulations should be updated.
     """
-    def __init__(self, ml_params, verbose=True):
+    def __init__(self, ml_params, output_matrix, verbose=True):
         super().__init__()
 
         init_string=''
@@ -52,11 +55,20 @@ class MultiPlasticLayer(BaseNetworkFunctions):
         ### Weight/bias initialization ###
         # Input weights
         self.W_init = ml_params.get('W_init', 'xavier')
-        self.parameter_or_buffer('W', torch.tensor(
-            rand_weight_init(self.n_input, self.n_output, init_type=self.W_init,
-                             cell_types=None),
-            dtype=torch.float)
+        W_freeze = ml_params.get('W_freeze', False)
+
+        # Initialize the weight tensor once.
+        W_tensor = torch.tensor(
+            rand_weight_init(self.n_input, self.n_output, init_type=self.W_init, cell_types=None),
+            dtype=torch.float
         )
+
+        if W_freeze:
+            print("MPN Layer W Frozen")
+            self.register_buffer('W', W_tensor)
+        else:
+            self.parameter_or_buffer('W', W_tensor)
+
 
         # Bias term
         if self.layer_bias:
@@ -104,7 +116,9 @@ class MultiPlasticLayer(BaseNetworkFunctions):
             self.params.append('eta')
             eta_train_str = 'train'
         self.eta_type = ml_params.get('eta_type', 'scalar')
-        self.eta_init = ml_params.get('eta_init', 'gaussian')
+        self.eta_init = ml_params.get('eta_init', 'eta_clamp')
+
+        self.eta_clamp = ml_params.get('eta_clamp', 1.00)
 
         self.parameter_or_buffer('eta', torch.tensor(
             self.init_M_parameter(param_type=self.eta_type, init_type=self.eta_init),
@@ -182,21 +196,29 @@ class MultiPlasticLayer(BaseNetworkFunctions):
             if param_type == 'scalar':
                 if init_type in ('lam_clamp',):
                     param = self.lam_clamp
+                elif init_type in ('eta_clamp',):
+                    param = self.eta_clamp
                 else:
                     param = rand_weight_init(1, init_type=init_type, weight_norm=1.0)
             elif param_type == 'pre_vector':
                 if init_type in ('lam_clamp',):
                     param = self.lam_clamp * np.ones((self.n_input,))
+                elif init_type in ('eta_clamp',):
+                    param = self.eta_clamp * np.ones((self.n_input,))
                 else:
                     param = rand_weight_init(self.n_input, init_type=init_type, weight_norm=1.0)
             elif param_type == 'post_vector':
                 if init_type in ('lam_clamp',):
                     param = self.lam_clamp * np.ones((self.n_output,))
+                elif init_type in ('eta_clamp',):
+                    param = self.eta_clamp * np.ones((self.n_output,))
                 else:
                     param = rand_weight_init(self.n_output, init_type=init_type, weight_norm=1.0)
             elif param_type == 'matrix':
                 if init_type in ('lam_clamp',):
                     param = self.lam_clamp * np.random.rand(self.n_output, self.n_input,)
+                elif init_type in ('eta_clamp',):
+                    param = self.eta_clamp * np.random.rand(self.n_output, self.n_input,)
                 else:
                     param = rand_weight_init(self.n_input, self.n_output, init_type=init_type, weight_norm=1.0)
         else:
@@ -344,9 +366,6 @@ class MultiPlasticLayer(BaseNetworkFunctions):
         W = self.W
         if M is None:
             M = self.M
-        # print('W mag: {:.2e}, M mag: {:.2e}'.format(
-        #     np.linalg.norm(W.detach().cpu().numpy()), np.linalg.norm(M.detach().cpu().numpy())
-        # ))
 
         # Fixed weights and M matrix, either multiplicative or additive
         if self.mp_type == 'mult':
@@ -376,7 +395,6 @@ class MultiPlasticLayer(BaseNetworkFunctions):
         """
 
         modulated_weights = self.get_modulated_weights()
-
         pre_act_no_bias =  torch.einsum('BiI, BI -> Bi', modulated_weights, x)
 
         pre_act = pre_act_no_bias + self.b.unsqueeze(0)
@@ -385,6 +403,7 @@ class MultiPlasticLayer(BaseNetworkFunctions):
             db = {
                 'pre_act_no_bias': pre_act_no_bias.detach(),
                 'M': self.M.detach(),
+                'b': self.b.detach().unsqueeze(0), # record bias information as well 
             }
             if self.m_act:
                 db['M_pre'] = self.M_pre.detach()
@@ -400,7 +419,7 @@ class MultiPlasticNetBase(BaseNetwork):
     MPNs, no matter the connections that lead from input to output.
     """
 
-    def __init__(self, net_params, n_output_pre, verbose=False):
+    def __init__(self, net_params, n_output_pre, output_matrix="", verbose=False):
         # Note that this assumes self.output has already been set in child
         assert hasattr(self, 'n_output')
 
@@ -447,6 +466,22 @@ class MultiPlasticNetBase(BaseNetwork):
             dtype=torch.float)
         )
 
+        # overwrite 
+        if output_matrix == "":
+            pass
+        elif output_matrix == "untrained":
+            print("Output Matrix Untrained")
+            self.W_output.requires_grad = False
+        elif output_matrix == "orthogonal":
+            print("Output Matrix Orthogonal and Untrained")
+            W_output_init = torch.empty(self.n_output, n_output_pre)  # Create a matrix of size (n_output, n_output_pre)
+            orthogonal_(W_output_init)  # In-place orthogonal initialization
+            W_output_init = W_output_init.T
+            self.parameter_or_buffer('W_output', torch.tensor(W_output_init, dtype=torch.float))
+            self.W_output.requires_grad = False
+        else:
+            raise Exception("Output Matrix not recognized")
+
         self.parameter_or_buffer('b_output', torch.tensor(
             rand_weight_init(self.n_output, init_type=self.b_output_init),
             dtype=torch.float)
@@ -467,7 +502,7 @@ class MultiPlasticNetBase(BaseNetwork):
             mp_layer.param_clamp()
 
     @torch.no_grad()
-    def _monitor_init(self, train_params, train_data, valid_batch=None):
+    def _monitor_init(self, train_params, train_data, train_trails=None, valid_batch=None, valid_trails=None):
 
         # Additional quantities to track during training, note initializes these first so that _monitor call
         # inside super()._monitor_init can append additional quantities.
@@ -479,13 +514,13 @@ class MultiPlasticNetBase(BaseNetwork):
                 self.hist['eta{}'.format(mp_layer.mp_layer_name)] = []
                 self.hist['lam{}'.format(mp_layer.mp_layer_name)] = []
 
-        super()._monitor_init(train_params, train_data, valid_batch=valid_batch)
+        super()._monitor_init(train_params, train_data, train_trails=train_trails, valid_batch=valid_batch, valid_trails=valid_trails)
 
     @torch.no_grad()
-    def _monitor(self, train_batch, train_type='supervised', output=None, loss=None, loss_components=None,
+    def _monitor(self, train_batch, train_go_info_batch, valid_go_info_batch, train_type='supervised', output=None, loss=None, loss_components=None,
                  acc=None, valid_batch=None):
 
-        super()._monitor(train_batch, output=output, loss=loss, loss_components=loss_components,
+        super()._monitor(train_batch, train_go_info_batch, valid_go_info_batch, output=output, loss=loss, loss_components=loss_components,
                          valid_batch=valid_batch)
 
         for mpl_idx, mp_layer in enumerate(self.mp_layers):
@@ -520,7 +555,7 @@ class MultiPlasticNet(MultiPlasticNetBase):
         net_params['ml_params']['n_input'] = self.n_input
         net_params['ml_params']['n_output'] = self.n_hidden
         net_params['ml_params']['dt'] = self.dt
-        self.mp_layer = MultiPlasticLayer(net_params['ml_params'], verbose=verbose)
+        self.mp_layer = MultiPlasticLayer(net_params['ml_params'], output_matrix=self.output_matrix, verbose=verbose)
         self.params.extend(self.mp_layer.params)
 
         self.mp_layers = [self.mp_layer,] # List of all mp_layers in this network
@@ -542,6 +577,7 @@ class MultiPlasticNet(MultiPlasticNetBase):
                 'M': db_mp['M'],
                 'hidden_pre': hidden_pre.detach(),
                 'hidden': hidden.detach(),
+                "input": x.detach(), 
             }
         else:
             db = None
@@ -572,18 +608,53 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
 
     def __init__(self, net_params, verbose=False):
 
-        n_layers = len(net_params['n_neurons']) - 1
+        # Mar 16th: add input layer
+        self.input_layer_active = net_params.get('input_layer_add', False)
+        self.input_layer_active_trainable = net_params.get('input_layer_add_trainable', False)
+
+        if self.input_layer_active:
+            net_params['n_neurons'].insert(1, net_params['n_neurons'][1])
+
+        print(net_params['n_neurons'])
+        self.n_hidden = net_params['n_neurons'][1]
+
+        n_layers = len(net_params['n_neurons']) - 1        
 
         self.n_input = net_params['n_neurons'][0]
         self.n_output = net_params['n_neurons'][-1]
 
-        super().__init__(net_params, net_params['n_neurons'][-2], verbose=verbose)
+        self.output_matrix = net_params['output_matrix']
+
+        super().__init__(net_params, net_params['n_neurons'][-2], output_matrix=self.output_matrix, verbose=verbose)
 
         # Creates all the MP layers
         self.param_clamping = True # Always have param clamping for MP layers because lam bounds
 
+        if self.input_layer_active:
+            self.W_initial_linear = nn.Linear(net_params['n_neurons'][0], net_params['n_neurons'][1])
+
+            self.W_initial_linear.weight.data = torch.tensor(
+                rand_weight_init(net_params['n_neurons'][0], net_params['n_neurons'][1], init_type=net_params.get('W_init', 'xavier')),
+                dtype=torch.float
+            )
+            
+            if not self.input_layer_active_trainable:
+                print("Input Layer Frozen")
+                self.W_initial_linear.weight.requires_grad = False
+
+            if net_params.get('input_layer_bias', False):
+                self.W_initial_linear.bias.data = torch.tensor(
+                    rand_weight_init(net_params['n_neurons'][1], init_type='gaussian'),
+                    dtype=torch.float
+                )
+            else:
+                self.W_initial_linear.bias = None
+
         self.mp_layers = []
-        for mpl_idx in range(n_layers - 1): # (e.g. three-layer has two MP layers)
+        
+        start_layer_count = 1 if self.input_layer_active else 0
+        # if additional input layer is added, shift the starting index of layer counting from 1
+        for mpl_idx in range(start_layer_count, n_layers - 1): # (e.g. three-layer has two MP layers)
             # Can specify layer with either layer-specific 'ml_params' or just a single set of parameters
             if f'ml_params{mpl_idx}' in net_params.keys():
                 print("=== Layer Specific Setup ===")
@@ -596,24 +667,32 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
             net_params[ml_params_key]['dt'] = self.dt
             net_params[ml_params_key]['mpl_name'] = str(mpl_idx)
             net_params[ml_params_key]['n_input'] = net_params['n_neurons'][mpl_idx]
+            print(net_params['n_neurons'][mpl_idx])
             net_params[ml_params_key]['n_output'] = net_params['n_neurons'][mpl_idx + 1]
 
             setattr(self, 'mp_layer{}'.format(mpl_idx),
-                    MultiPlasticLayer(net_params[ml_params_key], verbose=verbose))
+                    MultiPlasticLayer(net_params[ml_params_key], output_matrix=self.output_matrix, verbose=verbose))
 
             self.mp_layers.append(getattr(self, 'mp_layer{}'.format(mpl_idx)))
             self.params.extend([param+str(mpl_idx) for param in self.mp_layers[-1].params])
 
     def forward(self, inputs, run_mode='minimal', verbose=False):
+    
+        if self.input_layer_active:
+            x = self.W_initial_linear(inputs)
+            x = self.act_fn(x)
+        else:
+            x = inputs
 
-        layer_input = torch.clone(inputs)
+        layer_input = torch.clone(x)
 
-        mpl_activities = [layer_input,] # Used for updating the M matrices
+        mpl_activities = [x,] # Used for updating the M matrices
 
         db = {} if run_mode in ('track_states',) else None
 
         for mpl_idx, mp_layer in enumerate(self.mp_layers):
             # Returns pre-activation
+            layer_input_old = layer_input.clone()
             hidden_pre, db_mp = mp_layer(layer_input, run_mode=run_mode)
             layer_input = self.act_fn(hidden_pre)
 
@@ -628,11 +707,14 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
                 db['hidden_pre{}'.format(mp_layer.mp_layer_name)] = hidden_pre.detach()
                 db['hidden{}'.format(mp_layer.mp_layer_name)] = layer_input.detach()
                 db['M{}'.format(mp_layer.mp_layer_name)] = db_mp['M']
+                db['b{}'.format(mp_layer.mp_layer_name)] = db_mp['b']
+                db['input{}'.format(mp_layer.mp_layer_name)] = layer_input_old.detach()
 
         if run_mode in ('debug',): print(f'  Output layer forward.')
         output_hidden = torch.einsum('iI, BI -> Bi', self.W_output, layer_input)
         output = output_hidden + self.b_output.unsqueeze(0)
 
+        
         return output, mpl_activities, db
 
     def network_step(self, current_input, run_mode='minimal', verbose=False):
@@ -661,4 +743,4 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
 
             _ = mp_layer.update_M_matrix(mpl_activities[mpl_idx], mpl_activities[mpl_idx + 1])
 
-        return output, db
+        return output, mpl_activities, db
