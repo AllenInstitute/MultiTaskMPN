@@ -5,9 +5,55 @@ import numpy as np
 from scipy.linalg import null_space
 import time
 
+from typing import Dict, List, Sequence, Iterable, Iterator, TypeVar
+from itertools import permutations, chain, islice
+import random
+import math
+
 import torch
 
+T = TypeVar("T")
 
+def all_leq(seq, limit):
+    """
+    check if all elements in the list is smaller or equal to certain value
+    """
+    return all(x <= limit for x in seq)
+    
+def concat_random_samples(
+    d: Dict[float, Sequence[T]], n_samples: int, seed: int
+) -> List[List[T]]:
+    """
+    Return `n_samples` random concatenations by shuffling the keys each time.
+    Sampling is *with replacement* over the space of permutations.
+    """
+    rng = random.Random(seed)
+    keys = list(d.keys())
+    out: List[List[T]] = []
+    for _ in range(n_samples):
+        rng.shuffle(keys)
+        out.append(list(chain.from_iterable(d[k] for k in keys)))
+    return out
+    
+def is_power_of_4_or_zero(n: int) -> bool:
+    """
+    Returns True if n is 0 **or** an exact power of 4 (1, 4, 16, 64, …).
+    """
+    return (
+        n == 0
+        or (
+            n > 0
+            and (n & (n - 1)) == 0      # power-of-2 check
+            and (n & 0x55555555) != 0    # even-bit position  ➜ power-of-4
+            )
+        )
+
+def basic_sort(lst, sort_idxs):
+    """
+    Map each element in `lst` to its corresponding entry in `sort_idxs`.
+    """
+    return [int(sort_idxs[i]) for i in lst]
+    
 def permutation_indices_b_to_a(a, b):
     """
     Return indices p such that [b[i] for i in p] == a (no duplicates).

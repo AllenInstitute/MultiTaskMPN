@@ -105,7 +105,6 @@ rules_dict_frequency = {
     'delayanti': np.array([1])
 }
 
-    
 
 # This can either be used to set parameters OR set parameters and train
 train = True # whether or not to train the network
@@ -162,7 +161,7 @@ def current_basic_params(hyp_dict_input):
         'batch_size': 128,
         'gradient_clip': 10,
         'valid_n_batch': min(max(50, int(200/len(rules_dict[hyp_dict_input['ruleset']]))), 50),
-        'n_datasets': 200, 
+        'n_datasets': 100, 
         'n_epochs_per_set': 100, 
         # 'weight_reg': 'L2',
         # 'activity_reg': 'L2', 
@@ -286,7 +285,7 @@ else:
 epoch_multiply = train_params["n_epochs_per_set"]
 
 # adjust the training information
-train_params2["n_datasets"] = 500
+train_params2["n_datasets"] = 1000
 train_params2['n_epochs_per_set'] = 100
 
 # In[5]:
@@ -312,7 +311,13 @@ if task_random_fix:
     print(f"Align {task_params['rules']} With Same Time")
 
 # how much the second stage input should be shifted/paddled 
-pretraining_shift = len(task_params['rules'])
+# zero-paddle to the training data of post-training; pretraining_shift = number of pre-training task
+pretraining_shift = len(task_params['rules']) 
+# zero-paddle to the training data of pre-training; pretraining_shift_pre = number of post-training task = 1
+pretraining_shift_pre = len(task_params2['rules'])
+# this should be 1, since we always pre-training on multiple and test on 1
+# hard-coded for simplicity
+assert pretraining_shift_pre == 1 
 
 if task_params['task_type'] in ('multitask',): # Test batch consists of all the rules
     task_params['hp']['batch_size_train'] = test_n_batch
@@ -324,8 +329,9 @@ if task_params['task_type'] in ('multitask',): # Test batch consists of all the 
     # ZIHAN
     # generate test data using "random"
     test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params, test_n_batch, \
-                rules=task_params['rules'], mode_input=test_mode_for_all, fix=task_random_fix
+                rules=task_params['rules'], mode_input=test_mode_for_all, fix=task_random_fix, pretraining_shift_pre=pretraining_shift_pre
     )
+    
     test_data2, test_trials_extra2 = mpn_tasks.generate_trials_wrap(task_params2, test_n_batch, \
                 rules=task_params2['rules'], mode_input=test_mode_for_all, fix=task_random_fix, pretraining_shift=pretraining_shift, 
     )
@@ -434,7 +440,10 @@ test_task2 = [i - len(task_params["rules"]) for i in test_task2]
 
 # actual fitting
 # we use net at different training stage on the same test_input
-net_pretrain, _, _ = net_helpers.train_network(params, device=device, verbose=verbose, train=train, hyp_dict=hyp_dict, netFunction=netFunction, test_input=[test_input])
+net_pretrain, _, _ = net_helpers.train_network(params, device=device, verbose=verbose, 
+                                               train=train, hyp_dict=hyp_dict, netFunction=netFunction, 
+                                               test_input=[test_input], pretraining_shift_pre=1
+)
 
 # compare the input layer after pretraining and after posttraining
 input_orig  = net_pretrain.W_initial_linear.weight.detach().cpu().clone()
@@ -443,14 +452,18 @@ net, _, (counter_lst, netout_lst, db_lst, Winput_lst, Winputbias_lst,\
          Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst) = net_helpers.train_network(params2, net=net_pretrain, device=device, verbose=verbose,\
                                                                                            train=train, hyp_dict=hyp_dict,\
                                                                                            netFunction=netFunction,\
-                                                                                           test_input=[test_input2], pretraining_shift=len(task_params["rules"]))
+                                                                                           test_input=[test_input2],
+                                                                                           pretraining_shift=len(task_params["rules"])
+)
 
 input_after = net.W_initial_linear.weight.detach().cpu().clone()
 
 figin, axsin = plt.subplots(2,1,figsize=(20,5*2))
 sns.heatmap(input_orig, ax=axsin[0], cmap="coolwarm", center=0)
 sns.heatmap(input_after, ax=axsin[1], cmap="coolwarm", center=0)
-diff = (input_orig - input_after[:, :-1]).abs()
+# Aug 26th: input_orig and input_after has the same shape now
+diff = (input_orig[:,:-1] - input_after[:, :-1]).abs()
+# make sure the freeze (on except the last component) is actually working
 assert torch.all(diff < 1e-4)
 figin.savefig(f"./pretraining/input_prepost_training_{hyp_dict_old['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)
 
@@ -502,7 +515,7 @@ if train:
     ax.set_yscale('log')
     ax.set_ylabel('Accuracy')
     ax.set_xlabel('# Batches')
-    fig.savefig(f"./pretraining/loss_{hyp_dict_old['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)
+    fig.savefig(f"./pretraining/loss_{hyp_dict_old['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=200)
     
 print('Done!')
 
