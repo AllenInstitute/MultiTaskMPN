@@ -86,7 +86,7 @@ torch.manual_seed(seed)
 
 hyp_dict['task_type'] = 'multitask' # int, NeuroGym, multitask
 hyp_dict['mode_for_all'] = "random_batch"
-hyp_dict['ruleset'] = 'fdanti_delaygo' # low_dim, all, test
+hyp_dict['ruleset'] = 'fdgo_delaygo' # low_dim, all, test
 
 accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti', 
                 'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 'dmsnogo', 'dmcnogo')
@@ -285,7 +285,7 @@ else:
 epoch_multiply = train_params["n_epochs_per_set"]
 
 # adjust the training information
-train_params2["n_datasets"] = 1000
+train_params2["n_datasets"] = 3000
 train_params2['n_epochs_per_set'] = 100
 
 # In[5]:
@@ -512,7 +512,7 @@ if train:
     
     ax.legend()
     ax.set_ylim([0.5, 1.05])
-    ax.set_yscale('log')
+    # ax.set_yscale('log')
     ax.set_ylabel('Accuracy')
     ax.set_xlabel('# Batches')
     fig.savefig(f"./pretraining/loss_{hyp_dict_old['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=200)

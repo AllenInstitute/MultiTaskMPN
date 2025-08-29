@@ -6,9 +6,6 @@ from typing import List, Sequence, Optional, Tuple, Dict, Any
 
 def _hierarchical_clustering(data, k_min=3, k_max=40, metric="euclidean", method="ward"):
     """
-    Hierarchical clustering on `data` (observations × features) with Ward by default.
-    Chooses k in [k_min, k_max] by max silhouette (precomputed distances).
-    Returns leaf order for visualization and the labels at the optimal k.
     """
     n_obs = data.shape[0]
     k_min = max(k_min, 2)
@@ -16,35 +13,26 @@ def _hierarchical_clustering(data, k_min=3, k_max=40, metric="euclidean", method
     if k_max < k_min:
         raise ValueError("Not enough observations for the requested k-range.")
 
-    # --- Build the linkage ---
     if method.lower() == "ward":
-        if metric.lower() != "euclidean":
-            warnings.warn("Ward requires Euclidean distances; overriding metric to 'euclidean'.")
-        # Ward must use the observation matrix directly
         Z = linkage(data, method="ward", metric="euclidean")
         pairwise_dists = pdist(data, metric="euclidean")
     else:
-        # For other methods, a condensed distance matrix is fine
         pairwise_dists = pdist(data, metric=metric)
         Z = linkage(pairwise_dists, method=method)
 
-    # Optimal leaf ordering for a nicer dendrogram/heatmap
     Z = optimal_leaf_ordering(Z, pairwise_dists)
 
-    # Precompute full distance matrix for silhouette
     D_square = squareform(pairwise_dists)
 
-    # --- Model selection by silhouette ---
     best_k, best_score, best_labels = None, -np.inf, None
     score_recording, cut_thresholds = {}, {}
 
     for k in range(k_min, k_max + 1):
         labels = fcluster(Z, k, criterion="maxclust")
-        # Silhouette on *distances* to match the description
         score = silhouette_score(D_square, labels, metric="precomputed")
         score_recording[k] = score
 
-        cut_idx = (n_obs - k) - 1  # zero-based
+        cut_idx = (n_obs - k) - 1  
         if 0 <= cut_idx < Z.shape[0]:
             cut_thresholds[k] = float(np.nextafter(Z[cut_idx, 2], np.inf))
         else:
@@ -68,8 +56,6 @@ def _hierarchical_clustering(data, k_min=3, k_max=40, metric="euclidean", method
 
 def cluster_variance_matrix(V, k_min=3, k_max=40, metric="euclidean", method="ward"):
     """
-    Cluster a variance matrix V (rows = one axis of units/tasks, cols = the other).
-    Runs hierarchical clustering on both axes, selects k by silhouette (3..40).
     """
     V = np.asarray(V)
 
@@ -106,22 +92,33 @@ def _hierarchical_clustering_repeat(
     """
     Hierarchical clustering on `data` (observations × features) with stability repeats.
 
-    - For each repeat, optionally resample features (columns) and add tiny Gaussian jitter
-      to break ties and probe stability.
-    - For each k in k_range, compute silhouette; aggregate mean/std across repeats.
-    - Choose k with best mean silhouette.
-    - For that k, pick the labeling whose ARI-agreement with other repeats is maximal.
+    Mirrors `_hierarchical_clustering`:
+      - Ward shortcut (linkage on data, euclidean only) vs generic metric
+      - Optimal leaf ordering
+      - Silhouette on precomputed distances
+      - Cut thresholds computed from Z rows
+
+    Repeats:
+      - Optional feature resampling and Gaussian jitter
+      - Aggregate silhouette mean/std across repeats for each k
+      - Choose k with best mean silhouette
+      - Pick labeling from the repeat that maximizes mean ARI to other repeats at that k
+      - Return that repeat's linkage, leaf order, labels, and cut threshold
     """
     rng = np.random.default_rng(random_state)
     n_obs, n_feat = data.shape
 
-    k_range = range(max(k_min, 2), min(k_max, n_obs - 1) + 1)
+    # Resolve k-range as in the single-run version
+    k_min = max(k_min, 2)
+    k_max = min(k_max, n_obs - 1)
+    if k_max < k_min:
+        raise ValueError("Not enough observations for the requested k-range.")
 
-    # Per-repeat storage
-    per_repeat = []  # list of dicts: { 'Z':..., 'leaf_order':..., 'labels_by_k':{k:labels}, 'scores_by_k':{k:score} }
+    k_range = range(k_min, k_max + 1)
+    per_repeat = []
 
     for r in range(n_repeats):
-        # 1) feature resampling (bagging in feature space)
+        # --- (1) Optional feature bootstrap/resampling
         if resample_features_frac < 1.0:
             m = max(1, int(np.ceil(resample_features_frac * n_feat)))
             feat_idx = rng.choice(n_feat, size=m, replace=True)
@@ -129,54 +126,77 @@ def _hierarchical_clustering_repeat(
         else:
             Xr = data
 
-        # 2) tiny jitter (optional) to break exact distance ties
+        # --- (2) Optional jitter to break ties / probe stability
         if jitter_std > 0.0:
             Xr = Xr + rng.normal(0.0, jitter_std, size=Xr.shape)
 
-        pairwise_dists = pdist(Xr, metric=metric)
-        Z = linkage(pairwise_dists, method=method)
+        # --- (3) Ward shortcut vs generic metric (match single-run behavior)
+        if method.lower() == "ward":
+            Z = linkage(Xr, method="ward", metric="euclidean")
+            pairwise_dists = pdist(Xr, metric="euclidean")
+        else:
+            pairwise_dists = pdist(Xr, metric=metric)
+            Z = linkage(pairwise_dists, method=method)
+
+        # Optimal leaf ordering
         Z = optimal_leaf_ordering(Z, pairwise_dists)
 
         D_square = squareform(pairwise_dists)
 
         labels_by_k = {}
         scores_by_k = {}
+        cut_thresholds = {}
 
         for k in k_range:
             labels = fcluster(Z, k, criterion="maxclust")
             score = silhouette_score(D_square, labels, metric="precomputed")
             labels_by_k[k] = labels
-            scores_by_k[k] = score
+            scores_by_k[k] = float(score)
+
+            # cut threshold extraction aligned with single-run version
+            cut_idx = (n_obs - k) - 1
+            if 0 <= cut_idx < Z.shape[0]:
+                cut_thresholds[k] = float(np.nextafter(Z[cut_idx, 2], np.inf))
+            else:
+                cut_thresholds[k] = None
 
         leaf_order = dendrogram(Z, no_plot=True)["leaves"]
-        per_repeat.append(dict(Z=Z, leaf_order=leaf_order,
-                               labels_by_k=labels_by_k, scores_by_k=scores_by_k))
+        per_repeat.append(dict(
+            Z=Z,
+            leaf_order=leaf_order,
+            labels_by_k=labels_by_k,
+            scores_by_k=scores_by_k,
+            cut_thresholds=cut_thresholds
+        ))
 
-    # Aggregate silhouettes over repeats
-    score_recording_mean = {k: np.mean([rep["scores_by_k"][k] for rep in per_repeat]) for k in k_range}
-    score_recording_std  = {k: np.std( [rep["scores_by_k"][k] for rep in per_repeat]) for k in k_range}
+    # --- (4) Aggregate silhouettes over repeats
+    score_recording_mean = {k: float(np.mean([rep["scores_by_k"][k] for rep in per_repeat])) for k in k_range}
+    score_recording_std  = {k: float(np.std( [rep["scores_by_k"][k] for rep in per_repeat])) for k in k_range}
 
     best_k = max(score_recording_mean, key=score_recording_mean.get)
     best_score_mean = score_recording_mean[best_k]
 
-    # Pick a stable labeling for best_k: choose repeat with highest mean ARI to others
+    # --- (5) Pick a stable labeling for best_k: max-mean-ARI repeat
     labels_list = [rep["labels_by_k"][best_k] for rep in per_repeat]
+
     if n_repeats == 1:
-        # trivial case
         best_rep_idx = 0
+        mean_ari_val = 1.0
     else:
         R = len(labels_list)
         ari_mat = np.zeros((R, R))
         for i in range(R):
-            for j in range(i+1, R):
+            for j in range(i + 1, R):
                 ari = adjusted_rand_score(labels_list[i], labels_list[j])
                 ari_mat[i, j] = ari_mat[j, i] = ari
-        mean_ari = ari_mat.mean(axis=1)
+        mean_ari = ari_mat.mean(axis=1)  # mean ARI to others (zeros on diagonal)
         best_rep_idx = int(np.argmax(mean_ari))
+        mean_ari_val = float(mean_ari[best_rep_idx])
 
     best_labels = labels_list[best_rep_idx]
     Z_best      = per_repeat[best_rep_idx]["Z"]
     leaf_order  = per_repeat[best_rep_idx]["leaf_order"]
+    best_cut_threshold = per_repeat[best_rep_idx]["cut_thresholds"][best_k]
 
     return dict(
         linkage=Z_best,
@@ -186,8 +206,15 @@ def _hierarchical_clustering_repeat(
         silhouette=best_score_mean,
         score_recording_mean=score_recording_mean,
         score_recording_std=score_recording_std,
+        cut_threshold=best_cut_threshold,
         _repeats=len(per_repeat),
-        _params=dict(resample_features_frac=resample_features_frac, jitter_std=jitter_std)
+        _params=dict(
+            resample_features_frac=resample_features_frac,
+            jitter_std=jitter_std,
+            method=method,
+            metric=metric,
+            mean_ari_at_best_k=mean_ari_val
+        ),
     )
 
 
@@ -201,8 +228,11 @@ def cluster_variance_matrix_repeat(
     random_state=None
 ):
     """
-    Cluster a variance matrix V (shape: N features × M neurons)
+    Cluster a variance matrix V (shape: N_features × M_neurons)
     for both rows (features) and columns (neurons), with repeat-based stabilization.
+
+    Returns mean/std silhouette curves for rows and cols, chosen k per axis,
+    and the cut thresholds (from the chosen repeat) for convenience.
     """
     V = np.asarray(V)
 
@@ -214,13 +244,12 @@ def cluster_variance_matrix_repeat(
         random_state=random_state
     )
 
-    # For columns, observations are neurons (columns), features are rows; we resample rows of V for stability
     col_res = _hierarchical_clustering_repeat(
         V.T, k_min, k_max, metric, method,
         n_repeats=n_repeats,
         resample_features_frac=resample_features_frac,
         jitter_std=jitter_std,
-        random_state=None if random_state is None else (random_state + 1)  # different stream
+        random_state=None if random_state is None else (random_state + 1)
     )
 
     return dict(
@@ -235,7 +264,11 @@ def cluster_variance_matrix_repeat(
         row_score_recording_mean=row_res["score_recording_mean"],
         row_score_recording_std=row_res["score_recording_std"],
         col_score_recording_mean=col_res["score_recording_mean"],
-        col_score_recording_std=col_res["score_recording_std"]
+        col_score_recording_std=col_res["score_recording_std"],
+        row_cut_threshold=row_res["cut_threshold"],
+        col_cut_threshold=col_res["cut_threshold"],
+        _row_meta=row_res["_params"],
+        _col_meta=col_res["_params"],
     )
     
 # ---------------------------------------------------------------------

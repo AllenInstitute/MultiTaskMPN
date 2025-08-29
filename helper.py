@@ -5,8 +5,8 @@ import numpy as np
 from scipy.linalg import null_space
 import time
 
-from typing import Dict, List, Sequence, Iterable, Iterator, TypeVar
-from itertools import permutations, chain, islice
+from typing import Dict, Sequence, TypeVar, List, Tuple
+from itertools import chain
 import random
 import math
 
@@ -22,17 +22,29 @@ def all_leq(seq, limit):
     
 def concat_random_samples(
     d: Dict[float, Sequence[T]], n_samples: int, seed: int
-) -> List[List[T]]:
+) -> List[Tuple[List[T], List[List[T]]]]:
     """
     Return `n_samples` random concatenations by shuffling the keys each time.
+    For each sample, also return the ordered list-of-lists used to build it.
+
     Sampling is *with replacement* over the space of permutations.
+
+    Returns
+    -------
+    samples : list of (combined, parts)
+        combined : List[T]         # the concatenated list for this permutation
+        parts    : List[List[T]]   # the component lists in the shuffled order
     """
     rng = random.Random(seed)
     keys = list(d.keys())
-    out: List[List[T]] = []
+    out: List[Tuple[List[T], List[List[T]]]] = []
+
     for _ in range(n_samples):
         rng.shuffle(keys)
-        out.append(list(chain.from_iterable(d[k] for k in keys)))
+        parts = [list(d[k]) for k in keys]              
+        combined = list(chain.from_iterable(parts))     
+        out.append((combined, parts))
+
     return out
     
 def is_power_of_4_or_zero(n: int) -> bool:

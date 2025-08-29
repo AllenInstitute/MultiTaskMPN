@@ -1511,8 +1511,8 @@ class BaseNetwork(BaseNetworkFunctions):
                 moitor_str += ', valid_loss:{:.3e}'.format(valid_loss)
 
                 if self.loss_type in ('XE', 'MSE',): # Accuracy computations if relevant
-                    valid_acc, valid_acc_group = self.compute_acc(valid_output, valid_labels_batch, valid_masks_batch, valid_inputs_batch, 
-                                                 isvalid=True) 
+                    valid_acc, valid_acc_group = self.compute_acc(valid_output, valid_labels_batch, valid_masks_batch, 
+                                                                  valid_inputs_batch, isvalid=True) 
                     
                     self.hist['valid_acc'].append(valid_acc.item())
                     self.hist['group_valid_acc'].append(valid_acc_group)
