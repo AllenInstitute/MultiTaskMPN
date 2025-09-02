@@ -78,7 +78,7 @@ def expand_and_freeze(net, option):
             if bias_flag:
                 new_linear.bias.copy_(old_linear.bias.detach())
     else:
-        raise ValueError("option must be 0 (expand) or 1 (no expand).")
+        raise ValueError
 
     # swap into the network
     net.W_initial_linear = new_linear
@@ -86,14 +86,14 @@ def expand_and_freeze(net, option):
     # Keep original train/eval mode
     net.train(was_training)
 
-    # --- 3) freeze everything by default ------------------------------------
+    # freeze everything by default
     for p in net.parameters():
         p.requires_grad = False
 
-    # allow gradients on the *entire* weight tensor; mask will zero unwanted cols
+    # allow gradients on the entire weight tensor; mask will zero unwanted cols
     net.W_initial_linear.weight.requires_grad = True
 
-    # --- 4) mask grads so only the last input column updates -----------------
+    # mask grads so only the last input column updates 
     def _only_last_col_grad(grad: torch.Tensor) -> torch.Tensor:
         # grad shape: (out_f, in_features_current)
         mask = torch.zeros_like(grad)
@@ -102,7 +102,6 @@ def expand_and_freeze(net, option):
 
     # register a fresh hook (replacing layer removed any old hooks)
     handle = net.W_initial_linear.weight.register_hook(_only_last_col_grad)
-    # Optionally keep 'handle' somewhere if you ever want to remove the hook.
 
     return net
     
@@ -182,7 +181,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
                 for test_input_index, test_input_ in enumerate(test_input): 
                     # jul 16th: should we separate and load the input, and stack the output later 
                     print(f"test_input_: {test_input_.shape}")
-                    minibatch = 64 
+                    minibatch = 16
                     net_out_np = [] 
                     db = [] 
                     for start in range(0, test_input_.shape[0], minibatch): 
@@ -763,6 +762,7 @@ class BaseNetwork(BaseNetworkFunctions):
         super().__init__()
     
         self.loss_type = net_params.get('loss_type', 'XE')
+        self.acc_measure = net_param.get('acc_measure', 'angle')
 
         if self.loss_type == 'XE':
             self.loss_fn = F.cross_entropy
@@ -1009,7 +1009,7 @@ class BaseNetwork(BaseNetworkFunctions):
                 )
             
                 loss, loss_components, error_term = self.compute_loss(output, train_labels_batch, train_masks_batch, hidden=hidden)
-                acc, _ = self.compute_acc(output, train_labels_batch, train_masks_batch, train_inputs_batch, isvalid=False) 
+                acc, _ = self.compute_acc(output, train_labels_batch, train_masks_batch, train_inputs_batch, isvalid=False, mode=self.acc_measure) 
                 losses.append(loss.cpu().detach().numpy())
                 accs.append(acc.cpu().detach().numpy())
 
@@ -1162,8 +1162,8 @@ class BaseNetwork(BaseNetworkFunctions):
 
         return self.loss_fn(masked_output, masked_labels) + reg_term, loss_components, error_term
 
-    def compute_acc(self, output, labels, output_mask, input_, round_type='prefs', mode="stimulus", verbose=False, 
-                    isvalid=False):
+    def compute_acc(self, output, labels, output_mask, input_, round_type='prefs', mode="angle", 
+                    verbose=False, isvalid=False):
         """
         output shape: (batches, seq_len, output_size)
         labels shape: (batches, seq_len)
@@ -1471,7 +1471,7 @@ class BaseNetwork(BaseNetworkFunctions):
             moitor_str = 'Iter: {}, LR: {:.3e} - train_loss:{:.3e}'.format(self.hist['iter'], lr, loss)
 
             if self.loss_type in ('XE', 'MSE',): # Accuracy computations if relevant
-                acc, _ = self.compute_acc(output, train_labels_batch, train_masks_batch, train_inputs_batch, isvalid=False)
+                acc, _ = self.compute_acc(output, train_labels_batch, train_masks_batch, train_inputs_batch, isvalid=False, mode=self.acc_measure)
                 self.hist['train_acc'].append(acc.item())
                 if self.loss_type in ('XE',):
                     moitor_str += ', train_acc:{:.3f}'.format(acc)
@@ -1511,8 +1511,8 @@ class BaseNetwork(BaseNetworkFunctions):
                 moitor_str += ', valid_loss:{:.3e}'.format(valid_loss)
 
                 if self.loss_type in ('XE', 'MSE',): # Accuracy computations if relevant
-                    valid_acc, valid_acc_group = self.compute_acc(valid_output, valid_labels_batch, valid_masks_batch, 
-                                                                  valid_inputs_batch, isvalid=True) 
+                    valid_acc, valid_acc_group = self.compute_acc(valid_output, valid_labels_batch, 
+                                                                  valid_masks_batch, valid_inputs_batch, isvalid=True, mode=self.compute_acc) 
                     
                     self.hist['valid_acc'].append(valid_acc.item())
                     self.hist['group_valid_acc'].append(valid_acc_group)

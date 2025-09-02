@@ -148,7 +148,7 @@ hyp_dict['chosen_network'] = "dmpn"
 # trainetalambda
 
 mpn_depth = 1
-n_hidden = 200
+n_hidden = 300
 
 hyp_dict['addon_name'] = "L2"
 hyp_dict['addon_name'] += f"+hidden{n_hidden}"
@@ -188,7 +188,7 @@ def current_basic_params():
         'n_batches': 128,
         'batch_size': 128,
         'gradient_clip': 10,
-        'valid_n_batch': min(max(20, int(200/len(rules_dict[hyp_dict['ruleset']]))), 50),
+        'valid_n_batch': min(max(15, int(200/len(rules_dict[hyp_dict['ruleset']]))), 50),
         'n_datasets': 4000, 
         'n_epochs_per_set': 100, 
         'weight_reg': 'L2',
@@ -198,8 +198,8 @@ def current_basic_params():
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'
             'mode': 'min',                # for ReduceLROnPlateau
-            'factor': 0.75,                # factor to reduce LR
-            'patience': 20,                # epochs to wait before reducing LR
+            'factor': 0.9,                # factor to reduce LR
+            'patience': 30,                # epochs to wait before reducing LR
             'min_lr': 1e-6,
             'step_size': 30,              # for StepLR (step every 30 datasets)
             'gamma': 0.1                  # for StepLR (multiply LR by 0.1)
@@ -225,6 +225,7 @@ def current_basic_params():
         'input_layer_add_trainable': True, # revise this is effectively to [randomize_inputs], tune this
         'input_layer_bias': False, 
         'input_layer': "trainable", # for RNN only
+        'acc_measure': 'angle', 
         
         # for one-layer MPN, GRU or Vanilla
         'ml_params': {
@@ -265,7 +266,8 @@ def current_basic_params():
 
 task_params, train_params, net_params = current_basic_params()
 # add batch information to the parameters
-hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}"
+print("Accuracy Measure: {net_params['acc_measure']}")
+hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}+{net_params["acc_measure"]}"
 
 # save the setting result
 config = {
