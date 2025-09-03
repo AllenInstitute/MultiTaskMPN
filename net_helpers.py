@@ -229,7 +229,6 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
             _, monitor_loss, monitor_acc, goodness_history = net.fit(train_params, train_data, train_trails, valid_batch=valid_data, 
                                                                         valid_trails=valid_trails, new_thresh=new_thresh,
                                                                         run_mode=hyp_dict['run_mode'])
-
             
             # calculate the change of task sampling proportion 
             # aim for multi-task training (but clearly work for single-task)
@@ -247,9 +246,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
             
             # print(f"goodness_history: {goodness_history}")
             g = np.vstack(goodness_history)
-            
-            # g    = np.asarray(goodness_history, dtype=float)   # shape (R, C)
-            
+                        
             # sanity-check: every row must have the same length
             if len({len(row) for row in goodness_history}) != 1:
                 raise ValueError("`last_group_goodness` rows have unequal lengths.")
@@ -762,7 +759,7 @@ class BaseNetwork(BaseNetworkFunctions):
         super().__init__()
     
         self.loss_type = net_params.get('loss_type', 'XE')
-        self.acc_measure = net_param.get('acc_measure', 'angle')
+        self.acc_measure = net_params.get('acc_measure', 'angle')
 
         if self.loss_type == 'XE':
             self.loss_fn = F.cross_entropy
@@ -1512,7 +1509,7 @@ class BaseNetwork(BaseNetworkFunctions):
 
                 if self.loss_type in ('XE', 'MSE',): # Accuracy computations if relevant
                     valid_acc, valid_acc_group = self.compute_acc(valid_output, valid_labels_batch, 
-                                                                  valid_masks_batch, valid_inputs_batch, isvalid=True, mode=self.compute_acc) 
+                                                                  valid_masks_batch, valid_inputs_batch, isvalid=True, mode=self.acc_measure) 
                     
                     self.hist['valid_acc'].append(valid_acc.item())
                     self.hist['group_valid_acc'].append(valid_acc_group)

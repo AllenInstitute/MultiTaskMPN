@@ -1,8 +1,21 @@
 import numpy as np
 from scipy.cluster.hierarchy import linkage, fcluster, dendrogram, optimal_leaf_ordering
 from scipy.spatial.distance import pdist, squareform
-from sklearn.metrics import silhouette_score, adjusted_rand_score
+from scipy.cluster.hierarchy import cophenet
+from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
+from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from typing import List, Sequence, Optional, Tuple, Dict, Any
+from matplotlib.patches import Rectangle
+
+import matplotlib.pyplot as plt
+import seaborn as sns 
+import scienceplots
+plt.style.use('science')
+plt.style.use(['no-latex'])
+
+# ---------------------------------------------------------------------
+# Original Clustering 
+# ---------------------------------------------------------------------
 
 def _hierarchical_clustering(data, k_min=3, k_max=40, metric="euclidean", method="ward"):
     """
@@ -76,6 +89,156 @@ def cluster_variance_matrix(V, k_min=3, k_max=40, metric="euclidean", method="wa
         row_cut_threshold=row_res["cut_threshold"],
         col_cut_threshold=col_res["cut_threshold"],
     )
+
+# ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
+
+def show_A_ordered_by_B(A, res_B, row_name):
+    A_ord = A[np.ix_(res_B["row_order"], res_B["col_order"])]
+    fig, ax = plt.subplots(1,1,figsize=(24,8))
+    hm = sns.heatmap(A_ord, ax=ax, cmap="coolwarm", cbar=True, vmin=0, vmax=1)
+    # ax.set_xticks([])
+    # ax.set_yticks([])
+    rl = np.asarray(res_B["row_labels"])[res_B["row_order"]]
+    cl = np.asarray(res_B["col_labels"])[res_B["col_order"]]
+    def _breaks(lbls):
+        idx = np.nonzero(np.diff(lbls))[0] + 1
+        return idx.tolist()
+    rbreaks = _breaks(rl)
+    cbreaks = _breaks(cl)
+    for rb in rbreaks:
+        ax.axhline(rb, color="k", lw=0.6)
+    for cb in cbreaks:
+        ax.axvline(cb, color="k", lw=0.6)
+    ax.set_title("A reordered by B clustering", fontsize=20)
+    # set new row name
+    ax.set_yticks(np.arange(len(row_name)))
+    ax.set_yticklabels(row_name[res_B["row_order"]], rotation=0, ha='right', va='center', fontsize=9)
+    plt.tight_layout()
+    return fig, ax 
+
+def transfer_and_score(A, B, res_A, res_B, metric="euclidean"):
+    """
+    Evaluate how well B’s clustering explains A.
+    Assumes A and B share the same row/col entities in the same order.
+    If not, align by your IDs first, then pass aligned matrices.
+    """
+    # B→A labels
+    lblB_row = np.asarray(res_B["row_labels"])
+    lblB_col = np.asarray(res_B["col_labels"])
+
+    # A’s own labels (for partition agreement only)
+    lblA_row = np.asarray(res_A["row_labels"])
+    lblA_col = np.asarray(res_A["col_labels"])
+
+    # Pairwise distances in A for silhouette
+    D_row = squareform(pdist(A, metric=metric))       # rows as observations
+    D_col = squareform(pdist(A.T, metric=metric))     # cols as observations
+
+    # --- Cohesion/separation on A with B’s labels
+    row_sil = float(silhouette_score(D_row, lblB_row, metric="precomputed"))
+    col_sil = float(silhouette_score(D_col, lblB_col, metric="precomputed"))
+    row_ch  = float(calinski_harabasz_score(A,  lblB_row))
+    col_ch  = float(calinski_harabasz_score(A.T, lblB_col))
+    row_db  = float(davies_bouldin_score(A,  lblB_row))
+    col_db  = float(davies_bouldin_score(A.T, lblB_col))
+
+    # --- Variance explained in A by B’s labels
+    row_R2 = _cluster_R2(A,  lblB_row)
+    col_R2 = _cluster_R2(A.T, lblB_col)
+
+    # --- Agreement of partitions: A’s own labels vs B’s (not a performance metric per se, but useful)
+    row_ari = float(adjusted_rand_score(lblA_row, lblB_row))
+    col_ari = float(adjusted_rand_score(lblA_col, lblB_col))
+    row_nmi = float(normalized_mutual_info_score(lblA_row, lblB_row))
+    col_nmi = float(normalized_mutual_info_score(lblA_col, lblB_col))
+
+    # # --- Cross-cophenetic: does B’s dendrogram geometry match A’s distances?
+    # # Rows
+    # _, coph_B_row = cophenet(res_B["row_linkage"])     # condensed cophenetic distances from B
+    # D_row_A = pdist(A, metric=metric)                  # condensed distances in A
+    # ccc_row = float(np.corrcoef(coph_B_row, D_row_A)[0, 1])
+    # # Cols
+    # _, coph_B_col = cophenet(res_B["col_linkage"])
+    # D_col_A = pdist(A.T, metric=metric)
+    # ccc_col = float(np.corrcoef(coph_B_col, D_col_A)[0, 1])
+
+    ccc_row = _cross_cophenetic_corr(res_B["row_linkage"], A, metric=metric)
+    ccc_col = _cross_cophenetic_corr(res_B["col_linkage"], A.T, metric=metric)
+
+    # --- 2D block R^2 using both row+col labels from B
+    block_R2 = _block_R2(A, lblB_row, lblB_col)
+
+    return dict(
+        # A’s structure under B’s partition
+        row_silhouette_on_A=row_sil,
+        col_silhouette_on_A=col_sil,
+        row_CH_on_A=row_ch, col_CH_on_A=col_ch,
+        row_DB_on_A=row_db, col_DB_on_A=col_db,
+        row_R2_on_A=row_R2, col_R2_on_A=col_R2,
+        block_R2_on_A=block_R2,
+        # Partition agreement (A’s own clustering vs B’s)
+        row_ARI_A_vs_B=row_ari, col_ARI_A_vs_B=col_ari,
+        row_NMI_A_vs_B=row_nmi, col_NMI_A_vs_B=col_nmi,
+        # Geometry agreement
+        row_cophenetic_corr_Btree_vs_A=ccc_row,
+        col_cophenetic_corr_Btree_vs_A=ccc_col,
+        # Useful counts
+        row_k_B=int(res_B["row_k"]),
+        col_k_B=int(res_B["col_k"])
+    )
+
+def _cross_cophenetic_corr(Z_ref, X, metric="euclidean"):
+    """
+    Correlation between cophenetic distances implied by Z_ref
+    and the actual pairwise distances in X (same entities/order).
+    """
+    # Optional sanity check: (n_obs - 1) rows in linkage
+    n_ref = Z_ref.shape[0] + 1
+    n_X = X.shape[0]
+    if n_ref != n_X:
+        raise ValueError(f"Size mismatch: linkage has {n_ref} leaves but X has {n_X} rows.")
+    c, _ = cophenet(Z_ref, pdist(X, metric=metric))
+    return float(c)
+
+def _cluster_R2(X, labels):
+    """Univariate-free ‘k-means ANOVA’ style R^2 across multi-d features."""
+    X = np.asarray(X)
+    Xc = X - X.mean(axis=0, keepdims=True)
+    TSS = np.sum(Xc**2)
+    WSS = 0.0
+    for g in np.unique(labels):
+        Xg = X[labels == g]
+        Xg_c = Xg - Xg.mean(axis=0, keepdims=True)
+        WSS += np.sum(Xg_c**2)
+    return float(1.0 - WSS / (TSS + 1e-12))
+
+def _block_R2(M, row_labels, col_labels):
+    """
+    2D ‘ANOVA’ style R^2: how much of matrix energy is explained by row×col blocks.
+    Equivalent to replacing each block by its mean and computing 1 - SSE/TSS.
+    """
+    M = np.asarray(M)
+    M_centered = M - M.mean()
+    TSS = float(np.sum(M_centered**2))
+
+    # Build block means
+    row_u = np.unique(row_labels)
+    col_u = np.unique(col_labels)
+    M_hat = np.zeros_like(M, dtype=float)
+    for r in row_u:
+        rmask = (row_labels == r)
+        for c in col_u:
+            cmask = (col_labels == c)
+            block = M[np.ix_(rmask, cmask)]
+            M_hat[np.ix_(rmask, cmask)] = block.mean() if block.size else 0.0
+
+    SSE = float(np.sum((M - M_hat)**2))
+    return float(1.0 - SSE / (TSS + 1e-12))
+
+# ---------------------------------------------------------------------
+# Clustering with multiple repeats
+# ---------------------------------------------------------------------
 
 def _hierarchical_clustering_repeat(
     data,
@@ -272,6 +435,8 @@ def cluster_variance_matrix_repeat(
     )
     
 # ---------------------------------------------------------------------
+# Group clustering (taken some grouping prior and 
+# re-ordering/grouping based on this information)
 # ---------------------------------------------------------------------
 
 def _hierarchical_clustering_forgroup(
