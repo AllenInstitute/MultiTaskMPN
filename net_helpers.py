@@ -888,7 +888,6 @@ class BaseNetwork(BaseNetworkFunctions):
                         step_size=scheduler_params.get('step_size', 30),
                         gamma=scheduler_params.get('gamma', 0.1)
                     )
-                # Add other schedulers as needed
                 else:
                     self.scheduler = None
             else:

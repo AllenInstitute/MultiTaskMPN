@@ -200,7 +200,7 @@ def current_basic_params():
             'mode': 'min',                # for ReduceLROnPlateau
             'factor': 0.9,                # factor to reduce LR
             'patience': 30,                # epochs to wait before reducing LR
-            'min_lr': 1e-6,
+            'min_lr': 1e-8,
             'step_size': 30,              # for StepLR (step every 30 datasets)
             'gamma': 0.1                  # for StepLR (multiply LR by 0.1)
         },
@@ -492,7 +492,8 @@ if train:
     
     # ax.set_yscale('log')
     ax.legend()
-    ax.set_ylim([0.5, 1.05])
+    # ax.set_ylim([0.5, 1.05])
+    ax.set_ylim([0, 1])
     # ax.set_ylabel('Loss ({})'.format(net.loss_type))
     ax.set_ylabel('Accuracy')
     ax.set_xlabel('# Batches')

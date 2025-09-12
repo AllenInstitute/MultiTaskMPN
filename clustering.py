@@ -93,7 +93,15 @@ def cluster_variance_matrix(V, k_min=3, k_max=40, metric="euclidean", method="wa
 # ---------------------------------------------------------------------
 # ---------------------------------------------------------------------
 
+def _breaks(lbls):
+    """
+    """
+    idx = np.nonzero(np.diff(lbls))[0] + 1
+    return idx.tolist()
+
 def show_A_ordered_by_B(A, res_B, row_name):
+    """
+    """
     A_ord = A[np.ix_(res_B["row_order"], res_B["col_order"])]
     fig, ax = plt.subplots(1,1,figsize=(24,8))
     hm = sns.heatmap(A_ord, ax=ax, cmap="coolwarm", cbar=True, vmin=0, vmax=1)
@@ -101,9 +109,7 @@ def show_A_ordered_by_B(A, res_B, row_name):
     # ax.set_yticks([])
     rl = np.asarray(res_B["row_labels"])[res_B["row_order"]]
     cl = np.asarray(res_B["col_labels"])[res_B["col_order"]]
-    def _breaks(lbls):
-        idx = np.nonzero(np.diff(lbls))[0] + 1
-        return idx.tolist()
+    
     rbreaks = _breaks(rl)
     cbreaks = _breaks(cl)
     for rb in rbreaks:
@@ -240,6 +246,20 @@ def _block_R2(M, row_labels, col_labels):
 # Clustering with multiple repeats
 # ---------------------------------------------------------------------
 
+def labels_at_k(Z, k):
+    """
+    """
+    # Z has shape (n_obs-1, 4); Z[i,2] is the merge height of the (i+1)-th merge
+    n_obs = Z.shape[0] + 1
+    # index of the last merge included when you still have exactly k clusters
+    cut_idx = (n_obs - k) - 1           # 0-based
+    # choose a threshold strictly between the two adjacent heights
+    t_low  = Z[cut_idx, 2]
+    t_high = Z[cut_idx + 1, 2] if (cut_idx + 1) < Z.shape[0] else np.inf
+    t = np.nextafter(t_low, t_high)     # just above t_low, still below t_high
+    return fcluster(Z, t, criterion="distance")
+
+
 def _hierarchical_clustering_repeat(
     data,
     k_min=3,
@@ -281,7 +301,6 @@ def _hierarchical_clustering_repeat(
     per_repeat = []
 
     for r in range(n_repeats):
-        # --- (1) Optional feature bootstrap/resampling
         if resample_features_frac < 1.0:
             m = max(1, int(np.ceil(resample_features_frac * n_feat)))
             feat_idx = rng.choice(n_feat, size=m, replace=True)
@@ -289,11 +308,9 @@ def _hierarchical_clustering_repeat(
         else:
             Xr = data
 
-        # --- (2) Optional jitter to break ties / probe stability
         if jitter_std > 0.0:
             Xr = Xr + rng.normal(0.0, jitter_std, size=Xr.shape)
 
-        # --- (3) Ward shortcut vs generic metric (match single-run behavior)
         if method.lower() == "ward":
             Z = linkage(Xr, method="ward", metric="euclidean")
             pairwise_dists = pdist(Xr, metric="euclidean")
@@ -311,7 +328,9 @@ def _hierarchical_clustering_repeat(
         cut_thresholds = {}
 
         for k in k_range:
-            labels = fcluster(Z, k, criterion="maxclust")
+            # labels = fcluster(Z, k, criterion="maxclust")
+            labels = labels_at_k(Z, k)
+
             score = silhouette_score(D_square, labels, metric="precomputed")
             labels_by_k[k] = labels
             scores_by_k[k] = float(score)
@@ -332,14 +351,12 @@ def _hierarchical_clustering_repeat(
             cut_thresholds=cut_thresholds
         ))
 
-    # --- (4) Aggregate silhouettes over repeats
     score_recording_mean = {k: float(np.mean([rep["scores_by_k"][k] for rep in per_repeat])) for k in k_range}
     score_recording_std  = {k: float(np.std( [rep["scores_by_k"][k] for rep in per_repeat])) for k in k_range}
 
     best_k = max(score_recording_mean, key=score_recording_mean.get)
     best_score_mean = score_recording_mean[best_k]
 
-    # --- (5) Pick a stable labeling for best_k: max-mean-ARI repeat
     labels_list = [rep["labels_by_k"][best_k] for rep in per_repeat]
 
     if n_repeats == 1:

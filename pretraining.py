@@ -86,7 +86,8 @@ torch.manual_seed(seed)
 
 hyp_dict['task_type'] = 'multitask' # int, NeuroGym, multitask
 hyp_dict['mode_for_all'] = "random_batch"
-hyp_dict['ruleset'] = 'fdgo_delaygo' # low_dim, all, test
+hyp_dict['ruleset'] = 'fdanti_delaygo' # low_dim, all, test
+# hyp_dict['ruleset'] = 'fdgo_delaygo' # low_dim, all, test
 
 accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti', 
                 'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 'dmsnogo', 'dmcnogo')
@@ -114,13 +115,13 @@ hyp_dict['chosen_network'] = "dmpn"
 
 # suffix for saving images
 # inputadd, Wfix, WL2, hL2
-# inputrandom, Wtrain
+# inputrandom, WtrainZ
 # noise001
 # largeregularization
 # trainetalambda
 
 mpn_depth = 1
-n_hidden = 200
+n_hidden = 300
 
 hyp_dict['addon_name'] = ""
 hyp_dict['addon_name'] += f"+hidden{n_hidden}"
@@ -161,7 +162,8 @@ def current_basic_params(hyp_dict_input):
         'batch_size': 128,
         'gradient_clip': 10,
         'valid_n_batch': min(max(50, int(200/len(rules_dict[hyp_dict_input['ruleset']]))), 50),
-        'n_datasets': 100, 
+        # 'n_datasets': 100,
+        'n_datasets': 30, 
         'n_epochs_per_set': 100, 
         # 'weight_reg': 'L2',
         # 'activity_reg': 'L2', 
@@ -170,9 +172,9 @@ def current_basic_params(hyp_dict_input):
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'
             'mode': 'min',                # for ReduceLROnPlateau
-            'factor': 0.75,                # factor to reduce LR
+            'factor': 0.9,                # factor to reduce LR
             'patience': 20,                # epochs to wait before reducing LR
-            'min_lr': 1e-6,
+            'min_lr': 1e-8,
             'step_size': 30,              # for StepLR (step every 30 datasets)
             'gamma': 0.1                  # for StepLR (multiply LR by 0.1)
         },
@@ -197,6 +199,7 @@ def current_basic_params(hyp_dict_input):
         'input_layer_add_trainable': True, # revise this is effectively to [randomize_inputs], tune this
         'input_layer_bias': False, 
         'input_layer': "trainable", # for RNN only
+        'acc_measure': 'stimulus', 
         
         # for one-layer MPN, GRU or Vanilla
         'ml_params': {
@@ -236,13 +239,14 @@ def current_basic_params(hyp_dict_input):
     return task_params, train_params, net_params
 
 hyp_dict_old = copy.deepcopy(hyp_dict)
+
 task_params, train_params, net_params = current_basic_params(hyp_dict_old)
+print("Accuracy Measure: {net_params['acc_measure']}")
+hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}"
+hyp_dict_old['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}"
 
 hyp_dict['ruleset'] = 'delayanti'
 task_params2, train_params2, net_params2 = current_basic_params(hyp_dict)
-
-# add batch information to the parameters
-hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}"
 
 # save the setting result
 config = {
@@ -286,6 +290,8 @@ epoch_multiply = train_params["n_epochs_per_set"]
 
 # adjust the training information
 train_params2["n_datasets"] = 3000
+# train_params2["n_datasets"] = 20
+
 train_params2['n_epochs_per_set'] = 100
 
 # In[5]:
@@ -321,7 +327,7 @@ assert pretraining_shift_pre == 1
 
 if task_params['task_type'] in ('multitask',): # Test batch consists of all the rules
     task_params['hp']['batch_size_train'] = test_n_batch
-    task_params['hp']['batch_size_train'] = test_n_batch
+    task_params2['hp']['batch_size_train'] = test_n_batch
     # using homogeneous cutting off if multiple tasks are presented in the pool
     # if single task, using inhomogeneous cutoff to show diversity & robustness
     # test_mode_for_all = "random" if len(rules_dict[hyp_dict['ruleset']]) > 1 else "random_batch"
@@ -329,11 +335,13 @@ if task_params['task_type'] in ('multitask',): # Test batch consists of all the 
     # ZIHAN
     # generate test data using "random"
     test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params, test_n_batch, \
-                rules=task_params['rules'], mode_input=test_mode_for_all, fix=task_random_fix, pretraining_shift_pre=pretraining_shift_pre
+                rules=task_params['rules'], mode_input=test_mode_for_all, fix=task_random_fix,
+                                                                  pretraining_shift_pre=pretraining_shift_pre
     )
     
     test_data2, test_trials_extra2 = mpn_tasks.generate_trials_wrap(task_params2, test_n_batch, \
-                rules=task_params2['rules'], mode_input=test_mode_for_all, fix=task_random_fix, pretraining_shift=pretraining_shift, 
+                rules=task_params2['rules'], mode_input=test_mode_for_all, fix=task_random_fix,
+                                                                    pretraining_shift=pretraining_shift, 
     )
     _, test_trials, test_rule_idxs = test_trials_extra
     _, test_trials2, test_rule_idxs2 = test_trials_extra2
@@ -378,7 +386,7 @@ if task_params['task_type'] in ('multitask',): # Test batch consists of all the 
         return labels_resp, labels_stim, rules_epochs
 
     labels_resp, labels_stim, rules_epochs = generate_response_stimulus(task_params, test_trials, hyp_dict_old)
-    labels_resp2, labels_stim2, rules_epochs = generate_response_stimulus(task_params2, test_trials2, hyp_dict)
+    labels_resp2, labels_stim2, rules_epochs2 = generate_response_stimulus(task_params2, test_trials2, hyp_dict)
 
 labels = labels_stim if color_by == "stim" else labels_resp
 labels2 = labels_stim2 if color_by == "stim" else labels_resp2
@@ -396,6 +404,8 @@ test_input_np = test_input.detach().cpu().numpy()
 test_output_np = test_output.detach().cpu().numpy()
 test_input2_np = test_input2.detach().cpu().numpy()
 test_output2_np = test_output2.detach().cpu().numpy()
+labels_np = labels
+labels2_np = labels2
 
 del test_output, test_output2
 
@@ -440,21 +450,35 @@ test_task2 = [i - len(task_params["rules"]) for i in test_task2]
 
 # actual fitting
 # we use net at different training stage on the same test_input
-net_pretrain, _, _ = net_helpers.train_network(params, device=device, verbose=verbose, 
-                                               train=train, hyp_dict=hyp_dict, netFunction=netFunction, 
-                                               test_input=[test_input], pretraining_shift_pre=1
+print("================================= Stage 1 =================================")
+net_pretrain, _, (_, netout_stage1_lst, db_stage1_lst, _, _, _, _, marker_stage1_lst, _, _) = net_helpers.train_network(params, device=device,
+                                                                                            verbose=verbose, 
+                                                                                            train=train,
+                                                                                            hyp_dict=hyp_dict, 
+                                                                                            netFunction=netFunction, 
+                                                                                            test_input=[test_input],
+                                                                                            pretraining_shift_pre=1
 )
+
+net_stage1 = copy.deepcopy(net_pretrain)
 
 # compare the input layer after pretraining and after posttraining
 input_orig  = net_pretrain.W_initial_linear.weight.detach().cpu().clone()
 
+print("================================= Stage 2 =================================")
 net, _, (counter_lst, netout_lst, db_lst, Winput_lst, Winputbias_lst,\
-         Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst) = net_helpers.train_network(params2, net=net_pretrain, device=device, verbose=verbose,\
-                                                                                           train=train, hyp_dict=hyp_dict,\
+         Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst) = net_helpers.train_network(params2, net=net_pretrain,
+                                                                                           device=device,
+                                                                                           verbose=verbose,\
+                                                                                           train=train,
+                                                                                           hyp_dict=hyp_dict,\
                                                                                            netFunction=netFunction,\
                                                                                            test_input=[test_input2],
                                                                                            pretraining_shift=len(task_params["rules"])
 )
+
+print("================================= End  =================================")
+
 
 input_after = net.W_initial_linear.weight.detach().cpu().clone()
 
@@ -526,14 +550,13 @@ print('Done!')
 if train:
     net_helpers.net_eta_lambda_analysis(net, net_params, hyp_dict)
 
-
 # In[ ]:
-
 
 use_finalstage = False
 if use_finalstage:
     # plotting output in the validation set
-    net_out, db = net.iterate_sequence_batch(test_input, run_mode='track_states')
+    net_out_final, db = net.iterate_sequence_batch(test_input, run_mode='track_states')
+    
     W_output = net.W_output.detach().cpu().numpy()
 
     W_all_ = []
@@ -543,11 +566,13 @@ if use_finalstage:
     
 else:
     ind = len(marker_lst)-1 
-    # ind = 0
-    network_at_percent = (marker_lst[ind]+1)/train_params['n_datasets']*100
+    ind_stage1 = len(marker_stage1_lst)-1
+    network_at_percent = (marker_lst[ind]+1)/train_params2['n_datasets']*100
     print(f"Using network at {network_at_percent}%")
     # by default using the first test_input 
-    net_out = netout_lst[0][ind]
+    net_out_final = netout_lst[0][ind]
+    net_out_stage1_final = netout_stage1_lst[0][ind_stage1]
+    
     db = db_lst[0][ind]
     W_output = Woutput_lst[ind]
     W_ = Wall_lst[ind][0]
@@ -556,7 +581,7 @@ else:
 # In[ ]:
 
 
-def plot_input_output(test_input_np, net_out, test_output_np, task_params, test_task=None, tag="", batch_num=5):
+def plot_input_output(test_input_np, labels_np, net_out, test_output_np, task_params, test_task=None, tag="", batch_num=5):
     """
     """
     test_input_np = helper.to_ndarray(test_input_np)
@@ -572,6 +597,7 @@ def plot_input_output(test_input_np, net_out, test_output_np, task_params, test_
     
     else:
         for batch_idx in range(batch_num):
+            label_info = labels_np[batch_idx]
             for out_idx in range(test_output_np.shape[-1]):
                 axs_all[batch_idx,0].plot(net_out[batch_idx, :, out_idx], color=c_vals[out_idx], label=out_idx)
                 axs_all[batch_idx,0].plot(test_output_np[batch_idx, :, out_idx], color=c_vals_l[out_idx], linewidth=5, alpha=0.3)
@@ -584,7 +610,7 @@ def plot_input_output(test_input_np, net_out, test_output_np, task_params, test_
             for inp_idx in range(input_batch.shape[-1]):
                 axs_all[batch_idx,1].plot(input_batch[:,inp_idx], color=c_vals[inp_idx], label=inp_idx, alpha=1.0)
                 if test_task is not None: 
-                    axs_all[batch_idx,1].set_title(f"{task_params['rules'][test_task[batch_idx]]}")
+                    axs_all[batch_idx,1].set_title(f"{task_params['rules'][test_task[batch_idx]]}; label {label_info}")
 
     for ax in axs_all.flatten(): 
         ax.set_ylim([-2, 2])
@@ -592,9 +618,36 @@ def plot_input_output(test_input_np, net_out, test_output_np, task_params, test_
     fig_all.savefig(f"./pretraining/lowD_{hyp_dict_old['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}_{tag}.png", dpi=100)
 
 # plot the sample input & output for the post-training task
-plot_input_output(test_input2_np, net_out, test_output2_np, task_params=task_params2, test_task=test_task2, tag="", \
+plot_input_output(test_input_np, labels_np, net_out_stage1_final, test_output_np, task_params=task_params, test_task=test_task, tag="stage1", \
                   batch_num=20 if len(rules_dict[hyp_dict['ruleset']]) > 1 else 10)
 
+plot_input_output(test_input2_np, labels2_np, net_out_final, test_output2_np, task_params=task_params2, test_task=test_task2, tag="stage2", \
+                  batch_num=20 if len(rules_dict[hyp_dict['ruleset']]) > 1 else 10)
+
+# save to the output
+pathname_stage1output = f"./pretraining/output_{hyp_dict_old['ruleset']}_seed{seed}_{hyp_dict['addon_name']}_stage1.npz"
+np.savez_compressed(pathname_stage1output, \
+                    test_input_np=test_input_np, 
+                    net_out_stage1_final=net_out_stage1_final,
+                    test_output_np=test_output_np, 
+                    rules_epochs=rules_epochs,
+                    task_params=task_params, 
+                    test_task=test_task
+)
+print(f"test_input_np: {test_input_np.shape}")
+print(f"net_out_stage1_final: {net_out_stage1_final.shape}")
+print(f"test_output_np: {test_output_np.shape}")
+
+
+pathname_stage2output = f"./pretraining/output_{hyp_dict_old['ruleset']}_seed{seed}_{hyp_dict['addon_name']}_stage2.npz"
+np.savez_compressed(pathname_stage2output, \
+                    test_input_np=test_input2_np, 
+                    net_out_final=net_out_final,
+                    test_output_np=test_output2_np, 
+                    rules_epochs2=rules_epochs2,
+                    task_params=task_params2, 
+                    test_task=test_task2
+)
 
 # In[ ]:
 
@@ -635,29 +688,41 @@ def modulation_extraction(db, max_seq_len, layer_index):
     return Ms, Ms_orig, hs, bs, xs
 
 print(f"rules_epochs: {rules_epochs}")
+print(f"rules_epochs2: {rules_epochs2}")
+
 all_rules = np.array(task_params["rules"])
 print(f"all_rules: {all_rules}")
 test_task = np.array(test_task)
 print(f"test_task: {test_task}")
 
-Ms, Ms_orig, hs, bs, xs = modulation_extraction(db_lst[0][-1], max_seq_len, layer_index)
-print(f"Ms.shape:{Ms.shape}")
-print(f"Ms_orig.shape:{Ms_orig.shape}")
-print(f"hs.shape:{hs.shape}")
-print(f"bs.shape:{bs.shape}")
-print(f"xs.shape:{xs.shape}")
+Ms_stage1, Ms_orig_stage1, hs_stage1, bs_stage1, xs_stage1 = modulation_extraction(db_stage1_lst[0][-1], max_seq_len, layer_index)
+Ms_stage2, Ms_orig_stage2, hs_stage2, bs_stage2, xs_stage2 = modulation_extraction(db_lst[0][-1], max_seq_len, layer_index)
+
+print(f"Ms.shape:{Ms_stage1.shape}")
+print(f"Ms_orig.shape:{Ms_orig_stage1.shape}")
+print(f"hs.shape:{hs_stage1.shape}")
+print(f"bs.shape:{bs_stage1.shape}")
+print(f"xs.shape:{xs_stage1.shape}")
 
 # save
 pathname = f"./pretraining/param_{hyp_dict_old['ruleset']}_seed{seed}_{hyp_dict['addon_name']}_result.npz"
 np.savez_compressed(pathname, \
-                    rules_epochs=rules_epochs, \
+                    rules_epochs=rules_epochs, 
+                    rules_epochs2=rules_epochs2, 
+                    hyp_dict_old=hyp_dict_old,
                     hyp_dict=hyp_dict, \
                     all_rules=all_rules, \
-                    # Ms=Ms, 
-                    Ms_orig=Ms_orig, \
-                    hs=hs, \
-                    bs=bs, \
-                    xs=xs)
+
+                    Ms_orig_stage1=Ms_orig_stage1, \
+                    hs_stage1=hs_stage1, \
+                    bs_stage1=bs_stage1, \
+                    xs_stage1=xs_stage1, 
+                    
+                    Ms_orig_stage2=Ms_orig_stage2, \
+                    hs_stage2=hs_stage2, \
+                    bs_stage2=bs_stage2, \
+                    xs_stage2=xs_stage2
+)
 
 
 
