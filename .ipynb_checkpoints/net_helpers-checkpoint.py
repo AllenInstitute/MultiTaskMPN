@@ -24,57 +24,100 @@ c_vals_d = ['#9b2c2c', '#2c5282', '#276749', '#553c9a', '#9c4221', '#285e61', '#
 l_vals = ['solid', 'dashed', 'dotted', 'dashdot', '-', '--', '-.', ':', (0, (3, 1, 1, 1)), (0, (5, 10))]
 markers_vals = ['.', 'o', 'v', '^', '<', '>', '1', '2', '3', '4', 's', 'p', '*', 'h', 'H', '+', 'x', 'D', 'd', '|', '_']
 
-def expand_and_freeze(net):
+
+def expand_and_freeze(net, option):
     """
+    Modify `net.W_initial_linear` and freeze parameters according to `option`.
+
+    option=0: Expand W_initial_linear by +1 input feature. Freeze all params,
+              then only allow the *new* last column of W_initial_linear.weight to train
+              (by masking gradients on other columns).
+
+    option=1: Do NOT expand. Freeze all params, then only allow the *existing*
+              last column of W_initial_linear.weight to train (mask gradients on others).
     """
-    # --- 1. sanity checks ----------------------------------------------------
+    # --- 1) sanity checks ----------------------------------------------------
     assert getattr(net, "input_layer_active", False), \
         "This network was built without W_initial_linear."
+    assert hasattr(net, "W_initial_linear") and isinstance(net.W_initial_linear, nn.Linear), \
+        "net.W_initial_linear must be an nn.Linear."
+
     old_linear = net.W_initial_linear
     in_f, out_f = old_linear.in_features, old_linear.out_features
     bias_flag   = old_linear.bias is not None
+    device      = old_linear.weight.device
+    dtype       = old_linear.weight.dtype
+    was_training = net.training
 
-    # --- 2. build a replacement Linear --------------------------------------
-    new_linear = nn.Linear(in_f + 1, out_f, bias=bias_flag)
-
-    with torch.no_grad():
-        # copy old weights                     (out_f,  in_f)
-        new_linear.weight[:, :in_f] = old_linear.weight.data
-        # init the extra column (out_f, 1)
-        nn.init.kaiming_uniform_(new_linear.weight[:, -1:].t(), a=math.sqrt(5))
+    # --- 2) build replacement Linear ----------------------------------------
+    if option == 0:
+        # expand input dim by +1
+        new_in_f = in_f + 1
+        new_linear = nn.Linear(new_in_f, out_f, bias=bias_flag).to(device)
+        new_linear.weight.data = new_linear.weight.data.to(dtype)
         if bias_flag:
-            new_linear.bias[:] = old_linear.bias.data
+            new_linear.bias.data = new_linear.bias.data.to(dtype)
+
+        with torch.no_grad():
+            # copy old weights (out_f, in_f) -> left block
+            new_linear.weight[:, :in_f].copy_(old_linear.weight.detach())
+            # init the extra column (out_f, 1) as the "trainable" column
+            nn.init.kaiming_uniform_(new_linear.weight[:, -1:].t(), a=math.sqrt(5))
+            if bias_flag:
+                new_linear.bias.copy_(old_linear.bias.detach())
+
+    elif option == 1:
+        # keep same shape; replace module to clear any old hooks/state
+        new_linear = nn.Linear(in_f, out_f, bias=bias_flag).to(device)
+        new_linear.weight.data = new_linear.weight.data.to(dtype)
+        if bias_flag:
+            new_linear.bias.data = new_linear.bias.data.to(dtype)
+
+        with torch.no_grad():
+            new_linear.weight.copy_(old_linear.weight.detach())
+            if bias_flag:
+                new_linear.bias.copy_(old_linear.bias.detach())
+    else:
+        raise ValueError
 
     # swap into the network
     net.W_initial_linear = new_linear
 
-    # --- 3. freeze everything by default ------------------------------------
+    # Keep original train/eval mode
+    net.train(was_training)
+
+    # freeze everything by default
     for p in net.parameters():
         p.requires_grad = False
 
-    # make *entire* weight tensor trainable, but mask gradients later
+    # allow gradients on the entire weight tensor; mask will zero unwanted cols
     net.W_initial_linear.weight.requires_grad = True
 
-    # --- 4. mask grads for frozen block -------------------------------------
-    def freeze_left_cols(grad):
+    # mask grads so only the last input column updates 
+    def _only_last_col_grad(grad: torch.Tensor) -> torch.Tensor:
+        # grad shape: (out_f, in_features_current)
         mask = torch.zeros_like(grad)
-        mask[:, -1] = 1 
+        mask[:, -1] = 1
         return grad * mask
-        
-    net.W_initial_linear.weight.register_hook(freeze_left_cols)
+
+    # register a fresh hook (replacing layer removed any old hooks)
+    handle = net.W_initial_linear.weight.register_hook(_only_last_col_grad)
 
     return net
     
 def train_network(params, net=None, device=torch.device('cuda'), verbose=False, \
-    train=True, hyp_dict=None, netFunction=None, test_input=None, pretraining_shift=0):
+    train=True, hyp_dict=None, netFunction=None, test_input=None, \
+    pretraining_shift=0, pretraining_shift_pre=0
+):
     """
     """
     assert isinstance(test_input, list), "test_input must be a list"
 
     task_params, train_params, net_params = params
 
+    # indicates of post-training stage is happening
     if net is not None and pretraining_shift != 0: 
-        net = expand_and_freeze(net)
+        net = expand_and_freeze(net, option=1)
 
     if task_params['task_type'] in ('multitask',):
     
@@ -85,7 +128,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
             # "but validation should mix them"            
             train_data, (_, train_trails, _ ) = mpn_tasks.generate_trials_wrap(
                 task_params, train_params['n_batches'], device=device, verbose=True, mode_input=hyp_dict['mode_for_all'], \
-                pretraining_shift=pretraining_shift
+                pretraining_shift=pretraining_shift, pretraining_shift_pre=pretraining_shift_pre
                     
             )
 
@@ -94,7 +137,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
         def generate_valid_data(device='cuda'):
             valid_data, (_, valid_trails, _) = mpn_tasks.generate_trials_wrap(
                 task_params, train_params['valid_n_batch'], rules=task_params['rules'], device=device, mode_input=hyp_dict['mode_for_all'], \
-                pretraining_shift=pretraining_shift
+                pretraining_shift=pretraining_shift, pretraining_shift_pre=pretraining_shift_pre
             )
             return valid_data, valid_trails
         
@@ -102,6 +145,13 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
         raise ValueError('Task type not recognized.')
 
     if net is None: # Create a new network
+        # overwrite the input information
+        if pretraining_shift_pre > 0: 
+            n_neurons = net_params["n_neurons"]
+            new_n_neurons = copy.deepcopy(n_neurons)
+            new_n_neurons[0] += pretraining_shift_pre
+            net_params["n_neurons"] = new_n_neurons
+
         net = netFunction(net_params, verbose=verbose)
 
     # Puts network on device
@@ -116,19 +166,6 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
     Winput_lst, Woutput_lst, Winputbias_lst, Wall_lst, marker_lst, loss_lst, acc_lst = [], [], [], [], [], [], []
     net_lst = []
 
-    def is_power_of_4_or_zero(n: int) -> bool:
-        """
-        Returns True if n is 0 **or** an exact power of 4 (1, 4, 16, 64, …).
-        """
-        return (
-            n == 0
-            or (
-                n > 0
-                and (n & (n - 1)) == 0      # power-of-2 check
-                and (n & 0x55555555) != 0    # even-bit position  ➜ power-of-4
-                )
-            )
-
     for dataset_idx in range(train_params['n_datasets']):
         # generate training data
         train_data, train_trails = generate_train_data(device=device)
@@ -137,14 +174,14 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
         if train: 
             # Jul 19th: test the network's output on the testing dataset at the different stage of the network
             # save and register the network's parameter and output
-            if test_input is not None and (is_power_of_4_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
+            if test_input is not None and (helper.is_power_of_4_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
                 # print(f"How about Test Data at dataset {dataset_idx}")
                 counter_lst.append(dataset_idx)
                 # test data for each stage
                 for test_input_index, test_input_ in enumerate(test_input): 
                     # jul 16th: should we separate and load the input, and stack the output later 
                     print(f"test_input_: {test_input_.shape}")
-                    minibatch = 64 
+                    minibatch = 16
                     net_out_np = [] 
                     db = [] 
                     for start in range(0, test_input_.shape[0], minibatch): 
@@ -192,7 +229,6 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
             _, monitor_loss, monitor_acc, goodness_history = net.fit(train_params, train_data, train_trails, valid_batch=valid_data, 
                                                                         valid_trails=valid_trails, new_thresh=new_thresh,
                                                                         run_mode=hyp_dict['run_mode'])
-
             
             # calculate the change of task sampling proportion 
             # aim for multi-task training (but clearly work for single-task)
@@ -210,9 +246,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
             
             # print(f"goodness_history: {goodness_history}")
             g = np.vstack(goodness_history)
-            
-            # g    = np.asarray(goodness_history, dtype=float)   # shape (R, C)
-            
+                        
             # sanity-check: every row must have the same length
             if len({len(row) for row in goodness_history}) != 1:
                 raise ValueError("`last_group_goodness` rows have unequal lengths.")
@@ -230,7 +264,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
             else: # by default only one task, so probability trivally to 1
                 task_params['rules_probs'] = np.array([1])
 
-            if test_input is not None and (is_power_of_4_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
+            if test_input is not None and (helper.is_power_of_4_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
                 loss_lst.append(monitor_loss)
                 acc_lst.append(monitor_acc)
     
@@ -725,6 +759,7 @@ class BaseNetwork(BaseNetworkFunctions):
         super().__init__()
     
         self.loss_type = net_params.get('loss_type', 'XE')
+        self.acc_measure = net_params.get('acc_measure', 'angle')
 
         if self.loss_type == 'XE':
             self.loss_fn = F.cross_entropy
@@ -853,7 +888,6 @@ class BaseNetwork(BaseNetworkFunctions):
                         step_size=scheduler_params.get('step_size', 30),
                         gamma=scheduler_params.get('gamma', 0.1)
                     )
-                # Add other schedulers as needed
                 else:
                     self.scheduler = None
             else:
@@ -971,7 +1005,7 @@ class BaseNetwork(BaseNetworkFunctions):
                 )
             
                 loss, loss_components, error_term = self.compute_loss(output, train_labels_batch, train_masks_batch, hidden=hidden)
-                acc, _ = self.compute_acc(output, train_labels_batch, train_masks_batch, train_inputs_batch, isvalid=False) 
+                acc, _ = self.compute_acc(output, train_labels_batch, train_masks_batch, train_inputs_batch, isvalid=False, mode=self.acc_measure) 
                 losses.append(loss.cpu().detach().numpy())
                 accs.append(acc.cpu().detach().numpy())
 
@@ -1124,8 +1158,8 @@ class BaseNetwork(BaseNetworkFunctions):
 
         return self.loss_fn(masked_output, masked_labels) + reg_term, loss_components, error_term
 
-    def compute_acc(self, output, labels, output_mask, input_, round_type='prefs', mode="angle", verbose=False, 
-                    isvalid=False):
+    def compute_acc(self, output, labels, output_mask, input_, round_type='prefs', mode="angle", 
+                    verbose=False, isvalid=False):
         """
         output shape: (batches, seq_len, output_size)
         labels shape: (batches, seq_len)
@@ -1433,7 +1467,7 @@ class BaseNetwork(BaseNetworkFunctions):
             moitor_str = 'Iter: {}, LR: {:.3e} - train_loss:{:.3e}'.format(self.hist['iter'], lr, loss)
 
             if self.loss_type in ('XE', 'MSE',): # Accuracy computations if relevant
-                acc, _ = self.compute_acc(output, train_labels_batch, train_masks_batch, train_inputs_batch, isvalid=False)
+                acc, _ = self.compute_acc(output, train_labels_batch, train_masks_batch, train_inputs_batch, isvalid=False, mode=self.acc_measure)
                 self.hist['train_acc'].append(acc.item())
                 if self.loss_type in ('XE',):
                     moitor_str += ', train_acc:{:.3f}'.format(acc)
@@ -1473,8 +1507,8 @@ class BaseNetwork(BaseNetworkFunctions):
                 moitor_str += ', valid_loss:{:.3e}'.format(valid_loss)
 
                 if self.loss_type in ('XE', 'MSE',): # Accuracy computations if relevant
-                    valid_acc, valid_acc_group = self.compute_acc(valid_output, valid_labels_batch, valid_masks_batch, valid_inputs_batch, 
-                                                 isvalid=True) 
+                    valid_acc, valid_acc_group = self.compute_acc(valid_output, valid_labels_batch, 
+                                                                  valid_masks_batch, valid_inputs_batch, isvalid=True, mode=self.acc_measure) 
                     
                     self.hist['valid_acc'].append(valid_acc.item())
                     self.hist['group_valid_acc'].append(valid_acc_group)

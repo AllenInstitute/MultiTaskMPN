@@ -8,6 +8,7 @@ import torch
 import net_helpers
 import time
 import random
+import sys
 
 def get_rules(ruleset):
     return rules_dict[ruleset]
@@ -2244,7 +2245,7 @@ def insert_zeros_after_channel(x, K, after=5):
     return np.concatenate([first, zeros, second], axis=2)
 
 def generate_trials_wrap(task_params, n_batches, device='cuda', verbose=False, rules=None,
-                         mode_input="random_batch", fix=False, pretraining_shift=0):
+                         mode_input="random_batch", fix=False, pretraining_shift=0, pretraining_shift_pre=0):
     """
     Wrapper to generate the raw datasets, including the inputs, labels, and masks.
 
@@ -2368,6 +2369,7 @@ def generate_trials_wrap(task_params, n_batches, device='cuda', verbose=False, r
 
     # Jul 18th: pretraining purprose, paddling the input based on the number of pretrained tasks 
     # mask and output should not be affected
+    inputs_all = insert_zeros_after_channel(inputs_all, K=pretraining_shift_pre, after=inputs_all.shape[-1]-1)
     inputs_all = insert_zeros_after_channel(inputs_all, K=pretraining_shift, after=5)
     print(f"inputs_all paddled: {inputs_all.shape}")
 
