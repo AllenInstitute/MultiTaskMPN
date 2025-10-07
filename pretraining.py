@@ -634,6 +634,7 @@ np.savez_compressed(pathname_stage1output, \
                     task_params=task_params, 
                     test_task=test_task
 )
+
 print(f"test_input_np: {test_input_np.shape}")
 print(f"net_out_stage1_final: {net_out_stage1_final.shape}")
 print(f"test_output_np: {test_output_np.shape}")
@@ -660,9 +661,11 @@ if net_params["input_layer_add"]:
 
 max_seq_len = test_input.shape[1]
     
-def modulation_extraction(db, max_seq_len, layer_index):
+def modulation_extraction(db, max_seq_len, layer_index, half=False):
     """
     """
+    devider = 1 if not half else 2
+    
     n_batch_all_ = test_input.shape[0]
     
     Ms = np.concatenate((
@@ -678,11 +681,11 @@ def modulation_extraction(db, max_seq_len, layer_index):
     ), axis=-1) 
 
     hs = np.concatenate((
-        db[f'hidden{layer_index}'].reshape(n_batch_all_, max_seq_len, -1),
+        db[f'hidden{layer_index}'].reshape(int(n_batch_all_ / devider), max_seq_len, -1),
     ), axis=-1)
 
     xs = np.concatenate((
-        db[f'input{layer_index}'].reshape(n_batch_all_, max_seq_len, -1),
+        db[f'input{layer_index}'].reshape(int(n_batch_all_ / devider), max_seq_len, -1),
     ), axis=-1)
 
     return Ms, Ms_orig, hs, bs, xs
@@ -696,13 +699,17 @@ test_task = np.array(test_task)
 print(f"test_task: {test_task}")
 
 Ms_stage1, Ms_orig_stage1, hs_stage1, bs_stage1, xs_stage1 = modulation_extraction(db_stage1_lst[0][-1], max_seq_len, layer_index)
-Ms_stage2, Ms_orig_stage2, hs_stage2, bs_stage2, xs_stage2 = modulation_extraction(db_lst[0][-1], max_seq_len, layer_index)
+# since we only have half of the batches (one-task in post-training vs. two-task in pre-training)
+# so in reshape, we need to adjust the desired 
+Ms_stage2, Ms_orig_stage2, hs_stage2, bs_stage2, xs_stage2 = modulation_extraction(db_lst[0][-1], max_seq_len, layer_index, half=True)
 
 print(f"Ms.shape:{Ms_stage1.shape}")
 print(f"Ms_orig.shape:{Ms_orig_stage1.shape}")
 print(f"hs.shape:{hs_stage1.shape}")
 print(f"bs.shape:{bs_stage1.shape}")
 print(f"xs.shape:{xs_stage1.shape}")
+
+assert hs_stage1.shape[-1] == hs_stage2.shape[-1]
 
 # save
 pathname = f"./pretraining/param_{hyp_dict_old['ruleset']}_seed{seed}_{hyp_dict['addon_name']}_result.npz"
