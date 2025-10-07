@@ -6,10 +6,12 @@ from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bo
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from typing import List, Sequence, Optional, Tuple, Dict, Any
 from matplotlib.patches import Rectangle
+from sklearn.cluster import MiniBatchKMeans
 
 import matplotlib.pyplot as plt
 import seaborn as sns 
 import scienceplots
+import gc, psutil, os
 plt.style.use('science')
 plt.style.use(['no-latex'])
 
@@ -208,7 +210,9 @@ def _cross_cophenetic_corr(Z_ref, X, metric="euclidean"):
     return float(c)
 
 def _cluster_R2(X, labels):
-    """Univariate-free ‘k-means ANOVA’ style R^2 across multi-d features."""
+    """
+    Univariate-free ‘k-means ANOVA’ style R^2 across multi-d features.
+    """
     X = np.asarray(X)
     Xc = X - X.mean(axis=0, keepdims=True)
     TSS = np.sum(Xc**2)
@@ -464,14 +468,6 @@ def _hierarchical_clustering_forgroup(
 ) -> Dict[str, Any]:
     """
     Run Ward hierarchical clustering on `data` (observations × features).
-
-    Returns: {
-        'linkage'   : condensed linkage matrix (scipy format),
-        'leaf_order': list of observation indices in optimized dendrogram order,
-        'labels'    : 1-based flat-cluster labels at best_k,
-        'k'         : number of clusters chosen by silhouette maximisation,
-        'silhouette': best silhouette score,
-    }
     """
     n_obs = data.shape[0]
     if n_obs < 2:                             # nothing to cluster
@@ -484,7 +480,8 @@ def _hierarchical_clustering_forgroup(
         )
 
     pairwise = pdist(data, metric=metric)
-    Z = optimal_leaf_ordering(linkage(pairwise, method="ward"), pairwise)
+    # Z = optimal_leaf_ordering(linkage(pairwise, method="ward"), pairwise)
+    Z = linkage(pairwise, method="ward")
 
     best_k, best_score, best_labels = None, -np.inf, None
     D_sq = squareform(pairwise)
@@ -509,29 +506,16 @@ def _hierarchical_clustering_forgroup(
         score_recording=score_recording
     )
 
-
-
 def _build_groups(
     n_items: int,
     blocks: Optional[Sequence[Sequence[int]]] = None,
 ) -> Tuple[List[List[int]], np.ndarray]:
     """
     Ensure a full, disjoint partition of {0,…,n_items-1}.
-
-    Parameters
-    ----------
-    n_items : total number of elements along the axis
-    blocks  : list of lists (possibly None).  Each sub-list is a user-defined block.
-
-    Returns
-    -------
-    groups  : list of lists, length = n_groups
-    item_to_group : int array of length n_items mapping each item to its group index
     """
     item_to_group = -np.ones(n_items, dtype=int)
     groups: List[List[int]] = []
 
-    # 1. user-defined blocks
     if blocks is not None:
         for b in blocks:
             b = sorted(set(b))
@@ -546,7 +530,6 @@ def _build_groups(
                     raise ValueError(f"index {i} appears in multiple blocks")
                 item_to_group[i] = g_idx
 
-    # 2. singletons for anything not covered above
     for i in range(n_items):
         if item_to_group[i] == -1:
             item_to_group[i] = len(groups)
@@ -590,27 +573,6 @@ def cluster_variance_matrix_forgroup(
     """
     Bi-directional hierarchical clustering of a variance matrix V
     (shape: N_features × M_neurons).
-
-    Parameters
-    ----------
-    V           : (N × M) variance matrix
-    k_min/k_max : min / max candidate #clusters for silhouette selection
-    row_groups  : optional list of feature-index blocks that must stay together
-    col_groups  : optional list of neuron-index blocks that must stay together
-
-    Returns
-    -------
-    dict with:
-      row_order           – list of feature indices (full, flattened order)
-      col_order           – list of neuron  indices
-      row_group_order     – order of the row blocks
-      col_group_order     – order of the col blocks
-      row_labels          – per-feature     flat-cluster labels
-      col_labels          – per-neuron      flat-cluster labels
-      row_group_labels    – per-row-block   labels
-      col_group_labels    – per-col-block   labels
-      row_k / col_k       – chosen k for rows / cols
-      row_linkage / col_linkage – full linkage matrices on blocks
     """
     V = np.asarray(V)
 
@@ -650,3 +612,34 @@ def cluster_variance_matrix_forgroup(
         row_score_recording=row_res["score_recording"], 
         col_score_recording=col_res["score_recording"]
     )
+
+# ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
+def make_col_groups_with_kmeans(V: np.ndarray, n_groups: int = 1000, \
+                                batch_size: int = 8192, \
+                                random_state: int = 0):
+    """
+    Use MiniBatchKMeans to cluster columns (neurons) of V into groups.
+    This produces a 'col_groups' list compatible with cluster_variance_matrix_forgroup.
+    """
+    n_cols = V.shape[1]
+    print(f"Running MiniBatchKMeans on {n_cols} columns ...")
+    
+    mbk = MiniBatchKMeans(
+        n_clusters=n_groups,
+        batch_size=batch_size,
+        n_init='auto',
+        random_state=random_state
+    )
+    col_labels = mbk.fit_predict(V.T)   # clustering columns as observations
+    centroids = mbk.cluster_centers_.T  # shape (N_features, n_groups)
+    
+    # Build groups: list of indices for each coarse cluster
+    col_groups = [np.where(col_labels == g)[0].tolist() for g in range(n_groups)]
+    
+    # Drop empty groups (can happen rarely if n_groups > unique labels)
+    col_groups = [g for g in col_groups if len(g) > 0]
+    
+    print(f"Formed {len(col_groups)} groups.")
+    return col_groups, col_labels, centroids
+    
