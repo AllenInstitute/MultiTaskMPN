@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.cluster.hierarchy import linkage, fcluster, dendrogram, optimal_leaf_ordering
 from scipy.spatial.distance import pdist, squareform
-from scipy.cluster.hierarchy import cophenet
+from scipy.cluster.hierarchy import cophenet, linkage
 from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from typing import List, Sequence, Optional, Tuple, Dict, Any
@@ -160,16 +160,6 @@ def transfer_and_score(A, B, res_A, res_B, metric="euclidean"):
     col_ari = float(adjusted_rand_score(lblA_col, lblB_col))
     row_nmi = float(normalized_mutual_info_score(lblA_row, lblB_row))
     col_nmi = float(normalized_mutual_info_score(lblA_col, lblB_col))
-
-    # # --- Cross-cophenetic: does B’s dendrogram geometry match A’s distances?
-    # # Rows
-    # _, coph_B_row = cophenet(res_B["row_linkage"])     # condensed cophenetic distances from B
-    # D_row_A = pdist(A, metric=metric)                  # condensed distances in A
-    # ccc_row = float(np.corrcoef(coph_B_row, D_row_A)[0, 1])
-    # # Cols
-    # _, coph_B_col = cophenet(res_B["col_linkage"])
-    # D_col_A = pdist(A.T, metric=metric)
-    # ccc_col = float(np.corrcoef(coph_B_col, D_col_A)[0, 1])
 
     ccc_row = _cross_cophenetic_corr(res_B["row_linkage"], A, metric=metric)
     ccc_col = _cross_cophenetic_corr(res_B["col_linkage"], A.T, metric=metric)
@@ -460,6 +450,31 @@ def cluster_variance_matrix_repeat(
 # re-ordering/grouping based on this information)
 # ---------------------------------------------------------------------
 
+def _cut_distance_for_k(Z: np.ndarray, k: int) -> float:
+    """
+    Given a SciPy linkage matrix Z (n-1 merges; Z[:,2] are merge heights)
+    return a distance threshold t such that fcluster(Z, t, criterion='distance')
+    yields exactly k clusters (for standard monotone linkages like 'ward').
+
+    We choose t midway between the (i-1)-th and i-th merge heights, where
+    i = n - k (number of merges included). Handle edges robustly.
+    """
+    n = Z.shape[0] + 1              # number of original observations
+    d = Z[:, 2]                     # non-decreasing merge heights
+    if n <= 1:
+        return 0.0
+
+    i = n - k                       # merges included to reach k clusters
+    if i <= 0:
+        # No merges: want n clusters → pick any t < first height
+        return (d[0] * 0.5) if d.size > 0 else 0.0
+    elif i >= n - 1:
+        # All merges: want 1 cluster → pick t just above max height
+        return (d[-1] + np.finfo(float).eps) if d.size > 0 else 0.0
+    else:
+        # Midpoint between previous and next merge heights
+        return 0.5 * (d[i - 1] + d[i])
+
 def _hierarchical_clustering_forgroup(
     data: np.ndarray,
     k_min: int = 3,
@@ -483,19 +498,29 @@ def _hierarchical_clustering_forgroup(
     # Z = optimal_leaf_ordering(linkage(pairwise, method="ward"), pairwise)
     Z = linkage(pairwise, method="ward")
 
+    c, _ = cophenet(Z, pdist(data))
+
     best_k, best_score, best_labels = None, -np.inf, None
     D_sq = squareform(pairwise)
     k_range = range(max(k_min, 2), min(k_max, n_obs - 1) + 1)
 
     score_recording = {}
+    cut_distance_by_k = {}
+    labels_by_k: Dict[int, np.ndarray] = {}
+
+    for k in k_range:
+        cut_distance_by_k[k] = _cut_distance_for_k(Z, k)
+        
     for k in k_range:
         labels = fcluster(Z, k, criterion="maxclust")
+        labels_by_k[k] = labels
         score = silhouette_score(D_sq, labels, metric="precomputed")
         score_recording[k] = score # register
         if score > best_score:
             best_k, best_score, best_labels = k, score, labels
 
     leaf_order = dendrogram(Z, no_plot=True)["leaves"]
+    best_cut_distance = cut_distance_by_k.get(best_k, _cut_distance_for_k(Z, best_k))
 
     return dict(
         linkage=Z,
@@ -503,7 +528,11 @@ def _hierarchical_clustering_forgroup(
         labels=best_labels,
         k=best_k,
         silhouette=best_score,
-        score_recording=score_recording
+        score_recording=score_recording,
+        cophenet_score=c,
+        cut_distance_by_k=cut_distance_by_k,
+        best_cut_distance=best_cut_distance,
+        labels_by_k=labels_by_k
     )
 
 def _build_groups(
@@ -576,15 +605,14 @@ def cluster_variance_matrix_forgroup(
     """
     V = np.asarray(V)
 
-    # ---------- rows --------------------------------------------------
     row_blocks, row_map = _build_groups(V.shape[0], row_groups)
     V_row_grp = _aggregate_along_axis(V, row_blocks, axis=0, reduce="mean")
     row_res = _hierarchical_clustering_forgroup(V_row_grp, k_min, k_max)
-
-    # expand group labels → per-feature
+    
     row_labels = np.take(row_res["labels"], row_map)
-
-    # rebuild full feature order: block-by-block following dendrogram
+    row_labels_by_k = {
+        k: np.take(lbls, row_map) for k, lbls in row_res["labels_by_k"].items()
+    }
     row_order = [idx for g in row_res["leaf_order"] for idx in row_blocks[g]]
 
     col_blocks, col_map = _build_groups(V.shape[1], col_groups)
@@ -592,6 +620,9 @@ def cluster_variance_matrix_forgroup(
     col_res = _hierarchical_clustering_forgroup(V_col_grp.T, k_min, k_max)
 
     col_labels = np.take(col_res["labels"], col_map)
+    col_labels_by_k = {
+        k: np.take(lbls, col_map) for k, lbls in col_res["labels_by_k"].items()
+    }
     col_order = [idx for g in col_res["leaf_order"] for idx in col_blocks[g]]
 
     return dict(
@@ -610,7 +641,15 @@ def cluster_variance_matrix_forgroup(
         row_linkage=row_res["linkage"],
         col_linkage=col_res["linkage"],
         row_score_recording=row_res["score_recording"], 
-        col_score_recording=col_res["score_recording"]
+        col_score_recording=col_res["score_recording"],
+        row_cophenet_score=row_res["cophenet_score"],
+        col_cophenet_score=col_res["cophenet_score"],
+        row_cut_distance_by_k=row_res["cut_distance_by_k"],
+        col_cut_distance_by_k=col_res["cut_distance_by_k"],
+        row_best_cut_distance=row_res["best_cut_distance"],
+        col_best_cut_distance=col_res["best_cut_distance"],
+        row_labels_by_k=row_labels_by_k,
+        col_labels_by_k=col_labels_by_k
     )
 
 # ---------------------------------------------------------------------
@@ -631,13 +670,12 @@ def make_col_groups_with_kmeans(V: np.ndarray, n_groups: int = 1000, \
         n_init='auto',
         random_state=random_state
     )
-    col_labels = mbk.fit_predict(V.T)   # clustering columns as observations
-    centroids = mbk.cluster_centers_.T  # shape (N_features, n_groups)
     
-    # Build groups: list of indices for each coarse cluster
+    col_labels = mbk.fit_predict(V.T)  
+    centroids = mbk.cluster_centers_.T  
+    
     col_groups = [np.where(col_labels == g)[0].tolist() for g in range(n_groups)]
     
-    # Drop empty groups (can happen rarely if n_groups > unique labels)
     col_groups = [g for g in col_groups if len(g) > 0]
     
     print(f"Formed {len(col_groups)} groups.")
