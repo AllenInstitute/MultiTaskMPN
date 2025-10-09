@@ -138,6 +138,22 @@ def evaluate_bicluster_clustering(V, row_labels, col_labels):
         sil_l2 = (b - a) / denom
     silhouette_l2_approx = float(np.sum(n * sil_l2) / np.sum(n)) if Kb >= 2 else np.nan
 
+    # ---- Xie–Beni index (lower is better) ----
+    if Kb >= 2:
+        # min squared separation between distinct block means
+        offdiag = ~np.eye(Kb, dtype=bool)
+        sep2 = mudiff2[offdiag]
+        # consider strictly positive separations to avoid zero-distance degeneracy
+        pos_sep2 = sep2[sep2 > 0.0]
+        if pos_sep2.size > 0:
+            min_sep2 = float(np.min(pos_sep2))
+            xb = float(withinss) / (float(N) * min_sep2) if N > 0 else np.nan
+        else:
+            # All centroids coincide pairwise: degenerate. If withinss>0 -> inf, else 0.
+            xb = 0.0 if withinss == 0.0 else np.inf
+    else:
+        xb = np.nan
+
     return {
         "metrics": {
             "CH_blocks": ch,
@@ -145,6 +161,7 @@ def evaluate_bicluster_clustering(V, row_labels, col_labels):
             "Dunn_blocks": dunn,
             "silhouette_sq_blocks": silhouette_sq,
             "silhouette_L2approx_blocks": silhouette_l2_approx,
+            "XB_blocks": xb, 
             "K_row": Kr, "K_col": Kc, "K_blocks": K,
         },
         "blocks": {
@@ -153,3 +170,20 @@ def evaluate_bicluster_clustering(V, row_labels, col_labels):
             "global_mean": stats["mu_global"],
         },
     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
