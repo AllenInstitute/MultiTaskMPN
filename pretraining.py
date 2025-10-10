@@ -87,7 +87,7 @@ torch.manual_seed(seed)
 hyp_dict['task_type'] = 'multitask' # int, NeuroGym, multitask
 hyp_dict['mode_for_all'] = "random_batch"
 # hyp_dict['ruleset'] = 'fdanti_delaygo' # low_dim, all, test
-hyp_dict['ruleset'] = 'fdgo_delaygo' # low_dim, all, test
+hyp_dict['ruleset'] = 'fdanti_delaygo' # low_dim, all, test
 
 accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti', 
                 'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 'dmsnogo', 'dmcnogo')
@@ -121,7 +121,7 @@ hyp_dict['chosen_network'] = "dmpn"
 # trainetalambda
 
 mpn_depth = 1
-n_hidden = 300
+n_hidden = 200
 
 hyp_dict['addon_name'] = ""
 hyp_dict['addon_name'] += f"+hidden{n_hidden}"
@@ -165,9 +165,9 @@ def current_basic_params(hyp_dict_input):
         # 'n_datasets': 100,
         'n_datasets': 30, 
         'n_epochs_per_set': 100, 
-        # 'weight_reg': 'L2',
-        # 'activity_reg': 'L2', 
-        # 'reg_lambda': 1e-4,
+        'weight_reg': 'L2',
+        'activity_reg': 'L2', 
+        'reg_lambda': 1e-4,
         
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'
@@ -241,9 +241,11 @@ def current_basic_params(hyp_dict_input):
 hyp_dict_old = copy.deepcopy(hyp_dict)
 
 task_params, train_params, net_params = current_basic_params(hyp_dict_old)
+
 print("Accuracy Measure: {net_params['acc_measure']}")
-hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}"
-hyp_dict_old['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}"
+
+hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}+L2"
+hyp_dict_old['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}+L2"
 
 hyp_dict['ruleset'] = 'delayanti'
 task_params2, train_params2, net_params2 = current_basic_params(hyp_dict)
