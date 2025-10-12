@@ -895,8 +895,12 @@ class BaseNetwork(BaseNetworkFunctions):
 
 
         self.train() # put in train mode (doesn't really do anything unless we are using dropout/batch norm)
-        db, monitor_loss, monitor_acc = train_fn(train_params, train_data, train_trails, valid_batch=valid_batch, valid_trails=valid_trails,
-                      new_thresh=new_thresh, run_mode=run_mode)
+        db, monitor_loss, monitor_acc = train_fn(train_params, train_data, train_trails, 
+                                                 valid_batch=valid_batch, 
+                                                 valid_trails=valid_trails, 
+                                                 new_thresh=new_thresh, 
+                                                 run_mode=run_mode
+        )
         
         last_group_acc = list(self.hist['group_valid_acc'][-1].values())
         # print(f"last_group_acc: {last_group_acc}")
@@ -1479,7 +1483,7 @@ class BaseNetwork(BaseNetworkFunctions):
         ### Validation Set ###
         # Assumes validation set is already in batches
         valid_inputs_batch, valid_labels_batch, valid_masks_batch = valid_batch if valid_batch else (None, None, None)
-        # print(f"valid_inputs_batch.shape: {valid_inputs_batch.shape}")
+        print(f"valid_inputs_batch.shape: {valid_inputs_batch.shape}")
 
         if valid_batch is not None:
         

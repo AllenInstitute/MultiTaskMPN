@@ -515,7 +515,7 @@ if train:
 use_finalstage = False
 if use_finalstage:
     # plotting output in the validation set
-    net_out, db = net.iterate_sequence_batch(test_input, run_mode='track_states')
+    net_out, _ , db = net.iterate_sequence_batch(test_input, run_mode='track_states')
     W_output = net.W_output.detach().cpu().numpy()
 
     W_all_ = []
