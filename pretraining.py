@@ -121,7 +121,7 @@ hyp_dict['chosen_network'] = "dmpn"
 # trainetalambda
 
 mpn_depth = 1
-n_hidden = 200
+n_hidden = 100
 
 hyp_dict['addon_name'] = ""
 hyp_dict['addon_name'] += f"+hidden{n_hidden}"
@@ -163,7 +163,7 @@ def current_basic_params(hyp_dict_input):
         'gradient_clip': 10,
         'valid_n_batch': min(max(50, int(200/len(rules_dict[hyp_dict_input['ruleset']]))), 50),
         # 'n_datasets': 100,
-        'n_datasets': 30, 
+        'n_datasets': 60, 
         'n_epochs_per_set': 100, 
         'weight_reg': 'L2',
         'activity_reg': 'L2', 
