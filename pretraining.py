@@ -87,7 +87,7 @@ torch.manual_seed(seed)
 hyp_dict['task_type'] = 'multitask' # int, NeuroGym, multitask
 hyp_dict['mode_for_all'] = "random_batch"
 # hyp_dict['ruleset'] = 'fdanti_delaygo' # low_dim, all, test
-hyp_dict['ruleset'] = 'fdanti_delaygo' # low_dim, all, test
+hyp_dict['ruleset'] = 'fdgo_delaygo' # low_dim, all, test
 
 accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti', 
                 'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 'dmsnogo', 'dmcnogo')
@@ -143,11 +143,12 @@ def current_basic_params(hyp_dict_input):
         'mask_type': 'cost', # 'cost', None
         'fixate_off': True, # Second fixation signal goes on when first is off
         'task_info': True, 
-        'randomize_inputs': False,
+        'randomize_inputs': False, # outdated 
         'n_input': 20, # Only used if inputs are randomized,
         'modality_diff': True,
         'label_strength': True, 
         'long_delay': 'normal',
+        'long_response': 'normal', 
         'adjust_task_prop': True,
         'adjust_task_decay': 0.9, 
     }
@@ -162,7 +163,7 @@ def current_basic_params(hyp_dict_input):
         'batch_size': 64,
         'gradient_clip': 10,
         'valid_n_batch': min(max(50, int(200/len(rules_dict[hyp_dict_input['ruleset']]))), 50),
-        'n_datasets': 50, 
+        'n_datasets': 50, # 50
         'n_epochs_per_set': 100, 
         'weight_reg': 'L2',
         'activity_reg': 'L2', 
@@ -290,9 +291,7 @@ else:
 epoch_multiply = train_params["n_epochs_per_set"]
 
 # adjust the training information
-train_params2["n_datasets"] = 3000
-# train_params2["n_datasets"] = 20
-
+train_params2["n_datasets"] = 3000 # 3000
 train_params2['n_epochs_per_set'] = 100
 
 # In[5]:
@@ -335,15 +334,20 @@ if task_params['task_type'] in ('multitask',): # Test batch consists of all the 
     test_mode_for_all = "random"
     # ZIHAN
     # generate test data using "random"
-    test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params, test_n_batch, \
-                rules=task_params['rules'], mode_input=test_mode_for_all, fix=task_random_fix,
-                                                                  pretraining_shift_pre=pretraining_shift_pre
-    )
-    
-    test_data2, test_trials_extra2 = mpn_tasks.generate_trials_wrap(task_params2, test_n_batch, \
-                rules=task_params2['rules'], mode_input=test_mode_for_all, fix=task_random_fix,
-                                                                    pretraining_shift=pretraining_shift, 
-    )
+    task_params_test = copy.deepcopy(task_params)
+    long_response_change = "normal"
+    task_params_test["long_response"] = long_response_change
+    test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params_test, test_n_batch, 
+                                                                  rules=task_params_test['rules'], mode_input=test_mode_for_all, 
+                                                                  fix=task_random_fix, pretraining_shift_pre=pretraining_shift_pre)
+
+    # Oct 15th: make the response period to be longer
+    # so that the hidden activity analysis might be more reliable
+    task_params2_test = copy.deepcopy(task_params2)
+    task_params2_test["long_response"] = long_response_change
+    test_data2, test_trials_extra2 = mpn_tasks.generate_trials_wrap(task_params2_test, test_n_batch, 
+                                                                    rules=task_params2_test['rules'], mode_input=test_mode_for_all, 
+                                                                    fix=task_random_fix, pretraining_shift=pretraining_shift )
     _, test_trials, test_rule_idxs = test_trials_extra
     _, test_trials2, test_rule_idxs2 = test_trials_extra2
     
@@ -660,9 +664,10 @@ layer_index = 0 # 1 layer MPN
 if net_params["input_layer_add"]:
     layer_index += 1 
 
-max_seq_len = test_input.shape[1]
+max_seq_len1 = test_input.shape[1]
+max_seq_len2 = test_input2.shape[1]
     
-def modulation_extraction(db, max_seq_len, layer_index, half=False):
+def modulation_extraction(db_, max_seq_len_, layer_index, half=False):
     """
     """
     devider = 1 if not half else 2
@@ -670,23 +675,23 @@ def modulation_extraction(db, max_seq_len, layer_index, half=False):
     n_batch_all_ = test_input.shape[0]
     
     Ms = np.concatenate((
-        db[f'M{layer_index}'].reshape(n_batch_all_, max_seq_len, -1),
+        db_[f'M{layer_index}'].reshape(int(n_batch_all_ / devider), max_seq_len_, -1),
     ), axis=-1)
 
     Ms_orig = np.concatenate((
-        db[f'M{layer_index}'],
+        db_[f'M{layer_index}'],
     ), axis=-1)
 
     bs = np.concatenate((
-        db[f'b{layer_index}'],
+        db_[f'b{layer_index}'],
     ), axis=-1) 
 
     hs = np.concatenate((
-        db[f'hidden{layer_index}'].reshape(int(n_batch_all_ / devider), max_seq_len, -1),
+        db_[f'hidden{layer_index}'].reshape(int(n_batch_all_ / devider), max_seq_len_, -1),
     ), axis=-1)
 
     xs = np.concatenate((
-        db[f'input{layer_index}'].reshape(int(n_batch_all_ / devider), max_seq_len, -1),
+        db_[f'input{layer_index}'].reshape(int(n_batch_all_ / devider), max_seq_len_, -1),
     ), axis=-1)
 
     return Ms, Ms_orig, hs, bs, xs
@@ -699,16 +704,22 @@ print(f"all_rules: {all_rules}")
 test_task = np.array(test_task)
 print(f"test_task: {test_task}")
 
-Ms_stage1, Ms_orig_stage1, hs_stage1, bs_stage1, xs_stage1 = modulation_extraction(db_stage1_lst[0][-1], max_seq_len, layer_index)
+Ms_stage1, Ms_orig_stage1, hs_stage1, bs_stage1, xs_stage1 = modulation_extraction(db_stage1_lst[0][-1], max_seq_len1, layer_index)
 # since we only have half of the batches (one-task in post-training vs. two-task in pre-training)
 # so in reshape, we need to adjust the desired 
-Ms_stage2, Ms_orig_stage2, hs_stage2, bs_stage2, xs_stage2 = modulation_extraction(db_lst[0][-1], max_seq_len, layer_index, half=True)
+Ms_stage2, Ms_orig_stage2, hs_stage2, bs_stage2, xs_stage2 = modulation_extraction(db_lst[0][-1], max_seq_len2, layer_index, half=True)
 
-print(f"Ms.shape:{Ms_stage1.shape}")
-print(f"Ms_orig.shape:{Ms_orig_stage1.shape}")
-print(f"hs.shape:{hs_stage1.shape}")
-print(f"bs.shape:{bs_stage1.shape}")
-print(f"xs.shape:{xs_stage1.shape}")
+print(f"Ms_stage1.shape:{Ms_stage1.shape}")
+print(f"Ms_orig_stage1.shape:{Ms_orig_stage1.shape}")
+print(f"hs_stage1.shape:{hs_stage1.shape}")
+print(f"bs_stage1.shape:{bs_stage1.shape}")
+print(f"xs_stage1.shape:{xs_stage1.shape}")
+
+print(f"Ms_stage2.shape:{Ms_stage2.shape}")
+print(f"Ms_orig_stage2.shape:{Ms_orig_stage2.shape}")
+print(f"hs_stage2.shape:{hs_stage2.shape}")
+print(f"bs_stage2.shape:{bs_stage2.shape}")
+print(f"xs_stage2.shape:{xs_stage2.shape}")
 
 assert hs_stage1.shape[-1] == hs_stage2.shape[-1]
 

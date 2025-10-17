@@ -495,9 +495,7 @@ def _hierarchical_clustering_forgroup(
         )
 
     pairwise = pdist(data, metric=metric)
-    # Z = optimal_leaf_ordering(linkage(pairwise, method="ward"), pairwise)
     Z = linkage(pairwise, method="ward")
-
     c, _ = cophenet(Z, pdist(data))
 
     best_k, best_score, best_labels = None, -np.inf, None
@@ -673,9 +671,7 @@ def make_col_groups_with_kmeans(V: np.ndarray, n_groups: int = 1000, \
     
     col_labels = mbk.fit_predict(V.T)  
     centroids = mbk.cluster_centers_.T  
-    
     col_groups = [np.where(col_labels == g)[0].tolist() for g in range(n_groups)]
-    
     col_groups = [g for g in col_groups if len(g) > 0]
     
     print(f"Formed {len(col_groups)} groups.")

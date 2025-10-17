@@ -1,6 +1,53 @@
 import numpy as np 
 
+def count_pairs(col_all: np.ndarray, M: int):
+    """
+    Returns (same_pre_all, same_post_all, no_same_pre_post_all)
+    computed over unordered pairs within each group in col_all.
+    """
+    N = col_all.size
+    if N == 0:
+        return 0, 0, 0
+
+    # Precompute to avoid repeated div/mod
+    idx_all = np.arange(N)
+    pre_all  = idx_all // M
+    post_all = idx_all % M
+
+    same_pre_all = 0
+    same_post_all = 0
+    no_same_all = 0
+
+    for g in np.unique(col_all):
+        idx = np.flatnonzero(col_all == g)
+        n = idx.size
+        if n < 2:
+            continue
+
+        pre = pre_all[idx]
+        post = post_all[idx]
+
+        # count pairs sharing same pre: sum_k C(n_k, 2)
+        cnt_pre = np.bincount(pre)
+        same_pre = np.sum(cnt_pre * (cnt_pre - 1) // 2)
+
+        # count pairs sharing same post: sum_k C(n_k, 2)
+        cnt_post = np.bincount(post)
+        same_post = np.sum(cnt_post * (cnt_post - 1) // 2)
+
+        total_pairs = n * (n - 1) // 2
+        # disjoint because (pre, post) identifies an index uniquely
+        no_same = total_pairs - same_pre - same_post
+
+        same_pre_all += int(same_pre)
+        same_post_all += int(same_post)
+        no_same_all += int(no_same)
+
+    return same_pre_all, same_post_all, no_same_all
+
 def _to_zero_based(labels):
+    """
+    """
     labels = np.asarray(labels)
     uniques = np.unique(labels)
     remap = {u: i for i, u in enumerate(uniques)}
@@ -170,20 +217,3 @@ def evaluate_bicluster_clustering(V, row_labels, col_labels):
             "global_mean": stats["mu_global"],
         },
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

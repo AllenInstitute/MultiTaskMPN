@@ -1445,7 +1445,8 @@ class BaseNetwork(BaseNetworkFunctions):
             self._monitor(train_batch, train_trails, valid_trails, valid_batch=valid_batch)
 
     @torch.no_grad()
-    def _monitor(self, train_batch, train_go_info_batch, valid_go_info, output=None, loss=None, loss_components=None, valid_batch=None):  		
+    def _monitor(self, train_batch, train_go_info_batch, valid_go_info, 
+                 output=None, loss=None, loss_components=None, valid_batch=None):  		
         train_inputs_batch, train_labels_batch, train_masks_batch = train_batch # (seq_lens assumed not to matter since these are only used for init monitor)
 
         # Stores iterations where monitor was called
@@ -1471,7 +1472,8 @@ class BaseNetwork(BaseNetworkFunctions):
             moitor_str = 'Iter: {}, LR: {:.3e} - train_loss:{:.3e}'.format(self.hist['iter'], lr, loss)
 
             if self.loss_type in ('XE', 'MSE',): # Accuracy computations if relevant
-                acc, _ = self.compute_acc(output, train_labels_batch, train_masks_batch, train_inputs_batch, isvalid=False, mode=self.acc_measure)
+                acc, _ = self.compute_acc(output, train_labels_batch, train_masks_batch, train_inputs_batch, isvalid=False,
+                                          mode=self.acc_measure)
                 self.hist['train_acc'].append(acc.item())
                 if self.loss_type in ('XE',):
                     moitor_str += ', train_acc:{:.3f}'.format(acc)
