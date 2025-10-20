@@ -607,25 +607,24 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
     """
 
     def __init__(self, net_params, verbose=False):
+        cfg = copy.deepcopy(net_params)
 
         # Mar 16th: add input layer
-        self.input_layer_active = net_params.get('input_layer_add', False)
-        self.input_layer_active_trainable = net_params.get('input_layer_add_trainable', False)
+        self.input_layer_active = cfg.get('input_layer_add', False)
+        self.input_layer_active_trainable = cfg.get('input_layer_add_trainable', False)
 
+        arch = list(cfg['n_neurons'])
         if self.input_layer_active:
-            net_params['n_neurons'].insert(1, net_params['n_neurons'][1])
+            arch.insert(1, arch[1])
 
-        print(net_params['n_neurons'])
-        self.n_hidden = net_params['n_neurons'][1]
+        n_layers = len(arch) - 1     
+        self.n_input = cfg['n_neurons'][0]
+        self.n_hidden = cfg['n_neurons'][1]
+        self.n_output = cfg['n_neurons'][-1]
 
-        n_layers = len(net_params['n_neurons']) - 1        
+        self.output_matrix = cfg['output_matrix']
 
-        self.n_input = net_params['n_neurons'][0]
-        self.n_output = net_params['n_neurons'][-1]
-
-        self.output_matrix = net_params['output_matrix']
-
-        super().__init__(net_params, net_params['n_neurons'][-2], output_matrix=self.output_matrix, verbose=verbose)
+        super().__init__(cfg, cfg['n_neurons'][-2], output_matrix=self.output_matrix, verbose=verbose)
 
         # Creates all the MP layers
         self.param_clamping = True # Always have param clamping for MP layers because lam bounds
@@ -655,23 +654,15 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
         start_layer_count = 1 if self.input_layer_active else 0
         # if additional input layer is added, shift the starting index of layer counting from 1
         for mpl_idx in range(start_layer_count, n_layers - 1): # (e.g. three-layer has two MP layers)
-            # Can specify layer with either layer-specific 'ml_params' or just a single set of parameters
-            if f'ml_params{mpl_idx}' in net_params.keys():
-                print("=== Layer Specific Setup ===")
-                ml_params_key = f'ml_params{mpl_idx}'
-            else:
-                print("=== Layer Universal Setup ===")
-                ml_params_key = 'ml_params'
-
+            ml_key = f'ml_params{mpl_idx}' if f'ml_params{mpl_idx}' in cfg else 'ml_params'
             # Updates some parameters for each new MPL
-            net_params[ml_params_key]['dt'] = self.dt
-            net_params[ml_params_key]['mpl_name'] = str(mpl_idx)
-            net_params[ml_params_key]['n_input'] = net_params['n_neurons'][mpl_idx]
-            print(net_params['n_neurons'][mpl_idx])
-            net_params[ml_params_key]['n_output'] = net_params['n_neurons'][mpl_idx + 1]
+            cfg[ml_key]['dt'] = self.dt
+            cfg[ml_key]['mpl_name'] = str(mpl_idx)
+            cfg[ml_key]['n_input'] = arch[mpl_idx]
+            cfg[ml_key]['n_output'] = arch[mpl_idx + 1]
 
-            setattr(self, 'mp_layer{}'.format(mpl_idx),
-                    MultiPlasticLayer(net_params[ml_params_key], output_matrix=self.output_matrix, verbose=verbose))
+            setattr(self, f'mp_layer{mpl_idx}', MultiPlasticLayer(cfg[ml_key], output_matrix=self.output_matrix, 
+                                                                  verbose=verbose))
 
             self.mp_layers.append(getattr(self, 'mp_layer{}'.format(mpl_idx)))
             self.params.extend([param+str(mpl_idx) for param in self.mp_layers[-1].params])

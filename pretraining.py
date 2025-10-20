@@ -159,12 +159,12 @@ def current_basic_params(hyp_dict_input):
 
     train_params = {
         'lr': 1e-3,
-        'n_batches': 64,
-        'batch_size': 64,
+        'n_batches': 128,
+        'batch_size': 128,
         'gradient_clip': 10,
         'valid_n_batch': min(max(50, int(200/len(rules_dict[hyp_dict_input['ruleset']]))), 50),
-        'n_datasets': 50, # 50
-        'n_epochs_per_set': 100, 
+        'n_datasets': 5, # 50
+        'n_epochs_per_set': 100,  
         'weight_reg': 'L2',
         'activity_reg': 'L2', 
         'reg_lambda': 1e-4,
@@ -291,7 +291,7 @@ else:
 epoch_multiply = train_params["n_epochs_per_set"]
 
 # adjust the training information
-train_params2["n_datasets"] = 3000 # 3000
+train_params2["n_datasets"] = 5 # 3000
 train_params2['n_epochs_per_set'] = 100
 
 # In[5]:
@@ -457,12 +457,12 @@ test_task2 = [i - len(task_params["rules"]) for i in test_task2]
 # we use net at different training stage on the same test_input
 print("================================= Stage 1 =================================")
 net_pretrain, _, (_, netout_stage1_lst, db_stage1_lst, _, _, _, _, marker_stage1_lst, _, _) = net_helpers.train_network(params, device=device,
-                                                                                            verbose=verbose, 
-                                                                                            train=train,
-                                                                                            hyp_dict=hyp_dict, 
-                                                                                            netFunction=netFunction, 
-                                                                                            test_input=[test_input],
-                                                                                            pretraining_shift_pre=1
+                                                                                                                        verbose=verbose, 
+                                                                                                                        train=train,
+                                                                                                                        hyp_dict=hyp_dict, 
+                                                                                                                        netFunction=netFunction, 
+                                                                                                                        test_input=[test_input],
+                                                                                                                        pretraining_shift_pre=1
 )
 
 net_stage1 = copy.deepcopy(net_pretrain)
@@ -472,13 +472,9 @@ input_orig  = net_pretrain.W_initial_linear.weight.detach().cpu().clone()
 
 print("================================= Stage 2 =================================")
 net, _, (counter_lst, netout_lst, db_lst, Winput_lst, Winputbias_lst,\
-         Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst) = net_helpers.train_network(params2, net=net_pretrain,
-                                                                                           device=device,
-                                                                                           verbose=verbose,\
-                                                                                           train=train,
-                                                                                           hyp_dict=hyp_dict,\
-                                                                                           netFunction=netFunction,\
-                                                                                           test_input=[test_input2],
+         Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst) = net_helpers.train_network(params2, net=net_pretrain, device=device,
+                                                                                           verbose=verbose, train=train, hyp_dict=hyp_dict,
+                                                                                           netFunction=netFunction, test_input=[test_input2],
                                                                                            pretraining_shift=len(task_params["rules"])
 )
 
@@ -743,14 +739,21 @@ np.savez_compressed(pathname, \
                     xs_stage2=xs_stage2
 )
 
+# Oct 20th: save the network 
+netpathname = f"./pretraining/savednet_{hyp_dict_old['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.pt"
+save_dict = {
+    "state_dict": net.state_dict(), # trained result
+    "net_params": net_params # network parameter
+}
+torch.save(save_dict, netpathname)
+print("Network parameter saving is done")
 
+# try to reload 
+checkpoint = torch.load(netpathname, map_location="cpu", weights_only=True)
+net_params_loaded = checkpoint["net_params"]
 
-
-
-
-
-
-
-
-
+net = mpn.DeepMultiPlasticNet(net_params_loaded)
+net.load_state_dict(checkpoint["state_dict"])
+net.eval()   
+print("Reload Check is done")
 

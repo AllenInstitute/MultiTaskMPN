@@ -105,9 +105,9 @@ def expand_and_freeze(net, option):
 
     return net
     
-def train_network(params, net=None, device=torch.device('cuda'), verbose=False, \
-    train=True, hyp_dict=None, netFunction=None, test_input=None, \
-    pretraining_shift=0, pretraining_shift_pre=0
+def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
+                  train=True, hyp_dict=None, netFunction=None, test_input=None, 
+                  pretraining_shift=0, pretraining_shift_pre=0
 ):
     """
     """
