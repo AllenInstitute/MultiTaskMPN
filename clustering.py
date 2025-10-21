@@ -264,36 +264,37 @@ def _hierarchical_clustering_repeat(
     n_repeats=1,
     resample_features_frac=1.0,
     jitter_std=0.0,
-    random_state=None
+    random_state=None,
+    # existing tolerance selector for primary k
+    select_min_k_within_tol=True,
+    silhouette_tol=0.02,
+    tol_mode="relative",
 ):
     """
-    Hierarchical clustering on `data` (observations × features) with stability repeats.
+    Hierarchical clustering with stability repeats.
 
-    Mirrors `_hierarchical_clustering`:
-      - Ward shortcut (linkage on data, euclidean only) vs generic metric
-      - Optimal leaf ordering
-      - Silhouette on precomputed distances
-      - Cut thresholds computed from Z rows
+    Primary k selection (unchanged):
+      - If select_min_k_within_tol=True, pick the smallest k whose mean silhouette
+        is within tolerance of the *global best* mean silhouette.
+      - Else pick strict argmax silhouette.
 
-    Repeats:
-      - Optional feature resampling and Gaussian jitter
-      - Aggregate silhouette mean/std across repeats for each k
-      - Choose k with best mean silhouette
-      - Pick labeling from the repeat that maximizes mean ARI to other repeats at that k
-      - Return that repeat's linkage, leaf order, labels, and cut threshold
+    NEW alt_k:
+      - Define alt_k as the smallest k whose mean silhouette is within the same tolerance
+        of the *chosen best_k*'s silhouette (i.e., “not too far away” from best_k).
+      - Return alt_* (labels, linkage, leaf_order, cut_threshold) from the SAME repeat
+        as used for best_k to keep dendrograms/linkage comparable.
     """
     rng = np.random.default_rng(random_state)
     n_obs, n_feat = data.shape
 
-    # Resolve k-range as in the single-run version
+    # Resolve k-range
     k_min = max(k_min, 2)
     k_max = min(k_max, n_obs - 1)
     if k_max < k_min:
         raise ValueError("Not enough observations for the requested k-range.")
-
     k_range = range(k_min, k_max + 1)
-    per_repeat = []
 
+    per_repeat = []
     for r in range(n_repeats):
         if resample_features_frac < 1.0:
             m = max(1, int(np.ceil(resample_features_frac * n_feat)))
@@ -314,22 +315,16 @@ def _hierarchical_clustering_repeat(
 
         # Optimal leaf ordering
         Z = optimal_leaf_ordering(Z, pairwise_dists)
-
         D_square = squareform(pairwise_dists)
 
         labels_by_k = {}
         scores_by_k = {}
         cut_thresholds = {}
-
         for k in k_range:
-            # labels = fcluster(Z, k, criterion="maxclust")
             labels = labels_at_k(Z, k)
-
             score = silhouette_score(D_square, labels, metric="precomputed")
             labels_by_k[k] = labels
             scores_by_k[k] = float(score)
-
-            # cut threshold extraction aligned with single-run version
             cut_idx = (n_obs - k) - 1
             if 0 <= cut_idx < Z.shape[0]:
                 cut_thresholds[k] = float(np.nextafter(Z[cut_idx, 2], np.inf))
@@ -345,15 +340,31 @@ def _hierarchical_clustering_repeat(
             cut_thresholds=cut_thresholds
         ))
 
+    # Aggregate across repeats
     score_recording_mean = {k: float(np.mean([rep["scores_by_k"][k] for rep in per_repeat])) for k in k_range}
     score_recording_std  = {k: float(np.std( [rep["scores_by_k"][k] for rep in per_repeat])) for k in k_range}
 
-    best_k = max(score_recording_mean, key=score_recording_mean.get)
-    best_score_mean = score_recording_mean[best_k]
+    # Strict global best (for reference / thresholding)
+    strict_best_k = max(score_recording_mean, key=score_recording_mean.get)
+    strict_best_score = score_recording_mean[strict_best_k]
 
+    # Primary k selection (same as before)
+    if select_min_k_within_tol:
+        if tol_mode == "relative":
+            primary_threshold = strict_best_score * (1.0 - float(silhouette_tol))
+        elif tol_mode == "absolute":
+            primary_threshold = strict_best_score - float(silhouette_tol)
+        else:
+            raise ValueError("tol_mode must be 'relative' or 'absolute'.")
+        primary_candidates = [k for k in k_range if score_recording_mean[k] >= primary_threshold]
+        best_k = min(primary_candidates) if primary_candidates else strict_best_k
+    else:
+        best_k = strict_best_k
+        primary_candidates = [strict_best_k]
+
+    # Pick the repeat to represent best_k (maximize mean ARI at best_k)
     labels_list = [rep["labels_by_k"][best_k] for rep in per_repeat]
-
-    if n_repeats == 1:
+    if len(labels_list) == 1:
         best_rep_idx = 0
         mean_ari_val = 1.0
     else:
@@ -363,34 +374,69 @@ def _hierarchical_clustering_repeat(
             for j in range(i + 1, R):
                 ari = adjusted_rand_score(labels_list[i], labels_list[j])
                 ari_mat[i, j] = ari_mat[j, i] = ari
-        mean_ari = ari_mat.mean(axis=1)  # mean ARI to others (zeros on diagonal)
+        mean_ari = ari_mat.mean(axis=1)
         best_rep_idx = int(np.argmax(mean_ari))
         mean_ari_val = float(mean_ari[best_rep_idx])
 
-    best_labels = labels_list[best_rep_idx]
-    Z_best      = per_repeat[best_rep_idx]["Z"]
-    leaf_order  = per_repeat[best_rep_idx]["leaf_order"]
-    best_cut_threshold = per_repeat[best_rep_idx]["cut_thresholds"][best_k]
+    # Extract chosen (best_k) artifacts from that repeat
+    best_rep = per_repeat[best_rep_idx]
+    best_labels = best_rep["labels_by_k"][best_k]
+    Z_best      = best_rep["Z"]
+    leaf_order  = best_rep["leaf_order"]
+    best_cut_threshold = best_rep["cut_thresholds"][best_k]
+
+    # --- NEW: alt_k relative to best_k's silhouette score ---
+    best_k_score = score_recording_mean[best_k]
+    if tol_mode == "relative":
+        alt_threshold = best_k_score * (1.0 - float(silhouette_tol))
+    else:
+        alt_threshold = best_k_score - float(silhouette_tol)
+
+    # smallest k within tolerance of best_k's score
+    alt_candidates = [k for k in k_range if score_recording_mean[k] >= alt_threshold]
+    if alt_candidates:
+        alt_k = min(alt_candidates)
+    else:
+        # if nothing qualifies, just mirror best_k
+        alt_k = best_k
+
+    # Use the SAME repeat for alt_* to keep linkage/leaf_order comparable
+    alt_labels = best_rep["labels_by_k"][alt_k]
+    alt_cut_threshold = best_rep["cut_thresholds"][alt_k]
+    alt_linkage = Z_best
+    alt_leaf_order = leaf_order
 
     return dict(
         linkage=Z_best,
         leaf_order=leaf_order,
         labels=best_labels,
         k=best_k,
-        silhouette=best_score_mean,
+        silhouette=strict_best_score,             # keep for reference
         score_recording_mean=score_recording_mean,
         score_recording_std=score_recording_std,
         cut_threshold=best_cut_threshold,
+        # Alternative (relative to best_k's silhouette)
+        alt_k=alt_k,
+        alt_labels=alt_labels,
+        alt_linkage=alt_linkage,
+        alt_leaf_order=alt_leaf_order,
+        alt_cut_threshold=alt_cut_threshold,
         _repeats=len(per_repeat),
         _params=dict(
             resample_features_frac=resample_features_frac,
             jitter_std=jitter_std,
             method=method,
             metric=metric,
-            mean_ari_at_best_k=mean_ari_val
+            mean_ari_at_best_k=mean_ari_val,
+            select_min_k_within_tol=select_min_k_within_tol,
+            silhouette_tol=silhouette_tol,
+            tol_mode=tol_mode,
+            primary_candidates=primary_candidates,
+            strict_best_k=strict_best_k,
+            strict_best_score=strict_best_score,
+            alt_candidates=alt_candidates,
         ),
     )
-
 
 def cluster_variance_matrix_repeat(
     V,
@@ -399,7 +445,8 @@ def cluster_variance_matrix_repeat(
     n_repeats=10,
     resample_features_frac=1.0,
     jitter_std=0.0,
-    random_state=None
+    random_state=None,
+    silhouette_tol=0.02
 ):
     """
     Cluster a variance matrix V (shape: N_features × M_neurons)
@@ -415,7 +462,8 @@ def cluster_variance_matrix_repeat(
         n_repeats=n_repeats,
         resample_features_frac=resample_features_frac,
         jitter_std=jitter_std,
-        random_state=random_state
+        random_state=random_state,
+        silhouette_tol=silhouette_tol
     )
 
     col_res = _hierarchical_clustering_repeat(
@@ -423,7 +471,8 @@ def cluster_variance_matrix_repeat(
         n_repeats=n_repeats,
         resample_features_frac=resample_features_frac,
         jitter_std=jitter_std,
-        random_state=None if random_state is None else (random_state + 1)
+        random_state=None if random_state is None else (random_state + 1),
+        silhouette_tol=silhouette_tol
     )
 
     return dict(
@@ -443,6 +492,13 @@ def cluster_variance_matrix_repeat(
         col_cut_threshold=col_res["cut_threshold"],
         _row_meta=row_res["_params"],
         _col_meta=col_res["_params"],
+        # alternative result for the different k value
+        row_tol_labels=row_res["alt_labels"],
+        col_tol_labels=col_res["alt_labels"],
+        row_tol_k=row_res["alt_k"], 
+        col_tol_k=col_res["alt_k"],
+        row_cut_tol_threshold=row_res["alt_cut_threshold"],
+        col_cut_tol_threshold=col_res["alt_cut_threshold"]
     )
     
 # ---------------------------------------------------------------------
@@ -589,6 +645,118 @@ def _aggregate_along_axis(
             out.append(agg_fn(arr[:, idxs], axis=1))
     return np.stack(out, axis=axis)
 
+def _hierarchical_clustering_forgroup(
+    data: np.ndarray,
+    k_min: int = 3,
+    k_max: int = 40,
+    metric: str = "euclidean",
+    *,
+    # NEW tolerance knobs (default keeps old behavior but prefers simpler k)
+    select_min_k_within_tol: bool = True,
+    silhouette_tol: float = 0.02,
+    tol_mode: str = "relative",  # {"relative","absolute"}
+) -> Dict[str, Any]:
+    """
+    Ward hierarchical clustering on `data` (observations × features)
+    with tolerance-based k selection and an alternative k near the chosen k.
+    """
+    n_obs = data.shape[0]
+    if n_obs < 2:
+        return dict(
+            linkage=None,
+            leaf_order=list(range(n_obs)),
+            labels=np.ones(n_obs, dtype=int),
+            k=1,
+            silhouette=np.nan,
+            score_recording={},
+            cophenet_score=np.nan,
+            cut_distance_by_k={},
+            best_cut_distance=None,
+            labels_by_k={},
+            # NEW fields for consistency
+            strict_best_k=1,
+            alt_k=1,
+            alt_labels=np.ones(n_obs, dtype=int),
+            alt_cut_distance=None,
+            primary_candidates=[1],
+        )
+
+    pairwise = pdist(data, metric=metric)
+    Z = linkage(pairwise, method="ward")
+    c, _ = cophenet(Z, pdist(data))  # cophenetic correlation
+
+    D_sq = squareform(pairwise)
+    k_range = range(max(k_min, 2), min(k_max, n_obs - 1) + 1)
+
+    score_recording: Dict[int, float] = {}
+    cut_distance_by_k: Dict[int, float] = {}
+    labels_by_k: Dict[int, np.ndarray] = {}
+
+    # Precompute cut distances
+    for k in k_range:
+        cut_distance_by_k[k] = _cut_distance_for_k(Z, k)
+
+    # Silhouette per k
+    for k in k_range:
+        labels = fcluster(Z, k, criterion="maxclust")
+        labels_by_k[k] = labels
+        score = silhouette_score(D_sq, labels, metric="precomputed")
+        score_recording[k] = float(score)
+
+    # Strict argmax (global best)
+    strict_best_k = max(score_recording, key=score_recording.get)
+    strict_best_score = score_recording[strict_best_k]
+
+    # Tolerance threshold for primary selection (relative to strict best)
+    if select_min_k_within_tol:
+        if tol_mode == "relative":
+            primary_thresh = strict_best_score * (1.0 - float(silhouette_tol))
+        elif tol_mode == "absolute":
+            primary_thresh = strict_best_score - float(silhouette_tol)
+        else:
+            raise ValueError("tol_mode must be 'relative' or 'absolute'.")
+        primary_candidates = [k for k in k_range if score_recording[k] >= primary_thresh]
+        best_k = min(primary_candidates) if primary_candidates else strict_best_k
+    else:
+        best_k = strict_best_k
+        primary_candidates = [strict_best_k]
+
+    best_labels = labels_by_k[best_k]
+    best_score = score_recording[best_k]
+    best_cut_distance = cut_distance_by_k.get(best_k, _cut_distance_for_k(Z, best_k))
+
+    # Secondary tolerance (alt_k) relative to chosen best_k (smallest k within tol of best_k)
+    if tol_mode == "relative":
+        alt_thresh = best_score * (1.0 - float(silhouette_tol))
+    else:
+        alt_thresh = best_score - float(silhouette_tol)
+    alt_candidates = [k for k in k_range if score_recording[k] >= alt_thresh]
+    alt_k = min(alt_candidates) if alt_candidates else best_k
+    alt_labels = labels_by_k[alt_k]
+    alt_cut_distance = cut_distance_by_k.get(alt_k, _cut_distance_for_k(Z, alt_k))
+
+    leaf_order = dendrogram(Z, no_plot=True)["leaves"]
+
+    return dict(
+        linkage=Z,
+        leaf_order=leaf_order,
+        labels=best_labels,
+        k=best_k,
+        silhouette=best_score,                    # silhouette at chosen k
+        score_recording=score_recording,
+        cophenet_score=c,
+        cut_distance_by_k=cut_distance_by_k,
+        best_cut_distance=best_cut_distance,
+        labels_by_k=labels_by_k,
+        # NEW: introspection + alternative near chosen k
+        strict_best_k=strict_best_k,
+        strict_best_score=strict_best_score,
+        primary_candidates=primary_candidates,
+        alt_k=alt_k,
+        alt_labels=alt_labels,
+        alt_cut_distance=alt_cut_distance,
+    )
+
 
 def cluster_variance_matrix_forgroup(
     V: np.ndarray,
@@ -596,31 +764,44 @@ def cluster_variance_matrix_forgroup(
     k_max: int = 40,
     row_groups: Optional[Sequence[Sequence[int]]] = None,
     col_groups: Optional[Sequence[Sequence[int]]] = None,
+    *,
+    # NEW: plumb tolerance knobs through to both clusterings
+    select_min_k_within_tol: bool = True,
+    silhouette_tol: float = 0.02,
+    tol_mode: str = "relative",
 ) -> Dict[str, Any]:
     """
     Bi-directional hierarchical clustering of a variance matrix V
-    (shape: N_features × M_neurons).
+    (shape: N_features × M_neurons) with tolerance-based k selection.
     """
     V = np.asarray(V)
 
+    # ----- rows -----
     row_blocks, row_map = _build_groups(V.shape[0], row_groups)
     V_row_grp = _aggregate_along_axis(V, row_blocks, axis=0, reduce="mean")
-    row_res = _hierarchical_clustering_forgroup(V_row_grp, k_min, k_max)
-    
+    row_res = _hierarchical_clustering_forgroup(
+        V_row_grp, k_min, k_max,
+        select_min_k_within_tol=select_min_k_within_tol,
+        silhouette_tol=silhouette_tol,
+        tol_mode=tol_mode,
+    )
+
     row_labels = np.take(row_res["labels"], row_map)
-    row_labels_by_k = {
-        k: np.take(lbls, row_map) for k, lbls in row_res["labels_by_k"].items()
-    }
+    row_labels_by_k = {k: np.take(lbls, row_map) for k, lbls in row_res["labels_by_k"].items()}
     row_order = [idx for g in row_res["leaf_order"] for idx in row_blocks[g]]
 
+    # ----- cols -----
     col_blocks, col_map = _build_groups(V.shape[1], col_groups)
     V_col_grp = _aggregate_along_axis(V, col_blocks, axis=1, reduce="mean")
-    col_res = _hierarchical_clustering_forgroup(V_col_grp.T, k_min, k_max)
+    col_res = _hierarchical_clustering_forgroup(
+        V_col_grp.T, k_min, k_max,
+        select_min_k_within_tol=select_min_k_within_tol,
+        silhouette_tol=silhouette_tol,
+        tol_mode=tol_mode,
+    )
 
     col_labels = np.take(col_res["labels"], col_map)
-    col_labels_by_k = {
-        k: np.take(lbls, col_map) for k, lbls in col_res["labels_by_k"].items()
-    }
+    col_labels_by_k = {k: np.take(lbls, col_map) for k, lbls in col_res["labels_by_k"].items()}
     col_order = [idx for g in col_res["leaf_order"] for idx in col_blocks[g]]
 
     return dict(
@@ -647,7 +828,17 @@ def cluster_variance_matrix_forgroup(
         row_best_cut_distance=row_res["best_cut_distance"],
         col_best_cut_distance=col_res["best_cut_distance"],
         row_labels_by_k=row_labels_by_k,
-        col_labels_by_k=col_labels_by_k
+        col_labels_by_k=col_labels_by_k,
+        # NEW: extra introspection + alternatives near chosen k
+        row_strict_best_k=row_res["strict_best_k"],
+        col_strict_best_k=col_res["strict_best_k"],
+        row_alt_k=row_res["alt_k"],
+        col_alt_k=col_res["alt_k"],
+        row_alt_cut_distance=row_res["alt_cut_distance"],
+        col_alt_cut_distance=col_res["alt_cut_distance"],
+        # (optional) expose candidate sets if you want to visualize elbow
+        row_primary_candidates=row_res["primary_candidates"],
+        col_primary_candidates=col_res["primary_candidates"],
     )
 
 # ---------------------------------------------------------------------

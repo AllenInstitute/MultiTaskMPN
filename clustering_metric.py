@@ -1,22 +1,70 @@
 import numpy as np 
 
-def count_pairs(col_all: np.ndarray, M: int):
+def count_pairs_with_clusters(col_all: np.ndarray,
+                              M: int,
+                              pre_cluster: dict,
+                              post_cluster: dict):
     """
-    Returns (same_pre_all, same_post_all, no_same_pre_post_all)
-    computed over unordered pairs within each group in col_all.
+    Vectorized counts over unordered pairs within each group in col_all.
+
+    Returns a tuple:
+      (
+        same_pre_all,                  # i//M equal
+        same_post_all,                 # i%M equal
+        no_same_all,                   # neither same pre nor same post
+
+        same_pre_cluster_all,          # same pre *cluster*
+        same_post_cluster_all,         # same post *cluster*
+        both_pre_post_cluster_all,     # same pre-cluster AND same post-cluster
+        no_pre_post_cluster_all        # neither same pre-cluster nor same post-cluster
+      )
     """
+
     N = col_all.size
     if N == 0:
-        return 0, 0, 0
+        return (0, 0, 0, 0, 0, 0, 0)
 
-    # Precompute to avoid repeated div/mod
-    idx_all = np.arange(N)
+    # Precompute index → (pre, post)
+    idx_all  = np.arange(N)
     pre_all  = idx_all // M
     post_all = idx_all % M
 
-    same_pre_all = 0
-    same_post_all = 0
-    no_same_all = 0
+    # -------- Build fast reverse maps: index -> cluster id (int) --------
+    # Map cluster keys to consecutive ints and fill arrays in O(N)
+    def build_reverse_map(cluster_dict, size_hint):
+        # cluster_dict: {cluster_key: [indices]}
+        # returns: (arr_of_len>=max_index+1 with cluster ids, n_clusters)
+        arr = np.full(size_hint, -1, dtype=int)
+        for cid, (_, inds) in enumerate(cluster_dict.items()):
+            inds = np.asarray(inds, dtype=int)
+            if inds.size:
+                if inds.max() >= arr.size:
+                    # grow if needed (rare; defensive)
+                    arr = np.pad(arr, (0, inds.max() + 1 - arr.size), constant_values=-1)
+                arr[inds] = cid
+        n_clusters = max(cid + 1, 0) if cluster_dict else 0
+        return arr, n_clusters
+
+    # Size hints from observed indices
+    pre_size_hint  = pre_all.max() + 1
+    post_size_hint = post_all.max() + 1   # typically == M
+
+    pre_to_cluster, n_pre_clusters   = build_reverse_map(pre_cluster,  pre_size_hint)
+    post_to_cluster, n_post_clusters = build_reverse_map(post_cluster, post_size_hint)
+
+    if (pre_to_cluster[pre_all] < 0).any():
+        raise ValueError("Some pre indices are missing from pre_cluster.")
+    if (post_to_cluster[post_all] < 0).any():
+        raise ValueError("Some post indices are missing from post_cluster.")
+
+    # Cluster id per edge index
+    preC_all  = pre_to_cluster[pre_all]
+    postC_all = post_to_cluster[post_all]
+
+    # -------------------- Aggregate per group --------------------
+    same_pre_all = same_post_all = no_same_all = 0
+    same_pre_cluster_all = same_post_cluster_all = 0
+    both_pre_post_cluster_all = no_pre_post_cluster_all = 0
 
     for g in np.unique(col_all):
         idx = np.flatnonzero(col_all == g)
@@ -24,26 +72,59 @@ def count_pairs(col_all: np.ndarray, M: int):
         if n < 2:
             continue
 
-        pre = pre_all[idx]
-        post = post_all[idx]
-
-        # count pairs sharing same pre: sum_k C(n_k, 2)
-        cnt_pre = np.bincount(pre)
-        same_pre = np.sum(cnt_pre * (cnt_pre - 1) // 2)
-
-        # count pairs sharing same post: sum_k C(n_k, 2)
-        cnt_post = np.bincount(post)
-        same_post = np.sum(cnt_post * (cnt_post - 1) // 2)
+        pre   = pre_all[idx]
+        post  = post_all[idx]
+        preC  = preC_all[idx]
+        postC = postC_all[idx]
 
         total_pairs = n * (n - 1) // 2
-        # disjoint because (pre, post) identifies an index uniquely
+
+        # exact pre equality
+        cnt_pre  = np.bincount(pre)
+        same_pre = np.sum(cnt_pre * (cnt_pre - 1) // 2)
+
+        # exact post equality
+        cnt_post  = np.bincount(post, minlength=M)
+        same_post = np.sum(cnt_post * (cnt_post - 1) // 2)
+
         no_same = total_pairs - same_pre - same_post
 
+        # same pre *cluster*
+        cnt_preC = np.bincount(preC, minlength=n_pre_clusters)
+        same_preC = np.sum(cnt_preC * (cnt_preC - 1) // 2)
+
+        # same post *cluster*
+        cnt_postC = np.bincount(postC, minlength=n_post_clusters)
+        same_postC = np.sum(cnt_postC * (cnt_postC - 1) // 2)
+
+        # both same pre-cluster AND same post-cluster
+        comb_id = np.ravel_multi_index((preC, postC), (n_pre_clusters, n_post_clusters))
+        cnt_both = np.bincount(comb_id, minlength=n_pre_clusters * n_post_clusters)
+        both_clusters = np.sum(cnt_both * (cnt_both - 1) // 2)
+
+        # neither same pre-cluster nor same post-cluster
+        # Use inclusion-exclusion: |none| = total - |preC| - |postC| + |both|
+        no_pre_post_cluster = total_pairs - (same_preC + same_postC - both_clusters)
+
+        # accumulate
         same_pre_all += int(same_pre)
         same_post_all += int(same_post)
         no_same_all += int(no_same)
 
-    return same_pre_all, same_post_all, no_same_all
+        same_pre_cluster_all += int(same_preC)
+        same_post_cluster_all += int(same_postC)
+        both_pre_post_cluster_all += int(both_clusters)
+        no_pre_post_cluster_all += int(no_pre_post_cluster)
+
+    return (
+        same_pre_all,
+        same_post_all,
+        no_same_all,
+        same_pre_cluster_all,
+        same_post_cluster_all,
+        both_pre_post_cluster_all,
+        no_pre_post_cluster_all,
+    )
 
 def _to_zero_based(labels):
     """

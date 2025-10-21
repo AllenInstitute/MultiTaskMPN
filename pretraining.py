@@ -87,7 +87,7 @@ torch.manual_seed(seed)
 hyp_dict['task_type'] = 'multitask' # int, NeuroGym, multitask
 hyp_dict['mode_for_all'] = "random_batch"
 # hyp_dict['ruleset'] = 'fdanti_delaygo' # low_dim, all, test
-hyp_dict['ruleset'] = 'fdgo_delaygo' # low_dim, all, test
+hyp_dict['ruleset'] = 'fdanti_delaygo' # low_dim, all, test
 
 accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti', 
                 'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 'dmsnogo', 'dmcnogo')
@@ -163,7 +163,7 @@ def current_basic_params(hyp_dict_input):
         'batch_size': 128,
         'gradient_clip': 10,
         'valid_n_batch': min(max(50, int(200/len(rules_dict[hyp_dict_input['ruleset']]))), 50),
-        'n_datasets': 5, # 50
+        'n_datasets': 50, # 50
         'n_epochs_per_set': 100,  
         'weight_reg': 'L2',
         'activity_reg': 'L2', 
@@ -291,7 +291,7 @@ else:
 epoch_multiply = train_params["n_epochs_per_set"]
 
 # adjust the training information
-train_params2["n_datasets"] = 5 # 3000
+train_params2["n_datasets"] = 3000 # 3000
 train_params2['n_epochs_per_set'] = 100
 
 # In[5]:
