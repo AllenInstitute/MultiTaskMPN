@@ -86,8 +86,8 @@ torch.manual_seed(seed)
 
 hyp_dict['task_type'] = 'multitask' # int, NeuroGym, multitask
 hyp_dict['mode_for_all'] = "random_batch"
+hyp_dict['ruleset'] = 'fdgo_delaygo' # low_dim, all, test
 # hyp_dict['ruleset'] = 'fdanti_delaygo' # low_dim, all, test
-hyp_dict['ruleset'] = 'fdanti_delaygo' # low_dim, all, test
 
 accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti', 
                 'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 'dmsnogo', 'dmcnogo')
