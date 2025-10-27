@@ -24,6 +24,18 @@ c_vals_d = ['#9b2c2c', '#2c5282', '#276749', '#553c9a', '#9c4221', '#285e61', '#
 l_vals = ['solid', 'dashed', 'dotted', 'dashdot', '-', '--', '-.', ':', (0, (3, 1, 1, 1)), (0, (5, 10))]
 markers_vals = ['.', 'o', 'v', '^', '<', '>', '1', '2', '3', '4', 's', 'p', '*', 'h', 'H', '+', 'x', 'D', 'd', '|', '_']
 
+def tail_mean_decay(lst, N, decay=0.95):
+    """
+    """
+    lst = np.asarray(lst, dtype=float)
+    if len(lst) < N:
+        data = lst
+    else:
+        data = lst[-N:]
+
+    # weights: 1.0 for last element, decay^k for others (reverse order)
+    w = decay ** np.arange(len(data)-1, -1, -1)
+    return np.sum(data * w) / np.sum(w)
 
 def expand_and_freeze(net, option):
     """
@@ -166,7 +178,9 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
     Winput_lst, Woutput_lst, Winputbias_lst, Wall_lst, marker_lst, loss_lst, acc_lst = [], [], [], [], [], [], []
     net_lst = []
 
-    for dataset_idx in range(train_params['n_datasets']):
+    total_dataset = train_params['n_datasets']
+
+    for dataset_idx in range(total_dataset):
         # generate training data
         train_data, train_trails = generate_train_data(device=device)
         new_thresh = True if dataset_idx == 0 else False
@@ -226,10 +240,16 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
                 Wall_lst.append(W_all_)
                 marker_lst.append(dataset_idx)
 
-            _, monitor_loss, monitor_acc, goodness_history = net.fit(train_params, train_data, train_trails, valid_batch=valid_data, 
-                                                                        valid_trails=valid_trails, new_thresh=new_thresh,
-                                                                        run_mode=hyp_dict['run_mode'])
-            
+            _, monitor_loss, monitor_acc, goodness_history, valid_acc_history = net.fit(train_params, train_data, train_trails, valid_batch=valid_data, 
+                                                                                        valid_trails=valid_trails, new_thresh=new_thresh, run_mode=hyp_dict['run_mode'])
+
+            print(f"valid_acc_history: {valid_acc_history}")
+            # if None, then no early stop option
+            if train_params["valid_check"] is not None: 
+                if valid_acc_history > 0.97: 
+                    print(f"valid_acc_history > 0.97; early stop!")
+                    break
+                
             # calculate the change of task sampling proportion 
             # aim for multi-task training (but clearly work for single-task)
             # --- inputs ---------------------------------------------------------------
@@ -804,7 +824,7 @@ class BaseNetwork(BaseNetworkFunctions):
         - 'track_states': Collect additional data during run through for analysis, sometimes needed for different gradient types
 
         """
-
+        self.valid_check = train_params.get('valid_check', None)
         self.train_type = train_params.get('train_type', 'supervised')
         self.gradient_type = train_params.get('gradient_type', 'backprop')
 
@@ -903,8 +923,6 @@ class BaseNetwork(BaseNetworkFunctions):
         )
         
         last_group_acc = list(self.hist['group_valid_acc'][-1].values())
-        # print(f"last_group_acc: {last_group_acc}")
-        # print(len(last_group_acc))
         last_group_goodness = mpn_tasks.normalize_to_one([1 - acc for acc in last_group_acc])
         
         self.hist['group_valid_acc_batch'].append(last_group_goodness)
@@ -912,10 +930,10 @@ class BaseNetwork(BaseNetworkFunctions):
         self.eval() # return to eval mode
 
         self.hist['group_valid_acc'] = [] # registeration holder WITHIN one dataset (batch)
+        
+        return db, monitor_loss, monitor_acc, self.hist['group_valid_acc_batch'], tail_mean_decay(self.hist["valid_acc"], self.valid_check)
 
-        return db, monitor_loss, monitor_acc, self.hist['group_valid_acc_batch']
-         
-
+    
     def train_base(self, train_params, train_data, train_trails=None, valid_batch=None, valid_trails=None, new_thresh=True, 
                    monitor=True, run_mode='minimal'):
         """
@@ -925,9 +943,7 @@ class BaseNetwork(BaseNetworkFunctions):
     
         train_type: supervised, unsupervised, rl, rl_test
         output_credit_assign: optional different credit assignment across an output layer  
-
         """
-
         # Trigger these only on first train call
         if not hasattr(self, 'output_credit_assign'):
             self.output_credit_assign = train_params.get('output_credit_assign', 'W_output')

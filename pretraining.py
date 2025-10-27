@@ -121,7 +121,7 @@ hyp_dict['chosen_network'] = "dmpn"
 # trainetalambda
 
 mpn_depth = 1
-n_hidden = 200
+n_hidden = 300
 
 hyp_dict['addon_name'] = ""
 hyp_dict['addon_name'] += f"+hidden{n_hidden}"
@@ -163,11 +163,12 @@ def current_basic_params(hyp_dict_input):
         'batch_size': 128,
         'gradient_clip': 10,
         'valid_n_batch': min(max(50, int(200/len(rules_dict[hyp_dict_input['ruleset']]))), 50),
-        'n_datasets': 50, # 50
+        'n_datasets': 150, # 50
+        'valid_check': 20, 
         'n_epochs_per_set': 100,  
-        'weight_reg': 'L2',
-        'activity_reg': 'L2', 
-        'reg_lambda': 1e-4,
+        # 'weight_reg': 'L2',
+        # 'activity_reg': 'L2', 
+        # 'reg_lambda': 1e-4,
         
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'
@@ -244,8 +245,8 @@ task_params, train_params, net_params = current_basic_params(hyp_dict_old)
 
 print("Accuracy Measure: {net_params['acc_measure']}")
 
-hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}+L2"
-hyp_dict_old['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}+L2"
+hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}"
+hyp_dict_old['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}"
 
 hyp_dict['ruleset'] = 'delayanti'
 task_params2, train_params2, net_params2 = current_basic_params(hyp_dict)

@@ -16,8 +16,6 @@ import time
 ##############################################################################################
 
 class VanillaRNN(BaseNetwork):
-	
-
 	def __init__(self, net_params, verbose=False):
 		super().__init__(net_params, verbose=verbose)  
 
@@ -34,7 +32,6 @@ class VanillaRNN(BaseNetwork):
 		else:
 			self.input_cell_types = None
 			self.hidden_cell_types = None
-
 
 		### Weight/bias initialization ###
 		# Input weights

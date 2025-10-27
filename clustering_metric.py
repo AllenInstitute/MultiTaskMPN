@@ -1,5 +1,10 @@
 import numpy as np 
 
+# ---------------------------------------------------------------------
+# Find if modulation are belonging to some pre/post neuron and/or 
+# pre/post neuron cluster
+# ---------------------------------------------------------------------
+
 def count_pairs_with_clusters(col_all: np.ndarray,
                               M: int,
                               pre_cluster: dict,
@@ -125,6 +130,36 @@ def count_pairs_with_clusters(col_all: np.ndarray,
         both_pre_post_cluster_all,
         no_pre_post_cluster_all,
     )
+
+def count_pairs_with_clusters_control(col_all: np.ndarray,
+                                      M: int,
+                                      pre_cluster: dict,
+                                      post_cluster: dict,
+                                      repeat=10):
+    """
+    Create control for pre/post neuron & neuron clustering belonging 
+    """
+    control_stats = []
+    for _ in range(repeat):
+        # by shuffling the label to the modulation index, 
+        # we could create a benchmark to the belonging relationship
+        col_all_c = np.random.permutation(col_all)
+        result_c = count_pairs_with_clusters(col_all_c, M, pre_cluster, post_cluster)
+        control_stats.append(result_c)
+
+    control_stats = np.array(control_stats)
+    
+    # based on the inclusion/exclusion criteria
+    total_neuron_group = control_stats[:,0] + control_stats[:,1] + control_stats[:,2]
+    assert np.unique(total_neuron_group).size == 1, "Elements in total_neuron_group are not identical"
+    total_cluster_group = control_stats[:,3] + control_stats[:,4] - control_stats[:,5] + control_stats[:,6]
+    assert np.unique(total_cluster_group).size == 1, "Elements in total_cluster_group are not identical"
+
+    return np.mean(control_stats, axis=0)
+
+# ---------------------------------------------------------------------
+# Evaluation metric to clustering
+# ---------------------------------------------------------------------
 
 def _to_zero_based(labels):
     """
