@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import json 
 from pathlib import Path 
+import pickle
 
 # PyTorch Libraries
 import torch
@@ -64,7 +65,7 @@ l_vals = ['solid', 'dashed', 'dotted', 'dashdot', '-', '--', '-.', ':', (0, (3, 
 markers_vals = ['o', 'v', '*', '+', '>', '1', '2', '3', '4', 's', 'p', '*', 'h', 'H', '+', 'x', 'D', 'd', '|', '_']
 linestyles = ["-", "--", "-."]
 
-for _ in range(5): 
+for _ in range(10): 
     hyp_dict = {}
     
     # Reload modules if changes have been made to them
@@ -142,7 +143,7 @@ for _ in range(5):
     # trainetalambda
     
     mpn_depth = 1
-    n_hidden = 300
+    n_hidden = 200
     
     hyp_dict['addon_name'] = "noL2"
     hyp_dict['addon_name'] += f"+hidden{n_hidden}"
@@ -222,7 +223,7 @@ for _ in range(5):
             'recurrent_layer_add': False, 
             'input_layer_bias': False, 
             'input_layer': "trainable", # for RNN only
-            'acc_measure': 'stimulus', 
+            'acc_measure': 'angle', 
             
             # for one-layer MPN, GRU or Vanilla
             'ml_params': {
@@ -550,10 +551,10 @@ for _ in range(5):
     loss_dict = {
         "batch_idx": net.hist['iters_monitor'][1:], 
         "training_acc": net.hist['train_acc'][1:], 
-        "testing_acc": net.hist['valid_acc'][1:]
+        "validation_acc": net.hist['valid_acc'][1:]
     }
     
-    loss_name = f"./onetask/loss_{hyp_dict['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}_{tag}.pkl"
+    loss_name = f"./onetask/loss_{hyp_dict['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}.pkl"
     
     with open(loss_name, "wb") as f:
-        pickle.dump(data, f)
+        pickle.dump(loss_dict, f)
