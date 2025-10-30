@@ -1048,7 +1048,7 @@ def fdanti(config, mode, fix, separate_input, label_strength, long_delay, long_r
 #     return _dm(config, mode, 2, fix, separate_input, label_strength, **kwargs)
 
 
-def delaydm_(config, mode, stim_mod, fix, separate_input, label_strength, long_delay, **kwargs):
+def delaydm_(config, mode, stim_mod, fix, separate_input, label_strength, long_delay, long_response, **kwargs):
     '''
     Fixate whenever fixation point is shown.
     Two stimuluss are shown at different time, with different intensities
@@ -1219,12 +1219,12 @@ def delaydm_(config, mode, stim_mod, fix, separate_input, label_strength, long_d
     return trial
 
 
-def delaydm1(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
-    return delaydm_(config, mode, 1, fix, separate_input, label_strength, long_delay, **kwargs)
+def delaydm1(config, mode, fix, separate_input, label_strength, long_delay, long_response, **kwargs):
+    return delaydm_(config, mode, 1, fix, separate_input, label_strength, long_delay, long_response, **kwargs)
 
 
-def delaydm2(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
-    return delaydm_(config, mode, 2, fix, separate_input, label_strength, long_delay, **kwargs)
+def delaydm2(config, mode, fix, separate_input, label_strength, long_delay, long_response, **kwargs):
+    return delaydm_(config, mode, 2, fix, separate_input, label_strength, long_delay, long_response, **kwargs)
 
 
 def contextdelaydm_(config, mode, attend_mod, fix, separate_input, label_strength, long_delay, **kwargs):

@@ -86,7 +86,7 @@ torch.manual_seed(seed)
 
 hyp_dict['task_type'] = 'multitask' # int, NeuroGym, multitask
 hyp_dict['mode_for_all'] = "random_batch"
-hyp_dict['ruleset'] = 'fdgo_delaygo' # low_dim, all, test
+hyp_dict['ruleset'] = 'fdanti_delaygo' # low_dim, all, test
 # hyp_dict['ruleset'] = 'fdanti_delaygo' # low_dim, all, test
 
 accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti', 
@@ -164,11 +164,11 @@ def current_basic_params(hyp_dict_input):
         'gradient_clip': 10,
         'valid_n_batch': min(max(50, int(200/len(rules_dict[hyp_dict_input['ruleset']]))), 50),
         'n_datasets': 150, # 50
-        'valid_check': 20, 
+        'valid_check': 30, 
         'n_epochs_per_set': 100,  
-        # 'weight_reg': 'L2',
-        # 'activity_reg': 'L2', 
-        # 'reg_lambda': 1e-4,
+        'weight_reg': 'L2',
+        'activity_reg': 'L2', 
+        'reg_lambda': 1e-4,
         
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'
@@ -245,8 +245,8 @@ task_params, train_params, net_params = current_basic_params(hyp_dict_old)
 
 print("Accuracy Measure: {net_params['acc_measure']}")
 
-hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}"
-hyp_dict_old['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}"
+hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}+L2"
+hyp_dict_old['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}+L2"
 
 hyp_dict['ruleset'] = 'delayanti'
 task_params2, train_params2, net_params2 = current_basic_params(hyp_dict)
@@ -466,6 +466,8 @@ net_pretrain, _, (_, netout_stage1_lst, db_stage1_lst, _, _, _, _, marker_stage1
                                                                                                                         pretraining_shift_pre=1
 )
 
+# overwrite the early stopping in the post-training
+params2[1]["valid_check"] = None
 net_stage1 = copy.deepcopy(net_pretrain)
 
 # compare the input layer after pretraining and after posttraining

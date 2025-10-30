@@ -27,6 +27,9 @@ markers_vals = ['.', 'o', 'v', '^', '<', '>', '1', '2', '3', '4', 's', 'p', '*',
 def tail_mean_decay(lst, N, decay=0.95):
     """
     """
+    if N is None: 
+        return None 
+        
     lst = np.asarray(lst, dtype=float)
     if len(lst) < N:
         data = lst
@@ -169,7 +172,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
     # Puts network on device
     net.to(device)
 
-    # generate valid data
+    # 2025-10-29: the validation dataset is only generated ONCE and used throughout
     valid_data, valid_trails = generate_valid_data(device=device)
 
     counter_lst = []
@@ -196,6 +199,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
                     # jul 16th: should we separate and load the input, and stack the output later 
                     print(f"test_input_: {test_input_.shape}")
                     minibatch = 16
+                    # assert test_input_.shape[0] % minibatch == 0
                     net_out_np = [] 
                     db = [] 
                     for start in range(0, test_input_.shape[0], minibatch): 
@@ -1092,11 +1096,13 @@ class BaseNetwork(BaseNetworkFunctions):
         else:
             db_seq = None
 
+        
+        
         # Now iterate through the full input sequence, note that network_step of children classes will
         # update the internal state unless told otherwise. 
         for seq_idx in range(batch_inputs.shape[1]):
 
-            step_output, step_activity, db = self.network_step(batch_inputs[:, seq_idx, :], run_mode=run_mode)
+            step_output, step_activity, db = self.network_step(batch_inputs[:, seq_idx, :], run_mode=run_mode, seq_idx=seq_idx)
         
             batch_output[:, seq_idx, :] = step_output
             batch_hidden[:, seq_idx, :] = step_activity[-1] # assume 1-layer MPN for now

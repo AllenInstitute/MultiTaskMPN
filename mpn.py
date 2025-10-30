@@ -613,6 +613,9 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
         self.input_layer_active = cfg.get('input_layer_add', False)
         self.input_layer_active_trainable = cfg.get('input_layer_add_trainable', False)
 
+        # 2025-10-29: recurrent augmentation
+        self.recurrent_active = cfg.get('recurrent_layer_add', False)
+
         arch = list(cfg['n_neurons'])
         if self.input_layer_active:
             arch.insert(1, arch[1])
@@ -638,7 +641,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
             )
             
             if not self.input_layer_active_trainable:
-                print("Input Layer Frozen")
+                print(f'  Input Layer Frozen.')
                 self.W_initial_linear.weight.requires_grad = False
 
             if net_params.get('input_layer_bias', False):
@@ -650,10 +653,14 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
                 self.W_initial_linear.bias = None
 
         self.mp_layers = []
+        self.h_recurrent = [] 
+        self.recurrent_weights = nn.ParameterList() 
         
         start_layer_count = 1 if self.input_layer_active else 0
         # if additional input layer is added, shift the starting index of layer counting from 1
         for mpl_idx in range(start_layer_count, n_layers - 1): # (e.g. three-layer has two MP layers)
+            assert n_layers - 1 - start_layer_count == 1, "2025-10-29: One-Layer MPN Now"
+            
             ml_key = f'ml_params{mpl_idx}' if f'ml_params{mpl_idx}' in cfg else 'ml_params'
             # Updates some parameters for each new MPL
             cfg[ml_key]['dt'] = self.dt
@@ -661,14 +668,32 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
             cfg[ml_key]['n_input'] = arch[mpl_idx]
             cfg[ml_key]['n_output'] = arch[mpl_idx + 1]
 
-            setattr(self, f'mp_layer{mpl_idx}', MultiPlasticLayer(cfg[ml_key], output_matrix=self.output_matrix, 
-                                                                  verbose=verbose))
+            setattr(
+                self, 
+                f'mp_layer{mpl_idx}', 
+                MultiPlasticLayer(cfg[ml_key], output_matrix=self.output_matrix, verbose=verbose)
+            )
 
             self.mp_layers.append(getattr(self, 'mp_layer{}'.format(mpl_idx)))
             self.params.extend([param+str(mpl_idx) for param in self.mp_layers[-1].params])
 
+            # 2025-10-29: add hidden activity with recurrency
+            if self.recurrent_active:
+                n_units = arch[mpl_idx + 1]  # layer output size
+                # we'll use a simple scaled orthogonal / xavier-ish init
+                W_rec_init = rand_weight_init(n_units, n_units, init_type=net_params.get('W_rec_init', 'xavier'))
+                W_rec_param = nn.Parameter(torch.tensor(W_rec_init, dtype=torch.float), requires_grad=True)
+                self.recurrent_weights.append(W_rec_param)
+
+        if not self.recurrent_active:
+            print(f'  No Hidden Recurrency.')
+        else:
+            print(f'  Hidden Recurrency is Added.')
+
+                
     def forward(self, inputs, run_mode='minimal', verbose=False):
-    
+        """
+        """
         if self.input_layer_active:
             x = self.W_initial_linear(inputs)
             x = self.act_fn(x)
@@ -685,7 +710,20 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
             # Returns pre-activation
             layer_input_old = layer_input.clone()
             hidden_pre, db_mp = mp_layer(layer_input, run_mode=run_mode)
+            
+            if self.recurrent_active: 
+                if len(self.h_recurrent) == 0: # set zero initial hidden activity
+                    self.h_recurrent.append(torch.zeros_like(hidden_pre))
+
+                h_prev = self.h_recurrent[-1]
+                W_rec = self.recurrent_weights[mpl_idx]
+                hidden_pre = hidden_pre + torch.matmul(h_prev, W_rec.t())
+                
             layer_input = self.act_fn(hidden_pre)
+
+            # save the t-1 hidden state for the use at time t 
+            if self.recurrent_active:
+                self.h_recurrent[-1] = layer_input
 
             if run_mode in ('debug',):
                 print(f'  MP Layer {mpl_idx} forward.')
@@ -701,14 +739,15 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
                 db['b{}'.format(mp_layer.mp_layer_name)] = db_mp['b']
                 db['input{}'.format(mp_layer.mp_layer_name)] = layer_input_old.detach()
 
-        if run_mode in ('debug',): print(f'  Output layer forward.')
+        if run_mode in ('debug',): 
+            print(f'  Output layer forward.')
+            
         output_hidden = torch.einsum('iI, BI -> Bi', self.W_output, layer_input)
         output = output_hidden + self.b_output.unsqueeze(0)
-
         
         return output, mpl_activities, db
 
-    def network_step(self, current_input, run_mode='minimal', verbose=False):
+    def network_step(self, current_input, run_mode='minimal', verbose=False, seq_idx=None):
         """
         Performs a single batch pass forward for the network. This mostly consists of a forward pass and
         the associated updates to internal states (i.e. the modulations)
@@ -717,8 +756,14 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
         """
 
         assert len(current_input.shape) == 2
-        if run_mode in ('debug',): print(f' Network step:')
+        if run_mode in ('debug',): 
+            print(f' Network step:')
 
+        # at beginning of sequence (seq_idx == 0), provide empty list
+        if seq_idx == 0 and self.recurrent_active:
+            self.h_recurrent = []
+
+        # current_input is per-time input, so has shape (batch_size, input_size)
         output, mpl_activities, db = self.forward(current_input, run_mode=run_mode, verbose=verbose)
 
         # M updated internally when this is called
