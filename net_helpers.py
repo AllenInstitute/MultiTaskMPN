@@ -23,6 +23,8 @@ c_vals_l = ['#feb2b2', '#90cdf4', '#9ae6b4', '#d6bcfa', '#fbd38d', '#81e6d9', '#
 c_vals_d = ['#9b2c2c', '#2c5282', '#276749', '#553c9a', '#9c4221', '#285e61', '#2d3748', '#97266d', '#975a16',]
 l_vals = ['solid', 'dashed', 'dotted', 'dashdot', '-', '--', '-.', ':', (0, (3, 1, 1, 1)), (0, (5, 10))]
 markers_vals = ['.', 'o', 'v', '^', '<', '>', '1', '2', '3', '4', 's', 'p', '*', 'h', 'H', '+', 'x', 'D', 'd', '|', '_']
+# 2025-10-30: hard-coded print frequency for monitoring
+print_frequency = 100
 
 def tail_mean_decay(lst, N, decay=0.95):
     """
@@ -130,19 +132,22 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
 
     task_params, train_params, net_params = params
 
+    # 2025-10-30: based on the coding logic, this condition needs to be satisfied
+    assert net_params["monitor_freq"] <= train_params["n_epochs_per_set"]
+
     # indicates of post-training stage is happening
     if net is not None and pretraining_shift != 0: 
         net = expand_and_freeze(net, option=1)
 
     if task_params['task_type'] in ('multitask',):
     
-        def generate_train_data(device='cuda'):
+        def generate_train_data(device='cuda', verbose=True):
             # ZIHAN
             # correct thing to dox
             # "training batches should only be over one rule"
             # "but validation should mix them"            
             train_data, (_, train_trails, _ ) = mpn_tasks.generate_trials_wrap(
-                task_params, train_params['n_batches'], device=device, verbose=True, mode_input=hyp_dict['mode_for_all'], \
+                task_params, train_params['n_batches'], device=device, verbose=verbose, mode_input=hyp_dict['mode_for_all'], \
                 pretraining_shift=pretraining_shift, pretraining_shift_pre=pretraining_shift_pre
                     
             )
@@ -159,7 +164,8 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
     else:
         raise ValueError('Task type not recognized.')
 
-    if net is None: # Create a new network
+    # Create a new network
+    if net is None: 
         # overwrite the input information
         if pretraining_shift_pre > 0: 
             n_neurons = net_params["n_neurons"]
@@ -168,6 +174,9 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
             net_params["n_neurons"] = new_n_neurons
 
         net = netFunction(net_params, verbose=verbose)
+
+    num_params = sum(p.numel() for p in net.parameters() if p.requires_grad)
+    print(f"Trainable parameters: {num_params:,}")
 
     # Puts network on device
     net.to(device)
@@ -185,7 +194,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
 
     for dataset_idx in range(total_dataset):
         # generate training data
-        train_data, train_trails = generate_train_data(device=device)
+        train_data, train_trails = generate_train_data(device=device, verbose=(dataset_idx % print_frequency == 0))
         new_thresh = True if dataset_idx == 0 else False
 
         if train: 
@@ -196,10 +205,9 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
                 counter_lst.append(dataset_idx)
                 # test data for each stage
                 for test_input_index, test_input_ in enumerate(test_input): 
-                    # jul 16th: should we separate and load the input, and stack the output later 
-                    print(f"test_input_: {test_input_.shape}")
+                    # 2025-07-16: should we separate and load the input, and stack the output later 
+                    # print(f"test_input_: {test_input_.shape}")
                     minibatch = 16
-                    # assert test_input_.shape[0] % minibatch == 0
                     net_out_np = [] 
                     db = [] 
                     for start in range(0, test_input_.shape[0], minibatch): 
@@ -244,10 +252,13 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
                 Wall_lst.append(W_all_)
                 marker_lst.append(dataset_idx)
 
-            _, monitor_loss, monitor_acc, goodness_history, valid_acc_history = net.fit(train_params, train_data, train_trails, valid_batch=valid_data, 
-                                                                                        valid_trails=valid_trails, new_thresh=new_thresh, run_mode=hyp_dict['run_mode'])
+            _, monitor_loss, monitor_acc, goodness_history, valid_acc_history = net.fit(train_params, train_data, train_trails, 
+                                                                                        valid_batch=valid_data, valid_trails=valid_trails, 
+                                                                                        new_thresh=new_thresh, run_mode=hyp_dict['run_mode'], datanum=dataset_idx)
 
-            print(f"valid_acc_history: {valid_acc_history}")
+            if dataset_idx % print_frequency == 0: 
+                print(f"valid_acc_history: {valid_acc_history}")
+                
             # if None, then no early stop option
             if train_params["valid_check"] is not None: 
                 if valid_acc_history > 0.97: 
@@ -816,7 +827,7 @@ class BaseNetwork(BaseNetworkFunctions):
         self.monitor_freq = net_params.get('monitor_freq', 1000)
         self.monitor_valid_out = net_params.get('monitor_valid_out', 10)   
 
-    def fit(self, train_params, train_data, train_trails, valid_batch=None, valid_trails=None,new_thresh=True, run_mode='minimal'):
+    def fit(self, train_params, train_data, train_trails, valid_batch=None, valid_trails=None,new_thresh=True, run_mode='minimal', datanum=None):
         """
         Fit a network to the train_data using the train_parameters. 
 
@@ -851,6 +862,7 @@ class BaseNetwork(BaseNetworkFunctions):
         self.reg_omit = train_params.get('reg_omit', []) # List of named parameters to omit from regularization
 
         if new_thresh or self.hist is None:
+            print(f"========== Setup Parameters ==========")
             init_string = 'Train parameters:'
 
             # Init optimizer, sometimes even for unsupervised training just in case parameter adjustment is needed for other reasons
@@ -923,8 +935,7 @@ class BaseNetwork(BaseNetworkFunctions):
                                                  valid_batch=valid_batch, 
                                                  valid_trails=valid_trails, 
                                                  new_thresh=new_thresh, 
-                                                 run_mode=run_mode
-        )
+                                                 run_mode=run_mode, datanum=datanum)
         
         last_group_acc = list(self.hist['group_valid_acc'][-1].values())
         last_group_goodness = mpn_tasks.normalize_to_one([1 - acc for acc in last_group_acc])
@@ -974,7 +985,7 @@ class BaseNetwork(BaseNetworkFunctions):
 
     # @torch.no_grad()
     def train_epochs(self, train_params, train_data, train_trails, valid_batch=None, valid_trails=None, new_thresh=True, 
-                     monitor=True, run_mode='minimal'):
+                     monitor=True, run_mode='minimal', datanum=None):
         """
         This will either perform supervised/unsupervised training on the train_data. In both cases, the input data represents 
         some sequence of inputs, and the M matrices will go through the training during said sequence. For the case 
@@ -1055,7 +1066,7 @@ class BaseNetwork(BaseNetworkFunctions):
                                 (self.end_monitor and seq_idx == train_inputs.shape[1]-1)): # Do one monitor at the end of train set
                     self._monitor((train_inputs_batch, train_labels_batch, train_masks_batch), train_go_info_batch, valid_go_info, 
                                   output=output, loss=loss, loss_components=loss_components, 
-                                  valid_batch=valid_batch)
+                                  valid_batch=valid_batch, nowiter=self.hist['iter'])
 
             # At the end of the epoch, shuffle over batch dimension
             train_inputs, train_labels, train_masks = shuffle_dataset(
@@ -1063,14 +1074,15 @@ class BaseNetwork(BaseNetworkFunctions):
             )
 
         if valid_batch is not None and self.scheduler is not None:
-            # Use latest validation loss for ReduceLROnPlateau
-            if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                if self.hist['valid_loss']:
-                    last_valid_loss = self.hist['valid_loss'][-1]
-                    self.scheduler.step(last_valid_loss)
-            # Step-based schedulers (e.g., StepLR)
-            else:
-                self.scheduler.step()
+            if datanum % (int(print_frequency / 10)) == 0:
+                # Use latest validation loss for ReduceLROnPlateau
+                if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                    if self.hist['valid_loss']:
+                        last_valid_loss = self.hist['valid_loss'][-1]
+                        self.scheduler.step(last_valid_loss)
+                # Step-based schedulers (e.g., StepLR)
+                else:
+                    self.scheduler.step()
         
         return db, np.mean(losses), np.mean(accs)
 
@@ -1096,8 +1108,6 @@ class BaseNetwork(BaseNetworkFunctions):
         else:
             db_seq = None
 
-        
-        
         # Now iterate through the full input sequence, note that network_step of children classes will
         # update the internal state unless told otherwise. 
         for seq_idx in range(batch_inputs.shape[1]):
@@ -1463,14 +1473,14 @@ class BaseNetwork(BaseNetworkFunctions):
                 train_labels[:train_params['batch_size'], :], 
                 train_masks[:train_params['batch_size'], :, :], 
             )
-        
-            self._monitor(train_batch, train_trails, valid_trails, valid_batch=valid_batch)
+            # 2025-10-30: dummy change
+            self._monitor(train_batch, train_trails, valid_trails, valid_batch=valid_batch, nowiter=1)
 
     @torch.no_grad()
-    def _monitor(self, train_batch, train_go_info_batch, valid_go_info, 
-                 output=None, loss=None, loss_components=None, valid_batch=None):  		
-        train_inputs_batch, train_labels_batch, train_masks_batch = train_batch # (seq_lens assumed not to matter since these are only used for init monitor)
-
+    def _monitor(self, train_batch, train_go_info_batch, valid_go_info, output=None, loss=None, 
+                 loss_components=None, valid_batch=None, nowiter=None):  	
+        # (seq_lens assumed not to matter since these are only used for init monitor)
+        train_inputs_batch, train_labels_batch, train_masks_batch = train_batch 
         # Stores iterations where monitor was called
         self.hist['iters_monitor'].append(self.hist['iter'])
 
@@ -1507,7 +1517,7 @@ class BaseNetwork(BaseNetworkFunctions):
         ### Validation Set ###
         # Assumes validation set is already in batches
         valid_inputs_batch, valid_labels_batch, valid_masks_batch = valid_batch if valid_batch else (None, None, None)
-        print(f"valid_inputs_batch.shape: {valid_inputs_batch.shape}")
+        # print(f"valid_inputs_batch.shape: {valid_inputs_batch.shape}")
 
         if valid_batch is not None:
         
@@ -1540,8 +1550,6 @@ class BaseNetwork(BaseNetworkFunctions):
                     
                     self.hist['valid_acc'].append(valid_acc.item())
                     self.hist['group_valid_acc'].append(valid_acc_group)
-                    # print(valid_acc_group)
-                    # print(len(valid_acc_group))
                     self.hist['avg_valid_acc'].append(np.mean(self.hist['valid_acc'][-avg_window:]))
                     
                     if self.loss_type in ('XE',):
@@ -1557,8 +1565,8 @@ class BaseNetwork(BaseNetworkFunctions):
             self.hist['valid_acc'].append(torch.tensor(float('nan')))
             self.hist['avg_valid_loss'].append(torch.tensor(float('nan')))
             self.hist['avg_valid_acc'].append(torch.tensor(float('nan')))   
-    
-        if self.verbose:
+
+        if self.verbose and nowiter % print_frequency == 0:
             print(moitor_str)
 
     def save(self, path):

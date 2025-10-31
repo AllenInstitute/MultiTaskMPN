@@ -518,10 +518,10 @@ class MultiPlasticNetBase(BaseNetwork):
 
     @torch.no_grad()
     def _monitor(self, train_batch, train_go_info_batch, valid_go_info_batch, train_type='supervised', output=None, loss=None, loss_components=None,
-                 acc=None, valid_batch=None):
+                 acc=None, valid_batch=None, nowiter=None):
 
         super()._monitor(train_batch, train_go_info_batch, valid_go_info_batch, output=output, loss=loss, loss_components=loss_components,
-                         valid_batch=valid_batch)
+                         valid_batch=valid_batch, nowiter=nowiter)
 
         for mpl_idx, mp_layer in enumerate(self.mp_layers):
             self.hist['eta{}'.format(mp_layer.mp_layer_name)].append(

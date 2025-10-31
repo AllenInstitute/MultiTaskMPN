@@ -2168,7 +2168,10 @@ def convert_and_init_multitask_params(params):
 
     net_params['tau'] = 200 # Time constant (ms), default is 100 ms, only used to set noise scale for task
     net_params['dt'] = task_params['dt'] # Default is 20 ms
-    net_params['alpha'] = net_params['dt'] / net_params['tau'] # Default is 0.2
+    
+    # net_params['alpha'] = net_params['dt'] / net_params['tau'] # Default is 0.2
+    # 2025-10-30: overwrite alpha to be 0.8, to match with LD's paper
+    net_params['alpha'] = 1 - net_params['dt'] / net_params['tau'] 
     
     hp = {
         'seed': seed,
@@ -2242,17 +2245,31 @@ def normalize_to_one(x, axis=None, eps=1e-12):
 
 def insert_zeros_after_channel(x, K, after=5):
     """
+    Insert K zero-valued channels into a 3D NumPy array immediately after a given channel index.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Input 3D array of shape (H, W, C), e.g., an image or feature map.
+    K : int
+        Number of zero channels to insert.
+    after : int, optional
+        Index (0-based) after which the zero channels should be inserted.
+        Must satisfy 0 <= after < C. Default is 5.
+
+    Returns
+    -------
+    np.ndarray
+        A new array of shape (H, W, C + K) where K zero channels are inserted
+        immediately after the `after`-th channel of `x`.
     """
     if x.ndim != 3:
         raise ValueError("Input must be 3‑D (H, W, C).")
     if not (0 <= after < x.shape[2]):
         raise ValueError("'after' index out of range.")
 
-    # split once, no copies
-    first  = x[..., :after + 1]          # channels 0 … `after`
-    second = x[..., after + 1 :]         # remaining channels
-    # print(f"first.shape: {first.shape}")
-    # print(f"second.shape: {second.shape}")
+    first  = x[..., :after + 1]         
+    second = x[..., after + 1 :]        
 
     zeros  = np.zeros((*x.shape[:2], K), dtype=x.dtype)
 
@@ -2280,7 +2297,8 @@ def generate_trials_wrap(task_params, n_batches, device='cuda', verbose=False, r
     """
     if rules is None: # Draw a rule randomly, create tuple with single rule in it
         task_params['rules_probs'] = normalize_to_one(task_params['rules_probs'])
-        print(f"task_params['rules_probs']: {task_params['rules_probs']}")
+        if verbose: 
+            print(f"task_params['rules_probs']: {task_params['rules_probs']}")
         rule_idx = np.random.choice(task_params['n_rules'], p=task_params['rules_probs'])
         rules = (task_params['rules'][rule_idx],)
         rule_idxs = (rule_idx,) # Corresponding rule_idx in task_params['rules']
@@ -2382,11 +2400,17 @@ def generate_trials_wrap(task_params, n_batches, device='cuda', verbose=False, r
     if task_params['randomize_inputs']: # Multiplies all inputs by fixed random matrix (needed for MPNs sometimes)
         inputs_all = np.matmul(inputs_all, task_params['randomize_matrix'])
 
-    # Jul 18th: pretraining purprose, paddling the input based on the number of pretrained tasks 
+    # 2025-07-18: pretraining purprose, paddling the input based on the number of pretrained tasks 
     # mask and output should not be affected
     inputs_all = insert_zeros_after_channel(inputs_all, K=pretraining_shift_pre, after=inputs_all.shape[-1]-1)
     inputs_all = insert_zeros_after_channel(inputs_all, K=pretraining_shift, after=5)
-    print(f"inputs_all paddled: {inputs_all.shape}")
+    
+    # 2025-10-30: at most one is True, the values will only be nonzero during the pretraining analysis
+    # in which one value is used in pre-training and one value is used for post-training
+    assert not (pretraining_shift_pre > 0 and pretraining_shift > 0), "Both values are > 0, but only one or none is allowed."
+
+    if verbose:
+        print(f"inputs_all paddled: {inputs_all.shape}")
 
     # Converts the data to be passed to network to torch form
     inputs_all = torch.from_numpy(inputs_all).type(torch.float).to(device) # inputs.shape

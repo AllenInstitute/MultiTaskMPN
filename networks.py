@@ -169,7 +169,9 @@ class VanillaRNN(BaseNetwork):
 				self.leaky_timescale = net_params.get('leaky_timescale', 125) # Rate of leakyness, if dt = 50 ms then alpha = 0.6 by default
 				self.alpha = 1 - self.dt / self.leaky_timescale
 			else:
-				self.alpha = net_params.get('alpha', 0.2)
+				# self.alpha = net_params.get('alpha', 0.2)
+                # 2025-10-30: overwrite alpha to be 0.8, to match with LD's paper
+				self.alpha = net_params.get('alpha', 0.8)
 				self.leaky_timescale = self.dt / (1 - self.alpha)
 			init_string += '  Leaky updates, timescale {:.0f} ms (old: {:.1f} new: {:.1f})'.format(self.leaky_timescale, self.alpha, 1-self.alpha)
 		else:
@@ -179,7 +181,7 @@ class VanillaRNN(BaseNetwork):
 		self.ei_balance = None
 		self.input_cell_types = None
 		self.hidden_cell_types = None
-
+        
 		return init_string
 
 	def reset_state(self, B=1):
@@ -240,7 +242,7 @@ class VanillaRNN(BaseNetwork):
 
 		return output, hidden, db
 
-	def network_step(self, current_input, run_mode='minimal', monitor_set=False, verbose=False):
+	def network_step(self, current_input, run_mode='minimal', monitor_set=False, verbose=False, seq_idx=None):
 		"""
 		Performs a single batch pass forward for the network. This mostly consists of a forward pass and 
 		the associated updates internal states.
@@ -250,6 +252,8 @@ class VanillaRNN(BaseNetwork):
 		current_input: Input into the RNN at the current time step. Currently two forms implemented:
 		- type == torch.Tensor: Raw input to be passed through input layer
 		- tpye == tuple: Tuple consisting of (raw_input, noise_injections), former goes through input, latter goes directly into hidden activity
+
+        2025-10-30: adding seq_idx as input for consistency with DeepMultiPlasticNet
 		"""
 
 		output, current_hidden, db = self.forward(current_input, run_mode=run_mode, verbose=verbose)
@@ -259,7 +263,7 @@ class VanillaRNN(BaseNetwork):
 		# if run_mode in ('minimal',):
 		# 	db['hidden'] = current_hidden.detach()
 
-		return output, db
+		return output, current_hidden, db
 		
 	def update_parameters(self, net_params):
 		"""
@@ -283,20 +287,6 @@ class VanillaRNN(BaseNetwork):
 	def get_device(self):
 		""" Return current device the network is on """
 		return self.W_rec.device
-
-	# @torch.no_grad()
-	# def param_clamp(self):
-	# 	"""
-	# 	Clamps all weights (only called if cell types are enforced)
-
-	# 	"""
-
-	# 	if self.input_cell_types is not None and self.input_layer in ('trainable', 'frozen',):
-	# 		self.W_input.data.clamp_(self.W_input_bounds[0], self.W_input_bounds[1])
-	# 	if self.hidden_cell_types is not None:
-	# 		if self.cell_types not in ('E_in_and_out',): # Has hidden cell types but doesn't enforce them in recurrent layer
-	# 			self.W_rec.data.clamp_(self.W_rec_bounds[0], self.W_rec_bounds[1])
-	# 		self.W_output.data.clamp_(self.W_output_bounds[0], self.W_output_bounds[1])
 
 	@torch.no_grad()
 	def _monitor_init(self, train_params, train_data, train_trails=None, valid_batch=None, valid_trails=None):
@@ -325,10 +315,10 @@ class VanillaRNN(BaseNetwork):
 
 	@torch.no_grad()
 	def _monitor(self, train_batch, train_go_info_batch, valid_go_info_batch, train_type='supervised', output=None, loss=None, loss_components=None, 
-				 acc=None, valid_batch=None): 
+				 acc=None, valid_batch=None, nowiter=None): 
 
 		super()._monitor(train_batch, train_go_info_batch, valid_go_info_batch, output=output, loss=loss, loss_components=loss_components,
-						 valid_batch=valid_batch)
+						 valid_batch=valid_batch, nowiter=nowiter)
 
 
 class GRU(VanillaRNN):
