@@ -1227,7 +1227,7 @@ def delaydm2(config, mode, fix, separate_input, label_strength, long_delay, long
     return delaydm_(config, mode, 2, fix, separate_input, label_strength, long_delay, long_response, **kwargs)
 
 
-def contextdelaydm_(config, mode, attend_mod, fix, separate_input, label_strength, long_delay, **kwargs):
+def contextdelaydm_(config, mode, attend_mod, fix, separate_input, label_strength, long_delay, long_response, **kwargs):
     '''
     Fixate whenever fixation point is shown.
     Two stimuluss are shown in each ring,
@@ -1444,12 +1444,12 @@ def contextdelaydm_(config, mode, attend_mod, fix, separate_input, label_strengt
     return trial
 
 
-def contextdelaydm1(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
-    return contextdelaydm_(config, mode, 1, fix, separate_input, label_strength, long_delay, **kwargs)
+def contextdelaydm1(config, mode, fix, separate_input, label_strength, long_delay, long_response, **kwargs):
+    return contextdelaydm_(config, mode, 1, fix, separate_input, label_strength, long_delay, long_response, **kwargs)
 
 
-def contextdelaydm2(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
-    return contextdelaydm_(config, mode, 2, fix, separate_input, label_strength, long_delay, **kwargs)
+def contextdelaydm2(config, mode, fix, separate_input, label_strength, long_delay, long_response, **kwargs):
+    return contextdelaydm_(config, mode, 2, fix, separate_input, label_strength, long_delay, long_response, **kwargs)
 
 
 def multidelaydm(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):

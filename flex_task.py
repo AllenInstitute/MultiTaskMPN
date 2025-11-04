@@ -74,7 +74,7 @@ l_vals = ['solid', 'dashed', 'dotted', 'dashdot', '-', '--', '-.', ':', (0, (3, 
 markers_vals = ['o', 'v', '*', '+', '>', '1', '2', '3', '4', 's', 'p', '*', 'h', 'H', '+', 'x', 'D', 'd', '|', '_']
 linestyles = ["-", "--", "-."]
 
-for _ in range(1): 
+for _ in range(5): 
     hyp_dict = {}
     
     # Reload modules if changes have been made to them
@@ -91,7 +91,7 @@ for _ in range(1):
     
     hyp_dict['task_type'] = 'multitask' # int, NeuroGym, multitask
     hyp_dict['mode_for_all'] = "random_batch"
-    hyp_dict['ruleset'] = 'delayfamily' # low_dim, all, test
+    hyp_dict['ruleset'] = 'delaydm1' # low_dim, all, test
     
     accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti', 
                     'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 'dmsnogo', 'dmcnogo')
@@ -105,11 +105,13 @@ for _ in range(1):
                      'delaydm1', 'delaydm2', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm',
                      'dmsgo', 'dmsnogo', 'dmcgo', 'dmcnogo'],
          'delayfamily': ['delaygo', 'delayanti'], 
+         'fdgofamily': ['fdgo', 'fdanti'],
          'dmsgo': ['dmsgo'],
          'dmcgo': ['dmcgo'], 
          'contextdelaydm1': ['contextdelaydm1'], 
          'delaygo': ['delaygo'],
          'delaydm1': ['delaydm1'], 
+         'delaydmfamily': ['delaydm1', 'delaydm2'],
          'simplegofamily': ['fdgo', 'fdanti', 'reactgo', 'reactanti'],
          'gofamily': ['fdgo', 'fdanti', 'reactgo', 'reactanti', 'delaygo', 'delayanti'],
          'gofamily_delaydm': ['fdgo', 'fdanti', 'reactgo', 'reactanti', 'delaygo', 'delayanti', 'delaydm1', 'delaydm2'],
@@ -125,10 +127,12 @@ for _ in range(1):
     rules_dict_frequency = {
         'delaygo': np.array([1]),
         'delayfamily': np.array([1,1]), 
+        'fdgofamily': np.array([1,1]), 
         'dmsgo': np.array([1]), 
         'dmcgo': np.array([1]),
         'contextdelaydm1': np.array([1]), 
         'delaydm1': np.array([1]), 
+        'delaydmfamily': np.array([1,1]),
         'go_dm_family': np.array([1, 1, 1, 1, 1, 1, 
                                   3, 3, 3, 3, 3,
         ]), 
@@ -153,7 +157,7 @@ for _ in range(1):
     # trainetalambda
     
     mpn_depth = 1
-    n_hidden = 100
+    n_hidden = 200
     
     hyp_dict['addon_name'] = "L2"
     hyp_dict['addon_name'] += f"+hidden{n_hidden}"
@@ -233,7 +237,7 @@ for _ in range(1):
             'recurrent_layer_add': False, # for MPN
             'input_layer_bias': False, # for MPN
             'input_layer': "trainable", # for RNN only
-            'acc_measure': 'stimulus', 
+            'acc_measure': 'angle', 
             
             # for one-layer MPN, GRU or Vanilla
             'ml_params': {
@@ -275,7 +279,7 @@ for _ in range(1):
     task_params, train_params, net_params = current_basic_params()
     # add batch information to the parameters
     print("Accuracy Measure: {net_params['acc_measure']}")
-    hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}+rec{net_params['recurrent_layer_add']}"
+    hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}+rec{net_params['recurrent_layer_add']}+lr{train_params['lr']:.0e}"
     
     # save the setting result
     config = {
