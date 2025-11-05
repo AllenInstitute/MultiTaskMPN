@@ -4,6 +4,7 @@ import matplotlib.colors as mcolors
 import numpy as np 
 from scipy.linalg import null_space
 import time
+from scipy.stats import linregress
 
 from typing import Dict, Sequence, TypeVar, List, Tuple
 from itertools import chain
@@ -13,6 +14,15 @@ import math
 import torch
 
 T = TypeVar("T")
+
+def find_key_by_membership(d, value):
+    """
+    Return the key whose array/list contains `value`, else None.
+    """
+    for k, arr in d.items():
+        if value in arr:         
+            return k
+    return None
 
 def linear_regression(x1, y1, log=True, through_origin=False):
     """
