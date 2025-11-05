@@ -22,7 +22,7 @@ fig, axs = plt.subplots(1,2,figsize=(4*2,4))
 
 task_name = "delaydm1"
 hiddennum = "200"
-lr = "1e-03"
+lr = "1e-02"
 
 path = "./flextask/"
 keywords_mpn = ["loss", "recFalse", "dmpn", task_name, hiddennum, lr]
@@ -33,14 +33,12 @@ mpn_acc = []
 for idx, mpn_file in enumerate(results_mpn): 
     data = np.load(mpn_file, allow_pickle=True)
     mpn_acc.append(data["validation_acc"])
-    # for ax in axs:
-        # ax.plot(data["batch_idx"], data["validation_acc"], c=c_vals[0], alpha=0.1)
         
 mpn_acc_mean = np.mean(np.array(mpn_acc), axis=0)
 mpn_acc_std = np.std(np.array(mpn_acc), axis=0) / np.sqrt(np.array(mpn_acc).shape[0])
 for ax in axs:
     ax.plot(data["batch_idx"], mpn_acc_mean, c=c_vals[0], label="MPN without Recurrent Hidden")
-    ax.plot(data["batch_idx"], mpn_acc_mean-mpn_acc_std,  mpn_acc_mean+mpn_acc_std, color=c_vals[0])
+    ax.fill_between(data["batch_idx"], mpn_acc_mean-mpn_acc_std,  mpn_acc_mean+mpn_acc_std, color=c_vals[0], alpha=0.5)
 
 path = "./flextask/"
 keywords_rnn = ["loss", "recFalse", "rnn", task_name, hiddennum, lr]
@@ -51,14 +49,12 @@ rnn_acc = []
 for idx, rnn_file in enumerate(results_rnn): 
     data = np.load(rnn_file, allow_pickle=True)
     rnn_acc.append(data["validation_acc"])
-    # for ax in axs: 
-        # ax.plot(data["batch_idx"], data["validation_acc"], c=c_vals[1], alpha=0.1)
 
 rnn_acc_mean = np.mean(np.array(rnn_acc), axis=0)
 rnn_acc_std = np.std(np.array(rnn_acc), axis=0) / np.sqrt(np.array(rnn_acc).shape[0])
 for ax in axs:
     ax.plot(data["batch_idx"], rnn_acc_mean, c=c_vals[1], label="RNN")
-    ax.fill_between(data["batch_idx"], rnn_acc_mean-rnn_acc_std, rnn_acc_mean+rnn_acc_std, color=c_vals[1])
+    ax.fill_between(data["batch_idx"], rnn_acc_mean-rnn_acc_std, rnn_acc_mean+rnn_acc_std, color=c_vals[1], alpha=0.5)
 
 # 2025-11-04: whether to further compare with the dmpn with recurrent layer added 
 # currently consider as a benchmark
@@ -86,6 +82,7 @@ for ax in axs:
     ax.legend()
     ax.set_xlabel("# Batches", fontsize=15)
     ax.set_ylabel("Validation Accuracy", fontsize=15)
+    ax.set_ylim([0, 1.1])
 axs[1].set_xlim([0, 300])
 axs[0].set_title("Learning Trajectory", fontsize=15)
 axs[1].set_title("Zoomed In Learning Trajectory", fontsize=15)

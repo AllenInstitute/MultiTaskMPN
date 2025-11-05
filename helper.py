@@ -14,6 +14,40 @@ import torch
 
 T = TypeVar("T")
 
+def linear_regression(x1, y1, log=True, through_origin=False):
+    """
+    Fit a (log-)linear model using only pairs where both transformed
+    values are finite (not NaN/±∞).
+    """
+    x = np.asarray(x1, dtype=float)
+    y = np.asarray(y1, dtype=float)
+
+    # Apply log first (may introduce –∞/NaN for 0 or negative values)
+    if log:
+        x = np.log10(x)
+        y = np.log10(y)
+
+    # Keep only points where *both* log-transformed values are finite
+    good = np.isfinite(x) & np.isfinite(y)
+    if not np.any(good):
+        raise ValueError("No finite data points remain after log transform.")
+
+    x, y = x[good], y[good]
+    
+    r_value = np.corrcoef(x, y)[0, 1]
+
+    if through_origin:
+        # Least‑squares slope with intercept fixed at 0
+        slope = np.dot(x, y) / np.dot(x, x)
+        intercept = 0.0
+    else:
+        slope, intercept, _, _, _ = linregress(x, y)
+
+    x_fit = np.linspace(x.min(), x.max(), 100)
+    y_fit = slope * x_fit + intercept
+    
+    return x_fit, y_fit, r_value, slope, intercept
+
 def all_leq(seq, limit):
     """
     check if all elements in the list is smaller or equal to certain value

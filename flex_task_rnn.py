@@ -189,7 +189,7 @@ for _ in range(5):
         print(f"Fixation_off: {task_params['fixate_off']}; Task_info: {task_params['task_info']}")
     
         train_params = {
-            'lr': 1e-3,
+            'lr': 1e-2,
             'n_batches': 128,
             'batch_size': 128,
             'gradient_clip': 10,
