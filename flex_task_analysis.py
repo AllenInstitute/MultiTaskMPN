@@ -20,8 +20,8 @@ def find_pkl_files_with_keywords(path, keywords):
 
 fig, axs = plt.subplots(1,2,figsize=(4*2,4))
 
-task_name = "contextdelaydm1"
-hiddennum = "300"
+task_name = "delayfamily"
+hiddennum = "200"
 lr = "1e-03"
 
 path = "./flextask/"

@@ -91,7 +91,7 @@ for _ in range(5):
     
     hyp_dict['task_type'] = 'multitask' # int, NeuroGym, multitask
     hyp_dict['mode_for_all'] = "random_batch"
-    hyp_dict['ruleset'] = 'contextdelaydm1' # low_dim, all, test
+    hyp_dict['ruleset'] = 'delayfamily' # low_dim, all, test
     
     accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti', 
                     'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 'dmsnogo', 'dmcnogo')
@@ -157,7 +157,7 @@ for _ in range(5):
     # trainetalambda
     
     mpn_depth = 1
-    n_hidden = 300
+    n_hidden = 200
     
     hyp_dict['addon_name'] = "L2"
     hyp_dict['addon_name'] += f"+hidden{n_hidden}"
@@ -199,7 +199,7 @@ for _ in range(5):
             'batch_size': 128,
             'gradient_clip': 10,
             'valid_n_batch': 100, 
-            'n_datasets': 6000, 
+            'n_datasets': 3000, 
             'valid_check': None, 
             'n_epochs_per_set': 1, 
             'weight_reg': 'L2',
