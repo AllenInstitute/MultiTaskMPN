@@ -1452,11 +1452,11 @@ def contextdelaydm2(config, mode, fix, separate_input, label_strength, long_dela
     return contextdelaydm_(config, mode, 2, fix, separate_input, label_strength, long_delay, long_response, **kwargs)
 
 
-def multidelaydm(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
-    return contextdelaydm_(config, mode, 'both', fix, separate_input, label_strength, long_delay, **kwargs)
+def multidelaydm(config, mode, fix, separate_input, label_strength, long_delay, long_response, **kwargs):
+    return contextdelaydm_(config, mode, 'both', fix, separate_input, label_strength, long_delay, long_response, **kwargs)
 
 
-def dms_(config, mode, matchnogo, fix, separate_input, label_strength, long_delay, **kwargs):
+def dms_(config, mode, matchnogo, fix, separate_input, label_strength, long_delay, long_response, **kwargs):
     '''
     Delay-match-to-sample
 
@@ -1612,15 +1612,15 @@ def dms_(config, mode, matchnogo, fix, separate_input, label_strength, long_dela
     return trial
 
 
-def dmsgo(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
-    return dms_(config, mode, 0, fix, separate_input, label_strength, long_delay, **kwargs)
+def dmsgo(config, mode, fix, separate_input, label_strength, long_delay, long_response, **kwargs):
+    return dms_(config, mode, 0, fix, separate_input, label_strength, long_delay, long_response, **kwargs)
 
 
-def dmsnogo(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
-    return dms_(config, mode, 1, fix, separate_input, label_strength, long_delay, **kwargs)
+def dmsnogo(config, mode, fix, separate_input, label_strength, long_delay, long_response, **kwargs):
+    return dms_(config, mode, 1, fix, separate_input, label_strength, long_delay, long_response, **kwargs)
 
 
-def dmc_(config, mode, matchnogo, fix, separate_input, label_strength, long_delay, **kwargs):
+def dmc_(config, mode, matchnogo, fix, separate_input, label_strength, long_delay, long_response, **kwargs):
     '''
     Delay-match-to-category
 
@@ -1784,12 +1784,12 @@ def dmc_(config, mode, matchnogo, fix, separate_input, label_strength, long_dela
     return trial
 
 
-def dmcgo(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
-    return dmc_(config, mode, 0, fix, separate_input, label_strength, long_delay, **kwargs)
+def dmcgo(config, mode, fix, separate_input, label_strength, long_delay, long_response, **kwargs):
+    return dmc_(config, mode, 0, fix, separate_input, label_strength, long_delay, long_response, **kwargs)
 
 
-def dmcnogo(config, mode, fix, separate_input, label_strength, long_delay, **kwargs):
-    return dmc_(config, mode, 1, fix, separate_input, label_strength, long_delay, **kwargs)
+def dmcnogo(config, mode, fix, separate_input, label_strength, long_delay, long_response, **kwargs):
+    return dmc_(config, mode, 1, fix, separate_input, label_strength, long_delay, long_response, **kwargs)
 
 
 # def oic(config, mode, **kwargs):

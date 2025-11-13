@@ -163,9 +163,9 @@ def current_basic_params(hyp_dict_input):
         'batch_size': 128,
         'gradient_clip': 10,
         'valid_n_batch': min(max(50, int(200/len(rules_dict[hyp_dict_input['ruleset']]))), 50),
-        'n_datasets': 150, # 50
-        'valid_check': 30, 
-        'n_epochs_per_set': 100,  
+        'n_datasets': 15000, # 15000
+        'valid_check': 500, 
+        'n_epochs_per_set': 1,  
         'weight_reg': 'L2',
         'activity_reg': 'L2', 
         'reg_lambda': 1e-4,
@@ -193,7 +193,7 @@ def current_basic_params(hyp_dict_input):
         'loss_type': 'MSE', # XE, MSE
         'activation': 'tanh', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside
         'cuda': True,
-        'monitor_freq': 100,
+        'monitor_freq': 1,
         'monitor_valid_out': True, # Whether or not to save validation output throughout training
         'output_matrix': '',# "" (default); "untrained", or "orthogonal"
         'input_layer_add': True, 
@@ -292,8 +292,8 @@ else:
 epoch_multiply = train_params["n_epochs_per_set"]
 
 # adjust the training information
-train_params2["n_datasets"] = 3000 # 3000
-train_params2['n_epochs_per_set'] = 100
+train_params2["n_datasets"] = 100000 # 300000
+train_params2['n_epochs_per_set'] = 1
 
 # In[5]:
 params = task_params, train_params, net_params
@@ -460,31 +460,35 @@ print("================================= Stage 1 ===============================
 net_pretrain, _, (_, netout_stage1_lst, db_stage1_lst, _, _, _, _, marker_stage1_lst, _, _) = net_helpers.train_network(params, device=device,
                                                                                                                         verbose=verbose, 
                                                                                                                         train=train,
-                                                                                                                        hyp_dict=hyp_dict, 
+                                                                                                                        hyp_dict=hyp_dict_old, 
                                                                                                                         netFunction=netFunction, 
                                                                                                                         test_input=[test_input],
-                                                                                                                        pretraining_shift_pre=1
-)
+                                                                                                                        pretraining_shift_pre=1, 
+                                                                                                                        print_frequency=100)
 
 # overwrite the early stopping in the post-training
 params2[1]["valid_check"] = None
 net_stage1 = copy.deepcopy(net_pretrain)
 
 # compare the input layer after pretraining and after posttraining
-input_orig  = net_pretrain.W_initial_linear.weight.detach().cpu().clone()
+if hyp_dict_old["chosen_network"] == "dmpn":
+    input_orig  = net_pretrain.W_initial_linear.weight.detach().cpu().clone()
+elif hyp_dict_old["chosen_network"] == "vanilla":
+    input_orig = net_pretrain.W_input.detach().cpu().clone()
 
 print("================================= Stage 2 =================================")
 net, _, (counter_lst, netout_lst, db_lst, Winput_lst, Winputbias_lst,\
          Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst) = net_helpers.train_network(params2, net=net_pretrain, device=device,
                                                                                            verbose=verbose, train=train, hyp_dict=hyp_dict,
                                                                                            netFunction=netFunction, test_input=[test_input2],
-                                                                                           pretraining_shift=len(task_params["rules"])
-)
+                                                                                           pretraining_shift=len(task_params["rules"]), print_frequency=100)
 
 print("================================= End  =================================")
 
-
-input_after = net.W_initial_linear.weight.detach().cpu().clone()
+if hyp_dict_old["chosen_network"] == "dmpn":
+    input_after  = net.W_initial_linear.weight.detach().cpu().clone()
+elif hyp_dict_old["chosen_network"] == "vanilla":
+    input_after = net.W_input.detach().cpu().clone()                                                                                    
 
 figin, axsin = plt.subplots(2,1,figsize=(20,5*2))
 sns.heatmap(input_orig, ax=axsin[0], cmap="coolwarm", center=0)
@@ -579,7 +583,7 @@ else:
     
     db = db_lst[0][ind]
     W_output = Woutput_lst[ind]
-    W_ = Wall_lst[ind][0]
+    # W_ = Wall_lst[ind][0]
 
 
 # In[ ]:
@@ -666,34 +670,43 @@ if net_params["input_layer_add"]:
 max_seq_len1 = test_input.shape[1]
 max_seq_len2 = test_input2.shape[1]
     
-def modulation_extraction(db_, max_seq_len_, layer_index, half=False):
+def modulation_extraction(db_, max_seq_len_, layer_index, half=False, nettype="dmpn"):
     """
     """
+    print(db.keys())
     devider = 1 if not half else 2
-    
     n_batch_all_ = test_input.shape[0]
     
-    Ms = np.concatenate((
-        db_[f'M{layer_index}'].reshape(int(n_batch_all_ / devider), max_seq_len_, -1),
-    ), axis=-1)
+    if nettype == "dmpn": 
+        Ms = np.concatenate((
+            db_[f'M{layer_index}'].reshape(int(n_batch_all_ / devider), max_seq_len_, -1),
+        ), axis=-1)
+    
+        Ms_orig = np.concatenate((
+            db_[f'M{layer_index}'],
+        ), axis=-1)
+    
+        bs = np.concatenate((
+            db_[f'b{layer_index}'],
+        ), axis=-1) 
+    
+        hs = np.concatenate((
+            db_[f'hidden{layer_index}'].reshape(int(n_batch_all_ / devider), max_seq_len_, -1),
+        ), axis=-1)
+    
+        xs = np.concatenate((
+            db_[f'input{layer_index}'].reshape(int(n_batch_all_ / devider), max_seq_len_, -1),
+        ), axis=-1)
+    
+        return Ms, Ms_orig, hs, bs, xs
+    
+    elif nettype == "vanilla":
+        hs = np.concatenate((
+            db_[f'hidden'].reshape(int(n_batch_all_ / devider), max_seq_len_, -1),
+        ), axis=-1)
 
-    Ms_orig = np.concatenate((
-        db_[f'M{layer_index}'],
-    ), axis=-1)
-
-    bs = np.concatenate((
-        db_[f'b{layer_index}'],
-    ), axis=-1) 
-
-    hs = np.concatenate((
-        db_[f'hidden{layer_index}'].reshape(int(n_batch_all_ / devider), max_seq_len_, -1),
-    ), axis=-1)
-
-    xs = np.concatenate((
-        db_[f'input{layer_index}'].reshape(int(n_batch_all_ / devider), max_seq_len_, -1),
-    ), axis=-1)
-
-    return Ms, Ms_orig, hs, bs, xs
+        return None, None, hs, None, None
+        
 
 print(f"rules_epochs: {rules_epochs}")
 print(f"rules_epochs2: {rules_epochs2}")
@@ -703,22 +716,22 @@ print(f"all_rules: {all_rules}")
 test_task = np.array(test_task)
 print(f"test_task: {test_task}")
 
-Ms_stage1, Ms_orig_stage1, hs_stage1, bs_stage1, xs_stage1 = modulation_extraction(db_stage1_lst[0][-1], max_seq_len1, layer_index)
+Ms_stage1, Ms_orig_stage1, hs_stage1, bs_stage1, xs_stage1 = modulation_extraction(db_stage1_lst[0][-1], max_seq_len1, layer_index, nettype=hyp_dict["chosen_network"])
 # since we only have half of the batches (one-task in post-training vs. two-task in pre-training)
 # so in reshape, we need to adjust the desired 
-Ms_stage2, Ms_orig_stage2, hs_stage2, bs_stage2, xs_stage2 = modulation_extraction(db_lst[0][-1], max_seq_len2, layer_index, half=True)
+Ms_stage2, Ms_orig_stage2, hs_stage2, bs_stage2, xs_stage2 = modulation_extraction(db_lst[0][-1], max_seq_len2, layer_index, half=True, nettype=hyp_dict["chosen_network"])
 
-print(f"Ms_stage1.shape:{Ms_stage1.shape}")
-print(f"Ms_orig_stage1.shape:{Ms_orig_stage1.shape}")
+# print(f"Ms_stage1.shape:{Ms_stage1.shape}")
+# print(f"Ms_orig_stage1.shape:{Ms_orig_stage1.shape}")
 print(f"hs_stage1.shape:{hs_stage1.shape}")
-print(f"bs_stage1.shape:{bs_stage1.shape}")
-print(f"xs_stage1.shape:{xs_stage1.shape}")
+# print(f"bs_stage1.shape:{bs_stage1.shape}")
+# print(f"xs_stage1.shape:{xs_stage1.shape}")
 
-print(f"Ms_stage2.shape:{Ms_stage2.shape}")
-print(f"Ms_orig_stage2.shape:{Ms_orig_stage2.shape}")
+# print(f"Ms_stage2.shape:{Ms_stage2.shape}")
+# print(f"Ms_orig_stage2.shape:{Ms_orig_stage2.shape}")
 print(f"hs_stage2.shape:{hs_stage2.shape}")
-print(f"bs_stage2.shape:{bs_stage2.shape}")
-print(f"xs_stage2.shape:{xs_stage2.shape}")
+# print(f"bs_stage2.shape:{bs_stage2.shape}")
+# print(f"xs_stage2.shape:{xs_stage2.shape}")
 
 assert hs_stage1.shape[-1] == hs_stage2.shape[-1]
 

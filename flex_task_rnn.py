@@ -86,7 +86,7 @@ for _ in range(5):
     
     hyp_dict['task_type'] = 'multitask' # int, NeuroGym, multitask
     hyp_dict['mode_for_all'] = "random_batch"
-    hyp_dict['ruleset'] = 'delayfamily' # low_dim, all, test
+    hyp_dict['ruleset'] = 'delaydmfamily' # low_dim, all, test
     
     accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti', 
                     'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 'dmsnogo', 'dmcnogo')
@@ -101,6 +101,7 @@ for _ in range(5):
                      'dmsgo', 'dmsnogo', 'dmcgo', 'dmcnogo'],
          'delayfamily': ['delaygo', 'delayanti'], 
          'fdgofamily': ['fdgo', 'fdanti'],
+         'dmsgofamily': ['dmsgo', 'dmsnogo'],
          'dmsgo': ['dmsgo'],
          'dmcgo': ['dmcgo'], 
          'contextdelaydm1': ['contextdelaydm1'], 
@@ -123,6 +124,7 @@ for _ in range(5):
         'delaygo': np.array([1]),
         'delayfamily': np.array([1,1]), 
         'fdgofamily': np.array([1,1]), 
+        'dmsgofamily': np.array([1,1]), 
         'dmsgo': np.array([1]), 
         'dmcgo': np.array([1]),
         'contextdelaydm1': np.array([1]), 
@@ -189,7 +191,7 @@ for _ in range(5):
         print(f"Fixation_off: {task_params['fixate_off']}; Task_info: {task_params['task_info']}")
     
         train_params = {
-            'lr': 1e-3,
+            'lr': 1e-4,
             'n_batches': 128,
             'batch_size': 128,
             'gradient_clip': 10,

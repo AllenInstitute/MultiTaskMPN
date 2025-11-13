@@ -23,8 +23,8 @@ c_vals_l = ['#feb2b2', '#90cdf4', '#9ae6b4', '#d6bcfa', '#fbd38d', '#81e6d9', '#
 c_vals_d = ['#9b2c2c', '#2c5282', '#276749', '#553c9a', '#9c4221', '#285e61', '#2d3748', '#97266d', '#975a16',]
 l_vals = ['solid', 'dashed', 'dotted', 'dashdot', '-', '--', '-.', ':', (0, (3, 1, 1, 1)), (0, (5, 10))]
 markers_vals = ['.', 'o', 'v', '^', '<', '>', '1', '2', '3', '4', 's', 'p', '*', 'h', 'H', '+', 'x', 'D', 'd', '|', '_']
-# 2025-10-30: hard-coded print frequency for monitoring
-print_frequency = 100
+
+GLOBAL_PRINT_FREQUENCY = 1
 
 def tail_mean_decay(lst, N, decay=0.95):
     """
@@ -42,92 +42,170 @@ def tail_mean_decay(lst, N, decay=0.95):
     w = decay ** np.arange(len(data)-1, -1, -1)
     return np.sum(data * w) / np.sum(w)
 
-def expand_and_freeze(net, option):
+
+def expand_and_freeze(net, option, nettype):
     """
-    Modify `net.W_initial_linear` and freeze parameters according to `option`.
+    Modify the *input weight* of the network and freeze parameters according to `option`.
 
-    option=0: Expand W_initial_linear by +1 input feature. Freeze all params,
-              then only allow the *new* last column of W_initial_linear.weight to train
-              (by masking gradients on other columns).
+    Two supported cases:
 
-    option=1: Do NOT expand. Freeze all params, then only allow the *existing*
-              last column of W_initial_linear.weight to train (mask gradients on others).
+    1) "Linear front-end" networks
+       - Identified by `net.input_layer_active == True` and a module `net.W_initial_linear`
+         which is an `nn.Linear`.
+       - Behavior is SAME as your original function:
+         option=0: expand `W_initial_linear` by +1 input feature; only the new last column trains.
+         option=1: keep same shape; only the existing last column trains.
+
+    2) VanillaRNN-style networks
+       - Identified by having `net.W_input` which is a (n_hidden, n_input) matrix used in
+         `torch.einsum('iI, BI -> Bi', self.W_input, x)`.
+       - Behavior:
+         option=0: expand `W_input` by +1 input feature (extra column); only that extra
+                   last column trains.
+         option=1: keep same shape; only the existing last column trains.
     """
-    # --- 1) sanity checks ----------------------------------------------------
-    assert getattr(net, "input_layer_active", False), \
-        "This network was built without W_initial_linear."
-    assert hasattr(net, "W_initial_linear") and isinstance(net.W_initial_linear, nn.Linear), \
-        "net.W_initial_linear must be an nn.Linear."
-
-    old_linear = net.W_initial_linear
-    in_f, out_f = old_linear.in_features, old_linear.out_features
-    bias_flag   = old_linear.bias is not None
-    device      = old_linear.weight.device
-    dtype       = old_linear.weight.dtype
+    print(f"Expanding and Freezing on Network with Type: {nettype}")
     was_training = net.training
 
-    # --- 2) build replacement Linear ----------------------------------------
-    if option == 0:
-        # expand input dim by +1
-        new_in_f = in_f + 1
-        new_linear = nn.Linear(new_in_f, out_f, bias=bias_flag).to(device)
-        new_linear.weight.data = new_linear.weight.data.to(dtype)
-        if bias_flag:
-            new_linear.bias.data = new_linear.bias.data.to(dtype)
+    # -------------------------------------------------------------------------
+    # CASE A: networks with an nn.Linear front-end: net.W_initial_linear
+    # -------------------------------------------------------------------------
+    if getattr(net, "input_layer_active", False) and hasattr(net, "W_initial_linear"):
+        old_linear = net.W_initial_linear
+        assert isinstance(old_linear, nn.Linear), \
+            "net.W_initial_linear must be an nn.Linear."
 
-        with torch.no_grad():
-            # copy old weights (out_f, in_f) -> left block
-            new_linear.weight[:, :in_f].copy_(old_linear.weight.detach())
-            # init the extra column (out_f, 1) as the "trainable" column
-            nn.init.kaiming_uniform_(new_linear.weight[:, -1:].t(), a=math.sqrt(5))
+        in_f, out_f = old_linear.in_features, old_linear.out_features
+        bias_flag   = old_linear.bias is not None
+        device      = old_linear.weight.device
+        dtype       = old_linear.weight.dtype
+
+        # --- build replacement Linear ---------------------------------------
+        if option == 0:
+            # expand input dim by +1
+            new_in_f = in_f + 1
+            new_linear = nn.Linear(new_in_f, out_f, bias=bias_flag).to(device)
+            new_linear.weight.data = new_linear.weight.data.to(dtype)
             if bias_flag:
-                new_linear.bias.copy_(old_linear.bias.detach())
+                new_linear.bias.data = new_linear.bias.data.to(dtype)
 
-    elif option == 1:
-        # keep same shape; replace module to clear any old hooks/state
-        new_linear = nn.Linear(in_f, out_f, bias=bias_flag).to(device)
-        new_linear.weight.data = new_linear.weight.data.to(dtype)
-        if bias_flag:
-            new_linear.bias.data = new_linear.bias.data.to(dtype)
+            with torch.no_grad():
+                # copy old weights (out_f, in_f) -> left block
+                new_linear.weight[:, :in_f].copy_(old_linear.weight.detach())
+                # init the extra column (out_f, 1) as the "trainable" column
+                nn.init.kaiming_uniform_(new_linear.weight[:, -1:].t(),
+                                         a=math.sqrt(5))
+                if bias_flag:
+                    new_linear.bias.copy_(old_linear.bias.detach())
 
-        with torch.no_grad():
-            new_linear.weight.copy_(old_linear.weight.detach())
+        elif option == 1:
+            # keep same shape; replace module to clear any old hooks/state
+            new_linear = nn.Linear(in_f, out_f, bias=bias_flag).to(device)
+            new_linear.weight.data = new_linear.weight.data.to(dtype)
             if bias_flag:
-                new_linear.bias.copy_(old_linear.bias.detach())
-    else:
-        raise ValueError
+                new_linear.bias.data = new_linear.bias.data.to(dtype)
 
-    # swap into the network
-    net.W_initial_linear = new_linear
+            with torch.no_grad():
+                new_linear.weight.copy_(old_linear.weight.detach())
+                if bias_flag:
+                    new_linear.bias.copy_(old_linear.bias.detach())
+        else:
+            raise ValueError("option must be 0 or 1")
 
-    # Keep original train/eval mode
-    net.train(was_training)
+        # swap into the network
+        net.W_initial_linear = new_linear
 
-    # freeze everything by default
-    for p in net.parameters():
-        p.requires_grad = False
+        # Keep original train/eval mode
+        net.train(was_training)
 
-    # allow gradients on the entire weight tensor; mask will zero unwanted cols
-    net.W_initial_linear.weight.requires_grad = True
+        # freeze everything by default
+        for p in net.parameters():
+            p.requires_grad = False
 
-    # mask grads so only the last input column updates 
-    def _only_last_col_grad(grad: torch.Tensor) -> torch.Tensor:
-        # grad shape: (out_f, in_features_current)
-        mask = torch.zeros_like(grad)
-        mask[:, -1] = 1
-        return grad * mask
+        # allow gradients on the entire weight tensor; mask will zero unwanted cols
+        net.W_initial_linear.weight.requires_grad = True
 
-    # register a fresh hook (replacing layer removed any old hooks)
-    handle = net.W_initial_linear.weight.register_hook(_only_last_col_grad)
+        # mask grads so only the last input column updates
+        def _only_last_col_grad(grad: torch.Tensor) -> torch.Tensor:
+            # grad shape: (out_f, in_features_current)
+            mask = torch.zeros_like(grad)
+            mask[:, -1] = 1
+            return grad * mask
 
-    return net
+        handle = net.W_initial_linear.weight.register_hook(_only_last_col_grad)
+        return net, handle
+
+    # -------------------------------------------------------------------------
+    # CASE B: VanillaRNN-style networks with a raw matrix net.W_input
+    # -------------------------------------------------------------------------
+    if hasattr(net, "W_input"):
+        old_W = net.W_input
+        device = old_W.device
+        dtype  = old_W.dtype
+
+        # old_W shape: (n_hidden, n_input)
+        n_hidden, n_input = old_W.shape
+
+        if option == 0:
+            # expand by +1 input feature (add one column)
+            new_W = torch.zeros(n_hidden, n_input + 1, device=device, dtype=dtype)
+            with torch.no_grad():
+                # copy existing columns
+                new_W[:, :n_input].copy_(old_W.detach())
+                # initialize new last column as the "trainable" one
+                nn.init.kaiming_uniform_(new_W[:, -1:].t(), a=math.sqrt(5))
+
+            # also update book-keeping of input size if the net tracks it
+            if hasattr(net, "n_input"):
+                net.n_input = n_input + 1
+
+        elif option == 1:
+            # keep shape, just make sure we get a fresh parameter
+            new_W = old_W.detach().clone()
+        else:
+            raise ValueError("option must be 0 or 1")
+
+        # Replace W_input with a fresh Parameter so we can control its grads
+        new_W_param = nn.Parameter(new_W, requires_grad=True)
+        net.W_input = new_W_param
+
+        # restore train/eval mode
+        net.train(was_training)
+
+        # freeze ALL other parameters
+        for name, p in net.named_parameters():
+            # We'll re-enable W_input below
+            p.requires_grad = False
+        net.W_input.requires_grad = True
+
+        # gradient hook: only last input column gets nonzero grad
+        def _only_last_col_grad_rnn(grad: torch.Tensor) -> torch.Tensor:
+            # grad shape: (n_hidden, current_n_input)
+            mask = torch.zeros_like(grad)
+            mask[:, -1] = 1
+            return grad * mask
+
+        handle = net.W_input.register_hook(_only_last_col_grad_rnn)
+        return net, handle
+
+    # -------------------------------------------------------------------------
+    # If we reach here, we don't know how to expand this net
+    # -------------------------------------------------------------------------
+    raise RuntimeError(
+        "expand_and_freeze: network has neither W_initial_linear nor W_input; "
+        "cannot apply expansion logic."
+    )
     
 def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
                   train=True, hyp_dict=None, netFunction=None, test_input=None, 
-                  pretraining_shift=0, pretraining_shift_pre=0
+                  pretraining_shift=0, pretraining_shift_pre=0, print_frequency=1
 ):
     """
     """
+    # 2025-11-12: pass GLOBAL_PRINT_FREQUENCY through external input 
+    global GLOBAL_PRINT_FREQUENCY
+    GLOBAL_PRINT_FREQUENCY = print_frequency
+    
     assert isinstance(test_input, list), "test_input must be a list"
 
     task_params, train_params, net_params = params
@@ -137,7 +215,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
 
     # indicates of post-training stage is happening
     if net is not None and pretraining_shift != 0: 
-        net = expand_and_freeze(net, option=1)
+        net, _ = expand_and_freeze(net, option=1, nettype=hyp_dict['chosen_network'])
 
     if task_params['task_type'] in ('multitask',):
     
@@ -175,6 +253,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
 
         net = netFunction(net_params, verbose=verbose)
 
+
     num_params = sum(p.numel() for p in net.parameters() if p.requires_grad)
     print(f"Trainable parameters: {num_params:,}")
 
@@ -194,7 +273,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
 
     for dataset_idx in range(total_dataset):
         # generate training data
-        train_data, train_trails = generate_train_data(device=device, verbose=(dataset_idx % print_frequency == 0))
+        train_data, train_trails = generate_train_data(device=device, verbose=(dataset_idx % GLOBAL_PRINT_FREQUENCY == 0))
         new_thresh = True if dataset_idx == 0 else False
 
         if train: 
@@ -256,14 +335,14 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
                                                                                         valid_batch=valid_data, valid_trails=valid_trails, 
                                                                                         new_thresh=new_thresh, run_mode=hyp_dict['run_mode'], datanum=dataset_idx)
 
-            if dataset_idx % print_frequency == 0: 
+            if dataset_idx % GLOBAL_PRINT_FREQUENCY == 0: 
                 print(f"valid_acc_history: {valid_acc_history}")
                 
-            # if None, then no early stop option
-            if train_params["valid_check"] is not None: 
-                if valid_acc_history > 0.97: 
-                    print(f"valid_acc_history > 0.97; early stop!")
-                    break
+                # if None, then no early stop option
+                if train_params["valid_check"] is not None: 
+                    if valid_acc_history > 0.97: 
+                        print(f"valid_acc_history > 0.97; early stop!")
+                        break
                 
             # calculate the change of task sampling proportion 
             # aim for multi-task training (but clearly work for single-task)
@@ -946,7 +1025,7 @@ class BaseNetwork(BaseNetworkFunctions):
 
         self.hist['group_valid_acc'] = [] # registeration holder WITHIN one dataset (batch)
         
-        return db, monitor_loss, monitor_acc, self.hist['group_valid_acc_batch'], tail_mean_decay(self.hist["valid_acc"], self.valid_check)
+        return db, monitor_loss, monitor_acc, self.hist['group_valid_acc_batch'], tail_mean_decay(self.hist["valid_acc"], self.valid_check, decay=1.00)
 
     
     def train_base(self, train_params, train_data, train_trails=None, valid_batch=None, valid_trails=None, new_thresh=True, 
@@ -1001,7 +1080,6 @@ class BaseNetwork(BaseNetworkFunctions):
           train_masks shape: (batches, seq_len, output_size) used for calculating loss and uneven sequence lengths
         valid_batch = 
         """
-
         self.train_base(train_params, train_data, train_trails=train_trails, valid_batch=valid_batch, valid_trails=valid_trails, new_thresh=new_thresh, 
                         monitor=monitor, run_mode=run_mode)
 
@@ -1021,6 +1099,8 @@ class BaseNetwork(BaseNetworkFunctions):
     
         losses = []
         accs = []
+        # 2025-11-12: if train_params['n_epochs_per_set'] is not 1, namely we will have multiple training step (forward)
+        # on the same training batch, which is inconventional in ML 
         for epoch_idx in range(train_params['n_epochs_per_set']):
             for b in range(0, train_inputs.shape[0], B):
                 train_inputs_batch = train_inputs[b:b+B, :, :]
@@ -1074,7 +1154,11 @@ class BaseNetwork(BaseNetworkFunctions):
             )
 
         if valid_batch is not None and self.scheduler is not None:
-            if datanum % (int(print_frequency / 10)) == 0:
+            # 2025-11-12: effectively the frequency of running LR scheduler update
+            # -- every 50 data batches? 
+            freq_divider = 2
+            hf = int(GLOBAL_PRINT_FREQUENCY / freq_divider) if GLOBAL_PRINT_FREQUENCY > 1 else GLOBAL_PRINT_FREQUENCY
+            if datanum % hf == 0:
                 # Use latest validation loss for ReduceLROnPlateau
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                     if self.hist['valid_loss']:
@@ -1566,7 +1650,7 @@ class BaseNetwork(BaseNetworkFunctions):
             self.hist['avg_valid_loss'].append(torch.tensor(float('nan')))
             self.hist['avg_valid_acc'].append(torch.tensor(float('nan')))   
 
-        if self.verbose and nowiter % print_frequency == 0:
+        if self.verbose and nowiter % GLOBAL_PRINT_FREQUENCY == 0:
             print(moitor_str)
 
     def save(self, path):

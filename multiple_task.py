@@ -175,6 +175,7 @@ def current_basic_params():
         'modality_diff': True,
         'label_strength': True, 
         'long_delay': 'normal',
+        'long_response': 'normal',
         'adjust_task_prop': True,
         'adjust_task_decay': 0.9, 
     }
@@ -189,8 +190,9 @@ def current_basic_params():
         'batch_size': 128,
         'gradient_clip': 10,
         'valid_n_batch': min(max(15, int(200/len(rules_dict[hyp_dict['ruleset']]))), 50),
-        'n_datasets': 6000, 
-        'n_epochs_per_set': 100, 
+        'n_datasets': 100000, # 6000
+        'valid_check': None, 
+        'n_epochs_per_set': 1, 
         # 'weight_reg': 'L2',
         # 'activity_reg': 'L2', 
         # 'reg_lambda': 1e-4,
@@ -198,7 +200,7 @@ def current_basic_params():
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'
             'mode': 'min',                # for ReduceLROnPlateau
-            'factor': 0.9,                # factor to reduce LR
+            'factor': 0.95,                # factor to reduce LR
             'patience': 30,                # epochs to wait before reducing LR
             'min_lr': 1e-8,
             'step_size': 30,              # for StepLR (step every 30 datasets)
@@ -218,7 +220,7 @@ def current_basic_params():
         'loss_type': 'MSE', # XE, MSE
         'activation': 'tanh', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside
         'cuda': True,
-        'monitor_freq': 100,
+        'monitor_freq': train_params["n_epochs_per_set"],
         'monitor_valid_out': True, # Whether or not to save validation output throughout training
         'output_matrix': '',# "" (default); "untrained", or "orthogonal"
         'input_layer_add': True, 
@@ -279,8 +281,6 @@ config = {
 out_path = Path(f"./multiple_tasks/param_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}_param.json")
 with out_path.open("w") as f: 
     json.dump(config, f, indent=4, default=helper.as_jsonable)
-
-
 
 shift_index = 1 if not task_params['fixate_off'] else 0
 
@@ -446,7 +446,7 @@ net, _, (counter_lst, netout_lst, db_lst, Winput_lst, Winputbias_lst,\
          Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst) = net_helpers.train_network(params, device=device, verbose=verbose,\
                                                                                            train=train, hyp_dict=hyp_dict,\
                                                                                            netFunction=netFunction,\
-                                                                                           test_input=[test_input])
+                                                                                           test_input=[test_input], print_frequency=100)
 
 # In[ ]:
 
@@ -640,6 +640,15 @@ np.savez_compressed(pathname, \
                     hs=hs, \
                     bs=bs, \
                     xs=xs)
+
+# save the network information
+netpathname = f"./multiple_tasks/savednet_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.pt"
+save_dict = {
+    "state_dict": net.state_dict(), # trained result
+    "net_params": net_params # network parameter
+}
+torch.save(save_dict, netpathname)
+print("Network parameter saving is done")
 
 
 
