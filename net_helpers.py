@@ -336,11 +336,15 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
                                                                                         new_thresh=new_thresh, run_mode=hyp_dict['run_mode'], datanum=dataset_idx)
 
             if dataset_idx % GLOBAL_PRINT_FREQUENCY == 0: 
+                # 2025-11-13: we should consider loss temporal convolution with various decay factor
+                # to make sure the network has good performance across different levels
                 print(f"valid_acc_history: {valid_acc_history}")
                 
                 # if None, then no early stop option
-                if train_params["valid_check"] is not None: 
-                    if valid_acc_history > 0.97: 
+                # 2025-11-16: have some manual control to let the network has a minimum exposure to the 
+                # training dataset 
+                if train_params["valid_check"] is not None and dataset_idx >= 3000: 
+                    if all(v > 0.97 for v in valid_acc_history): 
                         print(f"valid_acc_history > 0.97; early stop!")
                         break
                 
@@ -1025,8 +1029,11 @@ class BaseNetwork(BaseNetworkFunctions):
 
         self.hist['group_valid_acc'] = [] # registeration holder WITHIN one dataset (batch)
         
-        return db, monitor_loss, monitor_acc, self.hist['group_valid_acc_batch'], tail_mean_decay(self.hist["valid_acc"], self.valid_check, decay=1.00)
-
+        return db, monitor_loss, monitor_acc, self.hist['group_valid_acc_batch'], \
+            [tail_mean_decay(self.hist["valid_acc"], self.valid_check, decay=1.00), \
+            tail_mean_decay(self.hist["valid_acc"], self.valid_check, decay=0.99), \
+            tail_mean_decay(self.hist["valid_acc"], self.valid_check, decay=0.95), \
+            tail_mean_decay(self.hist["valid_acc"], self.valid_check, decay=0.90)]
     
     def train_base(self, train_params, train_data, train_trails=None, valid_batch=None, valid_trails=None, new_thresh=True, 
                    monitor=True, run_mode='minimal'):
@@ -1142,7 +1149,7 @@ class BaseNetwork(BaseNetworkFunctions):
 
                 self.hist['iter'] += 1 # Note this will always be one more than corresponding seq_idx
             
-                if monitor and ((self.hist['iter'] % self.monitor_freq == 0) or # Do a monitor for a set amount of iterations
+                if monitor and ((self.hist['iter'] % min(self.monitor_freq, 10) == 0) or # Do a monitor for a set amount of iterations
                                 (self.end_monitor and seq_idx == train_inputs.shape[1]-1)): # Do one monitor at the end of train set
                     self._monitor((train_inputs_batch, train_labels_batch, train_masks_batch), train_go_info_batch, valid_go_info, 
                                   output=output, loss=loss, loss_components=loss_components, 

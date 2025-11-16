@@ -111,7 +111,7 @@ rules_dict_frequency = {
 train = True # whether or not to train the network
 verbose = True
 hyp_dict['run_mode'] = 'minimal' # minimal, debug
-hyp_dict['chosen_network'] = "dmpn"
+hyp_dict['chosen_network'] = "vanilla"
 
 # suffix for saving images
 # inputadd, Wfix, WL2, hL2
@@ -121,7 +121,7 @@ hyp_dict['chosen_network'] = "dmpn"
 # trainetalambda
 
 mpn_depth = 1
-n_hidden = 300
+n_hidden = 200
 
 hyp_dict['addon_name'] = ""
 hyp_dict['addon_name'] += f"+hidden{n_hidden}"
@@ -163,7 +163,7 @@ def current_basic_params(hyp_dict_input):
         'batch_size': 128,
         'gradient_clip': 10,
         'valid_n_batch': min(max(50, int(200/len(rules_dict[hyp_dict_input['ruleset']]))), 50),
-        'n_datasets': 15000, # 15000
+        'n_datasets': 10000, # 15000
         'valid_check': 500, 
         'n_epochs_per_set': 1,  
         'weight_reg': 'L2',
@@ -509,7 +509,7 @@ if hyp_dict['chosen_network'] == "dmpn":
         axsnorm.plot(counter_lst, [np.linalg.norm(Winput_matrix) for Winput_matrix in Winput_lst], "-o")
         axsnorm.set_xscale("log")
         axsnorm.set_ylabel("Frobenius Norm")
-        fignorm.savefig(f"./pretraining/input_norm_{hyp_dict_old['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)
+        fignorm.savefig(f"./pretraining/input_norm_{hyp_dict_old['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)
 
 
 # In[ ]:
@@ -547,7 +547,7 @@ if train:
     # ax.set_yscale('log')
     ax.set_ylabel('Accuracy')
     ax.set_xlabel('# Batches')
-    fig.savefig(f"./pretraining/loss_{hyp_dict_old['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=200)
+    fig.savefig(f"./pretraining/loss_{hyp_dict_old['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=200)
     
 print('Done!')
 
@@ -633,7 +633,7 @@ plot_input_output(test_input2_np, labels2_np, net_out_final, test_output2_np, ta
                   batch_num=20 if len(rules_dict[hyp_dict['ruleset']]) > 1 else 10)
 
 # save to the output
-pathname_stage1output = f"./pretraining/output_{hyp_dict_old['ruleset']}_seed{seed}_{hyp_dict['addon_name']}_stage1.npz"
+pathname_stage1output = f"./pretraining/output_{hyp_dict_old['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}_stage1.npz"
 np.savez_compressed(pathname_stage1output, \
                     test_input_np=test_input_np, 
                     net_out_stage1_final=net_out_stage1_final,
@@ -648,7 +648,7 @@ print(f"net_out_stage1_final: {net_out_stage1_final.shape}")
 print(f"test_output_np: {test_output_np.shape}")
 
 
-pathname_stage2output = f"./pretraining/output_{hyp_dict_old['ruleset']}_seed{seed}_{hyp_dict['addon_name']}_stage2.npz"
+pathname_stage2output = f"./pretraining/output_{hyp_dict_old['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}_stage2.npz"
 np.savez_compressed(pathname_stage2output, \
                     test_input_np=test_input2_np, 
                     net_out_final=net_out_final,
@@ -736,7 +736,7 @@ print(f"hs_stage2.shape:{hs_stage2.shape}")
 assert hs_stage1.shape[-1] == hs_stage2.shape[-1]
 
 # save
-pathname = f"./pretraining/param_{hyp_dict_old['ruleset']}_seed{seed}_{hyp_dict['addon_name']}_result.npz"
+pathname = f"./pretraining/param_{hyp_dict_old['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}_result.npz"
 np.savez_compressed(pathname, \
                     rules_epochs=rules_epochs, 
                     rules_epochs2=rules_epochs2, 
@@ -756,7 +756,7 @@ np.savez_compressed(pathname, \
 )
 
 # Oct 20th: save the network 
-netpathname = f"./pretraining/savednet_{hyp_dict_old['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.pt"
+netpathname = f"./pretraining/savednet_{hyp_dict_old['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}.pt"
 save_dict = {
     "state_dict": net.state_dict(), # trained result
     "net_params": net_params # network parameter
