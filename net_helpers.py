@@ -42,7 +42,6 @@ def tail_mean_decay(lst, N, decay=0.95):
     w = decay ** np.arange(len(data)-1, -1, -1)
     return np.sum(data * w) / np.sum(w)
 
-
 def expand_and_freeze(net, option, nettype):
     """
     Modify the *input weight* of the network and freeze parameters according to `option`.
@@ -176,6 +175,7 @@ def expand_and_freeze(net, option, nettype):
         for name, p in net.named_parameters():
             # We'll re-enable W_input below
             p.requires_grad = False
+            print(f"{name} is freezed: shape: {p.shape}")
         net.W_input.requires_grad = True
 
         # gradient hook: only last input column gets nonzero grad
@@ -257,6 +257,11 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
     num_params = sum(p.numel() for p in net.parameters() if p.requires_grad)
     print(f"Trainable parameters: {num_params:,}")
 
+    # 2025-11-16: print all trainable parameters and their shapes
+    for name, param in net.named_parameters():
+        if param.requires_grad:
+            print(f"{name}: {tuple(param.shape)}")
+
     # Puts network on device
     net.to(device)
 
@@ -270,6 +275,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
     net_lst = []
 
     total_dataset = train_params['n_datasets']
+    dataset_idx_early_stop = None
 
     for dataset_idx in range(total_dataset):
         # generate training data
@@ -338,14 +344,17 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
             if dataset_idx % GLOBAL_PRINT_FREQUENCY == 0: 
                 # 2025-11-13: we should consider loss temporal convolution with various decay factor
                 # to make sure the network has good performance across different levels
+                # i.e. if decay_factor is 1.00, equally focusing across the temporal window
+                # if decay_factor < 1.00, then allow gradual weight decaying for the past history
                 print(f"valid_acc_history: {valid_acc_history}")
                 
                 # if None, then no early stop option
                 # 2025-11-16: have some manual control to let the network has a minimum exposure to the 
                 # training dataset 
-                if train_params["valid_check"] is not None and dataset_idx >= 3000: 
+                if train_params["valid_check"] is not None and dataset_idx >= train_params["pretrain_min"]: 
                     if all(v > 0.97 for v in valid_acc_history): 
                         print(f"valid_acc_history > 0.97; early stop!")
+                        dataset_idx_early_stop = dataset_idx
                         break
                 
             # calculate the change of task sampling proportion 
@@ -387,7 +396,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
                 acc_lst.append(monitor_acc)
     
     return net, (train_data, valid_data), (counter_lst, netout_lst, db_lst, Winput_lst, Winputbias_lst, \
-                Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst)
+                Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst), dataset_idx_early_stop
 
 def net_eta_lambda_analysis(net, net_params, hyp_dict=None, verbose=False):
     """
@@ -660,6 +669,18 @@ def tukey_fn_p(x):
 def heaviside_p(x):
     raise NotImplementedError()
 
+# 2025-11-17: add softplus function to match with LD's paper
+def softplus_fn(x):
+    return torch.nn.functional.softplus(x)
+
+def softplus_fn_np(x):
+    # stable: log(1 + exp(x))
+    return np.log1p(np.exp(x))
+
+def softplus_fn_p(x):
+    # derivative of softplus is sigmoid(x)
+    return torch.sigmoid(x)
+
 def get_activation_function(act_fn):
     """ Returns pytorch version, numpy version, and pytorch derivative functions """
     if act_fn == 'ReLU':
@@ -680,6 +701,8 @@ def get_activation_function(act_fn):
         return cubed_re, None, cubed_re_p
     elif act_fn == 'heaviside':
         return lambda x : torch.heaviside(x, torch.tensor(0.5)), lambda x : np.heaviside(x, 0.5), heaviside_p
+    elif act_fn == 'softplus':
+        return softplus_fn, softplus_fn_np, softplus_fn_p
     else:
         raise ValueError('Activation function: {} not recoginized!'.format(act_fn))
 
@@ -1331,6 +1354,7 @@ class BaseNetwork(BaseNetworkFunctions):
             response_start, response_end = ll[-2][1] + 1, ll[-1][0]
 
             # ignore cut_proportion at the beginning of the response period
+            # 2025-11-16: is 1/4 reasonable enough? 
             cut_proportion = 1/4
             response_duration = response_end - response_start
             response_start = response_start + int(response_duration * cut_proportion)

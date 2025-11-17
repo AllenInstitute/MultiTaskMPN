@@ -47,11 +47,33 @@ class VanillaRNN(BaseNetwork):
 		self.W_rec_init = net_params.get('W_rec_init', 'xavier')
 		self.W_rec_sparsity = net_params.get('W_rec_sparsity', None)
 
-		self.parameter_or_buffer('W_rec', torch.tensor(
-			rand_weight_init(self.n_hidden, self.n_hidden, init_type=self.W_rec_init,
-							 cell_types=self.hidden_cell_types, sparsity=self.W_rec_sparsity),
-			dtype=torch.float)
-		)
+        # 2025-11-17: add diagonal initialization to match with LD's paper
+		if self.W_rec_init in ('diag', 'diagonal', 'identity'):
+			# scale of the diagonal entries; default 1.0
+			diag_scale = net_params.get('W_rec_diag_scale', 1.0)
+
+			if self.W_rec_sparsity is not None and verbose:
+				print("Warning: W_rec_sparsity is ignored when W_rec_init is 'diag'.")
+
+			# W_rec is a scaled identity matrix
+			self.parameter_or_buffer(
+				'W_rec',
+				torch.eye(self.n_hidden, dtype=torch.float) * diag_scale
+			)
+		else:
+			# original behavior
+			self.parameter_or_buffer(
+				'W_rec',
+				torch.tensor(
+					rand_weight_init(
+						self.n_hidden, self.n_hidden,
+						init_type=self.W_rec_init,
+						cell_types=self.hidden_cell_types,
+						sparsity=self.W_rec_sparsity
+					),
+					dtype=torch.float
+				)
+			)
 
 		# Output weights
 		if self.output_layer in ('trainable', 'frozen',):
@@ -71,6 +93,17 @@ class VanillaRNN(BaseNetwork):
 			rand_weight_init(self.n_hidden, init_type=self.b_hidden_init),
 			dtype=torch.float)
 		)
+
+		# 2025-11-16: Input bias (shape: n_hidden)
+		if self.b_input_active:
+			self.b_input_init = net_params.get('b_input_init', 'zeros')
+			self.parameter_or_buffer(
+				'b_input',
+				torch.tensor(
+					rand_weight_init(self.n_hidden, init_type=self.b_input_init),
+					dtype=torch.float
+				)
+			)
 
 		if self.output_layer in ('trainable', 'frozen',):
 			if self.b_output_active: 
@@ -153,6 +186,11 @@ class VanillaRNN(BaseNetwork):
 		init_string += '  Act: {}\n'.format(
 			self.act,
 		)
+  
+		# 2025-11-16: should we add options for input layer bias as well
+		self.b_input_active = net_params.get('input_bias', False)
+		if self.b_input_active:
+			self.params.append('b_input')
 
 		self.b_hidden_active = net_params.get('hidden_bias', True)
 		self.b_output_active = net_params.get('output_bias', True)
@@ -170,7 +208,7 @@ class VanillaRNN(BaseNetwork):
 				self.alpha = 1 - self.dt / self.leaky_timescale
 			else:
 				# self.alpha = net_params.get('alpha', 0.2)
-                # 2025-10-30: overwrite alpha to be 0.8, to match with LD's paper
+				# 2025-10-30: overwrite alpha to be 0.8, to match with LD's paper
 				self.alpha = net_params.get('alpha', 0.8)
 				self.leaky_timescale = self.dt / (1 - self.alpha)
 			init_string += '  Leaky updates, timescale {:.0f} ms (old: {:.1f} new: {:.1f})'.format(self.leaky_timescale, self.alpha, 1-self.alpha)
@@ -181,7 +219,7 @@ class VanillaRNN(BaseNetwork):
 		self.ei_balance = None
 		self.input_cell_types = None
 		self.hidden_cell_types = None
-        
+		
 		return init_string
 
 	def reset_state(self, B=1):
@@ -213,6 +251,9 @@ class VanillaRNN(BaseNetwork):
 			h_input = torch.einsum('iI, BI -> Bi', self.W_input, x)
 		else:
 			h_input = x
+
+		if self.b_input_active:
+			h_input = h_input + self.b_input.unsqueeze(0)
 
 		h_rec = torch.einsum('iI, BI -> Bi', self.W_rec, self.hidden)
 		
@@ -253,7 +294,7 @@ class VanillaRNN(BaseNetwork):
 		- type == torch.Tensor: Raw input to be passed through input layer
 		- tpye == tuple: Tuple consisting of (raw_input, noise_injections), former goes through input, latter goes directly into hidden activity
 
-        2025-10-30: adding seq_idx as input for consistency with DeepMultiPlasticNet
+		2025-10-30: adding seq_idx as input for consistency with DeepMultiPlasticNet
 		"""
 
 		output, current_hidden, db = self.forward(current_input, run_mode=run_mode, verbose=verbose)

@@ -87,7 +87,6 @@ torch.manual_seed(seed)
 hyp_dict['task_type'] = 'multitask' # int, NeuroGym, multitask
 hyp_dict['mode_for_all'] = "random_batch"
 hyp_dict['ruleset'] = 'fdanti_delaygo' # low_dim, all, test
-# hyp_dict['ruleset'] = 'fdanti_delaygo' # low_dim, all, test
 
 accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti', 
                 'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 'dmsnogo', 'dmcnogo')
@@ -164,7 +163,8 @@ def current_basic_params(hyp_dict_input):
         'gradient_clip': 10,
         'valid_n_batch': min(max(50, int(200/len(rules_dict[hyp_dict_input['ruleset']]))), 50),
         'n_datasets': 10000, # 15000
-        'valid_check': 500, 
+        'valid_check': 300, 
+        'pretrain_min': 1000, 
         'n_epochs_per_set': 1,  
         'weight_reg': 'L2',
         'activity_reg': 'L2', 
@@ -189,16 +189,20 @@ def current_basic_params(hyp_dict_input):
     net_params = {
         'net_type': hyp_dict_input['chosen_network'], # mpn1, dmpn, vanilla
         'n_neurons': [1] + [n_hidden] * mpn_depth + [1],
-        'output_bias': False, # Turn off biases for easier interpretation
+        'output_bias': True, 
+        'hidden_bias': False, 
+        'input_bias': True, 
         'loss_type': 'MSE', # XE, MSE
-        'activation': 'tanh', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside
+        'activation': 'softplus', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside
+        'W_rec_init': 'diag', 
+        'W_rec_diag_scale': 0.8, 
         'cuda': True,
         'monitor_freq': 1,
         'monitor_valid_out': True, # Whether or not to save validation output throughout training
         'output_matrix': '',# "" (default); "untrained", or "orthogonal"
         'input_layer_add': True, 
         'input_layer_add_trainable': True, # revise this is effectively to [randomize_inputs], tune this
-        'input_layer_bias': False, 
+        'input_layer_bias': True, 
         'input_layer': "trainable", # for RNN only
         'acc_measure': 'stimulus', 
         
@@ -220,6 +224,9 @@ def current_basic_params(hyp_dict_input):
         'leaky': True,
         'alpha': 0.2,
     }
+
+    # 2025-11-16: make sure the input bias control are consistent between vanilla RNN and dmpn
+    assert net_params["input_bias"] == net_params["input_layer_bias"]
 
     # Ensure the two options are *not* activated at the same time
     assert not (task_params["randomize_inputs"] and net_params["input_layer_add"]), (
@@ -292,8 +299,9 @@ else:
 epoch_multiply = train_params["n_epochs_per_set"]
 
 # adjust the training information
-train_params2["n_datasets"] = 100000 # 300000
+train_params2["n_datasets"] = 80000 # 300000
 train_params2['n_epochs_per_set'] = 1
+# net_params2['acc_measure'] = "angle"
 
 # In[5]:
 params = task_params, train_params, net_params
@@ -457,14 +465,14 @@ test_task2 = [i - len(task_params["rules"]) for i in test_task2]
 # actual fitting
 # we use net at different training stage on the same test_input
 print("================================= Stage 1 =================================")
-net_pretrain, _, (_, netout_stage1_lst, db_stage1_lst, _, _, _, _, marker_stage1_lst, _, _) = net_helpers.train_network(params, device=device,
-                                                                                                                        verbose=verbose, 
-                                                                                                                        train=train,
-                                                                                                                        hyp_dict=hyp_dict_old, 
-                                                                                                                        netFunction=netFunction, 
-                                                                                                                        test_input=[test_input],
-                                                                                                                        pretraining_shift_pre=1, 
-                                                                                                                        print_frequency=100)
+net_pretrain, _, (_, netout_stage1_lst, db_stage1_lst, _, _, _, _, marker_stage1_lst, _, _), pretrain_stop=  net_helpers.train_network(params, device=device,
+                                                                                                                                    verbose=verbose, 
+                                                                                                                                    train=train,
+                                                                                                                                    hyp_dict=hyp_dict_old, 
+                                                                                                                                    netFunction=netFunction, 
+                                                                                                                                    test_input=[test_input],
+                                                                                                                                    pretraining_shift_pre=1, 
+                                                                                                                                    print_frequency=100)
 
 # overwrite the early stopping in the post-training
 params2[1]["valid_check"] = None
@@ -478,7 +486,7 @@ elif hyp_dict_old["chosen_network"] == "vanilla":
 
 print("================================= Stage 2 =================================")
 net, _, (counter_lst, netout_lst, db_lst, Winput_lst, Winputbias_lst,\
-         Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst) = net_helpers.train_network(params2, net=net_pretrain, device=device,
+         Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst), _ = net_helpers.train_network(params2, net=net_pretrain, device=device,
                                                                                            verbose=verbose, train=train, hyp_dict=hyp_dict,
                                                                                            netFunction=netFunction, test_input=[test_input2],
                                                                                            pretraining_shift=len(task_params["rules"]), print_frequency=100)
@@ -747,12 +755,16 @@ np.savez_compressed(pathname, \
                     Ms_orig_stage1=Ms_orig_stage1, \
                     hs_stage1=hs_stage1, \
                     bs_stage1=bs_stage1, \
-                    xs_stage1=xs_stage1, 
+                    xs_stage1=xs_stage1, \
                     
                     Ms_orig_stage2=Ms_orig_stage2, \
                     hs_stage2=hs_stage2, \
                     bs_stage2=bs_stage2, \
-                    xs_stage2=xs_stage2
+                    xs_stage2=xs_stage2, \
+
+                    pretrain_stop=pretrain_stop, \
+                    valid_acc_iter=net.hist['iters_monitor'][1:], \
+                    valid_acc=net.hist['valid_acc'][1:]
 )
 
 # Oct 20th: save the network 
@@ -764,12 +776,12 @@ save_dict = {
 torch.save(save_dict, netpathname)
 print("Network parameter saving is done")
 
-# try to reload 
-checkpoint = torch.load(netpathname, map_location="cpu", weights_only=True)
-net_params_loaded = checkpoint["net_params"]
+# # try to reload 
+# checkpoint = torch.load(netpathname, map_location="cpu", weights_only=True)
+# net_params_loaded = checkpoint["net_params"]
 
-net = mpn.DeepMultiPlasticNet(net_params_loaded)
-net.load_state_dict(checkpoint["state_dict"])
-net.eval()   
-print("Reload Check is done")
+# net = mpn.DeepMultiPlasticNet(net_params_loaded)
+# net.load_state_dict(checkpoint["state_dict"])
+# net.eval()   
+# print("Reload Check is done")
 
