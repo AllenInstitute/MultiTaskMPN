@@ -4,7 +4,7 @@ import matplotlib.colors as mcolors
 import numpy as np 
 from scipy.linalg import null_space
 import time
-from scipy.stats import linregress
+from scipy.stats import linregress, t
 
 from typing import Dict, Sequence, TypeVar, List, Tuple
 from itertools import chain
@@ -28,6 +28,9 @@ def linear_regression(x1, y1, log=True, through_origin=False):
     """
     Fit a (log-)linear model using only pairs where both transformed
     values are finite (not NaN/±∞).
+
+    Returns:
+        x_fit, y_fit, r_value, slope, intercept, p_value
     """
     x = np.asarray(x1, dtype=float)
     y = np.asarray(y1, dtype=float)
@@ -37,26 +40,57 @@ def linear_regression(x1, y1, log=True, through_origin=False):
         x = np.log10(x)
         y = np.log10(y)
 
-    # Keep only points where *both* log-transformed values are finite
+    # Keep only points where *both* transformed values are finite
     good = np.isfinite(x) & np.isfinite(y)
     if not np.any(good):
-        raise ValueError("No finite data points remain after log transform.")
+        raise ValueError("No finite data points remain after transform.")
 
     x, y = x[good], y[good]
-    
+
+    if x.size < 2:
+        raise ValueError("Need at least two valid points for regression.")
+
+    # correlation coefficient (same as linregress.rvalue)
     r_value = np.corrcoef(x, y)[0, 1]
 
     if through_origin:
-        # Least‑squares slope with intercept fixed at 0
-        slope = np.dot(x, y) / np.dot(x, x)
-        intercept = 0.0
-    else:
-        slope, intercept, _, _, _ = linregress(x, y)
+        # ----- Linear regression through the origin -----
+        Sxx = np.dot(x, x)
+        if Sxx == 0.0:
+            raise ValueError("All x are zero; cannot fit through-origin regression.")
 
+        slope = np.dot(x, y) / Sxx
+        intercept = 0.0
+
+        # residuals and variance estimate
+        y_hat = slope * x
+        resid = y - y_hat
+        n = len(x)
+        if n <= 1:
+            raise ValueError("Not enough data points for p-value computation.")
+
+        # unbiased estimate of residual variance
+        s2 = np.dot(resid, resid) / (n - 1)
+        se_slope = np.sqrt(s2 / Sxx)
+
+        # t-test for slope != 0
+        t_stat = slope / se_slope
+        p_value = 2 * t.sf(np.abs(t_stat), df=n - 1)
+
+    else:
+        # ----- Standard linear regression with intercept -----
+        lr = linregress(x, y)
+        slope      = lr.slope
+        intercept  = lr.intercept
+        r_value    = lr.rvalue
+        p_value    = lr.pvalue
+        # lr.stderr is the std error of the slope if you need it
+
+    # build fitted line for plotting in transformed space
     x_fit = np.linspace(x.min(), x.max(), 100)
     y_fit = slope * x_fit + intercept
-    
-    return x_fit, y_fit, r_value, slope, intercept
+
+    return x_fit, y_fit, r_value, slope, intercept, p_value
 
 def all_leq(seq, limit):
     """

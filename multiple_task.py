@@ -150,7 +150,7 @@ hyp_dict['chosen_network'] = "dmpn"
 mpn_depth = 1
 n_hidden = 300
 
-hyp_dict['addon_name'] = "noL2"
+hyp_dict['addon_name'] = "L2"
 hyp_dict['addon_name'] += f"+hidden{n_hidden}"
 
 # for coding 
@@ -193,9 +193,9 @@ def current_basic_params():
         'n_datasets': 100000, # 6000
         'valid_check': None, 
         'n_epochs_per_set': 1, 
-        # 'weight_reg': 'L2',
-        # 'activity_reg': 'L2', 
-        # 'reg_lambda': 1e-4,
+        'weight_reg': 'L2',
+        'activity_reg': 'L2', 
+        'reg_lambda': 1e-4,
         
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'
@@ -218,7 +218,7 @@ def current_basic_params():
         'n_neurons': [1] + [n_hidden] * mpn_depth + [1],
         'output_bias': False, # Turn off biases for easier interpretation
         'loss_type': 'MSE', # XE, MSE
-        'activation': 'tanh', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside
+        'activation': 'softplus', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside
         'cuda': True,
         'monitor_freq': train_params["n_epochs_per_set"],
         'monitor_valid_out': True, # Whether or not to save validation output throughout training
