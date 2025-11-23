@@ -253,14 +253,19 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
 
         net = netFunction(net_params, verbose=verbose)
 
-
     num_params = sum(p.numel() for p in net.parameters() if p.requires_grad)
+    # 2025-11-19: even if expand_and_freeze is used, pytorch will display the whole
+    # input matrix as trainable, but internally in expand_and_freeze, we mask the 
+    # gradient flow so that only the last row (contextual entry) could be updated
     print(f"Trainable parameters: {num_params:,}")
 
     # 2025-11-16: print all trainable parameters and their shapes
     for name, param in net.named_parameters():
         if param.requires_grad:
             print(f"{name}: {tuple(param.shape)}")
+        # 2025-11-19: double check the setting for the recurrent weight matrix
+        if name == "W_rec": 
+            print(param)
 
     # Puts network on device
     net.to(device)

@@ -150,7 +150,7 @@ hyp_dict['chosen_network'] = "dmpn"
 mpn_depth = 1
 n_hidden = 300
 
-hyp_dict['addon_name'] = "L2"
+hyp_dict['addon_name'] = "noL2tanh"
 hyp_dict['addon_name'] += f"+hidden{n_hidden}"
 
 # for coding 
@@ -193,9 +193,9 @@ def current_basic_params():
         'n_datasets': 100000, # 6000
         'valid_check': None, 
         'n_epochs_per_set': 1, 
-        'weight_reg': 'L2',
-        'activity_reg': 'L2', 
-        'reg_lambda': 1e-4,
+        # 'weight_reg': 'L2',
+        # 'activity_reg': 'L2', 
+        # 'reg_lambda': 1e-4,
         
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'
@@ -218,7 +218,7 @@ def current_basic_params():
         'n_neurons': [1] + [n_hidden] * mpn_depth + [1],
         'output_bias': False, # Turn off biases for easier interpretation
         'loss_type': 'MSE', # XE, MSE
-        'activation': 'softplus', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside
+        'activation': 'tanh', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside
         'cuda': True,
         'monitor_freq': train_params["n_epochs_per_set"],
         'monitor_valid_out': True, # Whether or not to save validation output throughout training
@@ -443,7 +443,7 @@ test_task = find_task(task_params, test_input_np, shift_index)
 # actual fitting
 # we use net at different training stage on the same test_input
 net, _, (counter_lst, netout_lst, db_lst, Winput_lst, Winputbias_lst,\
-         Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst) = net_helpers.train_network(params, device=device, verbose=verbose,\
+         Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst), _ = net_helpers.train_network(params, device=device, verbose=verbose,\
                                                                                            train=train, hyp_dict=hyp_dict,\
                                                                                            netFunction=netFunction,\
                                                                                            test_input=[test_input], print_frequency=100)

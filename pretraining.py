@@ -164,12 +164,12 @@ def current_basic_params(hyp_dict_input):
         # 'valid_n_batch': min(max(50, int(200/len(rules_dict[hyp_dict_input['ruleset']]))), 50),
         'valid_n_batch': 200, 
         'n_datasets': 10000, # 15000
-        'valid_check': 300, 
+        'valid_check': 600, 
         'pretrain_min': 1000, 
         'n_epochs_per_set': 1,  
-        'weight_reg': 'L2',
-        'activity_reg': 'L2', 
-        'reg_lambda': 1e-4,
+        # 'weight_reg': 'L2',
+        # 'activity_reg': 'L2', 
+        # 'reg_lambda': 1e-4,
         
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'
@@ -253,8 +253,9 @@ task_params, train_params, net_params = current_basic_params(hyp_dict_old)
 
 print("Accuracy Measure: {net_params['acc_measure']}")
 
-hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}+L2"
-hyp_dict_old['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}+L2"
+# 2025-11-19: this part should either have "+L2" or not 
+hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}"
+hyp_dict_old['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}"
 
 hyp_dict['ruleset'] = 'delayanti'
 task_params2, train_params2, net_params2 = current_basic_params(hyp_dict)
@@ -466,7 +467,7 @@ test_task2 = [i - len(task_params["rules"]) for i in test_task2]
 # actual fitting
 # we use net at different training stage on the same test_input
 print("================================= Stage 1 =================================")
-net_pretrain, _, (_, netout_stage1_lst, db_stage1_lst, _, _, _, _, marker_stage1_lst, _, _), pretrain_stop=  net_helpers.train_network(params, device=device,
+net_pretrain, _, (_, netout_stage1_lst, db_stage1_lst, _, _, _, _, marker_stage1_lst, _, _), pretrain_stop = net_helpers.train_network(params, device=device,
                                                                                                                                     verbose=verbose, 
                                                                                                                                     train=train,
                                                                                                                                     hyp_dict=hyp_dict_old, 

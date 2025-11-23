@@ -694,6 +694,8 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
     def forward(self, inputs, run_mode='minimal', verbose=False):
         """
         """
+        # 2025-11-19: the x_t in the MPN paper is the "input to MPN layer"
+        # namely after the MLP 
         if self.input_layer_active:
             x = self.W_initial_linear(inputs)
             x = self.act_fn(x)
