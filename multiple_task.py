@@ -150,7 +150,7 @@ hyp_dict['chosen_network'] = "dmpn"
 mpn_depth = 1
 n_hidden = 300
 
-hyp_dict['addon_name'] = "noL2tanh"
+hyp_dict['addon_name'] = "L2tanh"
 hyp_dict['addon_name'] += f"+hidden{n_hidden}"
 
 # for coding 
@@ -193,9 +193,9 @@ def current_basic_params():
         'n_datasets': 100000, # 6000
         'valid_check': None, 
         'n_epochs_per_set': 1, 
-        # 'weight_reg': 'L2',
-        # 'activity_reg': 'L2', 
-        # 'reg_lambda': 1e-4,
+        'weight_reg': 'L2',
+        'activity_reg': 'L2', 
+        'reg_lambda': 1e-4,
         
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'
