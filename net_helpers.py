@@ -26,6 +26,86 @@ markers_vals = ['.', 'o', 'v', '^', '<', '>', '1', '2', '3', '4', 's', 'p', '*',
 
 GLOBAL_PRINT_FREQUENCY = 1
 
+def _to_cpu(x):
+    # torch tensor -> cpu tensor; numpy stays; python stays
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu()
+    return x
+
+def save_checkpoint(path, net, params, hyp_dict, seed,
+                    test_bundle=None,
+                    training_bundle=None):
+    """
+    Save a compact checkpoint suitable for reloading the trained net and running downstream analyses.
+
+    Args:
+      path: str, e.g. "./ckpts/exp1.pt"
+      net: trained model
+      params: tuple (task_params, train_params, net_params)
+      hyp_dict: dict
+      seed: int
+      test_bundle: dict of tensors/arrays needed for analysis
+      training_bundle: optional dict of large training traces (counter_lst, db_lst, etc.)
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    ckpt = {
+        "seed": seed,
+        "hyp_dict": hyp_dict,
+        "params": params,
+        "net_state_dict": net.state_dict(),
+        "net_class": hyp_dict.get("chosen_network", None),  # e.g. "dmpn"/"gru"/"vanilla"
+    }
+
+    if hasattr(net, "hist"):
+        ckpt["net_hist"] = net.hist  # learning curves; usually small
+
+    if test_bundle is not None:
+        # move torch tensors to CPU to make reload portable
+        ckpt["test_bundle"] = {k: _to_cpu(v) for k, v in test_bundle.items()}
+
+    if training_bundle is not None:
+        # WARNING: this can be huge if you include db_lst/netout_lst
+        ckpt["training_bundle"] = training_bundle
+
+    torch.save(ckpt, path)
+    print(f"Saved checkpoint to: {path}")
+
+
+def load_checkpoint(path, device, netFunction, rebuild_net_kwargs=None):
+    """
+    Load checkpoint and reconstruct net.
+
+    Args:
+      path: str to .pt
+      device: torch.device
+      netFunction: the class constructor you already use (e.g., mpn.DeepMultiPlasticNet / nets.GRU)
+      rebuild_net_kwargs: optional dict passed into constructor
+
+    Returns:
+      net, params, hyp_dict, test_bundle, training_bundle (may be None)
+    """
+    ckpt = torch.load(path, map_location="cpu")
+    task_params, train_params, net_params = ckpt["params"]
+    hyp_dict = ckpt["hyp_dict"]
+
+    rebuild_net_kwargs = rebuild_net_kwargs or {}
+
+    # Rebuild network exactly as train_network would
+    # Most codebases use something like: net = netFunction(task_params, net_params, train_params, **kwargs)
+    # If your constructor differs, adjust here once.
+    net = netFunction(task_params, net_params, train_params, **rebuild_net_kwargs)
+
+    net.load_state_dict(ckpt["net_state_dict"])
+    net.to(device)
+    net.eval()
+
+    test_bundle = ckpt.get("test_bundle", None)
+    training_bundle = ckpt.get("training_bundle", None)
+
+    return net, (task_params, train_params, net_params), hyp_dict, test_bundle, training_bundle
+
+
 def tail_mean_decay(lst, N, decay=0.95):
     """
     """
