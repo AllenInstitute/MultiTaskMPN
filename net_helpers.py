@@ -370,7 +370,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
         if train: 
             # Jul 19th: test the network's output on the testing dataset at the different stage of the network
             # save and register the network's parameter and output
-            if test_input is not None and (helper.is_power_of_4_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
+            if test_input is not None and (helper.is_power_of_n_or_zero(dataset_idx, 8) or dataset_idx == train_params['n_datasets'] - 1):
                 # print(f"How about Test Data at dataset {dataset_idx}")
                 counter_lst.append(dataset_idx)
                 # test data for each stage
@@ -476,7 +476,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
             else: # by default only one task, so probability trivally to 1
                 task_params['rules_probs'] = np.array([1])
 
-            if test_input is not None and (helper.is_power_of_4_or_zero(dataset_idx) or dataset_idx == train_params['n_datasets'] - 1):
+            if test_input is not None and (helper.is_power_of_n_or_zero(dataset_idx, 8) or dataset_idx == train_params['n_datasets'] - 1):
                 loss_lst.append(monitor_loss)
                 acc_lst.append(monitor_acc)
     

@@ -125,18 +125,25 @@ def concat_random_samples(
 
     return out
     
-def is_power_of_4_or_zero(n: int) -> bool:
+def is_power_of_n_or_zero(x: int, n: int) -> bool:
     """
-    Returns True if n is 0 **or** an exact power of 4 (1, 4, 16, 64, …).
+    Returns True if x is 0 or an exact power of n (n^0, n^1, n^2, ...),
+    with n >= 2.
     """
-    return (
-        n == 0
-        or (
-            n > 0
-            and (n & (n - 1)) == 0      # power-of-2 check
-            and (n & 0x55555555) != 0    # even-bit position  ➜ power-of-4
-            )
-        )
+    if n < 2:
+        raise ValueError("n must be >= 2")
+
+    if x == 0:
+        return True
+
+    if x < 0:
+        return False
+
+    while x % n == 0:
+        x //= n
+
+    return x == 1
+
 
 def basic_sort(lst, sort_idxs):
     """

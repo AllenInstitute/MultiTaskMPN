@@ -271,7 +271,7 @@ def test_init(config, mode, **kwargs):
     return trial
 
 
-def delaygo_(config, mode, anti_response, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
+def delaygo_(config, mode, anti_response, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
     '''
     Fixate whenever fixation point is shown,
     saccade to the location of the previously shown stimulus
@@ -303,7 +303,10 @@ def delaygo_(config, mode, anti_response, fix, separate_input, label_strength, l
         # A list of locations of stimulus and on/off time
         stim_locs = rng.rand(batch_size)*2*np.pi
         # stim_ons  = int(rng.choice([300, 500, 700])/dt)
-        stim_ons = int(rng.uniform(300,700)/dt)
+        if long_fixation == "normal":
+            stim_ons = int(rng.uniform(300,700)/dt)
+        elif long_fixation == "long":
+            stim_ons = int(rng.choice([10000])/dt)
         
         # stim_offs = stim_ons + int(rng.choice([200, 400, 600])/dt)
         if long_stimulus == "normal":
@@ -330,7 +333,10 @@ def delaygo_(config, mode, anti_response, fix, separate_input, label_strength, l
         # A list of locations of stimuluss and on/off time
         stim_locs = rng.rand(batch_size)*2*np.pi
         # stim_ons = batch_choice([300, 500, 700], batch_size, rng, dt)
-        stim_ons = (rng.uniform(300,700, size=(batch_size,))/dt).astype(np.int32)
+        if long_fixation == "normal":
+            stim_ons = (rng.uniform(300,700, size=(batch_size,))/dt).astype(np.int32)
+        elif long_fixation == "long":
+            stim_ons = (rng.choice([10000], size=(batch_size,))/dt).astype(np.int32)
         # stim_offs = stim_ons + batch_choice([200, 400, 600], batch_size, rng, dt)
         if long_stimulus == "normal":
             stim_offs = stim_ons + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
@@ -410,11 +416,11 @@ def delaygo_(config, mode, anti_response, fix, separate_input, label_strength, l
     return trial
 
 
-def delaygo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
-    return delaygo_(config, mode, False, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs)
+def delaygo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
+    return delaygo_(config, mode, False, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
 
-def delayanti(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
-    return delaygo_(config, mode, True, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs)
+def delayanti(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
+    return delaygo_(config, mode, True, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
 def contextdm_genstim(batch_size, rng, stim_coh_range=None):
     stim_mean = rng.uniform(0.8, 1.2, (batch_size,))
     if stim_coh_range is None:
@@ -426,7 +432,7 @@ def contextdm_genstim(batch_size, rng, stim_coh_range=None):
     return stim1_strengths, stim2_strengths
 
 
-def _contextdm(config, mode, attend_mod, fix, separate_input, label_strength, long_delay, long_stimulus, **kwargs):
+def _contextdm(config, mode, attend_mod, fix, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs):
     '''
     Fixate whenever fixation point is shown.
     Two stimuluss are shown in each ring,
@@ -635,16 +641,15 @@ def _contextdm(config, mode, attend_mod, fix, separate_input, label_strength, lo
     return trial
 
 
-def contextdm1(config, mode, fix, separate_input, label_strength, long_delay, long_stimulus, **kwargs):
-    return _contextdm(config, mode, 1, fix, separate_input, label_strength, long_delay, long_stimulus, **kwargs)
+def contextdm1(config, mode, fix, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs):
+    return _contextdm(config, mode, 1, fix, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs)
 
 
-def contextdm2(config, mode, fix, separate_input, label_strength, long_delay, long_stimulus, **kwargs):
-    return _contextdm(config, mode, 2, fix, separate_input, label_strength, long_delay, long_stimulus, **kwargs)
+def contextdm2(config, mode, fix, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs):
+    return _contextdm(config, mode, 2, fix, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs)
 
-
-def multidm(config, mode, fix, separate_input, label_strength, long_delay, long_stimulus, **kwargs):
-    return _contextdm(config, mode, 'both',fix, separate_input, label_strength, long_delay, long_stimulus, **kwargs)
+def multidm(config, mode, fix, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs):
+    return _contextdm(config, mode, 'both',fix, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs)
 
 def reactgo_(config, mode, anti_response, fix, **kwargs):
     '''
@@ -746,15 +751,15 @@ def reactgo_(config, mode, anti_response, fix, **kwargs):
 
     return trial
 
-def reactgo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
+def reactgo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
     return reactgo_(config, mode, False, fix, **kwargs)
 
 
-def reactanti(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
+def reactanti(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
     return reactgo_(config, mode, True, fix, **kwargs)
 
 
-def fdgo_(config, mode, anti_response, fix, long_response, long_stimulus,  **kwargs):
+def fdgo_(config, mode, anti_response, fix, long_response, long_stimulus, long_fixation, **kwargs):
     '''
     Go with inhibitory control. Important difference with Go task is that
     the stimulus is presented from the beginning.
@@ -875,14 +880,14 @@ def fdgo_(config, mode, anti_response, fix, long_response, long_stimulus,  **kwa
 
     return trial
 
-def fdgo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
-    return fdgo_(config, mode, False, fix, long_response, long_stimulus, **kwargs)
+def fdgo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
+    return fdgo_(config, mode, False, fix, long_response, long_stimulus, long_fixation, **kwargs)
 
 
-def fdanti(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
-    return fdgo_(config, mode, True, fix, long_response, long_stimulus, **kwargs)
+def fdanti(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
+    return fdgo_(config, mode, True, fix, long_response, long_stimulus, long_fixation, **kwargs)
 
-def delaydm_(config, mode, stim_mod, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
+def delaydm_(config, mode, stim_mod, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
     ''' 
     Fixate whenever fixation point is shown.
     Two stimuluss are shown at different time, with different intensities
@@ -1053,15 +1058,15 @@ def delaydm_(config, mode, stim_mod, fix, separate_input, label_strength, long_d
     return trial
 
 
-def delaydm1(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
-    return delaydm_(config, mode, 1, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs)
+def delaydm1(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
+    return delaydm_(config, mode, 1, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
 
 
-def delaydm2(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
-    return delaydm_(config, mode, 2, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs)
+def delaydm2(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
+    return delaydm_(config, mode, 2, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
 
 
-def contextdelaydm_(config, mode, attend_mod, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
+def contextdelaydm_(config, mode, attend_mod, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
     '''
     Fixate whenever fixation point is shown.
     Two stimuluss are shown in each ring,
@@ -1278,18 +1283,18 @@ def contextdelaydm_(config, mode, attend_mod, fix, separate_input, label_strengt
     return trial
 
 
-def contextdelaydm1(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
-    return contextdelaydm_(config, mode, 1, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs)
+def contextdelaydm1(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
+    return contextdelaydm_(config, mode, 1, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
 
 
-def contextdelaydm2(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
-    return contextdelaydm_(config, mode, 2, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs)
+def contextdelaydm2(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
+    return contextdelaydm_(config, mode, 2, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
 
 
-def multidelaydm(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
-    return contextdelaydm_(config, mode, 'both', fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs)
+def multidelaydm(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
+    return contextdelaydm_(config, mode, 'both', fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
 
-def dms_(config, mode, matchnogo, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
+def dms_(config, mode, matchnogo, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
     '''
     Delay-match-to-sample
 
@@ -1445,15 +1450,15 @@ def dms_(config, mode, matchnogo, fix, separate_input, label_strength, long_dela
     return trial
 
 
-def dmsgo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
-    return dms_(config, mode, 0, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs)
+def dmsgo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
+    return dms_(config, mode, 0, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
 
 
-def dmsnogo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
-    return dms_(config, mode, 1, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs)
+def dmsnogo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
+    return dms_(config, mode, 1, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
 
 
-def dmc_(config, mode, matchnogo, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
+def dmc_(config, mode, matchnogo, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
     '''
     Delay-match-to-category
 
@@ -1617,12 +1622,12 @@ def dmc_(config, mode, matchnogo, fix, separate_input, label_strength, long_dela
     return trial
 
 
-def dmcgo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
-    return dmc_(config, mode, 0, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs)
+def dmcgo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
+    return dmc_(config, mode, 0, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
 
 
-def dmcnogo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs):
-    return dmc_(config, mode, 1, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs)
+def dmcnogo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
+    return dmc_(config, mode, 1, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
 
 rule_mapping = {'testinit': test_init,
                 'fdgo': fdgo, # Var_batch
@@ -1674,8 +1679,10 @@ rule_name    = {'reactgo': 'RT Go',
                 }
 
 
-def generate_trials(rule, hp, mode, noise_on=True, fix=False, separate_input=False, label_strength=False, 
-                    long_delay="normal", long_response="normal", long_stimulus="normal", **kwargs):
+def generate_trials(rule, hp, mode, noise_on=True, fix=False, 
+                    separate_input=False, label_strength=False, 
+                    long_delay="normal", long_response="normal", 
+                    long_stimulus="normal", long_fixation="normal", **kwargs):
     """Generate one batch of data.
 
     Args:
@@ -1688,7 +1695,8 @@ def generate_trials(rule, hp, mode, noise_on=True, fix=False, separate_input=Fal
         trial: Trial class instance, containing input and target output
     """
     config = hp
-    trial = rule_mapping[rule](config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, **kwargs)
+    trial = rule_mapping[rule](config, mode, fix, separate_input, label_strength, long_delay, long_response, 
+                               long_stimulus, long_fixation, **kwargs)
 
     # Add rule input to every task
     if 'rule_on' in kwargs:
@@ -1955,7 +1963,8 @@ def generate_trials_wrap(task_params, n_batches, device='cuda', verbose=False, r
         trial = generate_trials(rule, task_params['hp'], mode_input, 
                                 batch_size=n_batches, fix=fix, separate_input=task_params['modality_diff'], 
                                 label_strength=task_params['label_strength'], long_delay=task_params['long_delay'],
-                                long_response=task_params['long_response'], long_stimulus=task_params['long_stimulus'])
+                                long_response=task_params['long_response'], long_stimulus=task_params['long_stimulus'], 
+                                long_fixation=task_params['long_fixation'])
 
         trial.x = trial.x[:,:,:-1] if not task_params["task_info"] else trial.x # ***
         
