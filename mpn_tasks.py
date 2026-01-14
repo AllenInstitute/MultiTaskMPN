@@ -421,6 +421,7 @@ def delaygo(config, mode, fix, separate_input, label_strength, long_delay, long_
 
 def delayanti(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
     return delaygo_(config, mode, True, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
+    
 def contextdm_genstim(batch_size, rng, stim_coh_range=None):
     stim_mean = rng.uniform(0.8, 1.2, (batch_size,))
     if stim_coh_range is None:

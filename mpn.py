@@ -698,7 +698,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
         # namely after the MLP 
         if self.input_layer_active:
             x = self.W_initial_linear(inputs)
-            x = self.act_fn(x)
+            # x = self.act_fn(x)
         else:
             x = inputs
 
