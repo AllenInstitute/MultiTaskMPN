@@ -370,14 +370,14 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
         if train: 
             # Jul 19th: test the network's output on the testing dataset at the different stage of the network
             # save and register the network's parameter and output
-            if test_input is not None and (helper.is_power_of_n_or_zero(dataset_idx, 8) or dataset_idx == train_params['n_datasets'] - 1):
+            if test_input is not None and (helper.is_power_of_n_or_zero(dataset_idx, 32) or dataset_idx == train_params['n_datasets'] - 1):
                 # print(f"How about Test Data at dataset {dataset_idx}")
                 counter_lst.append(dataset_idx)
                 # test data for each stage
                 for test_input_index, test_input_ in enumerate(test_input): 
                     # 2025-07-16: should we separate and load the input, and stack the output later 
                     # print(f"test_input_: {test_input_.shape}")
-                    minibatch = 16
+                    minibatch = 8
                     net_out_np = [] 
                     db = [] 
                     for start in range(0, test_input_.shape[0], minibatch): 
@@ -1285,49 +1285,89 @@ class BaseNetwork(BaseNetworkFunctions):
         
         return db, np.mean(losses), np.mean(accs)
 
-    def iterate_sequence_batch(self, batch_inputs, batch_labels=None, batch_masks=None, run_mode='minimal'):
+    def iterate_sequence_batch(
+        self,
+        batch_inputs,
+        batch_labels=None,
+        batch_masks=None,
+        run_mode="minimal",
+        save_to_cpu: bool = False,     # NEW: store outputs/logs on CPU
+        detach_saved: bool = False,     # NEW: detach before saving (recommended)
+        non_blocking: bool = True,     # NEW: async GPU->CPU copy when possible
+    ):
         """
-        Default iteration through the batch sequence, used in supervised learning setups.
+        Iterates through a batch sequence.
 
-        Computes all outputs and then returns externally to compute loss.
+        If save_to_cpu=True:
+        - batch_output and batch_hidden are stored on CPU (not CUDA)
+        - db_seq (tracked tensors) are stored on CPU
+        - values are copied step-by-step from compute device to CPU to avoid GPU accumulation
+
+        Note: this does NOT move the model itself; forward still runs on batch_inputs.device.
         """
-    
-        B = batch_inputs.shape[0]
 
-        batch_output = torch.zeros((B, batch_inputs.shape[1], self.n_output), 
-                                    dtype=torch.float, device=batch_inputs.device)
-        batch_hidden = torch.zeros((B, batch_inputs.shape[1], self.n_hidden),
-                                    dtype=torch.float, device=batch_inputs.device)
+        B, T = batch_inputs.shape[0], batch_inputs.shape[1]
+        compute_dev = batch_inputs.device
+        out_dev = torch.device("cpu") if save_to_cpu else compute_dev
+
+        # Allocate outputs on out_dev (CPU if save_to_cpu)
+        batch_output = torch.zeros((B, T, self.n_output), dtype=torch.float, device=out_dev)
+        batch_hidden = torch.zeros((B, T, self.n_hidden), dtype=torch.float, device=out_dev)
+
         self.reset_state(B=B)
 
-        if run_mode in ('track_states',): 
-            # For debugging, will keep track of all pyTorch tensors through entire sequence. 
-            # This is a placeholder dict, that will get populated after the first network_step
-            db_seq = {}
-        else:
-            db_seq = None
+        track = (run_mode == "track_states")
+        db_seq = {} if track else None
+        db_save_dev = torch.device("cpu") if (track and save_to_cpu) else compute_dev
 
-        # Now iterate through the full input sequence, note that network_step of children classes will
-        # update the internal state unless told otherwise. 
-        for seq_idx in range(batch_inputs.shape[1]):
+        for seq_idx in range(T):
+            step_output, step_activity, db = self.network_step(
+                batch_inputs[:, seq_idx, :],
+                run_mode=run_mode,
+                seq_idx=seq_idx,
+            )
 
-            step_output, step_activity, db = self.network_step(batch_inputs[:, seq_idx, :], run_mode=run_mode, seq_idx=seq_idx)
-        
-            batch_output[:, seq_idx, :] = step_output
-            batch_hidden[:, seq_idx, :] = step_activity[-1] # assume 1-layer MPN for now
+            # Prepare what we store (detach + move if requested)
+            out_to_store = step_output
+            hid_to_store = step_activity[-1]  # assume 1-layer MPN for now
 
-            if run_mode in ('track_states',):
-                if seq_idx == 0: # Initializes db_seq based off of first db return
-                    for key in db:
-                        if type(db[key]) == torch.Tensor:
-                            # Batch, seq, rest of dimensions
-                            db_seq[key] = torch.zeros((batch_inputs.shape[0], batch_inputs.shape[1], *db[key].shape[1:],)).to(db[key].device) 
-                for key in db: 
-                    if type(db[key]) == torch.Tensor:
-                        db_seq[key][:, seq_idx] = db[key]
+            if detach_saved:
+                out_to_store = out_to_store.detach()
+                hid_to_store = hid_to_store.detach()
+
+            if save_to_cpu:
+                out_to_store = out_to_store.to("cpu", non_blocking=non_blocking)
+                hid_to_store = hid_to_store.to("cpu", non_blocking=non_blocking)
+
+            batch_output[:, seq_idx, :] = out_to_store
+            batch_hidden[:, seq_idx, :] = hid_to_store
+
+            if track:
+                # Initialize db_seq storage on first step
+                if seq_idx == 0:
+                    for key, val in db.items():
+                        if torch.is_tensor(val):
+                            db_seq[key] = torch.zeros(
+                                (B, T, *val.shape[1:]),
+                                dtype=val.dtype,
+                                device=db_save_dev,
+                            )
+                        else:
+                            db_seq[key] = [None] * T
+
+                # Store per-step db
+                for key, val in db.items():
+                    if torch.is_tensor(val):
+                        v = val
+                        if detach_saved:
+                            v = v.detach()
+                        if save_to_cpu:
+                            v = v.to("cpu", non_blocking=non_blocking)
+                        db_seq[key][:, seq_idx] = v
+                    else:
+                        db_seq[key][seq_idx] = val
 
         return batch_output, batch_hidden, db_seq
-
 
     def compute_reg_term(self):
     

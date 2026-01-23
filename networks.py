@@ -162,6 +162,7 @@ class VanillaRNN(BaseNetwork):
 		init_string += '  input layer: {} //'.format(self.input_layer)
 
 		self.rec_layer = net_params.get('rec_layer', 'trainable')
+		self.tbptt = net_params.get('tbptt', False)
 		if self.rec_layer in ('trainable',):
 			self.params.append('W_rec')
 		elif self.rec_layer in (None,):
@@ -169,6 +170,7 @@ class VanillaRNN(BaseNetwork):
 		elif self.rec_layer not in ('frozen',):
 			raise ValueError('Recurrent layer option {} not recognized.'.format(self.rec_layer))
 		init_string += ' rec layer: {} //'.format(self.rec_layer)
+		init_string += ' TBPTT: {}\n'.format(self.tbptt)
 
 		self.output_layer = net_params.get('output_layer', 'trainable')
 		if self.output_layer in ('trainable',):
@@ -301,8 +303,9 @@ class VanillaRNN(BaseNetwork):
 
 		# Sets internal states using forward
 		self.hidden = current_hidden
-		# if run_mode in ('minimal',):
-		# 	db['hidden'] = current_hidden.detach()
+  
+		if self.tbptt:
+			self.state_detach()
 
 		return output, current_hidden, db
 		
