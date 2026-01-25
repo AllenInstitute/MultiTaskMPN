@@ -539,7 +539,7 @@ class MultiPlasticNet(MultiPlasticNetBase):
     def __init__(self, net_params, verbose=False):
 
         if 'n_neurons' in net_params:
-            assert len(net_params['n_neurons']) == 3
+            # assert len(net_params['n_neurons']) == 3
             self.n_input = net_params['n_neurons'][0]
             self.n_hidden = net_params['n_neurons'][1]
             self.n_output = net_params['n_neurons'][2]
@@ -606,7 +606,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
     N-layer feedforward setup, with N-1 multi-plastic layers followed by a single readout layer.
     """
 
-    def __init__(self, net_params, verbose=False):
+    def __init__(self, net_params, verbose=False, forzihan=True):
         cfg = copy.deepcopy(net_params)
 
         # Mar 16th: add input layer
@@ -618,7 +618,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
 
         arch = list(cfg['n_neurons'])
         if self.input_layer_active:
-            arch.insert(1, arch[1])
+            arch.insert(1, cfg.get('linear_embed', 128)) # add an initial linear embedding layer
 
         n_layers = len(arch) - 1     
         self.n_input = cfg['n_neurons'][0]
@@ -633,10 +633,10 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
         self.param_clamping = True # Always have param clamping for MP layers because lam bounds
 
         if self.input_layer_active:
-            self.W_initial_linear = nn.Linear(net_params['n_neurons'][0], net_params['n_neurons'][1])
+            self.W_initial_linear = nn.Linear(arch[0], arch[1])
 
             self.W_initial_linear.weight.data = torch.tensor(
-                rand_weight_init(net_params['n_neurons'][0], net_params['n_neurons'][1], init_type=net_params.get('W_init', 'xavier')),
+                rand_weight_init(arch[0], arch[1], init_type=net_params.get('W_init', 'xavier')),
                 dtype=torch.float
             )
             
@@ -646,7 +646,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
 
             if net_params.get('input_layer_bias', False):
                 self.W_initial_linear.bias.data = torch.tensor(
-                    rand_weight_init(net_params['n_neurons'][1], init_type='gaussian'),
+                    rand_weight_init(arch[1], init_type='gaussian'),
                     dtype=torch.float
                 )
             else:
@@ -655,11 +655,13 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
         self.mp_layers = []
         self.h_recurrent = [] 
         self.recurrent_weights = nn.ParameterList() 
+        print(self.dt)
         
         start_layer_count = 1 if self.input_layer_active else 0
         # if additional input layer is added, shift the starting index of layer counting from 1
         for mpl_idx in range(start_layer_count, n_layers - 1): # (e.g. three-layer has two MP layers)
-            assert n_layers - 1 - start_layer_count == 1, "2025-10-29: One-Layer MPN Now"
+            if forzihan:
+                assert n_layers - 1 - start_layer_count == 1, "2025-10-29: One-Layer MPN Now"
             
             ml_key = f'ml_params{mpl_idx}' if f'ml_params{mpl_idx}' in cfg else 'ml_params'
             # Updates some parameters for each new MPL
