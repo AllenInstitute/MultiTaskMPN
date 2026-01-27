@@ -181,7 +181,7 @@ def train_sequential_mnist(
         'ml_params': {
             'bias': True, # Bias of layer
             'mp_type': 'mult',
-            'm_activation': 'linear',
+            'm_activation': 'tanh',
             'm_update_type': 'hebb_assoc', # hebb_assoc, hebb_pre
             'eta_type': 'matrix', # scalar, pre_vector, post_vector, matrix
             'eta_train': True,
@@ -267,12 +267,12 @@ def train_sequential_mnist(
     return net, net_params, stats
 
 # %%
-trained_net, params, stats = train_sequential_mnist(
+trained_net, net_params, state_dict = train_sequential_mnist(
                 device="cuda",
                 hidden_dim=128,
                 batch_size=64,
                 lr=1e-3,
-                epochs=10,
+                epochs=30,
                 mpn_depth=3)
 
 # %%
