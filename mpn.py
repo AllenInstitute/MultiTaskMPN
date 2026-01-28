@@ -13,6 +13,8 @@ import numpy as np
 import copy 
 import time 
 
+from torch.utils.checkpoint import checkpoint
+
 class MultiPlasticLayer(BaseNetworkFunctions):
     """
     Fully-connected layer with multi-plasticity.
@@ -354,27 +356,67 @@ class MultiPlasticLayer(BaseNetworkFunctions):
 
         return delta_M # This is only used for theory matching
 
-    def get_modulated_weights(self, M=None):
-        """
-        Returns modulated weights, taking into account exactly how M and W are combined.
-        Note the batch size of the modulated weights is set by the batch size of M.
+    
+    #def get_modulated_weights(self, M=None):
+    #    """
+    #    Returns modulated weights, taking into account exactly how M and W are combined.
+    #    Note the batch size of the modulated weights is set by the batch size of M.#
 
-        If M is not None, the passed M matrix is used, otherwise just uses stored Ms (this
-        is be used for analysis of the network after training)
-        """
+    #    If M is not None, the passed M matrix is used, otherwise just uses stored Ms (this
+    #    is be used for analysis of the network after training)
+    #    """
 
-        W = self.W
-        if M is None:
-            M = self.M
+    #    W = self.W
+    #    if M is None:
+    #        M = self.M
 
         # Fixed weights and M matrix, either multiplicative or additive
+    #    if self.mp_type == 'mult':
+    #        modulated_weights = W.unsqueeze(0) + W.unsqueeze(0) * M
+    #    elif self.mp_type == 'add':
+    #        modulated_weights = W.unsqueeze(0) + M
+
+    #    return modulated_weights
+    
+    def get_pre_act(self, x, M=None):
+        """
+        Compute pre-activation without materializing modulated_weights.
+    
+        Args:
+            x: (B, n_input)
+            M: optional modulation tensor. If None, uses self.M.
+               Expected shape (B, n_output, n_input), same as self.M.
+    
+        Returns:
+            pre_act: (B, n_output)
+            pre_act_no_bias: (B, n_output)
+        """
+        W = self.W  # (n_output, n_input)
+        if M is None:
+            M = self.M  # (B, n_output, n_input)
+    
         if self.mp_type == 'mult':
-            modulated_weights = W.unsqueeze(0) + W.unsqueeze(0) * M
+            # y0 = W x
+            y0 = torch.matmul(x, W.t())  # (B, n_output)
+    
+            # y1 = (W ⊙ M) x   without building (B, n_output, n_input)
+            # sum_i M[b,o,i] * W[o,i] * x[b,i]
+            y1 = torch.einsum('boi,oi,bi->bo', M, W, x)  # (B, n_output)
+    
+            pre_act_no_bias = y0 + y1
+    
         elif self.mp_type == 'add':
-            modulated_weights = W.unsqueeze(0) + M
-
-        return modulated_weights
-
+            # (W + M) x = W x + M x
+            y0 = torch.matmul(x, W.t())              # (B, n_output)
+            y1 = torch.einsum('boi,bi->bo', M, x)    # (B, n_output)
+            pre_act_no_bias = y0 + y1
+    
+        else:
+            raise ValueError(f"Unknown mp_type: {self.mp_type}")
+    
+        pre_act = pre_act_no_bias + self.b.unsqueeze(0)  # broadcast bias: (1, n_output)
+        return pre_act, pre_act_no_bias
+        
     def forward(self, x, run_mode='minimal'):
         """
         Passes inputs through the modulated weights. Activation are handled
@@ -394,10 +436,12 @@ class MultiPlasticLayer(BaseNetworkFunctions):
 
         """
 
-        modulated_weights = self.get_modulated_weights()
-        pre_act_no_bias =  torch.einsum('BiI, BI -> Bi', modulated_weights, x)
+        #modulated_weights = self.get_modulated_weights()
+        #pre_act_no_bias =  torch.einsum('BiI, BI -> Bi', modulated_weights, x)
 
-        pre_act = pre_act_no_bias + self.b.unsqueeze(0)
+        #pre_act = pre_act_no_bias + self.b.unsqueeze(0)
+
+        pre_act, pre_act_no_bias = self.get_pre_act(x)
 
         if run_mode in ('track_states',):
             db = {
@@ -407,6 +451,64 @@ class MultiPlasticLayer(BaseNetworkFunctions):
             }
             if self.m_act:
                 db['M_pre'] = self.M_pre.detach()
+        else:
+            db = None
+
+        return pre_act, db
+
+    ##############################
+    #new code for checkpointing:
+    #############################
+    def update_M_matrix_functional(self, pre, post, M, update_mask=None):
+        """
+        Functional M update: returns M_next without touching self.M.
+        pre:  (B, n_input)
+        post: (B, n_output)
+        M:    (B, n_output, n_input)
+        """
+        eta = self.build_M_parameter(self.eta, self.eta_type)  # shape broadcastable to (n_output,n_input)
+        lam = self.build_M_parameter(self.lam, self.lam_type)
+
+        # Batched Hebbian outer product
+        if self.m_update_type in ('hebb_pre',):
+            post_eff = 1.0 / math.sqrt(post.shape[-1]) * torch.ones_like(post)
+        else:
+            post_eff = post
+
+        if self.m_update_type in ('hebb_assoc', 'hebb_pre',):
+            # delta_M = -M + lam*M + eta*(post ⊗ pre)
+            hebb = torch.einsum('Bi,BI->BiI', post_eff, pre)  # (B, n_output, n_input)
+            delta_M = -M + lam.unsqueeze(0) * M + eta.unsqueeze(0) * hebb
+        else:
+            raise NotImplementedError(f"m_update_type {self.m_update_type} functional update not implemented")
+
+        M_pre = M + delta_M
+        M_next = self.m_act_fn(M_pre)
+
+        if self.modulation_bounds:
+            M_next = torch.clamp(M_next, min=self.M_bounds[1], max=self.M_bounds[0])
+
+        if update_mask is not None:
+            # Only update some batch items
+            # update_mask: (B,) boolean or 0/1
+            um = update_mask.to(M_next.dtype).view(-1, 1, 1)
+            M_next = um * M_next + (1.0 - um) * M  # keep old if masked off
+
+        return M_next
+
+    def forward_functional(self, x, M, run_mode='minimal'):
+        """
+        Functional forward: uses provided M (B,out,in). Does not read self.M.
+        Returns pre_act (B,out) and db.
+        """
+        pre_act, pre_act_no_bias = self.get_pre_act(x, M=M)
+
+        if run_mode in ('track_states',):
+            db = {
+                'pre_act_no_bias': pre_act_no_bias.detach(),
+                'M': M.detach(),
+                'b': self.b.detach().unsqueeze(0),
+            }
         else:
             db = None
 
@@ -784,3 +886,185 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
             _ = mp_layer.update_M_matrix(mpl_activities[mpl_idx], mpl_activities[mpl_idx + 1])
 
         return output, mpl_activities, db
+    ######################################
+    #new code for checkpointing
+    ######################################
+    def init_Ms(self, B, device=None, dtype=None):
+        """
+        Initialize Ms for all MP layers: list of (B, out, in)
+        """
+        Ms = []
+        for mp_layer in self.mp_layers:
+            W = mp_layer.W
+            dev = device if device is not None else W.device
+            dtp = dtype if dtype is not None else W.dtype
+            M0 = mp_layer.M_init.to(device=dev, dtype=dtp).unsqueeze(0).expand(B, -1, -1).contiguous()
+            Ms.append(M0)
+        return Ms
+
+    def step_functional(self, x_t, Ms, h_rec=None, run_mode='minimal'):
+        """
+        One time step, functional.
+        x_t: (B, input_dim_at_this_step)
+        Ms: list of M tensors, one per mp_layer
+        h_rec: optional recurrent hidden list/tensors (only if recurrent_active)
+        Returns: logits_t, Ms_next, h_rec_next
+        """
+        # Optional input embedding
+        if self.input_layer_active:
+            x = self.W_initial_linear(x_t)
+        else:
+            x = x_t
+
+        layer_input = x
+        mpl_acts_pre = []   # pre-syn inputs to each layer (for M update)
+        mpl_acts_post = []  # post-syn activations (for M update)
+
+        # Recurrent state handling (your code only keeps one hidden per layer index;
+        # here we keep list length = #mp_layers if recurrent is on)
+        if self.recurrent_active:
+            if h_rec is None:
+                h_rec = [None] * len(self.mp_layers)
+
+        for li, mp_layer in enumerate(self.mp_layers):
+            mpl_acts_pre.append(layer_input)
+
+            # functional forward uses Ms[li]
+            hidden_pre, _ = mp_layer.forward_functional(layer_input, Ms[li], run_mode=run_mode)
+
+            if self.recurrent_active:
+                if h_rec[li] is None:
+                    h_prev = torch.zeros_like(hidden_pre)
+                else:
+                    h_prev = h_rec[li]
+                W_rec = self.recurrent_weights[li]
+                hidden_pre = hidden_pre + torch.matmul(h_prev, W_rec.t())
+
+            layer_input = self.act_fn(hidden_pre)
+            mpl_acts_post.append(layer_input)
+
+            if self.recurrent_active:
+                h_rec[li] = layer_input  # update recurrent state
+
+        logits = torch.einsum('iI,BI->Bi', self.W_output, layer_input) + self.b_output.unsqueeze(0)
+
+        # Update Ms (functional)
+        Ms_next = []
+        for li, mp_layer in enumerate(self.mp_layers):
+            M_next = mp_layer.update_M_matrix_functional(
+                pre=mpl_acts_pre[li],
+                post=mpl_acts_post[li],
+                M=Ms[li],
+                update_mask=None
+            )
+            Ms_next.append(M_next)
+
+        return logits, Ms_next, h_rec
+
+    def forward_sequence_checkpointed(
+        self,
+        x_seq,
+        chunk_size=32,
+        Ms0=None,
+        run_mode='minimal'
+    ):
+        """
+        x_seq: (T, B, input_dim)  OR (B, T, input_dim) if you prefer (see below)
+        Returns logits_seq: (T, B, n_output), Ms_T
+
+        Exact gradients like full BPTT, but uses time checkpointing.
+        """
+        # Normalize shape to (T,B,D)
+        if x_seq.dim() != 3:
+            raise ValueError("x_seq must be 3D tensor: (T,B,D) or (B,T,D)")
+        if x_seq.shape[0] != x_seq.shape[1] and x_seq.shape[0] != x_seq.shape[-2]:
+            pass  # ignore; we’ll detect via heuristics below
+
+        # If input is (B,T,D), transpose to (T,B,D)
+        # Heuristic: if first dim equals batch size more often in your code, adjust accordingly.
+        if x_seq.shape[0] != x_seq.shape[1] and x_seq.shape[0] < x_seq.shape[1]:
+            # likely (B,T,D)
+            x_seq = x_seq.transpose(0, 1).contiguous()
+
+        T, B, D = x_seq.shape
+        device = x_seq.device
+        dtype = x_seq.dtype
+
+        if Ms0 is None:
+            Ms = self.init_Ms(B=B, device=device, dtype=dtype)
+        else:
+            Ms = Ms0
+
+        # recurrent state
+        h_rec = None
+        if self.recurrent_active:
+            h_rec = [None] * len(self.mp_layers)
+
+        outputs = []
+        n_layers = len(self.mp_layers)
+
+        def chunk_fn(x_chunk, *state):
+            """
+            x_chunk: (K,B,D)
+            state: flattened (Ms..., h_rec...) tensors
+            Returns: logits_chunk (K,B,C), new flattened state
+            """
+            # Unpack
+            idx = 0
+            Ms_local = list(state[idx: idx + n_layers]); idx += n_layers
+
+            if self.recurrent_active:
+                h_local = list(state[idx: idx + n_layers]); idx += n_layers
+            else:
+                h_local = None
+
+            K = x_chunk.shape[0]
+            out_local = []
+            for tt in range(K):
+                logits_t, Ms_local, h_local = self.step_functional(x_chunk[tt], Ms_local, h_local, run_mode='minimal')
+                out_local.append(logits_t)
+
+            logits_chunk = torch.stack(out_local, dim=0)  # (K,B,C)
+
+            # Pack updated state
+            packed = []
+            packed.extend(Ms_local)
+            if self.recurrent_active:
+                packed.extend(h_local)
+            return (logits_chunk, *packed)
+
+        # Flatten initial state into tensors for checkpoint
+        state = []
+        state.extend(Ms)
+        if self.recurrent_active:
+            # represent None as zeros at first call
+            for li, mp_layer in enumerate(self.mp_layers):
+                # create placeholder h with correct shape using layer output size
+                # We can infer it by running one step cheaply? Instead, allocate at first use:
+                # Here we allocate zeros based on mp_layer.n_output:
+                h0 = torch.zeros((B, mp_layer.n_output), device=device, dtype=dtype)
+                state.append(h0)
+
+        # Run chunks
+        t = 0
+        while t < T:
+            x_chunk = x_seq[t: t + chunk_size]  # (K,B,D)
+            K = x_chunk.shape[0]
+
+            # checkpoint returns tuple: (logits_chunk, *new_state)
+            logits_chunk, *new_state = checkpoint(
+                chunk_fn,
+                x_chunk,
+                *state,
+                use_reentrant=False
+            )
+
+            outputs.append(logits_chunk)
+            state = new_state
+            t += K
+
+        logits_seq = torch.cat(outputs, dim=0)  # (T,B,C)
+
+        # Unpack final Ms from state
+        Ms_T = list(state[:n_layers])
+        return logits_seq, Ms_T
