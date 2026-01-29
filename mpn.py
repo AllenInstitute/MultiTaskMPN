@@ -1,3 +1,4 @@
+
 import torch
 from torch import nn
 from torch.utils.data import TensorDataset
@@ -389,7 +390,6 @@ class MultiPlasticLayer(BaseNetworkFunctions):
     
         Returns:
             pre_act: (B, n_output)
-            pre_act_no_bias: (B, n_output)
         """
         W = self.W  # (n_output, n_input)
         if M is None:
@@ -401,21 +401,23 @@ class MultiPlasticLayer(BaseNetworkFunctions):
     
             # y1 = (W ⊙ M) x   without building (B, n_output, n_input)
             # sum_i M[b,o,i] * W[o,i] * x[b,i]
-            y1 = torch.einsum('boi,oi,bi->bo', M, W, x)  # (B, n_output)
+            
+            # compute (M * x) first (still B,out,in), then dot with W
+            Mx = M * x.unsqueeze(1)                 # (B,out,in)
+            y1 = torch.einsum('boi,oi->bo', Mx, W)  # (B,out)
     
-            pre_act_no_bias = y0 + y1
+            pre_act = y0 + y1 + self.b.unsqueeze(0)
     
         elif self.mp_type == 'add':
             # (W + M) x = W x + M x
             y0 = torch.matmul(x, W.t())              # (B, n_output)
             y1 = torch.einsum('boi,bi->bo', M, x)    # (B, n_output)
-            pre_act_no_bias = y0 + y1
+            pre_act = y0 + y1 + self.b.unsqueeze(0)
     
         else:
             raise ValueError(f"Unknown mp_type: {self.mp_type}")
     
-        pre_act = pre_act_no_bias + self.b.unsqueeze(0)  # broadcast bias: (1, n_output)
-        return pre_act, pre_act_no_bias
+        return pre_act
         
     def forward(self, x, run_mode='minimal'):
         """
@@ -441,20 +443,9 @@ class MultiPlasticLayer(BaseNetworkFunctions):
 
         #pre_act = pre_act_no_bias + self.b.unsqueeze(0)
 
-        pre_act, pre_act_no_bias = self.get_pre_act(x)
+        pre_act = self.get_pre_act(x)
 
-        if run_mode in ('track_states',):
-            db = {
-                'pre_act_no_bias': pre_act_no_bias.detach(),
-                'M': self.M.detach(),
-                'b': self.b.detach().unsqueeze(0), # record bias information as well 
-            }
-            if self.m_act:
-                db['M_pre'] = self.M_pre.detach()
-        else:
-            db = None
-
-        return pre_act, db
+        return pre_act
 
     ##############################
     #new code for checkpointing:
@@ -499,20 +490,11 @@ class MultiPlasticLayer(BaseNetworkFunctions):
     def forward_functional(self, x, M, run_mode='minimal'):
         """
         Functional forward: uses provided M (B,out,in). Does not read self.M.
-        Returns pre_act (B,out) and db.
+        Returns pre_act (B,out).
         """
-        pre_act, pre_act_no_bias = self.get_pre_act(x, M=M)
+        pre_act = self.get_pre_act(x, M=M)
 
-        if run_mode in ('track_states',):
-            db = {
-                'pre_act_no_bias': pre_act_no_bias.detach(),
-                'M': M.detach(),
-                'b': self.b.detach().unsqueeze(0),
-            }
-        else:
-            db = None
-
-        return pre_act, db
+        return pre_act
 
 class MultiPlasticNetBase(BaseNetwork):
     """
@@ -667,24 +649,14 @@ class MultiPlasticNet(MultiPlasticNetBase):
         x = torch.clone(inputs)
 
         # Returns pre-activation
-        hidden_pre, db_mp = self.mp_layer(x, run_mode=run_mode)
+        hidden_pre = self.mp_layer(x, run_mode=run_mode)
 
         hidden = self.act_fn(hidden_pre)
 
         output_hidden = torch.einsum('iI, BI -> Bi', self.W_output, hidden)
         output = output_hidden + self.b_output.unsqueeze(0)
 
-        if run_mode in ('track_states'):
-            db = {
-                'M': db_mp['M'],
-                'hidden_pre': hidden_pre.detach(),
-                'hidden': hidden.detach(),
-                "input": x.detach(), 
-            }
-        else:
-            db = None
-
-        return output, hidden, db
+        return output, hidden
 
     def network_step(self, current_input, run_mode='minimal', verbose=False):
         """
@@ -696,12 +668,12 @@ class MultiPlasticNet(MultiPlasticNetBase):
 
         assert len(current_input.shape) == 2
 
-        output, current_hidden, db = self.forward(current_input, run_mode=run_mode, verbose=verbose)
+        output, current_hidden = self.forward(current_input, run_mode=run_mode, verbose=verbose)
 
         # M updated internally when this is called, M here is only used if finding fixed points (not yet implemented)
         M = self.mp_layer.update_M_matrix(current_input, current_hidden)
 
-        return output, db
+        return output
 
 class DeepMultiPlasticNet(MultiPlasticNetBase):
     """
@@ -810,12 +782,11 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
 
         mpl_activities = [x,] # Used for updating the M matrices
 
-        db = {} if run_mode in ('track_states',) else None
 
         for mpl_idx, mp_layer in enumerate(self.mp_layers):
             # Returns pre-activation
             layer_input_old = layer_input.clone()
-            hidden_pre, db_mp = mp_layer(layer_input, run_mode=run_mode)
+            hidden_pre = mp_layer(layer_input, run_mode=run_mode)
             
             if self.recurrent_active: 
                 if len(self.h_recurrent) == 0: # set zero initial hidden activity
@@ -838,12 +809,6 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
                 ))
 
             mpl_activities.append(layer_input) # Postsyn activity
-            if run_mode in ('track_states',):
-                db['hidden_pre{}'.format(mp_layer.mp_layer_name)] = hidden_pre.detach()
-                db['hidden{}'.format(mp_layer.mp_layer_name)] = layer_input.detach()
-                db['M{}'.format(mp_layer.mp_layer_name)] = db_mp['M']
-                db['b{}'.format(mp_layer.mp_layer_name)] = db_mp['b']
-                db['input{}'.format(mp_layer.mp_layer_name)] = layer_input_old.detach()
 
         if run_mode in ('debug',): 
             print(f'  Output layer forward.')
@@ -851,7 +816,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
         output_hidden = torch.einsum('iI, BI -> Bi', self.W_output, layer_input)
         output = output_hidden + self.b_output.unsqueeze(0)
         
-        return output, mpl_activities, db
+        return output, mpl_activities
 
     def network_step(self, current_input, run_mode='minimal', verbose=False, seq_idx=None):
         """
@@ -870,7 +835,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
             self.h_recurrent = []
 
         # current_input is per-time input, so has shape (batch_size, input_size)
-        output, mpl_activities, db = self.forward(current_input, run_mode=run_mode, verbose=verbose)
+        output, mpl_activities = self.forward(current_input, run_mode=run_mode, verbose=verbose)
 
         # M updated internally when this is called
         for mpl_idx, mp_layer in enumerate(self.mp_layers):
@@ -885,7 +850,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
 
             _ = mp_layer.update_M_matrix(mpl_activities[mpl_idx], mpl_activities[mpl_idx + 1])
 
-        return output, mpl_activities, db
+        return output, mpl_activities
     ######################################
     #new code for checkpointing
     ######################################
@@ -930,7 +895,7 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
             mpl_acts_pre.append(layer_input)
 
             # functional forward uses Ms[li]
-            hidden_pre, _ = mp_layer.forward_functional(layer_input, Ms[li], run_mode=run_mode)
+            hidden_pre = mp_layer.forward_functional(layer_input, Ms[li], run_mode=run_mode)
 
             if self.recurrent_active:
                 if h_rec[li] is None:
@@ -992,8 +957,6 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
 
         if Ms0 is None:
             Ms = self.init_Ms(B=B, device=device, dtype=dtype)
-        else:
-            Ms = Ms0
 
         # recurrent state
         h_rec = None
@@ -1007,64 +970,61 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
             """
             x_chunk: (K,B,D)
             state: flattened (Ms..., h_rec...) tensors
-            Returns: logits_chunk (K,B,C), new flattened state
+            Returns: last_logits (B,C), new flattened state
             """
             # Unpack
             idx = 0
             Ms_local = list(state[idx: idx + n_layers]); idx += n_layers
-
+        
             if self.recurrent_active:
                 h_local = list(state[idx: idx + n_layers]); idx += n_layers
             else:
                 h_local = None
-
+        
             K = x_chunk.shape[0]
-            out_local = []
+        
+            last = None
+            #self.step_functional = torch.compile(self.step_functional, mode="max-autotune")
             for tt in range(K):
-                logits_t, Ms_local, h_local = self.step_functional(x_chunk[tt], Ms_local, h_local, run_mode='minimal')
-                out_local.append(logits_t)
-
-            logits_chunk = torch.stack(out_local, dim=0)  # (K,B,C)
-
+                last, Ms_local, h_local = self.step_functional(
+                    x_chunk[tt],
+                    Ms_local,
+                    h_local,
+                    run_mode=run_mode,   
+                )
+        
             # Pack updated state
             packed = []
             packed.extend(Ms_local)
             if self.recurrent_active:
                 packed.extend(h_local)
-            return (logits_chunk, *packed)
+        
+            return (last, *packed)
 
         # Flatten initial state into tensors for checkpoint
         state = []
         state.extend(Ms)
+        
         if self.recurrent_active:
-            # represent None as zeros at first call
-            for li, mp_layer in enumerate(self.mp_layers):
-                # create placeholder h with correct shape using layer output size
-                # We can infer it by running one step cheaply? Instead, allocate at first use:
-                # Here we allocate zeros based on mp_layer.n_output:
+            for mp_layer in self.mp_layers:
+                # small: (B, hidden) per layer
                 h0 = torch.zeros((B, mp_layer.n_output), device=device, dtype=dtype)
                 state.append(h0)
-
-        # Run chunks
+        
+        last_logits = None
         t = 0
         while t < T:
             x_chunk = x_seq[t: t + chunk_size]  # (K,B,D)
             K = x_chunk.shape[0]
-
-            # checkpoint returns tuple: (logits_chunk, *new_state)
-            logits_chunk, *new_state = checkpoint(
+        
+            last_logits, *new_state = checkpoint(
                 chunk_fn,
                 x_chunk,
                 *state,
-                use_reentrant=False
+                use_reentrant=False,
             )
-
-            outputs.append(logits_chunk)
+        
             state = new_state
             t += K
-
-        logits_seq = torch.cat(outputs, dim=0)  # (T,B,C)
-
-        # Unpack final Ms from state
-        Ms_T = list(state[:n_layers])
-        return logits_seq, Ms_T
+        
+        return last_logits
