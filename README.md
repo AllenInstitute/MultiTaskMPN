@@ -1,7 +1,7 @@
 # MultiTaskMPN
 zhixin is working on this branch.
 
-The two main files Zhixin is working on is the mpn.py, which contains the multi-layer mpn model, and the mnist.ipynb, which trains it on a sequentialMNIST task. 
-
+The model is a MPN with directed acyclic graph, which is more general than multi-layer MPN.
+The current code (300 nodes) works in a A100 GPU for seq-MNIST (batch size=640), with performace being >79% after 20 epoches
 Currently, Zhixin is still debugging the code to find out the memory leak through the batches. 
 
