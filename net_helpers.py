@@ -331,6 +331,8 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
             new_n_neurons[0] += pretraining_shift_pre
             net_params["n_neurons"] = new_n_neurons
 
+        print(net_params["n_neurons"])
+
         net = netFunction(net_params, verbose=verbose)
 
     num_params = sum(p.numel() for p in net.parameters() if p.requires_grad)
@@ -447,7 +449,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
             # --- inputs ---------------------------------------------------------------
             df   = task_params["adjust_task_decay"]          # scalar decay factor
 
-            # Jul 19th: for pretraining
+            # 2025-07-19: for pretraining
             max_len = max(len(a) for a in goodness_history)
             goodness_history = [
                 np.pad(a.astype(float),                     # ensure float → can hold NaN
@@ -1129,6 +1131,8 @@ class BaseNetwork(BaseNetworkFunctions):
                                                  run_mode=run_mode, datanum=datanum)
         
         last_group_acc = list(self.hist['group_valid_acc'][-1].values())
+        # print(f"last_group_acc: {last_group_acc}")
+
         last_group_goodness = mpn_tasks.normalize_to_one([1 - acc for acc in last_group_acc])
         
         self.hist['group_valid_acc_batch'].append(last_group_goodness)
@@ -1454,7 +1458,15 @@ class BaseNetwork(BaseNetworkFunctions):
         if isvalid:
             # select the input part that is task related
             # under assumption for which the fixation off signal is provided (task_params)
-            task_mask_truc = input_[:,:,6:] 
+            # 2026-02-04: modified to adapt when fixation off signal is not provided
+            fixon = input_[:,:,0]
+            fixoff_candidate = input_[:,:,1]
+            s = fixon + fixoff_candidate
+            fixoff_add = torch.allclose(
+                s, torch.ones_like(s), rtol=1e-5, atol=1e-6
+            )
+            
+            task_mask_truc = input_[:,:,6-abs(1-fixoff_add):] 
 
             task_mask = one_hot_argidx(task_mask_truc)
             

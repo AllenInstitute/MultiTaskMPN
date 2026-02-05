@@ -2022,10 +2022,12 @@ def generate_trials_wrap(task_params, n_batches, device='cuda', verbose=False, r
     if task_params['randomize_inputs']: # Multiplies all inputs by fixed random matrix (needed for MPNs sometimes)
         inputs_all = np.matmul(inputs_all, task_params['randomize_matrix'])
 
+    # print(pretraining_shift_pre, pretraining_shift, inputs_all.shape)
     # 2025-07-18: pretraining purprose, paddling the input based on the number of pretrained tasks 
     # mask and output should not be affected
     inputs_all = insert_zeros_after_channel(inputs_all, K=pretraining_shift_pre, after=inputs_all.shape[-1]-1)
     inputs_all = insert_zeros_after_channel(inputs_all, K=pretraining_shift, after=5)
+    # print(inputs_all.shape)
     
     # 2025-10-30: at most one is True, the values will only be nonzero during the pretraining analysis
     # in which one value is used in pre-training and one value is used for post-training
