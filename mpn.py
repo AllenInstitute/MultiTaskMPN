@@ -631,14 +631,41 @@ class DeepMultiPlasticNet(MultiPlasticNetBase):
 
         # Creates all the MP layers
         self.param_clamping = True # Always have param clamping for MP layers because lam bounds
+        
+        input_init_type = net_params.get("input_init_type", "xavier")
 
         if self.input_layer_active:
             self.W_initial_linear = nn.Linear(arch[0], arch[1])
 
-            self.W_initial_linear.weight.data = torch.tensor(
-                rand_weight_init(arch[0], arch[1], init_type=net_params.get('W_init', 'xavier')),
-                dtype=torch.float
-            )
+            # self.W_initial_linear.weight.data = torch.tensor(
+            #     rand_weight_init(arch[0], arch[1], init_type=net_params.get('W_init', 'xavier')),
+            #     dtype=torch.float
+            # )
+            
+            with torch.no_grad():
+                if input_init_type == "identity":
+                    W = self.W_initial_linear.weight
+                    W.zero_()
+                    k = min(W.size(0), W.size(1))
+                    W[:k, :k].copy_(torch.eye(k, device=W.device, dtype=W.dtype))
+
+                elif input_init_type == "identity_noise":
+                    eps = net_params.get("identity_eps", 1e-3)
+                    W = self.W_initial_linear.weight
+                    W.zero_()
+                    k = min(W.size(0), W.size(1))
+                    W[:k, :k].copy_(torch.eye(k, device=W.device, dtype=W.dtype))
+                    W.add_(eps * torch.randn_like(W))
+
+                elif input_init_type == "orthogonal":
+                    torch.nn.init.orthogonal_(self.W_initial_linear.weight, gain=1.0)
+
+                else:
+                    self.W_initial_linear.weight.copy_(torch.tensor(
+                        rand_weight_init(arch[0], arch[1], init_type=input_init_type),
+                        device=self.W_initial_linear.weight.device,
+                        dtype=self.W_initial_linear.weight.dtype
+                    ))
             
             if not self.input_layer_active_trainable:
                 print(f'  Input Layer Frozen.')

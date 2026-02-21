@@ -1374,23 +1374,27 @@ class BaseNetwork(BaseNetworkFunctions):
         return batch_output, batch_hidden, db_seq
 
     def compute_reg_term(self):
-    
-        # Omits certain paramters from regularization
         p_reg = []
-    
+        p_reg_names = []
+
         for p_name, p in self.named_parameters():
-            if p_name not in self.reg_omit and "W" in p_name: # Only regularize weights	
+            if (p_name not in self.reg_omit) and ("W" in p_name):
                 p_reg.append(p)
+                p_reg_names.append(p_name)
+
+        # print("Regularized parameters ({}):".format(len(p_reg_names)))
+        # for n in p_reg_names:
+        #     print("  -", n)
 
         if self.weight_reg == 'L2':
-            l2_norm = sum(p.pow(2.0).sum()
-                                for p in p_reg)
-            reg_term = self.reg_lambda * l2_norm/2
+            l2_norm = sum(p.pow(2.0).sum() for p in p_reg)
+            reg_term = self.reg_lambda * l2_norm / 2
         elif self.weight_reg == 'L1':
-            l1_norm = sum(p.abs().sum()
-                                for p in p_reg)
+            l1_norm = sum(p.abs().sum() for p in p_reg)
             reg_term = self.reg_lambda * l1_norm
-            # print('Batch size: {}, L1 Norm {:0.5f}, Reg Term {:0.5f}'.format(B, l1_norm, reg_term))
+        else:
+            raise ValueError(f"Unknown weight_reg: {self.weight_reg}")
+
         return reg_term
 
     def compute_loss(self, output, labels, output_mask, hidden):
@@ -1408,6 +1412,8 @@ class BaseNetwork(BaseNetworkFunctions):
         if self.activity_reg in ('L2',): 
             activity_reg_term = torch.mean(hidden ** 2) * self.reg_lambda 
             reg_term += activity_reg_term
+        else:
+            raise ValueError(f"Unknown activity_reg: {self.activity_reg}")
 
         if output_mask.dtype == torch.bool:
             # Modify output by the mask (note just uses first output idx to mask)   

@@ -140,17 +140,10 @@ verbose = True
 hyp_dict['run_mode'] = 'minimal' # minimal, debug
 hyp_dict['chosen_network'] = "dmpn"
 
-# suffix for saving images
-# inputadd, Wfix, WL2, hL2
-# inputrandom, Wtrain
-# noise001
-# largeregularization
-# trainetalambda
-
 mpn_depth = 1
 n_hidden = 300
 
-hyp_dict['addon_name'] = "L2tanh"
+hyp_dict['addon_name'] = "L21e4"
 hyp_dict['addon_name'] += f"+hidden{n_hidden}"
 
 # for coding 
@@ -174,6 +167,8 @@ def current_basic_params():
         'n_input': 20, # Only used if inputs are randomized,
         'modality_diff': True,
         'label_strength': True, 
+        'long_stimulus': 'normal', 
+        'long_fixation': 'normal', 
         'long_delay': 'normal',
         'long_response': 'normal',
         'adjust_task_prop': True,
@@ -190,7 +185,7 @@ def current_basic_params():
         'batch_size': 128,
         'gradient_clip': 10,
         'valid_n_batch': min(max(15, int(200/len(rules_dict[hyp_dict['ruleset']]))), 50),
-        'n_datasets': 100000, # 6000
+        'n_datasets': 100000,
         'valid_check': None, 
         'n_epochs_per_set': 1, 
         'weight_reg': 'L2',
@@ -216,6 +211,7 @@ def current_basic_params():
     net_params = {
         'net_type': hyp_dict['chosen_network'], # mpn1, dmpn, vanilla
         'n_neurons': [1] + [n_hidden] * mpn_depth + [1],
+        'linear_embed': 300, 
         'output_bias': False, # Turn off biases for easier interpretation
         'loss_type': 'MSE', # XE, MSE
         'activation': 'tanh', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside
