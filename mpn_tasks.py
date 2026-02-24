@@ -1511,7 +1511,15 @@ def dmc_(config, mode, matchnogo, fix, separate_input, label_strength, long_dela
 
         stim1_ons  = int(rng.uniform(200,600)/dt)
         stim1_offs = stim1_ons + int(rng.uniform(200,1600)/dt)
-        stim2_ons  = stim1_offs + int(rng.uniform(200,1600)/dt)
+        
+        # long_delay controls the delay between stim1_offs and stim2_ons
+        if long_delay == "normal":
+            stim2_ons  = stim1_offs + int(rng.uniform(200,1600)/dt)
+        elif long_delay == "long":
+            stim2_ons  = stim1_offs + int(rng.choice([10000])/dt)
+        else:
+            raise ValueError(f"Unknown long_delay: {long_delay}")
+        
         tdim = stim2_ons + int(rng.uniform(300,700)/dt) # longest trial
 
     elif mode == 'random_batch': # Randomly generate parameters, times/modalities different across batch
@@ -1536,7 +1544,15 @@ def dmc_(config, mode, matchnogo, fix, separate_input, label_strength, long_dela
 
         stim1_ons  = (rng.uniform(200,600, size=(batch_size,))/dt).astype(np.int32)
         stim1_offs = stim1_ons + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
-        stim2_ons  = stim1_offs + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
+        
+        # long_delay controls the delay between stim1_offs and stim2_ons (per trial)
+        if long_delay == "normal":
+            stim2_ons  = stim1_offs + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
+        elif long_delay == "long":
+            stim2_ons  = stim1_offs + (rng.choice([10000], size=(batch_size,))/dt).astype(np.int32)
+        else:
+            raise ValueError(f"Unknown long_delay: {long_delay}")
+        
         tdim = stim2_ons + (rng.uniform(300,700, size=(batch_size,))/dt).astype(np.int32) # longest trial
 
     elif mode == 'test':
@@ -1610,7 +1626,6 @@ def dmc_(config, mode, matchnogo, fix, separate_input, label_strength, long_dela
                    'delay1'   : (stim1_offs, stim2_ons),
                    'go1'      : (stim2_ons, None)}
 
-    # ADD BY ZIHAN
     if trial.get_meta:
         trial.meta = {
             'stim1': get_clostest_pref_idx(stim1_locs, trial.pref),

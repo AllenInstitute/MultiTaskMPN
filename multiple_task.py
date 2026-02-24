@@ -338,8 +338,11 @@ if task_params['task_type'] in ('multitask',): # Test batch consists of all the 
     test_mode_for_all = "random"
     # ZIHAN
     # generate test data using "random"
-    test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params, test_n_batch, \
-                rules=task_params['rules'], mode_input=test_mode_for_all, fix=task_random_fix
+    test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params, 
+                                                                  test_n_batch, 
+                                                                  rules=task_params['rules'], 
+                                                                  mode_input=test_mode_for_all, 
+                                                                  fix=task_random_fix
     )
     _, test_trials, test_rule_idxs = test_trials_extra
     task_params['dataset_name'] = 'multitask'
@@ -439,10 +442,14 @@ test_task = find_task(task_params, test_input_np, shift_index)
 # actual fitting
 # we use net at different training stage on the same test_input
 net, _, (counter_lst, netout_lst, db_lst, Winput_lst, Winputbias_lst,\
-         Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst), _ = net_helpers.train_network(params, device=device, verbose=verbose,\
-                                                                                           train=train, hyp_dict=hyp_dict,\
-                                                                                           netFunction=netFunction,\
-                                                                                           test_input=[test_input], print_frequency=100)
+         Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst), _ = net_helpers.train_network(params, 
+                                                                                              device=device, 
+                                                                                              verbose=verbose, 
+                                                                                              train=train, 
+                                                                                              hyp_dict=hyp_dict,
+                                                                                              netFunction=netFunction,
+                                                                                              test_input=[test_input], 
+                                                                                              print_frequency=100)
 
 # In[ ]:
 
@@ -534,7 +541,7 @@ else:
 # In[ ]:
 
 
-def plot_input_output(test_input_np, net_out, test_output_np, test_task=None, tag="", batch_num=5):
+def plot_input_output(test_input_np, net_out, test_output_np, test_task=None, tag="", batch_num=5, savefig=True):
     """
     """
     test_input_np = helper.to_ndarray(test_input_np)
@@ -567,10 +574,14 @@ def plot_input_output(test_input_np, net_out, test_output_np, test_task=None, ta
     for ax in axs_all.flatten(): 
         ax.set_ylim([-2, 2])
     fig_all.tight_layout()
-    fig_all.savefig(f"./multiple_tasks/lowD_{hyp_dict['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}_{tag}.png", dpi=100)
+    
+    if savefig:
+        fig_all.savefig(f"./multiple_tasks/lowD_{hyp_dict['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}_{tag}.png", dpi=100)
+        
+    return fig_all, axs_all
 
-plot_input_output(test_input_np, net_out, test_output_np, test_task, tag="", \
-                  batch_num=20 if len(rules_dict[hyp_dict['ruleset']]) > 1 else 10)
+fig_all, axs_all = plot_input_output(test_input_np, net_out, test_output_np, test_task, tag="", 
+                                     batch_num=20 if len(rules_dict[hyp_dict['ruleset']]) > 1 else 10)
 
 
 # In[ ]:
