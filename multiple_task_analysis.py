@@ -189,163 +189,196 @@ task_params_c, train_params_c, net_params_c = mpn_tasks.convert_and_init_multita
     (task_params, train_params, net_params)
 )
 
-task_params_dmcgo = copy.deepcopy(task_params_c)
-print(task_params_dmcgo)
-
-task_params_dmcgo["rules"] = ["dmcgo", "dmcnogo"]
-test_n_batch = 100
-
-task_params_dmcgo['hp']['batch_size_train'] = test_n_batch
-task_params_dmcgo["long_delay"] = "long"
-test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params_dmcgo, 
-                                                              test_n_batch, 
-                                                              rules=task_params_dmcgo['rules'], 
-                                                              mode_input="random", 
-                                                              fix=True,
-                                                              device="cpu",
-                                                              verbose=True)
-test_input, test_output, _ = test_data
-
-print(f"test_input.shape: {test_input.shape}")
-
-test_task = helper.find_task(task_params_dmcgo, test_input.detach().cpu().numpy(), 0)
-test_task = [int(test_task_ - min(test_task)) for test_task_ in test_task]
-
-_, test_trials, test_rule_idxs = test_trials_extra
-
-stim1_choices = np.concatenate([test_trials[0].meta["stim1"], test_trials[1].meta["stim1"]])
-stim2_choices = np.concatenate([test_trials[0].meta["stim2"], test_trials[1].meta["stim2"]])
-
-epochs = test_trials[0].epochs
-delay_period = epochs["delay1"]
-print(f"delay_period: {delay_period}")
-
-assert len(test_task) == len(stim1_choices)
-
-net_out, _, db_test = model.iterate_sequence_batch(test_input, run_mode='track_states')
-hidden_test = db_test["hidden1"][:, delay_period[0]:delay_period[1], :]
-em_test = (db_test["M1"][:, delay_period[0]:delay_period[1], :, :] * state_dict["mp_layer1.W"]).cpu().numpy()
-m_test = db_test["M1"][:, delay_period[0]:delay_period[1], :, :].cpu().numpy()
-
-print(f"hidden_test: {hidden_test.shape}; em_test: {em_test.shape}; m_test: {m_test.shape}")
-
-fig, axs = plt.subplots(5,2,figsize=(5*2,5*2))
-for i in range(5):
-    for inp in range(test_input.shape[2]):
-        axs[i,0].plot(test_input[i,:,inp].detach().cpu().numpy(), color=c_vals[inp], alpha=0.5)
-    for inp in range(net_out.shape[2]):
-        axs[i,1].plot(net_out[i,:,inp].detach().cpu().numpy(), color=c_vals[inp], alpha=0.5)
-    for outp in range(test_output.shape[2]):
-        axs[i,1].plot(test_output[i,:,outp].detach().cpu().numpy(), color=c_vals[outp], 
-                    alpha=0.5, linestyle="--")
-fig.tight_layout()  
-fig.savefig(f"./multiple_tasks/dmcgo_{savefigure_name}.png", dpi=300)
-
-def combo_indices_16(A, B):
-    A = np.asarray(A)
-    B = np.asarray(B)
-    if A.shape != B.shape:
-        raise ValueError(f"Length mismatch: A{A.shape} vs B{B.shape}")
-
-    out = {}
-    for a in (0, 1):
-        for b in range(8):
-            out[(a, b)] = np.flatnonzero((A == a) & (B == b)).tolist()
-    return out
-
-idx_map = combo_indices_16(test_task, stim1_choices)
-
-stacked_inputs = [[], []]
-for i in range(2):
-    for b in range(8):
-        idxs = idx_map[(i, b)][0]
-        stacked_inputs[i].append(test_input[idxs])
-        
-    xs = stacked_inputs[i]  
-    stacked_inputs[i] = torch.stack(
-        [x if isinstance(x, torch.Tensor) else torch.as_tensor(x) for x in xs],
-        dim=0
-    )
-
-# common delay period PCA
-as_hidden_wantperiod = hidden_test.reshape(-1, hidden_test.shape[-1])
-pca_delay_h = PCA(n_components=3, random_state=42)
-pca_delay_h.fit(as_hidden_wantperiod)
-
-as_em_wantperiod = em_test.reshape(-1, em_test.shape[-1] * em_test.shape[-2])
-pca_delay_em = PCA(n_components=3, random_state=42)
-pca_delay_em.fit(as_em_wantperiod)
-
-as_m_wantperiod = m_test.reshape(-1, m_test.shape[-1] * m_test.shape[-2])
-pca_delay_m = PCA(n_components=3, random_state=42)
-pca_delay_m.fit(as_m_wantperiod)
-
-plot_all = [["hidden", pca_delay_h], ["e_modulation", pca_delay_em], ["m_modulation", pca_delay_m]]
-
-for plot_name, pca_delay in plot_all:
-    # interpolate between the two conditions (stim1 and stim2) in the input space, 
-    # and track how the fixed points evolve in the PCA space of the delay period activity
-    alpha_lst = np.linspace(0, 1, 10)
-    interpolate_inputs = [alpha * stacked_inputs[0] + (1 - alpha) * stacked_inputs[1] for alpha in alpha_lst]
-    fixed_points_all = []
-    traj_all = []
-
-    for idx, interpolate_input in enumerate(interpolate_inputs):
-        _, _, db = model.iterate_sequence_batch(interpolate_input, run_mode="track_states", save_to_cpu=True, detach_saved=True)
-        
-        if plot_name == "hidden":
-            data = db["hidden1"]
-            as_flat = data.reshape(-1, data.shape[-1])
-        elif plot_name == "e_modulation":
-            data = (db["M1"] * state_dict["mp_layer1.W"]).cpu().numpy()    
-            as_flat = data.reshape(-1, data.shape[-1] * data.shape[-2])
-        elif plot_name == "m_modulation":
-            data = db["M1"]
-            as_flat = data.reshape(-1, data.shape[-1] * data.shape[-2])
-        
-        print(as_flat.shape)
-        
-        hidden_tf = pca_delay.transform(as_flat)
-        projected_data = hidden_tf.reshape(data.shape[0], data.shape[1], -1)
-        fixed_points_all.append(projected_data[:,delay_period[-1],:])
-        
-        if idx in (0, len(interpolate_inputs) - 1, ):
-            traj_all.append(projected_data[:, delay_period[0]:delay_period[-1]+1, :])
-        
-    fixed_points_all_arr = np.stack(fixed_points_all, axis=0)  # (n_alpha, n_stim, n_pc)
-    n_alpha, n_stim, n_pc = fixed_points_all_arr.shape
-
-    figmap, axsmap = plt.subplots(1,3,figsize=(5*3,5))
-    pcs = [[0,1],[0,2],[1,2]]
-
-    for pc_idx, (pc_x, pc_y) in enumerate(pcs):
-        for stim in range(n_stim):
-            traj_fp = fixed_points_all_arr[:, stim, :] 
-
-            axsmap[pc_idx].plot(traj_fp[:, pc_x], traj_fp[:, pc_y], "-o", 
-                                color=c_vals[stim], linewidth=1.5, markersize=4, 
-                                alpha=0.5, label=f"stim {stim+1}")
-
-            axsmap[pc_idx].scatter(traj_fp[0, pc_x],  traj_fp[0, pc_y],  color=c_vals[stim], marker="s", s=50, zorder=3)
-            axsmap[pc_idx].scatter(traj_fp[-1, pc_x], traj_fp[-1, pc_y], color=c_vals[stim], marker="^", s=50, zorder=3)
-
-        for be in range(len(traj_all)):
-            proj = traj_all[be]
-            for stim in range(proj.shape[0]):
-                xs = proj[stim, :, pc_x]
-                ys = proj[stim, :, pc_y]
-                axsmap[pc_idx].plot(xs, ys,
-                            color=c_vals[stim], alpha=0.3, linewidth=1.0, linestyle=l_vals[be+1])
-                axsmap[pc_idx].scatter(xs[0], ys[0],
-                            color=c_vals[stim], marker="o", s=35, zorder=4, alpha=0.9)
-
-        axsmap[pc_idx].set_xlabel(f"Memory State PC{pc_x+1}", fontsize=12)
-        axsmap[pc_idx].set_ylabel(f"Memory State PC{pc_y+1}", fontsize=12)
-        axsmap[pc_idx].legend(frameon=True)
-        
-    figmap.tight_layout()
-    figmap.savefig(f"./multiple_tasks/dmcgo_fixed_points_{plot_name}_{savefigure_name}.png", dpi=300)
+def shared_run(addtask): 
+    """
+    Trying to replicate Fig 3D-E in Driscoll etal 2024
+    """
+    assert addtask in ("dmcgo", "delaydm1", )
     
+    task_params_dmcgo = copy.deepcopy(task_params_c)
+
+    if addtask == "dmcgo":
+        task_params_dmcgo["rules"] = ["dmcgo", "dmcnogo"]
+    elif addtask == "delaydm1":
+        task_params_dmcgo["rules"] = ["delaydm1", "delaydm2"]
+        
+    test_n_batch = 100
+
+    task_params_dmcgo['hp']['batch_size_train'] = test_n_batch
+    task_params_dmcgo["long_delay"] = "long"
+    
+    test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params_dmcgo, 
+                                                                test_n_batch, 
+                                                                rules=task_params_dmcgo['rules'], 
+                                                                mode_input="random", 
+                                                                fix=True,
+                                                                device="cpu",
+                                                                verbose=True)
+    test_input, test_output, _ = test_data
+
+    print(f"test_input.shape: {test_input.shape}")
+
+    test_task = helper.find_task(task_params_dmcgo, test_input.detach().cpu().numpy(), 0)
+    test_task = [int(test_task_ - min(test_task)) for test_task_ in test_task]
+
+    _, test_trials, test_rule_idxs = test_trials_extra
+
+    stim1_choices = np.concatenate([test_trials[0].meta["stim1"], test_trials[1].meta["stim1"]])
+    print(f"stim1_choices: {stim1_choices}")
+
+    epochs = test_trials[0].epochs
+    
+    if addtask == "dmcgo":
+        delay_period = epochs["delay1"]
+    elif addtask == "delaydm1":
+        delay_period = epochs["delay1"]
+        
+    print(f"delay_period: {delay_period}")
+
+    assert len(test_task) == len(stim1_choices)
+
+    net_out, _, db_test = model.iterate_sequence_batch(test_input, run_mode='track_states')
+    hidden_test = db_test["hidden1"][:, delay_period[0]:delay_period[1], :]
+    em_test = (db_test["M1"][:, delay_period[0]:delay_period[1], :, :] * state_dict["mp_layer1.W"]).cpu().numpy()
+    m_test = db_test["M1"][:, delay_period[0]:delay_period[1], :, :].cpu().numpy()
+
+    print(f"hidden_test: {hidden_test.shape}; em_test: {em_test.shape}; m_test: {m_test.shape}")
+
+    fig, axs = plt.subplots(5,2,figsize=(5*2,5*2))
+    for i in range(5):
+        for inp in range(test_input.shape[2]):
+            axs[i,0].plot(test_input[i,:,inp].detach().cpu().numpy(), color=c_vals[inp], alpha=0.5)
+        for inp in range(net_out.shape[2]):
+            axs[i,1].plot(net_out[i,:,inp].detach().cpu().numpy(), color=c_vals[inp], alpha=0.5)
+        for outp in range(test_output.shape[2]):
+            axs[i,1].plot(test_output[i,:,outp].detach().cpu().numpy(), color=c_vals[outp], 
+                        alpha=0.5, linestyle="--")
+    fig.tight_layout()  
+    fig.savefig(f"./multiple_tasks/{addtask}_{savefigure_name}.png", dpi=300)
+
+    def combo_indices_16(A, B):
+        A = np.asarray(A)
+        B = np.asarray(B)
+        if A.shape != B.shape:
+            raise ValueError(f"Length mismatch: A{A.shape} vs B{B.shape}")
+
+        out = {}
+        for a in (0, 1):
+            for b in range(8):
+                out[(a, b)] = np.flatnonzero((A == a) & (B == b)).tolist()
+        return out
+
+    idx_map = combo_indices_16(test_task, stim1_choices)
+
+    stacked_inputs = [[], []]
+    stacked_inputs_labels = [[], []]
+    for i in range(2):
+        for b in range(8):
+            # add multiple trials of the same kind of stimulus
+            trial_num = 1 
+            for trial_idx in range(trial_num): 
+                idxs = idx_map[(i, b)][trial_idx]
+                stacked_inputs[i].append(test_input[idxs])
+                # add the stimulus label (for this trial) as well
+                stacked_inputs_labels[i].append(b)
+            
+        xs = stacked_inputs[i]  
+        stacked_inputs[i] = torch.stack(
+            [x if isinstance(x, torch.Tensor) else torch.as_tensor(x) for x in xs],
+            dim=0
+        )
+        
+    assert stacked_inputs_labels[0] == stacked_inputs_labels[1], "The two conditions should have the same set of stimuli for interpolation to make sense"
+
+    # common delay period PCA
+    as_hidden_wantperiod = hidden_test.reshape(-1, hidden_test.shape[-1])
+    pca_delay_h = PCA(n_components=3, random_state=42)
+    pca_delay_h.fit(as_hidden_wantperiod)
+
+    as_em_wantperiod = em_test.reshape(-1, em_test.shape[-1] * em_test.shape[-2])
+    pca_delay_em = PCA(n_components=3, random_state=42)
+    pca_delay_em.fit(as_em_wantperiod)
+
+    as_m_wantperiod = m_test.reshape(-1, m_test.shape[-1] * m_test.shape[-2])
+    pca_delay_m = PCA(n_components=3, random_state=42)
+    pca_delay_m.fit(as_m_wantperiod)
+
+    plot_all = [["hidden", pca_delay_h], ["e_modulation", pca_delay_em], ["m_modulation", pca_delay_m]]
+
+    for plot_name, pca_delay in plot_all:
+        # interpolate between the two conditions (stim1 and stim2) in the input space, 
+        # and track how the fixed points evolve in the PCA space of the delay period activity
+        alpha_lst = np.linspace(0,1,20)
+        interpolate_inputs = [alpha * stacked_inputs[0] + (1 - alpha) * stacked_inputs[1] for alpha in alpha_lst]
+        fixed_points_all = []
+        traj_all = []
+
+        for idx, interpolate_input in enumerate(interpolate_inputs):
+            _, _, db = model.iterate_sequence_batch(interpolate_input, run_mode="track_states", save_to_cpu=True, detach_saved=True)
+            
+            if plot_name == "hidden":
+                data = db["hidden1"]
+                as_flat = data.reshape(-1, data.shape[-1])
+            elif plot_name == "e_modulation":
+                data = (db["M1"] * state_dict["mp_layer1.W"]).cpu().numpy()    
+                as_flat = data.reshape(-1, data.shape[-1] * data.shape[-2])
+            elif plot_name == "m_modulation":
+                data = db["M1"]
+                as_flat = data.reshape(-1, data.shape[-1] * data.shape[-2])
+            
+            # print(as_flat.shape)
+            
+            hidden_tf = pca_delay.transform(as_flat)
+            projected_data = hidden_tf.reshape(data.shape[0], data.shape[1], -1)
+            fixed_points_all.append(projected_data[:,delay_period[-1],:])
+            
+            if idx in (0, len(interpolate_inputs) - 1, ):
+                traj_all.append(projected_data[:, delay_period[0]:delay_period[-1]+1, :])
+            
+        fixed_points_all_arr = np.stack(fixed_points_all, axis=0)  # (n_alpha, n_stim, n_pc)
+        print(f"fixed_points_all_arr: {fixed_points_all_arr.shape}")
+        n_alpha, n_stim, n_pc = fixed_points_all_arr.shape
+
+        figmap, axsmap = plt.subplots(1,3,figsize=(5*3,5))
+        pcs = [[0,1],[0,2],[1,2]]
+
+        for pc_idx, (pc_x, pc_y) in enumerate(pcs):
+            for stim in range(n_stim):
+                traj_fp = fixed_points_all_arr[:, stim, :] 
+
+                axsmap[pc_idx].plot(traj_fp[:, pc_x], traj_fp[:, pc_y], "-o", 
+                                    color=c_vals[stacked_inputs_labels[0][stim]], linewidth=1.5, markersize=4, 
+                                    alpha=0.5, 
+                                    label=f"stim {stim+1}")
+
+                axsmap[pc_idx].scatter(traj_fp[0, pc_x],  traj_fp[0, pc_y],  color=c_vals[stacked_inputs_labels[0][stim]], 
+                                       marker="s", s=50, zorder=3)
+                axsmap[pc_idx].scatter(traj_fp[-1, pc_x], traj_fp[-1, pc_y], color=c_vals[stacked_inputs_labels[0][stim]], 
+                                       marker="^", s=50, zorder=3)
+
+            # plot the trajectory during the delay period for the first and last alpha (i.e. the two original conditions)
+            delay_traj = False 
+            if delay_traj: 
+                for be in range(len(traj_all)):
+                    proj = traj_all[be]
+                    for stim in range(proj.shape[0]):
+                        xs = proj[stim, :, pc_x]
+                        ys = proj[stim, :, pc_y]
+                        axsmap[pc_idx].plot(xs, ys,
+                                    color=c_vals[stacked_inputs_labels[stim]], alpha=0.3, linewidth=1.0, linestyle=l_vals[be+1])
+                        axsmap[pc_idx].scatter(xs[0], ys[0],
+                                    color=c_vals[stacked_inputs_labels[stim]], marker="o", s=35, zorder=4, alpha=0.9)
+
+            axsmap[pc_idx].set_xlabel(f"Memory State PC{pc_x+1}", fontsize=12)
+            axsmap[pc_idx].set_ylabel(f"Memory State PC{pc_y+1}", fontsize=12)
+            axsmap[pc_idx].legend(frameon=True)
+            
+        figmap.tight_layout()
+        figmap.savefig(f"./multiple_tasks/{addtask}_fixed_points_{plot_name}_{savefigure_name}.png", dpi=300)
+
+shared_run("delaydm1") 
+# shared_run("dmcgo")
+
 sys.exit()
     
 

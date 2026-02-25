@@ -930,21 +930,41 @@ def delaydm_(config, mode, stim_mod, fix, separate_input, label_strength, long_d
         stim1_strengths = stims_mean + stims_coh*stims_sign
         stim2_strengths = stims_mean - stims_coh*stims_sign
 
-        # Time of stimuluss on/off
-        # stim1_ons  = int(rng.choice([200, 400, 600])/dt)
-        stim1_ons  = int(rng.uniform(200,600)/dt)
-        # stim1_offs = stim1_ons + int(rng.choice([200, 400, 600])/dt)
-        stim1_offs = stim1_ons + int(rng.uniform(200,1600)/dt)
-        # stim2_ons  = stim1_offs + int(rng.choice([200, 400, 800, 1600])/dt)
-        stim2_ons  = stim1_offs + int(rng.uniform(200,1600)/dt)
-        # stim2_offs = stim2_ons + int(rng.choice([200, 400, 600])/dt)
-        stim2_offs = stim2_ons + int(rng.uniform(200,1600)/dt)
+        # # Time of stimuluss on/off
+        # # stim1_ons  = int(rng.choice([200, 400, 600])/dt)
+        # stim1_ons  = int(rng.uniform(200,600)/dt)
+        # # stim1_offs = stim1_ons + int(rng.choice([200, 400, 600])/dt)
+        # stim1_offs = stim1_ons + int(rng.uniform(200,1600)/dt)
+        # # stim2_ons  = stim1_offs + int(rng.choice([200, 400, 800, 1600])/dt)
+        # stim2_ons  = stim1_offs + int(rng.uniform(200,1600)/dt)
+        # # stim2_offs = stim2_ons + int(rng.choice([200, 400, 600])/dt)
+        # stim2_offs = stim2_ons + int(rng.uniform(200,1600)/dt)
+        # # fix_offs  = stim2_offs + int(rng.uniform(100,300)/dt)
         # fix_offs  = stim2_offs + int(rng.uniform(100,300)/dt)
-        fix_offs  = stim2_offs + int(rng.uniform(100,300)/dt)
+        
+        # # each batch consists of sequences of equal length
+        # # tdim = fix_offs + int(500/dt) # longest trial
+        # tdim = fix_offs + int(rng.uniform(300,700)/dt) # longest trial
+        
+        # Time of stimuluss on/off (keep your existing sampling for these)
+        stim1_ons  = int(rng.uniform(200,600)/dt)
+        stim1_offs = stim1_ons + int(rng.uniform(200,1600)/dt)
 
-        # each batch consists of sequences of equal length
-        # tdim = fix_offs + int(500/dt) # longest trial
-        tdim = fix_offs + int(rng.uniform(300,700)/dt) # longest trial
+        # NEW: delay lengths (apply to BOTH delay1 and delay2)
+        if long_delay == "normal":
+            delay1_len = int(rng.uniform(200,1600)/dt)   # between stim1_offs and stim2_ons
+            delay2_len = int(rng.uniform(100,300)/dt)    # between stim2_offs and fix_offs
+        elif long_delay == "long":
+            delay1_len = int(5000/dt)
+            delay2_len = int(5000/dt)
+        else:
+            raise ValueError(f"Unknown long_delay: {long_delay}")
+
+        stim2_ons  = stim1_offs + delay1_len
+        stim2_offs = stim2_ons + int(rng.uniform(200,1600)/dt)
+        fix_offs   = stim2_offs + delay2_len
+
+        tdim = fix_offs + int(rng.uniform(300,700)/dt)
 
     elif mode == 'random_batch': # Randomly generate parameters, times/modalities different across batch
         batch_size = kwargs['batch_size']
@@ -968,20 +988,39 @@ def delaydm_(config, mode, stim_mod, fix, separate_input, label_strength, long_d
         stim1_strengths = stims_mean + stims_coh*stims_sign
         stim2_strengths = stims_mean - stims_coh*stims_sign
 
-        # Time of stimuluss on/off
-        # stim1_ons  = batch_choice([200, 400, 600], batch_size, rng, dt)
-        stim1_ons  = (rng.uniform(200,600, size=(batch_size,))/dt).astype(np.int32)
-        # stim1_offs = stim1_ons + batch_choice([200, 400, 600], batch_size, rng, dt)
-        stim1_offs = stim1_ons + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
-        # stim2_ons  = stim1_offs + batch_choice([200, 400, 800, 1600], batch_size, rng, dt)
-        stim2_ons  = stim1_offs + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
-        # stim2_offs = stim2_ons + batch_choice([200, 400, 600], batch_size, rng, dt)
-        stim2_offs = stim2_ons + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
+        # # Time of stimuluss on/off
+        # # stim1_ons  = batch_choice([200, 400, 600], batch_size, rng, dt)
+        # stim1_ons  = (rng.uniform(200,600, size=(batch_size,))/dt).astype(np.int32)
+        # # stim1_offs = stim1_ons + batch_choice([200, 400, 600], batch_size, rng, dt)
+        # stim1_offs = stim1_ons + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
+        # # stim2_ons  = stim1_offs + batch_choice([200, 400, 800, 1600], batch_size, rng, dt)
+        # stim2_ons  = stim1_offs + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
+        # # stim2_offs = stim2_ons + batch_choice([200, 400, 600], batch_size, rng, dt)
+        # stim2_offs = stim2_ons + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
+        # # fix_offs  = stim2_offs + (rng.uniform(100,300, size=(batch_size,))/dt).astype(np.int32)
         # fix_offs  = stim2_offs + (rng.uniform(100,300, size=(batch_size,))/dt).astype(np.int32)
-        fix_offs  = stim2_offs + (rng.uniform(100,300, size=(batch_size,))/dt).astype(np.int32)
 
-        # tdim = fix_offs + int(500/dt) # longest trial
-        tdim = fix_offs + (rng.uniform(300,700, size=(batch_size,))/dt).astype(np.int32) # longest trial
+        # # tdim = fix_offs + int(500/dt) # longest trial
+        # tdim = fix_offs + (rng.uniform(300,700, size=(batch_size,))/dt).astype(np.int32) # longest trial
+        
+        stim1_ons  = (rng.uniform(200,600,  size=(batch_size,))/dt).astype(np.int32)
+        stim1_offs = stim1_ons + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
+
+        # NEW: delay lengths (apply to BOTH delay1 and delay2)
+        if long_delay == "normal":
+            delay1_len = (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
+            delay2_len = (rng.uniform(100,300,  size=(batch_size,))/dt).astype(np.int32)
+        elif long_delay == "long":
+            delay1_len = np.full((batch_size,), int(5000/dt), dtype=np.int32)
+            delay2_len = np.full((batch_size,), int(5000/dt), dtype=np.int32)
+        else:
+            raise ValueError(f"Unknown long_delay: {long_delay}")
+
+        stim2_ons  = stim1_offs + delay1_len
+        stim2_offs = stim2_ons + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
+        fix_offs   = stim2_offs + delay2_len
+
+        tdim = fix_offs + (rng.uniform(300,700, size=(batch_size,))/dt).astype(np.int32)
 
     elif mode == 'test':
         tdim = int(3000/dt)
