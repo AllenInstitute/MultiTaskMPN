@@ -297,7 +297,7 @@ for _ in range(5):
     epoch_multiply = train_params["n_epochs_per_set"]
 
     # adjust the training information
-    train_params2["n_datasets"] = 80000 # 300000
+    train_params2["n_datasets"] = 80000 
     train_params2['n_epochs_per_set'] = 1
     # net_params2['acc_measure'] = "angle"
 

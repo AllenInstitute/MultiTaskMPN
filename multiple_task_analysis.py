@@ -205,7 +205,7 @@ def shared_run(addtask):
     test_n_batch = 100
 
     task_params_dmcgo['hp']['batch_size_train'] = test_n_batch
-    task_params_dmcgo["long_delay"] = "long"
+    task_params_dmcgo["long_delay"] = "normal"
     
     test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params_dmcgo, 
                                                                 test_n_batch, 
@@ -228,19 +228,20 @@ def shared_run(addtask):
 
     epochs = test_trials[0].epochs
     
-    if addtask == "dmcgo":
+    if addtask in ("dmcgo", "delaydm1", ):
         delay_period = epochs["delay1"]
-    elif addtask == "delaydm1":
-        delay_period = epochs["delay1"]
-        
+    
+    # is delay period start inclusive and end exclusive?
     print(f"delay_period: {delay_period}")
 
     assert len(test_task) == len(stim1_choices)
 
     net_out, _, db_test = model.iterate_sequence_batch(test_input, run_mode='track_states')
-    hidden_test = db_test["hidden1"][:, delay_period[0]:delay_period[1], :]
-    em_test = (db_test["M1"][:, delay_period[0]:delay_period[1], :, :] * state_dict["mp_layer1.W"]).cpu().numpy()
-    m_test = db_test["M1"][:, delay_period[0]:delay_period[1], :, :].cpu().numpy()
+    
+    if addtask in ("dmcgo", "delaydm1", ):
+        hidden_test = db_test["hidden1"][:, delay_period[0]:delay_period[1]-1, :]
+        em_test = (db_test["M1"][:, delay_period[0]:delay_period[1]-1, :, :] * state_dict["mp_layer1.W"]).cpu().numpy()
+        m_test = db_test["M1"][:, delay_period[0]:delay_period[1]-1, :, :].cpu().numpy()
 
     print(f"hidden_test: {hidden_test.shape}; em_test: {em_test.shape}; m_test: {m_test.shape}")
 
@@ -275,11 +276,25 @@ def shared_run(addtask):
     for i in range(2):
         for b in range(8):
             # add multiple trials of the same kind of stimulus
-            trial_num = 1 
+            trial_num = 5
             for trial_idx in range(trial_num): 
+                # for trials that are considered to have the same stim1 and same task
+                # their input should be identical (quantified via sum) up to the end 
+                # of the delay period; only check for dmcgo since for delaydm1, the magnitude
+                # might be different across batches even the stim identity is the same 
+                if addtask == "dmcgo":
+                    input_check = []
+                    for key in idx_map[(i,b)]:
+                        input_check.append(torch.sum(test_input[key,:delay_period[1],:]).item())
+                    input_check = np.array(input_check, dtype=float)
+                    ok = np.all(np.isclose(input_check, input_check[0]))
+                    print(f"input_check: {input_check}")
+                    assert ok 
+                
                 idxs = idx_map[(i, b)][trial_idx]
-                stacked_inputs[i].append(test_input[idxs])
-                # add the stimulus label (for this trial) as well
+                test_input_chosen = test_input[idxs]
+                stacked_inputs[i].append(test_input_chosen)
+                # add the stim1 label (for this trial) as well
                 stacked_inputs_labels[i].append(b)
             
         xs = stacked_inputs[i]  
@@ -292,15 +307,15 @@ def shared_run(addtask):
 
     # common delay period PCA
     as_hidden_wantperiod = hidden_test.reshape(-1, hidden_test.shape[-1])
-    pca_delay_h = PCA(n_components=3, random_state=42)
+    pca_delay_h = PCA(n_components=3, random_state=np.random.randint(0, 10000), svd_solver="auto")
     pca_delay_h.fit(as_hidden_wantperiod)
 
     as_em_wantperiod = em_test.reshape(-1, em_test.shape[-1] * em_test.shape[-2])
-    pca_delay_em = PCA(n_components=3, random_state=42)
+    pca_delay_em = PCA(n_components=3, random_state=np.random.randint(0, 10000), svd_solver="auto")
     pca_delay_em.fit(as_em_wantperiod)
 
     as_m_wantperiod = m_test.reshape(-1, m_test.shape[-1] * m_test.shape[-2])
-    pca_delay_m = PCA(n_components=3, random_state=42)
+    pca_delay_m = PCA(n_components=3, random_state=np.random.randint(0, 10000), svd_solver="auto")
     pca_delay_m.fit(as_m_wantperiod)
 
     plot_all = [["hidden", pca_delay_h], ["e_modulation", pca_delay_em], ["m_modulation", pca_delay_m]]
@@ -309,7 +324,7 @@ def shared_run(addtask):
         # interpolate between the two conditions (stim1 and stim2) in the input space, 
         # and track how the fixed points evolve in the PCA space of the delay period activity
         alpha_lst = np.linspace(0,1,20)
-        interpolate_inputs = [alpha * stacked_inputs[0] + (1 - alpha) * stacked_inputs[1] for alpha in alpha_lst]
+        interpolate_inputs = [(1-a) * stacked_inputs[0] + a * stacked_inputs[1] for a in alpha_lst]
         fixed_points_all = []
         traj_all = []
 
@@ -325,15 +340,16 @@ def shared_run(addtask):
             elif plot_name == "m_modulation":
                 data = db["M1"]
                 as_flat = data.reshape(-1, data.shape[-1] * data.shape[-2])
-            
-            # print(as_flat.shape)
-            
+                        
             hidden_tf = pca_delay.transform(as_flat)
             projected_data = hidden_tf.reshape(data.shape[0], data.shape[1], -1)
-            fixed_points_all.append(projected_data[:,delay_period[-1],:])
+            
+            if addtask in ("dmcgo", "delaydm1", ): 
+                fixed_points_all.append(projected_data[:,delay_period[1]-1,:])
             
             if idx in (0, len(interpolate_inputs) - 1, ):
-                traj_all.append(projected_data[:, delay_period[0]:delay_period[-1]+1, :])
+                if addtask in ("dmcgo", "delaydm1", ): 
+                    traj_all.append(projected_data[:, delay_period[0]:delay_period[1], :])
             
         fixed_points_all_arr = np.stack(fixed_points_all, axis=0)  # (n_alpha, n_stim, n_pc)
         print(f"fixed_points_all_arr: {fixed_points_all_arr.shape}")
@@ -349,7 +365,7 @@ def shared_run(addtask):
                 axsmap[pc_idx].plot(traj_fp[:, pc_x], traj_fp[:, pc_y], "-o", 
                                     color=c_vals[stacked_inputs_labels[0][stim]], linewidth=1.5, markersize=4, 
                                     alpha=0.5, 
-                                    label=f"stim {stim+1}")
+                                    label=f"stim {(stim // trial_num + 1)}" if stim % trial_num == 0 else None)  
 
                 axsmap[pc_idx].scatter(traj_fp[0, pc_x],  traj_fp[0, pc_y],  color=c_vals[stacked_inputs_labels[0][stim]], 
                                        marker="s", s=50, zorder=3)
@@ -357,31 +373,29 @@ def shared_run(addtask):
                                        marker="^", s=50, zorder=3)
 
             # plot the trajectory during the delay period for the first and last alpha (i.e. the two original conditions)
-            delay_traj = False 
+            delay_traj = False
             if delay_traj: 
                 for be in range(len(traj_all)):
                     proj = traj_all[be]
                     for stim in range(proj.shape[0]):
                         xs = proj[stim, :, pc_x]
                         ys = proj[stim, :, pc_y]
-                        axsmap[pc_idx].plot(xs, ys,
-                                    color=c_vals[stacked_inputs_labels[stim]], alpha=0.3, linewidth=1.0, linestyle=l_vals[be+1])
-                        axsmap[pc_idx].scatter(xs[0], ys[0],
-                                    color=c_vals[stacked_inputs_labels[stim]], marker="o", s=35, zorder=4, alpha=0.9)
+                        axsmap[pc_idx].plot(xs, ys, color=c_vals[stacked_inputs_labels[0][stim]], 
+                                            alpha=0.3, linewidth=1.0, linestyle=l_vals[be+1])
+                        axsmap[pc_idx].scatter(xs[0], ys[0], color=c_vals[stacked_inputs_labels[0][stim]], 
+                                               marker="o", s=35, zorder=4, alpha=0.9)
 
             axsmap[pc_idx].set_xlabel(f"Memory State PC{pc_x+1}", fontsize=12)
             axsmap[pc_idx].set_ylabel(f"Memory State PC{pc_y+1}", fontsize=12)
             axsmap[pc_idx].legend(frameon=True)
+            # axsmap[pc_idx].set_xscale("symlog", linthresh=1e-3)
+            # axsmap[pc_idx].set_yscale("symlog", linthresh=1e-3)
             
         figmap.tight_layout()
         figmap.savefig(f"./multiple_tasks/{addtask}_fixed_points_{plot_name}_{savefigure_name}.png", dpi=300)
 
-shared_run("delaydm1") 
+# shared_run("delaydm1") 
 # shared_run("dmcgo")
-
-sys.exit()
-    
-
 
 # analyze the fitted weight matrices; we focus on the first layer of modulation and the output layer, since they are more interpretable than the hidden layer
 output_W = state_dict["W_output"].cpu().numpy()
@@ -453,8 +467,8 @@ def heatmap_with_top_left_marginals(
     ax_top.set_xticks([])
     # ax_top.set_ylabel(r"$\sum|\cdot|$ (col)", fontsize=tick_fs)
     ax_top.tick_params(axis="y", labelsize=tick_fs)
-    # ax_top.spines["top"].set_visible(False)
-    # ax_top.spines["right"].set_visible(False)
+    ax_top.spines["top"].set_visible(False)
+    ax_top.spines["right"].set_visible(False)
 
     # ---- left: row sums (vertical, aligned with heatmap rows)
     y = np.arange(n_rows)
@@ -463,8 +477,8 @@ def heatmap_with_top_left_marginals(
     ax_left.set_yticks([])
     # ax_left.set_xlabel(r"$\sum|\cdot|$ (row)", fontsize=tick_fs)
     ax_left.tick_params(axis="x", labelsize=tick_fs)
-    # ax_left.spines["top"].set_visible(False)
-    # ax_left.spines["right"].set_visible(False)
+    ax_left.spines["top"].set_visible(False)
+    ax_left.spines["right"].set_visible(False)
 
     return ax, ax_top, ax_left
 
@@ -477,48 +491,61 @@ def plot_weight_triplet_with_top_left_marginals(
     cs="coolwarm",
     save_dir="./multiple_tasks",
 ):
-    fig, axs = plt.subplots(3, 1, figsize=(10, 12))
+    figoutput, axsoutput = plt.subplots(1,1,figsize=(10, 12))
 
     heatmap_with_top_left_marginals(
         output_W,
-        ax=axs[0],
+        ax=axsoutput,
         cmap=cs,
         center=0,
         vmin=np.nanmin(output_W),
         vmax=np.nanmax(output_W),
         xlabel="Hidden 2 Index",
         ylabel="Output Index",
+        square=False
     )
-
+    
+    figinput, axsinput = plt.subplots(1,1,figsize=(10, 12))
     heatmap_with_top_left_marginals(
         input_W.T,
-        ax=axs[1],
+        ax=axsinput,
         cmap=cs,
         center=0,
         vmin=np.nanmin(input_W),
         vmax=np.nanmax(input_W),
         xlabel="Hidden 1 Index",
         ylabel="Input Index",
+        square=False
     )
-
+    
+    figmodulation, axsmodulation = plt.subplots(1,1,figsize=(10, 12))
     heatmap_with_top_left_marginals(
         modulation_W.T,
-        ax=axs[2],
+        ax=axsmodulation,
         cmap=cs,
         center=0,
         vmin=np.nanmin(modulation_W),
         vmax=np.nanmax(modulation_W),
         xlabel="Hidden 1 Index",
         ylabel="Hidden 2 Index",
-        square=True
+        square=False
     )
 
-    fig.tight_layout()
-    fig.savefig(f"{save_dir}/weight_matrices_{aname}.png", dpi=300)
-    plt.close(fig)
-    return fig
+    figoutput.tight_layout()
+    figoutput.savefig(f"{save_dir}/weight_matrices_{aname}.png", dpi=300)
+    plt.close(figoutput)
+    
+    figinput.tight_layout()
+    figinput.savefig(f"{save_dir}/weight_matrices_input_{aname}.png", dpi=300)
+    plt.close(figinput)
+    
+    figmodulation.tight_layout()
+    figmodulation.savefig(f"{save_dir}/weight_matrices_modulation_{aname}.png", dpi=300)
+    plt.close(figmodulation)
+    
+    return
 
-figw = plot_weight_triplet_with_top_left_marginals(
+plot_weight_triplet_with_top_left_marginals(
     output_W=output_W,
     input_W=input_W,
     modulation_W=modulation_W,
