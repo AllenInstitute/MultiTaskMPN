@@ -143,7 +143,7 @@ hyp_dict['chosen_network'] = "dmpn"
 mpn_depth = 1
 n_hidden = 300
 
-hyp_dict['addon_name'] = "L21e2"
+hyp_dict['addon_name'] = "L21e3"
 hyp_dict['addon_name'] += f"+hidden{n_hidden}"
 
 # for coding 
@@ -190,7 +190,7 @@ def current_basic_params():
         'n_epochs_per_set': 1, 
         'weight_reg': 'L2',
         'activity_reg': 'L2', 
-        'reg_lambda': 1e-2,
+        'reg_lambda': 1e-3,
         
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'
@@ -406,35 +406,7 @@ del test_output
 # this should be the same regardless of variety of test_input
 n_batch_all = test_input_np.shape[0] 
 
-def find_task(task_params, test_input_np, shift_index):
-    """
-    """
-    test_task = [] # which task
-    for batch_idx in range(test_input_np.shape[0]):
-        
-        if task_params["randomize_inputs"]: 
-            test_input_np_ = test_input_np @ np.linalg.pinv(task_params["randomize_matrix"])
-        else: 
-            test_input_np_ = test_input_np
-            
-        task_label = test_input_np_[batch_idx, 0, 6-shift_index:]
-        
-        task_label = np.asarray(task_label)       
-        dist = np.abs(task_label - 1)     
-        mask = dist == dist.min() 
-        
-        indices = np.where(mask)[0]
-        
-        if indices.size:                
-            task_label_index = indices[0]   
-        else:
-            raise ValueError("No entry close enough to 1 found")
-            
-        test_task.append(task_label_index)
-
-    return test_task  
-
-test_task = find_task(task_params, test_input_np, shift_index)
+test_task = helper.find_task(task_params, test_input_np, shift_index)
 
 
 # In[7]:

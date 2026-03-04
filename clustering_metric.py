@@ -5,10 +5,10 @@ import numpy as np
 # pre/post neuron cluster
 # ---------------------------------------------------------------------
 
-def count_pairs_with_clusters(col_all: np.ndarray,
-                              M: int,
-                              pre_cluster: dict,
-                              post_cluster: dict):
+def count_pairs_with_clusters(col_all,
+                              M,
+                              pre_cluster,
+                              post_cluster):
     """
     Vectorized counts over unordered pairs within each group in col_all.
 
@@ -131,13 +131,14 @@ def count_pairs_with_clusters(col_all: np.ndarray,
         no_pre_post_cluster_all,
     )
 
-def count_pairs_with_clusters_control(col_all: np.ndarray,
-                                      M: int,
-                                      pre_cluster: dict,
-                                      post_cluster: dict,
+def count_pairs_with_clusters_control(col_all,
+                                      M,
+                                      pre_cluster,
+                                      post_cluster,
                                       repeat=10):
     """
     Create control for pre/post neuron & neuron clustering belonging 
+    "Are these group labels more aligned with pre/post (or pre/post clusters) than random assignment given group sizes?"
     """
     control_stats = []
     for _ in range(repeat):

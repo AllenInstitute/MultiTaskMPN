@@ -294,9 +294,9 @@ def delaygo_(config, mode, anti_response, fix, separate_input, label_strength, l
     dt = config['dt']
     rng = config['rng']
 
-    if fix:
-        print(f"rng reset with seed {seed}")
-        rng = np.random.RandomState(seed)
+    # if fix:
+    #     print(f"rng reset with seed {seed}")
+    #     rng = np.random.RandomState(seed)
     
     if mode == 'random': # Randomly generate parameters, but uniform times/modalities across batch
         batch_size = kwargs['batch_size']
@@ -674,9 +674,9 @@ def reactgo_(config, mode, anti_response, fix, **kwargs):
     dt = config['dt']
     rng = config['rng']
 
-    if fix:
-        print(f"rng reset with seed {seed}")
-        rng = np.random.RandomState(seed)
+    # if fix:
+    #     print(f"rng reset with seed {seed}")
+    #     rng = np.random.RandomState(seed)
 
     if mode == 'random': # Randomly generate parameters
         batch_size = kwargs['batch_size']
@@ -786,9 +786,9 @@ def fdgo_(config, mode, anti_response, fix, long_response, long_stimulus, long_f
     dt = config['dt']
     rng = config['rng']
     
-    if fix:
-        print(f"rng reset with seed {seed}")
-        rng = np.random.RandomState(seed)
+    # if fix:
+    #     print(f"rng reset with seed {seed}")
+    #     rng = np.random.RandomState(seed)
         
     if mode == 'random': # Randomly generate parameters
         batch_size = kwargs['batch_size']

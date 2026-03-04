@@ -405,6 +405,8 @@ def _hierarchical_clustering_repeat(
     alt_cut_threshold = best_rep["cut_thresholds"][alt_k]
     alt_linkage = Z_best
     alt_leaf_order = leaf_order
+    
+    best_k_score_mean = score_recording_mean[best_k]
 
     return dict(
         linkage=Z_best,
@@ -432,7 +434,7 @@ def _hierarchical_clustering_repeat(
             silhouette_tol=silhouette_tol,
             tol_mode=tol_mode,
             primary_candidates=primary_candidates,
-            strict_best_k=strict_best_k,
+            strict_best_k=best_k_score_mean,
             strict_best_score=strict_best_score,
             alt_candidates=alt_candidates,
         ),
@@ -449,7 +451,7 @@ def cluster_variance_matrix_repeat(
     silhouette_tol=0.02
 ):
     """
-    Cluster a variance matrix V (shape: N_features × M_neurons)
+    Cluster a variance matrix V (shape: N_features * M_neurons)
     for both rows (features) and columns (neurons), with repeat-based stabilization.
 
     Returns mean/std silhouette curves for rows and cols, chosen k per axis,
@@ -506,6 +508,39 @@ def cluster_variance_matrix_repeat(
 # re-ordering/grouping based on this information)
 # ---------------------------------------------------------------------
 
+def _pca1_order(X):
+    """
+    """
+    # X: (n_items, n_features)
+    Xc = X - X.mean(axis=0, keepdims=True)
+    # first PC score via SVD (stable)
+    U, S, _ = np.linalg.svd(Xc, full_matrices=False)
+    score = U[:, 0] * S[0]
+    return np.argsort(score)
+
+def _within_block_leaf_order(
+    X,                 
+    metric="euclidean",
+    method="ward",
+    max_items=2000,
+    fallback="pca1",       
+): 
+    n = X.shape[0]
+    if n <= 2:
+        return np.arange(n)
+
+    # Ward is only coherent with Euclidean
+    if method == "ward" and metric != "euclidean":
+        metric = "euclidean"
+
+    if n > max_items:
+        return _pca1_order(X) if fallback == "pca1" else np.arange(n)
+
+    d = pdist(X, metric=metric)
+    Z = linkage(d, method=method)
+    leaves = dendrogram(Z, no_plot=True)["leaves"]
+    return np.asarray(leaves, dtype=int)
+
 def _cut_distance_for_k(Z: np.ndarray, k: int) -> float:
     """
     Given a SciPy linkage matrix Z (n-1 merges; Z[:,2] are merge heights)
@@ -530,64 +565,6 @@ def _cut_distance_for_k(Z: np.ndarray, k: int) -> float:
     else:
         # Midpoint between previous and next merge heights
         return 0.5 * (d[i - 1] + d[i])
-
-def _hierarchical_clustering_forgroup(
-    data: np.ndarray,
-    k_min: int = 3,
-    k_max: int = 40,
-    metric: str = "euclidean",
-) -> Dict[str, Any]:
-    """
-    Run Ward hierarchical clustering on `data` (observations × features).
-    """
-    n_obs = data.shape[0]
-    if n_obs < 2:                             # nothing to cluster
-        return dict(
-            linkage=None,
-            leaf_order=list(range(n_obs)),
-            labels=np.ones(n_obs, dtype=int),
-            k=1,
-            silhouette=np.nan,
-        )
-
-    pairwise = pdist(data, metric=metric)
-    Z = linkage(pairwise, method="ward")
-    c, _ = cophenet(Z, pdist(data))
-
-    best_k, best_score, best_labels = None, -np.inf, None
-    D_sq = squareform(pairwise)
-    k_range = range(max(k_min, 2), min(k_max, n_obs - 1) + 1)
-
-    score_recording = {}
-    cut_distance_by_k = {}
-    labels_by_k: Dict[int, np.ndarray] = {}
-
-    for k in k_range:
-        cut_distance_by_k[k] = _cut_distance_for_k(Z, k)
-        
-    for k in k_range:
-        labels = fcluster(Z, k, criterion="maxclust")
-        labels_by_k[k] = labels
-        score = silhouette_score(D_sq, labels, metric="precomputed")
-        score_recording[k] = score # register
-        if score > best_score:
-            best_k, best_score, best_labels = k, score, labels
-
-    leaf_order = dendrogram(Z, no_plot=True)["leaves"]
-    best_cut_distance = cut_distance_by_k.get(best_k, _cut_distance_for_k(Z, best_k))
-
-    return dict(
-        linkage=Z,
-        leaf_order=leaf_order,
-        labels=best_labels,
-        k=best_k,
-        silhouette=best_score,
-        score_recording=score_recording,
-        cophenet_score=c,
-        cut_distance_by_k=cut_distance_by_k,
-        best_cut_distance=best_cut_distance,
-        labels_by_k=labels_by_k
-    )
 
 def _build_groups(
     n_items: int,
@@ -785,11 +762,7 @@ def cluster_variance_matrix_forgroup(
         silhouette_tol=silhouette_tol,
         tol_mode=tol_mode,
     )
-
-    row_labels = np.take(row_res["labels"], row_map)
-    row_labels_by_k = {k: np.take(lbls, row_map) for k, lbls in row_res["labels_by_k"].items()}
-    row_order = [idx for g in row_res["leaf_order"] for idx in row_blocks[g]]
-
+    
     # ----- cols -----
     col_blocks, col_map = _build_groups(V.shape[1], col_groups)
     V_col_grp = _aggregate_along_axis(V, col_blocks, axis=1, reduce="mean")
@@ -800,9 +773,45 @@ def cluster_variance_matrix_forgroup(
         tol_mode=tol_mode,
     )
 
-    col_labels = np.take(col_res["labels"], col_map)
+    # row_labels = np.take(row_res["labels"], row_map)
+    # row_labels_by_k = {k: np.take(lbls, row_map) for k, lbls in row_res["labels_by_k"].items()}
+    # row_order = [idx for g in row_res["leaf_order"] for idx in row_blocks[g]]
+
+    # col_labels = np.take(col_res["labels"], col_map)
+    # col_labels_by_k = {k: np.take(lbls, col_map) for k, lbls in col_res["labels_by_k"].items()}
+    # col_order = [idx for g in col_res["leaf_order"] for idx in col_blocks[g]]
+    
+    # --- NEW: within-block ordering ---
+    within = True  # or expose as a function arg
+    row_order = []
+    for g in row_res["leaf_order"]:
+        idxs = np.asarray(row_blocks[g], dtype=int)
+        if not within or idxs.size <= 2:
+            row_order.extend(idxs.tolist())
+            continue
+        # rows represented in reduced col-group feature space
+        X = V_col_grp[idxs, :]                  # (n_in_block, C_blk)
+        local = _within_block_leaf_order(X, metric="euclidean", method="ward",
+                                        max_items=2000, fallback="pca1")
+        row_order.extend(idxs[local].tolist())
+
+    col_order = []
+    for g in col_res["leaf_order"]:
+        idxs = np.asarray(col_blocks[g], dtype=int)
+        if not within or idxs.size <= 2:
+            col_order.extend(idxs.tolist())
+            continue
+        # cols represented in reduced row-group feature space
+        X = V_row_grp[:, idxs].T                # (n_in_block, R_blk)
+        local = _within_block_leaf_order(X, metric="euclidean", method="ward",
+                                        max_items=2000, fallback="pca1")
+        col_order.extend(idxs[local].tolist())
+        
+    row_labels_by_k = {k: np.take(lbls, row_map) for k, lbls in row_res["labels_by_k"].items()}
     col_labels_by_k = {k: np.take(lbls, col_map) for k, lbls in col_res["labels_by_k"].items()}
-    col_order = [idx for g in col_res["leaf_order"] for idx in col_blocks[g]]
+    
+    row_labels = np.take(row_res["labels"], row_map)
+    col_labels = np.take(col_res["labels"], col_map)
 
     return dict(
         # fine-grained ordering / labels
@@ -843,9 +852,10 @@ def cluster_variance_matrix_forgroup(
 
 # ---------------------------------------------------------------------
 # ---------------------------------------------------------------------
-def make_col_groups_with_kmeans(V: np.ndarray, n_groups: int = 1000, \
-                                batch_size: int = 8192, \
-                                random_state: int = 0):
+def make_col_groups_with_kmeans(V, 
+                                n_groups=1000, 
+                                batch_size=8192, 
+                                random_state=0):
     """
     Use MiniBatchKMeans to cluster columns (neurons) of V into groups.
     This produces a 'col_groups' list compatible with cluster_variance_matrix_forgroup.
@@ -866,5 +876,7 @@ def make_col_groups_with_kmeans(V: np.ndarray, n_groups: int = 1000, \
     col_groups = [g for g in col_groups if len(g) > 0]
     
     print(f"Formed {len(col_groups)} groups.")
+    assert len(col_groups) <= n_groups, "Unexpected: more groups than requested."
+    
     return col_groups, col_labels, centroids
     

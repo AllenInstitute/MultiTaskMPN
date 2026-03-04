@@ -15,6 +15,28 @@ import torch
 
 T = TypeVar("T")
 
+def task_variance_period_numpy(h, stim, K=8, time_reduce="mean"):
+    """
+    """
+    B, T, N = h.shape
+
+    m = np.full((K, T, N), np.nan, dtype=h.dtype)
+    for k in range(K):
+        idx = (stim == k)
+        if np.any(idx):
+            m[k] = h[idx].mean(axis=0)
+
+    v_time = np.nanvar(m, axis=0)   # (T,N)
+
+    if time_reduce == "none":
+        return v_time               # (T,N)
+    elif time_reduce == "mean":
+        return v_time.mean(axis=0)  # (N,)
+    elif time_reduce == "sum":
+        return v_time.sum(axis=0)   # (N,)
+    else:
+        raise ValueError
+
 def find_task(task_params, test_input_np, shift_index):
     """
     """
