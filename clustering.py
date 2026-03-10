@@ -273,29 +273,59 @@ def _hierarchical_clustering_repeat(
     """
     Hierarchical clustering with stability repeats.
 
-    Primary k selection (unchanged):
-      - If select_min_k_within_tol=True, pick the smallest k whose mean silhouette
-        is within tolerance of the *global best* mean silhouette.
-      - Else pick strict argmax silhouette.
+    Key behavior (UPDATED):
+      - Repeats (feature bootstrap / jitter) are used ONLY to estimate silhouette-vs-k
+        (and to choose best_k / alt_k).
+      - The returned linkage / leaf_order / labels / cut_threshold are computed ONCE on
+        the ORIGINAL (unperturbed) data using the chosen k values.
+      - We still pick a representative repeat (max mean ARI at best_k) for diagnostics,
+        but we do NOT return its linkage as the final dendrogram.
 
-    NEW alt_k:
-      - Define alt_k as the smallest k whose mean silhouette is within the same tolerance
-        of the *chosen best_k*'s silhouette (i.e., “not too far away” from best_k).
-      - Return alt_* (labels, linkage, leaf_order, cut_threshold) from the SAME repeat
-        as used for best_k to keep dendrograms/linkage comparable.
+    Requires:
+      - labels_at_k(Z, k) defined (as in your snippet).
+      - scipy: linkage, dendrogram, optimal_leaf_ordering
+      - scipy.spatial.distance: pdist, squareform
+      - sklearn: silhouette_score, adjusted_rand_score
+      - numpy as np
     """
     rng = np.random.default_rng(random_state)
+    data = np.asarray(data)
     n_obs, n_feat = data.shape
 
-    # Resolve k-range
-    k_min = max(k_min, 2)
-    k_max = min(k_max, n_obs - 1)
+    def _compute_linkage_leaforder(X):
+        """Compute linkage + optimal leaf order; return (Z, condensed_dists, leaf_order)."""
+        X = np.asarray(X)
+
+        if method.lower() == "ward":
+            # Ward is defined for Euclidean distances
+            d = pdist(X, metric="euclidean")
+            Z = linkage(X, method="ward", metric="euclidean")
+        else:
+            d = pdist(X, metric=metric)
+            Z = linkage(d, method=method)
+
+        Z = optimal_leaf_ordering(Z, d)
+        leaf_order = dendrogram(Z, no_plot=True)["leaves"]
+        return Z, d, leaf_order
+
+    def _cut_threshold_from_Z(Z, k):
+        """Threshold just above the last merge height when there are k clusters."""
+        cut_idx = (n_obs - k) - 1
+        if 0 <= cut_idx < Z.shape[0]:
+            return float(np.nextafter(Z[cut_idx, 2], np.inf))
+        return None
+
+    # ---- resolve k-range ----
+    k_min = max(int(k_min), 2)
+    k_max = min(int(k_max), n_obs - 1)
     if k_max < k_min:
         raise ValueError("Not enough observations for the requested k-range.")
     k_range = range(k_min, k_max + 1)
 
+    # ---- repeats over perturbed data (for silhouette-vs-k only) ----
     per_repeat = []
-    for r in range(n_repeats):
+    for r in range(int(n_repeats)):
+        # feature bootstrap/subsample (with replacement, matching your original behavior)
         if resample_features_frac < 1.0:
             m = max(1, int(np.ceil(resample_features_frac * n_feat)))
             feat_idx = rng.choice(n_feat, size=m, replace=True)
@@ -303,52 +333,46 @@ def _hierarchical_clustering_repeat(
         else:
             Xr = data
 
+        # jitter
         if jitter_std > 0.0:
             Xr = Xr + rng.normal(0.0, jitter_std, size=Xr.shape)
 
-        if method.lower() == "ward":
-            Z = linkage(Xr, method="ward", metric="euclidean")
-            pairwise_dists = pdist(Xr, metric="euclidean")
-        else:
-            pairwise_dists = pdist(Xr, metric=metric)
-            Z = linkage(pairwise_dists, method=method)
-
-        # Optimal leaf ordering
-        Z = optimal_leaf_ordering(Z, pairwise_dists)
-        D_square = squareform(pairwise_dists)
+        Zr, dr, leaf_order_r = _compute_linkage_leaforder(Xr)
+        D_square = squareform(dr)
 
         labels_by_k = {}
         scores_by_k = {}
         cut_thresholds = {}
         for k in k_range:
-            labels = labels_at_k(Z, k)
+            labels = labels_at_k(Zr, k)
             score = silhouette_score(D_square, labels, metric="precomputed")
             labels_by_k[k] = labels
             scores_by_k[k] = float(score)
-            cut_idx = (n_obs - k) - 1
-            if 0 <= cut_idx < Z.shape[0]:
-                cut_thresholds[k] = float(np.nextafter(Z[cut_idx, 2], np.inf))
-            else:
-                cut_thresholds[k] = None
+            cut_thresholds[k] = _cut_threshold_from_Z(Zr, k)
 
-        leaf_order = dendrogram(Z, no_plot=True)["leaves"]
-        per_repeat.append(dict(
-            Z=Z,
-            leaf_order=leaf_order,
-            labels_by_k=labels_by_k,
-            scores_by_k=scores_by_k,
-            cut_thresholds=cut_thresholds
-        ))
+        per_repeat.append(
+            dict(
+                Z=Zr,
+                leaf_order=leaf_order_r,
+                labels_by_k=labels_by_k,
+                scores_by_k=scores_by_k,
+                cut_thresholds=cut_thresholds,
+            )
+        )
 
-    # Aggregate across repeats
-    score_recording_mean = {k: float(np.mean([rep["scores_by_k"][k] for rep in per_repeat])) for k in k_range}
-    score_recording_std  = {k: float(np.std( [rep["scores_by_k"][k] for rep in per_repeat])) for k in k_range}
+    # ---- aggregate silhouette across repeats ----
+    score_recording_mean = {
+        k: float(np.mean([rep["scores_by_k"][k] for rep in per_repeat])) for k in k_range
+    }
+    score_recording_std = {
+        k: float(np.std([rep["scores_by_k"][k] for rep in per_repeat])) for k in k_range
+    }
 
-    # Strict global best (for reference / thresholding)
+    # strict global best silhouette (mean over repeats)
     strict_best_k = max(score_recording_mean, key=score_recording_mean.get)
     strict_best_score = score_recording_mean[strict_best_k]
 
-    # Primary k selection (same as before)
+    # ---- primary k selection (same logic as your original) ----
     if select_min_k_within_tol:
         if tol_mode == "relative":
             primary_threshold = strict_best_score * (1.0 - float(silhouette_tol))
@@ -356,20 +380,21 @@ def _hierarchical_clustering_repeat(
             primary_threshold = strict_best_score - float(silhouette_tol)
         else:
             raise ValueError("tol_mode must be 'relative' or 'absolute'.")
+
         primary_candidates = [k for k in k_range if score_recording_mean[k] >= primary_threshold]
         best_k = min(primary_candidates) if primary_candidates else strict_best_k
     else:
         best_k = strict_best_k
         primary_candidates = [strict_best_k]
 
-    # Pick the repeat to represent best_k (maximize mean ARI at best_k)
+    # ---- pick a representative repeat for diagnostics (same as your original) ----
     labels_list = [rep["labels_by_k"][best_k] for rep in per_repeat]
     if len(labels_list) == 1:
         best_rep_idx = 0
         mean_ari_val = 1.0
     else:
         R = len(labels_list)
-        ari_mat = np.zeros((R, R))
+        ari_mat = np.zeros((R, R), dtype=float)
         for i in range(R):
             for j in range(i + 1, R):
                 ari = adjusted_rand_score(labels_list[i], labels_list[j])
@@ -378,51 +403,56 @@ def _hierarchical_clustering_repeat(
         best_rep_idx = int(np.argmax(mean_ari))
         mean_ari_val = float(mean_ari[best_rep_idx])
 
-    # Extract chosen (best_k) artifacts from that repeat
     best_rep = per_repeat[best_rep_idx]
-    best_labels = best_rep["labels_by_k"][best_k]
-    Z_best      = best_rep["Z"]
-    leaf_order  = best_rep["leaf_order"]
-    best_cut_threshold = best_rep["cut_thresholds"][best_k]
 
-    # --- NEW: alt_k relative to best_k's silhouette score ---
-    best_k_score = score_recording_mean[best_k]
-    if tol_mode == "relative":
-        alt_threshold = best_k_score * (1.0 - float(silhouette_tol))
-    else:
-        alt_threshold = best_k_score - float(silhouette_tol)
-
-    # smallest k within tolerance of best_k's score
-    alt_candidates = [k for k in k_range if score_recording_mean[k] >= alt_threshold]
-    if alt_candidates:
-        alt_k = min(alt_candidates)
-    else:
-        # if nothing qualifies, just mirror best_k
-        alt_k = best_k
-
-    # Use the SAME repeat for alt_* to keep linkage/leaf_order comparable
-    alt_labels = best_rep["labels_by_k"][alt_k]
-    alt_cut_threshold = best_rep["cut_thresholds"][alt_k]
-    alt_linkage = Z_best
-    alt_leaf_order = leaf_order
-    
+    # ---- alt_k relative to best_k's mean silhouette ----
     best_k_score_mean = score_recording_mean[best_k]
+    if tol_mode == "relative":
+        alt_threshold = best_k_score_mean * (1.0 - float(silhouette_tol))
+    else:
+        alt_threshold = best_k_score_mean - float(silhouette_tol)
+
+    alt_candidates = [k for k in k_range if score_recording_mean[k] >= alt_threshold]
+    alt_k = min(alt_candidates) if alt_candidates else best_k
+
+    # ======================================================================
+    # FINAL OUTPUT (UPDATED): compute dendrogram/labels on UNPERTURBED data
+    # ======================================================================
+    Z0, d0, leaf0 = _compute_linkage_leaforder(data)
+
+    final_labels = labels_at_k(Z0, best_k)
+    final_cut_threshold = _cut_threshold_from_Z(Z0, best_k)
+
+    final_alt_labels = labels_at_k(Z0, alt_k)
+    final_alt_cut_threshold = _cut_threshold_from_Z(Z0, alt_k)
 
     return dict(
-        linkage=Z_best,
-        leaf_order=leaf_order,
-        labels=best_labels,
+        # final (unperturbed) artifacts
+        linkage=Z0,
+        leaf_order=leaf0,
+        labels=final_labels,
         k=best_k,
-        silhouette=strict_best_score,             # keep for reference
+        cut_threshold=final_cut_threshold,
+
+        # alternative (also unperturbed)
+        alt_k=alt_k,
+        alt_labels=final_alt_labels,
+        alt_linkage=Z0,
+        alt_leaf_order=leaf0,
+        alt_cut_threshold=final_alt_cut_threshold,
+
+        # diagnostics / curves (from repeats)
+        silhouette_strict_best=strict_best_score,   # max_k mean silhouette (global best)
+        silhouette_at_k=best_k_score_mean,          # mean silhouette at chosen best_k
         score_recording_mean=score_recording_mean,
         score_recording_std=score_recording_std,
-        cut_threshold=best_cut_threshold,
-        # Alternative (relative to best_k's silhouette)
-        alt_k=alt_k,
-        alt_labels=alt_labels,
-        alt_linkage=alt_linkage,
-        alt_leaf_order=alt_leaf_order,
-        alt_cut_threshold=alt_cut_threshold,
+
+        # representative repeat (perturbed) kept for debugging/inspection if you want it
+        rep_linkage=best_rep["Z"],
+        rep_leaf_order=best_rep["leaf_order"],
+        rep_labels_at_k=best_rep["labels_by_k"][best_k],
+        rep_cut_threshold_at_k=best_rep["cut_thresholds"][best_k],
+
         _repeats=len(per_repeat),
         _params=dict(
             resample_features_frac=resample_features_frac,
@@ -434,7 +464,7 @@ def _hierarchical_clustering_repeat(
             silhouette_tol=silhouette_tol,
             tol_mode=tol_mode,
             primary_candidates=primary_candidates,
-            strict_best_k=best_k_score_mean,
+            strict_best_k=strict_best_k,          
             strict_best_score=strict_best_score,
             alt_candidates=alt_candidates,
         ),
@@ -773,45 +803,45 @@ def cluster_variance_matrix_forgroup(
         tol_mode=tol_mode,
     )
 
-    # row_labels = np.take(row_res["labels"], row_map)
-    # row_labels_by_k = {k: np.take(lbls, row_map) for k, lbls in row_res["labels_by_k"].items()}
-    # row_order = [idx for g in row_res["leaf_order"] for idx in row_blocks[g]]
-
-    # col_labels = np.take(col_res["labels"], col_map)
-    # col_labels_by_k = {k: np.take(lbls, col_map) for k, lbls in col_res["labels_by_k"].items()}
-    # col_order = [idx for g in col_res["leaf_order"] for idx in col_blocks[g]]
-    
-    # --- NEW: within-block ordering ---
-    within = True  # or expose as a function arg
-    row_order = []
-    for g in row_res["leaf_order"]:
-        idxs = np.asarray(row_blocks[g], dtype=int)
-        if not within or idxs.size <= 2:
-            row_order.extend(idxs.tolist())
-            continue
-        # rows represented in reduced col-group feature space
-        X = V_col_grp[idxs, :]                  # (n_in_block, C_blk)
-        local = _within_block_leaf_order(X, metric="euclidean", method="ward",
-                                        max_items=2000, fallback="pca1")
-        row_order.extend(idxs[local].tolist())
-
-    col_order = []
-    for g in col_res["leaf_order"]:
-        idxs = np.asarray(col_blocks[g], dtype=int)
-        if not within or idxs.size <= 2:
-            col_order.extend(idxs.tolist())
-            continue
-        # cols represented in reduced row-group feature space
-        X = V_row_grp[:, idxs].T                # (n_in_block, R_blk)
-        local = _within_block_leaf_order(X, metric="euclidean", method="ward",
-                                        max_items=2000, fallback="pca1")
-        col_order.extend(idxs[local].tolist())
-        
-    row_labels_by_k = {k: np.take(lbls, row_map) for k, lbls in row_res["labels_by_k"].items()}
-    col_labels_by_k = {k: np.take(lbls, col_map) for k, lbls in col_res["labels_by_k"].items()}
-    
     row_labels = np.take(row_res["labels"], row_map)
+    row_labels_by_k = {k: np.take(lbls, row_map) for k, lbls in row_res["labels_by_k"].items()}
+    row_order = [idx for g in row_res["leaf_order"] for idx in row_blocks[g]]
+
     col_labels = np.take(col_res["labels"], col_map)
+    col_labels_by_k = {k: np.take(lbls, col_map) for k, lbls in col_res["labels_by_k"].items()}
+    col_order = [idx for g in col_res["leaf_order"] for idx in col_blocks[g]]
+    
+    # # --- NEW: within-block ordering ---
+    # within = True  # or expose as a function arg
+    # row_order = []
+    # for g in row_res["leaf_order"]:
+    #     idxs = np.asarray(row_blocks[g], dtype=int)
+    #     if not within or idxs.size <= 2:
+    #         row_order.extend(idxs.tolist())
+    #         continue
+    #     # rows represented in reduced col-group feature space
+    #     X = V_col_grp[idxs, :]                  # (n_in_block, C_blk)
+    #     local = _within_block_leaf_order(X, metric="euclidean", method="ward",
+    #                                     max_items=2000, fallback="pca1")
+    #     row_order.extend(idxs[local].tolist())
+
+    # col_order = []
+    # for g in col_res["leaf_order"]:
+    #     idxs = np.asarray(col_blocks[g], dtype=int)
+    #     if not within or idxs.size <= 2:
+    #         col_order.extend(idxs.tolist())
+    #         continue
+    #     # cols represented in reduced row-group feature space
+    #     X = V_row_grp[:, idxs].T                # (n_in_block, R_blk)
+    #     local = _within_block_leaf_order(X, metric="euclidean", method="ward",
+    #                                     max_items=2000, fallback="pca1")
+    #     col_order.extend(idxs[local].tolist())
+        
+    # row_labels_by_k = {k: np.take(lbls, row_map) for k, lbls in row_res["labels_by_k"].items()}
+    # col_labels_by_k = {k: np.take(lbls, col_map) for k, lbls in col_res["labels_by_k"].items()}
+    
+    # row_labels = np.take(row_res["labels"], row_map)
+    # col_labels = np.take(col_res["labels"], col_map)
 
     return dict(
         # fine-grained ordering / labels

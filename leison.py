@@ -16,15 +16,21 @@ import mpn_tasks
 
 if __name__ == "__main__":
     aname = "everything_seed749_L21e4+hidden300+batch128+angle"
+    normalized = "_normalized"
     
     out_param_path = Path("multiple_tasks/" + f"param_{aname}_param.json")    
-    cluster_path = Path("./multiple_tasks/" + f"cluster_info_{aname}.pkl")
+    cluster_path = Path("./multiple_tasks/" + f"cluster_info_{aname}{normalized}.pkl")
 
     with out_param_path.open() as f: 
         raw_cfg_param = json.load(f)
         
     with cluster_path.open("rb") as f:
         cluster_info = pickle.load(f)
+        
+    # need to remind what the clusters are
+    cnames = ["input", "hidden"]
+    for cname in cnames:
+        print(f"{cname} clusters; row_clusters: {len(cluster_info[cname]['row_clusters'])}, col_clusters: {len(cluster_info[cname]['col_clusters'])}")
         
     task_params, train_params, net_params = raw_cfg_param["task_params"], raw_cfg_param["train_params"], raw_cfg_param["net_params"]
     
@@ -141,7 +147,7 @@ if __name__ == "__main__":
     fig.savefig(f"./multiple_tasks_perf/lesion_units_{aname}.png", dpi=300)
     
     # setup the evaluation dataset generator
-    test_n_batch = 100
+    test_n_batch = 10
     task_params_c['hp']['batch_size_train'] = test_n_batch
     
     # pruning for W

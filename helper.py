@@ -19,6 +19,7 @@ def task_variance_period_numpy(h, stim, K=8, time_reduce="mean"):
     """
     """
     B, T, N = h.shape
+    # print(f"stim: {stim}")
 
     m = np.full((K, T, N), np.nan, dtype=h.dtype)
     for k in range(K):

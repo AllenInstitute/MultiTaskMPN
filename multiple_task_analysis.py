@@ -36,7 +36,7 @@ import color_func
 import mpn 
 import mpn_tasks
 
-clean = True 
+clean = False
 if clean: 
     dir_path = Path("./multiple_tasks/")
 
@@ -648,7 +648,7 @@ selection_key = ["CH_blocks", "DB_blocks"]
 
 upper_cluster = 300
 lower_cluster = 5
-silhouette_tol = 0.00
+silhouette_tol = 0.02
 
 cluster_info_save = {}
 
@@ -694,7 +694,7 @@ for clustering_index in range(len(clustering_data_analysis)):
         # print(f"tb_break_name[el]: {tb_break_name[el]}")
         
         labels_stim = labels_stim1
-        labels_stim = labels_stim2 if ("stim2" in tb_break_name[el] or "delay2" in tb_break_name[el]) else labels_stim1
+        # labels_stim = labels_stim2 if ("stim2" in tb_break_name[el] or "delay2" in tb_break_name[el]) else labels_stim1
         
         if len(clustering_data.shape) == 3:
             # 2025-11-19: if period_time[1] is None, then go until the end along that axis
@@ -708,11 +708,13 @@ for clustering_index in range(len(clustering_data_analysis)):
                 rule_cluster = clustering_data[test_task == rule_idx, period_time[0]:period_time[1]]
                 mean_var = np.var(rule_cluster, axis=(0, 1)).mean(axis=0)
                 cell_vars_rules.append(mean_var)
+                raise NotImplementedError("The 'pre' clustering is outdated and should not be used. Please use 'all' instead for modulation analysis.")
                 
             elif "post" in clustering_name: # outdated
                 rule_cluster = clustering_data[test_task == rule_idx, period_time[0]:period_time[1]]
                 mean_var = np.var(rule_cluster, axis=(0, 1)).mean(axis=1)
                 cell_vars_rules.append(mean_var)
+                raise NotImplementedError("The 'post' clustering is outdated and should not be used. Please use 'all' instead for modulation analysis.")
                 
             elif "all" in clustering_name: 
                 clustering_data = clustering_data.reshape(clustering_data.shape[0], clustering_data.shape[1], -1)
@@ -726,14 +728,28 @@ for clustering_index in range(len(clustering_data_analysis)):
 
     print(f"cell_vars_rules.shape: {cell_vars_rules.shape}")
     
-    # normalize
-    cell_max_var = np.max(cell_vars_rules, axis=0) # Across rules
-    print(f"cell_max_var.shape: {cell_max_var.shape}")
+    # normalize for each neuron 
+    normalize = False
+    if normalize: 
+        cell_max_var = np.max(cell_vars_rules, axis=0) # Across rules
+        print(f"cell_max_var.shape: {cell_max_var.shape}")
 
-    for period_idx in range(len(tb_break)):
-        cell_vars_rules_norm[period_idx] = np.where(
-            cell_max_var > 0., cell_vars_rules[period_idx] / cell_max_var, 0.
-        )
+        for period_idx in range(len(tb_break)):
+            cell_vars_rules_norm[period_idx] = np.where(
+                cell_max_var > 0., cell_vars_rules[period_idx] / cell_max_var, 0.
+            )
+            
+        if clustering_index == 0: 
+            savefigure_name += "_normalized"
+        # with normalization, then when plotting the variance matrix, the entries 
+        # are all between 0 and 1, so we can set a fixed color range for better comparability across periods
+        vmins, vmaxs = 0, 1
+    else:
+        cell_vars_rules_norm = cell_vars_rules.copy()
+        
+        if clustering_index == 0:
+            savefigure_name += "_unnormalized"
+        vmins, vmaxs = None, None
 
     # modulation only, reshape to (N, pre, post) shape after calculating the variance
     # N here as the number of sessions after breakdown
@@ -771,6 +787,8 @@ for clustering_index in range(len(clustering_data_analysis)):
                                                            metric="euclidean", 
                                                            method="ward", 
                                                            n_repeats=100, 
+                                                           resample_features_frac=1.0,
+                                                           jitter_std=0.01, 
                                                            silhouette_tol=silhouette_tol)
         
         # sanity check to make sure no undesirable bug happens with in the clustering code
@@ -803,8 +821,8 @@ for clustering_index in range(len(clustering_data_analysis)):
             eval_random_metrics_all.append(eval_res_random["metrics"])
             eval_random_blocks_all.append(eval_res_random["blocks"])
 
-        eval_random_stdmean = [np.nanmedian(eval_random_blocks["std"] / eval_random_blocks["means"]) \
-                                       for eval_random_blocks in eval_random_blocks_all]
+        eval_random_stdmean = [np.nanmedian(eval_random_blocks["std"] / eval_random_blocks["means"]) 
+                               for eval_random_blocks in eval_random_blocks_all]
 
         metrics_all = {}
         for metric_key in selection_key: 
@@ -927,8 +945,8 @@ for clustering_index in range(len(clustering_data_analysis)):
 
         # plot the effect of grouping & ordering through the feature axis
         fig, ax = plt.subplots(2,1,figsize=(24,8*2))
-        sns.heatmap(cell_vars_rules_sorted_norm, ax=ax[0], cmap=cs, cbar=True, vmin=0, vmax=1)
-        sns.heatmap(cell_vars_rules_sorted_norm_ordered, ax=ax[1], cmap=cs, cbar=True, vmin=0, vmax=1)
+        sns.heatmap(cell_vars_rules_sorted_norm, ax=ax[0], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
+        sns.heatmap(cell_vars_rules_sorted_norm_ordered, ax=ax[1], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
         for rb in rbreaks:
             ax[1].axhline(rb, color="k", lw=0.6)
         for cb in cbreaks:
@@ -954,9 +972,11 @@ for clustering_index in range(len(clustering_data_analysis)):
                 # 2025-11-04: mean covariance in this bicluster
                 varmean_ = np.mean(cell_vars_rules_sorted_norm_ordered[rbreaks_[rr]:rbreaks_[rr+1], cbreaks_[cc]:cbreaks_[cc+1]])
                 varmean[rr,cc] = varmean_
-        sns.heatmap(varmean, ax=axsvarmean[0], cmap=cs, cbar=True, vmin=0, vmax=1)
+        sns.heatmap(varmean, ax=axsvarmean[0], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
         axsvarmean[0].set_ylabel("Session Clusters", fontsize=15)
         axsvarmean[0].set_xlabel("Neuron Clusters", fontsize=15)
+        axsvarmean[0].set_title("Mean Variance in Each Bicluster", fontsize=15)
+        
         # 2025-11-04: for sanity check; since the neuron clusters are ordered so that the adjacent ones 
         # are more similar to each other than the ones that are further, therefore the correlation matrix
         # should have larger value near the diagonal 
@@ -964,6 +984,7 @@ for clustering_index in range(len(clustering_data_analysis)):
         sns.heatmap(varmeanC, ax=axsvarmean[1], cmap=cs, cbar=True, vmin=0, vmax=1)
         axsvarmean[1].set_xlabel("Neuron Clusters", fontsize=15)
         axsvarmean[1].set_ylabel("Neuron Clusters", fontsize=15)
+        axsvarmean[1].set_title("Correlation Between Neuron Clusters", fontsize=15)
         figvarmean.tight_layout()
         figvarmean.savefig(f"./multiple_tasks/{clustering_name}_variance_cluster_mean_{savefigure_name}.png", dpi=300)
         plt.close(figvarmean)
@@ -1061,8 +1082,8 @@ for clustering_index in range(len(clustering_data_analysis)):
                                                                                                result_hidden["col_order"])]
         
         figsame, axssame = plt.subplots(2,1,figsize=(24,8*2))
-        sns.heatmap(cell_vars_rules_sorted_norm_ordered_input, ax=axssame[0], cmap=cs, cbar=True, vmin=0, vmax=1)
-        sns.heatmap(cell_vars_rules_sorted_norm_ordered_hidden, ax=axssame[1], cmap=cs, cbar=True, vmin=0, vmax=1)
+        sns.heatmap(cell_vars_rules_sorted_norm_ordered_input, ax=axssame[0], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
+        sns.heatmap(cell_vars_rules_sorted_norm_ordered_hidden, ax=axssame[1], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
         for tem in range(2):
             # 2025-11-05: input break
             for rb in rbreaks_all[0]:
@@ -1098,7 +1119,7 @@ for clustering_index in range(len(clustering_data_analysis)):
     
             figmeanact, axsmeanact = plt.subplots(1,1,figsize=(10,4))
             varmeanconcatenate = np.concatenate((varmeaninput, varmeanhidden), axis=1)
-            sns.heatmap(varmeanconcatenate, ax=axsmeanact, cmap=cs, cbar=True, vmin=0, vmax=1, square=True)
+            sns.heatmap(varmeanconcatenate, ax=axsmeanact, cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs, square=True)
             axsmeanact.axvline(len(cbreaks_input_), color="k", lw=0.6)
             axsmeanact.set_xlabel("Input / Hidden Cluster", fontsize=15)
             axsmeanact.set_ylabel("Common Session Cluster", fontsize=15)
@@ -1167,8 +1188,8 @@ for clustering_index in range(len(clustering_data_analysis)):
         flatten_by_post = cell_vars_rules_norm_keepshape_ih.transpose(0,2,1).reshape(N, M*M)
 
         fig, axs = plt.subplots(2,1,figsize=(24,8*2))
-        sns.heatmap(flatten_by_pre, ax=axs[0], cmap=cs, cbar=True, vmin=0, vmax=1)
-        sns.heatmap(flatten_by_post, ax=axs[1], cmap=cs, cbar=True, vmin=0, vmax=1)
+        sns.heatmap(flatten_by_pre, ax=axs[0], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
+        sns.heatmap(flatten_by_post, ax=axs[1], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
         axs[0].set_title("Flatten By Pre (Input)", fontsize=15)
         axs[1].set_title("Flatten By Post (Hidden)", fontsize=15)
         for ax in axs: 
@@ -1254,9 +1275,9 @@ for clustering_index in range(len(clustering_data_analysis)):
         cell_vars_rules_sorted_norm_outer_bypost = cell_vars_rules_sorted_norm[:,group_neurons_comb_post]
                 
         fig, axs = plt.subplots(6,1,figsize=(24,8*6))
-        sns.heatmap(cell_vars_rules_sorted_norm, ax=axs[0], cmap=cs, cbar=True, vmin=0, vmax=1)
-        sns.heatmap(cell_vars_rules_sorted_norm_outer_bypre, ax=axs[1], cmap=cs, cbar=True, vmin=0, vmax=1)
-        sns.heatmap(cell_vars_rules_sorted_norm_outer_bypost, ax=axs[2], cmap=cs, cbar=True, vmin=0, vmax=1)
+        sns.heatmap(cell_vars_rules_sorted_norm, ax=axs[0], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
+        sns.heatmap(cell_vars_rules_sorted_norm_outer_bypre, ax=axs[1], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
+        sns.heatmap(cell_vars_rules_sorted_norm_outer_bypost, ax=axs[2], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
         axs[0].set_title("Original", fontsize=15)
         axs[1].set_title(f"Ordering based on the Outer Product of Input & Hidden Clusters [Input Adjacent]", fontsize=15)
         axs[2].set_title(f"Ordering based on the Outer Product of Input & Hidden Clusters [Hidden Adjacent]", fontsize=15)
@@ -1276,8 +1297,7 @@ for clustering_index in range(len(clustering_data_analysis)):
             cell_vars_rules_sorted_norm_inputhidden = cell_vars_rules_sorted_norm[np.ix_(result_outer["row_order"], 
                                                                                          result_outer["col_order"])]
     
-            sns.heatmap(cell_vars_rules_sorted_norm_inputhidden, ax=axs[3+group_neurons_index], 
-                        cmap=cs, cbar=True, vmin=0, vmax=1)
+            sns.heatmap(cell_vars_rules_sorted_norm_inputhidden, ax=axs[3+group_neurons_index], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
             axs[3+group_neurons_index].set_yticks(np.arange(len(tb_break_name)))
             axs[3+group_neurons_index].set_yticklabels(tb_break_name[result_outer["row_order"]], 
                                                        rotation=0, ha='right', va='center', fontsize=9)
@@ -1316,7 +1336,7 @@ for clustering_index in range(len(clustering_data_analysis)):
         # simply grouping and considering each individual column as separate
         # having smaller G, e.g. 200, will make the following calculation in determining pre- and post-
         # belonging identity more time costly
-        G_lst = [100, 300, 1000]
+        G_lst = [100, 300]
         figcol, axscol = plt.subplots(1,len(G_lst),figsize=(4*len(G_lst),4))
         figppshare, axsppshare = plt.subplots(2,len(G_lst),figsize=(4*len(G_lst),4*2))
 
@@ -1450,7 +1470,7 @@ for clustering_index in range(len(clustering_data_analysis)):
                     same_pre_post_cluster_all_c, no_same_pre_post_cluster_all_c = clustering_metric.count_pairs_with_clusters_control(col_all, M, 
                                                                                                                                       cluster_input, 
                                                                                                                                       cluster_hidden,
-                                                                                                                                      repeat=1000)
+                                                                                                                                      repeat=10000)
                 
                 print(f"same_pre_all: {same_pre_all}; same_post_all: {same_post_all}; no_same_pre_post_all: {no_same_pre_post_all}")
                 print(f"same_pre_cluster_all: {same_pre_cluster_all}; same_post_cluster_all: {same_post_cluster_all}")
@@ -1676,13 +1696,13 @@ for clustering_index in range(len(clustering_data_analysis)):
         # plot original, pre, post, plus all results under different G
         tf = 3 + len(result_all_lst)
         figprepost, axprepost = plt.subplots(tf,1,figsize=(24,8*tf))
-        sns.heatmap(cell_vars_rules_sorted_norm, ax=axprepost[0], cmap=cs, cbar=True, vmin=0, vmax=1)
-        sns.heatmap(cell_vars_rules_sorted_norm_pre, ax=axprepost[1], cmap=cs, cbar=True, vmin=0, vmax=1)
-        sns.heatmap(cell_vars_rules_sorted_norm_post, ax=axprepost[2], cmap=cs, cbar=True, vmin=0, vmax=1)
+        sns.heatmap(cell_vars_rules_sorted_norm, ax=axprepost[0], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
+        sns.heatmap(cell_vars_rules_sorted_norm_pre, ax=axprepost[1], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
+        sns.heatmap(cell_vars_rules_sorted_norm_post, ax=axprepost[2], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
 
         # plot the headmap for all G result
         for k in range(len(cell_vars_rules_sorted_norm_all_lst)):
-            sns.heatmap(cell_vars_rules_sorted_norm_all_lst[k], ax=axprepost[3+k], cmap=cs, cbar=True, vmin=0, vmax=1)
+            sns.heatmap(cell_vars_rules_sorted_norm_all_lst[k], ax=axprepost[3+k], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
 
         for ax in axprepost:
             ax.set_yticks(np.arange(len(tb_break_name)))
