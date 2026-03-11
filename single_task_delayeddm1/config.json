@@ -1,0 +1,134 @@
+{
+  "seed": 8,
+  "device": "cpu",
+  "hyp_dict": {
+    "task_type": "multitask",
+    "mode_for_all": "random_batch",
+    "run_mode": "minimal",
+    "chosen_network": "dmpn",
+    "ruleset": "delaydm1",
+    "addon_name": "single_delaydm1_hidden300_seed8"
+  },
+  "task_params": {
+    "task_type": "multitask",
+    "rules": [
+      "delaydm1"
+    ],
+    "rules_probs": [
+      1.0
+    ],
+    "dt": 40,
+    "ruleset": "delaydm1",
+    "n_eachring": 8,
+    "in_out_mode": "low_dim",
+    "sigma_x": 0.0,
+    "mask_type": "cost",
+    "fixate_off": true,
+    "task_info": true,
+    "randomize_inputs": false,
+    "n_input": 7,
+    "modality_diff": true,
+    "label_strength": true,
+    "long_stimulus": "normal",
+    "long_fixation": "normal",
+    "long_delay": "normal",
+    "long_response": "normal",
+    "adjust_task_prop": true,
+    "adjust_task_decay": 0.9,
+    "n_rules": 1,
+    "n_output": 3,
+    "loss_type": "MSE",
+    "hp": {
+      "seed": 5835,
+      "rng": "numpy.random.RandomState",
+      "in_out_mode": "low_dim",
+      "batch_size_train": 4,
+      "loss_type": "lsq",
+      "tau": 200,
+      "dt": 40,
+      "alpha": 0.8,
+      "sigma_x": 0.0,
+      "n_eachring": 8,
+      "num_ring": 2,
+      "rules": [
+        "delaydm1"
+      ],
+      "n_rule": 1,
+      "rule_start": 6,
+      "n_input": 7,
+      "n_output": 3,
+      "fixate_off": true,
+      "task_info": true,
+      "get_meta": true
+    }
+  },
+  "train_params": {
+    "train_type": "supervised",
+    "gradient_type": "backprop",
+    "lr": 0.001,
+    "n_batches": 4,
+    "batch_size": 8,
+    "gradient_clip": 10,
+    "valid_n_batch": 2,
+    "n_datasets": 1,
+    "valid_check": null,
+    "n_epochs_per_set": 1,
+    "weight_reg": "L2",
+    "activity_reg": "L2",
+    "reg_lambda": 0.001,
+    "scheduler": {
+      "type": "ReduceLROnPlateau",
+      "mode": "min",
+      "factor": 0.95,
+      "patience": 30,
+      "min_lr": 1e-08,
+      "step_size": 30,
+      "gamma": 0.1
+    }
+  },
+  "net_params": {
+    "net_type": "dmpn",
+    "n_neurons": [
+      7,
+      300,
+      3
+    ],
+    "linear_embed": 300,
+    "output_bias": false,
+    "loss_type": "MSE",
+    "activation": "tanh",
+    "cuda": false,
+    "monitor_freq": 1,
+    "monitor_valid_out": true,
+    "output_matrix": "",
+    "input_layer_add": false,
+    "input_layer_add_trainable": false,
+    "input_layer_bias": false,
+    "acc_measure": "angle",
+    "ml_params": {
+      "bias": true,
+      "mp_type": "mult",
+      "m_update_type": "hebb_assoc",
+      "eta_type": "scalar",
+      "eta_train": false,
+      "lam_type": "scalar",
+      "m_time_scale": 4000,
+      "lam_train": false,
+      "W_freeze": false
+    },
+    "tau": 200,
+    "dt": 40,
+    "alpha": 0.8,
+    "prefs": [
+      0.0,
+      0.7853981633974483,
+      1.5707963267948966,
+      2.356194490192345,
+      3.141592653589793,
+      3.9269908169872414,
+      4.71238898038469,
+      5.497787143782138
+    ]
+  },
+  "early_stop_idx": null
+}
