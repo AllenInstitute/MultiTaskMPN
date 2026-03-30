@@ -5,13 +5,12 @@ import torch.nn.functional as F
 from torch.nn.init import orthogonal_
 
 import math
-
-from net_helpers import BaseNetwork, BaseNetworkFunctions
-from net_helpers import rand_weight_init, get_activation_function
-
 import numpy as np
 import copy 
 import time 
+
+from net_helpers import BaseNetwork, BaseNetworkFunctions
+from net_helpers import rand_weight_init, get_activation_function
 
 class MultiPlasticLayer(BaseNetworkFunctions):
     """

@@ -163,6 +163,7 @@ with out_param_path.open() as f:
 task_params, train_params, net_params = raw_cfg_param["task_params"], raw_cfg_param["train_params"], raw_cfg_param["net_params"]
 
 savefigure_name = f"{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}"
+savefigure_name_base = copy.deepcopy(savefigure_name)
 
 # %%
 # 2025-11-19: make sure the bias is only cell-dependent but not time- or trail-dependent
@@ -745,17 +746,13 @@ for clustering_index in range(len(clustering_data_analysis)):
                 cell_max_var > 0., cell_vars_rules[period_idx] / cell_max_var, 0.
             )
             
-        if clustering_index == 0: 
-            savefigure_name += "_normalized"
+        savefigure_name = savefigure_name_base + "_normalized"
         # with normalization, then when plotting the variance matrix, the entries 
         # are all between 0 and 1, so we can set a fixed color range for better comparability across periods
         vmins, vmaxs = 0, 1
     else:
         cell_vars_rules_norm = cell_vars_rules.copy()
-        
-        if clustering_index == 0:
-            savefigure_name += "_unnormalized"
-            
+        savefigure_name = savefigure_name_base + "_unnormalized"
         vmins, vmaxs = None, None
 
     # modulation only, reshape to (N, pre, post) shape after calculating the variance
@@ -1222,7 +1219,7 @@ for clustering_index in range(len(clustering_data_analysis)):
                 nc_combine = [cc[0] * M + cc[1] for cc in nc_combine]
                 cluster_combine[newc] = nc_combine
 
-        # Oct 8th: qualitatively, training MPN without regularization will cause more hidden cluster
+        # 2026-10-08: qualitatively, training MPN without regularization will cause more hidden cluster
         cluster_input_num, cluster_hidden_num = len(cluster_input), len(cluster_hidden)
         print(f"cluster_input_num: {cluster_input_num}; cluster_hidden_num: {cluster_hidden_num}")
         # by the setup, cluster_combine will be organized by shared pre
@@ -1339,7 +1336,7 @@ for clustering_index in range(len(clustering_data_analysis)):
         select_col_k = 10
         print(f"select_col_k: {select_col_k}")
         
-        # Oct 6th: do not give any prior grouping prior to the modulation information
+        # 2025-10-06: do not give any prior grouping prior to the modulation information
         # simply grouping and considering each individual column as separate
         # having smaller G, e.g. 200, will make the following calculation in determining pre- and post-
         # belonging identity more time costly
