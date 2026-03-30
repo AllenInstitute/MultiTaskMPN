@@ -271,7 +271,7 @@ def test_init(config, mode, **kwargs):
     return trial
 
 
-def delaygo_(config, mode, anti_response, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
+def delaygo_(config, mode, anti_response, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
     '''
     Fixate whenever fixation point is shown,
     saccade to the location of the previously shown stimulus
@@ -293,37 +293,38 @@ def delaygo_(config, mode, anti_response, fix, separate_input, label_strength, l
     '''
     dt = config['dt']
     rng = config['rng']
-
-    # if fix:
-    #     print(f"rng reset with seed {seed}")
-    #     rng = np.random.RandomState(seed)
     
     if mode == 'random': # Randomly generate parameters, but uniform times/modalities across batch
         batch_size = kwargs['batch_size']
         # A list of locations of stimulus and on/off time
         stim_locs = rng.rand(batch_size)*2*np.pi
-        # stim_ons  = int(rng.choice([300, 500, 700])/dt)
         if long_fixation == "normal":
             stim_ons = int(rng.uniform(300,700)/dt)
         elif long_fixation == "long":
             stim_ons = int(rng.choice([10000])/dt)
+        if long_all == True: # overwrite
+            stim_ons = int(700/dt)
         
-        # stim_offs = stim_ons + int(rng.choice([200, 400, 600])/dt)
         if long_stimulus == "normal":
             stim_offs = stim_ons + int(rng.uniform(200,1600)/dt)
         elif long_stimulus == "long":
             stim_offs = stim_ons + int(rng.choice([10000])/dt)
+        if long_all == True: # overwrite
+            stim_offs = stim_ons + int(1600/dt)
         
         if long_delay == "normal":
-            # fix_offs = stim_offs + int(rng.choice([200, 400, 800, 1600])/dt)
             fix_offs = stim_offs + int(rng.uniform(200, 1600)/dt)
         elif long_delay == "long":
             fix_offs = stim_offs + int(rng.choice([10000])/dt)
+        if long_all == True: # overwrite
+            fix_offs = stim_offs + int(1600/dt)
 
         if long_response == "normal": 
             tdim     = fix_offs + int(rng.uniform(300, 700)/dt)
         elif long_response == "long": 
             tdim     = fix_offs + int(rng.choice([10000])/dt)
+        if long_all == True: # overwrite
+            tdim     = fix_offs + int(700/dt)
             
         stim_mod  = rng.choice([1,2])
         
@@ -332,24 +333,20 @@ def delaygo_(config, mode, anti_response, fix, separate_input, label_strength, l
 
         # A list of locations of stimuluss and on/off time
         stim_locs = rng.rand(batch_size)*2*np.pi
-        # stim_ons = batch_choice([300, 500, 700], batch_size, rng, dt)
         if long_fixation == "normal":
             stim_ons = (rng.uniform(300,700, size=(batch_size,))/dt).astype(np.int32)
         elif long_fixation == "long":
             stim_ons = (rng.choice([10000], size=(batch_size,))/dt).astype(np.int32)
-        # stim_offs = stim_ons + batch_choice([200, 400, 600], batch_size, rng, dt)
         if long_stimulus == "normal":
             stim_offs = stim_ons + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
         elif long_stimulus == "long":
             stim_offs = stim_ons + (rng.choice([10000], size=(batch_size,))/dt).astype(np.int32)
         
         if long_delay == "normal": 
-            # fix_offs = stim_offs + batch_choice([200, 400, 800, 1600], batch_size, rng, dt)
             fix_offs = stim_offs + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
         elif long_delay == "long":
             fix_offs = stim_offs + batch_choice([10000], batch_size, rng, dt)
 
-        # tdim     = fix_offs + int(500/dt)
         if long_response == "normal": 
             tdim     = fix_offs + (rng.uniform(300,700, size=(batch_size,))/dt).astype(np.int32)
         elif long_response == "long": 
@@ -416,11 +413,11 @@ def delaygo_(config, mode, anti_response, fix, separate_input, label_strength, l
     return trial
 
 
-def delaygo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
-    return delaygo_(config, mode, False, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
+def delaygo(config, mode, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
+    return delaygo_(config, mode, False, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation,long_all, **kwargs)
 
-def delayanti(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
-    return delaygo_(config, mode, True, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
+def delayanti(config, mode, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
+    return delaygo_(config, mode, True, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs)
     
 def contextdm_genstim(batch_size, rng, stim_coh_range=None):
     stim_mean = rng.uniform(0.8, 1.2, (batch_size,))
@@ -432,8 +429,7 @@ def contextdm_genstim(batch_size, rng, stim_coh_range=None):
     stim2_strengths = stim_mean - stim_coh*stim_sign
     return stim1_strengths, stim2_strengths
 
-
-def _contextdm(config, mode, attend_mod, fix, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs):
+def _contextdm(config, mode, attend_mod, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs):
     '''
     Fixate whenever fixation point is shown.
     Two stimuluss are shown in each ring,
@@ -502,9 +498,6 @@ def _contextdm(config, mode, attend_mod, fix, separate_input, label_strength, lo
         stim_on = int(rng.uniform(100,400)/dt)
         stim_ons = (np.ones(batch_size)*stim_on).astype(int)
         stim_dur = int(rng.choice([400, 800, 1600])/dt)
-        # stim_dur = rng.choice((np.array([200, 400, 800, 1600])/dt).astype(int)) # Current setting
-        # stim_dur = int(rng.uniform(500, 1000)/dt) # Current setting
-        # stim_dur = int(800/dt)
         stim_offs = stim_ons+stim_dur
 
         # delay_dur = rng.choice((np.array([200, 400, 800])/dt).astype(int)) # Current setting
@@ -514,16 +507,6 @@ def _contextdm(config, mode, attend_mod, fix, separate_input, label_strength, lo
         # each batch consists of sequences of equal length
         tdim = stim_on+stim_dur+delay_dur+int(500/dt)
     elif mode == 'random_batch': # Randomly generate parameters, times/modalities different across batch
-        # raise NotImplementedError()
-        # Todo:
-        # - Change choices to batch_choice
-        # - Make sure c_mask turns off
-        # - Make sure fixation turns off
-        # - Make sure output turns off
-        # - Return tdim in self.epochs
-
-        # print("Implementation by Zihan")
-
         batch_size = kwargs['batch_size']
 
         # Generate per-trial stimulus locations
@@ -629,8 +612,6 @@ def _contextdm(config, mode, attend_mod, fix, separate_input, label_strength, lo
                    'go1'      : (fix_offs, None)}
 
     if trial.get_meta:
-        # raise NotImplementedError()
-        # ZIHAN
         trial.meta = {
             'stim1': get_clostest_pref_idx(stim1_locs, trial.pref),
             'stim1_strs': stim1_strengths,
@@ -641,18 +622,16 @@ def _contextdm(config, mode, attend_mod, fix, separate_input, label_strength, lo
 
     return trial
 
+def contextdm1(config, mode, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs):
+    return _contextdm(config, mode, 1, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs)
 
-def contextdm1(config, mode, fix, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs):
-    return _contextdm(config, mode, 1, fix, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs)
+def contextdm2(config, mode, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs):
+    return _contextdm(config, mode, 2, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs)
 
+def multidm(config, mode, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs):
+    return _contextdm(config, mode, 'both', separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs)
 
-def contextdm2(config, mode, fix, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs):
-    return _contextdm(config, mode, 2, fix, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs)
-
-def multidm(config, mode, fix, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs):
-    return _contextdm(config, mode, 'both',fix, separate_input, label_strength, long_delay, long_stimulus, long_fixation, **kwargs)
-
-def reactgo_(config, mode, anti_response, fix, **kwargs):
+def reactgo_(config, mode, anti_response, long_all, **kwargs):
     '''
     Fixate when fixation point is shown,
     A stimulus will be shown, and the output should saccade to the stimulus location
@@ -674,17 +653,16 @@ def reactgo_(config, mode, anti_response, fix, **kwargs):
     dt = config['dt']
     rng = config['rng']
 
-    # if fix:
-    #     print(f"rng reset with seed {seed}")
-    #     rng = np.random.RandomState(seed)
-
     if mode == 'random': # Randomly generate parameters
         batch_size = kwargs['batch_size']
         # each batch consists of sequences of equal length
         # A list of locations of fixation points and fixation off time
-        stim_ons = int(rng.uniform(500,2500)/dt)
-        # tdim = int(500/dt) + stim_ons
-        tdim = int(rng.uniform(300,1700)/dt) + stim_ons
+        if not long_all: 
+            stim_ons = int(rng.uniform(500,2500)/dt)
+            tdim = int(rng.uniform(300,1700)/dt) + stim_ons
+        else:
+            stim_ons = int(2500/dt)
+            tdim = int(1700/dt) + stim_ons
 
         # A list of locations of stimuluss (they are always on)
         stim_locs = rng.uniform(0, 2*np.pi, (batch_size,))
@@ -694,7 +672,6 @@ def reactgo_(config, mode, anti_response, fix, **kwargs):
         batch_size = kwargs['batch_size']
 
         stim_ons = (rng.uniform(500,2500, size=(batch_size,))/dt).astype(np.int32)
-        # tdim = int(500/dt) + stim_ons
         tdim = (rng.uniform(300,1700, size=(batch_size,))/dt).astype(np.int32) + stim_ons
 
         # A list of locations of stimuluss (they are always on)
@@ -752,15 +729,15 @@ def reactgo_(config, mode, anti_response, fix, **kwargs):
 
     return trial
 
-def reactgo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
-    return reactgo_(config, mode, False, fix, **kwargs)
+def reactgo(config, mode, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
+    return reactgo_(config, mode, False, long_all, **kwargs)
 
 
-def reactanti(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
-    return reactgo_(config, mode, True, fix, **kwargs)
+def reactanti(config, mode, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
+    return reactgo_(config, mode, True, long_all, **kwargs)
 
 
-def fdgo_(config, mode, anti_response, fix, long_response, long_stimulus, long_fixation, **kwargs):
+def fdgo_(config, mode, anti_response, long_response, long_stimulus, long_fixation, long_all, **kwargs):
     '''
     Go with inhibitory control. Important difference with Go task is that
     the stimulus is presented from the beginning.
@@ -786,10 +763,6 @@ def fdgo_(config, mode, anti_response, fix, long_response, long_stimulus, long_f
     dt = config['dt']
     rng = config['rng']
     
-    # if fix:
-    #     print(f"rng reset with seed {seed}")
-    #     rng = np.random.RandomState(seed)
-        
     if mode == 'random': # Randomly generate parameters
         batch_size = kwargs['batch_size']
         # each batch consists of sequences of equal length
@@ -798,16 +771,20 @@ def fdgo_(config, mode, anti_response, fix, long_response, long_stimulus, long_f
         # A list of locations of stimulus (they are always on)
         stim_locs = rng.rand(batch_size)*2*np.pi
         stim_mod  = rng.choice([1,2])
-        stim_ons  = int(rng.uniform(300,700)/dt)
-
-        # fix_offs  = stim_ons + int(rng.uniform(500,1500)/dt)
-        fix_offs  = stim_ons + int(rng.uniform(200,1500)/dt)
         
-        # tdim      = int(500/dt) + fix_offs
+        if not long_all:
+            stim_ons  = int(rng.uniform(300,700)/dt)
+            fix_offs  = stim_ons + int(rng.uniform(200,1500)/dt)
+        else:
+            stim_ons  = int(700/dt)
+            fix_offs  = stim_ons + int(1500/dt)
+        
         if long_response == "normal": 
             tdim = int(rng.uniform(300,700)/dt) + fix_offs
         elif long_response == "long": 
             tdim = int(rng.choice([5000])/dt) + fix_offs
+        if long_all == True: # overwrite
+            tdim = int(700/dt) + fix_offs
         
     elif mode == 'random_batch': # Randomly generate parameters, times/modalities different across batch
         batch_size = kwargs['batch_size']
@@ -881,14 +858,14 @@ def fdgo_(config, mode, anti_response, fix, long_response, long_stimulus, long_f
 
     return trial
 
-def fdgo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
-    return fdgo_(config, mode, False, fix, long_response, long_stimulus, long_fixation, **kwargs)
+def fdgo(config, mode, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
+    return fdgo_(config, mode, False, long_response, long_stimulus, long_fixation, long_all, **kwargs)
 
 
-def fdanti(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
-    return fdgo_(config, mode, True, fix, long_response, long_stimulus, long_fixation, **kwargs)
+def fdanti(config, mode, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
+    return fdgo_(config, mode, True, long_response, long_stimulus, long_fixation, long_all, **kwargs)
 
-def delaydm_(config, mode, stim_mod, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
+def delaydm_(config, mode, stim_mod, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
     ''' 
     Fixate whenever fixation point is shown.
     Two stimuluss are shown at different time, with different intensities
@@ -929,26 +906,14 @@ def delaydm_(config, mode, stim_mod, fix, separate_input, label_strength, long_d
 
         stim1_strengths = stims_mean + stims_coh*stims_sign
         stim2_strengths = stims_mean - stims_coh*stims_sign
-
-        # # Time of stimuluss on/off
-        # # stim1_ons  = int(rng.choice([200, 400, 600])/dt)
-        # stim1_ons  = int(rng.uniform(200,600)/dt)
-        # # stim1_offs = stim1_ons + int(rng.choice([200, 400, 600])/dt)
-        # stim1_offs = stim1_ons + int(rng.uniform(200,1600)/dt)
-        # # stim2_ons  = stim1_offs + int(rng.choice([200, 400, 800, 1600])/dt)
-        # stim2_ons  = stim1_offs + int(rng.uniform(200,1600)/dt)
-        # # stim2_offs = stim2_ons + int(rng.choice([200, 400, 600])/dt)
-        # stim2_offs = stim2_ons + int(rng.uniform(200,1600)/dt)
-        # # fix_offs  = stim2_offs + int(rng.uniform(100,300)/dt)
-        # fix_offs  = stim2_offs + int(rng.uniform(100,300)/dt)
-        
-        # # each batch consists of sequences of equal length
-        # # tdim = fix_offs + int(500/dt) # longest trial
-        # tdim = fix_offs + int(rng.uniform(300,700)/dt) # longest trial
         
         # Time of stimuluss on/off (keep your existing sampling for these)
-        stim1_ons  = int(rng.uniform(200,600)/dt)
-        stim1_offs = stim1_ons + int(rng.uniform(200,1600)/dt)
+        if not long_all:
+            stim1_ons  = int(rng.uniform(200,600)/dt)
+            stim1_offs = stim1_ons + int(rng.uniform(200,1600)/dt)
+        else:
+            stim1_ons  = int(600/dt)
+            stim1_offs = stim1_ons + int(1600/dt)
 
         # NEW: delay lengths (apply to BOTH delay1 and delay2)
         if long_delay == "normal":
@@ -959,12 +924,22 @@ def delaydm_(config, mode, stim_mod, fix, separate_input, label_strength, long_d
             delay2_len = int(5000/dt)
         else:
             raise ValueError(f"Unknown long_delay: {long_delay}")
+        
+        if long_all == True: # overwrite
+            delay1_len = int(1600/dt)
+            delay2_len = int(300/dt)
 
         stim2_ons  = stim1_offs + delay1_len
-        stim2_offs = stim2_ons + int(rng.uniform(200,1600)/dt)
+        if not long_all:
+            stim2_offs = stim2_ons + int(rng.uniform(200,1600)/dt)
+        else:
+            stim2_offs = stim2_ons + int(1600/dt)
         fix_offs   = stim2_offs + delay2_len
 
-        tdim = fix_offs + int(rng.uniform(300,700)/dt)
+        if not long_all:
+            tdim = fix_offs + int(rng.uniform(300,700)/dt)
+        else:
+            tdim = fix_offs + int(700/dt)
 
     elif mode == 'random_batch': # Randomly generate parameters, times/modalities different across batch
         batch_size = kwargs['batch_size']
@@ -987,21 +962,6 @@ def delaydm_(config, mode, stim_mod, fix, separate_input, label_strength, long_d
 
         stim1_strengths = stims_mean + stims_coh*stims_sign
         stim2_strengths = stims_mean - stims_coh*stims_sign
-
-        # # Time of stimuluss on/off
-        # # stim1_ons  = batch_choice([200, 400, 600], batch_size, rng, dt)
-        # stim1_ons  = (rng.uniform(200,600, size=(batch_size,))/dt).astype(np.int32)
-        # # stim1_offs = stim1_ons + batch_choice([200, 400, 600], batch_size, rng, dt)
-        # stim1_offs = stim1_ons + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
-        # # stim2_ons  = stim1_offs + batch_choice([200, 400, 800, 1600], batch_size, rng, dt)
-        # stim2_ons  = stim1_offs + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
-        # # stim2_offs = stim2_ons + batch_choice([200, 400, 600], batch_size, rng, dt)
-        # stim2_offs = stim2_ons + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
-        # # fix_offs  = stim2_offs + (rng.uniform(100,300, size=(batch_size,))/dt).astype(np.int32)
-        # fix_offs  = stim2_offs + (rng.uniform(100,300, size=(batch_size,))/dt).astype(np.int32)
-
-        # # tdim = fix_offs + int(500/dt) # longest trial
-        # tdim = fix_offs + (rng.uniform(300,700, size=(batch_size,))/dt).astype(np.int32) # longest trial
         
         stim1_ons  = (rng.uniform(200,600,  size=(batch_size,))/dt).astype(np.int32)
         stim1_offs = stim1_ons + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
@@ -1098,15 +1058,15 @@ def delaydm_(config, mode, stim_mod, fix, separate_input, label_strength, long_d
     return trial
 
 
-def delaydm1(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
-    return delaydm_(config, mode, 1, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
+def delaydm1(config, mode, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
+    return delaydm_(config, mode, 1, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs)
 
 
-def delaydm2(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
-    return delaydm_(config, mode, 2, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
+def delaydm2(config, mode, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
+    return delaydm_(config, mode, 2, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs)
 
 
-def contextdelaydm_(config, mode, attend_mod, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
+def contextdelaydm_(config, mode, attend_mod, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
     '''
     Fixate whenever fixation point is shown.
     Two stimuluss are shown in each ring,
@@ -1171,22 +1131,20 @@ def contextdelaydm_(config, mode, attend_mod, fix, separate_input, label_strengt
             stim2_mod1_strengths = stim2_strengths + stim2_mod12_diff/2
             stim2_mod2_strengths = stim2_strengths - stim2_mod12_diff/2
 
-        # # Time of stimulus on/off
-        # stim1_ons  = int(rng.choice([200, 400, 600])/dt)
-        # stim1_offs = stim1_ons + int(rng.choice([200, 400, 600])/dt)
-        # stim2_ons  = stim1_offs + int(rng.choice([200, 400, 800, 1600])/dt)
-        # stim2_offs = stim2_ons + int(rng.choice([200, 400, 600])/dt)
-        # fix_offs  = stim2_offs + int(rng.uniform(100,300)/dt)
-
-        # # each batch consists of sequences of equal length
-        # tdim = fix_offs + int(500/dt) # longest trial
-
-        stim1_ons  = int(rng.uniform(200,600)/dt)
-        stim1_offs = stim1_ons + int(rng.uniform(200,1600)/dt)
-        stim2_ons  = stim1_offs + int(rng.uniform(200,1600)/dt)
-        stim2_offs = stim2_ons + int(rng.uniform(200,1600)/dt)
-        fix_offs  = stim2_offs + int(rng.uniform(100,300)/dt)
-        tdim = fix_offs + int(rng.uniform(300,700)/dt) # longest trial
+        if not long_all:
+            stim1_ons  = int(rng.uniform(200,600)/dt)
+            stim1_offs = stim1_ons + int(rng.uniform(200,1600)/dt)
+            stim2_ons  = stim1_offs + int(rng.uniform(200,1600)/dt)
+            stim2_offs = stim2_ons + int(rng.uniform(200,1600)/dt)
+            fix_offs  = stim2_offs + int(rng.uniform(100,300)/dt)
+            tdim = fix_offs + int(rng.uniform(300,700)/dt) # longest trial
+        else:
+            stim1_ons  = int(600/dt)
+            stim1_offs = stim1_ons + int(1600/dt)
+            stim2_ons  = stim1_offs + int(1600/dt)
+            stim2_offs = stim2_ons + int(1600/dt)
+            fix_offs  = stim2_offs + int(300/dt)
+            tdim = fix_offs + int(700/dt) # longest trial
         
     elif mode == 'random_batch': # Randomly generate parameters, times/modalities different across batch
         batch_size = kwargs['batch_size']
@@ -1217,15 +1175,6 @@ def contextdelaydm_(config, mode, attend_mod, fix, separate_input, label_strengt
             stim2_mod12_diff = stim2_strengths * rng.uniform(0.2, 0.8, size=(batch_size,)) * rng.choice([+1, -1], size=(batch_size,))
             stim2_mod1_strengths = stim2_strengths + stim2_mod12_diff / 2
             stim2_mod2_strengths = stim2_strengths - stim2_mod12_diff / 2
-
-        # # Timing parameters (per trial arrays)
-        # stim1_ons  = (rng.choice([200, 400, 600], size=(batch_size,)) / dt).astype(np.int32)
-        # stim1_offs = stim1_ons + (rng.choice([200, 400, 600], size=(batch_size,)) / dt).astype(np.int32)
-        # stim2_ons  = stim1_offs + (rng.choice([200, 400, 800, 1600], size=(batch_size,)) / dt).astype(np.int32)
-        # stim2_offs = stim2_ons + (rng.choice([200, 400, 600], size=(batch_size,)) / dt).astype(np.int32)
-        # fix_offs   = stim2_offs + (rng.uniform(100, 300, size=(batch_size,)) / dt).astype(np.int32)
-        # # Use the maximum fix_off across trials to define a common trial length
-        # tdim       = np.max(fix_offs) + int(500 / dt)
 
         stim1_ons  = (rng.uniform(200,600, size=(batch_size,))/dt).astype(np.int32)
         stim1_offs = stim1_ons + (rng.uniform(200,1600, size=(batch_size,))/dt).astype(np.int32)
@@ -1323,18 +1272,16 @@ def contextdelaydm_(config, mode, attend_mod, fix, separate_input, label_strengt
     return trial
 
 
-def contextdelaydm1(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
-    return contextdelaydm_(config, mode, 1, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
+def contextdelaydm1(config, mode, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
+    return contextdelaydm_(config, mode, 1, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs)
 
+def contextdelaydm2(config, mode, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
+    return contextdelaydm_(config, mode, 2, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs)
 
-def contextdelaydm2(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
-    return contextdelaydm_(config, mode, 2, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
+def multidelaydm(config, mode, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
+    return contextdelaydm_(config, mode, 'both', separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs)
 
-
-def multidelaydm(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
-    return contextdelaydm_(config, mode, 'both', fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
-
-def dms_(config, mode, matchnogo, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
+def dms_(config, mode, matchnogo, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
     '''
     Delay-match-to-sample
 
@@ -1378,16 +1325,16 @@ def dms_(config, mode, matchnogo, fix, separate_input, label_strength, long_dela
         stim1_locs = rng.uniform(0, 2*np.pi, (batch_size,))
         stim2_locs = (stim1_locs+stim_dist*(1-matchs))%(2*np.pi)
 
-        # # Time of stimuluss on/off
-        # stim1_ons  = int(rng.choice([200, 400, 600])/dt)
-        # stim1_offs = stim1_ons + int(rng.choice([200, 400, 600])/dt)
-        # stim2_ons  = stim1_offs + int(rng.choice([200, 400, 800, 1600])/dt)
-        # tdim       = stim2_ons + int(500/dt)
-
-        stim1_ons  = int(rng.uniform(200,600)/dt)
-        stim1_offs = stim1_ons + int(rng.uniform(200,1600)/dt)
-        stim2_ons  = stim1_offs + int(rng.uniform(200,1600)/dt)
-        tdim = stim2_ons + int(rng.uniform(300,700)/dt) # longest trial
+        if not long_all:
+            stim1_ons  = int(rng.uniform(200,600)/dt)
+            stim1_offs = stim1_ons + int(rng.uniform(200,1600)/dt)
+            stim2_ons  = stim1_offs + int(rng.uniform(200,1600)/dt)
+            tdim = stim2_ons + int(rng.uniform(300,700)/dt) # longest trial
+        else:
+            stim1_ons  = int(600/dt)
+            stim1_offs = stim1_ons + int(1600/dt)
+            stim2_ons  = stim1_offs + int(1600/dt)
+            tdim = stim2_ons + int(700/dt) # longest trial
         
     elif mode == 'random_batch': # Randomly generate parameters, times/modalities different across batch
         batch_size = kwargs['batch_size']
@@ -1490,15 +1437,15 @@ def dms_(config, mode, matchnogo, fix, separate_input, label_strength, long_dela
     return trial
 
 
-def dmsgo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
-    return dms_(config, mode, 0, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
+def dmsgo(config, mode, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
+    return dms_(config, mode, 0, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs)
 
 
-def dmsnogo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
-    return dms_(config, mode, 1, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
+def dmsnogo(config, mode, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
+    return dms_(config, mode, 1, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs)
 
 
-def dmc_(config, mode, matchnogo, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
+def dmc_(config, mode, matchnogo, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
     '''
     Delay-match-to-category
 
@@ -1532,34 +1479,31 @@ def dmc_(config, mode, matchnogo, fix, separate_input, label_strength, long_dela
         # Use only mod 1 for input
         stim1_mod  = rng.choice([1,2])
         stim2_mod  = rng.choice([1,2])
-        # A list of locations of stimuluss
-        # Since stim1 is always shown first, it's important that we completely randomize their relative positions
-        # stim1_locs = rng.uniform(0, 2*np.pi, (batch_size,))
-        # stim2_locs = rng.uniform(0, 2*np.pi, (batch_size,))
-        
-        # stim1_locs = rng.choice(np.array([0.1, 0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9])*np.pi,size=(batch_size,))
-        # stim2_locs = rng.choice(np.array([0.1, 0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9])*np.pi,size=(batch_size,))
+
         stim1_locs = rng.choice(np.array([0.05, 0.30, 0.55, 0.80, 1.05, 1.30, 1.55, 1.80])*np.pi,size=(batch_size,)) # avoid ambiguity
         stim2_locs = rng.choice(np.array([0.05, 0.30, 0.55, 0.80, 1.05, 1.30, 1.55, 1.80])*np.pi,size=(batch_size,))
 
-        # # Time of stimuluss on/off
-        # stim1_ons  = int(rng.choice([200, 400, 600])/dt)
-        # stim1_offs = stim1_ons + int(rng.choice([200, 400, 600])/dt)
-        # stim2_ons  = stim1_offs + int(rng.choice([200, 400, 800, 1600])/dt)
-        # tdim       = stim2_ons + int(rng.choice([200, 400, 600])/dt)
+        if not long_all:
+            stim1_ons  = int(rng.uniform(200, 600) / dt)
+            stim1_offs = stim1_ons + int(rng.uniform(200, 1600) / dt)
 
-        stim1_ons  = int(rng.uniform(200,600)/dt)
-        stim1_offs = stim1_ons + int(rng.uniform(200,1600)/dt)
-        
-        # long_delay controls the delay between stim1_offs and stim2_ons
-        if long_delay == "normal":
-            stim2_ons  = stim1_offs + int(rng.uniform(200,1600)/dt)
-        elif long_delay == "long":
-            stim2_ons  = stim1_offs + int(rng.choice([10000])/dt)
+            # delay between stim1_offs and stim2_ons
+            if long_delay == "normal":
+                delay_len = int(rng.uniform(200, 1600) / dt)
+            elif long_delay == "long":
+                delay_len = int(10000 / dt)
+            else:
+                raise ValueError(f"Unknown long_delay: {long_delay}")
+
+            stim2_ons = stim1_offs + delay_len
+            tdim = stim2_ons + int(rng.uniform(300, 700) / dt)
+
         else:
-            raise ValueError(f"Unknown long_delay: {long_delay}")
-        
-        tdim = stim2_ons + int(rng.uniform(300,700)/dt) # longest trial
+            # longest selection within the normal range for all periods
+            stim1_ons  = int(600 / dt)
+            stim1_offs = stim1_ons + int(1600 / dt)
+            stim2_ons  = stim1_offs + int(1600 / dt)
+            tdim       = stim2_ons + int(700 / dt)
 
     elif mode == 'random_batch': # Randomly generate parameters, times/modalities different across batch
         batch_size = kwargs['batch_size']
@@ -1676,13 +1620,11 @@ def dmc_(config, mode, matchnogo, fix, separate_input, label_strength, long_dela
 
     return trial
 
+def dmcgo(config, mode, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
+    return dmc_(config, mode, 0, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs)
 
-def dmcgo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
-    return dmc_(config, mode, 0, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
-
-
-def dmcnogo(config, mode, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs):
-    return dmc_(config, mode, 1, fix, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, **kwargs)
+def dmcnogo(config, mode, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
+    return dmc_(config, mode, 1, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs)
 
 rule_mapping = {'testinit': test_init,
                 'fdgo': fdgo, # Var_batch
@@ -1693,8 +1635,8 @@ rule_mapping = {'testinit': test_init,
                 'delayanti': delayanti, # Var_batch
                 # 'dm1': dm1,
                 # 'dm2': dm2,
-                'contextdm1': contextdm1,
-                'contextdm2': contextdm2,
+                # 'contextdm1': contextdm1,
+                # 'contextdm2': contextdm2,
                 'multidm': multidm,
                 'delaydm1': delaydm1, # Var_batch
                 'delaydm2': delaydm2, # Var_batch
@@ -1734,10 +1676,11 @@ rule_name    = {'reactgo': 'RT Go',
                 }
 
 
-def generate_trials(rule, hp, mode, noise_on=True, fix=False, 
+def generate_trials(rule, hp, mode, noise_on=True, 
                     separate_input=False, label_strength=False, 
                     long_delay="normal", long_response="normal", 
-                    long_stimulus="normal", long_fixation="normal", **kwargs):
+                    long_stimulus="normal", long_fixation="normal", 
+                    long_all=False, **kwargs):
     """Generate one batch of data.
 
     Args:
@@ -1750,8 +1693,16 @@ def generate_trials(rule, hp, mode, noise_on=True, fix=False,
         trial: Trial class instance, containing input and target output
     """
     config = hp
-    trial = rule_mapping[rule](config, mode, fix, separate_input, label_strength, long_delay, long_response, 
-                               long_stimulus, long_fixation, **kwargs)
+    trial = rule_mapping[rule](config, 
+                               mode, 
+                               separate_input, 
+                               label_strength, 
+                               long_delay, 
+                               long_response, 
+                               long_stimulus, 
+                               long_fixation, 
+                               long_all=long_all, 
+                               **kwargs)
 
     # Add rule input to every task
     if 'rule_on' in kwargs:
@@ -1950,8 +1901,15 @@ def insert_zeros_after_channel(x, K, after=5):
 
     return np.concatenate([first, zeros, second], axis=2)
 
-def generate_trials_wrap(task_params, n_batches, device='cuda', verbose=False, rules=None,
-                         mode_input="random_batch", fix=False, pretraining_shift=0, pretraining_shift_pre=0):
+def generate_trials_wrap(task_params, 
+                         n_batches, 
+                         device='cuda', 
+                         verbose=False, 
+                         rules=None,
+                         mode_input="random_batch", 
+                         pretraining_shift=0, 
+                         pretraining_shift_pre=0,
+                         long_all=False):
     """
     Wrapper to generate the raw datasets, including the inputs, labels, and masks.
 
@@ -2013,13 +1971,25 @@ def generate_trials_wrap(task_params, n_batches, device='cuda', verbose=False, r
                 result[idx] += 1
         
         return result
+    
+    # 2026-03-29: we add an additional mode "long_all" as an additional mode for post-training analysis,
+    # which generates deta trail with longest (but still in reasonable range) delay, response, stimulus, and fixation
+    # currently only implemented in the 
+    if long_all:
+        assert mode_input == "random"
 
     for rule, rule_idx in zip(rules, rule_idxs):
-        trial = generate_trials(rule, task_params['hp'], mode_input, 
-                                batch_size=n_batches, fix=fix, separate_input=task_params['modality_diff'], 
-                                label_strength=task_params['label_strength'], long_delay=task_params['long_delay'],
-                                long_response=task_params['long_response'], long_stimulus=task_params['long_stimulus'], 
-                                long_fixation=task_params['long_fixation'])
+        trial = generate_trials(rule, 
+                                task_params['hp'], 
+                                mode_input, 
+                                batch_size=n_batches, 
+                                separate_input=task_params['modality_diff'], 
+                                label_strength=task_params['label_strength'], 
+                                long_delay=task_params['long_delay'],
+                                long_response=task_params['long_response'], 
+                                long_stimulus=task_params['long_stimulus'], 
+                                long_fixation=task_params['long_fixation'],
+                                long_all=long_all)
 
         trial.x = trial.x[:,:,:-1] if not task_params["task_info"] else trial.x # ***
         

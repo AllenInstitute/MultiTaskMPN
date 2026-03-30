@@ -83,7 +83,7 @@ if __name__ == "__main__":
 
         test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(
             task_params_c, test_n_batch, rules=task_params_c['rules'],
-            mode_input="random_batch", fix=True, device="cpu", verbose=False
+            mode_input="random_batch", device="cpu", verbose=False
         )
         test_input, test_output, test_mask = test_data
 
@@ -94,9 +94,9 @@ if __name__ == "__main__":
 
         with torch.no_grad():
             net_out, _, db_test = model.iterate_sequence_batch(test_input, run_mode='track_states')
-            acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input, isvalid=True, mode=model.acc_measure)
+            acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input, isvalid=True, mode="angle")
 
-        fig, axs = plt.subplots(5, 2, figsize=(10, 10))
+        fig, axs = plt.subplots(5,2,figsize=(10,10))
         for i in range(5):
             for inp in range(test_input.shape[2]):
                 axs[i,0].plot(test_input[i,:,inp].detach().cpu().numpy(), color=c_vals[inp], alpha=0.5)

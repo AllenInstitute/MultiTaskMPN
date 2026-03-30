@@ -15,7 +15,7 @@ import torch
 
 T = TypeVar("T")
 
-def task_variance_period_numpy(h, stim, K=8, time_reduce="mean"):
+def task_variance_period_numpy_old(h, stim, K=8, time_reduce="mean"):
     """
     """
     B, T, N = h.shape
@@ -37,37 +37,68 @@ def task_variance_period_numpy(h, stim, K=8, time_reduce="mean"):
         return v_time.sum(axis=0)   # (N,)
     else:
         raise ValueError
+    
+def task_variance_period_numpy(h, stim, K=8, return_means=False, ddof=0):
+    """
+    Compute task-period variance per unit using the pooled condition-by-time variance:
+    
+        V_n = Var_{k,t}(mu_{k,t,n})
+    
+    where
+        mu_{k,t,n} = mean activity of unit n at time t over trials with stimulus k.
+    """
+    B, T, N = h.shape
+    assert len(stim) == B, "stim length must match number of trials in h"
+
+    # stimulus-conditioned mean trajectories
+    m = np.full((K, T, N), np.nan, dtype=float)
+    for k in range(K):
+        idx = (stim == k)
+        if np.any(idx):
+            m[k] = h[idx].mean(axis=0)
+
+    # pool over condition and time, then compute one variance per unit
+    V = np.nanvar(m, axis=(0, 1), ddof=ddof)   # shape (N,)
+
+    if return_means:
+        return V, m
+    return V
+
 
 def find_task(task_params, test_input_np, shift_index):
     """
-    """
-    test_task = [] # which task
-    for batch_idx in range(test_input_np.shape[0]):
-        
-        if task_params["randomize_inputs"]: 
-            test_input_np_ = test_input_np @ np.linalg.pinv(task_params["randomize_matrix"])
-        else: 
-            test_input_np_ = test_input_np
-            
-        task_label = test_input_np_[batch_idx, 0, 6-shift_index:]
-        # task_label_index = np.where(task_label == 1)[0][0]
-        
-        # tol = 1e-3      
-        # mask = np.isclose(task_label, 1, atol=tol)
-        task_label = np.asarray(task_label)       
-        dist = np.abs(task_label - 1)     
-        mask = dist == dist.min() 
-        
-        indices = np.where(mask)[0]
-        
-        if indices.size:                
-            task_label_index = indices[0]   
-        else:
-            raise ValueError("No entry close enough to 1 found")
-            
-        test_task.append(task_label_index)
+    Infer task label index for each batch element.
 
-    return test_task 
+    Parameters
+    ----------
+    task_params : dict
+        Must contain:
+        - "randomize_inputs" : bool
+        - "randomize_matrix" : array-like, if randomize_inputs is True
+    test_input_np : np.ndarray
+        Shape (B, T, D)
+    shift_index : int
+        Used to slice task label as [6 - shift_index:]
+
+    Returns
+    -------
+    list[int]
+        Task index for each batch element.
+    """
+    # Undo input randomization once, for the whole tensor
+    if task_params["randomize_inputs"]:
+        pinv_mat = np.linalg.pinv(task_params["randomize_matrix"])
+        test_input_np_ = test_input_np @ pinv_mat
+    else:
+        test_input_np_ = test_input_np
+
+    # Extract all task-label vectors at once: shape (B, L)
+    task_label = test_input_np_[:, 0, 6 - shift_index:]
+
+    # Find index of entry closest to 1 for each batch
+    task_label_index = np.abs(task_label - 1).argmin(axis=1)
+
+    return task_label_index.tolist()
 
 def find_key_by_membership(d, value):
     """
@@ -198,7 +229,6 @@ def is_power_of_n_or_zero(x: int, n: int) -> bool:
 
     return x == 1
 
-
 def basic_sort(lst, sort_idxs):
     """
     Map each element in `lst` to its corresponding entry in `sort_idxs`.
@@ -244,7 +274,7 @@ def as_jsonable(obj):
     # --- Unknown type: let json default handler decide -----------------
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serialisable")
     
-        
+
 def to_ndarray(x):
     """
     Return *x* as a NumPy ndarray.

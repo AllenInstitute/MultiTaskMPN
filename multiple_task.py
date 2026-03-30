@@ -111,9 +111,9 @@ rules_dict = \
      'dm_family': ['delaydm1', 'delaydm2', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm'],
      'go_dm_family': ['fdgo', 'fdanti', 'reactgo', 'reactanti', 'delaygo', 'delayanti', \
                       'delaydm1', 'delaydm2', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm'],
-     'everything': ['fdgo', 'fdanti', 'reactgo', 'reactanti', 'delaygo', 'delayanti', \
-                      'delaydm1', 'delaydm2', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 
-                       'dmsgo', 'dmsnogo', 'dmcgo', 'dmcnogo'],
+     'everything': ['fdgo', 'fdanti', 'reactgo', 'reactanti', 'delaygo', 'delayanti', 
+                    'delaydm1', 'delaydm2', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 
+                    'dmsgo', 'dmsnogo', 'dmcgo', 'dmcnogo'],
     }
 
 # only work if adjust_task_prop == False, otherwise will be overwritten
@@ -326,10 +326,6 @@ elif net_params['net_type'] == 'gru':
 test_n_batch = train_params["valid_n_batch"]
 color_by = "stim" # or "resp" 
 
-task_random_fix = True
-if task_random_fix:
-    print(f"Align {task_params['rules']} With Same Time")
-
 if task_params['task_type'] in ('multitask',): # Test batch consists of all the rules
     task_params['hp']['batch_size_train'] = test_n_batch
     # using homogeneous cutting off if multiple tasks are presented in the pool
@@ -341,9 +337,8 @@ if task_params['task_type'] in ('multitask',): # Test batch consists of all the 
     test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params, 
                                                                   test_n_batch, 
                                                                   rules=task_params['rules'], 
-                                                                  mode_input=test_mode_for_all, 
-                                                                  fix=task_random_fix
-    )
+                                                                  mode_input=test_mode_for_all)
+    
     _, test_trials, test_rule_idxs = test_trials_extra
     task_params['dataset_name'] = 'multitask'
 

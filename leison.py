@@ -5,14 +5,69 @@ import seaborn as sns
 import pickle
 import copy 
 import gc
-import sys  
+
 import matplotlib.pyplot as plt
+import matplotlib as mpl 
 from matplotlib.ticker import MaxNLocator
+
+mpl.rcParams.update({
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"], 
+    "font.size": 8,
+    "axes.labelsize": 8,
+    "axes.titlesize": 8,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+    "pdf.fonttype": 42,   
+    "ps.fonttype": 42,
+})
 
 import torch 
 
 import mpn 
 import mpn_tasks
+
+def plot_heatmap(input_matrix, all_comb_names_, all_tasks_, xlabel, ylabel, savename, aname, label="Accuracy"):
+    """
+    """
+    A = np.asarray(input_matrix, dtype=float)
+    mask = ~np.isfinite(A)
+    fig_w = max(6, 0.55 * len(all_tasks_) + 2.5)
+    fig_h = max(4, 0.40 * len(all_comb_names_) + 2.0)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=200)
+    
+    hm = sns.heatmap(
+        A * 100, # since we are plot in terms of accuracy
+        mask=mask,
+        cmap="magma_r",
+        vmin=0.0 * 100, vmax=1.0 * 100,                
+        annot=True,
+        fmt=".2f",                          
+        annot_kws={"fontsize": 8},
+        linewidths=0.4,
+        linecolor="white",
+        cbar_kws={"label": label, "shrink": 0.9, "pad": 0.02},
+        ax=ax,
+    )
+
+    ax.set_xticklabels(all_comb_names_, rotation=45, ha="right")
+    ax.set_yticklabels(all_tasks_, rotation=0)    
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.tick_params(axis="both", length=2, pad=2)
+
+    cbar = hm.collections[0].colorbar
+    cbar.ax.yaxis.set_major_locator(MaxNLocator(6))
+
+    for t in hm.texts:
+        try:
+            v = float(t.get_text())
+            t.set_color("white" if v < 0.55 else "black")
+        except ValueError:
+            pass
+
+    fig.tight_layout()
+    fig.savefig(f"./multiple_tasks_perf/{savename}_heatmap_{aname}.png", dpi=300)
 
 if __name__ == "__main__":
     aname = "everything_seed749_L21e4+hidden300+batch128+angle"
@@ -60,31 +115,42 @@ if __name__ == "__main__":
     post_n = len(cluster_info["hidden"]["col_clusters"])
 
     all_comb = (
-        [("pre", i) for i in range(pre_n + 1)] +
-        [("post", i) for i in range(post_n + 1)]
+        [("pre", None)] + [("pre", i) for i in range(1, pre_n)] +
+        [("post", None)] + [("post", i) for i in range(1, post_n)]
     )
 
     rename = {"pre_c0": "pre_noleison", "post_c0": "post_noleison"}
     all_comb_names_leison = [rename.get(f"{tag}_c{i}", f"{tag}_c{i}") for tag, i in all_comb]
     print(f"all_comb_names_leison: {all_comb_names_leison}")
     
-    def leison_prepost(net, cluster_info, cluster_index, preorpost):
+    print(model.W_initial_linear.weight.shape, model.mp_layer1.W.shape, model.mp_layer1.b.shape, model.W_output.shape)
+    
+    def leison_prepost(net, cluster_info, cluster_index, preorpost, random=False):
         net_copy = copy.deepcopy(net)
         name = "input" if preorpost == "pre" else "hidden"
+        max_N = max(arr.max() for arr in cluster_info[name]["col_clusters"].values())
         
         leison_units = 0 
-        if cluster_index != 0: 
+        if cluster_index is not None: 
             neuron_index = cluster_info[name]["col_clusters"][cluster_index]
-            leison_units = len(neuron_index)
+            class_N = len(neuron_index) # length of the cluster to be lesioned
             
-            if preorpost == "pre":
-                net_copy.W_initial_linear.weight.data[neuron_index, :] = 0.0
-                net_copy.mp_layer1.W[:, neuron_index].zero_()
-            elif preorpost == "post":
-                net_copy.mp_layer1.W[neuron_index, :].zero_()
-                # the bias of MPN layer is on the postsynaptic side
-                net_copy.mp_layer1.b[neuron_index].zero_()
-                net_copy.W_output[:, neuron_index].zero_()
+            if not random: 
+                neuron_index = torch.tensor(neuron_index, dtype=torch.long, device=net_copy.W_output.device)
+                leison_units = len(neuron_index)
+            else:
+                vals = np.random.choice(np.arange(max_N + 1), size=class_N, replace=False)
+                neuron_index = torch.tensor(vals, dtype=torch.long, device=net_copy.W_output.device)
+        
+            with torch.no_grad():
+                if preorpost == "pre":
+                    net_copy.W_initial_linear.weight.data[neuron_index, :] = 0.0
+                    net_copy.mp_layer1.W[:, neuron_index] = 0.0
+                elif preorpost == "post":
+                    net_copy.mp_layer1.W[neuron_index, :] = 0.0
+                    # the bias of MPN layer is on the postsynaptic side
+                    net_copy.mp_layer1.b[neuron_index] = 0.0
+                    net_copy.W_output[:, neuron_index] = 0.0
         
         return net_copy, leison_units
     
@@ -150,16 +216,15 @@ if __name__ == "__main__":
     test_n_batch = 10
     task_params_c['hp']['batch_size_train'] = test_n_batch
     
-    # pruning for W
+    # L2 pruning for W
     K_lst = [0.0, 10.0, 50.0, 90.0, 95.0, 98.0, 99.0, 99.90]
     sparsity_lst = [k / 100.0 for k in K_lst]
     all_comb_prune = [("prune", k) for k in sparsity_lst]
-    all_comb_names_prune = [f"prune_{k:.3f}%" for k in sparsity_lst]
+    all_comb_names_prune = [f"prune_{k:.3f}%" for k in K_lst]
     
-    wtask_accs = []
-
     # leisons for different input & hidden clusters through a leave-one-out manner
-    ihtask_accs = []
+    ihtask_accs, wtask_accs = [], []
+    ihrandomtask_accs = []
     
     for task in all_tasks:   
         print(f"Evaluating task: {task}")
@@ -167,12 +232,14 @@ if __name__ == "__main__":
         # and make the comparison more fair
         test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(
             task_params_c, test_n_batch, rules=[task],
-            mode_input="random_batch", fix=True, device="cpu", verbose=False
+            mode_input="random_batch", device="cpu", verbose=False
         )
         test_input, test_output, test_mask = test_data
         
         ihaccs, waccs = [], []
+        ihrandomaccs = []
         
+        # experiment for leisons on different clusters
         for idx, comb in enumerate(all_comb): 
             print(f"Evaluating lesion condition: {all_comb_names_leison[idx]}")
             model_copy, _ = leison_prepost(model, cluster_info, cluster_index=comb[1], preorpost=comb[0])
@@ -183,10 +250,25 @@ if __name__ == "__main__":
             
             ihaccs.append(acc.item())
             
+            # what about randomly leisoning the same number of units from the same layer
+            # this can serve as a sanity check to see if the specific clusters we identified are more important than random sets of neurons.
+            random_leison_repeat = 10
+            rset = []
+            for _ in range(random_leison_repeat):
+                model_copy, _ = leison_prepost(model, cluster_info, cluster_index=comb[1], preorpost=comb[0], random=True)
+            
+                with torch.no_grad():
+                    net_out, _, db_test = model_copy.iterate_sequence_batch(test_input, run_mode='track_states')
+                    acc, _ = model_copy.compute_acc(net_out, test_output, test_mask, test_input, isvalid=True, mode=model_copy.acc_measure)
+                rset.append(acc.item())
+                
+            ihrandomaccs.append(np.mean(rset))
+            
             del net_out
             del model_copy
             gc.collect()
-            
+        
+        # pruning with different sparsity levels
         for idx in range(len(all_comb_prune)):
             k = all_comb_prune[idx][1]
             print(f"Evaluating pruning condition: {all_comb_names_prune[idx]}") 
@@ -204,53 +286,37 @@ if __name__ == "__main__":
         
         ihtask_accs.append(ihaccs)
         wtask_accs.append(waccs)
-
-    def plot_heatmap(input_matrix, all_comb_names_, all_tasks_, xlabel, ylabel, savename):
-        """
-        """
-        A = np.asarray(input_matrix, dtype=float)
-        mask = ~np.isfinite(A)
-        fig_w = max(6, 0.55 * len(all_tasks_) + 2.5)
-        fig_h = max(4, 0.40 * len(all_comb_names_) + 2.0)
-        fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=200)
-        
-        hm = sns.heatmap(
-            A,
-            mask=mask,
-            cmap="magma_r",
-            vmin=0.0, vmax=1.0,                
-            annot=True,
-            fmt=".2f",                          
-            annot_kws={"fontsize": 8},
-            linewidths=0.4,
-            linecolor="white",
-            cbar_kws={"label": "Accuracy", "shrink": 0.9, "pad": 0.02},
-            ax=ax,
-        )
-
-        ax.set_xticklabels(all_comb_names_, rotation=45, ha="right")
-        ax.set_yticklabels(all_tasks_, rotation=0)    
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        ax.tick_params(axis="both", length=2, pad=2)
-
-        cbar = hm.collections[0].colorbar
-        cbar.ax.yaxis.set_major_locator(MaxNLocator(6))
-
-        for t in hm.texts:
-            try:
-                v = float(t.get_text())
-                t.set_color("white" if v < 0.55 else "black")
-            except ValueError:
-                pass
-
-        fig.tight_layout()
-        fig.savefig(f"./multiple_tasks_perf/{savename}_heatmap_{aname}.png", dpi=300)
+        ihrandomtask_accs.append(ihrandomaccs)
         
     plot_heatmap(
-        ihtask_accs, all_comb_names_leison, all_tasks, xlabel="Lesion Condition", ylabel="Task", savename="lesion"
+        ihtask_accs, all_comb_names_leison, all_tasks, xlabel="Lesion Condition", ylabel="Task", savename="lesion", aname=aname
     )   
     
     plot_heatmap(
-        wtask_accs, all_comb_names_prune, all_tasks, xlabel="Pruning Condition", ylabel="Task", savename="pruning"
+        wtask_accs, all_comb_names_prune, all_tasks, xlabel="Pruning Condition", ylabel="Task", savename="pruning", aname=aname
     )
+    
+    plot_heatmap(
+        ihrandomtask_accs, all_comb_names_leison, all_tasks, xlabel="Random Lesion Condition", ylabel="Task", savename="random_lesion", aname=aname
+    )
+    
+    saved_dict = {
+        "leison": {
+            "ihtask_accs": ihtask_accs, 
+            "all_comb_names_leison": all_comb_names_leison, 
+            "all_tasks": all_tasks,
+        },
+        "prune": {
+            "wtask_accs": wtask_accs, 
+            "all_comb_names_prune": all_comb_names_prune, 
+            "all_tasks": all_tasks,
+        },
+        "random_leison": {
+            "ihrandomtask_accs": ihrandomtask_accs, 
+            "all_comb_names_leison": all_comb_names_leison, 
+            "all_tasks": all_tasks,
+        }
+    }
+    
+    with open(f"./multiple_tasks_perf/lesion_prune_results_{aname}.pkl", "wb") as f:
+        pickle.dump(saved_dict, f)

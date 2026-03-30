@@ -1,19 +1,31 @@
 # %%
 import numpy as np  
 from numpy.linalg import norm 
-import sys 
 import random 
 from pathlib import Path
 import json
-import time 
 import psutil
 import copy
 import pickle
 
+import matplotlib as mpl 
 import matplotlib.pyplot as plt 
 import matplotlib.ticker as ticker
 ticker.Locator.MAXTICKS = 10000 
 import seaborn as sns 
+
+mpl.rcParams.update({
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],  
+    "font.size": 8,
+    "axes.labelsize": 8,
+    "axes.titlesize": 8,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+    "pdf.fonttype": 42,  
+    "ps.fonttype": 42,
+})
+
 
 from scipy.cluster.hierarchy import dendrogram, cophenet
 from scipy.stats import spearmanr
@@ -24,19 +36,14 @@ from sklearn.decomposition import PCA
 import torch
 from torch.serialization import add_safe_globals
 
-import scienceplots
-plt.style.use('science')
-plt.style.use(['no-latex'])
-
 import helper           
 import clustering
 import clustering_metric
 import color_func
-
 import mpn 
 import mpn_tasks
 
-clean = False
+clean = True
 if clean: 
     dir_path = Path("./multiple_tasks/")
 
@@ -145,7 +152,6 @@ print(f"hs: {hs.shape}")
 print(f"xs: {xs.shape}")
 print(f"bs: {bs.shape}")
 print(f"test_task: {test_task.shape}")
-
 print(f"all_rules: {all_rules}")
 
 out_param_path = "multiple_tasks/" + f"param_{aname}_param.json"
@@ -207,12 +213,11 @@ def shared_run(addtask):
     task_params_dmcgo["long_delay"] = "normal"
     
     test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params_dmcgo, 
-                                                                test_n_batch, 
-                                                                rules=task_params_dmcgo['rules'], 
-                                                                mode_input="random", 
-                                                                fix=True,
-                                                                device="cpu",
-                                                                verbose=True)
+                                                                  test_n_batch, 
+                                                                  rules=task_params_dmcgo['rules'], 
+                                                                  mode_input="random", 
+                                                                  device="cpu",
+                                                                  verbose=True)
     test_input, test_output, _ = test_data
 
     print(f"test_input.shape: {test_input.shape}")
@@ -481,7 +486,6 @@ def heatmap_with_top_left_marginals(
 
     return ax, ax_top, ax_left
 
-
 def plot_weight_triplet_with_top_left_marginals(
     output_W,
     input_W,
@@ -573,21 +577,30 @@ if reevaluate:
     task_params_c['hp']['batch_size_train'] = test_n_batch
         
     test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(
-        task_params_c, test_n_batch, rules=task_params_c['rules'],
-        mode_input="random", fix=True, device="cpu", verbose=False
+        task_params_c, 
+        test_n_batch, 
+        rules=task_params_c['rules'],
+        mode_input="random", 
+        device="cpu", 
+        verbose=False,
+        long_all=True
     )
     
     test_input, test_output, test_mask = test_data
+    print(f"test_input.shape: {test_input.shape}; test_output.shape: {test_output.shape}; test_mask.shape: {test_mask.shape}")
     _, test_trials, test_rule_idxs = test_trials_extra
     
     with torch.no_grad():
         net_out, _, db_test = model.iterate_sequence_batch(test_input, run_mode='track_states')
+        acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input, isvalid=True, mode=model.acc_measure)
+        print(f"Accuracy: {acc}")
         
     Ms_orig = db_test["M1"].cpu().numpy()
     xs = db_test["input1"].cpu().numpy()
     hs = db_test["hidden1"].cpu().numpy()
     
     print(f"Ms_orig: {Ms_orig.shape}; xs: {xs.shape}; hs: {hs.shape}")
+    print(f"modulation_W: {modulation_W.shape}")
     
     all_rules = np.array(task_params["rules"])
     
@@ -598,7 +611,6 @@ if reevaluate:
         rules_epochs = {} 
         for rule_idx, rule in enumerate(task_params['rules']):
             rules_epochs[rule] = test_trials[rule_idx].epochs
-            # print(test_trials[rule_idx].meta.keys())
             
             if rule in ('dmsgo','dmcgo','dmsnogo','dmcnogo',):
                 labels_resp.append(test_trials[rule_idx].meta['matches'])                
@@ -612,7 +624,6 @@ if reevaluate:
             except KeyError:
                 labels_stim2.append(np.full_like(test_trials[rule_idx].meta['stim1'], np.nan))
 
-        
         labels_resp = np.concatenate(labels_resp, axis=0).reshape(-1,1)
         labels_stim1 = np.concatenate(labels_stim1, axis=0).reshape(-1,1)
         labels_stim2 = np.concatenate(labels_stim2, axis=0).reshape(-1,1)
@@ -620,9 +631,6 @@ if reevaluate:
         return labels_resp, labels_stim1, labels_stim2, rules_epochs
     
     labels_resp, labels_stim1, labels_stim2, rules_epochs = generate_response_stimulus(task_params, test_trials)
-    
-    # print(labels_stim1.shape)
-    # print(labels_stim2.shape)
     
     test_task = helper.find_task(task_params, test_input.detach().cpu().numpy(), 0)
     test_task = np.array([int(c) for c in test_task]).flatten()
@@ -632,9 +640,14 @@ if reevaluate:
 weighted_Ms_orig = Ms_orig * modulation_W
 print(f"weighted_Ms_orig: {weighted_Ms_orig.shape}")
 
-clustering_data_analysis = [xs, hs, Ms_orig]
-clustering_data_analysis_names = ["input", "hidden", "modulation_all"]
+# 2026-03-29: for the modulation-weighted activity, we will not normalize across rules, otherwise per-neuron normalization
+# will wash out the multiplication effect
+clustering_data_analysis = [xs, hs, Ms_orig, Ms_orig, weighted_Ms_orig]
+clustering_data_analysis_names = ["input", "hidden", "modulation_all", "modulation_all", "modulation_all_weighted"]
+clustering_data_normalize = [True, True, True, False, False]
+assert len(clustering_data_analysis) == len(clustering_data_analysis_names) == len(clustering_data_normalize)
 
+# data registertion buffer
 clustering_data_hierarchy = {}
 clustering_corr_info = []
 col_clusters_all, row_clusters_all = [], []
@@ -643,6 +656,7 @@ input_hidden_comparison = []
 base_data = []
 metrics_all_all = []
 rbreaks_all, cbreaks_all = [], []
+cluster_info_save = {}
 
 selection_key = ["CH_blocks", "DB_blocks"]
 
@@ -650,14 +664,18 @@ upper_cluster = 300
 lower_cluster = 5
 silhouette_tol = 0.02
 
-cluster_info_save = {}
-
 for clustering_index in range(len(clustering_data_analysis)): 
     print("======================================================")
     clustering_data = clustering_data_analysis[clustering_index]
     clustering_name = clustering_data_analysis_names[clustering_index]
-    print(f"clustering_name: {clustering_name}")
-    print(f"clustering_data: {clustering_data.shape}")
+    clustering_normalize = clustering_data_normalize[clustering_index]
+    
+    print(
+        f"[clustering]\n"
+        f"  name      : {clustering_name}\n"
+        f"  data shape: {clustering_data.shape}\n"
+        f"  normalize : {clustering_normalize}"
+    )
     
     if hyp_dict['ruleset'] == "everything": 
         phase_to_indices = [
@@ -693,6 +711,7 @@ for clustering_index in range(len(clustering_data_analysis)):
         # print('Rule {} (idx {}), {}'.format(all_rules[rule_idx], rule_idx, period_time))
         # print(f"tb_break_name[el]: {tb_break_name[el]}")
         
+        # 2026-03-29: select the stimulus information
         labels_stim = labels_stim1
         # labels_stim = labels_stim2 if ("stim2" in tb_break_name[el] or "delay2" in tb_break_name[el]) else labels_stim1
         
@@ -703,20 +722,8 @@ for clustering_index in range(len(clustering_data_analysis)):
             varval = helper.task_variance_period_numpy(rule_cluster, labels_stim[test_task == rule_idx].flatten())
             cell_vars_rules.append(varval) 
         else:
-            clustering_data_old = clustering_data
-            if "pre" in clustering_name: # outdated 
-                rule_cluster = clustering_data[test_task == rule_idx, period_time[0]:period_time[1]]
-                mean_var = np.var(rule_cluster, axis=(0, 1)).mean(axis=0)
-                cell_vars_rules.append(mean_var)
-                raise NotImplementedError("The 'pre' clustering is outdated and should not be used. Please use 'all' instead for modulation analysis.")
-                
-            elif "post" in clustering_name: # outdated
-                rule_cluster = clustering_data[test_task == rule_idx, period_time[0]:period_time[1]]
-                mean_var = np.var(rule_cluster, axis=(0, 1)).mean(axis=1)
-                cell_vars_rules.append(mean_var)
-                raise NotImplementedError("The 'post' clustering is outdated and should not be used. Please use 'all' instead for modulation analysis.")
-                
-            elif "all" in clustering_name: 
+            clustering_data_old = clustering_data                
+            if "all" in clustering_name: 
                 clustering_data = clustering_data.reshape(clustering_data.shape[0], clustering_data.shape[1], -1)
                 rule_cluster = clustering_data[test_task == rule_idx, period_time[0]:period_time[1], :]
                 # varval = np.var(rule_cluster, axis=(0, 1))
@@ -729,8 +736,7 @@ for clustering_index in range(len(clustering_data_analysis)):
     print(f"cell_vars_rules.shape: {cell_vars_rules.shape}")
     
     # normalize for each neuron 
-    normalize = False
-    if normalize: 
+    if clustering_normalize: 
         cell_max_var = np.max(cell_vars_rules, axis=0) # Across rules
         print(f"cell_max_var.shape: {cell_max_var.shape}")
 
@@ -749,6 +755,7 @@ for clustering_index in range(len(clustering_data_analysis)):
         
         if clustering_index == 0:
             savefigure_name += "_unnormalized"
+            
         vmins, vmaxs = None, None
 
     # modulation only, reshape to (N, pre, post) shape after calculating the variance

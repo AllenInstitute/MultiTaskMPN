@@ -1443,8 +1443,7 @@ class BaseNetwork(BaseNetworkFunctions):
 
         return self.loss_fn(masked_output, masked_labels) + reg_term, loss_components, error_term
 
-    def compute_acc(self, output, labels, output_mask, input_, round_type='prefs', mode="angle", 
-                    verbose=False, isvalid=False):
+    def compute_acc(self, output, labels, output_mask, input_, round_type='prefs', mode="angle",  verbose=False, isvalid=False):
         """
         output shape: (batches, seq_len, output_size)
         labels shape: (batches, seq_len)
