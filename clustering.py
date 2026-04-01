@@ -2,15 +2,13 @@ import numpy as np
 from scipy.cluster.hierarchy import linkage, fcluster, dendrogram, optimal_leaf_ordering
 from scipy.spatial.distance import pdist, squareform
 from scipy.cluster.hierarchy import cophenet, linkage
+from scipy.stats import wilcoxon
+
 from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from typing import List, Sequence, Optional, Tuple, Dict, Any
-from matplotlib.patches import Rectangle
 from sklearn.cluster import MiniBatchKMeans
 
-import matplotlib.pyplot as plt
-import seaborn as sns 
-import gc, psutil, os
 
 # ---------------------------------------------------------------------
 # Original Clustering 
@@ -93,6 +91,40 @@ def cluster_variance_matrix(V, k_min=3, k_max=40, metric="euclidean", method="wa
 # Clustering with multiple repeats
 # ---------------------------------------------------------------------
 
+def _paired_not_worse_pvalue(x, y):
+    """
+    One-sided paired Wilcoxon test for:
+        H0: median(x - y) = 0
+        H1: median(x - y) < 0   (x is worse than y)
+
+    Returns a p-value. Larger p means "not enough evidence that x is worse".
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+
+    good = np.isfinite(x) & np.isfinite(y)
+    x = x[good]
+    y = y[good]
+
+    if x.size == 0:
+        return np.nan
+
+    d = x - y
+
+    # If the two vectors are numerically identical, x is certainly not worse
+    if np.allclose(d, 0.0):
+        return 1.0
+
+    try:
+        res = wilcoxon(d, alternative="less", zero_method="wilcox")
+        return float(res.pvalue)
+    except ValueError:
+        # Can happen in degenerate cases with too many zero differences
+        # Fall back conservatively
+        if np.mean(x) >= np.mean(y):
+            return 1.0
+        return 0.0
+
 def _breaks(lbls):
     """
     """
@@ -124,10 +156,9 @@ def _hierarchical_clustering_repeat(
     resample_features_frac=1.0,
     jitter_std=0.0,
     random_state=None,
-    # existing tolerance selector for primary k
-    select_min_k_within_tol=True,
-    silhouette_tol=0.02,
-    tol_mode="relative",
+    select_min_k_not_significantly_worse=True,
+    selection_alpha=0.05,
+    use_holm_correction=False,
 ):
     """
     Hierarchical clustering with stability repeats.
@@ -203,10 +234,16 @@ def _hierarchical_clustering_repeat(
         scores_by_k = {}
         cut_thresholds = {}
         for k in k_range:
-            labels = labels_at_k(Zr, k)
-            score = silhouette_score(D_square, labels, metric="precomputed")
+            labels = fcluster(Zr, k, criterion="maxclust")
+            n_clusters = np.unique(labels).size
+
+            # skip pathological cases
+            if n_clusters < 2 or n_clusters >= n_obs:
+                scores_by_k[k] = -np.inf
+            else:
+                scores_by_k[k] = float(silhouette_score(D_square, labels, metric="precomputed"))
+
             labels_by_k[k] = labels
-            scores_by_k[k] = float(score)
             cut_thresholds[k] = _cut_threshold_from_Z(Zr, k)
 
         per_repeat.append(
@@ -231,20 +268,53 @@ def _hierarchical_clustering_repeat(
     strict_best_k = max(score_recording_mean, key=score_recording_mean.get)
     strict_best_score = score_recording_mean[strict_best_k]
 
-    # ---- primary k selection (same logic as your original) ----
-    if select_min_k_within_tol:
-        if tol_mode == "relative":
-            primary_threshold = strict_best_score * (1.0 - float(silhouette_tol))
-        elif tol_mode == "absolute":
-            primary_threshold = strict_best_score - float(silhouette_tol)
-        else:
-            raise ValueError("tol_mode must be 'relative' or 'absolute'.")
+    # ---- primary k selection: smallest k not significantly worse than strict_best_k ----
+    per_k_scores = {
+        k: np.array([rep["scores_by_k"][k] for rep in per_repeat], dtype=float)
+        for k in k_range
+    }
 
-        primary_candidates = [k for k in k_range if score_recording_mean[k] >= primary_threshold]
+    if select_min_k_not_significantly_worse:
+        pvalue_vs_best = {}
+        for k in k_range:
+            if k == strict_best_k:
+                pvalue_vs_best[k] = 1.0
+            else:
+                pvalue_vs_best[k] = _paired_not_worse_pvalue(
+                    per_k_scores[k], per_k_scores[strict_best_k]
+                )
+
+        if use_holm_correction:
+            # Holm correction over all comparisons excluding strict_best_k
+            other_ks = [k for k in k_range if k != strict_best_k]
+            sorted_ks = sorted(other_ks, key=lambda k: pvalue_vs_best[k])
+            m = len(sorted_ks)
+
+            significant_worse = {strict_best_k: False}
+            rejected_prefix = True
+            for rank, k in enumerate(sorted_ks, start=1):
+                threshold = float(selection_alpha) / (m - rank + 1)
+                if rejected_prefix and pvalue_vs_best[k] < threshold:
+                    significant_worse[k] = True
+                else:
+                    rejected_prefix = False
+                    significant_worse[k] = False
+
+            for k in sorted_ks:
+                significant_worse.setdefault(k, False)
+        else:
+            significant_worse = {
+                k: (False if k == strict_best_k else (pvalue_vs_best[k] < float(selection_alpha)))
+                for k in k_range
+            }
+
+        primary_candidates = [k for k in k_range if not significant_worse[k]]
         best_k = min(primary_candidates) if primary_candidates else strict_best_k
     else:
-        best_k = strict_best_k
+        pvalue_vs_best = {strict_best_k: 1.0}
+        significant_worse = {k: (k != strict_best_k) for k in k_range}
         primary_candidates = [strict_best_k]
+        best_k = strict_best_k
 
     # ---- pick a representative repeat for diagnostics (same as your original) ----
     labels_list = [rep["labels_by_k"][best_k] for rep in per_repeat]
@@ -264,25 +334,20 @@ def _hierarchical_clustering_repeat(
 
     best_rep = per_repeat[best_rep_idx]
 
-    # ---- alt_k relative to best_k's mean silhouette ----
+    # ---- alt_k: keep strict best for reference ----
     best_k_score_mean = score_recording_mean[best_k]
-    if tol_mode == "relative":
-        alt_threshold = best_k_score_mean * (1.0 - float(silhouette_tol))
-    else:
-        alt_threshold = best_k_score_mean - float(silhouette_tol)
-
-    alt_candidates = [k for k in k_range if score_recording_mean[k] >= alt_threshold]
-    alt_k = min(alt_candidates) if alt_candidates else best_k
+    alt_k = strict_best_k
+    alt_candidates = [strict_best_k]
 
     # ======================================================================
     # FINAL OUTPUT (UPDATED): compute dendrogram/labels on UNPERTURBED data
     # ======================================================================
     Z0, d0, leaf0 = _compute_linkage_leaforder(data)
 
-    final_labels = labels_at_k(Z0, best_k)
+    final_labels = fcluster(Z0, best_k, criterion="maxclust")
     final_cut_threshold = _cut_threshold_from_Z(Z0, best_k)
 
-    final_alt_labels = labels_at_k(Z0, alt_k)
+    final_alt_labels = fcluster(Z0, alt_k, criterion="maxclust")
     final_alt_cut_threshold = _cut_threshold_from_Z(Z0, alt_k)
 
     return dict(
@@ -319,12 +384,14 @@ def _hierarchical_clustering_repeat(
             method=method,
             metric=metric,
             mean_ari_at_best_k=mean_ari_val,
-            select_min_k_within_tol=select_min_k_within_tol,
-            silhouette_tol=silhouette_tol,
-            tol_mode=tol_mode,
+            select_min_k_not_significantly_worse=select_min_k_not_significantly_worse,
+            selection_alpha=selection_alpha,
+            use_holm_correction=use_holm_correction,
             primary_candidates=primary_candidates,
-            strict_best_k=strict_best_k,          
+            strict_best_k=strict_best_k,
             strict_best_score=strict_best_score,
+            pvalue_vs_best=pvalue_vs_best,
+            significant_worse=significant_worse,
             alt_candidates=alt_candidates,
         ),
     )
@@ -337,7 +404,8 @@ def cluster_variance_matrix_repeat(
     resample_features_frac=1.0,
     jitter_std=0.0,
     random_state=None,
-    silhouette_tol=0.02
+    selection_alpha=0.05,
+    use_holm_correction=False,
 ):
     """
     Cluster a variance matrix V (shape: N_features * M_neurons)
@@ -354,7 +422,8 @@ def cluster_variance_matrix_repeat(
         resample_features_frac=resample_features_frac,
         jitter_std=jitter_std,
         random_state=random_state,
-        silhouette_tol=silhouette_tol
+        selection_alpha=selection_alpha,
+        use_holm_correction=use_holm_correction,
     )
 
     col_res = _hierarchical_clustering_repeat(
@@ -363,7 +432,8 @@ def cluster_variance_matrix_repeat(
         resample_features_frac=resample_features_frac,
         jitter_std=jitter_std,
         random_state=None if random_state is None else (random_state + 1),
-        silhouette_tol=silhouette_tol
+        selection_alpha=selection_alpha,
+        use_holm_correction=use_holm_correction,
     )
 
     return dict(
@@ -553,6 +623,7 @@ def _hierarchical_clustering_forgroup(
 
     D_sq = squareform(pairwise)
     k_range = range(max(k_min, 2), min(k_max, n_obs - 1) + 1)
+    print(f"k_range: {k_range}")
 
     score_recording: Dict[int, float] = {}
     cut_distance_by_k: Dict[int, float] = {}
@@ -670,37 +741,37 @@ def cluster_variance_matrix_forgroup(
     col_labels_by_k = {k: np.take(lbls, col_map) for k, lbls in col_res["labels_by_k"].items()}
     col_order = [idx for g in col_res["leaf_order"] for idx in col_blocks[g]]
     
-    # # --- NEW: within-block ordering ---
-    # within = True  # or expose as a function arg
-    # row_order = []
-    # for g in row_res["leaf_order"]:
-    #     idxs = np.asarray(row_blocks[g], dtype=int)
-    #     if not within or idxs.size <= 2:
-    #         row_order.extend(idxs.tolist())
-    #         continue
-    #     # rows represented in reduced col-group feature space
-    #     X = V_col_grp[idxs, :]                  # (n_in_block, C_blk)
-    #     local = _within_block_leaf_order(X, metric="euclidean", method="ward",
-    #                                     max_items=2000, fallback="pca1")
-    #     row_order.extend(idxs[local].tolist())
+    # --- NEW: within-block ordering ---
+    within = True  # or expose as a function arg
+    row_order = []
+    for g in row_res["leaf_order"]:
+        idxs = np.asarray(row_blocks[g], dtype=int)
+        if not within or idxs.size <= 2:
+            row_order.extend(idxs.tolist())
+            continue
+        # rows represented in reduced col-group feature space
+        X = V_col_grp[idxs, :]                  # (n_in_block, C_blk)
+        local = _within_block_leaf_order(X, metric="euclidean", method="ward",
+                                        max_items=2000, fallback="pca1")
+        row_order.extend(idxs[local].tolist())
 
-    # col_order = []
-    # for g in col_res["leaf_order"]:
-    #     idxs = np.asarray(col_blocks[g], dtype=int)
-    #     if not within or idxs.size <= 2:
-    #         col_order.extend(idxs.tolist())
-    #         continue
-    #     # cols represented in reduced row-group feature space
-    #     X = V_row_grp[:, idxs].T                # (n_in_block, R_blk)
-    #     local = _within_block_leaf_order(X, metric="euclidean", method="ward",
-    #                                     max_items=2000, fallback="pca1")
-    #     col_order.extend(idxs[local].tolist())
+    col_order = []
+    for g in col_res["leaf_order"]:
+        idxs = np.asarray(col_blocks[g], dtype=int)
+        if not within or idxs.size <= 2:
+            col_order.extend(idxs.tolist())
+            continue
+        # cols represented in reduced row-group feature space
+        X = V_row_grp[:, idxs].T                # (n_in_block, R_blk)
+        local = _within_block_leaf_order(X, metric="euclidean", method="ward",
+                                        max_items=2000, fallback="pca1")
+        col_order.extend(idxs[local].tolist())
         
-    # row_labels_by_k = {k: np.take(lbls, row_map) for k, lbls in row_res["labels_by_k"].items()}
-    # col_labels_by_k = {k: np.take(lbls, col_map) for k, lbls in col_res["labels_by_k"].items()}
+    row_labels_by_k = {k: np.take(lbls, row_map) for k, lbls in row_res["labels_by_k"].items()}
+    col_labels_by_k = {k: np.take(lbls, col_map) for k, lbls in col_res["labels_by_k"].items()}
     
-    # row_labels = np.take(row_res["labels"], row_map)
-    # col_labels = np.take(col_res["labels"], col_map)
+    row_labels = np.take(row_res["labels"], row_map)
+    col_labels = np.take(col_res["labels"], col_map)
 
     return dict(
         # fine-grained ordering / labels

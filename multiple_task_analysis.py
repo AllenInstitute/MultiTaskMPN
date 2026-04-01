@@ -574,7 +574,7 @@ plt.close(fig)
 # should we re-evaluate the result? 
 reevaluate = True 
 if reevaluate:
-    test_n_batch = 100
+    test_n_batch = 30
     task_params_c['hp']['batch_size_train'] = test_n_batch
         
     test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(
@@ -636,7 +636,6 @@ if reevaluate:
     test_task = helper.find_task(task_params, test_input.detach().cpu().numpy(), 0)
     test_task = np.array([int(c) for c in test_task]).flatten()
 
-
 # %%
 weighted_Ms_orig = Ms_orig * modulation_W
 print(f"weighted_Ms_orig: {weighted_Ms_orig.shape}")
@@ -662,8 +661,9 @@ cluster_info_save = {}
 selection_key = ["CH_blocks", "DB_blocks"]
 
 upper_cluster = 300
-lower_cluster = 5
-silhouette_tol = 0.02
+lower_cluster = 5 # for input & hidden
+lower_cluster_mod = 10 # for modulation
+silhouette_tol = 0.01
 
 for clustering_index in range(len(clustering_data_analysis)): 
     print("======================================================")
@@ -716,18 +716,16 @@ for clustering_index in range(len(clustering_data_analysis)):
         labels_stim = labels_stim1
         # labels_stim = labels_stim2 if ("stim2" in tb_break_name[el] or "delay2" in tb_break_name[el]) else labels_stim1
         
-        if len(clustering_data.shape) == 3:
+        if len(clustering_data.shape) == 3: # input or hidden 
             # 2025-11-19: if period_time[1] is None, then go until the end along that axis
             rule_cluster = clustering_data[test_task == rule_idx, period_time[0]:period_time[1], :]
-            # varval = np.var(rule_cluster, axis=(0, 1))   
             varval = helper.task_variance_period_numpy(rule_cluster, labels_stim[test_task == rule_idx].flatten())
             cell_vars_rules.append(varval) 
         else:
             clustering_data_old = clustering_data                
-            if "all" in clustering_name: 
+            if "all" in clustering_name: # modulation 
                 clustering_data = clustering_data.reshape(clustering_data.shape[0], clustering_data.shape[1], -1)
                 rule_cluster = clustering_data[test_task == rule_idx, period_time[0]:period_time[1], :]
-                # varval = np.var(rule_cluster, axis=(0, 1))
                 varval = helper.task_variance_period_numpy(rule_cluster, labels_stim[test_task == rule_idx].flatten())
                 cell_vars_rules.append(varval) 
                     
@@ -790,10 +788,9 @@ for clustering_index in range(len(clustering_data_analysis)):
                                                            k_max=upper_cluster, 
                                                            metric="euclidean", 
                                                            method="ward", 
-                                                           n_repeats=100, 
+                                                           n_repeats=500, 
                                                            resample_features_frac=1.0,
-                                                           jitter_std=0.01, 
-                                                           silhouette_tol=silhouette_tol)
+                                                           jitter_std=0.01)
         
         # sanity check to make sure no undesirable bug happens with in the clustering code
         assert sorted(result["row_order"]) == list(range(cell_vars_rules_sorted_norm.shape[0]))
@@ -893,6 +890,7 @@ for clustering_index in range(len(clustering_data_analysis)):
         axscore.axvline(best_alt_k_col, color=c_vals[1], linestyle="--")
         axscore.set_xlabel("Number of Cluster")
         axscore.set_ylabel("Silhouette Score")
+        axscore.set_xscale("log")
         axscore.legend()
         axscore.set_title(f"{clustering_name}", fontsize=15)
         figscore.tight_layout()
@@ -1340,7 +1338,7 @@ for clustering_index in range(len(clustering_data_analysis)):
         # simply grouping and considering each individual column as separate
         # having smaller G, e.g. 200, will make the following calculation in determining pre- and post-
         # belonging identity more time costly
-        G_lst = [100, 300]
+        G_lst = [100, 300, 1000]
         figcol, axscol = plt.subplots(1,len(G_lst),figsize=(4*len(G_lst),4))
         figppshare, axsppshare = plt.subplots(2,len(G_lst),figsize=(4*len(G_lst),4*2))
 
@@ -1355,8 +1353,9 @@ for clustering_index in range(len(clustering_data_analysis)):
         
         for G_idx in range(len(G_lst)): 
             G = G_lst[G_idx]
-            col_groups_all, col_labels_all, centroids_all = clustering.make_col_groups_with_kmeans(cell_vars_rules_sorted_norm, 
-                                                                                                   n_groups=G)
+            col_groups_all, col_labels_all, centroids_all = clustering.make_col_groups_with_kmeans(
+                cell_vars_rules_sorted_norm, n_groups=G
+            )
     
             # plot the statistics of grouping on all modulations without considering their pre/post identity 
             group_lengths = [len(sublist) for sublist in col_groups_all]
@@ -1366,14 +1365,23 @@ for clustering_index in range(len(clustering_data_analysis)):
             axscol[G_idx].axvline(MM / G, linestyle="--", color="black")
             axscol[G_idx].set_xlabel('Length of Formed Group', fontsize=15)
             axscol[G_idx].set_ylabel('Frequency', fontsize=15)
+            
+            n_col_groups = len(col_groups_all)
+            if n_col_groups < 2:
+                raise ValueError(f"Need at least 2 non-empty column groups, got {n_col_groups}")
 
-            # modulation analysis: using different G will generate different dendogram effectively, since we use the mean/median 
-            # of each group to calculate the distance
+            k_max_this = min(G, n_col_groups - 1)
+            k_min_this = min(lower_cluster_mod, k_max_this)
+
+            # Modulation analysis: varying G changes the column-side grouped representation,
+            # because columns are first averaged within K-means groups before hierarchical clustering.
+            # Note that the row-side data are unchanged here; only the searched k-range also changes
+            # because we currently pass k_max=G to both axes.
             result_all = clustering.cluster_variance_matrix_forgroup(cell_vars_rules_sorted_norm, 
                                                                      row_groups=None, 
                                                                      col_groups=col_groups_all, 
-                                                                     k_min=lower_cluster, 
-                                                                     k_max=G, 
+                                                                     k_min=k_min_this, 
+                                                                     k_max=k_max_this, 
                                                                      silhouette_tol=silhouette_tol)
     
             print(f"G = {G}; result_all['row_k']: {result_all['row_k']}; result_all['col_k']: {result_all['col_k']}")
@@ -1508,7 +1516,7 @@ for clustering_index in range(len(clustering_data_analysis)):
             axsppshare[0,G_idx].set_title("Same Neuron Check")
             axsppshare[1,G_idx].set_title("Same Neuron Cluster Check")
 
-            # Oct 21th: next analyze for each individual modulation cluster, the belonging to different individual 
+            # 2025-10-21: next analyze for each individual modulation cluster, the belonging to different individual 
             # pre and post cluster; only test in the minimal modulation cluster selection case
             def value_counts_desc(arr):
                 """
