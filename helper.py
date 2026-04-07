@@ -100,6 +100,34 @@ def find_task(task_params, test_input_np, shift_index):
 
     return task_label_index.tolist()
 
+def generate_response_stimulus(task_params, test_trials): 
+    """
+    """
+    labels_resp, labels_stim1, labels_stim2 = [], [], []
+    rules_epochs = {} 
+    for rule_idx, rule in enumerate(task_params['rules']):
+        rules_epochs[rule] = test_trials[rule_idx].epochs
+        # print(test_trials[rule_idx].meta.keys())
+        
+        if rule in ('dmsgo','dmcgo','dmsnogo','dmcnogo',):
+            labels_resp.append(test_trials[rule_idx].meta['matches'])                
+        else:
+            labels_resp.append(test_trials[rule_idx].meta['resp1'])           
+            
+        labels_stim1.append(test_trials[rule_idx].meta['stim1']) 
+        
+        try: 
+            labels_stim2.append(test_trials[rule_idx].meta['stim2'])
+        except KeyError:
+            labels_stim2.append(np.full_like(test_trials[rule_idx].meta['stim1'], np.nan))
+
+    
+    labels_resp = np.concatenate(labels_resp, axis=0).reshape(-1,1)
+    labels_stim1 = np.concatenate(labels_stim1, axis=0).reshape(-1,1)
+    labels_stim2 = np.concatenate(labels_stim2, axis=0).reshape(-1,1)
+
+    return labels_resp, labels_stim1, labels_stim2, rules_epochs
+
 def find_key_by_membership(d, value):
     """
     Return the key whose array/list contains `value`, else None.

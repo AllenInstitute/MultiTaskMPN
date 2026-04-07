@@ -349,36 +349,7 @@ if task_params['task_type'] in ('multitask',): # Test batch consists of all the 
     else:
         raise NotImplementedError()
 
-    def generate_response_stimulus(task_params, test_trials): 
-        """
-        """
-        labels_resp, labels_stim = [], []
-        rules_epochs = {} 
-        for rule_idx, rule in enumerate(task_params['rules']):
-            print(rule)
-            if rule in accept_rules:
-                rules_epochs[rule] = test_trials[rule_idx].epochs
-                if hyp_dict['ruleset'] in ('dmsgo','dmcgo',):
-                    labels_resp.append(test_trials[rule_idx].meta['matches'])
-                    labels_stim.append(test_trials[rule_idx].meta['stim1']) 
-                else:
-                    try: 
-                        labels_resp.append(test_trials[rule_idx].meta['resp1'])
-                    except Exception as e:
-                        labels_resp.append(test_trials[rule_idx].meta['matches'])
-                    labels_stim.append(test_trials[rule_idx].meta['stim1']) 
-    
-            else:
-                raise NotImplementedError()
-
-        print(rules_epochs)
-        
-        labels_resp = np.concatenate(labels_resp, axis=0).reshape(-1,1)
-        labels_stim = np.concatenate(labels_stim, axis=0).reshape(-1,1)
-
-        return labels_resp, labels_stim, rules_epochs
-
-    labels_resp, labels_stim, rules_epochs = generate_response_stimulus(task_params, test_trials)
+    labels_resp, labels_stim, rules_epochs = helper.generate_response_stimulus(task_params, test_trials)
 
 
 labels = labels_stim if color_by == "stim" else labels_resp

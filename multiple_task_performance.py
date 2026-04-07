@@ -64,10 +64,8 @@ def parse_hidden_and_l2(path_str: str):
 
     return hidden_size, l2     
 
-if __name__ == "__main__":
-    pt_paths = list_pt_files("./multiple_tasks", recursive=False)
-        
-    def eval_one(netpathname, c_vals):
+if __name__ == "__main__":    
+    def eval_one(netpathname):
         hidden_size, l2_info = parse_hidden_and_l2(netpathname)
         core_name = netpathname[24:-3]
 
@@ -117,9 +115,11 @@ if __name__ == "__main__":
 
         return core_name, hidden_size, l2_info, float(acc)
 
+    pt_paths = list_pt_files("./multiple_tasks", recursive=False)
+    
     result_dict = {}
     for netpathname in pt_paths:
-        core_name, hidden_size, l2_info, acc = eval_one(netpathname, c_vals)
+        core_name, hidden_size, l2_info, acc = eval_one(netpathname)
         result_dict[core_name] = {"hidden_size": hidden_size, "l2_info": l2_info, "acc": acc}
         
     l2_info_uniq = set(d["l2_info"] for d in result_dict.values())

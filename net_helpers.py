@@ -1475,10 +1475,12 @@ class BaseNetwork(BaseNetworkFunctions):
 
             task_mask = one_hot_argidx(task_mask_truc)
             
-            output_mask_alter_taskalign = torch.full(output_mask_alter.shape, float('nan'), 
+            output_mask_alter_taskalign = torch.full(output_mask_alter.shape, 
+                                                     float('nan'), 
                                                      device=output_mask_alter.device)
             
             assert task_mask.shape[0] == output_mask_alter_taskalign.shape[0]
+            
             for batch_iter in range(task_mask.shape[0]):
                 # initial timestamp (definitely no paddling)
                 task_label = task_mask[:,0][batch_iter]
@@ -1761,7 +1763,11 @@ class BaseNetwork(BaseNetworkFunctions):
             moitor_str = 'Iter: {}, LR: {:.3e} - train_loss:{:.3e}'.format(self.hist['iter'], lr, loss)
 
             if self.loss_type in ('XE', 'MSE',): # Accuracy computations if relevant
-                acc, _ = self.compute_acc(output, train_labels_batch, train_masks_batch, train_inputs_batch, isvalid=False,
+                acc, _ = self.compute_acc(output, 
+                                          train_labels_batch, 
+                                          train_masks_batch, 
+                                          train_inputs_batch, 
+                                          isvalid=False,
                                           mode=self.acc_measure)
                 self.hist['train_acc'].append(acc.item())
                 if self.loss_type in ('XE',):
@@ -1802,8 +1808,12 @@ class BaseNetwork(BaseNetworkFunctions):
                 moitor_str += ', valid_loss:{:.3e}'.format(valid_loss)
 
                 if self.loss_type in ('XE', 'MSE',): # Accuracy computations if relevant
-                    valid_acc, valid_acc_group = self.compute_acc(valid_output, valid_labels_batch, 
-                                                                  valid_masks_batch, valid_inputs_batch, isvalid=True, mode=self.acc_measure) 
+                    valid_acc, valid_acc_group = self.compute_acc(valid_output, 
+                                                                  valid_labels_batch, 
+                                                                  valid_masks_batch,
+                                                                  valid_inputs_batch, 
+                                                                  isvalid=True, 
+                                                                  mode=self.acc_measure) 
                     
                     self.hist['valid_acc'].append(valid_acc.item())
                     self.hist['group_valid_acc'].append(valid_acc_group)

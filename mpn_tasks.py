@@ -1974,7 +1974,8 @@ def generate_trials_wrap(task_params,
     
     # 2026-03-29: we add an additional mode "long_all" as an additional mode for post-training analysis,
     # which generates deta trail with longest (but still in reasonable range) delay, response, stimulus, and fixation
-    # currently only implemented in the 
+    # currently only implemented in the "random" mode for which different task period is aligned across trials 
+    # in one specific task 
     if long_all:
         assert mode_input == "random"
 
