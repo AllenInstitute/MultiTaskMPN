@@ -1035,7 +1035,8 @@ for clustering_index in range(len(clustering_data_analysis)):
         for rr in range(len(rbreaks_) - 1):
             for cc in range(len(cbreaks_) - 1):
                 # 2025-11-04: mean covariance in this bicluster
-                varmean_ = np.mean(cell_vars_rules_sorted_norm_ordered[rbreaks_[rr]:rbreaks_[rr+1], cbreaks_[cc]:cbreaks_[cc+1]])
+                varmean_ = np.mean(cell_vars_rules_sorted_norm_ordered[rbreaks_[rr]:rbreaks_[rr+1], 
+                                                                       cbreaks_[cc]:cbreaks_[cc+1]])
                 varmean[rr,cc] = varmean_
         sns.heatmap(varmean, ax=axsvarmean[0], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
         axsvarmean[0].set_ylabel("Session Clusters", fontsize=15)

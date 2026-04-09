@@ -1,10 +1,12 @@
-from pathlib import Path 
-import json 
-import numpy as np 
-import seaborn as sns 
+from pathlib import Path
+import json
+import numpy as np
+import seaborn as sns
 import pickle
-import copy 
+import copy
 import gc
+import sys
+from scipy.spatial.distance import pdist, squareform
 
 import matplotlib.pyplot as plt
 import matplotlib as mpl 
@@ -32,17 +34,17 @@ def plot_heatmap(input_matrix, all_comb_names_, all_tasks_, xlabel, ylabel, save
     """
     A = np.asarray(input_matrix, dtype=float)
     mask = ~np.isfinite(A)
-    fig_w = max(6, 0.55 * len(all_tasks_) + 2.5)
-    fig_h = max(4, 0.40 * len(all_comb_names_) + 2.0)
+    fig_h = max(6, 0.55 * len(all_tasks_) + 2.5)
+    fig_w = max(4, 0.40 * len(all_comb_names_) + 2.0)
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=200)
     
     hm = sns.heatmap(
-        A * 100, # since we are plot in terms of accuracy
+        A * 100, 
         mask=mask,
         cmap="magma_r",
         vmin=0.0 * 100, vmax=1.0 * 100,                
         annot=True,
-        fmt=".2f",                          
+        fmt=".1f",                          
         annot_kws={"fontsize": 8},
         linewidths=0.4,
         linecolor="white",
@@ -68,8 +70,12 @@ def plot_heatmap(input_matrix, all_comb_names_, all_tasks_, xlabel, ylabel, save
 
     fig.tight_layout()
     fig.savefig(f"./multiple_tasks_perf/{savename}_heatmap_{aname}.png", dpi=300)
+    plt.close(fig)
 
 if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
     aname = "everything_seed749_L21e4+hidden300+batch128+angle"
     normalized = "_normalized"
     
@@ -90,7 +96,7 @@ if __name__ == "__main__":
     task_params, train_params, net_params = raw_cfg_param["task_params"], raw_cfg_param["train_params"], raw_cfg_param["net_params"]
     
     netpathname = "multiple_tasks/" + f"savednet_{aname}.pt"
-    checkpoint = torch.load(netpathname, map_location="cpu")
+    checkpoint = torch.load(netpathname, map_location=device)
 
     state_dict = checkpoint["state_dict"]
     print(state_dict.keys())
@@ -104,6 +110,7 @@ if __name__ == "__main__":
     print("unexpected:", unexpected)
 
     model.eval()
+    model.to(device)
 
     task_params_c, train_params_c, net_params_c = mpn_tasks.convert_and_init_multitask_params(
         (task_params, train_params, net_params)
@@ -114,93 +121,136 @@ if __name__ == "__main__":
     pre_n = len(cluster_info["input"]["col_clusters"])
     post_n = len(cluster_info["hidden"]["col_clusters"])
 
+    # Cluster mean correlation matrices, ordered by cluster number (1..n_clusters),
+    # consistent with the lesion order used in leison_prepost (all_comb below).
+    # For each neuron cluster: average across neurons → length-n_tasks profile.
+    # Then correlate those profiles pairwise across neuron clusters.
+    corr_matrices = {}
+    l1_dist_matrices = {}
+    cluster_means_cache = {}
+    for name, n_clusters in [("input", pre_n), ("hidden", post_n)]:
+        V = cluster_info[name]["cell_vars_rules_sorted_norm"]  # (n_tasks, n_neurons)
+        col_clusters = cluster_info[name]["col_clusters"]      # {label: neuron indices}, 1-based
+        cluster_means = np.stack(
+            [V[:, col_clusters[c]].mean(axis=1) for c in range(1, n_clusters + 1)],
+            axis=1
+        )  # (n_tasks, n_clusters)
+        cluster_means_cache[name] = cluster_means
+        corr_matrices[name] = np.corrcoef(cluster_means.T)  # (n_clusters, n_clusters)
+        l1_dist_matrices[name] = squareform(pdist(cluster_means.T, metric="cityblock"))  # (n_clusters, n_clusters)
+        print(f"{name} cluster corr matrix shape: {corr_matrices[name].shape}")
+
+    # plot the heatmaps for both correlation and L1 distance matrices for input and hidden clusters
+    for name, n_clusters in [("input", pre_n), ("hidden", post_n)]:
+        corr = corr_matrices[name]
+        l1_dist = l1_dist_matrices[name]
+
+        tick_labels = [f"c{c}" for c in range(1, n_clusters + 1)]
+        upper_mask = np.triu(np.ones((n_clusters, n_clusters), dtype=bool), k=1)
+        fig, axes = plt.subplots(1, 2, figsize=(10, 5), dpi=300)
+
+        for ax, mat, title, cmap, vmin, vmax in [
+            (axes[0], corr,    f"Correlation Between {name} Clusters",  "coolwarm", 0.0, 1.0),
+            (axes[1], l1_dist, f"L1 Distance Between {name} Clusters",  "coolwarm", None, None),
+        ]:
+            sns.heatmap(mat, mask=upper_mask, cmap=cmap, vmin=vmin, vmax=vmax, square=True, cbar=True,
+                        xticklabels=tick_labels, yticklabels=tick_labels, ax=ax)
+            ax.set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=9)
+            ax.set_yticklabels(tick_labels, rotation=0, fontsize=9)
+            ax.set_xlabel("Neuron Clusters", fontsize=15)
+            ax.set_ylabel("Neuron Clusters", fontsize=15)
+            ax.set_title(title, fontsize=12)
+
+        fig.tight_layout()
+        fig.savefig(f"./multiple_tasks_perf/cluster_corr_{name}_{aname}.png", dpi=300)
+        plt.close(fig)
+        
+    print(f"Plot the heatmaps for both correlation and L1 distance matrices for input and hidden clusters done.")
+    
     all_comb = (
-        [("pre", None)] + [("pre", i) for i in range(1, pre_n)] +
-        [("post", None)] + [("post", i) for i in range(1, post_n)]
+        [("pre", None)] + [("pre", i) for i in range(1, pre_n + 1)] +
+        [("post", None)] + [("post", i) for i in range(1, post_n + 1)]
     )
 
-    rename = {"pre_c0": "pre_noleison", "post_c0": "post_noleison"}
+    rename = {"pre_cNone": "pre_noleison", "post_cNone": "post_noleison"}
     all_comb_names_leison = [rename.get(f"{tag}_c{i}", f"{tag}_c{i}") for tag, i in all_comb]
     print(f"all_comb_names_leison: {all_comb_names_leison}")
     
     print(model.W_initial_linear.weight.shape, model.mp_layer1.W.shape, model.mp_layer1.b.shape, model.W_output.shape)
     
-    def leison_prepost(net, cluster_info, cluster_index, preorpost, random=False):
-        net_copy = copy.deepcopy(net)
+    # Precompute max_N for each cluster name (used for random lesion sampling)
+    max_N_cache = {
+        name: max(arr.max() for arr in cluster_info[name]["col_clusters"].values())
+        for name in ["input", "hidden"]
+    }
+
+    def leison_prepost_inplace(net, cluster_index, preorpost, random=False):
+        """Apply lesion in-place on net; returns (saved_state, leison_units).
+        Call restore_leison(net, saved_state) to undo.  No deepcopy."""
         name = "input" if preorpost == "pre" else "hidden"
-        max_N = max(arr.max() for arr in cluster_info[name]["col_clusters"].values())
-        
-        leison_units = 0 
-        if cluster_index is not None: 
+        leison_units = 0
+        saved = {}
+
+        if cluster_index is not None:
             neuron_index = cluster_info[name]["col_clusters"][cluster_index]
-            class_N = len(neuron_index) # length of the cluster to be lesioned
-            
-            if not random: 
-                neuron_index = torch.tensor(neuron_index, dtype=torch.long, device=net_copy.W_output.device)
+            class_N = len(neuron_index)
+
+            if not random:
+                neuron_index = torch.tensor(neuron_index, dtype=torch.long, device=net.W_output.device)
                 leison_units = len(neuron_index)
             else:
-                vals = np.random.choice(np.arange(max_N + 1), size=class_N, replace=False)
-                neuron_index = torch.tensor(vals, dtype=torch.long, device=net_copy.W_output.device)
-        
+                vals = np.random.choice(np.arange(max_N_cache[name] + 1), size=class_N, replace=False)
+                neuron_index = torch.tensor(vals, dtype=torch.long, device=net.W_output.device)
+
             with torch.no_grad():
                 if preorpost == "pre":
-                    net_copy.W_initial_linear.weight.data[neuron_index, :] = 0.0
-                    net_copy.mp_layer1.W[:, neuron_index] = 0.0
+                    saved = {
+                        "preorpost": preorpost,
+                        "neuron_index": neuron_index,
+                        "W_initial": net.W_initial_linear.weight.data[neuron_index, :].clone(),
+                        "mp_W_col": net.mp_layer1.W[:, neuron_index].clone(),
+                    }
+                    net.W_initial_linear.weight.data[neuron_index, :] = 0.0
+                    net.mp_layer1.W[:, neuron_index] = 0.0
                 elif preorpost == "post":
-                    net_copy.mp_layer1.W[neuron_index, :] = 0.0
+                    saved = {
+                        "preorpost": preorpost,
+                        "neuron_index": neuron_index,
+                        "mp_W_row": net.mp_layer1.W[neuron_index, :].clone(),
+                        "mp_b": net.mp_layer1.b[neuron_index].clone(),
+                        "W_output": net.W_output[:, neuron_index].clone(),
+                    }
+                    net.mp_layer1.W[neuron_index, :] = 0.0
                     # the bias of MPN layer is on the postsynaptic side
-                    net_copy.mp_layer1.b[neuron_index] = 0.0
-                    net_copy.W_output[:, neuron_index] = 0.0
-        
-        return net_copy, leison_units
-    
-    def prune_w(net, sparsity):
-        """
-        L2 (magnitude) pruning on net_copy.mp_layer.W:
-        keep the top (1 - sparsity) fraction of entries by L2 norm (for scalar entries: |w|)
-        and zero out the rest.
+                    net.mp_layer1.b[neuron_index] = 0.0
+                    net.W_output[:, neuron_index] = 0.0
 
-        Returns:
-            net_copy: deep-copied network with pruned W.
-        """
-        if not (0.0 <= sparsity <= 1.0):
-            raise ValueError(f"sparsity must be in [0, 1], got {sparsity}")
+        return saved, leison_units
 
-        net_copy = copy.deepcopy(net)
-
-        if not hasattr(net_copy, "mp_layer1") or not hasattr(net_copy.mp_layer1, "W"):
-            raise AttributeError("Expected net.mp_layer1.W to exist.")
-
-        W = net_copy.mp_layer1.W  
-        if not torch.is_tensor(W):
-            raise TypeError(f"net_copy.mp_layer1.W must be a torch Tensor/Parameter, got {type(W)}")
-
+    def restore_leison(net, saved):
+        """Restore weights modified by leison_prepost_inplace."""
+        if not saved:
+            return
+        neuron_index = saved["neuron_index"]
         with torch.no_grad():
-            numel = W.numel()
-            k = int((1.0 - float(sparsity)) * numel)  
+            if saved["preorpost"] == "pre":
+                net.W_initial_linear.weight.data[neuron_index, :] = saved["W_initial"]
+                net.mp_layer1.W[:, neuron_index] = saved["mp_W_col"]
+            elif saved["preorpost"] == "post":
+                net.mp_layer1.W[neuron_index, :] = saved["mp_W_row"]
+                net.mp_layer1.b[neuron_index] = saved["mp_b"]
+                net.W_output[:, neuron_index] = saved["W_output"]
 
-            if k <= 0:
-                W.zero_()
-                return net_copy
-            if k >= numel:
-                return net_copy 
-
-            w_abs = W.abs().view(-1)
-            _, idx = torch.topk(w_abs, k, largest=True, sorted=False)
-            mask = torch.zeros(numel, dtype=torch.bool, device=W.device)
-            mask[idx] = True
-            mask = mask.view_as(W)
-            
-            W.mul_(mask)
-
-        return net_copy
-        
-    # register the size for each cluster
+    # register the size for each cluster — no model copy needed
     leison_units_all = []
-    for idx, comb in enumerate(all_comb):
-        _, leison_units = leison_prepost(model, cluster_info, cluster_index=comb[1], preorpost=comb[0])
-        leison_units_all.append(leison_units)
-        print(f"Lesion condition: {all_comb_names_leison[idx]}, lesioned units: {leison_units}")
+    for tag, ci in all_comb:
+        if ci is None:
+            leison_units_all.append(0)
+        else:
+            name = "input" if tag == "pre" else "hidden"
+            leison_units_all.append(len(cluster_info[name]["col_clusters"][ci]))
+    for idx, units in enumerate(leison_units_all):
+        print(f"Lesion condition: {all_comb_names_leison[idx]}, lesioned units: {units}")
     
     fig, ax = plt.subplots(1,1,figsize=(4,3))
     ax.bar(all_comb_names_leison, leison_units_all)
@@ -221,101 +271,135 @@ if __name__ == "__main__":
     sparsity_lst = [k / 100.0 for k in K_lst]
     all_comb_prune = [("prune", k) for k in sparsity_lst]
     all_comb_names_prune = [f"prune_{k:.3f}%" for k in K_lst]
-    
+
+    # Precompute pruned W tensors once — mp_layer1.W doesn't change between tasks
+    W_orig = model.mp_layer1.W.data.clone()
+    pruned_Ws = []
+    for sparsity in sparsity_lst:
+        numel = W_orig.numel()
+        k = int((1.0 - sparsity) * numel)
+        W_p = W_orig.clone()
+        if k <= 0:
+            W_p.zero_()
+        elif k < numel:
+            w_abs = W_p.abs().view(-1)
+            _, top_idx = torch.topk(w_abs, k, largest=True, sorted=False)
+            mask = torch.zeros(numel, dtype=torch.bool, device=W_p.device)
+            mask[top_idx] = True
+            W_p.mul_(mask.view_as(W_p))
+        pruned_Ws.append(W_p)
+
     # leisons for different input & hidden clusters through a leave-one-out manner
     ihtask_accs, wtask_accs = [], []
     ihrandomtask_accs = []
-    
-    for task in all_tasks:   
+
+    for task in all_tasks:
         print(f"Evaluating task: {task}")
-        # use a fixed test set for all lesion conditions to reduce variance 
+        # use a fixed test set for all lesion conditions to reduce variance
         # and make the comparison more fair
         test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(
             task_params_c, test_n_batch, rules=[task],
-            mode_input="random_batch", device="cpu", verbose=False
+            mode_input="random_batch", device=device, verbose=False
         )
         test_input, test_output, test_mask = test_data
-        
+
         ihaccs, waccs = [], []
         ihrandomaccs = []
-        
+
         # experiment for leisons on different clusters
-        for idx, comb in enumerate(all_comb): 
+        for idx, comb in enumerate(all_comb):
             print(f"Evaluating lesion condition: {all_comb_names_leison[idx]}")
-            model_copy, _ = leison_prepost(model, cluster_info, cluster_index=comb[1], preorpost=comb[0])
-            
+            saved, _ = leison_prepost_inplace(model, cluster_index=comb[1], preorpost=comb[0])
+
             with torch.no_grad():
-                net_out, _, db_test = model_copy.iterate_sequence_batch(test_input, run_mode='track_states')
-                acc, _ = model_copy.compute_acc(net_out, test_output, test_mask, test_input, isvalid=True, mode=model_copy.acc_measure)
-            
+                net_out, _, db_test = model.iterate_sequence_batch(test_input, run_mode='track_states')
+                acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input, 
+                                           isvalid=True, mode=model.acc_measure)
+
             ihaccs.append(acc.item())
-            
+            restore_leison(model, saved)
+            del net_out
+            gc.collect()
+
             # what about randomly leisoning the same number of units from the same layer
             # this can serve as a sanity check to see if the specific clusters we identified are more important than random sets of neurons.
             random_leison_repeat = 10
             rset = []
             for _ in range(random_leison_repeat):
-                model_copy, _ = leison_prepost(model, cluster_info, cluster_index=comb[1], preorpost=comb[0], random=True)
-            
+                saved_r, _ = leison_prepost_inplace(model, cluster_index=comb[1], 
+                                                    preorpost=comb[0], random=True)
+
                 with torch.no_grad():
-                    net_out, _, db_test = model_copy.iterate_sequence_batch(test_input, run_mode='track_states')
-                    acc, _ = model_copy.compute_acc(net_out, test_output, test_mask, test_input, isvalid=True, mode=model_copy.acc_measure)
+                    net_out, _, db_test = model.iterate_sequence_batch(test_input, run_mode='track_states')
+                    acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input, 
+                                               isvalid=True, mode=model.acc_measure)
                 rset.append(acc.item())
-                
+                restore_leison(model, saved_r)
+                del net_out
+
             ihrandomaccs.append(np.mean(rset))
-            
-            del net_out
-            del model_copy
-            gc.collect()
-        
-        # pruning with different sparsity levels
-        for idx in range(len(all_comb_prune)):
-            k = all_comb_prune[idx][1]
-            print(f"Evaluating pruning condition: {all_comb_names_prune[idx]}") 
-            model_copy = prune_w(model, sparsity=k)
-            
+
+        # pruning with different sparsity levels — swap precomputed W in/out
+        for idx, W_pruned in enumerate(pruned_Ws):
+            print(f"Evaluating pruning condition: {all_comb_names_prune[idx]}")
+            model.mp_layer1.W.data.copy_(W_pruned)
+
             with torch.no_grad():
-                net_out, _, db_test = model_copy.iterate_sequence_batch(test_input, run_mode='track_states')
-                acc, _ = model_copy.compute_acc(net_out, test_output, test_mask, test_input, isvalid=True, mode=model_copy.acc_measure)
-            
+                net_out, _, db_test = model.iterate_sequence_batch(test_input, run_mode='track_states')
+                acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input,
+                                           isvalid=True, mode=model.acc_measure)
+
             waccs.append(acc.item())
-            
             del net_out
-            del model_copy
             gc.collect()
+
+        # restore original W after pruning loop
+        model.mp_layer1.W.data.copy_(W_orig)
         
         ihtask_accs.append(ihaccs)
         wtask_accs.append(waccs)
         ihrandomtask_accs.append(ihrandomaccs)
         
     plot_heatmap(
-        ihtask_accs, all_comb_names_leison, all_tasks, xlabel="Lesion Condition", ylabel="Task", savename="lesion", aname=aname
+        ihtask_accs, all_comb_names_leison, all_tasks, 
+        xlabel="Lesion Condition", ylabel="Task", savename="lesion", aname=aname
     )   
     
     plot_heatmap(
-        wtask_accs, all_comb_names_prune, all_tasks, xlabel="Pruning Condition", ylabel="Task", savename="pruning", aname=aname
+        wtask_accs, all_comb_names_prune, all_tasks, 
+        xlabel="Pruning Condition", ylabel="Task", savename="pruning", aname=aname
     )
     
     plot_heatmap(
-        ihrandomtask_accs, all_comb_names_leison, all_tasks, xlabel="Random Lesion Condition", ylabel="Task", savename="random_lesion", aname=aname
+        ihrandomtask_accs, all_comb_names_leison, all_tasks, 
+        xlabel="Random Lesion Condition", ylabel="Task", savename="random_lesion", aname=aname
     )
     
+    # Ordering note: corr/l1_dist row/col i → cluster i+1.
+    # ihtask_accs columns: [0]=pre_noleison, [1..pre_n]=lesion pre cluster 1..pre_n,
+    #                       [pre_n+1]=post_noleison, [pre_n+2..end]=lesion post cluster 1..post_n.
+    # So ihtask_accs[:, 1:pre_n+1] aligns with corr_matrices["input"] and l1_dist_matrices["input"].
     saved_dict = {
         "leison": {
-            "ihtask_accs": ihtask_accs, 
-            "all_comb_names_leison": all_comb_names_leison, 
+            "ihtask_accs": ihtask_accs,
+            "all_comb_names_leison": all_comb_names_leison,
             "all_tasks": all_tasks,
         },
         "prune": {
-            "wtask_accs": wtask_accs, 
-            "all_comb_names_prune": all_comb_names_prune, 
+            "wtask_accs": wtask_accs,
+            "all_comb_names_prune": all_comb_names_prune,
             "all_tasks": all_tasks,
         },
         "random_leison": {
-            "ihrandomtask_accs": ihrandomtask_accs, 
-            "all_comb_names_leison": all_comb_names_leison, 
+            "ihrandomtask_accs": ihrandomtask_accs,
+            "all_comb_names_leison": all_comb_names_leison,
             "all_tasks": all_tasks,
-        }
+        },
+        "cluster_similarity": {
+            "corr_matrices": corr_matrices,       # {name: (n_clusters, n_clusters)}
+            "l1_dist_matrices": l1_dist_matrices, # {name: (n_clusters, n_clusters)}
+            "cluster_means": cluster_means_cache, # {name: (n_tasks, n_clusters)}
+        },
     }
     
     with open(f"./multiple_tasks_perf/lesion_prune_results_{aname}.pkl", "wb") as f:

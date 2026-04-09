@@ -574,7 +574,7 @@ def _hierarchical_clustering_forgroup(
 
     D_sq = squareform(pairwise)
     k_range = range(max(k_min, 2), min(k_max, n_obs - 1) + 1)
-    print(f"k_range: {k_range}")
+    # print(f"k_range: {k_range}")
 
     score_recording: Dict[int, float] = {}
     cut_distance_by_k: Dict[int, float] = {}
@@ -824,13 +824,16 @@ def cluster_variance_matrix_forgroup(
 def make_col_groups_with_kmeans(V, 
                                 n_groups=1000, 
                                 batch_size=8192, 
-                                random_state=0):
+                                random_state=0,
+                                verbose=False):
     """
     Use MiniBatchKMeans to cluster columns (neurons) of V into groups.
     This produces a 'col_groups' list compatible with cluster_variance_matrix_forgroup.
     """
     n_cols = V.shape[1]
-    print(f"Running MiniBatchKMeans on {n_cols} columns ...")
+    
+    if verbose:
+        print(f"Running MiniBatchKMeans on {n_cols} columns ...")
     
     mbk = MiniBatchKMeans(
         n_clusters=n_groups,
@@ -844,7 +847,9 @@ def make_col_groups_with_kmeans(V,
     col_groups = [np.where(col_labels == g)[0].tolist() for g in range(n_groups)]
     col_groups = [g for g in col_groups if len(g) > 0]
     
-    print(f"Formed {len(col_groups)} groups.")
+    if verbose:
+        print(f"Formed {len(col_groups)} groups.")
+        
     assert len(col_groups) <= n_groups, "Unexpected: more groups than requested."
     
     return col_groups, col_labels, centroids
