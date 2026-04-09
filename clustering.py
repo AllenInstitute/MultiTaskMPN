@@ -651,20 +651,27 @@ def cluster_variance_matrix_forgroup(
     k_min: int = 3,
     k_max: int = 40,
     row_groups: Optional[Sequence[Sequence[int]]] = None,
-    col_groups: Optional[Sequence[Sequence[int]]] = None,
+    col_groups_all_lst: Optional[List[Sequence[Sequence[int]]]] = None,
     *,
-    # NEW: plumb tolerance knobs through to both clusterings
     select_min_k_within_tol: bool = True,
     silhouette_tol: float = 0.02,
     tol_mode: str = "relative",
 ) -> Dict[str, Any]:
     """
     Bi-directional hierarchical clustering of a variance matrix V
-    (shape: N_features × M_neurons) with tolerance-based k selection.
+    (shape: N_features * M_neurons) with tolerance-based k selection.
+
+    col_groups_all_lst : list of col_groups, each from a different trial/seed.
+        Each element is a grouping of column indices (same format as the old
+        col_groups argument).  All groupings are used to compute per-k
+        silhouette scores; the scores are averaged across groupings to
+        determine the best column k collectively.  The first element is used
+        as the primary grouping for the final linkage, leaf ordering, and
+        label assignment.
     """
     V = np.asarray(V)
 
-    # ----- rows -----
+    # ----- rows (unchanged) -----
     row_blocks, row_map = _build_groups(V.shape[0], row_groups)
     V_row_grp = _aggregate_along_axis(V, row_blocks, axis=0, reduce="mean")
     row_res = _hierarchical_clustering_forgroup(
@@ -673,56 +680,105 @@ def cluster_variance_matrix_forgroup(
         silhouette_tol=silhouette_tol,
         tol_mode=tol_mode,
     )
-    
-    # ----- cols -----
-    col_blocks, col_map = _build_groups(V.shape[1], col_groups)
-    V_col_grp = _aggregate_along_axis(V, col_blocks, axis=1, reduce="mean")
-    col_res = _hierarchical_clustering_forgroup(
-        V_col_grp.T, k_min, k_max,
-        select_min_k_within_tol=select_min_k_within_tol,
-        silhouette_tol=silhouette_tol,
-        tol_mode=tol_mode,
-    )
 
-    row_labels = np.take(row_res["labels"], row_map)
-    row_labels_by_k = {k: np.take(lbls, row_map) for k, lbls in row_res["labels_by_k"].items()}
-    row_order = [idx for g in row_res["leaf_order"] for idx in row_blocks[g]]
+    # ----- cols: aggregate silhouette across all provided groupings -----
+    if col_groups_all_lst is None or len(col_groups_all_lst) == 0:
+        col_groups_all_lst = [None]
 
-    col_labels = np.take(col_res["labels"], col_map)
-    col_labels_by_k = {k: np.take(lbls, col_map) for k, lbls in col_res["labels_by_k"].items()}
-    col_order = [idx for g in col_res["leaf_order"] for idx in col_blocks[g]]
-    
-    # --- NEW: within-block ordering ---
-    within = True  # or expose as a function arg
-    row_order = []
+    # Run clustering for every col_groups; collect per-k silhouette curves.
+    col_res_list: List[Dict[str, Any]] = []
+    col_blocks_list: List[List[List[int]]] = []
+    col_V_grp_list: List[np.ndarray] = []
+
+    for col_groups_i in col_groups_all_lst:
+        col_blocks_i, _ = _build_groups(V.shape[1], col_groups_i)
+        V_col_grp_i = _aggregate_along_axis(V, col_blocks_i, axis=1, reduce="mean")
+        col_res_i = _hierarchical_clustering_forgroup(
+            V_col_grp_i.T, k_min, k_max,
+            select_min_k_within_tol=select_min_k_within_tol,
+            silhouette_tol=silhouette_tol,
+            tol_mode=tol_mode,
+        )
+        col_res_list.append(col_res_i)
+        col_blocks_list.append(col_blocks_i)
+        col_V_grp_list.append(V_col_grp_i)
+
+    # Average silhouette scores across groupings for each k.
+    all_k_col: set = set()
+    for col_res_i in col_res_list:
+        all_k_col.update(col_res_i["score_recording"].keys())
+
+    col_score_mean: Dict[int, float] = {}
+    col_score_std: Dict[int, float] = {}
+    for k in sorted(all_k_col):
+        vals = [col_res_i["score_recording"][k]
+                for col_res_i in col_res_list
+                if k in col_res_i["score_recording"]]
+        col_score_mean[k] = float(np.mean(vals))
+        col_score_std[k] = float(np.std(vals))
+
+    # Re-select best col k from the averaged silhouette curve.
+    col_strict_best_k = max(col_score_mean, key=col_score_mean.get)
+    col_strict_best_score = col_score_mean[col_strict_best_k]
+
+    if select_min_k_within_tol:
+        if tol_mode == "relative":
+            col_primary_thresh = col_strict_best_score * (1.0 - float(silhouette_tol))
+        elif tol_mode == "absolute":
+            col_primary_thresh = col_strict_best_score - float(silhouette_tol)
+        else:
+            raise ValueError("tol_mode must be 'relative' or 'absolute'.")
+        col_primary_candidates = [k for k in col_score_mean
+                                   if col_score_mean[k] >= col_primary_thresh]
+        best_k_col = min(col_primary_candidates) if col_primary_candidates else col_strict_best_k
+    else:
+        best_k_col = col_strict_best_k
+        col_primary_candidates = [col_strict_best_k]
+
+    # Primary grouping (first element) provides linkage, ordering, and labels.
+    col_res = col_res_list[0]
+    col_blocks = col_blocks_list[0]
+    V_col_grp = col_V_grp_list[0]
+    col_blocks_primary, col_map = _build_groups(V.shape[1], col_groups_all_lst[0])
+
+    # Labels / cut distance at the collectively determined best k.
+    if best_k_col in col_res["labels_by_k"]:
+        col_group_labels_at_best_k = col_res["labels_by_k"][best_k_col]
+        col_best_cut_distance = col_res["cut_distance_by_k"].get(
+            best_k_col, _cut_distance_for_k(col_res["linkage"], best_k_col)
+        )
+    else:
+        col_group_labels_at_best_k = col_res["labels"]
+        col_best_cut_distance = col_res["best_cut_distance"]
+
+    # ----- within-block ordering -----
+    row_order: List[int] = []
     for g in row_res["leaf_order"]:
         idxs = np.asarray(row_blocks[g], dtype=int)
-        if not within or idxs.size <= 2:
+        if idxs.size <= 2:
             row_order.extend(idxs.tolist())
             continue
-        # rows represented in reduced col-group feature space
-        X = V_col_grp[idxs, :]                  # (n_in_block, C_blk)
+        X = V_col_grp[idxs, :]          # (n_in_block, C_blk) — primary col grouping
         local = _within_block_leaf_order(X, metric="euclidean", method="ward",
-                                        max_items=2000, fallback="pca1")
+                                         max_items=2000, fallback="pca1")
         row_order.extend(idxs[local].tolist())
 
-    col_order = []
+    col_order: List[int] = []
     for g in col_res["leaf_order"]:
         idxs = np.asarray(col_blocks[g], dtype=int)
-        if not within or idxs.size <= 2:
+        if idxs.size <= 2:
             col_order.extend(idxs.tolist())
             continue
-        # cols represented in reduced row-group feature space
-        X = V_row_grp[:, idxs].T                # (n_in_block, R_blk)
+        X = V_row_grp[:, idxs].T        # (n_in_block, R_blk)
         local = _within_block_leaf_order(X, metric="euclidean", method="ward",
-                                        max_items=2000, fallback="pca1")
+                                         max_items=2000, fallback="pca1")
         col_order.extend(idxs[local].tolist())
-        
-    row_labels_by_k = {k: np.take(lbls, row_map) for k, lbls in row_res["labels_by_k"].items()}
-    col_labels_by_k = {k: np.take(lbls, col_map) for k, lbls in col_res["labels_by_k"].items()}
-    
+
     row_labels = np.take(row_res["labels"], row_map)
-    col_labels = np.take(col_res["labels"], col_map)
+    row_labels_by_k = {k: np.take(lbls, row_map) for k, lbls in row_res["labels_by_k"].items()}
+
+    col_labels = np.take(col_group_labels_at_best_k, col_map)
+    col_labels_by_k = {k: np.take(lbls, col_map) for k, lbls in col_res["labels_by_k"].items()}
 
     return dict(
         # fine-grained ordering / labels
@@ -730,35 +786,37 @@ def cluster_variance_matrix_forgroup(
         col_order=col_order,
         row_labels=row_labels,
         col_labels=col_labels,
-        # block-level results
+        # block-level results (primary grouping for cols)
         row_group_order=row_res["leaf_order"],
         col_group_order=col_res["leaf_order"],
         row_group_labels=row_res["labels"],
-        col_group_labels=col_res["labels"],
+        col_group_labels=col_group_labels_at_best_k,
         row_k=row_res["k"],
-        col_k=col_res["k"],
+        col_k=best_k_col,
         row_linkage=row_res["linkage"],
         col_linkage=col_res["linkage"],
-        row_score_recording=row_res["score_recording"], 
-        col_score_recording=col_res["score_recording"],
+        row_score_recording=row_res["score_recording"],
+        # col silhouette: mean/std across all groupings
+        col_score_recording_mean=col_score_mean,
+        col_score_recording_std=col_score_std,
+        col_score_recording_per_grouping=[r["score_recording"] for r in col_res_list],
         row_cophenet_score=row_res["cophenet_score"],
         col_cophenet_score=col_res["cophenet_score"],
         row_cut_distance_by_k=row_res["cut_distance_by_k"],
         col_cut_distance_by_k=col_res["cut_distance_by_k"],
         row_best_cut_distance=row_res["best_cut_distance"],
-        col_best_cut_distance=col_res["best_cut_distance"],
+        col_best_cut_distance=col_best_cut_distance,
         row_labels_by_k=row_labels_by_k,
         col_labels_by_k=col_labels_by_k,
-        # NEW: extra introspection + alternatives near chosen k
+        # introspection + strict best k
         row_strict_best_k=row_res["strict_best_k"],
-        col_strict_best_k=col_res["strict_best_k"],
+        col_strict_best_k=col_strict_best_k,
         row_alt_k=row_res["alt_k"],
         col_alt_k=col_res["alt_k"],
         row_alt_cut_distance=row_res["alt_cut_distance"],
         col_alt_cut_distance=col_res["alt_cut_distance"],
-        # (optional) expose candidate sets if you want to visualize elbow
         row_primary_candidates=row_res["primary_candidates"],
-        col_primary_candidates=col_res["primary_candidates"],
+        col_primary_candidates=col_primary_candidates,
     )
 
 # ---------------------------------------------------------------------

@@ -640,11 +640,13 @@ if reevaluate:
 weighted_Ms_orig = Ms_orig * modulation_W
 print(f"weighted_Ms_orig: {weighted_Ms_orig.shape}")
 
-# 2026-03-29: for the modulation-weighted activity, we will not normalize across rules, otherwise per-neuron normalization
+# 2026-03-29: for the modulation-weighted activity, we will not normalize across rules, 
+# otherwise per-neuron normalization
 # will wash out the multiplication effect
 # 2026-04-06: downstream analysis implicitly require the order of
 clustering_data_analysis = [xs, hs, Ms_orig, Ms_orig, weighted_Ms_orig]
-clustering_data_analysis_names = ["input", "hidden", "modulation_all", "modulation_all", "modulation_all_weighted"]
+clustering_data_analysis_names = ["input", "hidden", "modulation_all", \
+    "modulation_all", "modulation_all_weighted"]
 clustering_data_normalize = [True, True, True, False, False]
 assert len(clustering_data_analysis) == len(clustering_data_analysis_names) == len(clustering_data_normalize)
 
@@ -759,6 +761,7 @@ for clustering_index in range(len(clustering_data_analysis)):
 
     # modulation only, reshape to (N, pre, post) shape after calculating the variance
     # N here as the number of sessions after breakdown
+    # 2026-04-06: the code implicitly requires the modulation to be a square matrix
     if "all" in clustering_name: 
         N, MM = cell_vars_rules_norm.shape
         M = int(np.sqrt(MM))
@@ -773,6 +776,11 @@ for clustering_index in range(len(clustering_data_analysis)):
     dtype = np.dtype([(name, float) for name in rule_names])
     rules_struct = np.array(list(zip(*rule_vals)), dtype=dtype)
     
+    ## 2026-04-09: this part is important and should be treated delicately
+    ## currently no sorting is applied, i.e. we keep the original order of the neurons; 
+    # this is for better interpretability and also to avoid potential 
+    # undesirable bugs in the clustering code that might be triggered by a non-identity sorting
+    
     # sort_idxs = np.argsort(rules_struct, order=rule_names)[::-1] # descending lexicographic sort across all rule columns 
     sort_idxs = np.arange(rules_struct.shape[0], dtype=np.intp) # identity map for better interpretability
 
@@ -783,7 +791,7 @@ for clustering_index in range(len(clustering_data_analysis)):
     base_data.append(cell_vars_rules_sorted_norm)
     print(f"cell_vars_rules_sorted_norm: {cell_vars_rules_sorted_norm.shape}")  
 
-    # analyze input and hidden
+    # 2026-04-06: analyze input and hidden
     if not ("all" in clustering_name): 
         # clustering & grouping & re-ordering
         # first loop on input, second loop in hidden
@@ -839,7 +847,9 @@ for clustering_index in range(len(clustering_data_analysis)):
             metrics_all[metric_key] = [optimized_value, np.mean(random_values), 
                                        np.std(random_values, ddof=1)/np.sqrt(len(random_values))]
 
-        metrics_all["std/mean"] = [eval_stdmean, np.mean(eval_random_stdmean), np.std(eval_random_stdmean, ddof=1)/np.sqrt(len(eval_random_stdmean))]
+        metrics_all["std/mean"] = [eval_stdmean, 
+                                   np.mean(eval_random_stdmean), 
+                                   np.std(eval_random_stdmean, ddof=1)/np.sqrt(len(eval_random_stdmean))]
         
         # registeration
         metrics_all_all.append(metrics_all) 
@@ -847,7 +857,8 @@ for clustering_index in range(len(clustering_data_analysis)):
         input_hidden_comparison.append([result, cell_vars_rules_sorted_norm])
         
         # reorder the original matrix based on the clustering result
-        cell_vars_rules_sorted_norm_ordered = cell_vars_rules_sorted_norm[np.ix_(result["row_order"], result["col_order"])]
+        cell_vars_rules_sorted_norm_ordered = cell_vars_rules_sorted_norm[
+            np.ix_(result["row_order"], result["col_order"])]
         
         rl = np.asarray(result["row_tol_labels"])[result["row_order"]]
         cl = np.asarray(result["col_tol_labels"])[result["col_order"]]
@@ -882,6 +893,8 @@ for clustering_index in range(len(clustering_data_analysis)):
             "col_clusters": col_clusters,
             "row_clusters": row_clusters,
             "tb_break_name": tb_break_name,
+            "cell_vars_rules_sorted_norm": cell_vars_rules_sorted_norm,
+            "result": result,
         }
         
         # plot the optimization score as a function of number of clustering
@@ -1343,12 +1356,12 @@ for clustering_index in range(len(clustering_data_analysis)):
 
         for group_neurons_index in range(len(group_all)):
             group_neurons_ = group_all[group_neurons_index]
-            result_outer = clustering.cluster_variance_matrix_forgroup(cell_vars_rules_sorted_norm, 
-                                                                       row_groups=None, 
-                                                                       col_groups=group_neurons_, 
-                                                                       k_min=int(lower_cluster-1), 
-                                                                       k_max=upper_cluster, 
-                                                                       silhouette_tol=silhouette_tol, 
+            result_outer = clustering.cluster_variance_matrix_forgroup(cell_vars_rules_sorted_norm,
+                                                                       row_groups=None,
+                                                                       col_groups_all_lst=[group_neurons_],
+                                                                       k_min=int(lower_cluster-1),
+                                                                       k_max=upper_cluster,
+                                                                       silhouette_tol=silhouette_tol,
                                                                        tol_mode=tol_mode)
             prior_cluster_num = len(group_neurons_)
             cell_vars_rules_sorted_norm_inputhidden = cell_vars_rules_sorted_norm[np.ix_(result_outer["row_order"], 
@@ -1364,8 +1377,6 @@ for clustering_index in range(len(clustering_data_analysis)):
         fig.savefig(f"./multiple_tasks/modulation_input2hiddentogether_variance_hierarchy_{savefigure_name}.png", dpi=300)
         plt.close(fig)
             
-    # plot the conditional grouping for modulation
-    # currently grouped based on modulation-pre and modulation-post separately
     if ("all" in clustering_name): 
         assert len(clustering_data_old.shape) == 4
         pre_num, post_num = clustering_data_old.shape[2], clustering_data_old.shape[3]
@@ -1376,26 +1387,26 @@ for clustering_index in range(len(clustering_data_analysis)):
         for i in range(pre_num):
             feature_group_pre.append(helper.basic_sort([j for j in range(post_num * i, post_num * (i+1))], sort_idxs))
 
-        result_pre = clustering.cluster_variance_matrix_forgroup(cell_vars_rules_sorted_norm, 
-                                                                 row_groups=None, 
-                                                                 col_groups=feature_group_pre, 
-                                                                 k_min=lower_cluster, 
-                                                                 k_max=upper_cluster, 
-                                                                 silhouette_tol=silhouette_tol, 
+        result_pre = clustering.cluster_variance_matrix_forgroup(cell_vars_rules_sorted_norm,
+                                                                 row_groups=None,
+                                                                 col_groups_all_lst=[feature_group_pre],
+                                                                 k_min=lower_cluster,
+                                                                 k_max=upper_cluster,
+                                                                 silhouette_tol=silhouette_tol,
                                                                  tol_mode=tol_mode)
-        result_post = clustering.cluster_variance_matrix_forgroup(cell_vars_rules_sorted_norm, 
-                                                                  row_groups=None, 
-                                                                  col_groups=feature_group_post, 
-                                                                  k_min=lower_cluster, 
-                                                                  k_max=upper_cluster, 
-                                                                  silhouette_tol=silhouette_tol, 
+        result_post = clustering.cluster_variance_matrix_forgroup(cell_vars_rules_sorted_norm,
+                                                                  row_groups=None,
+                                                                  col_groups_all_lst=[feature_group_post],
+                                                                  k_min=lower_cluster,
+                                                                  k_max=upper_cluster,
+                                                                  silhouette_tol=silhouette_tol,
                                                                   tol_mode=tol_mode)
 
         # 2025-10-06: do not give any prior grouping prior to the modulation information
         # simply grouping and considering each individual column as separate
         # having smaller G, e.g. 200, will make the following calculation in determining pre- and post-
         # belonging identity more time costly
-        G_lst = [100, 300, 1000]
+        G_lst = [100, 300, 1000, 3000]
         figcol, axscol = plt.subplots(1,len(G_lst),figsize=(4*len(G_lst),4))
         figppshare, axsppshare = plt.subplots(2,len(G_lst),figsize=(4*len(G_lst),4*2))
 
@@ -1410,14 +1421,22 @@ for clustering_index in range(len(clustering_data_analysis)):
         
         for G_idx in range(len(G_lst)): 
             G = G_lst[G_idx]
-            col_groups_all, col_labels_all, centroids_all = clustering.make_col_groups_with_kmeans(
-                cell_vars_rules_sorted_norm, n_groups=G
-            )
+            assert G <= cell_vars_rules_sorted_norm.shape[0] * cell_vars_rules_sorted_norm.shape[1]
+            
+            col_groups_all_lst = []
+            # 2025-10-06: since K-means has randomness, we run it multiple times to obtain 
+            # the distribution of grouping statistics,
+            for _ in range(100):
+                random_seed = np.random.randint(0, 10000)
+                col_groups_all = clustering.make_col_groups_with_kmeans(cell_vars_rules_sorted_norm, 
+                                                                        n_groups=G,
+                                                                        random_state=random_seed)[0]
+                col_groups_all_lst.append(col_groups_all)
     
             # plot the statistics of grouping on all modulations without considering their pre/post identity 
-            group_lengths = [len(sublist) for sublist in col_groups_all]
-            
-            axscol[G_idx].hist(group_lengths, bins=20, edgecolor='black', alpha=0.7)
+            for gi in range(5): 
+                group_lengths = [len(sublist) for sublist in col_groups_all_lst[gi]]
+                axscol[G_idx].hist(group_lengths, color=c_vals[gi], bins=20, edgecolor='black', alpha=0.7)
             # if uniform grouping, what is the expected length for each group 
             axscol[G_idx].axvline(MM / G, linestyle="--", color="black")
             axscol[G_idx].set_xlabel('Length of Formed Group', fontsize=15)
@@ -1429,7 +1448,7 @@ for clustering_index in range(len(clustering_data_analysis)):
             # because we currently pass k_max=G to both axes.
             result_all = clustering.cluster_variance_matrix_forgroup(cell_vars_rules_sorted_norm, 
                                                                      row_groups=None, 
-                                                                     col_groups=col_groups_all, 
+                                                                     col_groups_all_lst=col_groups_all_lst, 
                                                                      k_min=lower_cluster, 
                                                                      k_max=G, 
                                                                      silhouette_tol=silhouette_tol,
@@ -1578,7 +1597,7 @@ for clustering_index in range(len(clustering_data_analysis)):
                 return {unique[i]: counts[i] for i in sorted_idx}
 
             # 2025-11-17: revise to plot for G=300 case
-            if G_idx == 0: 
+            if G_idx == 1: 
                 print(f"Plot for G={G_lst[G_idx]} Case")
                 # for plotting purpose
                 mp = 5; cnt = 0
@@ -1857,13 +1876,31 @@ for clustering_index in range(len(clustering_data_analysis)):
 
         # plot the score
         figscore, axscore = plt.subplots(1,1,figsize=(10,3))
-        axscore.plot(result_pre["col_score_recording"].keys(), result_pre["col_score_recording"].values(), \
-                     label="col pre", color=c_vals[1])
-        axscore.plot(result_post["col_score_recording"].keys(), result_post["col_score_recording"].values(), \
+        # result_pre / result_post: single grouping → col_score_recording_mean has no meaningful std
+        pre_ks  = np.asarray(sorted(result_pre["col_score_recording_mean"].keys()),  dtype=int)
+        post_ks = np.asarray(sorted(result_post["col_score_recording_mean"].keys()), dtype=int)
+        axscore.plot(pre_ks,  [result_pre["col_score_recording_mean"][k]  for k in pre_ks],
+                     label="col pre",  color=c_vals[1])
+        axscore.scatter(result_pre["col_k"],
+                        result_pre["col_score_recording_mean"][result_pre["col_k"]],
+                        color=c_vals[1], zorder=5, s=60, marker="*")
+        axscore.plot(post_ks, [result_post["col_score_recording_mean"][k] for k in post_ks],
                      label="col post", color=c_vals[3])
-        for k in range(len(result_all_lst)): 
-            axscore.plot(result_all_lst[k]["col_score_recording"].keys(), result_all_lst[k]["col_score_recording"].values(), \
-                         label=f"col all, G={G_lst[k]}", color=c_vals[5+k], linestyle="--")
+        axscore.scatter(result_post["col_k"],
+                        result_post["col_score_recording_mean"][result_post["col_k"]],
+                        color=c_vals[3], zorder=5, s=60, marker="*")
+        # result_all_lst: multiple groupings → plot mean ± std across groupings
+        for k in range(len(result_all_lst)):
+            r    = result_all_lst[k]
+            ks   = np.asarray(sorted(r["col_score_recording_mean"].keys()), dtype=int)
+            mean = np.asarray([r["col_score_recording_mean"][ki] for ki in ks], dtype=float)
+            std  = np.asarray([r["col_score_recording_std"][ki]  for ki in ks], dtype=float)
+            color = c_vals[5+k]
+            axscore.plot(ks, mean, label=f"col all, G={G_lst[k]}", color=color, linestyle="--")
+            axscore.fill_between(ks, mean - std, mean + std, color=color, alpha=0.2)
+            axscore.scatter(r["col_k"],
+                            r["col_score_recording_mean"][r["col_k"]],
+                            color=color, zorder=5, s=60, marker="*")
         axscore.set_xlabel("Number of Cluster", fontsize=15)
         axscore.set_ylabel("Silhouette Score", fontsize=15)
         axscore.legend()
