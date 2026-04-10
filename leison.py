@@ -29,7 +29,15 @@ import torch
 import mpn 
 import mpn_tasks
 
-def plot_heatmap(input_matrix, all_comb_names_, all_tasks_, xlabel, ylabel, savename, aname, label="Accuracy"):
+def plot_heatmap(input_matrix, 
+                 all_comb_names_, 
+                 all_tasks_, 
+                 xlabel, 
+                 ylabel, 
+                 savename, 
+                 aname, 
+                 label="Accuracy",
+                 vmin=0.0, vmax=1.0):
     """
     """
     A = np.asarray(input_matrix, dtype=float)
@@ -41,8 +49,10 @@ def plot_heatmap(input_matrix, all_comb_names_, all_tasks_, xlabel, ylabel, save
     hm = sns.heatmap(
         A * 100, 
         mask=mask,
-        cmap="magma_r",
-        vmin=0.0 * 100, vmax=1.0 * 100,                
+        cmap="coolwarm",
+        vmin=vmin * 100 if vmin is not None else None, 
+        vmax=vmax * 100 if vmax is not None else None,    
+        center=50.0 if vmin is not None and vmax is not None else 0.0,            
         annot=True,
         fmt=".1f",                          
         annot_kws={"fontsize": 8},
@@ -263,7 +273,7 @@ if __name__ == "__main__":
     fig.savefig(f"./multiple_tasks_perf/lesion_units_{aname}.png", dpi=300)
     
     # setup the evaluation dataset generator
-    test_n_batch = 10
+    test_n_batch = 100
     task_params_c['hp']['batch_size_train'] = test_n_batch
     
     # L2 pruning for W
@@ -323,7 +333,7 @@ if __name__ == "__main__":
 
             # what about randomly leisoning the same number of units from the same layer
             # this can serve as a sanity check to see if the specific clusters we identified are more important than random sets of neurons.
-            random_leison_repeat = 10
+            random_leison_repeat = 100
             rset = []
             for _ in range(random_leison_repeat):
                 saved_r, _ = leison_prepost_inplace(model, cluster_index=comb[1], 

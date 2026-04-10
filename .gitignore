@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Model checkpoints & saved networks
+*.pt
+*.pth
+*.ckpt
+
+# Serialized data & results
+*.pkl
+*.npz
+*.npy
+*.h5
+*.hdf5
+
+# Output directories (figures, analysis results)
+multiple_tasks/
+multiple_tasks_perf/
+multiple_task_heatmaps/
+onetask/
+onetask_data/
+twotasks/
+twotasks_data/
+pretraining/
+state_space/
+mnist/
+flextask/
+data/
+
+# Logs & temp
+*.log
+*.tmp
+*.out

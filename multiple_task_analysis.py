@@ -43,7 +43,7 @@ import color_func
 import mpn 
 import mpn_tasks
 
-clean = True
+clean = False
 if clean: 
     dir_path = Path("./multiple_tasks/")
 
@@ -121,7 +121,7 @@ print(f"Percentage: {mem.percent}%")
 # %%
 # load and unpack parameters
 # make sure to change out_path and out_param_path simultaneously
-seed = "749" 
+seed = "921" 
 task = "everything"
 hidden = "300"
 batch = "128"
@@ -190,6 +190,9 @@ print("missing:", missing)
 print("unexpected:", unexpected)
 
 model.eval()
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
+print(f"Running on: {device}")
 
 task_params_c, train_params_c, net_params_c = mpn_tasks.convert_and_init_multitask_params(
     (task_params, train_params, net_params)
@@ -241,8 +244,8 @@ def shared_run(addtask):
 
     assert len(test_task) == len(stim1_choices)
 
-    net_out, _, db_test = model.iterate_sequence_batch(test_input, run_mode='track_states')
-    
+    net_out, _, db_test = model.iterate_sequence_batch(test_input.to(device), run_mode='track_states')
+
     if addtask in ("dmcgo", "delaydm1", ):
         hidden_test = db_test["hidden1"][:, delay_period[0]:delay_period[1]-1, :]
         em_test = (db_test["M1"][:, delay_period[0]:delay_period[1]-1, :, :] * state_dict["mp_layer1.W"]).cpu().numpy()
@@ -334,7 +337,7 @@ def shared_run(addtask):
         traj_all = []
 
         for idx, interpolate_input in enumerate(interpolate_inputs):
-            _, _, db = model.iterate_sequence_batch(interpolate_input, run_mode="track_states", save_to_cpu=True, detach_saved=True)
+            _, _, db = model.iterate_sequence_batch(interpolate_input.to(device), run_mode="track_states", save_to_cpu=True, detach_saved=True)
             
             if plot_name == "hidden":
                 data = db["hidden1"]
@@ -591,6 +594,9 @@ if reevaluate:
     print(f"test_input.shape: {test_input.shape}; test_output.shape: {test_output.shape}; test_mask.shape: {test_mask.shape}")
     _, test_trials, test_rule_idxs = test_trials_extra
     
+    test_input = test_input.to(device)
+    test_output = test_output.to(device)
+    test_mask = test_mask.to(device)
     with torch.no_grad():
         net_out, _, db_test = model.iterate_sequence_batch(test_input, run_mode='track_states')
         acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input, isvalid=True, mode=model.acc_measure)
