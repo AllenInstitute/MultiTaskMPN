@@ -20,10 +20,11 @@ import numpy as np
 import os 
 
 if __name__ == "__main__":
+    addname = f"result_all_everything_seed921_L21e4+hidden300+batch128+angle"
     paths = [
-        "modulation_all_clustering_result_all_everything_seed749_L21e4+hidden300+batch128+angle_normalized.pkl", 
-        "modulation_all_clustering_result_all_everything_seed749_L21e4+hidden300+batch128+angle_unnormalized.pkl", 
-        "modulation_all_weighted_clustering_result_all_everything_seed749_L21e4+hidden300+batch128+angle_unnormalized.pkl"
+        f"modulation_all_clustering_{addname}_normalized.pkl", 
+        f"modulation_all_clustering_{addname}_unnormalized.pkl", 
+        f"modulation_all_weighted_clustering_{addname}_unnormalized.pkl"
     ]
     
     os.makedirs("multiple_task_heatmaps", exist_ok=True)
@@ -33,7 +34,7 @@ if __name__ == "__main__":
         with open("multiple_tasks/" + path, "rb") as f: 
             data = pickle.load(f)
         
-        select = 2 
+        select = 1
         heatmap = data["cell_vars_rules_sorted_norm_all_lst"][select]
         boundaries = data["modulation_cluster_boundary"][select]
         xboundary, yboundary = boundaries[0], boundaries[1]

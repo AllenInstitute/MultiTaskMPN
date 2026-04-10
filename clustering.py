@@ -537,6 +537,7 @@ def _hierarchical_clustering_forgroup(
     k_min: int = 3,
     k_max: int = 40,
     metric: str = "euclidean",
+    method: str = "ward",
     *,
     # NEW tolerance knobs (default keeps old behavior but prefers simpler k)
     select_min_k_within_tol: bool = True,
@@ -544,8 +545,9 @@ def _hierarchical_clustering_forgroup(
     tol_mode: str = "relative",  # {"relative","absolute"}
 ) -> Dict[str, Any]:
     """
-    Ward hierarchical clustering on `data` (observations × features)
+    Hierarchical clustering on `data` (observations × features)
     with tolerance-based k selection and an alternative k near the chosen k.
+    metric/method: use "euclidean"/"ward" (default) or "cosine"/"average".
     """
     n_obs = data.shape[0]
     if n_obs < 2:
@@ -569,8 +571,8 @@ def _hierarchical_clustering_forgroup(
         )
 
     pairwise = pdist(data, metric=metric)
-    Z = linkage(pairwise, method="ward")
-    c, _ = cophenet(Z, pdist(data))  # cophenetic correlation
+    Z = linkage(pairwise, method=method)
+    c, _ = cophenet(Z, pairwise)  # cophenetic correlation
 
     D_sq = squareform(pairwise)
     k_range = range(max(k_min, 2), min(k_max, n_obs - 1) + 1)
@@ -653,6 +655,7 @@ def cluster_variance_matrix_forgroup(
     row_groups: Optional[Sequence[Sequence[int]]] = None,
     col_groups_all_lst: Optional[List[Sequence[Sequence[int]]]] = None,
     *,
+    metric: str = "euclidean",
     select_min_k_within_tol: bool = True,
     silhouette_tol: float = 0.02,
     tol_mode: str = "relative",
@@ -660,6 +663,10 @@ def cluster_variance_matrix_forgroup(
     """
     Bi-directional hierarchical clustering of a variance matrix V
     (shape: N_features * M_neurons) with tolerance-based k selection.
+
+    metric : "euclidean" (default) uses Ward linkage;
+             "cosine" uses average linkage (scale-invariant, suitable for
+             unnormalized modulation data).
 
     col_groups_all_lst : list of col_groups, each from a different trial/seed.
         Each element is a grouping of column indices (same format as the old
@@ -669,6 +676,10 @@ def cluster_variance_matrix_forgroup(
         as the primary grouping for the final linkage, leaf ordering, and
         label assignment.
     """
+    _METRIC_TO_METHOD = {"euclidean": "ward", "cosine": "average"}
+    if metric not in _METRIC_TO_METHOD:
+        raise ValueError(f"metric must be one of {list(_METRIC_TO_METHOD)}; got {metric!r}")
+    method = _METRIC_TO_METHOD[metric]
     V = np.asarray(V)
 
     # ----- rows (unchanged) -----
@@ -676,6 +687,7 @@ def cluster_variance_matrix_forgroup(
     V_row_grp = _aggregate_along_axis(V, row_blocks, axis=0, reduce="mean")
     row_res = _hierarchical_clustering_forgroup(
         V_row_grp, k_min, k_max,
+        metric=metric, method=method,
         select_min_k_within_tol=select_min_k_within_tol,
         silhouette_tol=silhouette_tol,
         tol_mode=tol_mode,
@@ -695,6 +707,7 @@ def cluster_variance_matrix_forgroup(
         V_col_grp_i = _aggregate_along_axis(V, col_blocks_i, axis=1, reduce="mean")
         col_res_i = _hierarchical_clustering_forgroup(
             V_col_grp_i.T, k_min, k_max,
+            metric=metric, method=method,
             select_min_k_within_tol=select_min_k_within_tol,
             silhouette_tol=silhouette_tol,
             tol_mode=tol_mode,
@@ -759,7 +772,7 @@ def cluster_variance_matrix_forgroup(
             row_order.extend(idxs.tolist())
             continue
         X = V_col_grp[idxs, :]          # (n_in_block, C_blk) — primary col grouping
-        local = _within_block_leaf_order(X, metric="euclidean", method="ward",
+        local = _within_block_leaf_order(X, metric=metric, method=method,
                                          max_items=2000, fallback="pca1")
         row_order.extend(idxs[local].tolist())
 
@@ -770,7 +783,7 @@ def cluster_variance_matrix_forgroup(
             col_order.extend(idxs.tolist())
             continue
         X = V_row_grp[:, idxs].T        # (n_in_block, R_blk)
-        local = _within_block_leaf_order(X, metric="euclidean", method="ward",
+        local = _within_block_leaf_order(X, metric=metric, method=method,
                                          max_items=2000, fallback="pca1")
         col_order.extend(idxs[local].tolist())
 

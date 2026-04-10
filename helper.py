@@ -15,6 +15,14 @@ import torch
 
 T = TypeVar("T")
 
+def value_counts_desc(arr):
+    """
+    Return dict: {value: count}, sorted by count descending.
+    """
+    unique, counts = np.unique(arr, return_counts=True)
+    sorted_idx = np.argsort(-counts)  # sort by count descending
+    return {unique[i]: counts[i] for i in sorted_idx}
+
 def task_variance_period_numpy_old(h, stim, K=8, time_reduce="mean"):
     """
     """

@@ -577,7 +577,7 @@ plt.close(fig)
 # should we re-evaluate the result? 
 reevaluate = True 
 if reevaluate:
-    test_n_batch = 30
+    test_n_batch = 40 # number of batches for each task 
     task_params_c['hp']['batch_size_train'] = test_n_batch
         
     test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(
@@ -654,7 +654,9 @@ clustering_data_analysis = [xs, hs, Ms_orig, Ms_orig, weighted_Ms_orig]
 clustering_data_analysis_names = ["input", "hidden", "modulation_all", \
     "modulation_all", "modulation_all_weighted"]
 clustering_data_normalize = [True, True, True, False, False]
-assert len(clustering_data_analysis) == len(clustering_data_analysis_names) == len(clustering_data_normalize)
+c_methods = [None, None, "euclidean", "cosine", "cosine"]
+assert len(clustering_data_analysis) == len(clustering_data_analysis_names) \
+    == len(clustering_data_normalize)
 
 # data registertion buffer
 clustering_data_hierarchy = {}
@@ -666,6 +668,7 @@ base_data = []
 metrics_all_all = []
 rbreaks_all, cbreaks_all = [], []
 cluster_info_save = {}
+cluster_info_save_mod = {}
 
 selection_key = ["CH_blocks", "DB_blocks"]
 
@@ -682,6 +685,8 @@ for clustering_index in range(len(clustering_data_analysis)):
     clustering_data = clustering_data_analysis[clustering_index]
     clustering_name = clustering_data_analysis_names[clustering_index]
     clustering_normalize = clustering_data_normalize[clustering_index]
+    # 2026-04-09: only used for the modulation-related clustering analysis
+    c_method = c_methods[clustering_index]
     
     print(
         f"[clustering]\n"
@@ -1076,18 +1081,6 @@ for clustering_index in range(len(clustering_data_analysis)):
         fig.savefig(f"./multiple_tasks/{clustering_name}_variance_norm_{savefigure_name}.png", dpi=300)
         plt.close(fig)
         
-        # # plot hierarchy of grouping 
-        # fig, axs = plt.subplots(2,1,figsize=(25,4*2))
-        # dendrogram(result["row_linkage"], ax=axs[0], labels=tb_break_name[result["row_order"]], leaf_rotation=45)
-        # axs[0].axhline(row_t, linestyle="--", color="black")
-        # axs[0].set_title(f"Row hierarchy (k = {result['row_k']})", fontsize=15)
-        # dendrogram(result["col_linkage"], ax=axs[1], labels=np.array([i for i in range(cell_vars_rules_sorted_norm_ordered.shape[1])]), leaf_rotation=45)
-        # axs[1].set_title(f"Col hierarchy (k = {result['col_k']})", fontsize=15)
-        # axs[1].axhline(col_t, linestyle="--", color="black")
-        # fig.suptitle(clustering_name, fontsize=15)
-        # fig.tight_layout()
-        # fig.savefig(f"./multiple_tasks/{clustering_name}_variance_hierarchy_{savefigure_name}.png", dpi=300)
-
         # register hierarchy clustering
         clustering_data_hierarchy[clustering_name] = result["col_linkage"]
 
@@ -1369,12 +1362,14 @@ for clustering_index in range(len(clustering_data_analysis)):
                                                                        k_min=int(lower_cluster-1),
                                                                        k_max=upper_cluster,
                                                                        silhouette_tol=silhouette_tol,
-                                                                       tol_mode=tol_mode)
+                                                                       tol_mode=tol_mode,
+                                                                       metric=c_method)
             prior_cluster_num = len(group_neurons_)
             cell_vars_rules_sorted_norm_inputhidden = cell_vars_rules_sorted_norm[np.ix_(result_outer["row_order"], 
                                                                                          result_outer["col_order"])]
     
-            sns.heatmap(cell_vars_rules_sorted_norm_inputhidden, ax=axs[3+group_neurons_index], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
+            sns.heatmap(cell_vars_rules_sorted_norm_inputhidden, ax=axs[3+group_neurons_index], cmap=cs, cbar=True, 
+                        vmin=vmins, vmax=vmaxs)
             axs[3+group_neurons_index].set_yticks(np.arange(len(tb_break_name)))
             axs[3+group_neurons_index].set_yticklabels(tb_break_name[result_outer["row_order"]], 
                                                        rotation=0, ha='right', va='center', fontsize=9)
@@ -1400,20 +1395,22 @@ for clustering_index in range(len(clustering_data_analysis)):
                                                                  k_min=lower_cluster,
                                                                  k_max=upper_cluster,
                                                                  silhouette_tol=silhouette_tol,
-                                                                 tol_mode=tol_mode)
+                                                                 tol_mode=tol_mode,
+                                                                 metric=c_method)
         result_post = clustering.cluster_variance_matrix_forgroup(cell_vars_rules_sorted_norm,
                                                                   row_groups=None,
                                                                   col_groups_all_lst=[feature_group_post],
                                                                   k_min=lower_cluster,
                                                                   k_max=upper_cluster,
                                                                   silhouette_tol=silhouette_tol,
-                                                                  tol_mode=tol_mode)
+                                                                  tol_mode=tol_mode,
+                                                                  metric=c_method)
 
         # 2025-10-06: do not give any prior grouping prior to the modulation information
         # simply grouping and considering each individual column as separate
         # having smaller G, e.g. 200, will make the following calculation in determining pre- and post-
         # belonging identity more time costly
-        G_lst = [100, 300, 1000, 3000]
+        G_lst = [100, 300]
         figcol, axscol = plt.subplots(1,len(G_lst),figsize=(4*len(G_lst),4))
         figppshare, axsppshare = plt.subplots(2,len(G_lst),figsize=(4*len(G_lst),4*2))
 
@@ -1433,7 +1430,9 @@ for clustering_index in range(len(clustering_data_analysis)):
             col_groups_all_lst = []
             # 2025-10-06: since K-means has randomness, we run it multiple times to obtain 
             # the distribution of grouping statistics,
-            for _ in range(100):
+            krun = 10
+            print(f"Running K-means with G={G} for {krun} times to obtain the distribution of grouping statistics...")
+            for _ in range(krun):
                 random_seed = np.random.randint(0, 10000)
                 col_groups_all = clustering.make_col_groups_with_kmeans(cell_vars_rules_sorted_norm, 
                                                                         n_groups=G,
@@ -1459,7 +1458,8 @@ for clustering_index in range(len(clustering_data_analysis)):
                                                                      k_min=lower_cluster, 
                                                                      k_max=G, 
                                                                      silhouette_tol=silhouette_tol,
-                                                                     tol_mode=tol_mode)
+                                                                     tol_mode=tol_mode,
+                                                                     metric=c_method)
     
             print(f"G = {G}; result_all['row_k']: {result_all['row_k']}; result_all['col_k']: {result_all['col_k']}")
             assert result_all["col_k"] < G
@@ -1512,62 +1512,26 @@ for clustering_index in range(len(clustering_data_analysis)):
                 
             # 2025-10-21: "both" for debugging purpose, effectively with "True" or "False" should obtain identical result
             # Use "True" for the actual implementation; 
-            parallel_cal = "True" 
-            if parallel_cal in ("False", "both", ): 
-                # put here for future sanity check of consistency
-                same_pre_all, same_post_all, no_same_pre_post_all = 0, 0, 0
-                same_pre_cluster_all, same_post_cluster_all, same_pre_post_cluster_all, no_same_pre_post_cluster_all = 0, 0, 0, 0
-                # looping through different identified cluster number
-                for cluster_num in np.unique(col_all):
-                    # find indices that match to the desired cluster
-                    idx = np.where(col_all == cluster_num)[0]
-                    # combinations of all indices pair by removing the permutation
-                    idx_comb = [[idx[i], idx[j]] for i in range(len(idx)) for j in range(i + 1, len(idx))]
-                    for idx_ in idx_comb: 
-                        same_pre_check = same_pre(idx_[0], idx_[1], M)
-                        same_post_check = same_post(idx_[0], idx_[1], M)
-                        # at most one is true, since we exclude i == j case in idx_comb, it is 
-                        # impossible to having two different modulation entry sharing the same
-                        # presynaptic and postsynaptic neuron 
-                        assert same_pre_check + same_post_check <= 1
-                        non_check = 0 if (same_pre_check + same_post_check == 1) else 1
-                        
-                        same_pre_all += same_pre_check; same_post_all += same_post_check; no_same_pre_post_all += non_check 
-                        
-                        # 2025-10-20: check with pre/post [cluster] belonging
-                        _, _, same_pre_cluster_check = same_pre_cluster(idx_[0], idx_[1], M, cluster_input)
-                        _, _, same_post_cluster_check = same_post_cluster(idx_[0], idx_[1], M, cluster_hidden)
-                        assert same_pre_cluster_check + same_post_cluster_check <= 2
-                        non_cluster_check = 1 if (same_pre_cluster_check + same_post_cluster_check == 0) else 0
-                        both_cluster_check = 1 if (same_pre_cluster_check + same_post_cluster_check == 2) else 0
-                        same_pre_cluster_all += same_pre_cluster_check; same_post_cluster_all += same_post_cluster_check
-                        same_pre_post_cluster_all += both_cluster_check; no_same_pre_post_cluster_all += non_cluster_check
-
-                print(f"same_pre_all: {same_pre_all}; same_post_all: {same_post_all}; no_same_pre_post_all: {no_same_pre_post_all}")
-                print(f"same_pre_cluster_all: {same_pre_cluster_all}; same_post_cluster_all: {same_post_cluster_all}")
-                print(f"same_pre_post_cluster_all: {same_pre_post_cluster_all}; no_same_pre_post_cluster_all: {no_same_pre_post_cluster_all}")
+            # membership using the actual clustering information
+            same_pre_all, same_post_all, no_same_pre_post_all, same_pre_cluster_all, same_post_cluster_all, \
+                same_pre_post_cluster_all, no_same_pre_post_cluster_all = clustering_metric.count_pairs_with_clusters(col_all, M, 
+                                                                                                                        cluster_input, 
+                                                                                                                        cluster_hidden)
+            # (control) membership using the random clustering information 
+            # 2026-03-03: increase the repeat times for a more reliable null distribution
+            same_pre_all_c, same_post_all_c, no_same_pre_post_all_c, same_pre_cluster_all_c, same_post_cluster_all_c, \
+                same_pre_post_cluster_all_c, no_same_pre_post_cluster_all_c = clustering_metric.count_pairs_with_clusters_control(col_all, M, 
+                                                                                                                                    cluster_input, 
+                                                                                                                                    cluster_hidden,
+                                                                                                                                    repeat=10000)
             
-            if parallel_cal in ("True", "both", ):
-                # membership using the actual clustering information
-                same_pre_all, same_post_all, no_same_pre_post_all, same_pre_cluster_all, same_post_cluster_all, \
-                    same_pre_post_cluster_all, no_same_pre_post_cluster_all = clustering_metric.count_pairs_with_clusters(col_all, M, 
-                                                                                                                          cluster_input, 
-                                                                                                                          cluster_hidden)
-                # (control) membership using the random clustering information 
-                # 2026-03-03: increase the repeat times for a more reliable null distribution
-                same_pre_all_c, same_post_all_c, no_same_pre_post_all_c, same_pre_cluster_all_c, same_post_cluster_all_c, \
-                    same_pre_post_cluster_all_c, no_same_pre_post_cluster_all_c = clustering_metric.count_pairs_with_clusters_control(col_all, M, 
-                                                                                                                                      cluster_input, 
-                                                                                                                                      cluster_hidden,
-                                                                                                                                      repeat=10000)
-                
-                print(f"same_pre_all: {same_pre_all}; same_post_all: {same_post_all}; no_same_pre_post_all: {no_same_pre_post_all}")
-                print(f"same_pre_cluster_all: {same_pre_cluster_all}; same_post_cluster_all: {same_post_cluster_all}")
-                print(f"same_pre_post_cluster_all: {same_pre_post_cluster_all}; no_same_pre_post_cluster_all: {no_same_pre_post_cluster_all}")
+            print(f"same_pre_all: {same_pre_all}; same_post_all: {same_post_all}; no_same_pre_post_all: {no_same_pre_post_all}")
+            print(f"same_pre_cluster_all: {same_pre_cluster_all}; same_post_cluster_all: {same_post_cluster_all}")
+            print(f"same_pre_post_cluster_all: {same_pre_post_cluster_all}; no_same_pre_post_cluster_all: {no_same_pre_post_cluster_all}")
 
-                print(f"same_pre_all_c: {same_pre_all_c}; same_post_all_c: {same_post_all_c}; no_same_pre_post_all_c: {no_same_pre_post_all_c}")
-                print(f"same_pre_cluster_all_c: {same_pre_cluster_all_c}; same_post_cluster_all_c: {same_post_cluster_all_c}")
-                print(f"same_pre_post_cluster_all_c: {same_pre_post_cluster_all_c}; no_same_pre_post_cluster_all_c: {no_same_pre_post_cluster_all_c}")
+            print(f"same_pre_all_c: {same_pre_all_c}; same_post_all_c: {same_post_all_c}; no_same_pre_post_all_c: {no_same_pre_post_all_c}")
+            print(f"same_pre_cluster_all_c: {same_pre_cluster_all_c}; same_post_cluster_all_c: {same_post_cluster_all_c}")
+            print(f"same_pre_post_cluster_all_c: {same_pre_post_cluster_all_c}; no_same_pre_post_cluster_all_c: {no_same_pre_post_cluster_all_c}")
     
             bar_all_lst = [[same_pre_all, same_post_all, no_same_pre_post_all], 
                            [same_pre_cluster_all, same_post_cluster_all, same_pre_post_cluster_all, no_same_pre_post_cluster_all]]
@@ -1595,167 +1559,143 @@ for clustering_index in range(len(clustering_data_analysis)):
 
             # 2025-10-21: next analyze for each individual modulation cluster, the belonging to different individual 
             # pre and post cluster; only test in the minimal modulation cluster selection case
-            def value_counts_desc(arr):
-                """
-                Return dict: {value: count}, sorted by count descending.
-                """
-                unique, counts = np.unique(arr, return_counts=True)
-                sorted_idx = np.argsort(-counts)  # sort by count descending
-                return {unique[i]: counts[i] for i in sorted_idx}
-
             # 2025-11-17: revise to plot for G=300 case
-            if G_idx == 1: 
+            if G_idx == 1:
                 print(f"Plot for G={G_lst[G_idx]} Case")
-                # for plotting purpose
                 mp = 5; cnt = 0
-                # order the modulation cluster size from largest to smallest
-                # select the ones with large cluster size for the following analysis
-                all_choice_order_dict = value_counts_desc(col_all)
-                # 2025-11-04: print the keys of modulation cluster name/labels after 
-                # ordering based on the size from the largest to the smallest
+                all_choice_order_dict = helper.value_counts_desc(col_all)
                 all_choice_order = list(all_choice_order_dict.keys())
                 print(f"all_choice_order: {all_choice_order}")
 
-                # 2025-11-04: calculate each cluster size and normalize it
-                cluster_size_all = []
-                for cluster_num in all_choice_order:
-                    idx = np.where(col_all == cluster_num)[0]
-                    cluster_size_all.append(len(idx))
-                # 2025-11-04: normalize to percentage
-                cluster_size_percent = [i / np.sum(cluster_size_all) for i in cluster_size_all]
-                # 2025-11-17: the summation of percentage is trivially 1
-                assert np.isclose(np.sum(cluster_size_percent), 1.0)
-                
-                for cluster_num in all_choice_order:
-                    idx = np.where(col_all == cluster_num)[0]
+                # cluster sizes come directly from value_counts_desc (no need to re-scan col_all)
+                cluster_size_all = np.array([all_choice_order_dict[k] for k in all_choice_order])
+                cluster_size_percent = cluster_size_all / cluster_size_all.sum()
+                assert np.isclose(cluster_size_percent.sum(), 1.0)
 
-                # size of cluster product by input and hidden 
-                in_num = [len(cluster_input[key]) for key in cluster_input.keys()]
-                hid_num = [len(cluster_hidden[key]) for key in cluster_hidden.keys()]
-                all_num = np.zeros((len(cluster_input), len(cluster_hidden)))
-                for ci in range(len(in_num)):
-                    for ch in range(len(hid_num)):
-                        all_num[ci,ch] = in_num[ci] * hid_num[ch]
-                        
+                # all_num is the outer product of input and hidden cluster sizes
+                in_num = np.array([len(cluster_input[k]) for k in cluster_input])
+                hid_num = np.array([len(cluster_hidden[k]) for k in cluster_hidden])
+                all_num = np.outer(in_num, hid_num).astype(float)
+                flat_all_num = all_num.flatten()
+                n_in, n_hid = len(cluster_input), len(cluster_hidden)
+
                 figac, axac = plt.subplots(1,1,figsize=(4,4))
                 sns.heatmap(all_num, ax=axac, cmap=cs)
                 axac.set_xlabel("Hidden Cluster Index", fontsize=15)
                 axac.set_ylabel("Input Cluster Index", fontsize=15)
                 axac.set_title("Number of Total Modulation", fontsize=15)
                 figac.tight_layout()
-                figac.savefig(f"./multiple_tasks/{clustering_name}_inhidpair_num_{savefigure_name}.png", dpi=300) 
-                plt.close(figac) 
+                figac.savefig(f"./multiple_tasks/{clustering_name}_inhidpair_num_{savefigure_name}.png", dpi=300)
+                plt.close(figac)
+
+                # Precompute neuron -> cluster index (0-based) lookup arrays once.
+                # Keys in cluster_input/cluster_hidden are 1-indexed, so subtract 1.
+                max_pre = max(max(v) for v in cluster_input.values())
+                max_post = max(max(v) for v in cluster_hidden.values())
+                pre_lookup = np.empty(max_pre + 1, dtype=int)
+                for key, neurons in cluster_input.items():
+                    pre_lookup[np.asarray(neurons)] = key - 1
+                post_lookup = np.empty(max_post + 1, dtype=int)
+                for key, neurons in cluster_hidden.items():
+                    post_lookup[np.asarray(neurons)] = key - 1
+
+                # Precompute the cluster assignment for every modulation entry.
+                all_idx = np.arange(len(col_all))
+                pre_clusters  = pre_lookup[all_idx // M]   # shape (N_mod,), 0-based
+                post_clusters = post_lookup[all_idx % M]   # shape (N_mod,), 0-based
 
                 corr_lst, om_lst, num_lst = [], [], []
                 over_membership_lst = []
-                
-                figsm, axsm = plt.subplots(2,mp,figsize=(4*mp,4*2))
-                # 2025-10-27: loop through different modulation cluster
-                for cidx, cluster_num in enumerate(all_choice_order):
-                    Z_count = np.zeros((len(cluster_input), len(cluster_hidden)))
-                    idx = np.where(col_all == cluster_num)[0]
-                    # for modulation in this cluster, loop through index to check its belonging
-                    for idx_ in idx: 
-                        # 2025-10-27: slightly abuse the usage of same_pre_cluster; here only 
-                        # extract the pre-cluster and post-cluster identity for idx_ 
-                        pre_i, _, _ = same_pre_cluster(idx_, idx_, M, cluster_input)
-                        post_i, _, _ = same_post_cluster(idx_, idx_, M, cluster_hidden)
-                        # register of pre & post cluster belonging 
-                        # -1 is for syntax consistency
-                        Z_count[pre_i-1, post_i-1] += 1
 
-                    # calculate Pearson correlation to the total membership count
-                    # normalization issue is handled internally within the calculation
-                    corr = np.corrcoef(all_num.flatten(), Z_count.flatten())[0,1]
+                figsm, axsm = plt.subplots(2,mp,figsize=(4*mp,4*2))
+                for cidx, cluster_num in enumerate(all_choice_order):
+                    idx = np.where(col_all == cluster_num)[0]
+
+                    # Build Z_count via bincount on linearised (pre, post) indices —
+                    # replaces the per-element Python loop + dict lookup.
+                    flat_idx = pre_clusters[idx] * n_hid + post_clusters[idx]
+                    Z_count = np.bincount(flat_idx, minlength=n_in * n_hid).reshape(n_in, n_hid).astype(float)
+
+                    corr = np.corrcoef(flat_all_num, Z_count.flatten())[0, 1]
                     corr_lst.append(corr)
-                    # calculate over/under-membership, defined as the relative "exceeding" 
-                    # compared to the membership by assuming uniform spliting on all_num
-                    # to different modulation cluster
-                    # this should captures the modulation-cluster-wise fluctuation 
-                    # in input-hidden-bicluster attendence
-                    # 2025-11-04: we should revise so that the average division is based on the 
-                    # modulation cluster size (i.e. weighted), not purely uniform devision (1/N_cluster)
-                    # all_num_avg = all_num / N_cluster
+
                     all_num_avg = all_num * cluster_size_percent[cidx]
-                    # 2025-11-04: we dont take the absolute value so the over- and under-membership
-                    # are separately treated
-                    # 2025-11-17: revise the calculation (center at 1 instead)
                     over_membership = Z_count / all_num_avg
-                    # 2025-11-04: the mean score is calculated through absolute value to prevent
-                    # mutual cancellation
                     om = np.mean(np.abs(over_membership))
                     om_lst.append(om); num_lst.append(len(idx))
                     over_membership_lst.append(over_membership)
-                    
-                    if cnt < mp: 
+
+                    if cnt < mp:
                         sns.heatmap(Z_count, ax=axsm[0,cnt], cmap=cs)
                         sns.heatmap(over_membership, ax=axsm[1,cnt], cmap=cs, vmin=0, vmax=2)
-                        for axindex in range(2): 
+                        for axindex in range(2):
                             axsm[axindex,cnt].set_xlabel("Hidden Cluster Index", fontsize=15)
                             axsm[axindex,cnt].set_ylabel("Input Cluster Index", fontsize=15)
                         axsm[0,cnt].set_title(f"Modulation Cluster {cluster_num}; corr: {corr:.3f}", fontsize=12)
                         axsm[1,cnt].set_title(f"Modulation Cluster {cluster_num}; om: {om:.3f}", fontsize=12)
                         cnt += 1
-                        
+
                 figsm.tight_layout()
-                figsm.savefig(f"./multiple_tasks/{clustering_name}_specific_case_{savefigure_name}.png", dpi=300)  
+                figsm.savefig(f"./multiple_tasks/{clustering_name}_specific_case_{savefigure_name}.png", dpi=300)
                 plt.close(figsm)
 
                 figomcluster, axsomcluster = plt.subplots(4,1,figsize=(10,4*4))
-                
-                over_membership_array_all = np.array([arr.flatten() for arr in over_membership_lst])
-                # 2025-11-04: calculate the average over/under-membership for input & hidden cluster
-                over_membership_array_input = np.array([np.mean(np.abs(arr), axis=1) for arr in over_membership_lst])
-                over_membership_array_hidden = np.array([np.mean(np.abs(arr), axis=0) for arr in over_membership_lst])
+
+                om_stack = np.stack(over_membership_lst)           # (N_clusters, n_in, n_hid)
+                over_membership_array_all    = om_stack.reshape(len(over_membership_lst), -1)
+                over_membership_array_input  = np.mean(np.abs(om_stack), axis=2)
+                over_membership_array_hidden = np.mean(np.abs(om_stack), axis=1)
 
                 over_membership_array = [over_membership_array_all, over_membership_array_input, over_membership_array_hidden]
 
-                for omindex, over_membership_array_ in enumerate(over_membership_array): 
+                for omindex, over_membership_array_ in enumerate(over_membership_array):
                     cluster_colors = color_func.rainbow_generate(over_membership_array_.shape[1])
                     for cindex in range(over_membership_array_.shape[1]):
                         axsomcluster[omindex].plot(over_membership_array_[:,cindex], color=cluster_colors[cindex], alpha=0.5)
-                    
+
                 axsomcluster[0].set_ylabel("Overmembership at Bi-Cluster", fontsize=15)
                 axsomcluster[1].set_ylabel("Mean Overmembership at Input-Cluster", fontsize=15)
                 axsomcluster[2].set_ylabel("Mean Overmembership at Hidden-Cluster", fontsize=15)
-                
+
                 axsomcluster[3].plot(cluster_size_percent, "-o", linewidth=2, color=cluster_colors[0])
                 axsomcluster[3].axhline(1 / len(cluster_size_percent), linestyle="--")
                 axsomcluster[3].set_ylabel("Cluster Size (Normalized)", fontsize=15)
-                for axomcluster in axsomcluster: 
+                for axomcluster in axsomcluster:
                     axomcluster.set_xlabel("Modulation Cluster Order (Largest to Smallest)", fontsize=15)
                 for indx in range(3):
                     axsomcluster[indx].set_xlim([0, 5])
                     axsomcluster[indx].set_ylim([0, 3])
                 figomcluster.tight_layout()
-                # figomcluster.savefig(f"./multiple_tasks/{clustering_name}_om_across_cluster_{savefigure_name}.png", dpi=300)  
+                # figomcluster.savefig(f"./multiple_tasks/{clustering_name}_om_across_cluster_{savefigure_name}.png", dpi=300)
                 plt.close(figomcluster)
-                
-                figgroupcorr, axsgroupcorr = plt.subplots(1,5,figsize=(4*5,4))
-                axsgroupcorr[0].hist(corr_lst, bins="auto")
-                axsgroupcorr[0].set_xlabel("Correlation per Group", fontsize=15)
-                axsgroupcorr[1].hist(om_lst, bins="auto")
-                axsgroupcorr[1].set_xlabel("Mean Absolute Average OM", fontsize=15)
-                for index in range(len(corr_lst)):
-                    axsgroupcorr[2].scatter(corr_lst[index], om_lst[index], c=c_vals[0], alpha=0.7)
-                    axsgroupcorr[3].scatter(num_lst[index], corr_lst[index], c=c_vals[0], alpha=0.7)
-                    axsgroupcorr[4].scatter(num_lst[index], om_lst[index], c=c_vals[0], alpha=0.7)
 
-                # 2025-11-04: do a linear regression
-                x_fit, y_fit, _, _, _, _ = helper.linear_regression(num_lst, corr_lst, log=False, through_origin=False)
+                corr_arr = np.array(corr_lst)
+                om_arr   = np.array(om_lst)
+                num_arr  = np.array(num_lst)
+
+                figgroupcorr, axsgroupcorr = plt.subplots(1,5,figsize=(4*5,4))
+                axsgroupcorr[0].hist(corr_arr, bins="auto")
+                axsgroupcorr[0].set_xlabel("Correlation per Group", fontsize=15)
+                axsgroupcorr[1].hist(om_arr, bins="auto")
+                axsgroupcorr[1].set_xlabel("Mean Absolute Average OM", fontsize=15)
+                axsgroupcorr[2].scatter(corr_arr, om_arr, c=c_vals[0], alpha=0.7)
+                axsgroupcorr[3].scatter(num_arr, corr_arr, c=c_vals[0], alpha=0.7)
+                axsgroupcorr[4].scatter(num_arr, om_arr,  c=c_vals[0], alpha=0.7)
+
+                x_fit,  y_fit,  _, _, _, _ = helper.linear_regression(num_lst, corr_lst, log=False, through_origin=False)
                 axsgroupcorr[3].plot(x_fit, y_fit)
                 x_fit2, y_fit2, _, _, _, _ = helper.linear_regression(num_lst, om_lst, log=False, through_origin=False)
                 axsgroupcorr[4].plot(x_fit2, y_fit2)
-                    
+
                 axsgroupcorr[2].set_xlabel("Corr", fontsize=15)
                 axsgroupcorr[2].set_ylabel("OM", fontsize=15)
                 axsgroupcorr[3].set_xlabel("Modulation Cluster Size", fontsize=15)
                 axsgroupcorr[3].set_ylabel("Corr", fontsize=15)
                 axsgroupcorr[4].set_xlabel("Modulation Cluster Size", fontsize=15)
                 axsgroupcorr[4].set_ylabel("OM", fontsize=15)
-                
+
                 figgroupcorr.tight_layout()
-                figgroupcorr.savefig(f"./multiple_tasks/{clustering_name}_corr_allgroup_case_{savefigure_name}.png", dpi=300)  
+                figgroupcorr.savefig(f"./multiple_tasks/{clustering_name}_corr_allgroup_case_{savefigure_name}.png", dpi=300)
                 plt.close(figgroupcorr)
 
         figcol.tight_layout()
@@ -1808,7 +1748,8 @@ for clustering_index in range(len(clustering_data_analysis)):
         modulation_cluster_norm = []
         modulation_cluster_boundary = []
         for k in range(len(cell_vars_rules_sorted_norm_all_lst)):
-            axprepost[3+k].set_yticklabels(tb_break_name[result_all_lst[k]["row_order"]], rotation=0, ha='right', va='center', fontsize=9)
+            axprepost[3+k].set_yticklabels(tb_break_name[result_all_lst[k]["row_order"]], rotation=0, 
+                                           ha='right', va='center', fontsize=9)
             result_all = result_all_lst[k]
             rl_all = np.asarray(result_all["row_labels"])[result_all["row_order"]]
             cl_all = np.asarray(result_all["col_labels"])[result_all["col_order"]]
@@ -1950,8 +1891,9 @@ for clustering_index in range(len(clustering_data_analysis)):
         fig, ax = plt.subplots(1,all_mod_metric_allk.shape[-1], figsize=(4*all_mod_metric_allk.shape[-1], 4))
         for metric_index in range(all_mod_metric_allk.shape[2]):
             for model_index in range(all_mod_metric_allk.shape[1]):
-                ax[metric_index].plot([j for j in range(len(select_col_allk))], all_mod_metric_allk[:,model_index,metric_index], \
-                           "-o", label=all_mod_name[model_index], color=c_vals[model_index])
+                ax[metric_index].plot([j for j in range(len(select_col_allk))], 
+                                      all_mod_metric_allk[:,model_index,metric_index], 
+                                      "-o", label=all_mod_name[model_index], color=c_vals[model_index])
                 ax[metric_index].set_xticks([j for j in range(len(select_col_allk))])
                 ax[metric_index].set_xticklabels(select_col_allk)
                 
@@ -1965,7 +1907,18 @@ for clustering_index in range(len(clustering_data_analysis)):
         fig.tight_layout()
         fig.savefig(f"./multiple_tasks/between_modulation_{savefigure_name}.png", dpi=300)
         plt.close(fig)
-        
+
+        cluster_info_save_mod[clustering_name] = {
+            "result_pre": result_pre,
+            "result_post": result_post,
+            "result_all_lst": result_all_lst,
+            "result_all_name_lst": result_all_name_lst,
+            "tb_break_name": tb_break_name,
+            "cell_vars_rules_sorted_norm": cell_vars_rules_sorted_norm,
+        }
+        with open(f"./multiple_tasks/cluster_info_mod_{savefigure_name}.pkl", "wb") as f:
+            pickle.dump(cluster_info_save_mod, f)
+
 
 
 
@@ -2181,7 +2134,4 @@ for clustering_index in range(len(clustering_data_analysis)):
 # # %%
 
 
-# # %%
-
-
-
+# # 
