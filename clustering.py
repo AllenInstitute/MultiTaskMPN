@@ -145,6 +145,7 @@ def _hierarchical_clustering_repeat(
     select_min_k_within_tol=True,
     silhouette_tol=0.02,
     tol_mode="relative",
+    score_quantile=None,
 ):
     """
     Hierarchical clustering with stability repeats.
@@ -155,9 +156,11 @@ def _hierarchical_clustering_repeat(
         - The returned linkage / leaf_order are computed ONCE on the original
           unperturbed data.
         - The primary returned labels / k correspond to the strict argmax of
-          the mean silhouette across repeats.
+          the aggregated silhouette across repeats.
         - The alt/tol returned labels / k correspond to the smallest k whose
-          mean silhouette is within tolerance of that strict best mean score.
+          aggregated silhouette is within tolerance of that strict best score.
+        - Aggregation is mean by default; set score_quantile (e.g. 0.75, 0.90)
+          to use that quantile across repeats instead.
         - We still pick a representative repeat (max mean ARI at the selected
           tolerant k) for diagnostics, but we do NOT return its linkage as the
           final dendrogram.
@@ -246,14 +249,22 @@ def _hierarchical_clustering_repeat(
         int(k): float(np.std(score_recording_all[:, idx])) for idx, k in enumerate(k_values)
     }
 
-    strict_best_k = max(score_recording_mean, key=score_recording_mean.get)
-    strict_best_score = score_recording_mean[strict_best_k]
+    if score_quantile is not None:
+        score_recording_agg = {
+            int(k): float(np.quantile(score_recording_all[:, idx], score_quantile))
+            for idx, k in enumerate(k_values)
+        }
+    else:
+        score_recording_agg = score_recording_mean
+
+    strict_best_k = max(score_recording_agg, key=score_recording_agg.get)
+    strict_best_score = score_recording_agg[strict_best_k]
 
     if select_min_k_within_tol:
         primary_thresh = _score_threshold_from_best(
             strict_best_score, silhouette_tol=silhouette_tol, tol_mode=tol_mode
         )
-        primary_candidates = [k for k in k_range if score_recording_mean[k] >= primary_thresh]
+        primary_candidates = [k for k in k_range if score_recording_agg[k] >= primary_thresh]
         best_k = min(primary_candidates) if primary_candidates else strict_best_k
     else:
         primary_thresh = strict_best_score
@@ -282,7 +293,7 @@ def _hierarchical_clustering_repeat(
     alt_thresh = _score_threshold_from_best(
         strict_best_score, silhouette_tol=silhouette_tol, tol_mode=tol_mode
     )
-    alt_candidates = [k for k in k_range if score_recording_mean[k] >= alt_thresh]
+    alt_candidates = [k for k in k_range if score_recording_agg[k] >= alt_thresh]
     alt_k = min(alt_candidates) if alt_candidates else strict_best_k
 
     Z0, d0, leaf0 = _compute_linkage_leaforder(data)
@@ -328,6 +339,7 @@ def _hierarchical_clustering_repeat(
             select_min_k_within_tol=select_min_k_within_tol,
             silhouette_tol=silhouette_tol,
             tol_mode=tol_mode,
+            score_quantile=score_quantile,
             chosen_k=best_k,
             chosen_score=best_k_score_mean,
             strict_best_k=strict_best_k,
@@ -350,14 +362,17 @@ def cluster_variance_matrix_repeat(
     select_min_k_within_tol=True,
     silhouette_tol=0.02,
     tol_mode="relative",
+    score_quantile=None,
 ):
     """
     Cluster a variance matrix V (shape: N_features * M_neurons)
     for both rows (features) and columns (neurons), with repeat-based stabilization.
 
     Returns mean/std silhouette curves for rows and cols.
-    row_k / col_k correspond to the strict mean-silhouette argmax.
+    row_k / col_k correspond to the strict argmax of the aggregated silhouette.
     row_tol_* / col_tol_* correspond to the smaller tolerance-selected solution.
+    Aggregation is mean by default; set score_quantile (e.g. 0.75, 0.90) to use
+    that quantile across repeats instead.
     """
     V = np.asarray(V)
 
@@ -370,6 +385,7 @@ def cluster_variance_matrix_repeat(
         select_min_k_within_tol=select_min_k_within_tol,
         silhouette_tol=silhouette_tol,
         tol_mode=tol_mode,
+        score_quantile=score_quantile,
     )
 
     col_res = _hierarchical_clustering_repeat(
@@ -381,6 +397,7 @@ def cluster_variance_matrix_repeat(
         select_min_k_within_tol=select_min_k_within_tol,
         silhouette_tol=silhouette_tol,
         tol_mode=tol_mode,
+        score_quantile=score_quantile,
     )
 
     return dict(

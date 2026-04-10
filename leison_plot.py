@@ -9,6 +9,7 @@ import matplotlib as mpl
 from matplotlib.ticker import MaxNLocator
 
 import leison as leison_helper
+import helper
 
 mpl.rcParams.update({
     "font.family": "sans-serif",
@@ -52,11 +53,37 @@ if __name__ == "__main__":
     select_props = np.array(select_props).T
     print(f"select_props: {select_props.shape}")
 
-    leison_helper.plot_heatmap(select_props, all_comb_names_leison_, all_tasks,
-                               xlabel="Lesion Condition", ylabel="Task", savename="normalized_leison",
-                               aname=aname, label="Normalized Accuracy",
-                               vmin=None, vmax=None)
+    helper.plot_heatmap(select_props, all_comb_names_leison_, all_tasks,
+                        xlabel="Lesion Condition", ylabel="Task", savename="normalized_leison",
+                        aname=aname, label="Normalized Accuracy",
+                        vmin=None, vmax=None)
+
+    # # normalized modulation lesion effect
+    # mod_baseline_keys = {"mod_noleison"}
+    # print(results.keys())
+    # all_comb_names_mod = results["mod_leison"]["all_comb_names_mod"]
+    # all_comb_names_mod_ = [k for k in all_comb_names_mod if k not in mod_baseline_keys]
+    # modtask_accs = np.asarray(results["mod_leison"]["modtask_accs"], dtype=float)
+    # modrandomtask_accs = np.asarray(results["mod_leison"]["modrandomtask_accs"], dtype=float)
+
+    # mod_select_props = []
+    # for key_idx, key in enumerate(all_comb_names_mod):
+    #     if key not in mod_baseline_keys:
+    #         leison = modtask_accs[:, key_idx]
+    #         random_leison = modrandomtask_accs[:, key_idx]
+    #         normalized_leison_diff = random_leison - leison
+    #         mod_select_props.append(normalized_leison_diff)
+
+    # mod_select_props = np.array(mod_select_props).T
+    # print(f"mod_select_props: {mod_select_props.shape}")
+
+    # helper.plot_heatmap(mod_select_props, all_comb_names_mod_, all_tasks,
+    #                     xlabel="Modulation Lesion Condition", ylabel="Task",
+    #                     savename="normalized_mod_leison",
+    #                     aname=aname, label="Normalized Accuracy",
+    #                     vmin=None, vmax=None)
     
+    # this part focuses on input & hidden analysis only 
     # drop the two baseline columns from ihtask_accs so its layout matches select_props:
     #   keep only columns where the condition is not a no-lesion baseline
     keep_cols = [i for i, k in enumerate(all_comb_names_leison) if k not in baseline_keys]

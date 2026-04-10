@@ -3,14 +3,12 @@ import json
 import numpy as np
 import seaborn as sns
 import pickle
-import copy
 import gc
-import sys
+import sys 
 from scipy.spatial.distance import pdist, squareform
 
-import matplotlib.pyplot as plt
 import matplotlib as mpl 
-from matplotlib.ticker import MaxNLocator
+import matplotlib.pyplot as plt
 
 mpl.rcParams.update({
     "font.family": "sans-serif",
@@ -28,82 +26,39 @@ import torch
 
 import mpn 
 import mpn_tasks
+import helper
 
-def plot_heatmap(input_matrix, 
-                 all_comb_names_, 
-                 all_tasks_, 
-                 xlabel, 
-                 ylabel, 
-                 savename, 
-                 aname, 
-                 label="Accuracy",
-                 vmin=0.0, vmax=1.0):
+def main(seed, feature):
     """
     """
-    A = np.asarray(input_matrix, dtype=float)
-    mask = ~np.isfinite(A)
-    fig_h = max(6, 0.55 * len(all_tasks_) + 2.5)
-    fig_w = max(4, 0.40 * len(all_comb_names_) + 2.0)
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=200)
-    
-    hm = sns.heatmap(
-        A * 100, 
-        mask=mask,
-        cmap="coolwarm",
-        vmin=vmin * 100 if vmin is not None else None, 
-        vmax=vmax * 100 if vmax is not None else None,    
-        center=50.0 if vmin is not None and vmax is not None else 0.0,            
-        annot=True,
-        fmt=".1f",                          
-        annot_kws={"fontsize": 8},
-        linewidths=0.4,
-        linecolor="white",
-        cbar_kws={"label": label, "shrink": 0.9, "pad": 0.02},
-        ax=ax,
-    )
-
-    ax.set_xticklabels(all_comb_names_, rotation=45, ha="right")
-    ax.set_yticklabels(all_tasks_, rotation=0)    
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.tick_params(axis="both", length=2, pad=2)
-
-    cbar = hm.collections[0].colorbar
-    cbar.ax.yaxis.set_major_locator(MaxNLocator(6))
-
-    for t in hm.texts:
-        try:
-            v = float(t.get_text())
-            t.set_color("white" if v < 0.55 else "black")
-        except ValueError:
-            pass
-
-    fig.tight_layout()
-    fig.savefig(f"./multiple_tasks_perf/{savename}_heatmap_{aname}.png", dpi=300)
-    plt.close(fig)
-
-if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-
-    aname = "everything_seed749_L21e4+hidden300+batch128+angle"
-    normalized = "_normalized"
     
-    out_param_path = Path("multiple_tasks/" + f"param_{aname}_param.json")    
-    cluster_path = Path("./multiple_tasks/" + f"cluster_info_{aname}{normalized}.pkl")
+    repeat_num = 100
 
-    with out_param_path.open() as f: 
+    aname = f"everything_seed{seed}_{feature}+hidden300+batch128+angle"
+    
+    out_param_path = Path("multiple_tasks/" + f"param_{aname}_param.json")
+    cluster_path = Path("./multiple_tasks/" + f"cluster_info_{aname}.pkl")
+    cluster_path_mod = Path("./multiple_tasks/" + f"cluster_info_mod_{aname}.pkl")
+
+    with out_param_path.open() as f:
         raw_cfg_param = json.load(f)
-        
+
     with cluster_path.open("rb") as f:
         cluster_info = pickle.load(f)
+
+    with cluster_path_mod.open("rb") as f:
+        cluster_info_mod = pickle.load(f)
         
     # need to remind what the clusters are
     cnames = ["input", "hidden"]
     for cname in cnames:
         print(f"{cname} clusters; row_clusters: {len(cluster_info[cname]['row_clusters'])}, col_clusters: {len(cluster_info[cname]['col_clusters'])}")
         
-    task_params, train_params, net_params = raw_cfg_param["task_params"], raw_cfg_param["train_params"], raw_cfg_param["net_params"]
+    task_params = raw_cfg_param["task_params"]
+    train_params = raw_cfg_param["train_params"]
+    net_params = raw_cfg_param["net_params"]
     
     netpathname = "multiple_tasks/" + f"savednet_{aname}.pt"
     checkpoint = torch.load(netpathname, map_location=device)
@@ -163,7 +118,8 @@ if __name__ == "__main__":
             (axes[0], corr,    f"Correlation Between {name} Clusters",  "coolwarm", 0.0, 1.0),
             (axes[1], l1_dist, f"L1 Distance Between {name} Clusters",  "coolwarm", None, None),
         ]:
-            sns.heatmap(mat, mask=upper_mask, cmap=cmap, vmin=vmin, vmax=vmax, square=True, cbar=True,
+            sns.heatmap(mat, mask=upper_mask, cmap=cmap, vmin=vmin, vmax=vmax, 
+                        square=True, cbar=True,
                         xticklabels=tick_labels, yticklabels=tick_labels, ax=ax)
             ax.set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=9)
             ax.set_yticklabels(tick_labels, rotation=0, fontsize=9)
@@ -193,6 +149,20 @@ if __name__ == "__main__":
         name: max(arr.max() for arr in cluster_info[name]["col_clusters"].values())
         for name in ["input", "hidden"]
     }
+
+    # Build modulation col_clusters from modulation_all, result_all_lst with G=300 (index 1)
+    mod_G_idx = 1 
+    use_mod_cluster = "modulation_all_normalized"
+    mod_result = cluster_info_mod[use_mod_cluster]["result_all_lst"][mod_G_idx]
+    mod_col_labels = mod_result["col_labels"]  # length M*M
+    MM = len(mod_col_labels)
+    M = int(np.sqrt(MM))
+    assert M * M == MM, f"Expected square modulation matrix, got {MM} entries"
+    mod_col_clusters = {}
+    for flat_idx, label in enumerate(mod_col_labels):
+        mod_col_clusters.setdefault(int(label), []).append(flat_idx)
+    mod_n = len(mod_col_clusters)
+    print(f"modulation_all clusters (G={[100,300][mod_G_idx]}): {mod_n}")
 
     def leison_prepost_inplace(net, cluster_index, preorpost, random=False):
         """Apply lesion in-place on net; returns (saved_state, leison_units).
@@ -237,19 +207,44 @@ if __name__ == "__main__":
 
         return saved, leison_units
 
+    def leison_modulation_inplace(net, cluster_index, random=False):
+        """Lesion a modulation cluster by zeroing mp_layer1.W[post, pre] entries.
+        flat_idx k → pre = k // M, post = k % M → W[post, pre].
+        Returns (saved_state, n_lesioned)."""
+        if cluster_index is None:
+            return {}, 0
+        flat_idxs = np.array(mod_col_clusters[cluster_index], dtype=int)
+        n = len(flat_idxs)
+        if random:
+            flat_idxs = np.random.choice(MM, size=n, replace=False)
+        pre_t = torch.tensor(flat_idxs // M, dtype=torch.long, device=net.mp_layer1.W.device)
+        post_t = torch.tensor(flat_idxs % M, dtype=torch.long, device=net.mp_layer1.W.device)
+        with torch.no_grad():
+            saved = {
+                "preorpost": "modulation",
+                "pre_t": pre_t,
+                "post_t": post_t,
+                "W_vals": net.mp_layer1.W[post_t, pre_t].clone(),
+            }
+            net.mp_layer1.W[post_t, pre_t] = 0.0
+        return saved, n
+
     def restore_leison(net, saved):
-        """Restore weights modified by leison_prepost_inplace."""
+        """Restore weights modified by leison_prepost_inplace or leison_modulation_inplace."""
         if not saved:
             return
-        neuron_index = saved["neuron_index"]
         with torch.no_grad():
             if saved["preorpost"] == "pre":
+                neuron_index = saved["neuron_index"]
                 net.W_initial_linear.weight.data[neuron_index, :] = saved["W_initial"]
                 net.mp_layer1.W[:, neuron_index] = saved["mp_W_col"]
             elif saved["preorpost"] == "post":
+                neuron_index = saved["neuron_index"]
                 net.mp_layer1.W[neuron_index, :] = saved["mp_W_row"]
                 net.mp_layer1.b[neuron_index] = saved["mp_b"]
                 net.W_output[:, neuron_index] = saved["W_output"]
+            elif saved["preorpost"] == "modulation":
+                net.mp_layer1.W[saved["post_t"], saved["pre_t"]] = saved["W_vals"]
 
     # register the size for each cluster — no model copy needed
     leison_units_all = []
@@ -273,7 +268,7 @@ if __name__ == "__main__":
     fig.savefig(f"./multiple_tasks_perf/lesion_units_{aname}.png", dpi=300)
     
     # setup the evaluation dataset generator
-    test_n_batch = 100
+    test_n_batch = repeat_num
     task_params_c['hp']['batch_size_train'] = test_n_batch
     
     # L2 pruning for W
@@ -333,7 +328,7 @@ if __name__ == "__main__":
 
             # what about randomly leisoning the same number of units from the same layer
             # this can serve as a sanity check to see if the specific clusters we identified are more important than random sets of neurons.
-            random_leison_repeat = 100
+            random_leison_repeat = repeat_num
             rset = []
             for _ in range(random_leison_repeat):
                 saved_r, _ = leison_prepost_inplace(model, cluster_index=comb[1], 
@@ -370,21 +365,78 @@ if __name__ == "__main__":
         wtask_accs.append(waccs)
         ihrandomtask_accs.append(ihrandomaccs)
         
-    plot_heatmap(
-        ihtask_accs, all_comb_names_leison, all_tasks, 
+    # modulation lesion — one cluster zeroed at a time
+    all_comb_mod = [("mod", None)] + [("mod", i) for i in sorted(mod_col_clusters.keys())]
+    all_comb_names_mod = ["mod_noleison"] + [f"mod_c{i}" for i in sorted(mod_col_clusters.keys())]
+    print(f"all_comb_names_mod: {all_comb_names_mod}")
+
+    modtask_accs = []
+    modrandomtask_accs = []
+
+    for task in all_tasks:
+        print(f"[modulation lesion] Evaluating task: {task}")
+        test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(
+            task_params_c, test_n_batch, rules=[task],
+            mode_input="random_batch", device=device, verbose=False
+        )
+        test_input, test_output, test_mask = test_data
+
+        modaccs = []
+        modrandomaccs = []
+
+        for tag, ci in all_comb_mod:
+            print(f"  Lesion condition: mod_c{ci}")
+            saved, _ = leison_modulation_inplace(model, cluster_index=ci)
+
+            with torch.no_grad():
+                net_out, _, _ = model.iterate_sequence_batch(test_input, run_mode='track_states')
+                acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input,
+                                           isvalid=True, mode=model.acc_measure)
+            modaccs.append(acc.item())
+            restore_leison(model, saved)
+            del net_out
+            gc.collect()
+
+            rset = []
+            for _ in range(random_leison_repeat):
+                saved_r, _ = leison_modulation_inplace(model, cluster_index=ci, random=True)
+                with torch.no_grad():
+                    net_out, _, _ = model.iterate_sequence_batch(test_input, run_mode='track_states')
+                    acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input,
+                                               isvalid=True, mode=model.acc_measure)
+                rset.append(acc.item())
+                restore_leison(model, saved_r)
+                del net_out
+            modrandomaccs.append(np.mean(rset))
+
+        modtask_accs.append(modaccs)
+        modrandomtask_accs.append(modrandomaccs)
+
+    helper.plot_heatmap(
+        ihtask_accs, all_comb_names_leison, all_tasks,
         xlabel="Lesion Condition", ylabel="Task", savename="lesion", aname=aname
-    )   
-    
-    plot_heatmap(
-        wtask_accs, all_comb_names_prune, all_tasks, 
+    )
+
+    helper.plot_heatmap(
+        wtask_accs, all_comb_names_prune, all_tasks,
         xlabel="Pruning Condition", ylabel="Task", savename="pruning", aname=aname
     )
-    
-    plot_heatmap(
-        ihrandomtask_accs, all_comb_names_leison, all_tasks, 
+
+    helper.plot_heatmap(
+        ihrandomtask_accs, all_comb_names_leison, all_tasks,
         xlabel="Random Lesion Condition", ylabel="Task", savename="random_lesion", aname=aname
     )
-    
+
+    helper.plot_heatmap(
+        modtask_accs, all_comb_names_mod, all_tasks,
+        xlabel="Modulation Lesion Condition", ylabel="Task", savename="mod_lesion", aname=aname
+    )
+
+    helper.plot_heatmap(
+        modrandomtask_accs, all_comb_names_mod, all_tasks,
+        xlabel="Random Modulation Lesion Condition", ylabel="Task", savename="mod_random_lesion", aname=aname
+    )
+
     # Ordering note: corr/l1_dist row/col i → cluster i+1.
     # ihtask_accs columns: [0]=pre_noleison, [1..pre_n]=lesion pre cluster 1..pre_n,
     #                       [pre_n+1]=post_noleison, [pre_n+2..end]=lesion post cluster 1..post_n.
@@ -405,12 +457,26 @@ if __name__ == "__main__":
             "all_comb_names_leison": all_comb_names_leison,
             "all_tasks": all_tasks,
         },
+        "mod_leison": {
+            "modtask_accs": modtask_accs,
+            "modrandomtask_accs": modrandomtask_accs,
+            "all_comb_names_mod": all_comb_names_mod,
+            "all_tasks": all_tasks,
+            "mod_G_idx": mod_G_idx,
+            "mod_col_clusters": mod_col_clusters,
+        },
         "cluster_similarity": {
             "corr_matrices": corr_matrices,       # {name: (n_clusters, n_clusters)}
             "l1_dist_matrices": l1_dist_matrices, # {name: (n_clusters, n_clusters)}
             "cluster_means": cluster_means_cache, # {name: (n_tasks, n_clusters)}
         },
     }
-    
+
     with open(f"./multiple_tasks_perf/lesion_prune_results_{aname}.pkl", "wb") as f:
         pickle.dump(saved_dict, f)
+        
+if __name__ == "__main__":
+    seed_lst = [921, 749, 842, 408]
+    # seed_lst = [921]
+    for seed in seed_lst:
+        main(seed, "L21e4")

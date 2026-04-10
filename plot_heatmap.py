@@ -19,8 +19,10 @@ import pickle
 import numpy as np 
 import os 
 
-if __name__ == "__main__":
-    addname = f"result_all_everything_seed921_L21e4+hidden300+batch128+angle"
+def main(seed, feature):
+    """
+    """
+    addname = f"result_all_everything_seed{seed}_{feature}+hidden300+batch128+angle"
     paths = [
         f"modulation_all_clustering_{addname}_normalized.pkl", 
         f"modulation_all_clustering_{addname}_unnormalized.pkl", 
@@ -80,17 +82,23 @@ if __name__ == "__main__":
         )
         plt.close(fig)
         
-        # for idx == 2: also plot the portion after the first vertical cutoff
+        # for idx == 2: also plot with the largest cluster removed
         if idx == 2 and len(yboundary) > 0:
-            first_cut = yboundary[0]
-            plot_data_right = plot_data[:, first_cut:]
+            edges = [0] + list(yboundary) + [plot_data.shape[1]]
+            cluster_sizes = [edges[i + 1] - edges[i] for i in range(len(edges) - 1)]
+            largest_idx = int(np.argmax(cluster_sizes))
 
-            # rebase yboundary to the cropped region
-            yboundary_right = [y - first_cut for y in yboundary[1:]]
+            # remove the largest cluster's column range and rebase boundaries
+            plot_data_excl = np.concatenate([
+                plot_data[:, :edges[largest_idx]],
+                plot_data[:, edges[largest_idx + 1]:]
+            ], axis=1)
+            remaining_sizes = [s for i, s in enumerate(cluster_sizes) if i != largest_idx]
+            yboundary_excl = list(np.cumsum(remaining_sizes)[:-1])
 
             fig2, ax2 = plt.subplots(1, 1, figsize=(10, 4))
             sns.heatmap(
-                plot_data_right,
+                plot_data_excl,
                 ax=ax2,
                 cmap="coolwarm",
                 cbar=True,
@@ -99,15 +107,19 @@ if __name__ == "__main__":
             )
             for x in xboundary:
                 ax2.axhline(x, color="black", linestyle="-", linewidth=1.5, alpha=0.9, zorder=10)
-            for y in yboundary_right:
+            for y in yboundary_excl:
                 ax2.axvline(y, color="black", linestyle="-", linewidth=1.5, alpha=0.9, zorder=10)
-            ax2.set_title(f"After First Vertical Cut (col {first_cut}+); Neuron Class Number: {len(yboundary_right)+1}")
+            ax2.set_title(f"Largest Cluster Removed (cluster {largest_idx}, size {cluster_sizes[largest_idx]}); Neuron Class Number: {len(yboundary_excl)+1}")
             fig2.tight_layout()
             fig2.savefig(
-                os.path.join("multiple_task_heatmaps", path.replace(".pkl", "_after_first_cut.png")),
+                os.path.join("multiple_task_heatmaps", path.replace(".pkl", "_largest_removed.png")),
                 dpi=300,
                 bbox_inches="tight"
             )
             plt.close(fig2)
         
-        
+if __name__ == "__main__":
+    seed_lst = [921, 749, 842, 408]
+    # seed_lst = [921]
+    for seed in seed_lst:
+        main(seed, "L21e4")

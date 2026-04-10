@@ -1,19 +1,72 @@
-import mpn_tasks
+import matplotlib as mpl
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 import matplotlib.colors as mcolors
+
 import numpy as np 
-from scipy.linalg import null_space
-import time
+import seaborn as sns 
 from scipy.stats import linregress, t
 
 from typing import Dict, Sequence, TypeVar, List, Tuple
 from itertools import chain
 import random
-import math
 
 import torch
 
 T = TypeVar("T")
+
+def plot_heatmap(input_matrix, 
+                 all_comb_names_, 
+                 all_tasks_, 
+                 xlabel, 
+                 ylabel, 
+                 savename, 
+                 aname, 
+                 label="Accuracy",
+                 vmin=0.0, vmax=1.0):
+    """
+    """
+    A = np.asarray(input_matrix, dtype=float)
+    mask = ~np.isfinite(A)
+    fig_h = max(6, 0.55 * len(all_tasks_) + 2.5)
+    fig_w = max(4, 0.40 * len(all_comb_names_) + 2.0)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=200)
+    
+    hm = sns.heatmap(
+        A * 100, 
+        mask=mask,
+        cmap="coolwarm",
+        vmin=vmin * 100 if vmin is not None else None, 
+        vmax=vmax * 100 if vmax is not None else None,    
+        center=50.0 if vmin is not None and vmax is not None else 0.0,            
+        annot=True,
+        fmt=".1f",                          
+        annot_kws={"fontsize": 8},
+        linewidths=0.4,
+        linecolor="white",
+        cbar_kws={"label": label, "shrink": 0.9, "pad": 0.02},
+        ax=ax,
+    )
+
+    ax.set_xticklabels(all_comb_names_, rotation=45, ha="right")
+    ax.set_yticklabels(all_tasks_, rotation=0)    
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.tick_params(axis="both", length=2, pad=2)
+
+    cbar = hm.collections[0].colorbar
+    cbar.ax.yaxis.set_major_locator(MaxNLocator(6))
+
+    for t in hm.texts:
+        try:
+            v = float(t.get_text())
+            t.set_color("white" if v < 0.55 else "black")
+        except ValueError:
+            pass
+
+    fig.tight_layout()
+    fig.savefig(f"./multiple_tasks_perf/{savename}_heatmap_{aname}.png", dpi=300)
+    plt.close(fig)
 
 def value_counts_desc(arr):
     """
