@@ -45,3 +45,6 @@ data/
 *.log
 *.tmp
 *.out
+
+# Claude
+CLAUDE.md

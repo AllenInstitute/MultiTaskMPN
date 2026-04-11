@@ -176,6 +176,7 @@ def main(seed, feature):
     missing, unexpected = model.load_state_dict(checkpoint["state_dict"], strict=True)
     print("missing:", missing)
     print("unexpected:", unexpected)
+    del checkpoint  # free duplicated weights; state_dict already extracted above
 
     model.eval()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -217,7 +218,7 @@ def main(seed, feature):
         test_task = helper.find_task(task_params_dmcgo, test_input.detach().cpu().numpy(), 0)
         test_task = [int(test_task_ - min(test_task)) for test_task_ in test_task]
 
-        _, test_trials, test_rule_idxs = test_trials_extra
+        _, test_trials, _ = test_trials_extra
 
         stim1_choices = np.concatenate([test_trials[0].meta["stim1"], test_trials[1].meta["stim1"]])
         print(f"stim1_choices: {stim1_choices}")
@@ -326,27 +327,31 @@ def main(seed, feature):
 
             for idx, interpolate_input in enumerate(interpolate_inputs):
                 _, _, db = model.iterate_sequence_batch(interpolate_input.to(device), run_mode="track_states", save_to_cpu=True, detach_saved=True)
-                
+
                 if plot_name == "hidden":
                     data = db["hidden1"]
                     as_flat = data.reshape(-1, data.shape[-1])
                 elif plot_name == "e_modulation":
-                    data = (db["M1"] * state_dict["mp_layer1.W"]).cpu().numpy()    
+                    data = (db["M1"] * state_dict["mp_layer1.W"]).cpu().numpy()
                     as_flat = data.reshape(-1, data.shape[-1] * data.shape[-2])
                 elif plot_name == "m_modulation":
                     data = db["M1"]
                     as_flat = data.reshape(-1, data.shape[-1] * data.shape[-2])
-                            
+                del db  # free activation dict before next iteration
+
                 hidden_tf = pca_delay.transform(as_flat)
                 projected_data = hidden_tf.reshape(data.shape[0], data.shape[1], -1)
-                
-                if addtask in ("dmcgo", "delaydm1", ): 
+                del data, as_flat  # intermediates no longer needed
+
+                if addtask in ("dmcgo", "delaydm1", ):
                     fixed_points_all.append(projected_data[:,delay_period[1]-1,:])
-                
+
                 if idx in (0, len(interpolate_inputs) - 1, ):
-                    if addtask in ("dmcgo", "delaydm1", ): 
+                    if addtask in ("dmcgo", "delaydm1", ):
                         traj_all.append(projected_data[:, delay_period[0]:delay_period[1], :])
+                del projected_data
                 
+            del interpolate_inputs  # free the 20 interpolated input tensors
             fixed_points_all_arr = np.stack(fixed_points_all, axis=0)  # (n_alpha, n_stim, n_pc)
             print(f"fixed_points_all_arr: {fixed_points_all_arr.shape}")
             n_alpha, n_stim, n_pc = fixed_points_all_arr.shape
@@ -565,7 +570,7 @@ def main(seed, feature):
     # should we re-evaluate the result? 
     reevaluate = True 
     if reevaluate:
-        test_n_batch = 40 # number of batches for each task 
+        test_n_batch = 80 # number of batches for each task 
         task_params_c['hp']['batch_size_train'] = test_n_batch
             
         test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(
@@ -585,15 +590,39 @@ def main(seed, feature):
         test_input = test_input.to(device)
         test_output = test_output.to(device)
         test_mask = test_mask.to(device)
+
+        forward_chunk_size = 20  
+        B_total = test_input.shape[0]
+        chunk_net_outs, chunk_db = [], {}
         with torch.no_grad():
-            net_out, _, db_test = model.iterate_sequence_batch(test_input, run_mode='track_states')
-            acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input, isvalid=True, mode=model.acc_measure)
-            print(f"Accuracy: {acc}")
-            
+            for chunk_start in range(0, B_total, forward_chunk_size):
+                chunk_end = min(chunk_start + forward_chunk_size, B_total)
+                chunk_out, _, chunk_db_i = model.iterate_sequence_batch(
+                    test_input[chunk_start:chunk_end], run_mode='track_states'
+                )
+                chunk_net_outs.append(chunk_out.cpu())
+                for key, val in chunk_db_i.items():
+                    if torch.is_tensor(val):
+                        chunk_db.setdefault(key, []).append(val.cpu())
+                    else:
+                        chunk_db.setdefault(key, []).append(val)
+
+        net_out = torch.cat(chunk_net_outs, dim=0)
+        del chunk_net_outs  # free per-chunk output list now that net_out is assembled
+        db_test = {
+            key: torch.cat(chunks, dim=0) if torch.is_tensor(chunks[0]) else [x for c in chunks for x in c]
+            for key, chunks in chunk_db.items()
+        }
+        del chunk_db  # free per-chunk state lists now that db_test is assembled
+        acc, _ = model.compute_acc(net_out.to(device), test_output, test_mask, test_input, isvalid=True, mode=model.acc_measure)
+        print(f"Accuracy: {acc}")
+        del net_out, test_output, test_mask  # no longer needed after accuracy; test_input kept for find_task below
+
         Ms_orig = db_test["M1"].cpu().numpy()
         xs = db_test["input1"].cpu().numpy()
         hs = db_test["hidden1"].cpu().numpy()
-        
+        del db_test  # all needed arrays extracted; free the large activation tensors
+
         print(f"Ms_orig: {Ms_orig.shape}; xs: {xs.shape}; hs: {hs.shape}")
         print(f"modulation_W: {modulation_W.shape}")
         
@@ -625,7 +654,7 @@ def main(seed, feature):
 
             return labels_resp, labels_stim1, labels_stim2, rules_epochs
         
-        labels_resp, labels_stim1, labels_stim2, rules_epochs = generate_response_stimulus(task_params, test_trials)
+        _, labels_stim1, _, rules_epochs = generate_response_stimulus(task_params, test_trials)
         
         test_task = helper.find_task(task_params, test_input.detach().cpu().numpy(), 0)
         test_task = np.array([int(c) for c in test_task]).flatten()
@@ -642,7 +671,8 @@ def main(seed, feature):
     clustering_data_analysis_names = ["input", "input", "hidden", "hidden", \
         "modulation_all", "modulation_all", "modulation_all_weighted"]
     clustering_data_normalize = [True, False, True, False, True, False, False]
-    c_methods = [None, None, "euclidean", "euclidean", "euclidean", "euclidean", "euclidean"]
+    c_metrics = ["euclidean", "cosine", "euclidean", "cosine", "euclidean", "euclidean", "euclidean"]
+    c_methods = ["ward", "average", "ward", "average", "ward", "ward", "ward"]
     assert len(clustering_data_analysis) == len(clustering_data_analysis_names) \
         == len(clustering_data_normalize)
 
@@ -674,6 +704,7 @@ def main(seed, feature):
         clustering_name = clustering_data_analysis_names[clustering_index]
         clustering_normalize = clustering_data_normalize[clustering_index]
         # 2026-04-09: only used for the modulation-related clustering analysis
+        c_metric = c_metrics[clustering_index]
         c_method = c_methods[clustering_index]
         
         print(
@@ -730,8 +761,10 @@ def main(seed, feature):
                 clustering_data_old = clustering_data                
                 if "all" in clustering_name: # modulation 
                     clustering_data = clustering_data.reshape(clustering_data.shape[0], clustering_data.shape[1], -1)
-                    rule_cluster = clustering_data[test_task == rule_idx, period_time[0]:period_time[1], :]
-                    varval = helper.task_variance_period_numpy(rule_cluster, labels_stim[test_task == rule_idx].flatten())
+                    rule_cluster = clustering_data[test_task == rule_idx, 
+                                                   period_time[0]:period_time[1], :]
+                    varval = helper.task_variance_period_numpy(rule_cluster, 
+                                                               labels_stim[test_task == rule_idx].flatten())
                     cell_vars_rules.append(varval) 
                         
         cell_vars_rules = np.array(cell_vars_rules)    
@@ -793,17 +826,26 @@ def main(seed, feature):
         print(f"cell_vars_rules_sorted_norm: {cell_vars_rules_sorted_norm.shape}")  
 
         # 2026-04-06: analyze input and hidden
-        if not ("all" in clustering_name): 
+        if not ("all" in clustering_name):
+            # For unnormalized variance data (all non-negative), apply log1p to compress
+            # the dynamic range before clustering so that cosine distance captures
+            # selectivity profile shape rather than raw amplitude differences.
+            # Normalized data is passed through unchanged.
+            if clustering_normalize:
+                V_for_clustering = cell_vars_rules_sorted_norm
+            else:
+                V_for_clustering = np.log1p(cell_vars_rules_sorted_norm)
+
             # clustering & grouping & re-ordering
             # first loop on input, second loop in hidden
-            result = clustering.cluster_variance_matrix_repeat(cell_vars_rules_sorted_norm, 
-                                                               k_min=lower_cluster, 
-                                                               k_max=upper_cluster, 
-                                                               metric="euclidean", 
-                                                               method="ward", 
-                                                               n_repeats=100, 
+            result = clustering.cluster_variance_matrix_repeat(V_for_clustering,
+                                                               k_min=lower_cluster,
+                                                               k_max=upper_cluster,
+                                                               metric=c_metric,
+                                                               method=c_method,
+                                                               n_repeats=100,
                                                                resample_features_frac=1.0,
-                                                               jitter_std=0.01,
+                                                               jitter_std=0.02,
                                                                silhouette_tol=silhouette_tol,
                                                                tol_mode=tol_mode,
                                                                score_quantile=0.90)
@@ -828,7 +870,7 @@ def main(seed, feature):
 
             eval_random_metrics_all = []
             eval_random_blocks_all = []
-            for repeat in range(1000):
+            for _ in range(1000):
                 rng = np.random.default_rng(seed=np.random.randint(0, 10000))
                 row_arr = rng.permutation(result["row_tol_labels"])
                 col_arr = rng.permutation(result["col_tol_labels"])
@@ -839,7 +881,7 @@ def main(seed, feature):
                 eval_random_blocks_all.append(eval_res_random["blocks"])
 
             eval_random_stdmean = [np.nanmedian(eval_random_blocks["std"] / eval_random_blocks["means"]) 
-                                for eval_random_blocks in eval_random_blocks_all]
+                                   for eval_random_blocks in eval_random_blocks_all]
 
             metrics_all = {}
             for metric_key in selection_key: 
@@ -847,11 +889,11 @@ def main(seed, feature):
                 random_values = [eval_random_metrics[metric_key] 
                                 for eval_random_metrics in eval_random_metrics_all]
                 metrics_all[metric_key] = [optimized_value, np.mean(random_values), 
-                                        np.std(random_values, ddof=1)/np.sqrt(len(random_values))]
+                                           np.std(random_values, ddof=1)/np.sqrt(len(random_values))]
 
             metrics_all["std/mean"] = [eval_stdmean, 
-                                    np.mean(eval_random_stdmean), 
-                                    np.std(eval_random_stdmean, ddof=1)/np.sqrt(len(eval_random_stdmean))]
+                                       np.mean(eval_random_stdmean), 
+                                       np.std(eval_random_stdmean, ddof=1)/np.sqrt(len(eval_random_stdmean))]
             
             # registeration
             metrics_all_all.append(metrics_all) 
@@ -1358,7 +1400,7 @@ def main(seed, feature):
                                                                            k_max=upper_cluster,
                                                                            silhouette_tol=silhouette_tol,
                                                                            tol_mode=tol_mode,
-                                                                           metric=c_method)
+                                                                           metric=c_metric)
                 prior_cluster_num = len(group_neurons_)
                 cell_vars_rules_sorted_norm_inputhidden = cell_vars_rules_sorted_norm[np.ix_(result_outer["row_order"], 
                                                                                             result_outer["col_order"])]
@@ -1392,7 +1434,7 @@ def main(seed, feature):
                                                                     k_max=upper_cluster,
                                                                     silhouette_tol=silhouette_tol,
                                                                     tol_mode=tol_mode,
-                                                                    metric=c_method)
+                                                                    metric=c_metric)
             result_post = clustering.cluster_variance_matrix_forgroup(cell_vars_rules_sorted_norm,
                                                                     row_groups=None,
                                                                     col_groups_all_lst=[feature_group_post],
@@ -1400,7 +1442,7 @@ def main(seed, feature):
                                                                     k_max=upper_cluster,
                                                                     silhouette_tol=silhouette_tol,
                                                                     tol_mode=tol_mode,
-                                                                    metric=c_method)
+                                                                    metric=c_metric)
 
             # 2025-10-06: do not give any prior grouping prior to the modulation information
             # simply grouping and considering each individual column as separate
@@ -1455,7 +1497,7 @@ def main(seed, feature):
                                                                         k_max=G, 
                                                                         silhouette_tol=silhouette_tol,
                                                                         tol_mode=tol_mode,
-                                                                        metric=c_method)
+                                                                        metric=c_metric)
         
                 print(f"G = {G}; result_all['row_k']: {result_all['row_k']}; result_all['col_k']: {result_all['col_k']}")
                 assert result_all["col_k"] < G

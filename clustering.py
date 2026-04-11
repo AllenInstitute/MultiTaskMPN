@@ -164,6 +164,10 @@ def _hierarchical_clustering_repeat(
         - We still pick a representative repeat (max mean ARI at the selected
           tolerant k) for diagnostics, but we do NOT return its linkage as the
           final dendrogram.
+        - jitter_std is a RELATIVE fraction: each entry is multiplied by
+          (1 + N(0, jitter_std)), so jitter_std=0.01 means ±1% per-entry noise.
+          This is scale-invariant and behaves consistently across normalized and
+          unnormalized matrices. Zero entries receive no jitter.
     """
     rng = np.random.default_rng(random_state)
     data = np.asarray(data)
@@ -208,7 +212,10 @@ def _hierarchical_clustering_repeat(
             Xr = data
 
         if jitter_std > 0.0:
-            Xr = Xr + rng.normal(0.0, jitter_std, size=Xr.shape)
+            # Relative jitter: each entry is perturbed by jitter_std fraction of
+            # its own magnitude, i.e. Xr_ij *= (1 + N(0, jitter_std)).
+            # Zero entries receive no jitter, which is intentional.
+            Xr = Xr * (1.0 + rng.normal(0.0, jitter_std, size=Xr.shape))
 
         Zr, dr, leaf_order_r = _compute_linkage_leaforder(Xr)
         D_square = squareform(dr)
@@ -354,6 +361,8 @@ def _hierarchical_clustering_repeat(
 def cluster_variance_matrix_repeat(
     V,
     k_min=3, k_max=40, metric="euclidean", method="ward",
+    row_metric=None, row_method=None,
+    col_metric=None, col_method=None,
     *,
     n_repeats=10,
     resample_features_frac=1.0,
@@ -373,11 +382,26 @@ def cluster_variance_matrix_repeat(
     row_tol_* / col_tol_* correspond to the smaller tolerance-selected solution.
     Aggregation is mean by default; set score_quantile (e.g. 0.75, 0.90) to use
     that quantile across repeats instead.
+
+    Row and column axes can use different distance metrics and linkage methods via
+    row_metric / row_method / col_metric / col_method. When any of these is None
+    it falls back to the shared metric / method defaults. This allows, for example,
+    keeping euclidean + ward for rows (task periods) while using cosine + average
+    for columns (neurons) on unnormalized data.
     """
+    # Resolve per-axis metric/method, falling back to shared defaults.
+    _row_metric = row_metric if row_metric is not None else metric
+    _row_method = row_method if row_method is not None else method
+    _col_metric = col_metric if col_metric is not None else metric
+    _col_method = col_method if col_method is not None else method
+
+    print(f"Row  — method: {_row_method}, metric: {_row_metric}")
+    print(f"Col  — method: {_col_method}, metric: {_col_metric}")
+
     V = np.asarray(V)
 
     row_res = _hierarchical_clustering_repeat(
-        V, k_min, k_max, metric, method,
+        V, k_min, k_max, _row_metric, _row_method,
         n_repeats=n_repeats,
         resample_features_frac=resample_features_frac,
         jitter_std=jitter_std,
@@ -389,7 +413,7 @@ def cluster_variance_matrix_repeat(
     )
 
     col_res = _hierarchical_clustering_repeat(
-        V.T, k_min, k_max, metric, method,
+        V.T, k_min, k_max, _col_metric, _col_method,
         n_repeats=n_repeats,
         resample_features_frac=resample_features_frac,
         jitter_std=jitter_std,
