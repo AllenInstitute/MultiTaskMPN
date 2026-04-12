@@ -1,3 +1,4 @@
+import warnings
 import numpy as np
 from scipy.cluster.hierarchy import linkage, fcluster, dendrogram, optimal_leaf_ordering
 from scipy.spatial.distance import pdist, squareform
@@ -146,6 +147,7 @@ def _hierarchical_clustering_repeat(
     silhouette_tol=0.02,
     tol_mode="relative",
     score_quantile=None,
+    unresponsive_norm_frac=1e-3,
 ):
     """
     Hierarchical clustering with stability repeats.
@@ -173,9 +175,64 @@ def _hierarchical_clustering_repeat(
     data = np.asarray(data)
     n_obs, n_feat = data.shape
 
+    # ------------------------------------------------------------------
+    # Unresponsive row detection (active for cosine / correlation only).
+    #
+    # Rows whose L2 norm is < unresponsive_norm_frac * max_norm are
+    # considered "unresponsive" (silent neuron or silent task period).
+    # Cosine distance is undefined for near-zero vectors and misleading
+    # for very small ones, so we exclude them from clustering entirely
+    # and assign them a dedicated cluster label (k+1) at the end.
+    # Using a relative threshold (fraction of the max norm) keeps the
+    # criterion scale-invariant across normalised and unnormalised data.
+    # ------------------------------------------------------------------
+    if metric.lower() in ("cosine", "correlation"):
+        norms = np.linalg.norm(data, axis=1)
+        max_norm = norms.max() if norms.max() > 0 else 1.0
+        unresponsive_mask = norms < unresponsive_norm_frac * max_norm
+    else:
+        unresponsive_mask = np.zeros(n_obs, dtype=bool)
+
+    n_unresponsive = int(unresponsive_mask.sum())
+    if n_unresponsive > 0:
+        warnings.warn(
+            f"{n_unresponsive} unresponsive row(s) detected "
+            f"(norm < {unresponsive_norm_frac} * max_norm = "
+            f"{unresponsive_norm_frac * max_norm:.3g}); "
+            f"excluding from clustering and assigning to dedicated cluster (label = k+1).",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+
+    active_mask = ~unresponsive_mask
+    active_idx  = np.where(active_mask)[0]        # original row indices of active rows
+    unres_idx   = np.where(unresponsive_mask)[0]  # original row indices of unresponsive rows
+    active_data = data[active_mask]               # shape: (n_active, n_feat)
+    n_active    = active_data.shape[0]
+
+    def _expand_labels(labels_active, k_active):
+        """Map labels from n_active rows back to n_obs; unresponsive rows get label k+1."""
+        full = np.zeros(n_obs, dtype=int)
+        full[active_mask] = labels_active
+        if n_unresponsive > 0:
+            full[unresponsive_mask] = k_active + 1
+        return full
+
+    def _expand_leaf_order(leaf_order_active):
+        """Map leaf order from active-row indices back to original indices.
+
+        Unresponsive rows are appended at the end so they form a contiguous
+        block in downstream heatmaps.
+        """
+        return list(active_idx[np.array(leaf_order_active)]) + list(unres_idx)
+
     def _compute_linkage_leaforder(X):
-        """Compute linkage + optimal leaf order; return (Z, condensed_dists, leaf_order)."""
-        X = np.asarray(X)
+        """Compute linkage + optimal leaf order; return (Z, condensed_dists, leaf_order).
+
+        X must already be free of unresponsive rows — handled by the caller.
+        leaf_order indices are relative to the rows of X (0..len(X)-1).
+        """
+        X = np.asarray(X, dtype=float)
 
         if method.lower() == "ward":
             Z = linkage(X, method="ward")
@@ -190,13 +247,13 @@ def _hierarchical_clustering_repeat(
 
     def _cut_threshold_from_Z(Z, k):
         """Threshold just above the last merge height when there are k clusters."""
-        cut_idx = (n_obs - k) - 1
+        cut_idx = (n_active - k) - 1
         if 0 <= cut_idx < Z.shape[0]:
             return float(np.nextafter(Z[cut_idx, 2], np.inf))
         return None
 
     k_min = max(int(k_min), 2)
-    k_max = min(int(k_max), n_obs - 1)
+    k_max = min(int(k_max), n_active - 1)
     if k_max < k_min:
         raise ValueError("Not enough observations for the requested k-range.")
     k_range = range(k_min, k_max + 1)
@@ -207,9 +264,9 @@ def _hierarchical_clustering_repeat(
         if resample_features_frac < 1.0:
             m = max(1, int(np.ceil(resample_features_frac * n_feat)))
             feat_idx = rng.choice(n_feat, size=m, replace=True)
-            Xr = data[:, feat_idx]
+            Xr = active_data[:, feat_idx]
         else:
-            Xr = data
+            Xr = active_data
 
         if jitter_std > 0.0:
             # Relative jitter: each entry is perturbed by jitter_std fraction of
@@ -227,7 +284,7 @@ def _hierarchical_clustering_repeat(
             labels = fcluster(Zr, k, criterion="maxclust")
             n_clusters = np.unique(labels).size
 
-            if n_clusters < 2 or n_clusters >= n_obs:
+            if n_clusters < 2 or n_clusters >= n_active:
                 scores_by_k[k] = -np.inf
             else:
                 scores_by_k[k] = float(silhouette_score(D_square, labels, metric="precomputed"))
@@ -303,17 +360,19 @@ def _hierarchical_clustering_repeat(
     alt_candidates = [k for k in k_range if score_recording_agg[k] >= alt_thresh]
     alt_k = min(alt_candidates) if alt_candidates else strict_best_k
 
-    Z0, d0, leaf0 = _compute_linkage_leaforder(data)
+    # Final linkage and labels on the original unperturbed active rows.
+    Z0, d0, leaf0 = _compute_linkage_leaforder(active_data)
+    leaf0_full = _expand_leaf_order(leaf0)
 
-    strict_labels = fcluster(Z0, strict_best_k, criterion="maxclust")
+    strict_labels     = _expand_labels(fcluster(Z0, strict_best_k, criterion="maxclust"), strict_best_k)
     strict_cut_threshold = _cut_threshold_from_Z(Z0, strict_best_k)
 
-    final_alt_labels = fcluster(Z0, alt_k, criterion="maxclust")
+    final_alt_labels  = _expand_labels(fcluster(Z0, alt_k, criterion="maxclust"), alt_k)
     final_alt_cut_threshold = _cut_threshold_from_Z(Z0, alt_k)
 
     return dict(
         linkage=Z0,
-        leaf_order=leaf0,
+        leaf_order=leaf0_full,
         labels=strict_labels,
         k=strict_best_k,
         cut_threshold=strict_cut_threshold,
@@ -321,7 +380,7 @@ def _hierarchical_clustering_repeat(
         alt_k=alt_k,
         alt_labels=final_alt_labels,
         alt_linkage=Z0,
-        alt_leaf_order=leaf0,
+        alt_leaf_order=leaf0_full,
         alt_cut_threshold=final_alt_cut_threshold,
 
         silhouette_strict_best=strict_best_score,
@@ -332,8 +391,8 @@ def _hierarchical_clustering_repeat(
         k_values=k_values,
 
         rep_linkage=best_rep["Z"],
-        rep_leaf_order=best_rep["leaf_order"],
-        rep_labels_at_k=best_rep["labels_by_k"][best_k],
+        rep_leaf_order=_expand_leaf_order(best_rep["leaf_order"]),
+        rep_labels_at_k=_expand_labels(best_rep["labels_by_k"][best_k], best_k),
         rep_cut_threshold_at_k=best_rep["cut_thresholds"][best_k],
 
         _repeats=len(per_repeat),

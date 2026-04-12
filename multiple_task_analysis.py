@@ -8,10 +8,12 @@ import copy
 import pickle
 import sys 
 
-import matplotlib as mpl 
-import matplotlib.pyplot as plt 
+import matplotlib as mpl
+import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from matplotlib.colors import LogNorm
+from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
+from sklearn.metrics.cluster import contingency_matrix as sk_contingency_matrix
 ticker.Locator.MAXTICKS = 10000 
 import seaborn as sns 
 
@@ -678,13 +680,13 @@ def main(seed, feature):
 
     # data registertion buffer
     clustering_data_hierarchy = {}
-    clustering_corr_info = []
-    col_clusters_all, row_clusters_all = [], []
-    row_cluster_breaker_all = []
-    input_hidden_comparison = []
-    base_data = []
-    metrics_all_all = []
-    rbreaks_all, cbreaks_all = [], []
+    clustering_corr_info = {}
+    col_clusters_all, row_clusters_all = {}, {}
+    row_cluster_breaker_all = {}
+    input_hidden_comparison = {}
+    base_data = {}
+    metrics_all_all = {}
+    rbreaks_all, cbreaks_all = {}, {}
     cluster_info_save = {}
     cluster_info_save_mod = {}
 
@@ -822,7 +824,7 @@ def main(seed, feature):
         # all the following should be aligned with this change
         # 2025-08-22: sort based on the variance ordering OR using an identity map (i.e. do nothing)
         cell_vars_rules_sorted_norm = cell_vars_rules_norm[:, sort_idxs]
-        base_data.append(cell_vars_rules_sorted_norm)
+        base_data[clustering_save_name] = cell_vars_rules_sorted_norm
         print(f"cell_vars_rules_sorted_norm: {cell_vars_rules_sorted_norm.shape}")  
 
         # 2026-04-06: analyze input and hidden
@@ -848,7 +850,7 @@ def main(seed, feature):
                                                                jitter_std=0.02,
                                                                silhouette_tol=silhouette_tol,
                                                                tol_mode=tol_mode,
-                                                               score_quantile=0.90)
+                                                               score_quantile=0.50)
             
             # sanity check to make sure no undesirable bug happens with in the clustering code
             assert sorted(result["row_order"]) == list(range(cell_vars_rules_sorted_norm.shape[0]))
@@ -857,8 +859,10 @@ def main(seed, feature):
             assert len(result["row_labels"]) == cell_vars_rules_sorted_norm.shape[0]
             assert len(result["col_labels"]) == cell_vars_rules_sorted_norm.shape[1]
 
-            assert np.unique(result["row_labels"]).size == result["row_k"]
-            assert np.unique(result["col_labels"]).size == result["col_k"]
+            # Allow one extra label (k+1) for the unresponsive cluster that
+            # clustering.py appends when unresponsive rows are detected.
+            assert np.unique(result["row_labels"]).size in (result["row_k"], result["row_k"] + 1)
+            assert np.unique(result["col_labels"]).size in (result["col_k"], result["col_k"] + 1)
             
             eval_res = clustering_metric.evaluate_bicluster_clustering(
                 cell_vars_rules_sorted_norm, row_labels=result["row_tol_labels"], col_labels=result["col_tol_labels"]
@@ -896,9 +900,9 @@ def main(seed, feature):
                                        np.std(eval_random_stdmean, ddof=1)/np.sqrt(len(eval_random_stdmean))]
             
             # registeration
-            metrics_all_all.append(metrics_all) 
+            metrics_all_all[clustering_save_name] = metrics_all
 
-            input_hidden_comparison.append([result, cell_vars_rules_sorted_norm])
+            input_hidden_comparison[clustering_save_name] = [result, cell_vars_rules_sorted_norm]
             
             # reorder the original matrix based on the clustering result
             cell_vars_rules_sorted_norm_ordered = cell_vars_rules_sorted_norm[
@@ -908,7 +912,8 @@ def main(seed, feature):
             cl = np.asarray(result["col_tol_labels"])[result["col_order"]]
             rbreaks = clustering._breaks(rl)
             cbreaks = clustering._breaks(cl)
-            rbreaks_all.append(rbreaks); cbreaks_all.append(cbreaks)
+            rbreaks_all[clustering_save_name] = rbreaks
+            cbreaks_all[clustering_save_name] = cbreaks
 
             best_k_row, best_k_col = result["row_k"], result["col_k"]
             best_alt_k_row, best_alt_k_col = result["row_tol_k"], result["col_tol_k"]
@@ -930,8 +935,8 @@ def main(seed, feature):
             row_labels, row_k = result["row_tol_labels"], result["row_tol_k"]
             row_clusters = {int(lab): np.where(row_labels == lab)[0] for lab in np.unique(row_labels)}
             # registeration
-            col_clusters_all.append(col_clusters)
-            row_clusters_all.append(row_clusters)
+            col_clusters_all[clustering_save_name] = col_clusters
+            row_clusters_all[clustering_save_name] = row_clusters
             
             cluster_info_save[clustering_save_name] = {
                 "col_clusters": col_clusters,
@@ -1011,7 +1016,7 @@ def main(seed, feature):
                 row_breakers.append(row_breakers[-1] + len(row_group))
             row_breakers = row_breakers[1:]
             print(f"row_breakers: {row_breakers}")
-            row_cluster_breaker_all.append(row_breakers)
+            row_cluster_breaker_all[clustering_save_name] = row_breakers
             
             # pearson correlation matrix
             figcorr, axcorrs = plt.subplots(1,3,figsize=(8*3,8))
@@ -1021,8 +1026,10 @@ def main(seed, feature):
             cell_vars_rules_sorted_norm_ordered_measure_L2  = squareform(pdist(cell_vars_rules_sorted_norm_ordered, metric='euclidean'))
 
             # set uniform colorbar to cross-compare between analysis
-            sns.heatmap(cell_vars_rules_sorted_norm_ordered_measure, cmap=cs, square=True, vmin=-0.5, vmax=1.0, ax=axcorrs[0])
-            sns.heatmap(cell_vars_rules_sorted_norm_ordered_measure_cos, cmap=cs, square=True, vmin=-0.5, vmax=1.0, ax=axcorrs[1])
+            sns.heatmap(cell_vars_rules_sorted_norm_ordered_measure, cmap=cs, square=True, 
+                        vmin=-0.5, vmax=1.0, ax=axcorrs[0])
+            sns.heatmap(cell_vars_rules_sorted_norm_ordered_measure_cos, cmap=cs, square=True, 
+                        vmin=-0.5, vmax=1.0, ax=axcorrs[1])
             sns.heatmap(cell_vars_rules_sorted_norm_ordered_measure_L2, cmap=cs, square=True, ax=axcorrs[2])
 
             for axcorr_index in range(len(axcorrs)): 
@@ -1048,26 +1055,49 @@ def main(seed, feature):
             plt.close(figcorr)
 
             # register correlation information
-            clustering_corr_info.append([
+            clustering_corr_info[clustering_save_name] = [
                 cell_vars_rules_sorted_norm_ordered_measure, ordered_row_name, result["col_order"]
-            ])
+            ]
 
             # plot the effect of grouping & ordering through the feature axis
-            fig, ax = plt.subplots(2,1,figsize=(24,8*2))
-            sns.heatmap(cell_vars_rules_sorted_norm, ax=ax[0], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
-            sns.heatmap(cell_vars_rules_sorted_norm_ordered, ax=ax[1], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
+            # For unnormalized data use a log-scale colorbar spanning ~3 orders
+            # of magnitude so that structure is visible despite large amplitude
+            # differences across neurons. The data itself is NOT transformed.
+            if clustering_normalize:
+                heatmap_norm = None
+                scale_label = ""
+            else:
+                data_max = np.max(cell_vars_rules_sorted_norm)
+                data_min = max(np.min(cell_vars_rules_sorted_norm[cell_vars_rules_sorted_norm > 0]),
+                               data_max / 1000.0)
+                heatmap_norm = LogNorm(vmin=data_min, vmax=data_max)
+                scale_label = " [log scale]"
+
+            fig, ax = plt.subplots(2,1,figsize=(16,8*2))
+            sns.heatmap(cell_vars_rules_sorted_norm, ax=ax[0], cmap=cs, cbar=True,
+                        norm=heatmap_norm, vmin=vmins, vmax=vmaxs)
+            sns.heatmap(cell_vars_rules_sorted_norm_ordered, ax=ax[1], cmap=cs, cbar=True,
+                        norm=heatmap_norm, vmin=vmins, vmax=vmaxs)
+            # Cluster boundaries: thick white line with a thin black outline for
+            # visibility against any colormap value.
             for rb in rbreaks:
-                ax[1].axhline(rb, color="k", lw=0.6)
+                ax[1].axhline(rb, color="w", lw=3.0, zorder=3)
+                ax[1].axhline(rb, color="k", lw=0.8, zorder=4)
             for cb in cbreaks:
-                ax[1].axvline(cb, color="k", lw=0.6)
-            ax[0].set_title(f"Before Clustering; best k row: {best_alt_k_row}; best k col: {best_alt_k_col}", fontsize=15)
+                ax[1].axvline(cb, color="w", lw=3.0, zorder=3)
+                ax[1].axvline(cb, color="k", lw=0.8, zorder=4)
+            ax[0].set_title(f"Before Clustering{scale_label}; best k row: {best_alt_k_row}; best k col: {best_alt_k_col}",
+                            fontsize=15)
             ax[0].set_ylabel('Rule / Break-name', fontsize=12, labelpad=12)
-            ax[0].set_yticks(np.arange(len(tb_break_name)))
+            # Seaborn heatmap cells are centered at 0.5, 1.5, ...; use + 0.5 offset
+            # so tick labels sit at the vertical center of each cell row.
+            ax[0].set_yticks(np.arange(len(tb_break_name)) + 0.5)
             ax[0].set_yticklabels(tb_break_name, rotation=0, ha='right', va='center', fontsize=9)
-            ax[1].set_title(f"After Clustering; best k row: {best_alt_k_row}; best k col: {best_alt_k_col}", fontsize=15)
+            ax[1].set_title(f"After Clustering{scale_label}; best k row: {best_alt_k_row}; best k col: {best_alt_k_col}",
+                            fontsize=15)
             ax[1].set_ylabel('Rule / Break-name', fontsize=12, labelpad=12)
-            ax[1].set_yticks(np.arange(len(tb_break_name)))
-            ax[1].set_yticklabels(tb_break_name[result["row_order"]], rotation=0, ha='right', va='center', fontsize=9)    
+            ax[1].set_yticks(np.arange(len(tb_break_name)) + 0.5)
+            ax[1].set_yticklabels(tb_break_name[result["row_order"]], rotation=0, ha='right', va='center', fontsize=9)
             fig.savefig(f"./multiple_tasks/{clustering_name}_variance_cluster_{savefigure_name}.png", dpi=300)
             plt.close(fig)
 
@@ -1122,35 +1152,53 @@ def main(seed, feature):
         # this IF condition will work when hidden is calculated but not yet move to the modulation iteration
         # 2026-04-10: == 4 instead, since we have 4 iterations before modulation
         if (len(clustering_corr_info) == 4) and ("all" not in clustering_name):
-            input_order_row, hidden_order_row = clustering_corr_info[0][1], clustering_corr_info[1][1]
-            input_corr, hidden_corr = clustering_corr_info[0][0], clustering_corr_info[1][0]
-            shuffle_hidden_to_input = helper.permutation_indices_b_to_a(input_order_row, hidden_order_row)
-            # reordering
-            hidden_corr_input = hidden_corr[np.ix_(shuffle_hidden_to_input, shuffle_hidden_to_input)]
+            corr_comparison_pairs = [
+                ("input_normalized",   "hidden_normalized",   "normalized"),
+                ("input_unnormalized", "hidden_unnormalized", "unnormalized"),
+            ]
+            for inp_key, hid_key, norm_desc in corr_comparison_pairs:
+                input_order_row  = clustering_corr_info[inp_key][1]
+                hidden_order_row = clustering_corr_info[hid_key][1]
+                input_corr       = clustering_corr_info[inp_key][0]
+                hidden_corr      = clustering_corr_info[hid_key][0]
 
-            figinputhiddencorr, axinputhiddencorr = plt.subplots(1,2,figsize=(8*2,8))
-            sns.heatmap(input_corr, ax=axinputhiddencorr[0], cmap=cs, square=True, vmin=-0.5, vmax=1.0)
-            sns.heatmap(hidden_corr_input, ax=axinputhiddencorr[1], cmap=cs, square=True, vmin=-0.5, vmax=1.0)
+                # reorder hidden rows/cols to match input's task-condition ordering
+                shuffle_hidden_to_input = helper.permutation_indices_b_to_a(
+                    input_order_row, hidden_order_row
+                )
+                hidden_corr_reordered = hidden_corr[
+                    np.ix_(shuffle_hidden_to_input, shuffle_hidden_to_input)
+                ]
 
-            for ax in axinputhiddencorr:
-                ax.set_xticks(np.arange(len(input_order_row)))
-                ax.set_xticklabels(input_order_row, rotation=45, ha='right', va='center', \
-                                    rotation_mode='anchor', fontsize=9)    
-                ax.set_yticks(np.arange(len(input_order_row)))
-                ax.set_yticklabels(input_order_row, rotation=0, ha='right', va='center', \
-                                    rotation_mode='anchor', fontsize=9) 
-                ax.tick_params(axis="both", length=0)
+                figinputhiddencorr, axinputhiddencorr = plt.subplots(1, 2, figsize=(8*2, 8))
+                sns.heatmap(input_corr,           ax=axinputhiddencorr[0], cmap=cs, square=True, vmin=-0.5, vmax=1.0)
+                sns.heatmap(hidden_corr_reordered, ax=axinputhiddencorr[1], cmap=cs, square=True, vmin=-0.5, vmax=1.0)
 
-            axinputhiddencorr[0].set_title("Input Correlation", fontsize=15)
-            axinputhiddencorr[1].set_title("Hidden Correlation (Reordered By Input Correlation)", fontsize=15)
-            for ax in axinputhiddencorr:
-                for b in row_cluster_breaker_all[0]:
-                    ax.axvline(b, 0, 1, color="k", linewidth=1.2)
-                    ax.axhline(b, 0, 1, color="k", linewidth=1.2)
-                
-            figinputhiddencorr.suptitle("Reorder Input & Hidden Correlation")
-            figinputhiddencorr.savefig(f"./multiple_tasks/input2hidden_variance_hierarchy_{savefigure_name}.png", dpi=300)
-            plt.close(figinputhiddencorr)
+                for ax in axinputhiddencorr:
+                    ax.set_xticks(np.arange(len(input_order_row)) + 0.5)
+                    ax.set_xticklabels(input_order_row, rotation=45, ha='right', va='center',
+                                       rotation_mode='anchor', fontsize=9)
+                    ax.set_yticks(np.arange(len(input_order_row)) + 0.5)
+                    ax.set_yticklabels(input_order_row, rotation=0, ha='right', va='center',
+                                       rotation_mode='anchor', fontsize=9)
+                    ax.tick_params(axis="both", length=0)
+
+                axinputhiddencorr[0].set_title(f"Input Correlation ({norm_desc})", fontsize=15)
+                axinputhiddencorr[1].set_title(
+                    f"Hidden Correlation — reordered by input ({norm_desc})", fontsize=15
+                )
+                # draw cluster breaks using input's break positions
+                for ax in axinputhiddencorr:
+                    for b in row_cluster_breaker_all[inp_key]:
+                        ax.axvline(b, 0, 1, color="k", linewidth=1.2)
+                        ax.axhline(b, 0, 1, color="k", linewidth=1.2)
+
+                figinputhiddencorr.suptitle(f"Input vs Hidden Correlation ({norm_desc})")
+                figinputhiddencorr.savefig(
+                    f"./multiple_tasks/input2hidden_variance_hierarchy_{norm_desc}_{savefigure_name_base}.png",
+                    dpi=300
+                )
+                plt.close(figinputhiddencorr)
         
         # 2025-11-04: check the consistency of row clusters between input & hidden
         if (len(clustering_corr_info) == 4) and ("all" not in clustering_name):
@@ -1159,12 +1207,104 @@ def main(seed, feature):
                 pickle.dump(cluster_info_save, f)
                 
             print(cluster_info_save.keys())
-            sys.exit()
+
+            # ----------------------------------------------------------------
+            # 2026-04-12: Input vs Hidden clustering comparison
+            # Compare optimal-k row labels (task conditions) between input and
+            # hidden for each normalisation variant (normalized / unnormalized).
+            #
+            # NOTE: col_labels (neurons/features) are NOT compared here because
+            # input_dim != hidden_dim — those label vectors have different lengths
+            # and index different feature spaces, so no meaningful comparison exists.
+            # Row labels (task conditions) have the same length in both cases
+            # (same tb_break) so ARI / NMI / contingency matrix are all valid.
+            #
+            # Metrics: Adjusted Rand Index (ARI) and Normalized Mutual Info (NMI)
+            # — both permutation-invariant and handle different k.
+            # Visual: contingency-matrix heatmap (counts + row-norm fractions).
+            # ----------------------------------------------------------------
+            comparison_pairs = [
+                ("input_normalized",   "hidden_normalized",   "normalized"),
+                ("input_unnormalized", "hidden_unnormalized", "unnormalized"),
+            ]
+
+            for input_key, hidden_key, norm_desc in comparison_pairs:
+                if input_key not in cluster_info_save or hidden_key not in cluster_info_save:
+                    continue
+
+                r_input  = cluster_info_save[input_key]["result"]
+                r_hidden = cluster_info_save[hidden_key]["result"]
+
+                lbl_input  = np.asarray(r_input["row_tol_labels"])
+                lbl_hidden = np.asarray(r_hidden["row_tol_labels"])
+                k_input    = r_input["row_tol_k"]
+                k_hidden   = r_hidden["row_tol_k"]
+
+                assert len(lbl_input) == len(lbl_hidden), (
+                    f"row_labels length mismatch: input={len(lbl_input)}, "
+                    f"hidden={len(lbl_hidden)}"
+                )
+
+                ari = adjusted_rand_score(lbl_input, lbl_hidden)
+                nmi = normalized_mutual_info_score(lbl_input, lbl_hidden)
+
+                # contingency matrix: rows = input clusters, cols = hidden clusters
+                cm      = sk_contingency_matrix(lbl_input, lbl_hidden)
+                cm_frac = cm.astype(float) / cm.sum(axis=1, keepdims=True)
+                n_input_k, n_hidden_k = cm.shape
+
+                fig_w = max(6, n_hidden_k * 0.7 + 2) * 2
+                fig_h = max(4, n_input_k  * 0.6 + 2)
+                fig, axes = plt.subplots(
+                    1, 2, figsize=(fig_w, fig_h),
+                    gridspec_kw={"wspace": 0.5},
+                )
+
+                # left panel: raw counts
+                sns.heatmap(
+                    cm, ax=axes[0], annot=True, fmt="d", cmap="Blues",
+                    xticklabels=[f"H{i}" for i in range(n_hidden_k)],
+                    yticklabels=[f"I{i}" for i in range(n_input_k)],
+                    cbar=False,
+                )
+                axes[0].set_xlabel(f"Hidden clusters  (k={k_hidden})")
+                axes[0].set_ylabel(f"Input clusters  (k={k_input})")
+                axes[0].set_title("Count")
+
+                # right panel: row-normalised fractions
+                sns.heatmap(
+                    cm_frac, ax=axes[1], annot=True, fmt=".2f", cmap="Blues",
+                    xticklabels=[f"H{i}" for i in range(n_hidden_k)],
+                    yticklabels=[f"I{i}" for i in range(n_input_k)],
+                    vmin=0, vmax=1, cbar=True,
+                )
+                axes[1].set_xlabel(f"Hidden clusters  (k={k_hidden})")
+                axes[1].set_ylabel(f"Input clusters  (k={k_input})")
+                axes[1].set_title("Row-normalised fraction")
+
+                fig.suptitle(
+                    f"Input vs Hidden — task conditions  ({norm_desc})  |  "
+                    f"ARI = {ari:.3f}   NMI = {nmi:.3f}   "
+                    f"(input k={k_input}, hidden k={k_hidden})",
+                    fontsize=10,
+                )
+                out_path = (
+                    f"./multiple_tasks/input_vs_hidden_row_"
+                    f"{norm_desc}_{savefigure_name_base}.png"
+                )
+                fig.savefig(out_path, dpi=200, bbox_inches="tight")
+                plt.close(fig)
+                print(
+                    f"[input vs hidden] {norm_desc} — task conditions: "
+                    f"ARI={ari:.3f}  NMI={nmi:.3f}  "
+                    f"(input k={k_input}  hidden k={k_hidden})"
+                )
             
+            ih_keys = ["input_normalized", "hidden_normalized"]
             belonging = np.zeros((2, len(tb_break_name)))
             for ttind in range(len(tb_break_name)):
                 for rowind in range(2):
-                    cluster_name = helper.find_key_by_membership(row_clusters_all[rowind], ttind)
+                    cluster_name = helper.find_key_by_membership(row_clusters_all[ih_keys[rowind]], ttind)
                     belonging[rowind, ttind] = cluster_name
 
             figbelonging, axbelonging = plt.subplots(1,1,figsize=(10,2))
@@ -1176,8 +1316,8 @@ def main(seed, feature):
             figbelonging.savefig(f"./multiple_tasks/inputhidden_row_membership_{savefigure_name}.png", dpi=300)
             plt.close(figbelonging)
 
-            [result_input, cell_vars_rules_sorted_norm_input] = input_hidden_comparison[0]
-            [result_hidden, cell_vars_rules_sorted_norm_hidden] = input_hidden_comparison[1]
+            [result_input, cell_vars_rules_sorted_norm_input]  = input_hidden_comparison["input_normalized"]
+            [result_hidden, cell_vars_rules_sorted_norm_hidden] = input_hidden_comparison["hidden_normalized"]
             cell_vars_rules_sorted_norm_ordered_input = cell_vars_rules_sorted_norm_input[np.ix_(result_input["row_order"], 
                                                                                                 result_input["col_order"])]
             cell_vars_rules_sorted_norm_ordered_hidden = cell_vars_rules_sorted_norm_hidden[np.ix_(result_input["row_order"], 
@@ -1186,11 +1326,11 @@ def main(seed, feature):
             figsame, axssame = plt.subplots(2,1,figsize=(24,8*2))
             sns.heatmap(cell_vars_rules_sorted_norm_ordered_input, ax=axssame[0], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
             sns.heatmap(cell_vars_rules_sorted_norm_ordered_hidden, ax=axssame[1], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
-            for tem in range(2):
-                # 2025-11-05: input break
-                for rb in rbreaks_all[0]:
+            for tem, tem_key in enumerate(["input_normalized", "hidden_normalized"]):
+                # 2025-11-05: use input row breaks for both; col breaks per data type
+                for rb in rbreaks_all["input_normalized"]:
                     axssame[tem].axhline(rb, color="k", lw=0.6)
-                for cb in cbreaks_all[tem]:
+                for cb in cbreaks_all[tem_key]:
                     axssame[tem].axvline(cb, color="k", lw=0.6)
 
             axssame[0].set_title("Input Using Input Session Break", fontsize=15)
@@ -1204,10 +1344,10 @@ def main(seed, feature):
 
             # 2025-11-18: whether to use the common session grouping based on input or hidden
             activecorr_lst = []
-            for ih_index in range(2): 
-                common_rbreaks_ = [0] + rbreaks_all[ih_index] + [cell_vars_rules_sorted_norm_input.shape[0]]
-                cbreaks_input_ = [0] + cbreaks_all[0] + [cell_vars_rules_sorted_norm_input.shape[1]]
-                cbreaks_hidden_ = [0] + cbreaks_all[1] + [cell_vars_rules_sorted_norm_hidden.shape[1]]
+            for ih_index, ih_key in enumerate(["input_normalized", "hidden_normalized"]):
+                common_rbreaks_ = [0] + rbreaks_all[ih_key]             + [cell_vars_rules_sorted_norm_input.shape[0]]
+                cbreaks_input_  = [0] + cbreaks_all["input_normalized"]  + [cell_vars_rules_sorted_norm_input.shape[1]]
+                cbreaks_hidden_ = [0] + cbreaks_all["hidden_normalized"] + [cell_vars_rules_sorted_norm_hidden.shape[1]]
         
                 varmeaninput = np.zeros((len(common_rbreaks_) - 1, len(cbreaks_input_) - 1))
                 varmeanhidden = np.zeros((len(common_rbreaks_) - 1, len(cbreaks_hidden_) - 1))
@@ -1281,7 +1421,8 @@ def main(seed, feature):
         # trying to observe consistency in between
         # 2026-04-06: this part of analysis is specifically targeting to the modulation-related data
         if (len(clustering_corr_info) == 4) and ("all" in clustering_name):
-            input_order_col_ind, hidden_order_col_ind = clustering_corr_info[0][2], clustering_corr_info[1][2]
+            input_order_col_ind  = clustering_corr_info["input_normalized"][2]
+            hidden_order_col_ind = clustering_corr_info["hidden_normalized"][2]
             # cell_vars_rules_norm_keepshape: 3D array
             # sort the modulation matrix based on the pre (input) and post (hidden) neuron ordering
             cell_vars_rules_norm_keepshape_ih = cell_vars_rules_norm_keepshape[:, input_order_col_ind, :]
@@ -1304,7 +1445,8 @@ def main(seed, feature):
 
             # 
             print(cell_vars_rules_sorted_norm.shape)
-            cluster_input, cluster_hidden = col_clusters_all[0], col_clusters_all[1]
+            cluster_input  = col_clusters_all["input_normalized"]
+            cluster_hidden = col_clusters_all["hidden_normalized"]
             cluster_combine = {}
             newc = 0
             for c1 in cluster_input.keys(): # input cluster name
@@ -1456,7 +1598,8 @@ def main(seed, feature):
             result_all_name_lst = []
 
             # 2025-11-04: input cluster & hidden cluster along the neuron dimension (N)
-            cluster_input, cluster_hidden = col_clusters_all[0], col_clusters_all[1]
+            cluster_input  = col_clusters_all["input_normalized"]
+            cluster_hidden = col_clusters_all["hidden_normalized"]
             # sanity check: order it based on the key
             cluster_input = dict(sorted(cluster_input.items()))
             cluster_hidden = dict(sorted(cluster_hidden.items()))
@@ -1513,7 +1656,7 @@ def main(seed, feature):
                 # but they may still share the same neuron cluster
                 # here we are curious about their collective behavior and calculate the total summation of count
                 row_all, col_all = result_all["row_labels"], result_all["col_labels"]
-                assert np.max(col_all) == result_all["col_k"]
+                assert np.max(col_all) in (result_all["col_k"], result_all["col_k"] + 1)
                 
                 print(f"col_all: {col_all}")
 
@@ -1895,7 +2038,8 @@ def main(seed, feature):
             figscore.savefig(f"./multiple_tasks/{clustering_name}_variance_cluster_score_{savefigure_name}.png", dpi=300)
             plt.close(figscore)
 
-            input_info, hidden_info = base_data[0], base_data[1]
+            input_info  = base_data["input_normalized"]
+            hidden_info = base_data["hidden_normalized"]
 
             # compare modulation grouping result
             # either using pre, post, or different level of K-means pre-clusters
