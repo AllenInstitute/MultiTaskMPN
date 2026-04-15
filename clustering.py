@@ -763,7 +763,20 @@ def _hierarchical_clustering_forgroup(
     c, _ = cophenet(Z, pairwise)  # cophenetic correlation
 
     D_sq = squareform(pairwise)
-    k_range = range(max(k_min, 2), min(k_max, n_active - 1) + 1)
+    k_min_eff = max(k_min, 2)
+    k_max_eff = min(k_max, n_active - 1)
+    if k_max_eff < k_min_eff:
+        # n_active is too small to reach the requested k_min.
+        # Clamp to the largest available k (n_active - 1).
+        warnings.warn(
+            f"n_active={n_active} is too small for k_min={k_min}; "
+            f"clamping k range to [2, {n_active - 1}].",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        k_min_eff = 2
+        k_max_eff = n_active - 1
+    k_range = range(k_min_eff, k_max_eff + 1)
 
     score_recording: Dict[int, float] = {}
     cut_distance_by_k: Dict[int, float] = {}
