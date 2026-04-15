@@ -148,6 +148,8 @@ def _hierarchical_clustering_repeat(
     tol_mode="relative",
     score_quantile=None,
     unresponsive_norm_frac=1e-3,
+    skip_unresponsive_detection=False,
+    tol_k_select="min",
 ):
     """
     Hierarchical clustering with stability repeats.
@@ -159,8 +161,9 @@ def _hierarchical_clustering_repeat(
           unperturbed data.
         - The primary returned labels / k correspond to the strict argmax of
           the aggregated silhouette across repeats.
-        - The alt/tol returned labels / k correspond to the smallest k whose
-          aggregated silhouette is within tolerance of that strict best score.
+        - The alt/tol returned labels / k correspond to the smallest (or
+          largest, depending on tol_k_select) k whose aggregated silhouette
+          is within tolerance of that strict best score.
         - Aggregation is mean by default; set score_quantile (e.g. 0.75, 0.90)
           to use that quantile across repeats instead.
         - We still pick a representative repeat (max mean ARI at the selected
@@ -170,28 +173,37 @@ def _hierarchical_clustering_repeat(
           (1 + N(0, jitter_std)), so jitter_std=0.01 means ±1% per-entry noise.
           This is scale-invariant and behaves consistently across normalized and
           unnormalized matrices. Zero entries receive no jitter.
+        - tol_k_select controls whether the smallest ("min") or largest
+          ("max") k within the tolerance band is selected.
     """
+    if tol_k_select not in ("min", "max"):
+        raise ValueError("tol_k_select must be 'min' or 'max'.")
+    _k_select = min if tol_k_select == "min" else max
+
     rng = np.random.default_rng(random_state)
     data = np.asarray(data)
     n_obs, n_feat = data.shape
 
     # ------------------------------------------------------------------
-    # Unresponsive row detection (active for cosine / correlation only).
+    # Unresponsive row detection (active for all metrics).
     #
     # Rows whose L2 norm is < unresponsive_norm_frac * max_norm are
     # considered "unresponsive" (silent neuron or silent task period).
-    # Cosine distance is undefined for near-zero vectors and misleading
-    # for very small ones, so we exclude them from clustering entirely
-    # and assign them a dedicated cluster label (k+1) at the end.
+    # For cosine/correlation metrics this is essential because the
+    # distance is undefined for zero vectors. For Euclidean/Ward it is
+    # also beneficial: near-zero rows form a trivial cluster that can
+    # inflate silhouette scores and obscure meaningful structure among
+    # the active rows. Excluding them and assigning a dedicated label
+    # (k+1) keeps the clustering focused on informative observations.
     # Using a relative threshold (fraction of the max norm) keeps the
     # criterion scale-invariant across normalised and unnormalised data.
     # ------------------------------------------------------------------
-    if metric.lower() in ("cosine", "correlation"):
+    if skip_unresponsive_detection:
+        unresponsive_mask = np.zeros(n_obs, dtype=bool)
+    else:
         norms = np.linalg.norm(data, axis=1)
         max_norm = norms.max() if norms.max() > 0 else 1.0
         unresponsive_mask = norms < unresponsive_norm_frac * max_norm
-    else:
-        unresponsive_mask = np.zeros(n_obs, dtype=bool)
 
     n_unresponsive = int(unresponsive_mask.sum())
     if n_unresponsive > 0:
@@ -329,7 +341,7 @@ def _hierarchical_clustering_repeat(
             strict_best_score, silhouette_tol=silhouette_tol, tol_mode=tol_mode
         )
         primary_candidates = [k for k in k_range if score_recording_agg[k] >= primary_thresh]
-        best_k = min(primary_candidates) if primary_candidates else strict_best_k
+        best_k = _k_select(primary_candidates) if primary_candidates else strict_best_k
     else:
         primary_thresh = strict_best_score
         primary_candidates = [strict_best_k]
@@ -358,7 +370,7 @@ def _hierarchical_clustering_repeat(
         strict_best_score, silhouette_tol=silhouette_tol, tol_mode=tol_mode
     )
     alt_candidates = [k for k in k_range if score_recording_agg[k] >= alt_thresh]
-    alt_k = min(alt_candidates) if alt_candidates else strict_best_k
+    alt_k = _k_select(alt_candidates) if alt_candidates else strict_best_k
 
     # Final linkage and labels on the original unperturbed active rows.
     Z0, d0, leaf0 = _compute_linkage_leaforder(active_data)
@@ -431,6 +443,8 @@ def cluster_variance_matrix_repeat(
     silhouette_tol=0.02,
     tol_mode="relative",
     score_quantile=None,
+    skip_unresponsive_detection=False,
+    tol_k_select="min",
 ):
     """
     Cluster a variance matrix V (shape: N_features * M_neurons)
@@ -469,6 +483,8 @@ def cluster_variance_matrix_repeat(
         silhouette_tol=silhouette_tol,
         tol_mode=tol_mode,
         score_quantile=score_quantile,
+        skip_unresponsive_detection=skip_unresponsive_detection,
+        tol_k_select=tol_k_select,
     )
 
     col_res = _hierarchical_clustering_repeat(
@@ -481,15 +497,19 @@ def cluster_variance_matrix_repeat(
         silhouette_tol=silhouette_tol,
         tol_mode=tol_mode,
         score_quantile=score_quantile,
+        skip_unresponsive_detection=skip_unresponsive_detection,
+        tol_k_select=tol_k_select,
     )
 
     return dict(
         row_order=row_res["leaf_order"],
         col_order=col_res["leaf_order"],
-        row_labels=row_res["labels"],
-        col_labels=col_res["labels"],
-        row_k=row_res["k"],
-        col_k=col_res["k"],
+        # Tolerance-selected labels and k (primary result).
+        # Use row_strict_best_k / col_strict_best_k for the raw silhouette argmax.
+        row_labels=row_res["alt_labels"],
+        col_labels=col_res["alt_labels"],
+        row_k=row_res["alt_k"],
+        col_k=col_res["alt_k"],
         row_linkage=row_res["linkage"],
         col_linkage=col_res["linkage"],
         row_score_recording_mean=row_res["score_recording_mean"],
@@ -500,10 +520,19 @@ def cluster_variance_matrix_repeat(
         col_score_recording_std=col_res["score_recording_std"],
         col_score_recording_all=col_res["score_recording_all"],
         col_k_values=col_res["k_values"],
-        row_cut_threshold=row_res["cut_threshold"],
-        col_cut_threshold=col_res["cut_threshold"],
+        row_cut_threshold=row_res["alt_cut_threshold"],
+        col_cut_threshold=col_res["alt_cut_threshold"],
         _row_meta=row_res["_params"],
         _col_meta=col_res["_params"],
+        # Strict argmax (before tolerance).
+        row_strict_best_k=row_res["k"],
+        col_strict_best_k=col_res["k"],
+        row_strict_labels=row_res["labels"],
+        col_strict_labels=col_res["labels"],
+        row_strict_cut_threshold=row_res["cut_threshold"],
+        col_strict_cut_threshold=col_res["cut_threshold"],
+        # Aliases — tol_* == primary (row_k / row_labels) for API consistency
+        # with cluster_variance_matrix_forgroup.
         row_tol_labels=row_res["alt_labels"],
         col_tol_labels=col_res["alt_labels"],
         row_tol_k=row_res["alt_k"],
@@ -639,44 +668,102 @@ def _hierarchical_clustering_forgroup(
     metric: str = "euclidean",
     method: str = "ward",
     *,
-    # NEW tolerance knobs (default keeps old behavior but prefers simpler k)
     select_min_k_within_tol: bool = True,
     silhouette_tol: float = 0.02,
-    tol_mode: str = "relative",  # {"relative","absolute"}
+    tol_mode: str = "relative",
+    tol_k_select: str = "min",
+    skip_unresponsive_detection: bool = False,
+    unresponsive_norm_frac: float = 1e-3,
 ) -> Dict[str, Any]:
     """
     Hierarchical clustering on `data` (observations × features)
     with tolerance-based k selection and an alternative k near the chosen k.
     metric/method: use "euclidean"/"ward" (default) or "cosine"/"average".
+
+    tol_k_select : "min" selects the smallest k within the tolerance band of
+        the best silhouette score; "max" selects the largest.
+    skip_unresponsive_detection : when False (default), rows whose L2 norm is
+        below unresponsive_norm_frac * max_norm are excluded from clustering
+        and assigned a dedicated label (k+1), appended at the end of leaf_order.
+        Set to True to disable detection (e.g. already-normalised data).
     """
+    if tol_k_select not in ("min", "max"):
+        raise ValueError("tol_k_select must be 'min' or 'max'.")
+    _k_select = min if tol_k_select == "min" else max
+
     n_obs = data.shape[0]
-    if n_obs < 2:
+
+    # ------------------------------------------------------------------
+    # Unresponsive observation detection.
+    # Rows whose L2 norm is < unresponsive_norm_frac * max_norm are
+    # excluded from clustering.  They are assigned label k+1 and appended
+    # at the end of leaf_order so they form a contiguous block in heatmaps.
+    # ------------------------------------------------------------------
+    if skip_unresponsive_detection:
+        unresponsive_mask = np.zeros(n_obs, dtype=bool)
+    else:
+        norms = np.linalg.norm(data, axis=1)
+        max_norm = norms.max() if norms.max() > 0 else 1.0
+        unresponsive_mask = norms < unresponsive_norm_frac * max_norm
+
+    n_unresponsive = int(unresponsive_mask.sum())
+    if n_unresponsive > 0:
+        warnings.warn(
+            f"{n_unresponsive} unresponsive observation(s) detected "
+            f"(norm < {unresponsive_norm_frac} * max_norm = "
+            f"{unresponsive_norm_frac * (np.linalg.norm(data, axis=1).max() if not skip_unresponsive_detection else 0.):.3g}); "
+            f"excluding from clustering and assigning to dedicated cluster (label = k+1).",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+
+    active_mask = ~unresponsive_mask
+    active_idx  = np.where(active_mask)[0]
+    unres_idx   = np.where(unresponsive_mask)[0]
+    active_data = data[active_mask]
+    n_active    = active_data.shape[0]
+
+    def _expand_labels(labels_active, k_active):
+        """Map labels from n_active observations back to n_obs; unresponsive get label k+1."""
+        full = np.zeros(n_obs, dtype=int)
+        full[active_mask] = labels_active
+        if n_unresponsive > 0:
+            full[unresponsive_mask] = k_active + 1
+        return full
+
+    def _expand_leaf_order(leaf_order_active):
+        """Map active-observation leaf order back to original indices, unresponsive appended."""
+        return list(active_idx[np.array(leaf_order_active)]) + list(unres_idx)
+
+    # Degenerate case: fewer than 2 active observations
+    if n_active < 2:
+        k_deg = 1
+        labels_deg = _expand_labels(np.ones(max(n_active, 1), dtype=int), k_deg)
         return dict(
             linkage=None,
-            leaf_order=list(range(n_obs)),
-            labels=np.ones(n_obs, dtype=int),
-            k=1,
+            leaf_order=_expand_leaf_order(list(range(n_active))),
+            labels=labels_deg,
+            k=k_deg,
             silhouette=np.nan,
             score_recording={},
             cophenet_score=np.nan,
             cut_distance_by_k={},
             best_cut_distance=None,
             labels_by_k={},
-            # NEW fields for consistency
-            strict_best_k=1,
-            alt_k=1,
-            alt_labels=np.ones(n_obs, dtype=int),
+            strict_best_k=k_deg,
+            strict_best_score=np.nan,
+            alt_k=k_deg,
+            alt_labels=labels_deg,
             alt_cut_distance=None,
-            primary_candidates=[1],
+            primary_candidates=[k_deg],
         )
 
-    pairwise = pdist(data, metric=metric)
+    pairwise = pdist(active_data, metric=metric)
     Z = linkage(pairwise, method=method)
     c, _ = cophenet(Z, pairwise)  # cophenetic correlation
 
     D_sq = squareform(pairwise)
-    k_range = range(max(k_min, 2), min(k_max, n_obs - 1) + 1)
-    # print(f"k_range: {k_range}")
+    k_range = range(max(k_min, 2), min(k_max, n_active - 1) + 1)
 
     score_recording: Dict[int, float] = {}
     cut_distance_by_k: Dict[int, float] = {}
@@ -697,7 +784,7 @@ def _hierarchical_clustering_forgroup(
     strict_best_k = max(score_recording, key=score_recording.get)
     strict_best_score = score_recording[strict_best_k]
 
-    # Tolerance threshold for primary selection (relative to strict best)
+    # Tolerance threshold for primary selection
     if select_min_k_within_tol:
         if tol_mode == "relative":
             primary_thresh = strict_best_score * (1.0 - float(silhouette_tol))
@@ -706,7 +793,7 @@ def _hierarchical_clustering_forgroup(
         else:
             raise ValueError("tol_mode must be 'relative' or 'absolute'.")
         primary_candidates = [k for k in k_range if score_recording[k] >= primary_thresh]
-        best_k = min(primary_candidates) if primary_candidates else strict_best_k
+        best_k = _k_select(primary_candidates) if primary_candidates else strict_best_k
     else:
         best_k = strict_best_k
         primary_candidates = [strict_best_k]
@@ -715,35 +802,34 @@ def _hierarchical_clustering_forgroup(
     best_score = score_recording[best_k]
     best_cut_distance = cut_distance_by_k.get(best_k, _cut_distance_for_k(Z, best_k))
 
-    # Secondary tolerance (alt_k) relative to chosen best_k (smallest k within tol of best_k)
+    # Secondary tolerance (alt_k) relative to chosen best_k
     if tol_mode == "relative":
         alt_thresh = best_score * (1.0 - float(silhouette_tol))
     else:
         alt_thresh = best_score - float(silhouette_tol)
     alt_candidates = [k for k in k_range if score_recording[k] >= alt_thresh]
-    alt_k = min(alt_candidates) if alt_candidates else best_k
+    alt_k = _k_select(alt_candidates) if alt_candidates else best_k
     alt_labels = labels_by_k[alt_k]
     alt_cut_distance = cut_distance_by_k.get(alt_k, _cut_distance_for_k(Z, alt_k))
 
-    leaf_order = dendrogram(Z, no_plot=True)["leaves"]
+    leaf_order_active = dendrogram(Z, no_plot=True)["leaves"]
 
     return dict(
         linkage=Z,
-        leaf_order=leaf_order,
-        labels=best_labels,
+        leaf_order=_expand_leaf_order(leaf_order_active),
+        labels=_expand_labels(best_labels, best_k),
         k=best_k,
-        silhouette=best_score,                    # silhouette at chosen k
+        silhouette=best_score,
         score_recording=score_recording,
         cophenet_score=c,
         cut_distance_by_k=cut_distance_by_k,
         best_cut_distance=best_cut_distance,
-        labels_by_k=labels_by_k,
-        # NEW: introspection + alternative near chosen k
+        labels_by_k={k: _expand_labels(lbls, k) for k, lbls in labels_by_k.items()},
         strict_best_k=strict_best_k,
         strict_best_score=strict_best_score,
         primary_candidates=primary_candidates,
         alt_k=alt_k,
-        alt_labels=alt_labels,
+        alt_labels=_expand_labels(alt_labels, alt_k),
         alt_cut_distance=alt_cut_distance,
     )
 
@@ -756,41 +842,79 @@ def cluster_variance_matrix_forgroup(
     col_groups_all_lst: Optional[List[Sequence[Sequence[int]]]] = None,
     *,
     metric: str = "euclidean",
+    row_metric: Optional[str] = None,
+    row_method: Optional[str] = None,
+    col_metric: Optional[str] = None,
+    col_method: Optional[str] = None,
     select_min_k_within_tol: bool = True,
     silhouette_tol: float = 0.02,
     tol_mode: str = "relative",
+    tol_k_select: str = "min",
+    skip_unresponsive_detection: bool = False,
+    score_quantile: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Bi-directional hierarchical clustering of a variance matrix V
     (shape: N_features * M_neurons) with tolerance-based k selection.
 
-    metric : "euclidean" (default) uses Ward linkage;
-             "cosine" uses average linkage (scale-invariant, suitable for
-             unnormalized modulation data).
+    metric : shared fallback when row_metric / col_metric are not provided.
+        Supported values: "euclidean" (Ward linkage) or "cosine" (average linkage).
+    row_metric / row_method : override metric/method for the row axis.
+    col_metric / col_method : override metric/method for the column axis.
+        method defaults to the canonical choice for the given metric
+        ("euclidean" → "ward", "cosine" → "average") when not specified.
 
     col_groups_all_lst : list of col_groups, each from a different trial/seed.
-        Each element is a grouping of column indices (same format as the old
-        col_groups argument).  All groupings are used to compute per-k
-        silhouette scores; the scores are averaged across groupings to
-        determine the best column k collectively.  The first element is used
-        as the primary grouping for the final linkage, leaf ordering, and
-        label assignment.
+        All groupings are used to compute per-k silhouette scores; the scores
+        are aggregated across groupings to determine the best column k.
+        The first element is used as the primary grouping for the final
+        linkage, leaf ordering, and label assignment.
+
+    score_quantile : if given (e.g. 0.5, 0.75), use that quantile across
+        col groupings when aggregating silhouette scores for k selection,
+        rather than the mean.  Mirrors the same parameter in
+        cluster_variance_matrix_repeat.  Has no effect when only one col
+        grouping is provided (mean == quantile).
     """
     _METRIC_TO_METHOD = {"euclidean": "ward", "cosine": "average"}
-    if metric not in _METRIC_TO_METHOD:
-        raise ValueError(f"metric must be one of {list(_METRIC_TO_METHOD)}; got {metric!r}")
-    method = _METRIC_TO_METHOD[metric]
+
+    _row_metric = row_metric if row_metric is not None else metric
+    _col_metric = col_metric if col_metric is not None else metric
+
+    for _ax, _m in (("row", _row_metric), ("col", _col_metric)):
+        if _m not in _METRIC_TO_METHOD:
+            raise ValueError(
+                f"{_ax}_metric must be one of {list(_METRIC_TO_METHOD)}; got {_m!r}"
+            )
+
+    _row_method = row_method if row_method is not None else _METRIC_TO_METHOD[_row_metric]
+    _col_method = col_method if col_method is not None else _METRIC_TO_METHOD[_col_metric]
+
+    if tol_k_select not in ("min", "max"):
+        raise ValueError("tol_k_select must be 'min' or 'max'.")
+    _k_select = min if tol_k_select == "min" else max
+
+    print(f"Row  — method: {_row_method}, metric: {_row_metric}")
+    print(f"Col  — method: {_col_method}, metric: {_col_metric}")
+
     V = np.asarray(V)
 
-    # ----- rows (unchanged) -----
+    # shared kwargs forwarded to every _hierarchical_clustering_forgroup call
+    _hcfg_kw = dict(
+        select_min_k_within_tol=select_min_k_within_tol,
+        silhouette_tol=silhouette_tol,
+        tol_mode=tol_mode,
+        tol_k_select=tol_k_select,
+        skip_unresponsive_detection=skip_unresponsive_detection,
+    )
+
+    # ----- rows -----
     row_blocks, row_map = _build_groups(V.shape[0], row_groups)
     V_row_grp = _aggregate_along_axis(V, row_blocks, axis=0, reduce="mean")
     row_res = _hierarchical_clustering_forgroup(
         V_row_grp, k_min, k_max,
-        metric=metric, method=method,
-        select_min_k_within_tol=select_min_k_within_tol,
-        silhouette_tol=silhouette_tol,
-        tol_mode=tol_mode,
+        metric=_row_metric, method=_row_method,
+        **_hcfg_kw,
     )
 
     # ----- cols: aggregate silhouette across all provided groupings -----
@@ -807,32 +931,39 @@ def cluster_variance_matrix_forgroup(
         V_col_grp_i = _aggregate_along_axis(V, col_blocks_i, axis=1, reduce="mean")
         col_res_i = _hierarchical_clustering_forgroup(
             V_col_grp_i.T, k_min, k_max,
-            metric=metric, method=method,
-            select_min_k_within_tol=select_min_k_within_tol,
-            silhouette_tol=silhouette_tol,
-            tol_mode=tol_mode,
+            metric=_col_metric, method=_col_method,
+            **_hcfg_kw,
         )
         col_res_list.append(col_res_i)
         col_blocks_list.append(col_blocks_i)
         col_V_grp_list.append(V_col_grp_i)
 
-    # Average silhouette scores across groupings for each k.
+    # Aggregate silhouette scores across groupings for each k.
+    # col_score_mean is always the mean (used for reporting/plotting).
+    # col_score_agg uses score_quantile if specified; otherwise equals col_score_mean.
+    # k selection is driven by col_score_agg.
     all_k_col: set = set()
     for col_res_i in col_res_list:
         all_k_col.update(col_res_i["score_recording"].keys())
 
     col_score_mean: Dict[int, float] = {}
     col_score_std: Dict[int, float] = {}
+    col_score_agg: Dict[int, float] = {}
     for k in sorted(all_k_col):
         vals = [col_res_i["score_recording"][k]
                 for col_res_i in col_res_list
                 if k in col_res_i["score_recording"]]
         col_score_mean[k] = float(np.mean(vals))
         col_score_std[k] = float(np.std(vals))
+        col_score_agg[k] = (
+            float(np.quantile(vals, score_quantile))
+            if score_quantile is not None
+            else col_score_mean[k]
+        )
 
-    # Re-select best col k from the averaged silhouette curve.
-    col_strict_best_k = max(col_score_mean, key=col_score_mean.get)
-    col_strict_best_score = col_score_mean[col_strict_best_k]
+    # Re-select best col k from the aggregated silhouette curve.
+    col_strict_best_k = max(col_score_agg, key=col_score_agg.get)
+    col_strict_best_score = col_score_agg[col_strict_best_k]
 
     if select_min_k_within_tol:
         if tol_mode == "relative":
@@ -841,9 +972,9 @@ def cluster_variance_matrix_forgroup(
             col_primary_thresh = col_strict_best_score - float(silhouette_tol)
         else:
             raise ValueError("tol_mode must be 'relative' or 'absolute'.")
-        col_primary_candidates = [k for k in col_score_mean
-                                   if col_score_mean[k] >= col_primary_thresh]
-        best_k_col = min(col_primary_candidates) if col_primary_candidates else col_strict_best_k
+        col_primary_candidates = [k for k in col_score_agg
+                                   if col_score_agg[k] >= col_primary_thresh]
+        best_k_col = _k_select(col_primary_candidates) if col_primary_candidates else col_strict_best_k
     else:
         best_k_col = col_strict_best_k
         col_primary_candidates = [col_strict_best_k]
@@ -872,7 +1003,7 @@ def cluster_variance_matrix_forgroup(
             row_order.extend(idxs.tolist())
             continue
         X = V_col_grp[idxs, :]          # (n_in_block, C_blk) — primary col grouping
-        local = _within_block_leaf_order(X, metric=metric, method=method,
+        local = _within_block_leaf_order(X, metric=_row_metric, method=_row_method,
                                          max_items=2000, fallback="pca1")
         row_order.extend(idxs[local].tolist())
 
@@ -883,7 +1014,7 @@ def cluster_variance_matrix_forgroup(
             col_order.extend(idxs.tolist())
             continue
         X = V_row_grp[:, idxs].T        # (n_in_block, R_blk)
-        local = _within_block_leaf_order(X, metric=metric, method=method,
+        local = _within_block_leaf_order(X, metric=_col_metric, method=_col_method,
                                          max_items=2000, fallback="pca1")
         col_order.extend(idxs[local].tolist())
 
@@ -892,6 +1023,18 @@ def cluster_variance_matrix_forgroup(
 
     col_labels = np.take(col_group_labels_at_best_k, col_map)
     col_labels_by_k = {k: np.take(lbls, col_map) for k, lbls in col_res["labels_by_k"].items()}
+
+    # --- pre-compute arrays for score-curve keys ---
+    row_score_recording = row_res["score_recording"]
+    sorted_k_row = sorted(row_score_recording.keys())
+    sorted_k_col = sorted(all_k_col)
+
+    # col_score_recording_all: shape (n_groupings, n_k_col)
+    col_score_recording_all = np.array(
+        [[col_res_i["score_recording"].get(k, np.nan) for k in sorted_k_col]
+         for col_res_i in col_res_list],
+        dtype=float,
+    )
 
     return dict(
         # fine-grained ordering / labels
@@ -908,10 +1051,11 @@ def cluster_variance_matrix_forgroup(
         col_k=best_k_col,
         row_linkage=row_res["linkage"],
         col_linkage=col_res["linkage"],
-        row_score_recording=row_res["score_recording"],
-        # col silhouette: mean/std across all groupings
+        row_score_recording=row_score_recording,
+        # col silhouette: mean/std/agg across all groupings
         col_score_recording_mean=col_score_mean,
         col_score_recording_std=col_score_std,
+        col_score_recording_agg=col_score_agg,          # used for k selection
         col_score_recording_per_grouping=[r["score_recording"] for r in col_res_list],
         row_cophenet_score=row_res["cophenet_score"],
         col_cophenet_score=col_res["cophenet_score"],
@@ -930,6 +1074,56 @@ def cluster_variance_matrix_forgroup(
         col_alt_cut_distance=col_res["alt_cut_distance"],
         row_primary_candidates=row_res["primary_candidates"],
         col_primary_candidates=col_primary_candidates,
+        # --- API aliases for consistency with cluster_variance_matrix_repeat ---
+        # In cluster_variance_matrix_repeat:  row_k  = strict best;  row_tol_k = tolerance.
+        # Here:  row_k  = tolerance-selected  (what _hierarchical_clustering_forgroup calls
+        #        best_k);  row_strict_best_k  is the raw argmax.
+        # Aliases below ensure code that always reads row_tol_labels / row_tol_k
+        # works consistently across both functions.
+        row_tol_labels=row_labels,
+        col_tol_labels=col_labels,
+        row_tol_k=row_res["k"],
+        col_tol_k=best_k_col,
+        row_cut_threshold=row_res["best_cut_distance"],
+        col_cut_threshold=col_best_cut_distance,
+        # score-curve arrays matching cluster_variance_matrix_repeat return shape
+        row_score_recording_mean=row_score_recording,           # single run: mean == value
+        row_score_recording_std={k: 0.0 for k in row_score_recording},
+        row_score_recording_all=np.array(
+            [[row_score_recording[k] for k in sorted_k_row]], dtype=float
+        ),                                                       # shape (1, n_k_row)
+        row_k_values=np.array(sorted_k_row, dtype=int),
+        col_k_values=np.array(sorted_k_col, dtype=int),
+        col_score_recording_all=col_score_recording_all,        # shape (n_groupings, n_k_col)
+        # introspection meta dicts
+        _row_meta=dict(
+            method=_row_method,
+            metric=_row_metric,
+            select_min_k_within_tol=select_min_k_within_tol,
+            silhouette_tol=silhouette_tol,
+            tol_mode=tol_mode,
+            score_quantile=score_quantile,
+            tol_k_select=tol_k_select,
+            chosen_k=row_res["k"],
+            chosen_score=row_res["silhouette"],
+            strict_best_k=row_res["strict_best_k"],
+            strict_best_score=row_res["strict_best_score"],
+            primary_candidates=row_res["primary_candidates"],
+        ),
+        _col_meta=dict(
+            method=_col_method,
+            metric=_col_metric,
+            n_groupings=len(col_res_list),
+            select_min_k_within_tol=select_min_k_within_tol,
+            silhouette_tol=silhouette_tol,
+            tol_mode=tol_mode,
+            score_quantile=score_quantile,
+            tol_k_select=tol_k_select,
+            chosen_k=best_k_col,
+            strict_best_k=col_strict_best_k,
+            strict_best_score=col_strict_best_score,
+            primary_candidates=col_primary_candidates,
+        ),
     )
 
 # ---------------------------------------------------------------------

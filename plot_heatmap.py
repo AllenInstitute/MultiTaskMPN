@@ -2,6 +2,8 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize, LogNorm
 
+from pathlib import Path
+
 mpl.rcParams.update({
     "font.family": "sans-serif",
     "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],  
@@ -119,7 +121,11 @@ def main(seed, feature):
             plt.close(fig2)
         
 if __name__ == "__main__":
-    seed_lst = [921, 749, 842, 408]
-    # seed_lst = [921]
+    # Clean up old output files
+    for f in Path("multiple_task_heatmaps").glob("*.png"):
+        f.unlink()
+        
+    # seed_lst = [921, 749, 842, 408]
+    seed_lst = [921]
     for seed in seed_lst:
         main(seed, "L21e4")

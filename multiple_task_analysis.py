@@ -6,7 +6,6 @@ import json
 import psutil
 import copy
 import pickle
-import sys 
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -673,8 +672,8 @@ def main(seed, feature):
     clustering_data_analysis_names = ["input", "input", "hidden", "hidden", \
         "modulation_all", "modulation_all", "modulation_all_weighted"]
     clustering_data_normalize = [True, False, True, False, True, False, False]
-    c_metrics = ["euclidean", "cosine", "euclidean", "cosine", "euclidean", "euclidean", "euclidean"]
-    c_methods = ["ward", "average", "ward", "average", "ward", "ward", "ward"]
+    c_metrics = ["euclidean", "euclidean", "euclidean", "euclidean", "euclidean", "euclidean", "euclidean"]
+    c_methods = ["ward", "ward", "ward", "ward", "ward", "ward", "ward"]
     assert len(clustering_data_analysis) == len(clustering_data_analysis_names) \
         == len(clustering_data_normalize)
 
@@ -695,8 +694,10 @@ def main(seed, feature):
     upper_cluster = 300
     lower_cluster = 5 # for input & hidden
     lower_cluster_mod = 10 # for modulation
-    silhouette_tol = 0.00
-    tol_mode = "absolute"   # or "relative"
+    silhouette_tol = 0.01
+    tol_mode = "relative"   # or "relative"
+    tol_k_select = "max"
+    score_quantile = 0.50
 
     assert tol_mode in ("absolute", "relative"), f"Invalid tol_mode: {tol_mode}"
 
@@ -840,17 +841,25 @@ def main(seed, feature):
 
             # clustering & grouping & re-ordering
             # first loop on input, second loop in hidden
+            jitter_std = 0.02 
+            resample_features_frac = 1.0 
+            n_repeats = 100
+            if jitter_std == 0 and resample_features_frac == 1.0:
+                n_repeats = 1  # no need to repeat if no randomness is introduced
+                
             result = clustering.cluster_variance_matrix_repeat(V_for_clustering,
                                                                k_min=lower_cluster,
                                                                k_max=upper_cluster,
                                                                metric=c_metric,
                                                                method=c_method,
-                                                               n_repeats=100,
-                                                               resample_features_frac=1.0,
-                                                               jitter_std=0.02,
+                                                               n_repeats=n_repeats,
+                                                               resample_features_frac=resample_features_frac,
+                                                               jitter_std=jitter_std,
                                                                silhouette_tol=silhouette_tol,
                                                                tol_mode=tol_mode,
-                                                               score_quantile=0.50)
+                                                               score_quantile=score_quantile,
+                                                               skip_unresponsive_detection=clustering_normalize,
+                                                               tol_k_select=tol_k_select)
             
             # sanity check to make sure no undesirable bug happens with in the clustering code
             assert sorted(result["row_order"]) == list(range(cell_vars_rules_sorted_norm.shape[0]))
@@ -915,10 +924,20 @@ def main(seed, feature):
             rbreaks_all[clustering_save_name] = rbreaks
             cbreaks_all[clustering_save_name] = cbreaks
 
-            best_k_row, best_k_col = result["row_k"], result["col_k"]
-            best_alt_k_row, best_alt_k_col = result["row_tol_k"], result["col_tol_k"]
-            print(f"best_k_row: {best_k_row}; best_k_col: {best_k_col}")
-            print(f"best_alt_k_row: {best_alt_k_row}; best_alt_k_col: {best_alt_k_col}")
+            best_k_row, best_k_col = result["row_strict_best_k"], result["col_strict_best_k"]
+            best_alt_k_row, best_alt_k_col = result["row_k"], result["col_k"]
+            row_sil_strict = result["row_score_recording_mean"].get(best_k_row, float("nan"))
+            col_sil_strict = result["col_score_recording_mean"].get(best_k_col, float("nan"))
+            row_sil_tol = result["row_score_recording_mean"].get(best_alt_k_row, float("nan"))
+            col_sil_tol = result["col_score_recording_mean"].get(best_alt_k_col, float("nan"))
+            print(
+                f"best_k_row (strict): {best_k_row} (sil={row_sil_strict:.4f}); "
+                f"best_k_col (strict): {best_k_col} (sil={col_sil_strict:.4f})"
+            )
+            print(
+                f"best_alt_k_row (tol): {best_alt_k_row} (sil={row_sil_tol:.4f}); "
+                f"best_alt_k_col (tol): {best_alt_k_col} (sil={col_sil_tol:.4f})"
+            )
             
             row_t, col_t = result["row_cut_threshold"], result["col_cut_threshold"] 
 
@@ -1319,9 +1338,9 @@ def main(seed, feature):
             [result_input, cell_vars_rules_sorted_norm_input]  = input_hidden_comparison["input_normalized"]
             [result_hidden, cell_vars_rules_sorted_norm_hidden] = input_hidden_comparison["hidden_normalized"]
             cell_vars_rules_sorted_norm_ordered_input = cell_vars_rules_sorted_norm_input[np.ix_(result_input["row_order"], 
-                                                                                                result_input["col_order"])]
+                                                                                                 result_input["col_order"])]
             cell_vars_rules_sorted_norm_ordered_hidden = cell_vars_rules_sorted_norm_hidden[np.ix_(result_input["row_order"], 
-                                                                                                result_hidden["col_order"])]
+                                                                                                   result_hidden["col_order"])]
             
             figsame, axssame = plt.subplots(2,1,figsize=(24,8*2))
             sns.heatmap(cell_vars_rules_sorted_norm_ordered_input, ax=axssame[0], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
@@ -1416,14 +1435,21 @@ def main(seed, feature):
             figcoactivecompare.savefig(f"./multiple_tasks/inputhidden_coactivation_ihcompare_{savefigure_name}.png", dpi=300)
             plt.close(figcoactivecompare)
             
-            print("done")
-            sys.exit()
-            
         # use the clustering result for input and hidden to order the modulation information
         # and/or cross-compare the clustering result from input & hidden 
         # trying to observe consistency in between
         # 2026-04-06: this part of analysis is specifically targeting to the modulation-related data
         if (len(clustering_corr_info) == 4) and ("all" in clustering_name):
+            # Apply log1p to unnormalized modulation data before clustering,
+            # matching the same transform used for unnormalized input/hidden data.
+            # Variance values are non-negative, so log1p is valid and compresses
+            # the dynamic range so Euclidean distance captures pattern shape
+            # rather than raw amplitude. Normalized data is passed unchanged.
+            if clustering_normalize:
+                V_for_clustering_mod = cell_vars_rules_sorted_norm
+            else:
+                V_for_clustering_mod = np.log1p(cell_vars_rules_sorted_norm)
+
             input_order_col_ind  = clustering_corr_info["input_normalized"][2]
             hidden_order_col_ind = clustering_corr_info["hidden_normalized"][2]
             # cell_vars_rules_norm_keepshape: 3D array
@@ -1448,8 +1474,12 @@ def main(seed, feature):
 
             # 
             print(cell_vars_rules_sorted_norm.shape)
-            cluster_input  = col_clusters_all["input_normalized"]
-            cluster_hidden = col_clusters_all["hidden_normalized"]
+            if clustering_name == "modulation_all" and clustering_normalize is True:
+                cluster_input  = col_clusters_all["input_normalized"]
+                cluster_hidden = col_clusters_all["hidden_normalized"]
+            else:
+                cluster_input  = col_clusters_all["input_unnormalized"]
+                cluster_hidden = col_clusters_all["hidden_unnormalized"]
             cluster_combine = {}
             newc = 0
             for c1 in cluster_input.keys(): # input cluster name
@@ -1538,14 +1568,17 @@ def main(seed, feature):
 
             for group_neurons_index in range(len(group_all)):
                 group_neurons_ = group_all[group_neurons_index]
-                result_outer = clustering.cluster_variance_matrix_forgroup(cell_vars_rules_sorted_norm,
+                result_outer = clustering.cluster_variance_matrix_forgroup(V_for_clustering_mod,
                                                                            row_groups=None,
                                                                            col_groups_all_lst=[group_neurons_],
                                                                            k_min=int(lower_cluster-1),
                                                                            k_max=upper_cluster,
                                                                            silhouette_tol=silhouette_tol,
                                                                            tol_mode=tol_mode,
-                                                                           metric=c_metric)
+                                                                           metric=c_metric,
+                                                                           score_quantile=score_quantile,
+                                                                           tol_k_select=tol_k_select,
+                                                                           skip_unresponsive_detection=clustering_normalize)
                 prior_cluster_num = len(group_neurons_)
                 cell_vars_rules_sorted_norm_inputhidden = cell_vars_rules_sorted_norm[np.ix_(result_outer["row_order"], 
                                                                                             result_outer["col_order"])]
@@ -1572,22 +1605,50 @@ def main(seed, feature):
             for i in range(pre_num):
                 feature_group_pre.append(helper.basic_sort([j for j in range(post_num * i, post_num * (i+1))], sort_idxs))
 
-            result_pre = clustering.cluster_variance_matrix_forgroup(cell_vars_rules_sorted_norm,
+            result_pre = clustering.cluster_variance_matrix_forgroup(V_for_clustering_mod,
                                                                     row_groups=None,
                                                                     col_groups_all_lst=[feature_group_pre],
                                                                     k_min=lower_cluster,
                                                                     k_max=upper_cluster,
                                                                     silhouette_tol=silhouette_tol,
                                                                     tol_mode=tol_mode,
-                                                                    metric=c_metric)
-            result_post = clustering.cluster_variance_matrix_forgroup(cell_vars_rules_sorted_norm,
+                                                                    metric=c_metric,
+                                                                    score_quantile=score_quantile,
+                                                                    tol_k_select=tol_k_select,
+                                                                    skip_unresponsive_detection=clustering_normalize)
+            result_post = clustering.cluster_variance_matrix_forgroup(V_for_clustering_mod,
                                                                     row_groups=None,
                                                                     col_groups_all_lst=[feature_group_post],
                                                                     k_min=lower_cluster,
                                                                     k_max=upper_cluster,
                                                                     silhouette_tol=silhouette_tol,
                                                                     tol_mode=tol_mode,
-                                                                    metric=c_metric)
+                                                                    metric=c_metric,
+                                                                    score_quantile=score_quantile,
+                                                                    tol_k_select=tol_k_select,
+                                                                    skip_unresponsive_detection=clustering_normalize)
+
+            for _lbl, _res in [("result_pre", result_pre), ("result_post", result_post)]:
+                _row_k_strict = _res["row_strict_best_k"]
+                _col_k_strict = _res["col_strict_best_k"]
+                _row_k_tol    = _res["row_k"]
+                _col_k_tol    = _res["col_k"]
+                _row_sil_strict = _res["row_score_recording_mean"].get(_row_k_strict, float("nan"))
+                _col_sil_strict = _res["col_score_recording_mean"].get(_col_k_strict, float("nan"))
+                _row_sil_tol    = _res["row_score_recording_mean"].get(_row_k_tol, float("nan"))
+                _col_sil_tol    = _res["col_score_recording_mean"].get(_col_k_tol, float("nan"))
+                print(
+                    f"[{_lbl}] row_k (strict): {_row_k_strict} "
+                    f"(sil={_row_sil_strict:.4f}); "
+                    f"col_k (strict): {_col_k_strict} "
+                    f"(sil={_col_sil_strict:.4f})"
+                )
+                print(
+                    f"[{_lbl}] row_k (tol):    {_row_k_tol} "
+                    f"(sil={_row_sil_tol:.4f}); "
+                    f"col_k (tol):    {_col_k_tol} "
+                    f"(sil={_col_sil_tol:.4f})"
+                )
 
             # 2025-10-06: do not give any prior grouping prior to the modulation information
             # simply grouping and considering each individual column as separate
@@ -1601,8 +1662,13 @@ def main(seed, feature):
             result_all_name_lst = []
 
             # 2025-11-04: input cluster & hidden cluster along the neuron dimension (N)
-            cluster_input  = col_clusters_all["input_normalized"]
-            cluster_hidden = col_clusters_all["hidden_normalized"]
+            if clustering_name == "modulation_all" and clustering_normalize is True:
+                cluster_input  = col_clusters_all["input_normalized"]
+                cluster_hidden = col_clusters_all["hidden_normalized"]
+            else:
+                cluster_input = col_clusters_all["input_unnormalized"]
+                cluster_hidden = col_clusters_all["hidden_unnormalized"]
+                
             # sanity check: order it based on the key
             cluster_input = dict(sorted(cluster_input.items()))
             cluster_hidden = dict(sorted(cluster_hidden.items()))
@@ -1618,7 +1684,7 @@ def main(seed, feature):
                 print(f"Running K-means with G={G} for {krun} times to obtain the distribution of grouping statistics...")
                 for _ in range(krun):
                     random_seed = np.random.randint(0, 10000)
-                    col_groups_all = clustering.make_col_groups_with_kmeans(cell_vars_rules_sorted_norm, 
+                    col_groups_all = clustering.make_col_groups_with_kmeans(V_for_clustering_mod,
                                                                             n_groups=G,
                                                                             random_state=random_seed)[0]
                     col_groups_all_lst.append(col_groups_all)
@@ -1636,23 +1702,46 @@ def main(seed, feature):
                 # because columns are first averaged within K-means groups before hierarchical clustering.
                 # Note that the row-side data are unchanged here; only the searched k-range also changes
                 # because we currently pass k_max=G to both axes.
-                result_all = clustering.cluster_variance_matrix_forgroup(cell_vars_rules_sorted_norm, 
-                                                                        row_groups=None, 
-                                                                        col_groups_all_lst=col_groups_all_lst, 
-                                                                        k_min=lower_cluster, 
-                                                                        k_max=G, 
-                                                                        silhouette_tol=silhouette_tol,
-                                                                        tol_mode=tol_mode,
-                                                                        metric=c_metric)
+                result_all = clustering.cluster_variance_matrix_forgroup(V_for_clustering_mod,
+                                                                         row_groups=None,
+                                                                         col_groups_all_lst=col_groups_all_lst,
+                                                                         k_min=lower_cluster_mod,
+                                                                         k_max=G,
+                                                                         silhouette_tol=silhouette_tol,
+                                                                         tol_mode=tol_mode,
+                                                                         metric=c_metric,
+                                                                         score_quantile=score_quantile,
+                                                                         tol_k_select=tol_k_select,
+                                                                         skip_unresponsive_detection=clustering_normalize)
         
-                print(f"G = {G}; result_all['row_k']: {result_all['row_k']}; result_all['col_k']: {result_all['col_k']}")
+                _row_k_strict_all = result_all["row_strict_best_k"]
+                _col_k_strict_all = result_all["col_strict_best_k"]
+                _row_k_tol_all    = result_all["row_k"]
+                _col_k_tol_all    = result_all["col_k"]
+                _row_sil_strict_all = result_all["row_score_recording_mean"].get(_row_k_strict_all, float("nan"))
+                _col_sil_strict_all = result_all["col_score_recording_mean"].get(_col_k_strict_all, float("nan"))
+                _row_sil_tol_all    = result_all["row_score_recording_mean"].get(_row_k_tol_all, float("nan"))
+                _col_sil_tol_all    = result_all["col_score_recording_mean"].get(_col_k_tol_all, float("nan"))
+                print(
+                    f"[G={G}] row_k (strict): {_row_k_strict_all} "
+                    f"(sil={_row_sil_strict_all:.4f}); "
+                    f"col_k (strict): {_col_k_strict_all} "
+                    f"(sil={_col_sil_strict_all:.4f})"
+                )
+                print(
+                    f"[G={G}] row_k (tol):    {_row_k_tol_all} "
+                    f"(sil={_row_sil_tol_all:.4f}); "
+                    f"col_k (tol):    {_col_k_tol_all} "
+                    f"(sil={_col_sil_tol_all:.4f})"
+                )
                 assert result_all["col_k"] < G
                 axscol[G_idx].set_title(f"G={G}, Neuron Cluster={result_all['col_k']}", fontsize=15)
 
                 result_all_lst.append(result_all)
                 result_all_name_lst.append(f"G={G}")
         
-                # 2025-10-21: after grouping and clustering the modulation, we ask for two modulation within the same cluster, 
+                # 2025-10-21: after grouping and clustering the modulation, 
+                # we ask for two modulation within the same cluster, 
                 # how likely they share the same presynaptic neuron (or neuron cluster), 
                 # postsynaptic neuron (or neuron cluster), or neither, or both for neuron cluster 
                 # it is not possible for different modulation sharing the same pre and post neuron,
@@ -1699,15 +1788,15 @@ def main(seed, feature):
                 # membership using the actual clustering information
                 same_pre_all, same_post_all, no_same_pre_post_all, same_pre_cluster_all, same_post_cluster_all, \
                     same_pre_post_cluster_all, no_same_pre_post_cluster_all = clustering_metric.count_pairs_with_clusters(col_all, M, 
-                                                                                                                            cluster_input, 
-                                                                                                                            cluster_hidden)
+                                                                                                                          cluster_input, 
+                                                                                                                          cluster_hidden)
                 # (control) membership using the random clustering information 
                 # 2026-03-03: increase the repeat times for a more reliable null distribution
                 same_pre_all_c, same_post_all_c, no_same_pre_post_all_c, same_pre_cluster_all_c, same_post_cluster_all_c, \
                     same_pre_post_cluster_all_c, no_same_pre_post_cluster_all_c = clustering_metric.count_pairs_with_clusters_control(col_all, M, 
-                                                                                                                                        cluster_input, 
-                                                                                                                                        cluster_hidden,
-                                                                                                                                        repeat=10000)
+                                                                                                                                      cluster_input, 
+                                                                                                                                      cluster_hidden,
+                                                                                                                                      repeat=10000)
                 
                 print(f"same_pre_all: {same_pre_all}; same_post_all: {same_post_all}; no_same_pre_post_all: {no_same_pre_post_all}")
                 print(f"same_pre_cluster_all: {same_pre_cluster_all}; same_post_cluster_all: {same_post_cluster_all}")
@@ -2327,8 +2416,8 @@ if __name__ == "__main__":
     for f in Path("multiple_tasks").glob("*.pkl"):
         f.unlink()
         
-    seed_lst = [921, 749, 842, 408]
-    # seed_lst = [921]
+    # seed_lst = [921, 749, 842, 408]
+    seed_lst = [921]
     for seed in seed_lst:
         main(seed, "L21e4")
     
