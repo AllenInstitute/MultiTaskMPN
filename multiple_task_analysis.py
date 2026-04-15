@@ -1571,7 +1571,7 @@ def main(seed, feature):
                 result_outer = clustering.cluster_variance_matrix_forgroup(V_for_clustering_mod,
                                                                            row_groups=None,
                                                                            col_groups_all_lst=[group_neurons_],
-                                                                           k_min=int(lower_cluster-1),
+                                                                           k_min=lower_cluster,
                                                                            k_max=upper_cluster,
                                                                            silhouette_tol=silhouette_tol,
                                                                            tol_mode=tol_mode,
@@ -1616,6 +1616,7 @@ def main(seed, feature):
                                                                     score_quantile=score_quantile,
                                                                     tol_k_select=tol_k_select,
                                                                     skip_unresponsive_detection=clustering_normalize)
+            
             result_post = clustering.cluster_variance_matrix_forgroup(V_for_clustering_mod,
                                                                     row_groups=None,
                                                                     col_groups_all_lst=[feature_group_post],
@@ -2021,8 +2022,8 @@ def main(seed, feature):
             modulation_cluster_norm = []
             modulation_cluster_boundary = []
             for k in range(len(cell_vars_rules_sorted_norm_all_lst)):
-                axprepost[3+k].set_yticklabels(tb_break_name[result_all_lst[k]["row_order"]], rotation=0, 
-                                            ha='right', va='center', fontsize=9)
+                axprepost[3+k].set_yticklabels(tb_break_name[result_all_lst[k]["row_order"]], 
+                                               rotation=0, ha='right', va='center', fontsize=9)
                 result_all = result_all_lst[k]
                 rl_all = np.asarray(result_all["row_labels"])[result_all["row_order"]]
                 cl_all = np.asarray(result_all["col_labels"])[result_all["col_order"]]
@@ -2140,7 +2141,7 @@ def main(seed, feature):
 
             all_mod_metric_allk = []
             # loop through downsampled clusters along the neuron dimension
-            select_col_allk = np.arange(lower_cluster, 15)
+            select_col_allk = np.arange(lower_cluster_mod, 15)
             for select_col_k_ in select_col_allk:
                 all_mod_metric = []
                 for mod_ in all_mod: 
