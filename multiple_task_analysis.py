@@ -1416,6 +1416,9 @@ def main(seed, feature):
             figcoactivecompare.savefig(f"./multiple_tasks/inputhidden_coactivation_ihcompare_{savefigure_name}.png", dpi=300)
             plt.close(figcoactivecompare)
             
+            print("done")
+            sys.exit()
+            
         # use the clustering result for input and hidden to order the modulation information
         # and/or cross-compare the clustering result from input & hidden 
         # trying to observe consistency in between
