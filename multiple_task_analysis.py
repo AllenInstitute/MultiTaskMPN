@@ -500,7 +500,7 @@ def main(seed, feature):
             cmap=cs,
             center=0,
             vmin=np.nanmin(output_W),
-            vmax=np.nanmax(output_w),
+            vmax=np.nanmax(output_W),
             xlabel="Hidden 2 Index",
             ylabel="Output Index",
             square=False
@@ -508,12 +508,12 @@ def main(seed, feature):
         
         figinput, axsinput = plt.subplots(1,1,figsize=(10, 12))
         heatmap_with_top_left_marginals(
-            input_w.T,
+            input_W.T,
             ax=axsinput,
             cmap=cs,
             center=0,
-            vmin=np.nanmin(input_w),
-            vmax=np.nanmax(input_w),
+            vmin=np.nanmin(input_W),
+            vmax=np.nanmax(input_W),
             xlabel="Hidden 1 Index",
             ylabel="Input Index",
             square=False
@@ -521,12 +521,12 @@ def main(seed, feature):
         
         figmodulation, axsmodulation = plt.subplots(1,1,figsize=(10, 12))
         heatmap_with_top_left_marginals(
-            modulation_w.T,
+            modulation_W.T,
             ax=axsmodulation,
             cmap=cs,
             center=0,
-            vmin=np.nanmin(modulation_w),
-            vmax=np.nanmax(modulation_w),
+            vmin=np.nanmin(modulation_W),
+            vmax=np.nanmax(modulation_W),
             xlabel="Hidden 1 Index",
             ylabel="Hidden 2 Index",
             square=False
@@ -547,16 +547,16 @@ def main(seed, feature):
         return
 
     plot_weight_triplet_with_top_left_marginals(
-        output_w=output_w,
-        input_w=input_w,
-        modulation_w=modulation_w,
+        output_W=output_W,
+        input_W=input_W,
+        modulation_W=modulation_W,
         aname=aname,
         cs=cs,
         save_dir="./multiple_tasks",
     )
 
     all_input = ["Fix On", "Fix Off", "Stim 1 Cos", "Stim 1 Sin", "Stim 2 Cos", "Stim 2 Sin"] + task_params_c["rules"]
-    input_corr = np.corrcoef(input_w.T)
+    input_corr = np.corrcoef(input_W.T)
     mask = np.triu(np.ones_like(input_corr, dtype=bool), k=1)
     fig, ax = plt.subplots(1,1,figsize=(5,5))
     sns.heatmap(input_corr, ax=ax, cmap=cs, center=0, mask=mask, vmin=-1, vmax=1, square=True, cbar_kws={"shrink": 0.5})
@@ -625,7 +625,7 @@ def main(seed, feature):
         del db_test  # all needed arrays extracted; free the large activation tensors
 
         print(f"Ms_orig: {Ms_orig.shape}; xs: {xs.shape}; hs: {hs.shape}")
-        print(f"modulation_w: {modulation_w.shape}")
+        print(f"modulation_W: {modulation_W.shape}")
         
         all_rules = np.array(task_params["rules"])
         
@@ -661,7 +661,7 @@ def main(seed, feature):
         test_task = np.array([int(c) for c in test_task]).flatten()
 
     # %%
-    weighted_Ms_orig = Ms_orig * modulation_w
+    weighted_Ms_orig = Ms_orig * modulation_W
     print(f"weighted_Ms_orig: {weighted_Ms_orig.shape}")
 
     # 2026-03-29: for the modulation-weighted activity, we will not normalize across rules, 
