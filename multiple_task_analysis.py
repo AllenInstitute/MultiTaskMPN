@@ -696,8 +696,9 @@ def main(seed, feature):
     lower_cluster_mod = 10 # for modulation
     silhouette_tol = 0.05
     tol_mode = "relative"   # or "relative"
-    tol_k_select = "max"
+    tol_k_select = "mean"
     score_quantile = 0.50
+    unresponsive_norm_frac = 1e-3
 
     assert tol_mode in ("absolute", "relative"), f"Invalid tol_mode: {tol_mode}"
 
@@ -858,6 +859,7 @@ def main(seed, feature):
                                                                silhouette_tol=silhouette_tol,
                                                                tol_mode=tol_mode,
                                                                score_quantile=score_quantile,
+                                                               unresponsive_norm_frac=unresponsive_norm_frac,
                                                                skip_unresponsive_detection=clustering_normalize,
                                                                tol_k_select=tol_k_select)
             
@@ -939,8 +941,6 @@ def main(seed, feature):
                 f"best_alt_k_col (tol): {best_alt_k_col} (sil={col_sil_tol:.4f})"
             )
             
-            row_t, col_t = result["row_cut_threshold"], result["col_cut_threshold"] 
-
             # extract the grouping information, i.e. which neuron belong to which cluster
             # instead of the view of dendrogram
             # 2025-10-20: we register the tolerant version of optimal cluster selection
@@ -1472,9 +1472,9 @@ def main(seed, feature):
             fig.savefig(f"./multiple_tasks/modulation_input2hidden_variance_hierarchy_{savefigure_name}.png", dpi=300)
             plt.close(fig)
 
-            # 
+            #
             print(cell_vars_rules_sorted_norm.shape)
-            if clustering_name == "modulation_all" and clustering_normalize is True:
+            if clustering_normalize:
                 cluster_input  = col_clusters_all["input_normalized"]
                 cluster_hidden = col_clusters_all["hidden_normalized"]
             else:
@@ -1578,6 +1578,7 @@ def main(seed, feature):
                                                                            tol_mode=tol_mode,
                                                                            metric=c_metric,
                                                                            score_quantile=score_quantile,
+                                                                           unresponsive_norm_frac=unresponsive_norm_frac,
                                                                            tol_k_select=tol_k_select,
                                                                            skip_unresponsive_detection=clustering_normalize)
                 prior_cluster_num = len(group_neurons_)
@@ -1639,9 +1640,10 @@ def main(seed, feature):
                                                                     tol_mode=tol_mode,
                                                                     metric=c_metric,
                                                                     score_quantile=score_quantile,
+                                                                    unresponsive_norm_frac=unresponsive_norm_frac,
                                                                     tol_k_select=tol_k_select,
                                                                     skip_unresponsive_detection=clustering_normalize)
-            
+
             result_post = clustering.cluster_variance_matrix_forgroup(V_for_clustering_mod,
                                                                     row_groups=None,
                                                                     col_groups_all_lst=[feature_group_post],
@@ -1651,6 +1653,7 @@ def main(seed, feature):
                                                                     tol_mode=tol_mode,
                                                                     metric=c_metric,
                                                                     score_quantile=score_quantile,
+                                                                    unresponsive_norm_frac=unresponsive_norm_frac,
                                                                     tol_k_select=tol_k_select,
                                                                     skip_unresponsive_detection=clustering_normalize)
 
@@ -1682,17 +1685,18 @@ def main(seed, feature):
             # belonging identity more time costly
             G_lst = [100, 300, 1000]
             figcol, axscol = plt.subplots(1,len(G_lst),figsize=(4*len(G_lst),4))
+            figcolcluster, axscolcluster = plt.subplots(1,len(G_lst),figsize=(4*len(G_lst),4))
             figppshare, axsppshare = plt.subplots(2,len(G_lst),figsize=(4*len(G_lst),4*2))
 
             result_all_lst = []
             result_all_name_lst = []
 
             # 2025-11-04: input cluster & hidden cluster along the neuron dimension (N)
-            if clustering_name == "modulation_all" and clustering_normalize is True:
+            if clustering_normalize:
                 cluster_input  = col_clusters_all["input_normalized"]
                 cluster_hidden = col_clusters_all["hidden_normalized"]
             else:
-                cluster_input = col_clusters_all["input_unnormalized"]
+                cluster_input  = col_clusters_all["input_unnormalized"]
                 cluster_hidden = col_clusters_all["hidden_unnormalized"]
                 
             # sanity check: order it based on the key
@@ -1737,6 +1741,7 @@ def main(seed, feature):
                                                                          tol_mode=tol_mode,
                                                                          metric=c_metric,
                                                                          score_quantile=score_quantile,
+                                                                         unresponsive_norm_frac=unresponsive_norm_frac,
                                                                          tol_k_select=tol_k_select,
                                                                          skip_unresponsive_detection=clustering_normalize)
         
@@ -1762,6 +1767,29 @@ def main(seed, feature):
                 )
                 assert result_all["col_k"] < G
                 axscol[G_idx].set_title(f"G={G}, Neuron Cluster={result_all['col_k']}", fontsize=15)
+
+                # Plot the size distribution of the actual modulation clusters
+                # after cluster_variance_matrix_forgroup expands labels back to
+                # the original modulation columns.
+                actual_cluster_ids, actual_cluster_sizes = np.unique(
+                    np.asarray(result_all["col_labels"]), return_counts=True
+                )
+                assert actual_cluster_ids.size in (result_all["col_k"], result_all["col_k"] + 1)
+                axscolcluster[G_idx].hist(
+                    actual_cluster_sizes,
+                    color=c_vals[G_idx],
+                    bins="auto",
+                    edgecolor='black',
+                    alpha=0.7
+                )
+                axscolcluster[G_idx].axvline(
+                    MM / result_all["col_k"], linestyle="--", color="black"
+                )
+                axscolcluster[G_idx].set_xlabel('Length of Actual Cluster', fontsize=15)
+                axscolcluster[G_idx].set_ylabel('Frequency', fontsize=15)
+                axscolcluster[G_idx].set_title(
+                    f"G={G}, Actual Cluster={result_all['col_k']}", fontsize=15
+                )
 
                 result_all_lst.append(result_all)
                 result_all_name_lst.append(f"G={G}")
@@ -1833,28 +1861,33 @@ def main(seed, feature):
                 print(f"same_pre_post_cluster_all_c: {same_pre_post_cluster_all_c}; no_same_pre_post_cluster_all_c: {no_same_pre_post_cluster_all_c}")
         
                 bar_all_lst = [[same_pre_all, same_post_all, no_same_pre_post_all], 
-                            [same_pre_cluster_all, same_post_cluster_all, same_pre_post_cluster_all, no_same_pre_post_cluster_all]]
+                               [same_pre_cluster_all, same_post_cluster_all, same_pre_post_cluster_all, no_same_pre_post_cluster_all]]
                 bar_all_ctrl_lst = [[same_pre_all_c, same_post_all_c, no_same_pre_post_all_c], 
                                     [same_pre_cluster_all_c, same_post_cluster_all_c, same_pre_post_cluster_all_c, no_same_pre_post_cluster_all_c]]
                 bar_name_lst = [["Share-Pre", "Share-Post", "Neither"], 
-                            ["Share-Pre-Cluster", "Share-Post-Cluster", "Share-Both-Cluster", "Neither"]]
+                                ["Share-Pre-Cluster", "Share-Post-Cluster", "Share-Both-Cluster", "Neither"]]
 
                 N_cluster = np.max(col_all)
                 
                 ppshare_row_names = ["Same Neuron Check", "Same Neuron Cluster Check"]
+                n_pre_clusters  = len(cluster_input)
+                n_post_clusters = len(cluster_hidden)
                 for idx in range(len(bar_all_lst)):
                     bar_all = np.array(bar_all_lst[idx])
                     bar_all_c = np.array(bar_all_ctrl_lst[idx])
 
                     over_membership = (bar_all - bar_all_c) / bar_all_c
-                    
+
                     axsppshare[idx,G_idx].bar([i for i in range(len(over_membership))], over_membership)
                     axsppshare[idx,G_idx].set_xticks([i for i in range(len(over_membership))])
                     axsppshare[idx,G_idx].set_xticklabels(bar_name_lst[idx], rotation=45, ha="right")
                     axsppshare[idx,G_idx].set_ylabel("Over-membership", fontsize=15)
-                    axsppshare[idx,G_idx].set_title(
-                        f"{ppshare_row_names[idx]} | G={G}; #Cluster={N_cluster}"
-                    )
+                    if idx == 0:
+                        title = f"{ppshare_row_names[idx]} | G={G}; #Cluster={N_cluster}"
+                    else:
+                        title = (f"{ppshare_row_names[idx]} | G={G}; #Cluster={N_cluster}; "
+                                 f"#PreCluster={n_pre_clusters}; #PostCluster={n_post_clusters}")
+                    axsppshare[idx,G_idx].set_title(title)
 
                 # 2025-10-21: next analyze for each individual modulation cluster, 
                 # the belonging to different individual 
@@ -2012,6 +2045,9 @@ def main(seed, feature):
             figcol.tight_layout()
             figcol.savefig(f"./multiple_tasks/{clustering_name}_allneuron_grouplength_{savefigure_name}.png", dpi=300)  
             plt.close(figcol)
+            figcolcluster.tight_layout()
+            figcolcluster.savefig(f"./multiple_tasks/{clustering_name}_actualcluster_length_{savefigure_name}.png", dpi=300)
+            plt.close(figcolcluster)
             figppshare.tight_layout()
             figppshare.savefig(f"./multiple_tasks/{clustering_name}_prepost_belonging_{savefigure_name}.png", dpi=300)  
             plt.close(figppshare)
@@ -2182,25 +2218,38 @@ def main(seed, feature):
 
             all_mod_metric_allk = []
             # loop through downsampled clusters along the neuron dimension
-            select_col_allk = np.arange(lower_cluster_mod, 50, 3)
+            select_col_allk = np.arange(lower_cluster_mod, 30, 3)
+            valid_select_col_allk = []
             for select_col_k_ in select_col_allk:
-                all_mod_metric = []
-                for mod_ in all_mod: 
-                    eval_res_modulation = clustering_metric.evaluate_bicluster_clustering(
-                        cell_vars_rules_sorted_norm, 
-                        row_labels=mod_["row_labels_by_k"][select_col_k_], 
-                        col_labels=mod_["col_labels_by_k"][select_col_k_]
-                    )
-                    
-                    all_mod_metric.append([
-                        eval_res_modulation["metrics"]["CH_blocks"],
-                        eval_res_modulation["metrics"]["DB_blocks"],
-                        eval_res_modulation["metrics"]["XB_blocks"], 
-                    ])
+                if all(
+                    (select_col_k_ in mod_["row_labels_by_k"]) and
+                    (select_col_k_ in mod_["col_labels_by_k"])
+                    for mod_ in all_mod
+                ):
+                    valid_select_col_allk.append(select_col_k_)
 
-                all_mod_metric_allk.append(all_mod_metric)
+            if len(valid_select_col_allk) == 0:
+                print("No shared modulation clustering keys found for comparison; skipping metric plot.")
+                all_mod_metric_allk = np.empty((0, len(all_mod), 3))
+            else:
+                for select_col_k_ in valid_select_col_allk:
+                    all_mod_metric = []
+                    for mod_ in all_mod: 
+                        eval_res_modulation = clustering_metric.evaluate_bicluster_clustering(
+                            cell_vars_rules_sorted_norm, 
+                            row_labels=mod_["row_labels_by_k"][select_col_k_], 
+                            col_labels=mod_["col_labels_by_k"][select_col_k_]
+                        )
+                        
+                        all_mod_metric.append([
+                            eval_res_modulation["metrics"]["CH_blocks"],
+                            eval_res_modulation["metrics"]["DB_blocks"],
+                            eval_res_modulation["metrics"]["XB_blocks"], 
+                        ])
 
-            all_mod_metric_allk = np.array(all_mod_metric_allk)
+                    all_mod_metric_allk.append(all_mod_metric)
+
+                all_mod_metric_allk = np.array(all_mod_metric_allk)
             print(all_mod_metric_allk.shape)
             
             # compare the effect by clustering based on presynaptic neuron, postsynaptic neuron, or all
@@ -2210,26 +2259,27 @@ def main(seed, feature):
                 ("Davies-Bouldin (↓)", False),
                 ("Xie-Beni (↓)", False),
             ]
-            n_metrics = all_mod_metric_allk.shape[2]
-            fig, ax = plt.subplots(1, n_metrics, figsize=(5 * n_metrics, 4.5))
-            for metric_index in range(n_metrics):
-                for model_index in range(all_mod_metric_allk.shape[1]):
-                    ax[metric_index].plot(
-                        select_col_allk,
-                        all_mod_metric_allk[:, model_index, metric_index],
-                        "-o", markersize=4, linewidth=1.5,
-                        label=all_mod_name[model_index],
-                        color=c_vals[model_index],
-                    )
-                ax[metric_index].set_ylabel(metric_labels[metric_index][0], fontsize=13)
-                ax[metric_index].set_xlabel("# Cluster (col k)", fontsize=13)
-                ax[metric_index].set_yscale("log")
-                ax[metric_index].legend(fontsize=8, frameon=True, loc="best")
-                ax[metric_index].tick_params(labelsize=10)
-                ax[metric_index].grid(True, which="both", ls="--", alpha=0.3)
-            fig.tight_layout()
-            fig.savefig(f"./multiple_tasks/{clustering_name}_between_modulation_{savefigure_name}.png", dpi=300)
-            plt.close(fig)
+            if all_mod_metric_allk.shape[0] > 0:
+                n_metrics = all_mod_metric_allk.shape[2]
+                fig, ax = plt.subplots(1, n_metrics, figsize=(5 * n_metrics, 4.5))
+                for metric_index in range(n_metrics):
+                    for model_index in range(all_mod_metric_allk.shape[1]):
+                        ax[metric_index].plot(
+                            valid_select_col_allk,
+                            all_mod_metric_allk[:, model_index, metric_index],
+                            "-o", markersize=4, linewidth=1.5,
+                            label=all_mod_name[model_index],
+                            color=c_vals[model_index],
+                        )
+                    ax[metric_index].set_ylabel(metric_labels[metric_index][0], fontsize=13)
+                    ax[metric_index].set_xlabel("# Cluster (col k)", fontsize=13)
+                    ax[metric_index].set_yscale("log")
+                    ax[metric_index].legend(fontsize=8, frameon=True, loc="best")
+                    ax[metric_index].tick_params(labelsize=10)
+                    ax[metric_index].grid(True, which="both", ls="--", alpha=0.3)
+                fig.tight_layout()
+                fig.savefig(f"./multiple_tasks/{clustering_name}_between_modulation_{savefigure_name}.png", dpi=300)
+                plt.close(fig)
 
             cluster_info_save_mod[clustering_save_name] = {
                 "result_pre": result_pre,

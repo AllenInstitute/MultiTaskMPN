@@ -5,6 +5,119 @@ import numpy as np
 # pre/post neuron cluster
 # ---------------------------------------------------------------------
 
+
+def _build_reverse_map(cluster_dict, size_hint):
+    """Map cluster_dict {key: [indices]} → (lookup_array, n_clusters).
+
+    lookup_array[index] == cluster_id (0-based consecutive int).
+    """
+    arr = np.full(size_hint, -1, dtype=int)
+    n_clusters = 0
+    for cid, (_, inds) in enumerate(cluster_dict.items()):
+        inds = np.asarray(inds, dtype=int)
+        if inds.size:
+            if inds.max() >= arr.size:
+                arr = np.pad(arr, (0, inds.max() + 1 - arr.size), constant_values=-1)
+            arr[inds] = cid
+        n_clusters = cid + 1
+    return arr, n_clusters
+
+
+def _precompute_pair_arrays(N, M, pre_cluster, post_cluster):
+    """Precompute all index-level arrays shared across every shuffle repeat.
+
+    Returns a dict with:
+      pre_all, post_all          — pre/post neuron index per modulation
+      preC_all, postC_all        — pre/post cluster id per modulation
+      comb_id                    — ravelled (preC, postC) pair id per modulation
+      n_pre_clusters, n_post_clusters
+    """
+    idx_all = np.arange(N)
+    pre_all = idx_all // M
+    post_all = idx_all % M
+
+    pre_to_cluster, n_pre_clusters = _build_reverse_map(pre_cluster, pre_all.max() + 1)
+    post_to_cluster, n_post_clusters = _build_reverse_map(post_cluster, post_all.max() + 1)
+
+    if (pre_to_cluster[pre_all] < 0).any():
+        raise ValueError("Some pre indices are missing from pre_cluster.")
+    if (post_to_cluster[post_all] < 0).any():
+        raise ValueError("Some post indices are missing from post_cluster.")
+
+    preC_all = pre_to_cluster[pre_all]
+    postC_all = post_to_cluster[post_all]
+    comb_id = np.ravel_multi_index((preC_all, postC_all), (n_pre_clusters, n_post_clusters))
+
+    return dict(
+        pre_all=pre_all, post_all=post_all,
+        preC_all=preC_all, postC_all=postC_all,
+        comb_id=comb_id,
+        n_pre_clusters=n_pre_clusters, n_post_clusters=n_post_clusters,
+    )
+
+
+def _aggregate_pair_counts(col_all, M, arrays):
+    """Compute the 7 pair-count statistics for one assignment of col_all.
+
+    Uses pre-computed arrays from _precompute_pair_arrays to avoid
+    rebuilding lookup tables.
+    """
+    pre_all = arrays["pre_all"]
+    post_all = arrays["post_all"]
+    preC_all = arrays["preC_all"]
+    postC_all = arrays["postC_all"]
+    comb_id = arrays["comb_id"]
+    n_pre_clusters = arrays["n_pre_clusters"]
+    n_post_clusters = arrays["n_post_clusters"]
+
+    same_pre_all = same_post_all = no_same_all = 0
+    same_pre_cluster_all = same_post_cluster_all = 0
+    both_pre_post_cluster_all = no_pre_post_cluster_all = 0
+
+    for g in np.unique(col_all):
+        idx = np.flatnonzero(col_all == g)
+        n = idx.size
+        if n < 2:
+            continue
+
+        pre = pre_all[idx]
+        post = post_all[idx]
+        preC = preC_all[idx]
+        postC = postC_all[idx]
+        comb = comb_id[idx]
+
+        total_pairs = n * (n - 1) // 2
+
+        cnt_pre = np.bincount(pre)
+        same_pre = int(np.sum(cnt_pre * (cnt_pre - 1) // 2))
+
+        cnt_post = np.bincount(post, minlength=M)
+        same_post = int(np.sum(cnt_post * (cnt_post - 1) // 2))
+
+        cnt_preC = np.bincount(preC, minlength=n_pre_clusters)
+        same_preC = int(np.sum(cnt_preC * (cnt_preC - 1) // 2))
+
+        cnt_postC = np.bincount(postC, minlength=n_post_clusters)
+        same_postC = int(np.sum(cnt_postC * (cnt_postC - 1) // 2))
+
+        cnt_both = np.bincount(comb, minlength=n_pre_clusters * n_post_clusters)
+        both_clusters = int(np.sum(cnt_both * (cnt_both - 1) // 2))
+
+        same_pre_all += same_pre
+        same_post_all += same_post
+        no_same_all += total_pairs - same_pre - same_post
+        same_pre_cluster_all += same_preC
+        same_post_cluster_all += same_postC
+        both_pre_post_cluster_all += both_clusters
+        no_pre_post_cluster_all += total_pairs - (same_preC + same_postC - both_clusters)
+
+    return (
+        same_pre_all, same_post_all, no_same_all,
+        same_pre_cluster_all, same_post_cluster_all,
+        both_pre_post_cluster_all, no_pre_post_cluster_all,
+    )
+
+
 def count_pairs_with_clusters(col_all,
                               M,
                               pre_cluster,
@@ -24,112 +137,33 @@ def count_pairs_with_clusters(col_all,
         no_pre_post_cluster_all        # neither same pre-cluster nor same post-cluster
       )
     """
-
     N = col_all.size
     if N == 0:
         return (0, 0, 0, 0, 0, 0, 0)
 
-    # Precompute index → (pre, post)
-    idx_all  = np.arange(N)
-    pre_all  = idx_all // M
-    post_all = idx_all % M
+    arrays = _precompute_pair_arrays(N, M, pre_cluster, post_cluster)
+    return _aggregate_pair_counts(col_all, M, arrays)
 
-    # -------- Build fast reverse maps: index -> cluster id (int) --------
-    # Map cluster keys to consecutive ints and fill arrays in O(N)
-    def build_reverse_map(cluster_dict, size_hint):
-        # cluster_dict: {cluster_key: [indices]}
-        # returns: (arr_of_len>=max_index+1 with cluster ids, n_clusters)
-        arr = np.full(size_hint, -1, dtype=int)
-        for cid, (_, inds) in enumerate(cluster_dict.items()):
-            inds = np.asarray(inds, dtype=int)
-            if inds.size:
-                if inds.max() >= arr.size:
-                    # grow if needed (rare; defensive)
-                    arr = np.pad(arr, (0, inds.max() + 1 - arr.size), constant_values=-1)
-                arr[inds] = cid
-        n_clusters = max(cid + 1, 0) if cluster_dict else 0
-        return arr, n_clusters
 
-    # Size hints from observed indices
-    pre_size_hint  = pre_all.max() + 1
-    post_size_hint = post_all.max() + 1   # typically == M
+def _count_same_pairs_all_repeats(shuffled_groups, feature_all, feature_range, n_groups, repeat, N):
+    """Count same-group AND same-feature pairs for all repeats simultaneously.
 
-    pre_to_cluster, n_pre_clusters   = build_reverse_map(pre_cluster,  pre_size_hint)
-    post_to_cluster, n_post_clusters = build_reverse_map(post_cluster, post_size_hint)
+    Uses the combined-key flat-bincount trick:
+      key[r, i] = shuffled_groups[r, i] * feature_range + feature_all[i]
+    Encoding all (repeat, key_range) counts into one bincount call.
 
-    if (pre_to_cluster[pre_all] < 0).any():
-        raise ValueError("Some pre indices are missing from pre_cluster.")
-    if (post_to_cluster[post_all] < 0).any():
-        raise ValueError("Some post indices are missing from post_cluster.")
+    Returns (repeat,) int64 array.
+    """
+    key = shuffled_groups * feature_range + feature_all[None, :]   # (repeat, N)
+    key_range = n_groups * feature_range
+    # Offset each repeat's keys so all repeats can share one bincount
+    offsets = np.arange(repeat, dtype=np.int64)[:, None] * key_range
+    key_flat = (key + offsets).ravel()
+    counts_flat = np.bincount(key_flat, minlength=repeat * key_range)
+    counts_2d = counts_flat.reshape(repeat, key_range)
+    sum_sq = np.einsum("ij,ij->i", counts_2d, counts_2d)   # (repeat,) — Σ count_k^2
+    return (sum_sq - N) // 2
 
-    # Cluster id per edge index
-    preC_all  = pre_to_cluster[pre_all]
-    postC_all = post_to_cluster[post_all]
-
-    # -------------------- Aggregate per group --------------------
-    same_pre_all = same_post_all = no_same_all = 0
-    same_pre_cluster_all = same_post_cluster_all = 0
-    both_pre_post_cluster_all = no_pre_post_cluster_all = 0
-
-    for g in np.unique(col_all):
-        idx = np.flatnonzero(col_all == g)
-        n = idx.size
-        if n < 2:
-            continue
-
-        pre   = pre_all[idx]
-        post  = post_all[idx]
-        preC  = preC_all[idx]
-        postC = postC_all[idx]
-
-        total_pairs = n * (n - 1) // 2
-
-        # exact pre equality
-        cnt_pre  = np.bincount(pre)
-        same_pre = np.sum(cnt_pre * (cnt_pre - 1) // 2)
-
-        # exact post equality
-        cnt_post  = np.bincount(post, minlength=M)
-        same_post = np.sum(cnt_post * (cnt_post - 1) // 2)
-
-        no_same = total_pairs - same_pre - same_post
-
-        # same pre *cluster*
-        cnt_preC = np.bincount(preC, minlength=n_pre_clusters)
-        same_preC = np.sum(cnt_preC * (cnt_preC - 1) // 2)
-
-        # same post *cluster*
-        cnt_postC = np.bincount(postC, minlength=n_post_clusters)
-        same_postC = np.sum(cnt_postC * (cnt_postC - 1) // 2)
-
-        # both same pre-cluster AND same post-cluster
-        comb_id = np.ravel_multi_index((preC, postC), (n_pre_clusters, n_post_clusters))
-        cnt_both = np.bincount(comb_id, minlength=n_pre_clusters * n_post_clusters)
-        both_clusters = np.sum(cnt_both * (cnt_both - 1) // 2)
-
-        # neither same pre-cluster nor same post-cluster
-        # Use inclusion-exclusion: |none| = total - |preC| - |postC| + |both|
-        no_pre_post_cluster = total_pairs - (same_preC + same_postC - both_clusters)
-
-        # accumulate
-        same_pre_all += int(same_pre)
-        same_post_all += int(same_post)
-        no_same_all += int(no_same)
-
-        same_pre_cluster_all += int(same_preC)
-        same_post_cluster_all += int(same_postC)
-        both_pre_post_cluster_all += int(both_clusters)
-        no_pre_post_cluster_all += int(no_pre_post_cluster)
-
-    return (
-        same_pre_all,
-        same_post_all,
-        no_same_all,
-        same_pre_cluster_all,
-        same_post_cluster_all,
-        both_pre_post_cluster_all,
-        no_pre_post_cluster_all,
-    )
 
 def count_pairs_with_clusters_control(col_all,
                                       M,
@@ -137,23 +171,68 @@ def count_pairs_with_clusters_control(col_all,
                                       post_cluster,
                                       repeat=10):
     """
-    Create control for pre/post neuron & neuron clustering belonging 
-    "Are these group labels more aligned with pre/post (or pre/post clusters) than random assignment given group sizes?"
-    """
-    control_stats = []
-    for _ in range(repeat):
-        # by shuffling the label to the modulation index, 
-        # we could create a benchmark to the belonging relationship
-        col_all_c = np.random.permutation(col_all)
-        result_c = count_pairs_with_clusters(col_all_c, M, pre_cluster, post_cluster)
-        control_stats.append(result_c)
+    Control distribution for pre/post neuron & neuron clustering belonging.
 
-    control_stats = np.array(control_stats)
-    
-    # based on the inclusion/exclusion criteria
-    total_neuron_group = control_stats[:,0] + control_stats[:,1] + control_stats[:,2]
+    "Are these group labels more aligned with pre/post (or pre/post clusters)
+    than random assignment given group sizes?"
+
+    Vectorized: precomputes static arrays once, then processes all `repeat`
+    shuffles simultaneously via combined-key flat bincount — O(repeat * N)
+    instead of O(repeat * N * n_groups).
+    """
+    N = col_all.size
+    if N == 0:
+        return np.zeros(7)
+
+    arrays = _precompute_pair_arrays(N, M, pre_cluster, post_cluster)
+    pre_all = arrays["pre_all"]
+    post_all = arrays["post_all"]
+    preC_all = arrays["preC_all"]
+    postC_all = arrays["postC_all"]
+    comb_id = arrays["comb_id"]
+    n_pre_clusters = arrays["n_pre_clusters"]
+    n_post_clusters = arrays["n_post_clusters"]
+
+    # Remap group labels to 0-based consecutive ints (required by key encoding)
+    unique_groups = np.unique(col_all)
+    n_groups = unique_groups.size
+    group_remap = np.empty(unique_groups.max() + 1, dtype=np.int64)
+    group_remap[unique_groups] = np.arange(n_groups, dtype=np.int64)
+    col_mapped = group_remap[col_all]  # (N,)
+
+    # Fixed total pairs per group — identical for every shuffle (it's a permutation)
+    group_sizes = np.bincount(col_mapped, minlength=n_groups)
+    total_pairs = int(np.sum(group_sizes * (group_sizes - 1) // 2))
+
+    # Generate all permutations at once → shuffled group labels (repeat, N)
+    perm_matrix = np.stack([np.random.permutation(N) for _ in range(repeat)])  # (repeat, N)
+    shuffled_groups = col_mapped[perm_matrix].astype(np.int64)                  # (repeat, N)
+
+    # Vectorized pair counts for every feature across all repeats
+    same_pre = _count_same_pairs_all_repeats(
+        shuffled_groups, pre_all.astype(np.int64), pre_all.max() + 1, n_groups, repeat, N)
+    same_post = _count_same_pairs_all_repeats(
+        shuffled_groups, post_all.astype(np.int64), M, n_groups, repeat, N)
+    same_preC = _count_same_pairs_all_repeats(
+        shuffled_groups, preC_all.astype(np.int64), n_pre_clusters, n_groups, repeat, N)
+    same_postC = _count_same_pairs_all_repeats(
+        shuffled_groups, postC_all.astype(np.int64), n_post_clusters, n_groups, repeat, N)
+    same_both = _count_same_pairs_all_repeats(
+        shuffled_groups, comb_id.astype(np.int64), n_pre_clusters * n_post_clusters,
+        n_groups, repeat, N)
+
+    no_same = total_pairs - same_pre - same_post
+    no_both = total_pairs - (same_preC + same_postC - same_both)
+
+    control_stats = np.stack(
+        [same_pre, same_post, no_same, same_preC, same_postC, same_both, no_both],
+        axis=1,
+    ).astype(float)   # (repeat, 7)
+
+    # Sanity checks (mirror the original assertions)
+    total_neuron_group = control_stats[:, 0] + control_stats[:, 1] + control_stats[:, 2]
     assert np.unique(total_neuron_group).size == 1, "Elements in total_neuron_group are not identical"
-    total_cluster_group = control_stats[:,3] + control_stats[:,4] - control_stats[:,5] + control_stats[:,6]
+    total_cluster_group = control_stats[:, 3] + control_stats[:, 4] - control_stats[:, 5] + control_stats[:, 6]
     assert np.unique(total_cluster_group).size == 1, "Elements in total_cluster_group are not identical"
 
     return np.mean(control_stats, axis=0)

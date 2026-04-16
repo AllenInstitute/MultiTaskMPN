@@ -132,6 +132,24 @@ def _score_threshold_from_best(best_score, silhouette_tol=0.02, tol_mode="relati
     raise ValueError("tol_mode must be 'relative' or 'absolute'.")
 
 
+def _select_k(candidates, tol_k_select):
+    """Pick one k from a non-empty list of candidate k values.
+
+    tol_k_select:
+        "min"  — smallest k in the tolerance band (fewest clusters).
+        "max"  — largest k in the tolerance band (most clusters).
+        "mean" — k closest to the arithmetic mean of the band (middle ground).
+                 Ties are broken by choosing the smaller k.
+    """
+    if tol_k_select == "min":
+        return min(candidates)
+    if tol_k_select == "max":
+        return max(candidates)
+    # "mean": pick candidate closest to the arithmetic mean of the band
+    mean_val = float(np.mean(candidates))
+    return min(candidates, key=lambda k: (abs(k - mean_val), k))
+
+
 def _hierarchical_clustering_repeat(
     data,
     k_min=3,
@@ -173,12 +191,13 @@ def _hierarchical_clustering_repeat(
           (1 + N(0, jitter_std)), so jitter_std=0.01 means ±1% per-entry noise.
           This is scale-invariant and behaves consistently across normalized and
           unnormalized matrices. Zero entries receive no jitter.
-        - tol_k_select controls whether the smallest ("min") or largest
-          ("max") k within the tolerance band is selected.
+        - tol_k_select controls which k within the tolerance band is selected:
+          "min" picks the smallest, "max" the largest, "mean" the one closest
+          to the arithmetic mean of all candidates (ties broken by smaller k).
     """
-    if tol_k_select not in ("min", "max"):
-        raise ValueError("tol_k_select must be 'min' or 'max'.")
-    _k_select = min if tol_k_select == "min" else max
+    if tol_k_select not in ("min", "max", "mean"):
+        raise ValueError("tol_k_select must be 'min', 'max', or 'mean'.")
+    _k_select = lambda cands: _select_k(cands, tol_k_select)  # noqa: E731
 
     rng = np.random.default_rng(random_state)
     data = np.asarray(data)
@@ -443,6 +462,7 @@ def cluster_variance_matrix_repeat(
     silhouette_tol=0.02,
     tol_mode="relative",
     score_quantile=None,
+    unresponsive_norm_frac=1e-3,
     skip_unresponsive_detection=False,
     tol_k_select="min",
 ):
@@ -483,6 +503,7 @@ def cluster_variance_matrix_repeat(
         silhouette_tol=silhouette_tol,
         tol_mode=tol_mode,
         score_quantile=score_quantile,
+        unresponsive_norm_frac=unresponsive_norm_frac,
         skip_unresponsive_detection=skip_unresponsive_detection,
         tol_k_select=tol_k_select,
     )
@@ -497,6 +518,7 @@ def cluster_variance_matrix_repeat(
         silhouette_tol=silhouette_tol,
         tol_mode=tol_mode,
         score_quantile=score_quantile,
+        unresponsive_norm_frac=unresponsive_norm_frac,
         skip_unresponsive_detection=skip_unresponsive_detection,
         tol_k_select=tol_k_select,
     )
@@ -681,15 +703,16 @@ def _hierarchical_clustering_forgroup(
     metric/method: use "euclidean"/"ward" (default) or "cosine"/"average".
 
     tol_k_select : "min" selects the smallest k within the tolerance band of
-        the best silhouette score; "max" selects the largest.
+        the best silhouette score; "max" selects the largest; "mean" selects
+        the k closest to the arithmetic mean of the band.
     skip_unresponsive_detection : when False (default), rows whose L2 norm is
         below unresponsive_norm_frac * max_norm are excluded from clustering
         and assigned a dedicated label (k+1), appended at the end of leaf_order.
         Set to True to disable detection (e.g. already-normalised data).
     """
-    if tol_k_select not in ("min", "max"):
-        raise ValueError("tol_k_select must be 'min' or 'max'.")
-    _k_select = min if tol_k_select == "min" else max
+    if tol_k_select not in ("min", "max", "mean"):
+        raise ValueError("tol_k_select must be 'min', 'max', or 'mean'.")
+    _k_select = lambda cands: _select_k(cands, tol_k_select)  # noqa: E731
 
     n_obs = data.shape[0]
 
@@ -863,6 +886,7 @@ def cluster_variance_matrix_forgroup(
     silhouette_tol: float = 0.02,
     tol_mode: str = "relative",
     tol_k_select: str = "min",
+    unresponsive_norm_frac: float = 1e-3,
     skip_unresponsive_detection: bool = False,
     score_quantile: Optional[float] = None,
 ) -> Dict[str, Any]:
@@ -903,9 +927,9 @@ def cluster_variance_matrix_forgroup(
     _row_method = row_method if row_method is not None else _METRIC_TO_METHOD[_row_metric]
     _col_method = col_method if col_method is not None else _METRIC_TO_METHOD[_col_metric]
 
-    if tol_k_select not in ("min", "max"):
-        raise ValueError("tol_k_select must be 'min' or 'max'.")
-    _k_select = min if tol_k_select == "min" else max
+    if tol_k_select not in ("min", "max", "mean"):
+        raise ValueError("tol_k_select must be 'min', 'max', or 'mean'.")
+    _k_select = lambda cands: _select_k(cands, tol_k_select)  # noqa: E731
 
     print(f"Row  — method: {_row_method}, metric: {_row_metric}")
     print(f"Col  — method: {_col_method}, metric: {_col_metric}")
@@ -918,6 +942,7 @@ def cluster_variance_matrix_forgroup(
         silhouette_tol=silhouette_tol,
         tol_mode=tol_mode,
         tol_k_select=tol_k_select,
+        unresponsive_norm_frac=unresponsive_norm_frac,
         skip_unresponsive_detection=skip_unresponsive_detection,
     )
 
