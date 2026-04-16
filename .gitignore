@@ -48,3 +48,6 @@ data/
 
 # Claude
 CLAUDE.md
+
+# Codex
+.codex/config.toml

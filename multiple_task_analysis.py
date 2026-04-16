@@ -696,7 +696,7 @@ def main(seed, feature):
     lower_cluster_mod = 10 # for modulation
     silhouette_tol = 0.05
     tol_mode = "relative"   # or "relative"
-    tol_k_select = "mean"
+    tol_k_select = "gap"
     score_quantile = 0.50
     unresponsive_norm_frac = 1e-3
 
@@ -926,20 +926,65 @@ def main(seed, feature):
             rbreaks_all[clustering_save_name] = rbreaks
             cbreaks_all[clustering_save_name] = cbreaks
 
-            best_k_row, best_k_col = result["row_strict_best_k"], result["col_strict_best_k"]
-            best_alt_k_row, best_alt_k_col = result["row_k"], result["col_k"]
-            row_sil_strict = result["row_score_recording_mean"].get(best_k_row, float("nan"))
-            col_sil_strict = result["col_score_recording_mean"].get(best_k_col, float("nan"))
-            row_sil_tol = result["row_score_recording_mean"].get(best_alt_k_row, float("nan"))
-            col_sil_tol = result["col_score_recording_mean"].get(best_alt_k_col, float("nan"))
-            print(
-                f"best_k_row (strict): {best_k_row} (sil={row_sil_strict:.4f}); "
-                f"best_k_col (strict): {best_k_col} (sil={col_sil_strict:.4f})"
+            # Print k decisions across all selection strategies for comparison.
+            row_sil_mean = result["row_score_recording_mean"]
+            col_sil_mean = result["col_score_recording_mean"]
+            row_ari_mean = result["row_ari_recording_mean"]
+            col_ari_mean = result["col_ari_recording_mean"]
+
+            row_strict_k = result["row_strict_best_k"]
+            col_strict_k = result["col_strict_best_k"]
+            row_strict_sil = row_sil_mean.get(row_strict_k, float("nan"))
+            col_strict_sil = col_sil_mean.get(col_strict_k, float("nan"))
+
+            # Recompute tolerance band (mirrors clustering._score_threshold_from_best)
+            def _tol_thresh(score):
+                if tol_mode == "relative":
+                    return score * (1.0 - silhouette_tol)
+                return score - silhouette_tol
+
+            row_band = sorted(
+                k for k in result["row_k_values"]
+                if row_sil_mean.get(k, -np.inf) >= _tol_thresh(row_strict_sil)
             )
-            print(
-                f"best_alt_k_row (tol): {best_alt_k_row} (sil={row_sil_tol:.4f}); "
-                f"best_alt_k_col (tol): {best_alt_k_col} (sil={col_sil_tol:.4f})"
+            col_band = sorted(
+                k for k in result["col_k_values"]
+                if col_sil_mean.get(k, -np.inf) >= _tol_thresh(col_strict_sil)
             )
+
+            def _band_select(band, strategy, fallback):
+                if not band:
+                    return fallback
+                if strategy == "min":
+                    return min(band)
+                if strategy == "max":
+                    return max(band)
+                # "mean": k closest to the arithmetic mean; ties broken by smaller k
+                m = float(np.mean(band))
+                return min(band, key=lambda k: (abs(k - m), k))
+
+            strat_ks = {
+                "min":  (_band_select(row_band, "min",  row_strict_k), _band_select(col_band, "min",  col_strict_k)),
+                "max":  (_band_select(row_band, "max",  row_strict_k), _band_select(col_band, "max",  col_strict_k)),
+                "mean": (_band_select(row_band, "mean", row_strict_k), _band_select(col_band, "mean", col_strict_k)),
+                "ari":  (result["row_ari_tol_k"],  result["col_ari_tol_k"]),
+                "gap":  (result["row_gap_tol_k"],  result["col_gap_tol_k"]),
+            }
+
+            print(
+                f"  strict argmax — row: {row_strict_k} (sil={row_strict_sil:.4f}); "
+                f"col: {col_strict_k} (sil={col_strict_sil:.4f})"
+            )
+            for strat, (rk, ck) in strat_ks.items():
+                marker = "  <-- selected" if strat == tol_k_select else ""
+                r_sil = row_sil_mean.get(rk, float("nan"))
+                c_sil = col_sil_mean.get(ck, float("nan"))
+                r_ari = row_ari_mean.get(rk, float("nan"))
+                c_ari = col_ari_mean.get(ck, float("nan"))
+                print(
+                    f"  {strat:4s}: row={rk:3d} (sil={r_sil:.4f}, ari={r_ari:.4f}); "
+                    f"col={ck:3d} (sil={c_sil:.4f}, ari={c_ari:.4f}){marker}"
+                )
             
             # extract the grouping information, i.e. which neuron belong to which cluster
             # instead of the view of dendrogram
@@ -953,6 +998,8 @@ def main(seed, feature):
             # as well, since increasing the cutoff threshold in dendrogram will "merge" these clusters
             row_labels, row_k = result["row_tol_labels"], result["row_tol_k"]
             row_clusters = {int(lab): np.where(row_labels == lab)[0] for lab in np.unique(row_labels)}
+            print(f"col_clusters: {len(col_clusters)}; row_clusters: {len(row_clusters)}")
+            
             # registeration
             col_clusters_all[clustering_save_name] = col_clusters
             row_clusters_all[clustering_save_name] = row_clusters
@@ -967,63 +1014,95 @@ def main(seed, feature):
             
             # plot the optimization score as a function of number of clustering
             # also plot the indicator for the optimal number of cluster (and with tolerance version)
-            # 2026-04-16: add more details in the plotting 
-            figscore, axscore = plt.subplots(1, 1, figsize=(6, 4))
-            # ---------- row ----------
-            row_kvals = np.asarray(result["row_k_values"], dtype=int)
-            row_all   = np.asarray(result["row_score_recording_all"], dtype=float)   # (n_repeats, n_k)
-            row_mean  = np.asarray([result["row_score_recording_mean"][k] for k in row_kvals], dtype=float)
-            row_std   = np.asarray([result["row_score_recording_std"][k]  for k in row_kvals], dtype=float)
+            # 2026-04-16: add more details in the plotting
 
-            # each repeat
-            for r in range(row_all.shape[0]):
-                axscore.plot(
-                    row_kvals, row_all[r],
-                    color=c_vals[0], alpha=0.10, linewidth=0.8
-                )
+            def _gap_curve(Z, k_vals):
+                """Compute the Ward merge-height gap for each k from a linkage matrix."""
+                n = Z.shape[0] + 1
+                gaps = []
+                for k in k_vals:
+                    idx_above = n - k
+                    idx_below = n - k - 1
+                    h_above = float(Z[idx_above, 2]) if 0 <= idx_above < Z.shape[0] else np.inf
+                    h_below = float(Z[idx_below, 2]) if 0 <= idx_below < Z.shape[0] else 0.0
+                    gaps.append(h_above - h_below)
+                return np.asarray(gaps, dtype=float)
 
-            # mean ± std
-            axscore.fill_between(
-                row_kvals, row_mean - row_std, row_mean + row_std,
-                color=c_vals[0], alpha=0.20
-            )
-            axscore.plot(
-                row_kvals, row_mean,
-                color=c_vals[0], linewidth=2.5, label="row mean"
-            )
+            # solid vline = strict silhouette argmax; dashed vline = tol_k_select decision
+            row_decision_k, col_decision_k = strat_ks[tol_k_select]
 
-            axscore.axvline(best_k_row, color=c_vals[0], linestyle="-",  linewidth=1.5)
-            axscore.axvline(best_alt_k_row, color=c_vals[0], linestyle="--", linewidth=1.5)
+            figscore, (axscore, axari, axgap) = plt.subplots(3, 1, figsize=(6, 10), sharex=True)
 
-            # ---------- col ----------
-            col_kvals = np.asarray(result["col_k_values"], dtype=int)
-            col_all   = np.asarray(result["col_score_recording_all"], dtype=float)   # (n_repeats, n_k)
-            col_mean  = np.asarray([result["col_score_recording_mean"][k] for k in col_kvals], dtype=float)
-            col_std   = np.asarray([result["col_score_recording_std"][k]  for k in col_kvals], dtype=float)
+            # ---------- silhouette: row ----------
+            row_kvals   = np.asarray(result["row_k_values"], dtype=int)
+            row_sil_all = np.asarray(result["row_score_recording_all"], dtype=float)  # (n_repeats, n_k)
+            row_sil_arr = np.asarray([result["row_score_recording_mean"][k] for k in row_kvals], dtype=float)
+            row_sil_std = np.asarray([result["row_score_recording_std"][k]  for k in row_kvals], dtype=float)
 
-            for r in range(col_all.shape[0]):
-                axscore.plot(
-                    col_kvals, col_all[r],
-                    color=c_vals[1], alpha=0.10, linewidth=0.8
-                )
+            for r in range(row_sil_all.shape[0]):
+                axscore.plot(row_kvals, row_sil_all[r], color=c_vals[0], alpha=0.10, linewidth=0.8)
+            axscore.fill_between(row_kvals, row_sil_arr - row_sil_std, row_sil_arr + row_sil_std,
+                                 color=c_vals[0], alpha=0.20)
+            axscore.plot(row_kvals, row_sil_arr, color=c_vals[0], linewidth=2.5, label="row")
+            axscore.axvline(row_strict_k,   color=c_vals[0], linestyle="-",  linewidth=1.5)
+            axscore.axvline(row_decision_k, color=c_vals[0], linestyle="--", linewidth=1.5)
 
-            axscore.fill_between(
-                col_kvals, col_mean - col_std, col_mean + col_std,
-                color=c_vals[1], alpha=0.20
-            )
-            axscore.plot(
-                col_kvals, col_mean,
-                color=c_vals[1], linewidth=2.5, label="col mean"
-            )
+            # ---------- silhouette: col ----------
+            col_kvals   = np.asarray(result["col_k_values"], dtype=int)
+            col_sil_all = np.asarray(result["col_score_recording_all"], dtype=float)  # (n_repeats, n_k)
+            col_sil_arr = np.asarray([result["col_score_recording_mean"][k] for k in col_kvals], dtype=float)
+            col_sil_std = np.asarray([result["col_score_recording_std"][k]  for k in col_kvals], dtype=float)
 
-            axscore.axvline(best_k_col, color=c_vals[1], linestyle="-",  linewidth=1.5)
-            axscore.axvline(best_alt_k_col, color=c_vals[1], linestyle="--", linewidth=1.5)
+            for r in range(col_sil_all.shape[0]):
+                axscore.plot(col_kvals, col_sil_all[r], color=c_vals[1], alpha=0.10, linewidth=0.8)
+            axscore.fill_between(col_kvals, col_sil_arr - col_sil_std, col_sil_arr + col_sil_std,
+                                 color=c_vals[1], alpha=0.20)
+            axscore.plot(col_kvals, col_sil_arr, color=c_vals[1], linewidth=2.5, label="col")
+            axscore.axvline(col_strict_k,   color=c_vals[1], linestyle="-",  linewidth=1.5)
+            axscore.axvline(col_decision_k, color=c_vals[1], linestyle="--", linewidth=1.5)
 
-            axscore.set_xlabel("Number of Cluster")
             axscore.set_ylabel("Silhouette Score")
-            axscore.set_xscale("log")
             axscore.legend(frameon=True)
             axscore.set_title(f"{clustering_name}", fontsize=15)
+
+            # ---------- ARI stability: row ----------
+            row_ari_arr = np.asarray([result["row_ari_recording_mean"][k] for k in row_kvals], dtype=float)
+            row_ari_std = np.asarray([result["row_ari_recording_std"][k]  for k in row_kvals], dtype=float)
+            axari.fill_between(row_kvals, row_ari_arr - row_ari_std, row_ari_arr + row_ari_std,
+                               color=c_vals[0], alpha=0.20)
+            axari.plot(row_kvals, row_ari_arr, color=c_vals[0], linewidth=2.5, label="row")
+            axari.axvline(row_strict_k,   color=c_vals[0], linestyle="-",  linewidth=1.5)
+            axari.axvline(row_decision_k, color=c_vals[0], linestyle="--", linewidth=1.5)
+
+            # ---------- ARI stability: col ----------
+            col_ari_arr = np.asarray([result["col_ari_recording_mean"][k] for k in col_kvals], dtype=float)
+            col_ari_std = np.asarray([result["col_ari_recording_std"][k]  for k in col_kvals], dtype=float)
+            axari.fill_between(col_kvals, col_ari_arr - col_ari_std, col_ari_arr + col_ari_std,
+                               color=c_vals[1], alpha=0.20)
+            axari.plot(col_kvals, col_ari_arr, color=c_vals[1], linewidth=2.5, label="col")
+            axari.axvline(col_strict_k,   color=c_vals[1], linestyle="-",  linewidth=1.5)
+            axari.axvline(col_decision_k, color=c_vals[1], linestyle="--", linewidth=1.5)
+
+            axari.set_ylabel("Mean Pairwise ARI")
+            axari.legend(frameon=True)
+
+            # ---------- gap score: row ----------
+            row_gap_arr = _gap_curve(result["row_linkage"], row_kvals)
+            axgap.plot(row_kvals, row_gap_arr, color=c_vals[0], linewidth=2.5, label="row")
+            axgap.axvline(row_strict_k,   color=c_vals[0], linestyle="-",  linewidth=1.5)
+            axgap.axvline(row_decision_k, color=c_vals[0], linestyle="--", linewidth=1.5)
+
+            # ---------- gap score: col ----------
+            col_gap_arr = _gap_curve(result["col_linkage"], col_kvals)
+            axgap.plot(col_kvals, col_gap_arr, color=c_vals[1], linewidth=2.5, label="col")
+            axgap.axvline(col_strict_k,   color=c_vals[1], linestyle="-",  linewidth=1.5)
+            axgap.axvline(col_decision_k, color=c_vals[1], linestyle="--", linewidth=1.5)
+
+            axgap.set_xlabel("Number of Clusters")
+            axgap.set_ylabel("Gap Score")
+            axgap.set_xscale("log")
+            axgap.legend(frameon=True)
+
             figscore.tight_layout()
             figscore.savefig(f"./multiple_tasks/{clustering_name}_variance_cluster_score_{savefigure_name}.png", dpi=300)
             plt.close(figscore)
@@ -1105,14 +1184,14 @@ def main(seed, feature):
             for cb in cbreaks:
                 ax[1].axvline(cb, color="w", lw=3.0, zorder=3)
                 ax[1].axvline(cb, color="k", lw=0.8, zorder=4)
-            ax[0].set_title(f"Before Clustering{scale_label}; best k row: {best_alt_k_row}; best k col: {best_alt_k_col}",
+            ax[0].set_title(f"Before Clustering{scale_label}; best k row: {row_decision_k}; best k col: {col_decision_k}",
                             fontsize=15)
             ax[0].set_ylabel('Rule / Break-name', fontsize=12, labelpad=12)
             # Seaborn heatmap cells are centered at 0.5, 1.5, ...; use + 0.5 offset
             # so tick labels sit at the vertical center of each cell row.
             ax[0].set_yticks(np.arange(len(tb_break_name)) + 0.5)
             ax[0].set_yticklabels(tb_break_name, rotation=0, ha='right', va='center', fontsize=9)
-            ax[1].set_title(f"After Clustering{scale_label}; best k row: {best_alt_k_row}; best k col: {best_alt_k_col}",
+            ax[1].set_title(f"After Clustering{scale_label}; best k row: {row_decision_k}; best k col: {col_decision_k}",
                             fontsize=15)
             ax[1].set_ylabel('Rule / Break-name', fontsize=12, labelpad=12)
             ax[1].set_yticks(np.arange(len(tb_break_name)) + 0.5)
@@ -1745,26 +1824,48 @@ def main(seed, feature):
                                                                          tol_k_select=tol_k_select,
                                                                          skip_unresponsive_detection=clustering_normalize)
         
-                _row_k_strict_all = result_all["row_strict_best_k"]
-                _col_k_strict_all = result_all["col_strict_best_k"]
-                _row_k_tol_all    = result_all["row_k"]
-                _col_k_tol_all    = result_all["col_k"]
-                _row_sil_strict_all = result_all["row_score_recording_mean"].get(_row_k_strict_all, float("nan"))
-                _col_sil_strict_all = result_all["col_score_recording_mean"].get(_col_k_strict_all, float("nan"))
-                _row_sil_tol_all    = result_all["row_score_recording_mean"].get(_row_k_tol_all, float("nan"))
-                _col_sil_tol_all    = result_all["col_score_recording_mean"].get(_col_k_tol_all, float("nan"))
+                _r_sil      = result_all["row_score_recording_mean"]
+                _c_sil      = result_all["col_score_recording_mean"]
+                _r_strict_k = result_all["row_strict_best_k"]
+                _c_strict_k = result_all["col_strict_best_k"]
+                # Tolerance band stored directly in the result — no need to recompute.
+                _r_band     = result_all["row_primary_candidates"]
+                _c_band     = result_all["col_primary_candidates"]
+
+                def _bsel(band, strategy, fallback, Z=None):
+                    if not band:
+                        return fallback
+                    if strategy == "min":
+                        return min(band)
+                    if strategy == "max":
+                        return max(band)
+                    if strategy == "gap":
+                        return clustering._gap_k(Z, band) if Z is not None else fallback
+                    m = float(np.mean(band))
+                    return min(band, key=lambda kk: (abs(kk - m), kk))
+
+                _strat_ks = {
+                    "min":  (_bsel(_r_band, "min",  _r_strict_k),
+                             _bsel(_c_band, "min",  _c_strict_k)),
+                    "max":  (_bsel(_r_band, "max",  _r_strict_k),
+                             _bsel(_c_band, "max",  _c_strict_k)),
+                    "mean": (_bsel(_r_band, "mean", _r_strict_k),
+                             _bsel(_c_band, "mean", _c_strict_k)),
+                    "gap":  (_bsel(_r_band, "gap",  _r_strict_k, result_all["row_linkage"]),
+                             _bsel(_c_band, "gap",  _c_strict_k, result_all["col_linkage"])),
+                }
+
                 print(
-                    f"[G={G}] row_k (strict): {_row_k_strict_all} "
-                    f"(sil={_row_sil_strict_all:.4f}); "
-                    f"col_k (strict): {_col_k_strict_all} "
-                    f"(sil={_col_sil_strict_all:.4f})"
+                    f"[G={G}]   strict argmax — "
+                    f"row: {_r_strict_k} (sil={_r_sil.get(_r_strict_k, float('nan')):.4f}); "
+                    f"col: {_c_strict_k} (sil={_c_sil.get(_c_strict_k, float('nan')):.4f})"
                 )
-                print(
-                    f"[G={G}] row_k (tol):    {_row_k_tol_all} "
-                    f"(sil={_row_sil_tol_all:.4f}); "
-                    f"col_k (tol):    {_col_k_tol_all} "
-                    f"(sil={_col_sil_tol_all:.4f})"
-                )
+                for _strat, (_rk, _ck) in _strat_ks.items():
+                    _marker = "  <-- selected" if _strat == tol_k_select else ""
+                    print(
+                        f"[G={G}]   {_strat:4s}: row={_rk:3d} (sil={_r_sil.get(_rk, float('nan')):.4f}); "
+                        f"col={_ck:3d} (sil={_c_sil.get(_ck, float('nan')):.4f}){_marker}"
+                    )
                 assert result_all["col_k"] < G
                 axscol[G_idx].set_title(f"G={G}, Neuron Cluster={result_all['col_k']}", fontsize=15)
 
@@ -1812,30 +1913,6 @@ def main(seed, feature):
                         if element in values:
                             return key
                     return None
-                    
-                def same_pre(i, j, M):
-                    return (i // M) == (j // M)
-        
-                def same_post(i, j, M):
-                    return (i % M) == (j % M)
-
-                def same_pre_cluster(i, j, M, pre_cluster):
-                    pre_i = i // M
-                    pre_j = j // M
-                    pre_i_belong = find_key_by_element(pre_cluster, pre_i)
-                    pre_j_belong = find_key_by_element(pre_cluster, pre_j)
-                    assert pre_i_belong is not None
-                    assert pre_j_belong is not None
-                    return pre_i_belong, pre_j_belong, pre_i_belong == pre_j_belong 
-
-                def same_post_cluster(i, j, M, post_cluster):
-                    post_i = i % M
-                    post_j = j % M
-                    post_i_belong = find_key_by_element(post_cluster, post_i)
-                    post_j_belong = find_key_by_element(post_cluster, post_j)
-                    assert post_i_belong is not None
-                    assert post_j_belong is not None
-                    return post_i_belong, post_j_belong, post_i_belong == post_j_belong 
                     
                 # 2025-10-21: "both" for debugging purpose, effectively with "True" or "False" should obtain identical result
                 # Use "True" for the actual implementation; 
@@ -1885,7 +1962,7 @@ def main(seed, feature):
                     if idx == 0:
                         title = f"{ppshare_row_names[idx]} | G={G}; #Cluster={N_cluster}"
                     else:
-                        title = (f"{ppshare_row_names[idx]} | G={G}; #Cluster={N_cluster}; "
+                        title = (f"{ppshare_row_names[idx]} | G={G}; #Cluster={N_cluster}\n"
                                  f"#PreCluster={n_pre_clusters}; #PostCluster={n_post_clusters}")
                     axsppshare[idx,G_idx].set_title(title)
 
@@ -2072,13 +2149,28 @@ def main(seed, feature):
             # plot original, pre, post, plus all results under different G
             tf = 3 + len(result_all_lst)
             figprepost, axprepost = plt.subplots(tf,1,figsize=(24,8*tf))
-            sns.heatmap(cell_vars_rules_sorted_norm, ax=axprepost[0], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
-            sns.heatmap(cell_vars_rules_sorted_norm_pre, ax=axprepost[1], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
-            sns.heatmap(cell_vars_rules_sorted_norm_post, ax=axprepost[2], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
+
+            # For unnormalized data use a log colorbar bounded below at 1e-4;
+            # compute a shared vmax across all subplots for consistent color scale.
+            if not clustering_normalize:
+                _all_mats = (
+                    [cell_vars_rules_sorted_norm,
+                     cell_vars_rules_sorted_norm_pre,
+                     cell_vars_rules_sorted_norm_post]
+                    + list(cell_vars_rules_sorted_norm_all_lst)
+                )
+                _vmax_log = float(max(m.max() for m in _all_mats))
+                _heatmap_kw = dict(norm=LogNorm(vmin=1e-4, vmax=_vmax_log))
+            else:
+                _heatmap_kw = dict(vmin=vmins, vmax=vmaxs)
+
+            sns.heatmap(cell_vars_rules_sorted_norm, ax=axprepost[0], cmap=cs, cbar=True, **_heatmap_kw)
+            sns.heatmap(cell_vars_rules_sorted_norm_pre, ax=axprepost[1], cmap=cs, cbar=True, **_heatmap_kw)
+            sns.heatmap(cell_vars_rules_sorted_norm_post, ax=axprepost[2], cmap=cs, cbar=True, **_heatmap_kw)
 
             # plot the headmap for all G result
             for k in range(len(cell_vars_rules_sorted_norm_all_lst)):
-                sns.heatmap(cell_vars_rules_sorted_norm_all_lst[k], ax=axprepost[3+k], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
+                sns.heatmap(cell_vars_rules_sorted_norm_all_lst[k], ax=axprepost[3+k], cmap=cs, cbar=True, **_heatmap_kw)
 
             for ax in axprepost:
                 ax.set_yticks(np.arange(len(tb_break_name)))
@@ -2176,36 +2268,88 @@ def main(seed, feature):
             plt.close(figmodnorm)
 
             # plot the score
-            figscore, axscore = plt.subplots(1,1,figsize=(10,3))
+            def _gap_curve_mod(Z, k_vals):
+                """Compute Ward merge-height gap for each k from a linkage matrix."""
+                if Z is None:
+                    return np.full(len(k_vals), np.nan)
+                n = Z.shape[0] + 1
+                gaps = []
+                for k in k_vals:
+                    idx_above = n - k
+                    idx_below = n - k - 1
+                    h_above = float(Z[idx_above, 2]) if 0 <= idx_above < Z.shape[0] else np.inf
+                    h_below = float(Z[idx_below, 2]) if 0 <= idx_below < Z.shape[0] else 0.0
+                    gaps.append(h_above - h_below)
+                return np.asarray(gaps, dtype=float)
+
+            figscore, (axscore, axgap) = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
+
             # result_pre / result_post: single grouping → col_score_recording_mean has no meaningful std
-            pre_ks  = np.asarray(sorted(result_pre["col_score_recording_mean"].keys()),  dtype=int)
-            post_ks = np.asarray(sorted(result_post["col_score_recording_mean"].keys()), dtype=int)
-            axscore.plot(pre_ks,  [result_pre["col_score_recording_mean"][k]  for k in pre_ks],
-                        label="col pre",  color=c_vals[1])
+            pre_ks  = np.asarray(result_pre["col_k_values"],  dtype=int)
+            post_ks = np.asarray(result_post["col_k_values"], dtype=int)
+
+            # ---------- silhouette: pre ----------
+            axscore.plot(pre_ks, [result_pre["col_score_recording_mean"][k] for k in pre_ks],
+                         label="col pre", color=c_vals[1])
             axscore.scatter(result_pre["col_k"],
                             result_pre["col_score_recording_mean"][result_pre["col_k"]],
                             color=c_vals[1], zorder=5, s=60, marker="*")
+            axscore.axvline(result_pre["col_strict_best_k"], color=c_vals[1], linestyle="-",  linewidth=1.0)
+            axscore.axvline(result_pre["col_k"],             color=c_vals[1], linestyle="--", linewidth=1.0)
+
+            # ---------- silhouette: post ----------
             axscore.plot(post_ks, [result_post["col_score_recording_mean"][k] for k in post_ks],
-                        label="col post", color=c_vals[3])
+                         label="col post", color=c_vals[3])
             axscore.scatter(result_post["col_k"],
                             result_post["col_score_recording_mean"][result_post["col_k"]],
                             color=c_vals[3], zorder=5, s=60, marker="*")
-            # result_all_lst: multiple groupings → plot mean ± std across groupings
-            for k in range(len(result_all_lst)):
-                r    = result_all_lst[k]
-                ks   = np.asarray(sorted(r["col_score_recording_mean"].keys()), dtype=int)
-                mean = np.asarray([r["col_score_recording_mean"][ki] for ki in ks], dtype=float)
-                std  = np.asarray([r["col_score_recording_std"][ki]  for ki in ks], dtype=float)
-                color = c_vals[5+k]
-                axscore.plot(ks, mean, label=f"col all, G={G_lst[k]}", color=color, linestyle="--")
+            axscore.axvline(result_post["col_strict_best_k"], color=c_vals[3], linestyle="-",  linewidth=1.0)
+            axscore.axvline(result_post["col_k"],             color=c_vals[3], linestyle="--", linewidth=1.0)
+
+            # ---------- silhouette: result_all_lst (mean ± std across groupings) ----------
+            for k_idx in range(len(result_all_lst)):
+                r     = result_all_lst[k_idx]
+                ks    = np.asarray(r["col_k_values"], dtype=int)
+                mean  = np.asarray([r["col_score_recording_mean"][ki] for ki in ks], dtype=float)
+                std   = np.asarray([r["col_score_recording_std"][ki]  for ki in ks], dtype=float)
+                color = c_vals[5 + k_idx]
+                axscore.plot(ks, mean, label=f"col all, G={G_lst[k_idx]}", color=color, linestyle="--")
                 axscore.fill_between(ks, mean - std, mean + std, color=color, alpha=0.2)
-                axscore.scatter(r["col_k"],
-                                r["col_score_recording_mean"][r["col_k"]],
+                axscore.scatter(r["col_k"], r["col_score_recording_mean"][r["col_k"]],
                                 color=color, zorder=5, s=60, marker="*")
-            axscore.set_xlabel("Number of Cluster", fontsize=15)
+                axscore.axvline(r["col_strict_best_k"], color=color, linestyle="-",  linewidth=1.0)
+                axscore.axvline(r["col_k"],             color=color, linestyle="--", linewidth=1.0)
+
             axscore.set_ylabel("Silhouette Score", fontsize=15)
             axscore.legend()
-            axscore.set_xscale("log")
+
+            # ---------- gap: pre ----------
+            axgap.plot(pre_ks, _gap_curve_mod(result_pre["col_linkage"], pre_ks),
+                       label="col pre", color=c_vals[1])
+            axgap.axvline(result_pre["col_strict_best_k"], color=c_vals[1], linestyle="-",  linewidth=1.0)
+            axgap.axvline(result_pre["col_k"],             color=c_vals[1], linestyle="--", linewidth=1.0)
+
+            # ---------- gap: post ----------
+            axgap.plot(post_ks, _gap_curve_mod(result_post["col_linkage"], post_ks),
+                       label="col post", color=c_vals[3])
+            axgap.axvline(result_post["col_strict_best_k"], color=c_vals[3], linestyle="-",  linewidth=1.0)
+            axgap.axvline(result_post["col_k"],             color=c_vals[3], linestyle="--", linewidth=1.0)
+
+            # ---------- gap: result_all_lst ----------
+            for k_idx in range(len(result_all_lst)):
+                r     = result_all_lst[k_idx]
+                ks    = np.asarray(r["col_k_values"], dtype=int)
+                color = c_vals[5 + k_idx]
+                axgap.plot(ks, _gap_curve_mod(r["col_linkage"], ks),
+                           label=f"col all, G={G_lst[k_idx]}", color=color, linestyle="--")
+                axgap.axvline(r["col_strict_best_k"], color=color, linestyle="-",  linewidth=1.0)
+                axgap.axvline(r["col_k"],             color=color, linestyle="--", linewidth=1.0)
+
+            axgap.set_xlabel("Number of Clusters", fontsize=15)
+            axgap.set_ylabel("Gap Score", fontsize=15)
+            axgap.set_xscale("log")
+            axgap.legend()
+
             figscore.tight_layout()
             figscore.savefig(f"./multiple_tasks/{clustering_name}_variance_cluster_score_{savefigure_name}.png", dpi=300)
             plt.close(figscore)

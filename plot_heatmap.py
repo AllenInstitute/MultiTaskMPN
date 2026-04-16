@@ -25,6 +25,7 @@ def main(seed, feature):
     """
     """
     addname = f"result_all_everything_seed{seed}_{feature}+hidden300+batch128+angle"
+    # modulation + unnormalized modulation + weighted modulation (unnormalized)
     paths = [
         f"modulation_all_clustering_{addname}_normalized.pkl", 
         f"modulation_all_clustering_{addname}_unnormalized.pkl", 
@@ -84,41 +85,85 @@ def main(seed, feature):
         )
         plt.close(fig)
         
-        # for idx == 2: also plot with the largest cluster removed
+        # for idx == 2: grid of block heatmaps + column-cluster sum filtered heatmap
         if idx == 2 and len(yboundary) > 0:
-            edges = [0] + list(yboundary) + [plot_data.shape[1]]
-            cluster_sizes = [edges[i + 1] - edges[i] for i in range(len(edges) - 1)]
-            largest_idx = int(np.argmax(cluster_sizes))
+            col_edges = [0] + list(yboundary) + [plot_data.shape[1]]
+            row_edges = [0] + list(xboundary) + [plot_data.shape[0]]
+            n_col_cls = len(col_edges) - 1
+            n_row_cls = len(row_edges) - 1
 
-            # remove the largest cluster's column range and rebase boundaries
-            plot_data_excl = np.concatenate([
-                plot_data[:, :edges[largest_idx]],
-                plot_data[:, edges[largest_idx + 1]:]
-            ], axis=1)
-            remaining_sizes = [s for i, s in enumerate(cluster_sizes) if i != largest_idx]
-            yboundary_excl = list(np.cumsum(remaining_sizes)[:-1])
+            # Mean of each (row_cluster × col_cluster) block; shape (n_row_cls, n_col_cls)
+            block_means = np.array([
+                [plot_data[row_edges[ri]:row_edges[ri + 1],
+                           col_edges[ci]:col_edges[ci + 1]].mean()
+                 for ci in range(n_col_cls)]
+                for ri in range(n_row_cls)
+            ])
+            # Score each column cluster by summing its block means across row clusters
+            # (size-independent, unlike raw entry sum)
+            col_sums = block_means.sum(axis=0)   # shape (n_col_cls,)
+            fig_grid, ax_grid = plt.subplots(
+                1, 1, figsize=(max(4, n_col_cls), max(2, n_row_cls))
+            )
+            sns.heatmap(block_means, ax=ax_grid, cmap="coolwarm", cbar=True,
+                        norm=norm, linewidths=0.5, annot=True, fmt=".2g",
+                        xticklabels=[f"C{ci}" for ci in range(n_col_cls)],
+                        yticklabels=[f"R{ri}" for ri in range(n_row_cls)])
+            ax_grid.set_title(
+                f"Block means — {n_row_cls} row × {n_col_cls} col clusters\n"
+                f"col sums: {', '.join(f'C{ci}={col_sums[ci]:.2g}' for ci in range(n_col_cls))}",
+                fontsize=8
+            )
+            fig_grid.tight_layout()
+            fig_grid.savefig(
+                os.path.join("multiple_task_heatmaps", path.replace(".pkl", "_block_grid.png")),
+                dpi=200, bbox_inches="tight"
+            )
+            plt.close(fig_grid)
 
-            fig2, ax2 = plt.subplots(1, 1, figsize=(10, 4))
+            # --- Figure 2: remove column clusters whose sum is below threshold ---
+            threshold_frac = 0.10   # remove if sum < 10% of max column-cluster sum
+            threshold_val  = threshold_frac * col_sums.max()
+            kept    = np.where(col_sums >= threshold_val)[0]
+            removed = np.where(col_sums <  threshold_val)[0]
+
+            if len(kept) == 0:
+                kept = np.array([int(np.argmax(col_sums))])   # always keep at least one
+                removed = np.array([i for i in range(n_col_cls) if i not in kept])
+
+            kept_blocks = [plot_data[:, col_edges[ci]:col_edges[ci + 1]] for ci in kept]
+            plot_data_filt = np.concatenate(kept_blocks, axis=1)
+            kept_sizes     = [col_edges[ci + 1] - col_edges[ci] for ci in kept]
+            yboundary_filt = list(np.cumsum(kept_sizes)[:-1])
+
+            removed_desc = (
+                ", ".join(f"C{ci}(sum={col_sums[ci]:.2g})" for ci in removed)
+                if len(removed) > 0 else "none"
+            )
+            title_filt = (
+                f"Col clusters kept: {len(kept)}/{n_col_cls}  "
+                f"(threshold={threshold_frac:.0%} × max={col_sums.max():.3g})\n"
+                f"Removed: {removed_desc}"
+            )
+
+            fig_filt, ax_filt = plt.subplots(1, 1, figsize=(10, 4))
             sns.heatmap(
-                plot_data_excl,
-                ax=ax2,
-                cmap="coolwarm",
-                cbar=True,
-                norm=norm,
-                linewidths=0,
+                plot_data_filt, ax=ax_filt, cmap="coolwarm",
+                cbar=True, norm=norm, linewidths=0,
             )
             for x in xboundary:
-                ax2.axhline(x, color="black", linestyle="-", linewidth=1.5, alpha=0.9, zorder=10)
-            for y in yboundary_excl:
-                ax2.axvline(y, color="black", linestyle="-", linewidth=1.5, alpha=0.9, zorder=10)
-            ax2.set_title(f"Largest Cluster Removed (cluster {largest_idx}, size {cluster_sizes[largest_idx]}); Neuron Class Number: {len(yboundary_excl)+1}")
-            fig2.tight_layout()
-            fig2.savefig(
-                os.path.join("multiple_task_heatmaps", path.replace(".pkl", "_largest_removed.png")),
-                dpi=300,
-                bbox_inches="tight"
+                ax_filt.axhline(x, color="black", linestyle="-", linewidth=1.5,
+                                alpha=0.9, zorder=10)
+            for y in yboundary_filt:
+                ax_filt.axvline(y, color="black", linestyle="-", linewidth=1.5,
+                                alpha=0.9, zorder=10)
+            ax_filt.set_title(title_filt, fontsize=8)
+            fig_filt.tight_layout()
+            fig_filt.savefig(
+                os.path.join("multiple_task_heatmaps", path.replace(".pkl", "_col_filtered.png")),
+                dpi=300, bbox_inches="tight"
             )
-            plt.close(fig2)
+            plt.close(fig_filt)
         
 if __name__ == "__main__":
     # Clean up old output files

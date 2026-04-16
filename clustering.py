@@ -140,6 +140,7 @@ def _select_k(candidates, tol_k_select):
         "max"  — largest k in the tolerance band (most clusters).
         "mean" — k closest to the arithmetic mean of the band (middle ground).
                  Ties are broken by choosing the smaller k.
+    Note: "ari" and "gap" are handled separately in the caller.
     """
     if tol_k_select == "min":
         return min(candidates)
@@ -148,6 +149,28 @@ def _select_k(candidates, tol_k_select):
     # "mean": pick candidate closest to the arithmetic mean of the band
     mean_val = float(np.mean(candidates))
     return min(candidates, key=lambda k: (abs(k - mean_val), k))
+
+
+def _gap_k(Z, candidates):
+    """Pick k from candidates with the largest Ward merge-height gap.
+
+    gap(k) = Z[n-k, 2] - Z[n-k-1, 2]:
+        height of the merge that reduces k → k-1 clusters
+        minus height of the merge that reduces k+1 → k clusters.
+    A large gap means those k clusters are a natural stopping point —
+    merging further would bridge a large geometric distance.
+    Ties broken by smaller k.
+    """
+    n = Z.shape[0] + 1  # number of leaf observations
+
+    def _gap(k):
+        idx_above = n - k      # merge index for k → k-1 transition
+        idx_below = n - k - 1  # merge index for k+1 → k transition
+        h_above = float(Z[idx_above, 2]) if 0 <= idx_above < Z.shape[0] else np.inf
+        h_below = float(Z[idx_below, 2]) if 0 <= idx_below < Z.shape[0] else 0.0
+        return h_above - h_below
+
+    return max(candidates, key=lambda k: (_gap(k), -k))
 
 
 def _hierarchical_clustering_repeat(
@@ -168,6 +191,7 @@ def _hierarchical_clustering_repeat(
     unresponsive_norm_frac=1e-3,
     skip_unresponsive_detection=False,
     tol_k_select="min",
+    max_ari_pairs=50,
 ):
     """
     Hierarchical clustering with stability repeats.
@@ -195,8 +219,8 @@ def _hierarchical_clustering_repeat(
           "min" picks the smallest, "max" the largest, "mean" the one closest
           to the arithmetic mean of all candidates (ties broken by smaller k).
     """
-    if tol_k_select not in ("min", "max", "mean"):
-        raise ValueError("tol_k_select must be 'min', 'max', or 'mean'.")
+    if tol_k_select not in ("min", "max", "mean", "ari", "gap"):
+        raise ValueError("tol_k_select must be 'min', 'max', 'mean', 'ari', or 'gap'.")
     _k_select = lambda cands: _select_k(cands, tol_k_select)  # noqa: E731
 
     rng = np.random.default_rng(random_state)
@@ -220,16 +244,16 @@ def _hierarchical_clustering_repeat(
     if skip_unresponsive_detection:
         unresponsive_mask = np.zeros(n_obs, dtype=bool)
     else:
-        norms = np.linalg.norm(data, axis=1)
-        max_norm = norms.max() if norms.max() > 0 else 1.0
-        unresponsive_mask = norms < unresponsive_norm_frac * max_norm
+        row_means = data.mean(axis=1)
+        max_mean  = row_means.max() if row_means.max() > 0 else 1.0
+        unresponsive_mask = row_means < unresponsive_norm_frac * max_mean
 
     n_unresponsive = int(unresponsive_mask.sum())
     if n_unresponsive > 0:
         warnings.warn(
             f"{n_unresponsive} unresponsive row(s) detected "
-            f"(norm < {unresponsive_norm_frac} * max_norm = "
-            f"{unresponsive_norm_frac * max_norm:.3g}); "
+            f"(mean < {unresponsive_norm_frac} * max_mean = "
+            f"{unresponsive_norm_frac * max_mean:.3g}); "
             f"excluding from clustering and assigning to dedicated cluster (label = k+1).",
             RuntimeWarning,
             stacklevel=3,
@@ -352,6 +376,38 @@ def _hierarchical_clustering_repeat(
     else:
         score_recording_agg = score_recording_mean
 
+    # ------------------------------------------------------------------
+    # ARI stability curve: for each k, compute the mean pairwise ARI
+    # across all (n_repeats choose 2) pairs of repeat clusterings.
+    # High ARI at k means the repeat clusterings agree at that k —
+    # i.e. k is stable — independent of whether silhouette is high.
+    # With a single repeat all values are trivially 1.0.
+    # ------------------------------------------------------------------
+    R = len(per_repeat)
+    ari_recording_mean = {}
+    ari_recording_std = {}
+    if R > 1:
+        # Build all unique pairs then cap to max_ari_pairs to avoid O(R^2) cost.
+        all_pairs = [(i, j) for i in range(R) for j in range(i + 1, R)]
+        if max_ari_pairs is not None and len(all_pairs) > max_ari_pairs:
+            rng_ari = np.random.default_rng(0)
+            chosen = rng_ari.choice(len(all_pairs), size=max_ari_pairs, replace=False)
+            sampled_pairs = [all_pairs[p] for p in chosen]
+        else:
+            sampled_pairs = all_pairs
+        for k in k_range:
+            labels_k = [rep["labels_by_k"][k] for rep in per_repeat]
+            ari_vals = [
+                adjusted_rand_score(labels_k[i], labels_k[j])
+                for i, j in sampled_pairs
+            ]
+            ari_recording_mean[k] = float(np.mean(ari_vals))
+            ari_recording_std[k] = float(np.std(ari_vals))
+    else:
+        for k in k_range:
+            ari_recording_mean[k] = 1.0
+            ari_recording_std[k] = 0.0
+
     strict_best_k = max(score_recording_agg, key=score_recording_agg.get)
     strict_best_score = score_recording_agg[strict_best_k]
 
@@ -360,11 +416,36 @@ def _hierarchical_clustering_repeat(
             strict_best_score, silhouette_tol=silhouette_tol, tol_mode=tol_mode
         )
         primary_candidates = [k for k in k_range if score_recording_agg[k] >= primary_thresh]
-        best_k = _k_select(primary_candidates) if primary_candidates else strict_best_k
     else:
         primary_thresh = strict_best_score
         primary_candidates = [strict_best_k]
-        best_k = strict_best_k
+
+    # Final linkage on the original unperturbed active rows.
+    # Computed here (before k selection) so gap-based selection can use Z0.
+    Z0, d0, leaf0 = _compute_linkage_leaforder(active_data)
+    leaf0_full = _expand_leaf_order(leaf0)
+
+    # ARI-based k selection — resolved here so "ari" mode can feed into best_k.
+    # ari_best_k: global argmax of the ARI stability curve (ignores silhouette).
+    # ari_tol_k:  best ARI within the silhouette tolerance band —
+    #             combines both criteria (silhouette screens, ARI breaks ties).
+    ari_best_k = max(ari_recording_mean, key=ari_recording_mean.get)
+    ari_tol_k = (
+        max(primary_candidates, key=lambda k: ari_recording_mean[k])
+        if primary_candidates else ari_best_k
+    )
+
+    # Gap-based k selection — uses Z0 (unperturbed linkage).
+    # gap_tol_k: k in the silhouette tolerance band with the largest merge-height gap.
+    gap_tol_k = _gap_k(Z0, primary_candidates) if primary_candidates else strict_best_k
+
+    # Select best_k according to tol_k_select.
+    if tol_k_select == "ari":
+        best_k = ari_tol_k
+    elif tol_k_select == "gap":
+        best_k = gap_tol_k
+    else:
+        best_k = _k_select(primary_candidates) if primary_candidates else strict_best_k
 
     best_k_score_mean = score_recording_mean[best_k]
 
@@ -389,17 +470,22 @@ def _hierarchical_clustering_repeat(
         strict_best_score, silhouette_tol=silhouette_tol, tol_mode=tol_mode
     )
     alt_candidates = [k for k in k_range if score_recording_agg[k] >= alt_thresh]
-    alt_k = _k_select(alt_candidates) if alt_candidates else strict_best_k
-
-    # Final linkage and labels on the original unperturbed active rows.
-    Z0, d0, leaf0 = _compute_linkage_leaforder(active_data)
-    leaf0_full = _expand_leaf_order(leaf0)
+    if tol_k_select == "ari":
+        alt_k = ari_tol_k
+    elif tol_k_select == "gap":
+        alt_k = gap_tol_k
+    else:
+        alt_k = _k_select(alt_candidates) if alt_candidates else strict_best_k
 
     strict_labels     = _expand_labels(fcluster(Z0, strict_best_k, criterion="maxclust"), strict_best_k)
     strict_cut_threshold = _cut_threshold_from_Z(Z0, strict_best_k)
 
     final_alt_labels  = _expand_labels(fcluster(Z0, alt_k, criterion="maxclust"), alt_k)
     final_alt_cut_threshold = _cut_threshold_from_Z(Z0, alt_k)
+
+    ari_best_labels = _expand_labels(fcluster(Z0, ari_best_k, criterion="maxclust"), ari_best_k)
+    ari_tol_labels  = _expand_labels(fcluster(Z0, ari_tol_k,  criterion="maxclust"), ari_tol_k)
+    gap_tol_labels  = _expand_labels(fcluster(Z0, gap_tol_k,  criterion="maxclust"), gap_tol_k)
 
     return dict(
         linkage=Z0,
@@ -420,6 +506,15 @@ def _hierarchical_clustering_repeat(
         score_recording_std=score_recording_std,
         score_recording_all=score_recording_all,
         k_values=k_values,
+
+        ari_recording_mean=ari_recording_mean,
+        ari_recording_std=ari_recording_std,
+        ari_best_k=ari_best_k,
+        ari_best_labels=ari_best_labels,
+        ari_tol_k=ari_tol_k,
+        ari_tol_labels=ari_tol_labels,
+        gap_tol_k=gap_tol_k,
+        gap_tol_labels=gap_tol_labels,
 
         rep_linkage=best_rep["Z"],
         rep_leaf_order=_expand_leaf_order(best_rep["leaf_order"]),
@@ -465,6 +560,7 @@ def cluster_variance_matrix_repeat(
     unresponsive_norm_frac=1e-3,
     skip_unresponsive_detection=False,
     tol_k_select="min",
+    max_ari_pairs=1000,
 ):
     """
     Cluster a variance matrix V (shape: N_features * M_neurons)
@@ -506,6 +602,7 @@ def cluster_variance_matrix_repeat(
         unresponsive_norm_frac=unresponsive_norm_frac,
         skip_unresponsive_detection=skip_unresponsive_detection,
         tol_k_select=tol_k_select,
+        max_ari_pairs=max_ari_pairs,
     )
 
     col_res = _hierarchical_clustering_repeat(
@@ -521,6 +618,7 @@ def cluster_variance_matrix_repeat(
         unresponsive_norm_frac=unresponsive_norm_frac,
         skip_unresponsive_detection=skip_unresponsive_detection,
         tol_k_select=tol_k_select,
+        max_ari_pairs=max_ari_pairs,
     )
 
     return dict(
@@ -542,6 +640,16 @@ def cluster_variance_matrix_repeat(
         col_score_recording_std=col_res["score_recording_std"],
         col_score_recording_all=col_res["score_recording_all"],
         col_k_values=col_res["k_values"],
+        row_ari_recording_mean=row_res["ari_recording_mean"],
+        row_ari_recording_std=row_res["ari_recording_std"],
+        row_ari_best_k=row_res["ari_best_k"],
+        row_ari_tol_k=row_res["ari_tol_k"],
+        col_ari_recording_mean=col_res["ari_recording_mean"],
+        col_ari_recording_std=col_res["ari_recording_std"],
+        col_ari_best_k=col_res["ari_best_k"],
+        col_ari_tol_k=col_res["ari_tol_k"],
+        row_gap_tol_k=row_res["gap_tol_k"],
+        col_gap_tol_k=col_res["gap_tol_k"],
         row_cut_threshold=row_res["alt_cut_threshold"],
         col_cut_threshold=col_res["alt_cut_threshold"],
         _row_meta=row_res["_params"],
@@ -710,8 +818,8 @@ def _hierarchical_clustering_forgroup(
         and assigned a dedicated label (k+1), appended at the end of leaf_order.
         Set to True to disable detection (e.g. already-normalised data).
     """
-    if tol_k_select not in ("min", "max", "mean"):
-        raise ValueError("tol_k_select must be 'min', 'max', or 'mean'.")
+    if tol_k_select not in ("min", "max", "mean", "ari", "gap"):
+        raise ValueError("tol_k_select must be 'min', 'max', 'mean', 'ari', or 'gap'.")
     _k_select = lambda cands: _select_k(cands, tol_k_select)  # noqa: E731
 
     n_obs = data.shape[0]
@@ -725,16 +833,16 @@ def _hierarchical_clustering_forgroup(
     if skip_unresponsive_detection:
         unresponsive_mask = np.zeros(n_obs, dtype=bool)
     else:
-        norms = np.linalg.norm(data, axis=1)
-        max_norm = norms.max() if norms.max() > 0 else 1.0
-        unresponsive_mask = norms < unresponsive_norm_frac * max_norm
+        row_means = data.mean(axis=1)
+        max_mean  = row_means.max() if row_means.max() > 0 else 1.0
+        unresponsive_mask = row_means < unresponsive_norm_frac * max_mean
 
     n_unresponsive = int(unresponsive_mask.sum())
     if n_unresponsive > 0:
         warnings.warn(
             f"{n_unresponsive} unresponsive observation(s) detected "
-            f"(norm < {unresponsive_norm_frac} * max_norm = "
-            f"{unresponsive_norm_frac * (np.linalg.norm(data, axis=1).max() if not skip_unresponsive_detection else 0.):.3g}); "
+            f"(mean < {unresponsive_norm_frac} * max_mean = "
+            f"{unresponsive_norm_frac * max_mean:.3g}); "
             f"excluding from clustering and assigning to dedicated cluster (label = k+1).",
             RuntimeWarning,
             stacklevel=3,
@@ -829,7 +937,10 @@ def _hierarchical_clustering_forgroup(
         else:
             raise ValueError("tol_mode must be 'relative' or 'absolute'.")
         primary_candidates = [k for k in k_range if score_recording[k] >= primary_thresh]
-        best_k = _k_select(primary_candidates) if primary_candidates else strict_best_k
+        if tol_k_select == "gap":
+            best_k = _gap_k(Z, primary_candidates) if primary_candidates else strict_best_k
+        else:
+            best_k = _k_select(primary_candidates) if primary_candidates else strict_best_k
     else:
         best_k = strict_best_k
         primary_candidates = [strict_best_k]
@@ -844,7 +955,10 @@ def _hierarchical_clustering_forgroup(
     else:
         alt_thresh = best_score - float(silhouette_tol)
     alt_candidates = [k for k in k_range if score_recording[k] >= alt_thresh]
-    alt_k = _k_select(alt_candidates) if alt_candidates else best_k
+    if tol_k_select == "gap":
+        alt_k = _gap_k(Z, alt_candidates) if alt_candidates else best_k
+    else:
+        alt_k = _k_select(alt_candidates) if alt_candidates else best_k
     alt_labels = labels_by_k[alt_k]
     alt_cut_distance = cut_distance_by_k.get(alt_k, _cut_distance_for_k(Z, alt_k))
 
@@ -927,8 +1041,8 @@ def cluster_variance_matrix_forgroup(
     _row_method = row_method if row_method is not None else _METRIC_TO_METHOD[_row_metric]
     _col_method = col_method if col_method is not None else _METRIC_TO_METHOD[_col_metric]
 
-    if tol_k_select not in ("min", "max", "mean"):
-        raise ValueError("tol_k_select must be 'min', 'max', or 'mean'.")
+    if tol_k_select not in ("min", "max", "mean", "ari", "gap"):
+        raise ValueError("tol_k_select must be 'min', 'max', 'mean', 'ari', or 'gap'.")
     _k_select = lambda cands: _select_k(cands, tol_k_select)  # noqa: E731
 
     print(f"Row  — method: {_row_method}, metric: {_row_metric}")
@@ -1012,7 +1126,13 @@ def cluster_variance_matrix_forgroup(
             raise ValueError("tol_mode must be 'relative' or 'absolute'.")
         col_primary_candidates = [k for k in col_score_agg
                                    if col_score_agg[k] >= col_primary_thresh]
-        best_k_col = _k_select(col_primary_candidates) if col_primary_candidates else col_strict_best_k
+        if tol_k_select == "gap":
+            # Gap uses the primary grouping's linkage (same one used for final labels).
+            # The band is still derived from the aggregated silhouette across all groupings.
+            _col_Z = col_res_list[0]["linkage"]
+            best_k_col = _gap_k(_col_Z, col_primary_candidates) if col_primary_candidates else col_strict_best_k
+        else:
+            best_k_col = _k_select(col_primary_candidates) if col_primary_candidates else col_strict_best_k
     else:
         best_k_col = col_strict_best_k
         col_primary_candidates = [col_strict_best_k]
