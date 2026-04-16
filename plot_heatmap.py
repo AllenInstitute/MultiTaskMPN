@@ -136,13 +136,21 @@ def main(seed, feature):
             kept_sizes     = [col_edges[ci + 1] - col_edges[ci] for ci in kept]
             yboundary_filt = list(np.cumsum(kept_sizes)[:-1])
 
+            kept_desc = ", ".join(
+                f"C{ci}(size={col_edges[ci+1]-col_edges[ci]}, sum={col_sums[ci]:.2g})"
+                for ci in kept
+            )
             removed_desc = (
-                ", ".join(f"C{ci}(sum={col_sums[ci]:.2g})" for ci in removed)
+                ", ".join(
+                    f"C{ci}(size={col_edges[ci+1]-col_edges[ci]}, sum={col_sums[ci]:.2g})"
+                    for ci in removed
+                )
                 if len(removed) > 0 else "none"
             )
             title_filt = (
                 f"Col clusters kept: {len(kept)}/{n_col_cls}  "
                 f"(threshold={threshold_frac:.0%} × max={col_sums.max():.3g})\n"
+                f"Kept: {kept_desc}\n"
                 f"Removed: {removed_desc}"
             )
 
