@@ -178,7 +178,6 @@ if __name__ == "__main__":
     for f in Path("multiple_task_heatmaps").glob("*.png"):
         f.unlink()
         
-    # seed_lst = [921, 749, 842, 408]
-    seed_lst = [921]
-    for seed in seed_lst:
-        main(seed, "L21e4")
+    seed = 749
+    L2 = "L21e4"
+    main(seed, L2)

@@ -23,7 +23,7 @@ def _build_reverse_map(cluster_dict, size_hint):
     return arr, n_clusters
 
 
-def _precompute_pair_arrays(N, M, pre_cluster, post_cluster):
+def _precompute_pair_arrays(N, M, pre_cluster, post_cluster, flat_idx=None):
     """Precompute all index-level arrays shared across every shuffle repeat.
 
     Returns a dict with:
@@ -31,10 +31,16 @@ def _precompute_pair_arrays(N, M, pre_cluster, post_cluster):
       preC_all, postC_all        — pre/post cluster id per modulation
       comb_id                    — ravelled (preC, postC) pair id per modulation
       n_pre_clusters, n_post_clusters
+
+    flat_idx : optional array of original flat indices (length N).
+        Pass when col_all has been filtered (e.g. unresponsive entries removed)
+        so that pre = flat_idx // M and post = flat_idx % M remain correct.
+        Defaults to np.arange(N).
     """
-    idx_all = np.arange(N)
-    pre_all = idx_all // M
-    post_all = idx_all % M
+    if flat_idx is None:
+        flat_idx = np.arange(N)
+    pre_all = flat_idx // M
+    post_all = flat_idx % M
 
     pre_to_cluster, n_pre_clusters = _build_reverse_map(pre_cluster, pre_all.max() + 1)
     post_to_cluster, n_post_clusters = _build_reverse_map(post_cluster, post_all.max() + 1)
@@ -121,7 +127,8 @@ def _aggregate_pair_counts(col_all, M, arrays):
 def count_pairs_with_clusters(col_all,
                               M,
                               pre_cluster,
-                              post_cluster):
+                              post_cluster,
+                              flat_idx=None):
     """
     Vectorized counts over unordered pairs within each group in col_all.
 
@@ -136,12 +143,14 @@ def count_pairs_with_clusters(col_all,
         both_pre_post_cluster_all,     # same pre-cluster AND same post-cluster
         no_pre_post_cluster_all        # neither same pre-cluster nor same post-cluster
       )
+
+    flat_idx : see _precompute_pair_arrays.
     """
     N = col_all.size
     if N == 0:
         return (0, 0, 0, 0, 0, 0, 0)
 
-    arrays = _precompute_pair_arrays(N, M, pre_cluster, post_cluster)
+    arrays = _precompute_pair_arrays(N, M, pre_cluster, post_cluster, flat_idx=flat_idx)
     return _aggregate_pair_counts(col_all, M, arrays)
 
 
@@ -169,7 +178,8 @@ def count_pairs_with_clusters_control(col_all,
                                       M,
                                       pre_cluster,
                                       post_cluster,
-                                      repeat=10):
+                                      repeat=10,
+                                      flat_idx=None):
     """
     Control distribution for pre/post neuron & neuron clustering belonging.
 
@@ -179,12 +189,14 @@ def count_pairs_with_clusters_control(col_all,
     Vectorized: precomputes static arrays once, then processes all `repeat`
     shuffles simultaneously via combined-key flat bincount — O(repeat * N)
     instead of O(repeat * N * n_groups).
+
+    flat_idx : see _precompute_pair_arrays.
     """
     N = col_all.size
     if N == 0:
         return np.zeros(7)
 
-    arrays = _precompute_pair_arrays(N, M, pre_cluster, post_cluster)
+    arrays = _precompute_pair_arrays(N, M, pre_cluster, post_cluster, flat_idx=flat_idx)
     pre_all = arrays["pre_all"]
     post_all = arrays["post_all"]
     preC_all = arrays["preC_all"]

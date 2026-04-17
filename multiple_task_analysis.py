@@ -546,6 +546,144 @@ def main(seed, feature):
         
         return
 
+    def plot_static_pathway_analysis(
+        output_W,
+        input_W,
+        modulation_W,
+        input_labels,
+        aname,
+        save_dir="./multiple_tasks",
+    ):
+        """End-to-end pathway W_out @ W_mod @ W_in and its SVD spectrum."""
+        W_path = output_W @ modulation_W @ input_W  # (n_output, n_input)
+        _, s, _ = np.linalg.svd(W_path, full_matrices=False)
+
+        n_output, n_input = W_path.shape
+        fig, axs = plt.subplots(
+            1, 2,
+            figsize=(max(8, n_input * 0.35 + 4), max(4, n_output * 0.45 + 2)),
+            gridspec_kw={"width_ratios": [3, 1]},
+        )
+
+        vabs = float(np.nanmax(np.abs(W_path)))
+        sns.heatmap(
+            W_path,
+            ax=axs[0],
+            cmap="coolwarm",
+            center=0,
+            vmin=-vabs,
+            vmax=vabs,
+            cbar=True,
+            xticklabels=input_labels,
+            yticklabels=np.arange(n_output),
+        )
+        axs[0].set_xticklabels(input_labels, rotation=90, fontsize=7)
+        axs[0].set_xlabel("Input Feature", fontsize=10)
+        axs[0].set_ylabel("Output Dim", fontsize=10)
+        axs[0].set_title("End-to-end pathway  W_out @ W_mod @ W_in", fontsize=9)
+
+        axs[1].bar(np.arange(len(s)), s, color="steelblue")
+        axs[1].set_xlabel("Mode", fontsize=10)
+        axs[1].set_ylabel("Singular value", fontsize=10)
+        axs[1].set_title("SV spectrum", fontsize=9)
+        axs[1].spines["top"].set_visible(False)
+        axs[1].spines["right"].set_visible(False)
+
+        fig.tight_layout()
+        fig.savefig(f"{save_dir}/pathway_static_{aname}.png", dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+    def plot_cluster_pathway_analysis(
+        output_W,
+        input_W,
+        modulation_W,
+        cluster_input,
+        cluster_hidden,
+        aname,
+        save_dir="./multiple_tasks",
+    ):
+        """Cluster-level pathway: block means, per-cluster output projections, and cascade."""
+        pre_keys  = sorted(cluster_input.keys())
+        post_keys = sorted(cluster_hidden.keys())
+        n_pre  = len(pre_keys)
+        n_post = len(post_keys)
+        n_output = output_W.shape[0]
+
+        # modulation_W block means: (n_post, n_pre)
+        block_mean = np.array([
+            [modulation_W[np.ix_(cluster_hidden[c2], cluster_input[c1])].mean()
+             for c1 in pre_keys]
+            for c2 in post_keys
+        ])
+
+        # mean output_W column per post-cluster: (n_output, n_post)
+        cluster_out_proj = np.column_stack([
+            output_W[:, cluster_hidden[c2]].mean(axis=1)
+            for c2 in post_keys
+        ])
+
+        # effective cascade output per pre-cluster:
+        # eff[:, c1] = sum_{c2} block_mean[c2, c1] * cluster_out_proj[:, c2]
+        eff_pathway = cluster_out_proj @ block_mean  # (n_output, n_pre)
+
+        fig, axs = plt.subplots(1, 3, figsize=(4 * (n_pre + n_post) + 2, max(4, n_output * 0.5 + 2)))
+
+        vabs1 = float(np.nanmax(np.abs(block_mean))) or 1.0
+        sns.heatmap(
+            block_mean,
+            ax=axs[0],
+            cmap="coolwarm",
+            center=0,
+            vmin=-vabs1,
+            vmax=vabs1,
+            cbar=True,
+            annot=True,
+            fmt=".2g",
+            xticklabels=[f"Pre C{i}" for i in range(n_pre)],
+            yticklabels=[f"Post C{i}" for i in range(n_post)],
+        )
+        axs[0].set_title("modulation_W block means\n(Hidden1 pre → Hidden2 post)", fontsize=9)
+
+        vabs2 = float(np.nanmax(np.abs(cluster_out_proj))) or 1.0
+        sns.heatmap(
+            cluster_out_proj,
+            ax=axs[1],
+            cmap="coolwarm",
+            center=0,
+            vmin=-vabs2,
+            vmax=vabs2,
+            cbar=True,
+            xticklabels=[f"Post C{i}" for i in range(n_post)],
+            yticklabels=np.arange(n_output),
+        )
+        axs[1].set_xlabel("Post-cluster", fontsize=9)
+        axs[1].set_ylabel("Output Dim", fontsize=9)
+        axs[1].set_title("output_W projection\nper Hidden2 cluster", fontsize=9)
+
+        vabs3 = float(np.nanmax(np.abs(eff_pathway))) or 1.0
+        sns.heatmap(
+            eff_pathway,
+            ax=axs[2],
+            cmap="coolwarm",
+            center=0,
+            vmin=-vabs3,
+            vmax=vabs3,
+            cbar=True,
+            xticklabels=[f"Pre C{i}" for i in range(n_pre)],
+            yticklabels=np.arange(n_output),
+        )
+        axs[2].set_xlabel("Pre-cluster (Hidden1)", fontsize=9)
+        axs[2].set_ylabel("Output Dim", fontsize=9)
+        axs[2].set_title("Effective cascade pathway\n(Pre-cluster → Output)", fontsize=9)
+
+        fig.suptitle(
+            f"Cluster-level pathway: {n_pre} pre-clusters × {n_post} post-clusters",
+            fontsize=10,
+        )
+        fig.tight_layout()
+        fig.savefig(f"{save_dir}/pathway_cluster_{aname}.png", dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
     plot_weight_triplet_with_top_left_marginals(
         output_W=output_W,
         input_W=input_W,
@@ -567,6 +705,15 @@ def main(seed, feature):
     fig.tight_layout()
     fig.savefig(f"./multiple_tasks/input_weight_correlation_{aname}.png", dpi=300)
     plt.close(fig)
+
+    plot_static_pathway_analysis(
+        output_W=output_W,
+        input_W=input_W,
+        modulation_W=modulation_W,
+        input_labels=all_input,
+        aname=aname,
+        save_dir="./multiple_tasks",
+    )
 
     # should we re-evaluate the result? 
     reevaluate = True 
@@ -1631,7 +1778,7 @@ def main(seed, feature):
             # cell_vars_rules_sorted_norm_r1 = cell_vars_rules_sorted_norm[:,group_neurons_comb]
             cell_vars_rules_sorted_norm_outer_bypre = cell_vars_rules_sorted_norm[:,group_neurons_comb_pre]
             cell_vars_rules_sorted_norm_outer_bypost = cell_vars_rules_sorted_norm[:,group_neurons_comb_post]
-                    
+
             fig, axs = plt.subplots(6,1,figsize=(24,8*6))
             sns.heatmap(cell_vars_rules_sorted_norm, ax=axs[0], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
             sns.heatmap(cell_vars_rules_sorted_norm_outer_bypre, ax=axs[1], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
@@ -1778,6 +1925,16 @@ def main(seed, feature):
                 cluster_input  = col_clusters_all["input_unnormalized"]
                 cluster_hidden = col_clusters_all["hidden_unnormalized"]
                 
+            plot_cluster_pathway_analysis(
+                output_W=output_W,
+                input_W=input_W,
+                modulation_W=modulation_W,
+                cluster_input=cluster_input,
+                cluster_hidden=cluster_hidden,
+                aname=savefigure_name,
+                save_dir="./multiple_tasks",
+            )
+                
             # sanity check: order it based on the key
             cluster_input = dict(sorted(cluster_input.items()))
             cluster_hidden = dict(sorted(cluster_hidden.items()))
@@ -1914,20 +2071,55 @@ def main(seed, feature):
                             return key
                     return None
                     
-                # 2025-10-21: "both" for debugging purpose, effectively with "True" or "False" should obtain identical result
-                # Use "True" for the actual implementation; 
-                # membership using the actual clustering information
+                # Exclude the unresponsive modulation cluster (label = col_k + 1).
+                # flat_idx preserves original positions so i//M and i%M stay correct.
+                # Note: when clustering_normalize=True, skip_unresponsive_detection=True is
+                # passed to cluster_variance_matrix_forgroup, so col_all only contains labels
+                # 1..col_k and the mask is all-True (no-op). The exclusion is only meaningful
+                # when clustering_normalize=False, where unresponsive modulations get label col_k+1.
+                _unres_mod_label = result_all["col_k"] + 1
+                _active_mod_mask = col_all != _unres_mod_label
+                _col_all_active  = col_all[_active_mod_mask]
+                _flat_idx_active = np.where(_active_mod_mask)[0]
+
+                # Additionally exclude modulations whose pre-neuron (input) or post-neuron
+                # (hidden) is in the unresponsive neuron cluster.  This gives "fully responsive
+                # triplets": the modulation itself AND both its endpoints are task-sensitive.
+                # Only meaningful when clustering_normalize=False (unresponsive detection was run
+                # for input/hidden neurons).  When clustering_normalize=True this block is a no-op
+                # because no col_k+1 label was assigned to input/hidden neurons.
+                if not clustering_normalize:
+                    _input_col_k  = cluster_info_save["input_unnormalized"]["result"]["col_tol_k"]
+                    _hidden_col_k = cluster_info_save["hidden_unnormalized"]["result"]["col_tol_k"]
+                    _unres_input_neurons  = set(cluster_input.get(_input_col_k  + 1, []))
+                    _unres_hidden_neurons = set(cluster_hidden.get(_hidden_col_k + 1, []))
+
+                    if _unres_input_neurons or _unres_hidden_neurons:
+                        _pre_idx  = _flat_idx_active // M
+                        _post_idx = _flat_idx_active % M
+                        _endpoint_mask = (
+                            ~np.isin(_pre_idx,  list(_unres_input_neurons)) &
+                            ~np.isin(_post_idx, list(_unres_hidden_neurons))
+                        )
+                        _col_all_active  = _col_all_active[_endpoint_mask]
+                        _flat_idx_active = _flat_idx_active[_endpoint_mask]
+                        n_dropped = int((~_endpoint_mask).sum())
+                        print(f"  Endpoint mask: dropped {n_dropped} modulations touching "
+                              f"unresponsive pre/post neurons "
+                              f"({len(_unres_input_neurons)} unresponsive input, "
+                              f"{len(_unres_hidden_neurons)} unresponsive hidden neurons)")
+
+                # 2025-10-21: membership using the actual clustering information
                 same_pre_all, same_post_all, no_same_pre_post_all, same_pre_cluster_all, same_post_cluster_all, \
-                    same_pre_post_cluster_all, no_same_pre_post_cluster_all = clustering_metric.count_pairs_with_clusters(col_all, M, 
-                                                                                                                          cluster_input, 
-                                                                                                                          cluster_hidden)
-                # (control) membership using the random clustering information 
+                    same_pre_post_cluster_all, no_same_pre_post_cluster_all = clustering_metric.count_pairs_with_clusters(
+                        _col_all_active, M, cluster_input, cluster_hidden,
+                        flat_idx=_flat_idx_active)
+                # (control) membership using the random clustering information
                 # 2026-03-03: increase the repeat times for a more reliable null distribution
                 same_pre_all_c, same_post_all_c, no_same_pre_post_all_c, same_pre_cluster_all_c, same_post_cluster_all_c, \
-                    same_pre_post_cluster_all_c, no_same_pre_post_cluster_all_c = clustering_metric.count_pairs_with_clusters_control(col_all, M, 
-                                                                                                                                      cluster_input, 
-                                                                                                                                      cluster_hidden,
-                                                                                                                                      repeat=10000)
+                    same_pre_post_cluster_all_c, no_same_pre_post_cluster_all_c = clustering_metric.count_pairs_with_clusters_control(
+                        _col_all_active, M, cluster_input, cluster_hidden,
+                        repeat=10000, flat_idx=_flat_idx_active)
                 
                 print(f"same_pre_all: {same_pre_all}; same_post_all: {same_post_all}; no_same_pre_post_all: {no_same_pre_post_all}")
                 print(f"same_pre_cluster_all: {same_pre_cluster_all}; same_post_cluster_all: {same_post_cluster_all}")
@@ -1938,9 +2130,11 @@ def main(seed, feature):
                 print(f"same_pre_post_cluster_all_c: {same_pre_post_cluster_all_c}; no_same_pre_post_cluster_all_c: {no_same_pre_post_cluster_all_c}")
         
                 bar_all_lst = [[same_pre_all, same_post_all, no_same_pre_post_all], 
-                               [same_pre_cluster_all, same_post_cluster_all, same_pre_post_cluster_all, no_same_pre_post_cluster_all]]
+                               [same_pre_cluster_all, same_post_cluster_all, 
+                                same_pre_post_cluster_all, no_same_pre_post_cluster_all]]
                 bar_all_ctrl_lst = [[same_pre_all_c, same_post_all_c, no_same_pre_post_all_c], 
-                                    [same_pre_cluster_all_c, same_post_cluster_all_c, same_pre_post_cluster_all_c, no_same_pre_post_cluster_all_c]]
+                                    [same_pre_cluster_all_c, same_post_cluster_all_c, 
+                                     same_pre_post_cluster_all_c, no_same_pre_post_cluster_all_c]]
                 bar_name_lst = [["Share-Pre", "Share-Post", "Neither"], 
                                 ["Share-Pre-Cluster", "Share-Post-Cluster", "Share-Both-Cluster", "Neither"]]
 
@@ -1973,7 +2167,10 @@ def main(seed, feature):
                 if G_idx == 1:
                     print(f"Plot for G={G_lst[G_idx]} Case")
                     mp = 5; cnt = 0
-                    all_choice_order_dict = helper.value_counts_desc(col_all)
+                    # Use active (responsive) modulations only, consistent with count_pairs_with_clusters.
+                    # _col_all_active / _flat_idx_active are all-inclusive no-ops when
+                    # clustering_normalize=True (unresponsive detection is skipped).
+                    all_choice_order_dict = helper.value_counts_desc(_col_all_active)
                     all_choice_order = list(all_choice_order_dict.keys())
 
                     # cluster sizes come directly from value_counts_desc (no need to re-scan col_all)
@@ -2008,17 +2205,18 @@ def main(seed, feature):
                     for key, neurons in cluster_hidden.items():
                         post_lookup[np.asarray(neurons)] = key - 1
 
-                    # Precompute the cluster assignment for every modulation entry.
-                    all_idx = np.arange(len(col_all))
-                    pre_clusters  = pre_lookup[all_idx // M]   # shape (N_mod,), 0-based
-                    post_clusters = post_lookup[all_idx % M]   # shape (N_mod,), 0-based
+                    # Precompute cluster assignment using original flat positions (_flat_idx_active)
+                    # so that pre = flat_idx // M and post = flat_idx % M remain correct after
+                    # unresponsive entries are removed.
+                    pre_clusters  = pre_lookup[_flat_idx_active // M]   # shape (N_active,), 0-based
+                    post_clusters = post_lookup[_flat_idx_active % M]   # shape (N_active,), 0-based
 
                     corr_lst, om_lst, num_lst = [], [], []
                     over_membership_lst = []
 
                     figsm, axsm = plt.subplots(2,mp,figsize=(4*mp,4*2))
                     for cidx, cluster_num in enumerate(all_choice_order):
-                        idx = np.where(col_all == cluster_num)[0]
+                        idx = np.where(_col_all_active == cluster_num)[0]
 
                         # Build Z_count via bincount on linearised (pre, post) indices —
                         # replaces the per-element Python loop + dict lookup.
@@ -2048,34 +2246,105 @@ def main(seed, feature):
                     figsm.savefig(f"./multiple_tasks/{clustering_name}_specific_case_{savefigure_name}.png", dpi=300)
                     plt.close(figsm)
 
-                    figomcluster, axsomcluster = plt.subplots(4,1,figsize=(10,4*4))
+                    # Directional asymmetry analysis:
+                    # Each modulation cluster groups synapses (pre, post) with similar Hebbian dynamics.
+                    # The question is whether co-clustered synapses share a common pre-synaptic (input)
+                    # neuron cluster, a common post-synaptic (hidden) neuron cluster, or neither.
+                    # Over-membership (OM) = observed count / expected count under random assignment.
+                    # OM > 1 means the modulation cluster is enriched for that (input or hidden) cluster.
+                    # The log2 asymmetry ratio log2(peak_input_OM / peak_hidden_OM) > 0 means
+                    # a modulation cluster is better explained by shared input identity than shared
+                    # hidden identity, suggesting pre-synaptic organisation of plasticity.
+                    om_stack = np.stack(over_membership_lst)           # (N_cls, n_in, n_hid)
+                    N_cls = len(over_membership_lst)
+                    # Mean |OM| collapsed over the other dimension
+                    over_membership_array_input  = np.mean(np.abs(om_stack), axis=2)  # (N_cls, n_in)
+                    over_membership_array_hidden = np.mean(np.abs(om_stack), axis=1)  # (N_cls, n_hid)
 
-                    om_stack = np.stack(over_membership_lst)           # (N_clusters, n_in, n_hid)
-                    over_membership_array_all    = om_stack.reshape(len(over_membership_lst), -1)
-                    over_membership_array_input  = np.mean(np.abs(om_stack), axis=2)
-                    over_membership_array_hidden = np.mean(np.abs(om_stack), axis=1)
+                    # Per-mod-cluster peak alignment strength in each dimension
+                    max_input_om  = over_membership_array_input.max(axis=1)   # (N_cls,)
+                    max_hidden_om = over_membership_array_hidden.max(axis=1)  # (N_cls,)
 
-                    over_membership_array = [over_membership_array_all, over_membership_array_input, over_membership_array_hidden]
+                    # Log2 asymmetry ratio: >0 = input-dominant, <0 = hidden-dominant
+                    log_asym = np.log2(
+                        np.clip(max_input_om, 1e-6, None) /
+                        np.clip(max_hidden_om, 1e-6, None)
+                    )
+                    input_dominant_frac = float(np.mean(log_asym > 0))
+                    mean_log_asym = float(np.mean(log_asym))
 
-                    for omindex, over_membership_array_ in enumerate(over_membership_array):
-                        cluster_colors = color_func.rainbow_generate(over_membership_array_.shape[1])
-                        for cindex in range(over_membership_array_.shape[1]):
-                            axsomcluster[omindex].plot(over_membership_array_[:,cindex], color=cluster_colors[cindex], alpha=0.5)
+                    figomcluster, axsomcluster = plt.subplots(2, 2, figsize=(14, 10))
+                    x_cls = np.arange(N_cls)
 
-                    axsomcluster[0].set_ylabel("Overmembership at Bi-Cluster", fontsize=15)
-                    axsomcluster[1].set_ylabel("Mean Overmembership at Input-Cluster", fontsize=15)
-                    axsomcluster[2].set_ylabel("Mean Overmembership at Hidden-Cluster", fontsize=15)
+                    # Panel [0,0]: scatter — max input OM vs max hidden OM, sized by cluster size
+                    ax_sc = axsomcluster[0, 0]
+                    sizes = cluster_size_percent / cluster_size_percent.max() * 200 + 20
+                    sc = ax_sc.scatter(
+                        max_input_om, max_hidden_om,
+                        s=sizes, c=x_cls, cmap="viridis",
+                        alpha=0.8, edgecolors="k", linewidths=0.5,
+                    )
+                    lim = max(float(max_input_om.max()), float(max_hidden_om.max())) * 1.15
+                    ax_sc.plot([0, lim], [0, lim], "--", color="gray", lw=1.2, label="y = x")
+                    ax_sc.set_xlim(0, lim); ax_sc.set_ylim(0, lim)
+                    ax_sc.set_xlabel("Peak OM — input cluster", fontsize=12)
+                    ax_sc.set_ylabel("Peak OM — hidden cluster", fontsize=12)
+                    ax_sc.set_title(
+                        f"Per-cluster peak alignment\n"
+                        f"{input_dominant_frac:.0%} input-dominant  |  mean log₂ ratio = {mean_log_asym:+.2f}",
+                        fontsize=10,
+                    )
+                    ax_sc.legend(fontsize=8)
+                    plt.colorbar(sc, ax=ax_sc, label="Mod cluster order (0=largest)")
 
-                    axsomcluster[3].plot(cluster_size_percent, "-o", linewidth=2, color=cluster_colors[0])
-                    axsomcluster[3].axhline(1 / len(cluster_size_percent), linestyle="--")
-                    axsomcluster[3].set_ylabel("Cluster Size (Normalized)", fontsize=15)
-                    for axomcluster in axsomcluster:
-                        axomcluster.set_xlabel("Modulation Cluster Order (Largest to Smallest)", fontsize=15)
-                    for indx in range(3):
-                        axsomcluster[indx].set_xlim([0, 5])
-                        axsomcluster[indx].set_ylim([0, 3])
+                    # Panel [0,1]: log asymmetry ratio bar chart, sorted by cluster size
+                    ax_bar = axsomcluster[0, 1]
+                    bar_colors = ["#d73027" if v > 0 else "#4575b4" for v in log_asym]
+                    ax_bar.bar(x_cls, log_asym, color=bar_colors, edgecolor="k", linewidth=0.4)
+                    ax_bar.axhline(0, color="black", lw=1)
+                    ax_bar.set_xlabel("Modulation cluster (largest → smallest)", fontsize=12)
+                    ax_bar.set_ylabel("log₂(peak input OM / peak hidden OM)", fontsize=11)
+                    ax_bar.set_title(
+                        "Directional asymmetry per mod cluster\n"
+                        "red = input-dominant   blue = hidden-dominant",
+                        fontsize=10,
+                    )
+
+                    # Panel [1,0]: input-cluster OM profiles across mod clusters
+                    ax_in = axsomcluster[1, 0]
+                    in_colors = color_func.rainbow_generate(n_in)
+                    for ci in range(n_in):
+                        ax_in.plot(
+                            x_cls, over_membership_array_input[:, ci],
+                            color=in_colors[ci], alpha=0.8, lw=1.5, label=f"In C{ci}",
+                        )
+                    ax_in.axhline(1.0, color="gray", lw=1, linestyle="--", label="Expected = 1")
+                    ax_in.set_xlabel("Modulation cluster (largest → smallest)", fontsize=12)
+                    ax_in.set_ylabel("Mean |OM| — input cluster", fontsize=12)
+                    ax_in.set_title("Input-cluster alignment profiles", fontsize=10)
+                    ax_in.legend(fontsize=8, loc="upper right")
+
+                    # Panel [1,1]: hidden-cluster OM profiles across mod clusters
+                    ax_hid = axsomcluster[1, 1]
+                    hid_colors = color_func.rainbow_generate(n_hid)
+                    for ci in range(n_hid):
+                        ax_hid.plot(
+                            x_cls, over_membership_array_hidden[:, ci],
+                            color=hid_colors[ci], alpha=0.8, lw=1.5, label=f"Hid C{ci}",
+                        )
+                    ax_hid.axhline(1.0, color="gray", lw=1, linestyle="--", label="Expected = 1")
+                    ax_hid.set_xlabel("Modulation cluster (largest → smallest)", fontsize=12)
+                    ax_hid.set_ylabel("Mean |OM| — hidden cluster", fontsize=12)
+                    ax_hid.set_title("Hidden-cluster alignment profiles", fontsize=10)
+                    ax_hid.legend(fontsize=8, loc="upper right")
+
+                    figomcluster.suptitle(
+                        f"Modulation cluster ↔ Input / Hidden cluster alignment  "
+                        f"| {n_in} input clusters × {n_hid} hidden clusters × {N_cls} mod clusters",
+                        fontsize=11,
+                    )
                     figomcluster.tight_layout()
-                    # figomcluster.savefig(f"./multiple_tasks/{clustering_name}_om_across_cluster_{savefigure_name}.png", dpi=300)
+                    figomcluster.savefig(f"./multiple_tasks/{clustering_name}_om_across_cluster_{savefigure_name}.png", dpi=300)
                     plt.close(figomcluster)
 
                     corr_arr = np.array(corr_lst)
@@ -2437,220 +2706,7 @@ def main(seed, feature):
     # save this only at the end     
     with open(f"./multiple_tasks/cluster_info_mod_{savefigure_name_base}.pkl", "wb") as f:
         pickle.dump(cluster_info_save_mod, f)
-
-    # # %%
-    # rules_epochs
-
-    # # %%
-    # plot_num = 3
-    # modulation_norm = modulation_cluster_norm[2]
-    # print(f"modulation_norm: {modulation_norm.shape}")
-    # assert modulation_norm.shape[1] == max(all_choice_order)
-    # print(np.min(all_choice_order))
-
-    # fig, axs = plt.subplots(3,plot_num,figsize=(4*plot_num,4*3))
-    # for i in range(plot_num):
-    #     cluster_name = all_choice_order[i] - 1
-    #     modulation_norm_cl = modulation_norm[:,cluster_name].reshape(-1,1)
-    #     data = over_membership_lst[i]
-    #     hidden_mean = np.mean(data, axis=0)
-    #     input_mean = np.mean(data, axis=1)
-    #     mean, std = np.mean(hidden_mean), np.std(hidden_mean) / np.sqrt(len(hidden_mean))
-    #     idx = np.where(hidden_mean > 2)[0]
-    #     axs[0,i].plot(hidden_mean, "-o", color=c_vals[0])
-    #     # axs[0,i].axhline(mean, linestyle="--", linewidth=2)
-    #     # axs[0,i].axhline(2 * std, linestyle="--", linewidth=2)
-    #     axs[0,i].set_title(f"{idx + 1}")
-    #     # axs[0,i].set_title(f"Cluster Name: {cluster_name}")
-    #     idx = np.where(input_mean > 2)[0]
-    #     axs[1,i].plot(input_mean, "-o", color=c_vals[0])
-    #     axs[1,i].set_title(f"{idx + 1}")
-    #     sns.heatmap(modulation_norm_cl, ax=axs[2,i], cmap=cs, vmin=np.min(modulation_norm), vmax=np.max(modulation_norm))
         
-    # fig.tight_layout()
-
-    # # %%
-    # # 2025-11-20: filter out some small modulation cluster
-    # valid_mod_cluster = np.array(cluster_size_percent) > (1 / len(cluster_size_percent))
-
-    # # %%
-    # # 2025-11-20: filter out some small input * hidden bi-cluster
-    # inp_hidden_mask = all_num > (np.sum(all_num) / (all_num.shape[0] * all_num.shape[1]))
-
-    # # %%
-    # data_lst = []
-    # data_all = [[], []]
-    # fig, axs = plt.subplots(2,plot_num,figsize=(4*plot_num,4*2))
-    # for i in range(len(over_membership_lst)):
-    #     data = over_membership_lst[i]
-    #     xx, yy = activecorr.flatten(), data.flatten()
-    #     if valid_mod_cluster[i]: 
-    #         data_all[0].extend(list(activecorr[inp_hidden_mask].flatten())); 
-    #         data_all[1].extend(list(data[inp_hidden_mask].flatten()))
-    #     x_fit, y_fit, r_value, slope, _, p_val = helper.linear_regression(xx, yy, log=False, through_origin=False)
-    #     data_lst.append([slope, p_val])
-    #     if i < plot_num: 
-    #         sns.kdeplot(x=xx, y=yy, fill=True, cmap='coolwarm', ax=axs[0,i], levels=200, thresh=0, bw_adjust=0.5, gridsize=300)
-    #         axs[1,i].scatter(xx, yy, alpha=0.5, color=c_vals[0])
-    #         axs[1,i].plot(x_fit, y_fit, label=f"R={r_value:.3f}; Slope: {slope:.3f}; p-value: {p_val:.3f}")
-    #         axs[1,i].legend()
-    #         for j in range(2):
-    #             axs[j,i].set_xlabel("Co-activation Level", fontsize=15)
-    #             axs[j,i].set_ylabel("Overmembership Level", fontsize=15)
-    # fig.tight_layout()
-    # fig.savefig(f"./multiple_tasks/inputhiddencoactive_om_{savefigure_name}.png", dpi=300)
-
-    # # %%
-    # fig, ax = plt.subplots(1,1,figsize=(6,6))
-    # ax.scatter(data_all[0], data_all[1], alpha=0.5, s=10, color=c_vals[0])
-    # # ax.set_yscale("log")
-    # ax.set_ylim([0, 5])
-    # ax.set_xlabel("Coactivation Level", fontsize=15)
-    # ax.set_ylabel("Modulation-Cluster-Specific Overmembership", fontsize=15)
-    # ax.axhline(1, color=c_vals[1])
-
-    # unique_x = np.unique(data_all[0])
-    # median_y = [np.median(np.array(data_all[1])[data_all[0] == ux]) for ux in unique_x]
-    # ax.plot(unique_x, median_y, color=c_vals[2], linewidth=2, label="Median Y given X")
-    # ax.legend(loc="best", frameon=True, fontsize=15)
-
-    # # %%
-    # cutoff_lst = np.linspace(1,3,100)
-    # fig, axs = plt.subplots(1,4,figsize=(4*4,4))
-
-    # fits = []
-    # for cindex, cutoff in enumerate(cutoff_lst): 
-    #     prop_y_gt2 = []
-        
-    #     for ux in unique_x:
-    #         y_vals = np.array(data_all[1])[np.array(data_all[0]) == ux]
-    #         prop_y_gt2.append(np.mean(y_vals > cutoff))  
-
-    #     x_fit, y_fit, r_value, slope, _, p_val = helper.linear_regression(unique_x, prop_y_gt2, 
-    #                                                                       log=False, through_origin=False)
-    #     fits.append([r_value, slope])
-
-    #     if cindex % 25 == 0: 
-    #         cindex = int(cindex/25)
-    #         axs[cindex].scatter(unique_x, prop_y_gt2, c=c_vals[0])
-    #         axs[cindex].set_xlabel("Coactivation Level", fontsize=15)
-    #         axs[cindex].set_ylabel("Percentage of Overmembership", fontsize=15)
-    #         axs[cindex].plot(x_fit, y_fit, linestyle="--", label=f"r_value: {r_value:.3f}; slope: {slope:.3f}; ")
-    #         axs[cindex].legend()
-    #         axs[cindex].set_title(f"cutoff: {cutoff}", fontsize=15)
-
-    # fig.tight_layout()
-    # fig.savefig(f"./multiple_tasks/coact_om_{savefigure_name}.png", dpi=300)
-
-    # fits = np.array(fits)
-    # figfit, axsfit = plt.subplots(1,2,figsize=(4*2,4))
-    # axsfit[0].plot(cutoff_lst, fits[:,0])
-    # axsfit[1].plot(cutoff_lst, fits[:,1])
-    # axsfit[0].set_xlabel("Threshold", fontsize=15)
-    # axsfit[1].set_xlabel("Threshold", fontsize=15)
-    # axsfit[0].set_ylabel("R-Value", fontsize=15)
-    # axsfit[1].set_ylabel("Slope", fontsize=15)
-    # figfit.tight_layout()
-    # figfit.savefig(f"./multiple_tasks/coact_om_threshold_{savefigure_name}.png", dpi=300)
-
-    # # %%
-    # phase_to_indices_fix = [
-    #     ("fix1",    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
-    # ]
-
-    # tb_break_fix = [
-    #     [idx, rules_epochs[all_rules[idx]][phase)]
-    #     for phase, indices in phase_to_indices_fix
-    #     for idx in indices
-    # ]
-
-    # tb_break_fix_name = [
-    #     f"{all_rules[idx]}"
-    #     for phase, indices in phase_to_indices_fix
-    #     for idx in indices
-    # ]
-
-    # clustering_datas = [xs, hs, Ms_orig]
-    # clustering_data_names = ["input", "hidden", "modulation"]
-    # sindex = 1
-
-    # states = []
-    # for el in range(len(tb_break_fix)):        
-    #     rule_idx, period_time = tb_break[el][0], tb_break[el][1]
-    #     if sindex in (0, 1,):
-    #         rule_context_final_state = clustering_datas[sindex][test_task == rule_idx, period_time[1], :]
-    #     else:
-    #         rule_context_final_state = clustering_datas[sindex][test_task == rule_idx, period_time[1], :, :]
-    #         rule_context_final_state = rule_context_final_state.reshape(rule_context_final_state.shape[0], -1)
-    #     states.append(rule_context_final_state)
-
-    # print(tb_break_fix_name)
-
-    # # %%
-    # X_all = np.vstack(states)              
-    # N_per_task = [s.shape[0] for s in states]
-
-    # mean_vec = X_all.mean(axis=0, keepdims=True)
-    # X_centered = X_all - mean_vec      
-
-    # U, S, Vt = np.linalg.svd(X_centered, full_matrices=False)
-    # W = Vt[:2].T                         
-
-    # Z_all = X_centered @ W                 
-
-    # Z_tasks = []
-    # start = 0
-    # for n in N_per_task:
-    #     Z_tasks.append(Z_all[start:start+n])   
-    #     start += n
-
-    # print(len(Z_tasks))
-
-    # # %%
-    # from matplotlib.patches import Circle
-
-    # fig, ax = plt.subplots(1,1,figsize=(10,10))
-
-    # for k, Zk in enumerate(Z_tasks):
-    #     color = c_vals[k % len(c_vals)]
-    #     ax.scatter(Zk[:, 0], Zk[:, 1], s=20, alpha=0.5, color=color)
-
-    #     med = np.mean(Zk, axis=0)   
-    #     med_x, med_y = med[0], med[1]
-
-    #     ax.scatter(med_x, med_y, s=150, color=color, edgecolor="black",
-    #                marker="X", linewidth=1.5, zorder=5)
-
-    #     dists = np.linalg.norm(Zk - med, axis=1)
-    #     radius = dists.max()
-
-    #     circle = Circle(
-    #         (med_x, med_y),
-    #         radius,
-    #         edgecolor=color,
-    #         facecolor="none",
-    #         linestyle="--",
-    #         linewidth=2,
-    #         alpha=0.8
-    #     )
-    #     ax.add_patch(circle)
-
-    #     label = f"{tb_break_fix_name[k]} (med=({med_x:.2f}, {med_y:.2f}))"
-
-    #     ax.scatter([], [], color=color, marker="X", s=150, edgecolor="black",
-    #                label=label)
-
-    # ax.set_xlabel("Context endpt. state PC1", fontsize=15)
-    # ax.set_ylabel("Context endpt. state PC2", fontsize=15)
-    # ax.set_title(f"{clustering_data_names[sindex]}", fontsize=15)
-    # ax.legend(frameon=True, fontsize=12)
-    # fig.tight_layout()
-    # fig.show()
-
-    # # %%
-
-
-    # # %%
 
 if __name__ == "__main__":
     # Clean up old output files
@@ -2659,7 +2715,14 @@ if __name__ == "__main__":
     for f in Path("multiple_tasks").glob("*.pkl"):
         f.unlink()
         
-    # seed_lst = [921, 749, 842, 408]
-    seed_lst = [921]
-    for seed in seed_lst:
-        main(seed, "L21e4")
+    import re
+    saved_nets = sorted(Path("multiple_tasks").glob("savednet_everything_seed*+angle.pt"))
+    param_lst = []
+    for p in saved_nets:
+        m = re.match(r"savednet_everything_seed(\d+)_(\w+)\+hidden\d+\+batch\d+\+angle\.pt", p.name)
+        if m:
+            param_lst.append((int(m.group(1)), m.group(2)))
+            
+    print(f"Found {len(param_lst)} saved models: {param_lst}")
+    for seed, feature in param_lst:
+        main(seed, feature)
