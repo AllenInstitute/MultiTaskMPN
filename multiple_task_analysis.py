@@ -593,97 +593,6 @@ def main(seed, feature):
         fig.savefig(f"{save_dir}/pathway_static_{aname}.png", dpi=300, bbox_inches="tight")
         plt.close(fig)
 
-    def plot_cluster_pathway_analysis(
-        output_W,
-        input_W,
-        modulation_W,
-        cluster_input,
-        cluster_hidden,
-        aname,
-        save_dir="./multiple_tasks",
-    ):
-        """Cluster-level pathway: block means, per-cluster output projections, and cascade."""
-        pre_keys  = sorted(cluster_input.keys())
-        post_keys = sorted(cluster_hidden.keys())
-        n_pre  = len(pre_keys)
-        n_post = len(post_keys)
-        n_output = output_W.shape[0]
-
-        # modulation_W block means: (n_post, n_pre)
-        block_mean = np.array([
-            [modulation_W[np.ix_(cluster_hidden[c2], cluster_input[c1])].mean()
-             for c1 in pre_keys]
-            for c2 in post_keys
-        ])
-
-        # mean output_W column per post-cluster: (n_output, n_post)
-        cluster_out_proj = np.column_stack([
-            output_W[:, cluster_hidden[c2]].mean(axis=1)
-            for c2 in post_keys
-        ])
-
-        # effective cascade output per pre-cluster:
-        # eff[:, c1] = sum_{c2} block_mean[c2, c1] * cluster_out_proj[:, c2]
-        eff_pathway = cluster_out_proj @ block_mean  # (n_output, n_pre)
-
-        fig, axs = plt.subplots(1, 3, figsize=(4 * (n_pre + n_post) + 2, max(4, n_output * 0.5 + 2)))
-
-        vabs1 = float(np.nanmax(np.abs(block_mean))) or 1.0
-        sns.heatmap(
-            block_mean,
-            ax=axs[0],
-            cmap="coolwarm",
-            center=0,
-            vmin=-vabs1,
-            vmax=vabs1,
-            cbar=True,
-            annot=True,
-            fmt=".2g",
-            xticklabels=[f"Pre C{i}" for i in range(n_pre)],
-            yticklabels=[f"Post C{i}" for i in range(n_post)],
-        )
-        axs[0].set_title("modulation_W block means\n(Hidden1 pre → Hidden2 post)", fontsize=9)
-
-        vabs2 = float(np.nanmax(np.abs(cluster_out_proj))) or 1.0
-        sns.heatmap(
-            cluster_out_proj,
-            ax=axs[1],
-            cmap="coolwarm",
-            center=0,
-            vmin=-vabs2,
-            vmax=vabs2,
-            cbar=True,
-            xticklabels=[f"Post C{i}" for i in range(n_post)],
-            yticklabels=np.arange(n_output),
-        )
-        axs[1].set_xlabel("Post-cluster", fontsize=9)
-        axs[1].set_ylabel("Output Dim", fontsize=9)
-        axs[1].set_title("output_W projection\nper Hidden2 cluster", fontsize=9)
-
-        vabs3 = float(np.nanmax(np.abs(eff_pathway))) or 1.0
-        sns.heatmap(
-            eff_pathway,
-            ax=axs[2],
-            cmap="coolwarm",
-            center=0,
-            vmin=-vabs3,
-            vmax=vabs3,
-            cbar=True,
-            xticklabels=[f"Pre C{i}" for i in range(n_pre)],
-            yticklabels=np.arange(n_output),
-        )
-        axs[2].set_xlabel("Pre-cluster (Hidden1)", fontsize=9)
-        axs[2].set_ylabel("Output Dim", fontsize=9)
-        axs[2].set_title("Effective cascade pathway\n(Pre-cluster → Output)", fontsize=9)
-
-        fig.suptitle(
-            f"Cluster-level pathway: {n_pre} pre-clusters × {n_post} post-clusters",
-            fontsize=10,
-        )
-        fig.tight_layout()
-        fig.savefig(f"{save_dir}/pathway_cluster_{aname}.png", dpi=300, bbox_inches="tight")
-        plt.close(fig)
-
     plot_weight_triplet_with_top_left_marginals(
         output_W=output_W,
         input_W=input_W,
@@ -1925,16 +1834,6 @@ def main(seed, feature):
                 cluster_input  = col_clusters_all["input_unnormalized"]
                 cluster_hidden = col_clusters_all["hidden_unnormalized"]
                 
-            plot_cluster_pathway_analysis(
-                output_W=output_W,
-                input_W=input_W,
-                modulation_W=modulation_W,
-                cluster_input=cluster_input,
-                cluster_hidden=cluster_hidden,
-                aname=savefigure_name,
-                save_dir="./multiple_tasks",
-            )
-                
             # sanity check: order it based on the key
             cluster_input = dict(sorted(cluster_input.items()))
             cluster_hidden = dict(sorted(cluster_hidden.items()))
@@ -2710,10 +2609,12 @@ def main(seed, feature):
 
 if __name__ == "__main__":
     # Clean up old output files
-    for f in Path("multiple_tasks").glob("*.png"):
-        f.unlink()
-    for f in Path("multiple_tasks").glob("*.pkl"):
-        f.unlink()
+    clean = False 
+    if clean: 
+        for f in Path("multiple_tasks").glob("*.png"):
+            f.unlink()
+        for f in Path("multiple_tasks").glob("*.pkl"):
+            f.unlink()
         
     import re
     saved_nets = sorted(Path("multiple_tasks").glob("savednet_everything_seed*+angle.pt"))
@@ -2724,5 +2625,8 @@ if __name__ == "__main__":
             param_lst.append((int(m.group(1)), m.group(2)))
             
     print(f"Found {len(param_lst)} saved models: {param_lst}")
+    
+    param_lst = [[749, "L21e4"]]
+    
     for seed, feature in param_lst:
         main(seed, feature)
