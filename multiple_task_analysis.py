@@ -724,12 +724,12 @@ def main(seed, feature):
     # otherwise per-neuron normalization
     # will wash out the multiplication effect
     # 2026-04-06: downstream analysis implicitly require the order of
-    clustering_data_analysis = [xs, xs, hs, hs, Ms_orig, Ms_orig, weighted_Ms_orig]
+    clustering_data_analysis = [xs, xs, hs, hs, Ms_orig, Ms_orig, weighted_Ms_orig, Ms_orig]
     clustering_data_analysis_names = ["input", "input", "hidden", "hidden", \
-        "modulation_all", "modulation_all", "modulation_all_weighted"]
-    clustering_data_normalize = [True, False, True, False, True, False, False]
-    c_metrics = ["euclidean", "euclidean", "euclidean", "euclidean", "euclidean", "euclidean", "euclidean"]
-    c_methods = ["ward", "ward", "ward", "ward", "ward", "ward", "ward"]
+        "modulation_all", "modulation_all", "modulation_all_weighted", "modulation_all_var_weighted"]
+    clustering_data_normalize = [True, False, True, False, True, False, False, False]
+    c_metrics = ["euclidean", "euclidean", "euclidean", "euclidean", "euclidean", "euclidean", "euclidean", "euclidean"]
+    c_methods = ["ward", "ward", "ward", "ward", "ward", "ward", "ward", "ward"]
     assert len(clustering_data_analysis) == len(clustering_data_analysis_names) \
         == len(clustering_data_normalize)
 
@@ -754,7 +754,7 @@ def main(seed, feature):
     tol_mode = "relative"   # or "relative"
     tol_k_select = "gap"
     score_quantile = 0.50
-    unresponsive_norm_frac = 1e-3
+    unresponsive_norm_frac = 5e-3
 
     assert tol_mode in ("absolute", "relative"), f"Invalid tol_mode: {tol_mode}"
 
@@ -852,6 +852,10 @@ def main(seed, feature):
             savefigure_name = savefigure_name_base + "_unnormalized"
             clustering_save_name = clustering_name + "_unnormalized"
             vmins, vmaxs = None, None
+
+        # for var_weighted: compute variance on Ms_orig then weight by modulation_W
+        if "var_weighted" in clustering_name:
+            cell_vars_rules_norm = cell_vars_rules_norm * modulation_W.flatten()[np.newaxis, :]
 
         # modulation only, reshape to (N, pre, post) shape after calculating the variance
         # N here as the number of sessions after breakdown
