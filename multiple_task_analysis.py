@@ -2116,6 +2116,7 @@ def main(seed, feature):
 
                     corr_lst, om_lst, num_lst = [], [], []
                     over_membership_lst = []
+                    z_count_lst = []
 
                     figsm, axsm = plt.subplots(2,mp,figsize=(4*mp,4*2))
                     for cidx, cluster_num in enumerate(all_choice_order):
@@ -2134,6 +2135,7 @@ def main(seed, feature):
                         om = np.mean(np.abs(over_membership))
                         om_lst.append(om); num_lst.append(len(idx))
                         over_membership_lst.append(over_membership)
+                        z_count_lst.append(Z_count)
 
                         if cnt < mp:
                             sns.heatmap(Z_count, ax=axsm[0,cnt], cmap=cs)
@@ -2290,7 +2292,202 @@ def main(seed, feature):
                     figgroupcorr.tight_layout()
                     figgroupcorr.savefig(f"./multiple_tasks/{clustering_name}_corr_allgroup_case_{savefigure_name}.png", dpi=300)
                     plt.close(figgroupcorr)
-            
+
+                    # Global assignment heatmap: all modulation clusters × flattened
+                    # (input-cluster, hidden-cluster) pairs.  Each row is one modulation
+                    # cluster (largest → smallest); each column is one neuron-cluster pair
+                    # grouped by input cluster.  Color = over-membership (1 = chance level).
+                    om_global = om_stack.reshape(N_cls, n_in * n_hid)  # (N_cls, n_in*n_hid)
+
+                    y_labels = [
+                        f"MC{cid} ({pct:.1%})"
+                        for cid, pct in zip(all_choice_order, cluster_size_percent)
+                    ]
+                    x_labels = [
+                        f"({i},{j})" for i in range(n_in) for j in range(n_hid)
+                    ]
+
+                    # Symmetric colormap range around 1 (clipped at 99th percentile of deviation)
+                    max_dev = float(np.nanpercentile(np.abs(om_global - 1.0), 99))
+                    max_dev = max(max_dev, 0.1)   # avoid degenerate all-uniform case
+                    vmin_gah = max(0.0, 1.0 - max_dev)
+                    vmax_gah = 1.0 + max_dev
+
+                    fig_gah, ax_gah = plt.subplots(
+                        1, 1,
+                        figsize=(max(8, n_in * n_hid * 0.7), max(4, N_cls * 0.35 + 1.5))
+                    )
+                    sns.heatmap(
+                        om_global,
+                        ax=ax_gah,
+                        cmap="RdBu_r",
+                        vmin=vmin_gah, vmax=vmax_gah,
+                        center=1.0,
+                        xticklabels=x_labels,
+                        yticklabels=y_labels,
+                        linewidths=0.3,
+                        linecolor="lightgray",
+                        cbar_kws={"label": "Over-membership (1 = expected)"},
+                    )
+                    # Vertical lines separating input-cluster groups
+                    for _i in range(1, n_in):
+                        ax_gah.axvline(_i * n_hid, color="black", lw=1.5)
+                    # Input-cluster group labels below x-axis ticks
+                    ax_gah.set_xticklabels(x_labels, rotation=45, ha="right", fontsize=8)
+                    ax_gah.set_yticklabels(y_labels, fontsize=8)
+                    ax_gah.set_xlabel("(Input cluster, Hidden cluster) pair", fontsize=12)
+                    ax_gah.set_ylabel("Modulation cluster (largest → smallest)", fontsize=12)
+                    ax_gah.set_title(
+                        f"Global assignment heatmap: mod-cluster over-membership per neuron-cluster block\n"
+                        f"{N_cls} mod clusters  ×  {n_in} input clusters  ×  {n_hid} hidden clusters",
+                        fontsize=11,
+                    )
+                    fig_gah.tight_layout()
+                    fig_gah.savefig(
+                        f"./multiple_tasks/{clustering_name}_global_assignment_heatmap_{savefigure_name}.png",
+                        dpi=300,
+                    )
+                    plt.close(fig_gah)
+
+                    # -------------------------------------------------------
+                    # Analysis 2: Block purity / entropy
+                    #
+                    # Direction A — mod-cluster entropy over neuron-cluster blocks:
+                    #   For each modulation cluster c, treat the distribution of its
+                    #   synapses over (input-cluster, hidden-cluster) pairs as a
+                    #   probability vector and compute its Shannon entropy.
+                    #   Low entropy  → cluster is concentrated in one block (specialised).
+                    #   High entropy → cluster spans many blocks (diffuse).
+                    #
+                    # Direction B — block entropy over mod clusters:
+                    #   For each (input-cluster, hidden-cluster) pair, treat the
+                    #   distribution of its synapses across modulation clusters as a
+                    #   probability vector.
+                    #   Low entropy  → block is "owned" by one mod cluster (clean partition).
+                    #   High entropy → block is shared across many mod clusters.
+                    # -------------------------------------------------------
+                    z_count_stack = np.stack(z_count_lst)  # (N_cls, n_in, n_hid)
+
+                    # Direction A: entropy of each mod cluster over (n_in*n_hid) blocks
+                    z_flat = z_count_stack.reshape(N_cls, -1).astype(float)     # (N_cls, n_in*n_hid)
+                    row_sum = z_flat.sum(axis=1, keepdims=True)
+                    p_mod = z_flat / np.maximum(row_sum, 1e-12)                 # (N_cls, n_in*n_hid)
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        h_mod = -np.sum(np.where(p_mod > 0, p_mod * np.log2(p_mod), 0.0), axis=1)
+                    h_mod_norm = h_mod / np.log2(n_in * n_hid)                  # (N_cls,) in [0,1]
+
+                    # Direction B: entropy of each (i,j) block over N_cls mod clusters
+                    col_sum = z_count_stack.sum(axis=0, keepdims=True)          # (1, n_in, n_hid)
+                    p_block = z_count_stack / np.maximum(col_sum, 1e-12)        # (N_cls, n_in, n_hid)
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        h_block = -np.sum(np.where(p_block > 0, p_block * np.log2(p_block), 0.0), axis=0)
+                    h_block_norm = h_block / np.log2(max(N_cls, 2))             # (n_in, n_hid) in [0,1]
+
+                    fig_ent, axs_ent = plt.subplots(2, 3, figsize=(16, 9))
+
+                    # [0,0] Bar chart: mod-cluster normalised entropy, sorted by cluster size
+                    ax = axs_ent[0, 0]
+                    bar_colors = plt.cm.RdYlGn_r(h_mod_norm)
+                    ax.bar(np.arange(N_cls), h_mod_norm, color=bar_colors, edgecolor="k", linewidth=0.4)
+                    ax.axhline(1.0, color="gray", lw=1, linestyle="--", label="Max entropy (uniform)")
+                    ax.set_xticks(np.arange(N_cls))
+                    ax.set_xticklabels(
+                        [f"MC{cid}" for cid in all_choice_order],
+                        rotation=45, ha="right", fontsize=7,
+                    )
+                    ax.set_ylim(0, 1.1)
+                    ax.set_xlabel("Modulation cluster (largest → smallest)", fontsize=11)
+                    ax.set_ylabel("Normalised entropy", fontsize=11)
+                    ax.set_title(
+                        "Mod-cluster entropy over neuron-cluster blocks\n"
+                        "0 = one block owns it all,  1 = uniform across all blocks",
+                        fontsize=10,
+                    )
+                    ax.legend(fontsize=8)
+
+                    # [0,1] Scatter: cluster size vs mod-cluster entropy
+                    ax = axs_ent[0, 1]
+                    sc = ax.scatter(
+                        cluster_size_percent * 100, h_mod_norm,
+                        c=h_mod_norm, cmap="RdYlGn_r", vmin=0, vmax=1,
+                        s=60, edgecolors="k", linewidths=0.5, alpha=0.85,
+                    )
+                    plt.colorbar(sc, ax=ax, label="Normalised entropy")
+                    ax.set_xlabel("Modulation cluster size (%)", fontsize=11)
+                    ax.set_ylabel("Normalised entropy", fontsize=11)
+                    ax.set_title("Cluster size vs specialisation", fontsize=10)
+
+                    # [0,2] Histogram of mod-cluster normalised entropy
+                    ax = axs_ent[0, 2]
+                    ax.hist(h_mod_norm, bins="auto", color="#4575b4", edgecolor="k", alpha=0.8)
+                    ax.axvline(np.mean(h_mod_norm), color="red", lw=1.5,
+                               label=f"Mean = {np.mean(h_mod_norm):.2f}")
+                    ax.set_xlabel("Normalised entropy", fontsize=11)
+                    ax.set_ylabel("Count", fontsize=11)
+                    ax.set_title("Distribution of mod-cluster entropy", fontsize=10)
+                    ax.legend(fontsize=8)
+
+                    # [1,0] Heatmap: block entropy over mod clusters (n_in × n_hid)
+                    ax = axs_ent[1, 0]
+                    sns.heatmap(
+                        h_block_norm,
+                        ax=ax,
+                        cmap="RdYlGn_r",
+                        vmin=0, vmax=1,
+                        annot=True, fmt=".2f", annot_kws={"fontsize": 8},
+                        cbar_kws={"label": "Normalised entropy"},
+                        xticklabels=[f"Hid C{j}" for j in range(n_hid)],
+                        yticklabels=[f"In C{i}" for i in range(n_in)],
+                    )
+                    ax.set_xlabel("Hidden cluster", fontsize=11)
+                    ax.set_ylabel("Input cluster", fontsize=11)
+                    ax.set_title(
+                        "Block entropy over mod clusters\n"
+                        "0 = owned by one mod cluster,  1 = shared equally",
+                        fontsize=10,
+                    )
+
+                    # [1,1] Histogram of block normalised entropy
+                    ax = axs_ent[1, 1]
+                    ax.hist(h_block_norm.flatten(), bins="auto", color="#d73027", edgecolor="k", alpha=0.8)
+                    ax.axvline(np.mean(h_block_norm), color="navy", lw=1.5,
+                               label=f"Mean = {np.mean(h_block_norm):.2f}")
+                    ax.set_xlabel("Normalised entropy", fontsize=11)
+                    ax.set_ylabel("Count", fontsize=11)
+                    ax.set_title("Distribution of block entropy", fontsize=10)
+                    ax.legend(fontsize=8)
+
+                    # [1,2] Scatter: mod-cluster entropy vs block entropy of the peak block
+                    # (the (i,j) block where that mod cluster has the highest count)
+                    peak_block_flat = z_flat.argmax(axis=1)                     # (N_cls,)
+                    peak_block_entropy = h_block_norm.flatten()[peak_block_flat] # (N_cls,)
+                    ax = axs_ent[1, 2]
+                    sc2 = ax.scatter(
+                        h_mod_norm, peak_block_entropy,
+                        c=cluster_size_percent * 100, cmap="viridis",
+                        s=60, edgecolors="k", linewidths=0.5, alpha=0.85,
+                    )
+                    plt.colorbar(sc2, ax=ax, label="Cluster size (%)")
+                    ax.set_xlabel("Mod-cluster entropy (specialisation)", fontsize=11)
+                    ax.set_ylabel("Entropy of its peak block", fontsize=11)
+                    ax.set_title(
+                        "Specialised clusters → do they own exclusive blocks?\n"
+                        "Bottom-left = both specific",
+                        fontsize=10,
+                    )
+
+                    fig_ent.suptitle(
+                        f"Block purity / entropy analysis  |  "
+                        f"{N_cls} mod clusters  ×  {n_in} input clusters  ×  {n_hid} hidden clusters",
+                        fontsize=12,
+                    )
+                    fig_ent.tight_layout()
+                    fig_ent.savefig(
+                        f"./multiple_tasks/{clustering_name}_block_entropy_{savefigure_name}.png",
+                        dpi=300,
+                    )
+                    plt.close(fig_ent)
+
             figcol.tight_layout()
             figcol.savefig(f"./multiple_tasks/{clustering_name}_allneuron_grouplength_{savefigure_name}.png", dpi=300)  
             plt.close(figcol)
