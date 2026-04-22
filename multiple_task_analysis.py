@@ -158,6 +158,9 @@ def main(seed, feature):
     # all outputs for this experiment go into their own subfolder
     save_dir = f"./multiple_tasks/{savefigure_name_base}"
     os.makedirs(save_dir, exist_ok=True)
+    for _old_file in Path(save_dir).iterdir():
+        if _old_file.is_file():
+            _old_file.unlink()
 
     # %%
     # 2025-11-19: make sure the bias is only cell-dependent but not time- or trail-dependent
@@ -1676,10 +1679,6 @@ def main(seed, feature):
                     f"(norm k={k_col_norm}  unnorm k={k_col_unnorm})"
                 )
 
-            import sys
-            print("done")
-            sys.exit()
-
         # use the clustering result for input and hidden to order the modulation information
         # and/or cross-compare the clustering result from input & hidden 
         # trying to observe consistency in between
@@ -1956,7 +1955,7 @@ def main(seed, feature):
                 col_groups_all_lst = []
                 # 2025-10-06: since K-means has randomness, we run it multiple times to obtain 
                 # the distribution of grouping statistics,
-                krun = 10
+                krun = 100
                 print(f"Running K-means with G={G} for {krun} times to obtain the distribution of grouping statistics...")
                 for _ in range(krun):
                     random_seed = np.random.randint(0, 10000)
@@ -2420,10 +2419,7 @@ def main(seed, feature):
                     vmin_gah = max(0.0, 1.0 - max_dev)
                     vmax_gah = 1.0 + max_dev
 
-                    fig_gah, ax_gah = plt.subplots(
-                        1, 1,
-                        figsize=(max(8, n_in * n_hid * 0.7), max(4, N_cls * 0.35 + 1.5))
-                    )
+                    fig_gah, ax_gah = plt.subplots(1, 1, figsize=(14, 8))
                     sns.heatmap(
                         om_global,
                         ax=ax_gah,
@@ -2440,8 +2436,10 @@ def main(seed, feature):
                     for _i in range(1, n_in):
                         ax_gah.axvline(_i * n_hid, color="black", lw=1.5)
                     # Input-cluster group labels below x-axis ticks
-                    ax_gah.set_xticklabels(x_labels, rotation=45, ha="right", fontsize=8)
-                    ax_gah.set_yticklabels(y_labels, fontsize=8)
+                    _gah_xfs = max(5, min(9, int(110 / max(n_in * n_hid, 1))))
+                    _gah_yfs = max(5, min(9, int(110 / max(N_cls, 1))))
+                    ax_gah.set_xticklabels(x_labels, rotation=45, ha="right", fontsize=_gah_xfs)
+                    ax_gah.set_yticklabels(y_labels, fontsize=_gah_yfs)
                     ax_gah.set_xlabel("(Input cluster, Hidden cluster) pair", fontsize=12)
                     ax_gah.set_ylabel("Modulation cluster (largest → smallest)", fontsize=12)
                     ax_gah.set_title(
@@ -2934,7 +2932,7 @@ if __name__ == "__main__":
             
     print(f"Found {len(param_lst)} saved models: {param_lst}")
     
-    param_lst = [[749, "L21e4"]]
+    # param_lst = [[749, "L21e4"]]
     
     for seed, feature in param_lst:
         main(seed, feature)

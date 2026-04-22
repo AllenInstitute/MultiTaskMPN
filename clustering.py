@@ -1077,9 +1077,10 @@ def cluster_variance_matrix_forgroup(
     col_res_list: List[Dict[str, Any]] = []
     col_blocks_list: List[List[List[int]]] = []
     col_V_grp_list: List[np.ndarray] = []
+    col_map_list: List[np.ndarray] = []
 
     for col_groups_i in col_groups_all_lst:
-        col_blocks_i, _ = _build_groups(V.shape[1], col_groups_i)
+        col_blocks_i, col_map_i = _build_groups(V.shape[1], col_groups_i)
         V_col_grp_i = _aggregate_along_axis(V, col_blocks_i, axis=1, reduce="mean")
         col_res_i = _hierarchical_clustering_forgroup(
             V_col_grp_i.T, k_min, k_max,
@@ -1089,6 +1090,7 @@ def cluster_variance_matrix_forgroup(
         col_res_list.append(col_res_i)
         col_blocks_list.append(col_blocks_i)
         col_V_grp_list.append(V_col_grp_i)
+        col_map_list.append(col_map_i)
 
     # Aggregate silhouette scores across groupings for each k.
     # col_score_mean is always the mean (used for reporting/plotting).
@@ -1126,22 +1128,83 @@ def cluster_variance_matrix_forgroup(
             raise ValueError("tol_mode must be 'relative' or 'absolute'.")
         col_primary_candidates = [k for k in col_score_agg
                                    if col_score_agg[k] >= col_primary_thresh]
-        if tol_k_select == "gap":
-            # Gap uses the primary grouping's linkage (same one used for final labels).
-            # The band is still derived from the aggregated silhouette across all groupings.
-            _col_Z = col_res_list[0]["linkage"]
-            best_k_col = _gap_k(_col_Z, col_primary_candidates) if col_primary_candidates else col_strict_best_k
-        else:
+        if tol_k_select != "gap":
+            # Non-gap strategies need no linkage; best_k_col is fully determined here.
             best_k_col = _k_select(col_primary_candidates) if col_primary_candidates else col_strict_best_k
+        else:
+            # Gap needs a linkage tree; defer until after representative is known.
+            best_k_col = None
     else:
         best_k_col = col_strict_best_k
         col_primary_candidates = [col_strict_best_k]
 
-    # Primary grouping (first element) provides linkage, ordering, and labels.
-    col_res = col_res_list[0]
-    col_blocks = col_blocks_list[0]
-    V_col_grp = col_V_grp_list[0]
-    col_blocks_primary, col_map = _build_groups(V.shape[1], col_groups_all_lst[0])
+    # ------------------------------------------------------------------
+    # Select the most representative grouping by pairwise ARI.
+    #
+    # Reference k for representative selection:
+    #   - non-gap strategies: best_k_col is already final → use it directly.
+    #   - gap strategy: best_k_col still needs a linkage → use col_strict_best_k
+    #     (aggregated silhouette argmax) as a proxy reference k so that the
+    #     representative's linkage is available for the gap step below.
+    #
+    # Each grouping's group-level labels are expanded to individual neurons
+    # via that grouping's col_map, then all pairs are compared with ARI.
+    # The grouping with the highest mean ARI against all others is selected.
+    # With a single grouping the selection is trivial (index 0).
+    # ------------------------------------------------------------------
+    def _neuron_labels_at_k(res_i, map_i, k):
+        grp_lbls = res_i["labels_by_k"].get(k, res_i["labels"])
+        return np.take(grp_lbls, map_i)
+
+    def _compute_ari(ref_k):
+        """Return (col_best_rep_idx, col_mean_ari, col_ari_mean_dict, col_ari_std_dict)."""
+        if N_grp == 1:
+            return 0, 1.0, {ref_k: 1.0}, {ref_k: 0.0}
+        neuron_lbls = [
+            _neuron_labels_at_k(col_res_list[i], col_map_list[i], ref_k)
+            for i in range(N_grp)
+        ]
+        ari_mat = np.zeros((N_grp, N_grp), dtype=float)
+        for i in range(N_grp):
+            for j in range(i + 1, N_grp):
+                a = adjusted_rand_score(neuron_lbls[i], neuron_lbls[j])
+                ari_mat[i, j] = ari_mat[j, i] = a
+        mean_ari_per_grp = ari_mat.mean(axis=1)
+        best_idx = int(np.argmax(mean_ari_per_grp))
+        best_mean = float(mean_ari_per_grp[best_idx])
+        off_diag = [ari_mat[i, j] for i in range(N_grp) for j in range(i + 1, N_grp)]
+        return best_idx, best_mean, {ref_k: float(np.mean(off_diag))}, {ref_k: float(np.std(off_diag))}
+
+    N_grp = len(col_res_list)
+
+    # Phase 1: select representative at the reference k (proxy for gap, final for others).
+    _ari_ref_k = best_k_col if best_k_col is not None else col_strict_best_k
+    col_best_rep_idx, col_mean_ari_at_best_k, col_ari_recording_mean, col_ari_recording_std = \
+        _compute_ari(_ari_ref_k)
+
+    # Phase 2: for gap strategy, now use the representative's linkage to finalize best_k_col.
+    if tol_k_select == "gap" and select_min_k_within_tol:
+        _col_Z_rep = col_res_list[col_best_rep_idx]["linkage"]
+        best_k_col = _gap_k(_col_Z_rep, col_primary_candidates) if col_primary_candidates else col_strict_best_k
+
+        # Phase 3: if gap moved k away from the proxy, update ARI reporting at the
+        # final k — but do NOT change col_best_rep_idx.  best_k_col was derived from
+        # col_res_list[col_best_rep_idx]["linkage"]; keeping the same representative
+        # guarantees that result_all["col_linkage"] and best_k_col are always consistent.
+        if best_k_col != _ari_ref_k:
+            _, col_mean_ari_at_best_k, col_ari_recording_mean, col_ari_recording_std = \
+                _compute_ari(best_k_col)
+
+    print(
+        f"Col  — representative grouping: {col_best_rep_idx} / {N_grp - 1}  "
+        f"(mean pairwise ARI at k={best_k_col}: {col_ari_recording_mean[best_k_col]:.3f})"
+    )
+
+    # Representative grouping provides linkage, ordering, and labels.
+    col_res    = col_res_list[col_best_rep_idx]
+    col_blocks = col_blocks_list[col_best_rep_idx]
+    V_col_grp  = col_V_grp_list[col_best_rep_idx]
+    col_map    = col_map_list[col_best_rep_idx]
 
     # Labels / cut distance at the collectively determined best k.
     if best_k_col in col_res["labels_by_k"]:
@@ -1253,6 +1316,11 @@ def cluster_variance_matrix_forgroup(
         row_k_values=np.array(sorted_k_row, dtype=int),
         col_k_values=np.array(sorted_k_col, dtype=int),
         col_score_recording_all=col_score_recording_all,        # shape (n_groupings, n_k_col)
+        # representative grouping selection
+        col_best_rep_idx=col_best_rep_idx,
+        col_mean_ari_at_best_k=col_mean_ari_at_best_k,
+        col_ari_recording_mean=col_ari_recording_mean,
+        col_ari_recording_std=col_ari_recording_std,
         # introspection meta dicts
         _row_meta=dict(
             method=_row_method,
@@ -1272,6 +1340,8 @@ def cluster_variance_matrix_forgroup(
             method=_col_method,
             metric=_col_metric,
             n_groupings=len(col_res_list),
+            best_rep_idx=col_best_rep_idx,
+            mean_ari_at_best_k=col_mean_ari_at_best_k,
             select_min_k_within_tol=select_min_k_within_tol,
             silhouette_tol=silhouette_tol,
             tol_mode=tol_mode,
