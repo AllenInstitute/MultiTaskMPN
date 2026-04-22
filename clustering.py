@@ -560,7 +560,7 @@ def cluster_variance_matrix_repeat(
     unresponsive_norm_frac=1e-3,
     skip_unresponsive_detection=False,
     tol_k_select="min",
-    max_ari_pairs=1000,
+    max_ari_pairs=300,
 ):
     """
     Cluster a variance matrix V (shape: N_features * M_neurons)
