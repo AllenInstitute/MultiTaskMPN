@@ -36,7 +36,7 @@ def main(seed, feature):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    repeat_num = 10
+    repeat_num = 100
 
     aname = f"everything_seed{seed}_{feature}+hidden300+batch128+angle"
 
@@ -438,6 +438,25 @@ def main(seed, feature):
 
         all_comb_mod = [("mod", None)] + [("mod", i) for i in sorted(mod_col_clusters_cur.keys())]
         all_comb_names_mod = ["mod_noleison"] + [f"mod_c{i}" for i in sorted(mod_col_clusters_cur.keys())]
+
+        # Plot cluster sizes for this modulation clustering type
+        mod_cluster_ids_sorted = sorted(mod_col_clusters_cur.keys())
+        mod_cluster_sizes = [len(mod_col_clusters_cur[ci]) for ci in mod_cluster_ids_sorted]
+        mod_cluster_labels = [f"c{ci}" for ci in mod_cluster_ids_sorted]
+        type_tag_size = mod_type_key.replace("modulation_all_", "").replace("_", "-")
+
+        fig_sz, ax_sz = plt.subplots(1, 1, figsize=(max(4, 0.5 * len(mod_cluster_ids_sorted)), 3))
+        ax_sz.bar(mod_cluster_labels, mod_cluster_sizes)
+        ax_sz.set_xticks(range(len(mod_cluster_labels)))
+        ax_sz.set_xticklabels(mod_cluster_labels, rotation=45, ha="right")
+        ax_sz.set_ylabel("# Synapses in Cluster", fontsize=10)
+        ax_sz.set_xlabel(f"Modulation Cluster ({type_tag_size})", fontsize=10)
+        ax_sz.set_title(f"Modulation cluster sizes — {type_tag_size}")
+        ax_sz.tick_params(axis="both", length=2, pad=2)
+        fig_sz.tight_layout()
+        fig_sz.savefig(f"{save_dir}/mod_lesion_units_{type_tag_size}_{aname}.png", dpi=300)
+        plt.close(fig_sz)
+        print(f"  Saved modulation cluster sizes for {mod_type_key}: {dict(zip(mod_cluster_labels, mod_cluster_sizes))}")
 
         for mod_lesion_mode in mod_lesion_modes:
             print(f"  [mode={mod_lesion_mode}]")

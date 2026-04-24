@@ -21,8 +21,8 @@ mpl.rcParams.update({
     "ps.fonttype": 42,
 })
 
-if __name__ == "__main__": 
-    aname = "everything_seed749_L21e4+hidden300+batch128+angle"
+def main(seed, feature):
+    aname = f"everything_seed{seed}_{feature}+hidden300+batch128+angle"
 
     save_dir = f"./multiple_tasks_perf/{aname}"
     pickle_name = f"{save_dir}/lesion_prune_results_{aname}.pkl"
@@ -225,9 +225,8 @@ if __name__ == "__main__":
 
         fig.tight_layout()
         fig.savefig(f"{save_dir}/cluster_corr_vs_{savesuffix}_{aname}.png", dpi=300)
-        plt.close(fig)  
-        
-        
-            
-    
-    
+        plt.close(fig)
+
+
+if __name__ == "__main__":
+    main(749, "L21e4")
