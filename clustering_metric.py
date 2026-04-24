@@ -1,4 +1,5 @@
-import numpy as np 
+import numpy as np
+from scipy.stats import hypergeom
 
 # ---------------------------------------------------------------------
 # Find if modulation are belonging to some pre/post neuron and/or 
@@ -248,6 +249,106 @@ def count_pairs_with_clusters_control(col_all,
     assert np.unique(total_cluster_group).size == 1, "Elements in total_cluster_group are not identical"
 
     return np.mean(control_stats, axis=0)
+
+
+# ---------------------------------------------------------------------
+# Unresponsive enrichment test
+# ---------------------------------------------------------------------
+
+
+def unresponsive_enrichment_test(col_labels, col_k, M,
+                                 cluster_input, cluster_hidden,
+                                 input_col_k, hidden_col_k,
+                                 n_repeats=10000, batch_size=500):
+    """Test whether unresponsive modulations are enriched for unresponsive endpoints.
+
+    For the marginal tests (pre-only, post-only), the exact hypergeometric
+    distribution is used — no shuffling needed.  For the joint "both" test
+    (pre AND post simultaneously unresponsive) the marginals are not
+    independent (matrix structure), so a batched permutation test is used.
+
+    Returns a dict with observed counts, null expectations, enrichment
+    ratios (observed / expected - 1), and one-sided p-values, or None if
+    there are no unresponsive modulations or no unresponsive neurons.
+    """
+    col_labels = np.asarray(col_labels)
+    MM = col_labels.size
+
+    unres_mod_mask = col_labels == (col_k + 1)
+    n_unres_mod = int(unres_mod_mask.sum())
+    if n_unres_mod == 0:
+        return None
+
+    unres_input_set  = set(cluster_input.get(input_col_k + 1, []))
+    unres_hidden_set = set(cluster_hidden.get(hidden_col_k + 1, []))
+    if not unres_input_set and not unres_hidden_set:
+        return None
+
+    flat_idx = np.arange(MM)
+    pre_idx  = flat_idx // M
+    post_idx = flat_idx % M
+
+    is_unres_pre  = np.isin(pre_idx,  list(unres_input_set))
+    is_unres_post = np.isin(post_idx, list(unres_hidden_set))
+    is_both       = is_unres_pre & is_unres_post
+
+    n_unres_pre_pop  = int(is_unres_pre.sum())
+    n_unres_post_pop = int(is_unres_post.sum())
+    n_both_pop       = int(is_both.sum())
+
+    unres_flat = flat_idx[unres_mod_mask]
+    obs_pre  = int(is_unres_pre[unres_flat].sum())
+    obs_post = int(is_unres_post[unres_flat].sum())
+    obs_both = int(is_both[unres_flat].sum())
+
+    # --- Marginal tests: exact hypergeometric ---
+    # P(X >= obs) where X ~ Hypergeom(MM, K, n_unres_mod)
+    mean_null_pre  = hypergeom.mean(MM, n_unres_pre_pop,  n_unres_mod)
+    mean_null_post = hypergeom.mean(MM, n_unres_post_pop, n_unres_mod)
+    pval_pre  = float(hypergeom.sf(obs_pre  - 1, MM, n_unres_pre_pop,  n_unres_mod))
+    pval_post = float(hypergeom.sf(obs_post - 1, MM, n_unres_post_pop, n_unres_mod))
+
+    # --- Joint test: batched shuffle ---
+    null_both = np.empty(n_repeats, dtype=int)
+    done = 0
+    while done < n_repeats:
+        bs = min(batch_size, n_repeats - done)
+        idx = np.column_stack([
+            np.random.choice(MM, size=n_unres_mod, replace=False)
+            for _ in range(bs)
+        ]).T  # (bs, n_unres_mod)
+        null_both[done:done + bs] = is_both[idx].sum(axis=1)
+        done += bs
+
+    mean_null_both = float(null_both.mean())
+    pval_both = float((np.sum(null_both >= obs_both) + 1) / (n_repeats + 1))
+
+    def _enrichment(obs, expected):
+        if expected > 0:
+            return (obs - expected) / expected
+        return np.inf if obs > 0 else 0.0
+
+    return {
+        "n_unres_mod": n_unres_mod,
+        "n_total_mod": MM,
+        "n_unres_pre_pop": n_unres_pre_pop,
+        "n_unres_post_pop": n_unres_post_pop,
+        "n_both_pop": n_both_pop,
+        "obs_pre": obs_pre,
+        "obs_post": obs_post,
+        "obs_both": obs_both,
+        "mean_null_pre": float(mean_null_pre),
+        "mean_null_post": float(mean_null_post),
+        "mean_null_both": mean_null_both,
+        "enrichment_pre":  _enrichment(obs_pre,  mean_null_pre),
+        "enrichment_post": _enrichment(obs_post, mean_null_post),
+        "enrichment_both": _enrichment(obs_both, mean_null_both),
+        "pval_pre": pval_pre,
+        "pval_post": pval_post,
+        "pval_both": pval_both,
+        "null_both_dist": null_both,
+    }
+
 
 # ---------------------------------------------------------------------
 # Evaluation metric to clustering

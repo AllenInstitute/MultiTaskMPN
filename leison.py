@@ -1,5 +1,7 @@
 from pathlib import Path
 import json
+import os
+import re
 import numpy as np
 import seaborn as sns
 import pickle
@@ -34,13 +36,19 @@ def main(seed, feature):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    repeat_num = 100
+    repeat_num = 10
 
     aname = f"everything_seed{seed}_{feature}+hidden300+batch128+angle"
-    
-    out_param_path = Path("multiple_tasks/" + f"param_{aname}_param.json")
-    cluster_path = Path("./multiple_tasks/" + f"cluster_info_{aname}.pkl")
-    cluster_path_mod = Path("./multiple_tasks/" + f"cluster_info_mod_{aname}.pkl")
+
+    save_dir = f"./multiple_tasks_perf/{aname}"
+    os.makedirs(save_dir, exist_ok=True)
+    for _old in Path(save_dir).iterdir():
+        if _old.is_file():
+            _old.unlink()
+
+    out_param_path = Path("multiple_tasks/" + f"/param_{aname}_param.json")
+    cluster_path = Path(f"./multiple_tasks/{aname}/cluster_info_{aname}.pkl")
+    cluster_path_mod = Path(f"./multiple_tasks/{aname}/cluster_info_mod_{aname}.pkl")
 
     with out_param_path.open() as f:
         raw_cfg_param = json.load(f)
@@ -51,8 +59,10 @@ def main(seed, feature):
     with cluster_path_mod.open("rb") as f:
         cluster_info_mod = pickle.load(f)
         
+    print(cluster_info.keys())
+        
     # need to remind what the clusters are
-    cnames = ["input", "hidden"]
+    cnames = ["input_normalized", "hidden_normalized"]
     for cname in cnames:
         print(f"{cname} clusters; row_clusters: {len(cluster_info[cname]['row_clusters'])}, col_clusters: {len(cluster_info[cname]['col_clusters'])}")
         
@@ -77,14 +87,14 @@ def main(seed, feature):
     model.eval()
     model.to(device)
 
-    task_params_c, train_params_c, net_params_c = mpn_tasks.convert_and_init_multitask_params(
+    task_params_c, _, _ = mpn_tasks.convert_and_init_multitask_params(
         (task_params, train_params, net_params)
     )
     
     all_tasks = task_params_c['rules']
     
-    pre_n = len(cluster_info["input"]["col_clusters"])
-    post_n = len(cluster_info["hidden"]["col_clusters"])
+    pre_n = len(cluster_info["input_normalized"]["col_clusters"])
+    post_n = len(cluster_info["hidden_normalized"]["col_clusters"])
 
     # Cluster mean correlation matrices, ordered by cluster number (1..n_clusters),
     # consistent with the lesion order used in leison_prepost (all_comb below).
@@ -93,7 +103,7 @@ def main(seed, feature):
     corr_matrices = {}
     l1_dist_matrices = {}
     cluster_means_cache = {}
-    for name, n_clusters in [("input", pre_n), ("hidden", post_n)]:
+    for name, n_clusters in [("input_normalized", pre_n), ("hidden_normalized", post_n)]:
         V = cluster_info[name]["cell_vars_rules_sorted_norm"]  # (n_tasks, n_neurons)
         col_clusters = cluster_info[name]["col_clusters"]      # {label: neuron indices}, 1-based
         cluster_means = np.stack(
@@ -106,7 +116,7 @@ def main(seed, feature):
         print(f"{name} cluster corr matrix shape: {corr_matrices[name].shape}")
 
     # plot the heatmaps for both correlation and L1 distance matrices for input and hidden clusters
-    for name, n_clusters in [("input", pre_n), ("hidden", post_n)]:
+    for name, n_clusters in [("input_normalized", pre_n), ("hidden_normalized", post_n)]:
         corr = corr_matrices[name]
         l1_dist = l1_dist_matrices[name]
 
@@ -128,7 +138,7 @@ def main(seed, feature):
             ax.set_title(title, fontsize=12)
 
         fig.tight_layout()
-        fig.savefig(f"./multiple_tasks_perf/cluster_corr_{name}_{aname}.png", dpi=300)
+        fig.savefig(f"{save_dir}/cluster_corr_{name}_{aname}.png", dpi=300)
         plt.close(fig)
         
     print(f"Plot the heatmaps for both correlation and L1 distance matrices for input and hidden clusters done.")
@@ -147,27 +157,31 @@ def main(seed, feature):
     # Precompute max_N for each cluster name (used for random lesion sampling)
     max_N_cache = {
         name: max(arr.max() for arr in cluster_info[name]["col_clusters"].values())
-        for name in ["input", "hidden"]
+        for name in ["input_normalized", "hidden_normalized"]
     }
 
-    # Build modulation col_clusters from modulation_all, result_all_lst with G=300 (index 1)
-    mod_G_idx = 1 
-    use_mod_cluster = "modulation_all_normalized"
-    mod_result = cluster_info_mod[use_mod_cluster]["result_all_lst"][mod_G_idx]
-    mod_col_labels = mod_result["col_labels"]  # length M*M
-    MM = len(mod_col_labels)
+    # All modulation clustering types to run lesion experiments on.
+    # G_lst index: 0=G100, 1=G300, 2=G1000.  G=300 (idx 1) is used for all types.
+    G_lst_leison = [100, 300, 1000]
+    mod_type_lst_all = [
+        ("modulation_all_normalized",                1),
+        ("modulation_all_unnormalized",              1),
+        ("modulation_all_weighted_unnormalized",     1),
+        ("modulation_all_var_weighted_unnormalized", 1),
+    ]
+    mod_type_lst = [(k, g) for k, g in mod_type_lst_all if k in cluster_info_mod]
+    print(f"Modulation types to lesion ({len(mod_type_lst)}): {[k for k,_ in mod_type_lst]}")
+
+    # Infer M from the first available type (same for all — shared modulation matrix size)
+    _first_labels = cluster_info_mod[mod_type_lst[0][0]]["result_all_lst"][mod_type_lst[0][1]]["col_labels"]
+    MM = len(_first_labels)
     M = int(np.sqrt(MM))
     assert M * M == MM, f"Expected square modulation matrix, got {MM} entries"
-    mod_col_clusters = {}
-    for flat_idx, label in enumerate(mod_col_labels):
-        mod_col_clusters.setdefault(int(label), []).append(flat_idx)
-    mod_n = len(mod_col_clusters)
-    print(f"modulation_all clusters (G={[100,300][mod_G_idx]}): {mod_n}")
 
     def leison_prepost_inplace(net, cluster_index, preorpost, random=False):
         """Apply lesion in-place on net; returns (saved_state, leison_units).
         Call restore_leison(net, saved_state) to undo.  No deepcopy."""
-        name = "input" if preorpost == "pre" else "hidden"
+        name = "input_normalized" if preorpost == "pre" else "hidden_normalized"
         leison_units = 0
         saved = {}
 
@@ -207,18 +221,18 @@ def main(seed, feature):
 
         return saved, leison_units
 
-    def leison_modulation_inplace(net, cluster_index, random=False):
+    def leison_modulation_inplace(net, cluster_index, mod_col_clusters_, MM_, M_, random=False):
         """Lesion a modulation cluster by zeroing mp_layer1.W[post, pre] entries.
-        flat_idx k → pre = k // M, post = k % M → W[post, pre].
+        flat_idx k → pre = k // M_, post = k % M_ → W[post, pre].
         Returns (saved_state, n_lesioned)."""
         if cluster_index is None:
             return {}, 0
-        flat_idxs = np.array(mod_col_clusters[cluster_index], dtype=int)
+        flat_idxs = np.array(mod_col_clusters_[cluster_index], dtype=int)
         n = len(flat_idxs)
         if random:
-            flat_idxs = np.random.choice(MM, size=n, replace=False)
-        pre_t = torch.tensor(flat_idxs // M, dtype=torch.long, device=net.mp_layer1.W.device)
-        post_t = torch.tensor(flat_idxs % M, dtype=torch.long, device=net.mp_layer1.W.device)
+            flat_idxs = np.random.choice(MM_, size=n, replace=False)
+        pre_t = torch.tensor(flat_idxs // M_, dtype=torch.long, device=net.mp_layer1.W.device)
+        post_t = torch.tensor(flat_idxs % M_, dtype=torch.long, device=net.mp_layer1.W.device)
         with torch.no_grad():
             saved = {
                 "preorpost": "modulation",
@@ -229,8 +243,29 @@ def main(seed, feature):
             net.mp_layer1.W[post_t, pre_t] = 0.0
         return saved, n
 
+    def leison_modulation_freeze_inplace(net, cluster_index, mod_col_clusters_, MM_, M_, random=False):
+        """Freeze plasticity at a modulation cluster: M stays at its initial value
+        at those (post, pre) positions throughout the trial, but W is untouched.
+        Returns (saved_state, n_frozen)."""
+        if cluster_index is None:
+            return {}, 0
+        flat_idxs = np.array(mod_col_clusters_[cluster_index], dtype=int)
+        n = len(flat_idxs)
+        if random:
+            flat_idxs = np.random.choice(MM_, size=n, replace=False)
+        pre_t = torch.tensor(flat_idxs // M_, dtype=torch.long, device=net.mp_layer1.W.device)
+        post_t = torch.tensor(flat_idxs % M_, dtype=torch.long, device=net.mp_layer1.W.device)
+        net.mp_layer1.set_plasticity_freeze(post_t, pre_t)
+        saved = {
+            "preorpost": "modulation_freeze",
+            "pre_t": pre_t,
+            "post_t": post_t,
+        }
+        return saved, n
+
     def restore_leison(net, saved):
-        """Restore weights modified by leison_prepost_inplace or leison_modulation_inplace."""
+        """Restore weights modified by leison_prepost_inplace, leison_modulation_inplace,
+        or leison_modulation_freeze_inplace."""
         if not saved:
             return
         with torch.no_grad():
@@ -245,6 +280,8 @@ def main(seed, feature):
                 net.W_output[:, neuron_index] = saved["W_output"]
             elif saved["preorpost"] == "modulation":
                 net.mp_layer1.W[saved["post_t"], saved["pre_t"]] = saved["W_vals"]
+            elif saved["preorpost"] == "modulation_freeze":
+                net.mp_layer1.clear_plasticity_freeze()
 
     # register the size for each cluster — no model copy needed
     leison_units_all = []
@@ -252,7 +289,7 @@ def main(seed, feature):
         if ci is None:
             leison_units_all.append(0)
         else:
-            name = "input" if tag == "pre" else "hidden"
+            name = "input_normalized" if tag == "pre" else "hidden_normalized"
             leison_units_all.append(len(cluster_info[name]["col_clusters"][ci]))
     for idx, units in enumerate(leison_units_all):
         print(f"Lesion condition: {all_comb_names_leison[idx]}, lesioned units: {units}")
@@ -265,10 +302,10 @@ def main(seed, feature):
     ax.set_xlabel("Lesion Condition", fontsize=10)
     ax.tick_params(axis="both", length=2, pad=2)
     fig.tight_layout()
-    fig.savefig(f"./multiple_tasks_perf/lesion_units_{aname}.png", dpi=300)
+    fig.savefig(f"{save_dir}/lesion_units_{aname}.png", dpi=300)
     
     # setup the evaluation dataset generator
-    test_n_batch = repeat_num
+    test_n_batch = 200
     task_params_c['hp']['batch_size_train'] = test_n_batch
     
     # L2 pruning for W
@@ -365,77 +402,123 @@ def main(seed, feature):
         wtask_accs.append(waccs)
         ihrandomtask_accs.append(ihrandomaccs)
         
-    # modulation lesion — one cluster zeroed at a time
-    all_comb_mod = [("mod", None)] + [("mod", i) for i in sorted(mod_col_clusters.keys())]
-    all_comb_names_mod = ["mod_noleison"] + [f"mod_c{i}" for i in sorted(mod_col_clusters.keys())]
-    print(f"all_comb_names_mod: {all_comb_names_mod}")
-
-    modtask_accs = []
-    modrandomtask_accs = []
-
-    for task in all_tasks:
-        print(f"[modulation lesion] Evaluating task: {task}")
-        test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(
-            task_params_c, test_n_batch, rules=[task],
-            mode_input="random_batch", device=device, verbose=False
-        )
-        test_input, test_output, test_mask = test_data
-
-        modaccs = []
-        modrandomaccs = []
-
-        for tag, ci in all_comb_mod:
-            print(f"  Lesion condition: mod_c{ci}")
-            saved, _ = leison_modulation_inplace(model, cluster_index=ci)
-
-            with torch.no_grad():
-                net_out, _, _ = model.iterate_sequence_batch(test_input, run_mode='track_states')
-                acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input,
-                                           isvalid=True, mode=model.acc_measure)
-            modaccs.append(acc.item())
-            restore_leison(model, saved)
-            del net_out
-            gc.collect()
-
-            rset = []
-            for _ in range(random_leison_repeat):
-                saved_r, _ = leison_modulation_inplace(model, cluster_index=ci, random=True)
-                with torch.no_grad():
-                    net_out, _, _ = model.iterate_sequence_batch(test_input, run_mode='track_states')
-                    acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input,
-                                               isvalid=True, mode=model.acc_measure)
-                rset.append(acc.item())
-                restore_leison(model, saved_r)
-                del net_out
-            modrandomaccs.append(np.mean(rset))
-
-        modtask_accs.append(modaccs)
-        modrandomtask_accs.append(modrandomaccs)
-
     helper.plot_heatmap(
         ihtask_accs, all_comb_names_leison, all_tasks,
-        xlabel="Lesion Condition", ylabel="Task", savename="lesion", aname=aname
+        xlabel="Lesion Condition", ylabel="Task", savename="lesion", aname=aname,
+        save_dir=save_dir,
     )
 
     helper.plot_heatmap(
         wtask_accs, all_comb_names_prune, all_tasks,
-        xlabel="Pruning Condition", ylabel="Task", savename="pruning", aname=aname
+        xlabel="Pruning Condition", ylabel="Task", savename="pruning", aname=aname,
+        save_dir=save_dir,
     )
 
     helper.plot_heatmap(
         ihrandomtask_accs, all_comb_names_leison, all_tasks,
-        xlabel="Random Lesion Condition", ylabel="Task", savename="random_lesion", aname=aname
+        xlabel="Random Lesion Condition", ylabel="Task", savename="random_lesion", aname=aname,
+        save_dir=save_dir,
     )
 
-    helper.plot_heatmap(
-        modtask_accs, all_comb_names_mod, all_tasks,
-        xlabel="Modulation Lesion Condition", ylabel="Task", savename="mod_lesion", aname=aname
-    )
+    # Modulation lesion — loop over all clustering types and both lesion modes.
+    # "zero_W": zero the static weight W at cluster synapses (original method).
+    # "freeze_M": keep W intact but freeze plasticity (M stays at M_init) at cluster synapses.
+    mod_lesion_modes = ["zero_W", "freeze_M"]
+    mod_leison_results = {}
 
-    helper.plot_heatmap(
-        modrandomtask_accs, all_comb_names_mod, all_tasks,
-        xlabel="Random Modulation Lesion Condition", ylabel="Task", savename="mod_random_lesion", aname=aname
-    )
+    for mod_type_key, mod_G_idx_cur in mod_type_lst:
+        print(f"\n[modulation lesion] type={mod_type_key}  G={G_lst_leison[mod_G_idx_cur]}")
+
+        mod_result_cur = cluster_info_mod[mod_type_key]["result_all_lst"][mod_G_idx_cur]
+        mod_col_labels_cur = mod_result_cur["col_labels"]
+        mod_col_clusters_cur = {}
+        for flat_idx, label in enumerate(mod_col_labels_cur):
+            mod_col_clusters_cur.setdefault(int(label), []).append(flat_idx)
+        print(f"  {len(mod_col_clusters_cur)} modulation clusters")
+
+        all_comb_mod = [("mod", None)] + [("mod", i) for i in sorted(mod_col_clusters_cur.keys())]
+        all_comb_names_mod = ["mod_noleison"] + [f"mod_c{i}" for i in sorted(mod_col_clusters_cur.keys())]
+
+        for mod_lesion_mode in mod_lesion_modes:
+            print(f"  [mode={mod_lesion_mode}]")
+
+            if mod_lesion_mode == "zero_W":
+                _lesion_fn = leison_modulation_inplace
+            else:
+                _lesion_fn = leison_modulation_freeze_inplace
+
+            modtask_accs = []
+            modrandomtask_accs = []
+
+            for task in all_tasks:
+                print(f"    Evaluating task: {task}")
+                test_data, _ = mpn_tasks.generate_trials_wrap(
+                    task_params_c, test_n_batch, rules=[task],
+                    mode_input="random_batch", device=device, verbose=False
+                )
+                test_input, test_output, test_mask = test_data
+
+                modaccs = []
+                modrandomaccs = []
+
+                for tag, ci in all_comb_mod:
+                    saved, _ = _lesion_fn(
+                        model, cluster_index=ci,
+                        mod_col_clusters_=mod_col_clusters_cur, MM_=MM, M_=M,
+                    )
+                    with torch.no_grad():
+                        net_out, _, _ = model.iterate_sequence_batch(test_input, run_mode='track_states')
+                        acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input,
+                                                   isvalid=True, mode=model.acc_measure)
+                    modaccs.append(acc.item())
+                    restore_leison(model, saved)
+                    del net_out
+                    gc.collect()
+
+                    rset = []
+                    for _ in range(random_leison_repeat):
+                        saved_r, _ = _lesion_fn(
+                            model, cluster_index=ci,
+                            mod_col_clusters_=mod_col_clusters_cur, MM_=MM, M_=M,
+                            random=True,
+                        )
+                        with torch.no_grad():
+                            net_out, _, _ = model.iterate_sequence_batch(test_input, run_mode='track_states')
+                            acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input,
+                                                       isvalid=True, mode=model.acc_measure)
+                        rset.append(acc.item())
+                        restore_leison(model, saved_r)
+                        del net_out
+                    modrandomaccs.append(np.mean(rset))
+
+                modtask_accs.append(modaccs)
+                modrandomtask_accs.append(modrandomaccs)
+
+            type_tag = mod_type_key.replace("modulation_all_", "").replace("_", "-")
+            mode_tag = mod_lesion_mode.replace("_", "-")
+            helper.plot_heatmap(
+                modtask_accs, all_comb_names_mod, all_tasks,
+                xlabel=f"Modulation Lesion Condition ({mod_lesion_mode})", ylabel="Task",
+                savename=f"mod_lesion_{type_tag}_{mode_tag}", aname=aname,
+                save_dir=save_dir,
+            )
+            helper.plot_heatmap(
+                modrandomtask_accs, all_comb_names_mod, all_tasks,
+                xlabel=f"Random Modulation Lesion Condition ({mod_lesion_mode})", ylabel="Task",
+                savename=f"mod_random_lesion_{type_tag}_{mode_tag}", aname=aname,
+                save_dir=save_dir,
+            )
+
+            result_key = f"{mod_type_key}__{mod_lesion_mode}"
+            mod_leison_results[result_key] = {
+                "modtask_accs": modtask_accs,
+                "modrandomtask_accs": modrandomtask_accs,
+                "all_comb_names_mod": all_comb_names_mod,
+                "all_tasks": all_tasks,
+                "mod_G_idx": mod_G_idx_cur,
+                "mod_col_clusters": mod_col_clusters_cur,
+                "mod_lesion_mode": mod_lesion_mode,
+            }
 
     # Ordering note: corr/l1_dist row/col i → cluster i+1.
     # ihtask_accs columns: [0]=pre_noleison, [1..pre_n]=lesion pre cluster 1..pre_n,
@@ -457,14 +540,7 @@ def main(seed, feature):
             "all_comb_names_leison": all_comb_names_leison,
             "all_tasks": all_tasks,
         },
-        "mod_leison": {
-            "modtask_accs": modtask_accs,
-            "modrandomtask_accs": modrandomtask_accs,
-            "all_comb_names_mod": all_comb_names_mod,
-            "all_tasks": all_tasks,
-            "mod_G_idx": mod_G_idx,
-            "mod_col_clusters": mod_col_clusters,
-        },
+        "mod_leison": mod_leison_results,
         "cluster_similarity": {
             "corr_matrices": corr_matrices,       # {name: (n_clusters, n_clusters)}
             "l1_dist_matrices": l1_dist_matrices, # {name: (n_clusters, n_clusters)}
@@ -472,11 +548,26 @@ def main(seed, feature):
         },
     }
 
-    with open(f"./multiple_tasks_perf/lesion_prune_results_{aname}.pkl", "wb") as f:
+    with open(f"{save_dir}/lesion_prune_results_{aname}.pkl", "wb") as f:
         pickle.dump(saved_dict, f)
         
 if __name__ == "__main__":
-    seed_lst = [921, 749, 842, 408]
-    # seed_lst = [921]
-    for seed in seed_lst:
-        main(seed, "L21e4")
+    saved_nets = sorted(Path("multiple_tasks").glob("savednet_everything_seed*+angle.pt"))
+    param_lst = []
+    for p in saved_nets:
+        m = re.match(r"savednet_everything_seed(\d+)_(\w+)\+hidden\d+\+batch\d+\+angle\.pt", p.name)
+        if m:
+            param_lst.append((int(m.group(1)), m.group(2)))
+
+    print(f"Found {len(param_lst)} saved models: {param_lst}")
+
+    param_lst = [(749, "L21e4")]
+
+    for seed, feature in param_lst:
+        aname = f"everything_seed{seed}_{feature}+hidden300+batch128+angle"
+        cluster_path     = Path(f"./multiple_tasks/{aname}/cluster_info_{aname}.pkl")
+        cluster_path_mod = Path(f"./multiple_tasks/{aname}/cluster_info_mod_{aname}.pkl")
+        if not cluster_path.exists() or not cluster_path_mod.exists():
+            print(f"Skipping {aname}: cluster files not found (run multiple_task_analysis.py first)")
+            continue
+        main(seed, feature)

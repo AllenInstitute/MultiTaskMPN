@@ -15,15 +15,16 @@ import torch
 
 T = TypeVar("T")
 
-def plot_heatmap(input_matrix, 
-                 all_comb_names_, 
-                 all_tasks_, 
-                 xlabel, 
-                 ylabel, 
-                 savename, 
-                 aname, 
+def plot_heatmap(input_matrix,
+                 all_comb_names_,
+                 all_tasks_,
+                 xlabel,
+                 ylabel,
+                 savename,
+                 aname,
                  label="Accuracy",
-                 vmin=0.0, vmax=1.0):
+                 vmin=0.0, vmax=1.0,
+                 save_dir="./multiple_tasks_perf"):
     """
     """
     A = np.asarray(input_matrix, dtype=float)
@@ -65,7 +66,7 @@ def plot_heatmap(input_matrix,
             pass
 
     fig.tight_layout()
-    fig.savefig(f"./multiple_tasks_perf/{savename}_heatmap_{aname}.png", dpi=300)
+    fig.savefig(f"{save_dir}/{savename}_heatmap_{aname}.png", dpi=300)
     plt.close(fig)
 
 def value_counts_desc(arr):

@@ -168,6 +168,25 @@ class MultiPlasticLayer(BaseNetworkFunctions):
 
         self.M_pre = torch.zeros_like(self.M)
 
+        # Snapshot M_init values at frozen positions so freeze_M restores them each step.
+        if hasattr(self, '_plasticity_freeze_mask') and self._plasticity_freeze_mask is not None:
+            self._M_frozen_vals = self.M[:, self._plasticity_freeze_mask[0],
+                                            self._plasticity_freeze_mask[1]].clone()
+
+    def set_plasticity_freeze(self, post_indices, pre_indices):
+        """Freeze M evolution at specific (post, pre) positions.
+
+        After each update_M_matrix call, M[:, post, pre] is reset to its
+        value at trial onset (from reset_state).  Pass torch long tensors.
+        """
+        self._plasticity_freeze_mask = (post_indices, pre_indices)
+        self._M_frozen_vals = None  # populated by reset_state
+
+    def clear_plasticity_freeze(self):
+        """Remove any plasticity freeze mask."""
+        self._plasticity_freeze_mask = None
+        self._M_frozen_vals = None
+
     @torch.no_grad()
     def param_clamp(self):
         """ Enforce lambda bounds. Doesn't track gradients, since this is always called after weight updates. """
@@ -350,6 +369,11 @@ class MultiPlasticLayer(BaseNetworkFunctions):
         # (note: updates to restristed cell types is built into the eta matrix)
         if self.modulation_bounds:
             self.M = torch.clamp(self.M, min=self.M_bounds[1], max=self.M_bounds[0])
+
+        # Freeze plasticity at masked positions: restore M to its initial-state values
+        if hasattr(self, '_plasticity_freeze_mask') and self._plasticity_freeze_mask is not None:
+            self.M[:, self._plasticity_freeze_mask[0],
+                      self._plasticity_freeze_mask[1]] = self._M_frozen_vals
 
         return delta_M # This is only used for theory matching
 

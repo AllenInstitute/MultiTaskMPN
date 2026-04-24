@@ -6,9 +6,7 @@ from scipy.stats import linregress
 
 import matplotlib.pyplot as plt
 import matplotlib as mpl 
-from matplotlib.ticker import MaxNLocator
 
-import leison as leison_helper
 import helper
 
 mpl.rcParams.update({
@@ -25,8 +23,9 @@ mpl.rcParams.update({
 
 if __name__ == "__main__": 
     aname = "everything_seed749_L21e4+hidden300+batch128+angle"
-    
-    pickle_name = f"./multiple_tasks_perf/lesion_prune_results_{aname}.pkl"
+
+    save_dir = f"./multiple_tasks_perf/{aname}"
+    pickle_name = f"{save_dir}/lesion_prune_results_{aname}.pkl"
     with open(pickle_name, 'rb') as f:
         results = pickle.load(f)
         
@@ -56,32 +55,95 @@ if __name__ == "__main__":
     helper.plot_heatmap(select_props, all_comb_names_leison_, all_tasks,
                         xlabel="Lesion Condition", ylabel="Task", savename="normalized_leison",
                         aname=aname, label="Normalized Accuracy",
-                        vmin=None, vmax=None)
+                        vmin=None, vmax=None, save_dir=save_dir)
 
-    # # normalized modulation lesion effect
-    # mod_baseline_keys = {"mod_noleison"}
-    # print(results.keys())
-    # all_comb_names_mod = results["mod_leison"]["all_comb_names_mod"]
-    # all_comb_names_mod_ = [k for k in all_comb_names_mod if k not in mod_baseline_keys]
-    # modtask_accs = np.asarray(results["mod_leison"]["modtask_accs"], dtype=float)
-    # modrandomtask_accs = np.asarray(results["mod_leison"]["modrandomtask_accs"], dtype=float)
+    # Normalized modulation lesion effect for each clustering type
+    mod_baseline_keys = {"mod_noleison"}
+    mod_leison_results = results["mod_leison"]
 
-    # mod_select_props = []
-    # for key_idx, key in enumerate(all_comb_names_mod):
-    #     if key not in mod_baseline_keys:
-    #         leison = modtask_accs[:, key_idx]
-    #         random_leison = modrandomtask_accs[:, key_idx]
-    #         normalized_leison_diff = random_leison - leison
-    #         mod_select_props.append(normalized_leison_diff)
+    # First pass: compute normalized effect for each entry and plot individual heatmaps.
+    # Also collect results grouped by clustering type for cross-method comparison.
+    from collections import defaultdict
+    mod_by_type = defaultdict(dict)
 
-    # mod_select_props = np.array(mod_select_props).T
-    # print(f"mod_select_props: {mod_select_props.shape}")
+    for mod_type_key, mod_data in mod_leison_results.items():
+        all_comb_names_mod = mod_data["all_comb_names_mod"]
+        all_comb_names_mod_ = [k for k in all_comb_names_mod if k not in mod_baseline_keys]
+        modtask_accs = np.asarray(mod_data["modtask_accs"], dtype=float)
+        modrandomtask_accs = np.asarray(mod_data["modrandomtask_accs"], dtype=float)
 
-    # helper.plot_heatmap(mod_select_props, all_comb_names_mod_, all_tasks,
-    #                     xlabel="Modulation Lesion Condition", ylabel="Task",
-    #                     savename="normalized_mod_leison",
-    #                     aname=aname, label="Normalized Accuracy",
-    #                     vmin=None, vmax=None)
+        mod_select_props = []
+        for key_idx, key in enumerate(all_comb_names_mod):
+            if key not in mod_baseline_keys:
+                leison = modtask_accs[:, key_idx]
+                random_leison = modrandomtask_accs[:, key_idx]
+                mod_select_props.append(random_leison - leison)
+
+        mod_select_props = np.array(mod_select_props).T
+
+        if "__" in mod_type_key:
+            base_key, mode = mod_type_key.rsplit("__", 1)
+            type_tag = base_key.replace("modulation_all_", "").replace("_", "-") + "_" + mode.replace("_", "-")
+        else:
+            base_key = mod_type_key
+            mode = mod_data.get("mod_lesion_mode", "zero_W")
+            type_tag = base_key.replace("modulation_all_", "").replace("_", "-")
+
+        lesion_mode_label = mod_data.get("mod_lesion_mode", "zero_W")
+        print(f"[{mod_type_key}] mod_select_props: {mod_select_props.shape}")
+
+        helper.plot_heatmap(mod_select_props, all_comb_names_mod_, all_tasks,
+                            xlabel=f"Modulation Lesion Condition ({lesion_mode_label})",
+                            ylabel="Task",
+                            savename=f"normalized_mod_leison_{type_tag}",
+                            aname=aname, label="Normalized Accuracy",
+                            vmin=None, vmax=None, save_dir=save_dir)
+
+        mod_by_type[base_key][mode] = {
+            "select_props": mod_select_props,
+            "cluster_names": all_comb_names_mod_,
+        }
+
+    # Second pass: for each clustering type that has both lesion modes,
+    # plot a side-by-side comparison (zero_W | freeze_M | difference).
+    for base_key, modes_dict in mod_by_type.items():
+        if len(modes_dict) < 2:
+            continue
+        if "zero_W" not in modes_dict or "freeze_M" not in modes_dict:
+            continue
+
+        zw = modes_dict["zero_W"]["select_props"]
+        fm = modes_dict["freeze_M"]["select_props"]
+        cluster_names = modes_dict["zero_W"]["cluster_names"]
+        diff = fm - zw
+
+        vabs = max(np.nanmax(np.abs(zw)), np.nanmax(np.abs(fm)))
+        dabs = np.nanmax(np.abs(diff))
+
+        base_tag = base_key.replace("modulation_all_", "").replace("_", "-")
+
+        fig, axes = plt.subplots(1, 3, figsize=(5 * 3, 0.4 * len(all_tasks) + 1.5))
+
+        panels = [
+            (axes[0], zw,   "zero_W",  "RdBu_r", -vabs, vabs),
+            (axes[1], fm,   "freeze_M", "RdBu_r", -vabs, vabs),
+            (axes[2], diff, "freeze_M − zero_W", "PiYG", -dabs, dabs),
+        ]
+        for ax, mat, title, cmap, vlo, vhi in panels:
+            im = ax.imshow(mat, aspect="auto", cmap=cmap, vmin=vlo, vmax=vhi)
+            fig.colorbar(im, ax=ax, shrink=0.6, label="Normalized Accuracy")
+            ax.set_xticks(range(len(cluster_names)))
+            ax.set_xticklabels(cluster_names, rotation=45, ha="right")
+            ax.set_yticks(range(len(all_tasks)))
+            ax.set_yticklabels(all_tasks)
+            ax.set_xlabel("Modulation Cluster")
+            ax.set_ylabel("Task")
+            ax.set_title(f"{base_tag}: {title}")
+
+        fig.tight_layout()
+        fig.savefig(f"{save_dir}/normalized_mod_leison_compare_{base_tag}_{aname}.png", dpi=300)
+        plt.close(fig)
+        print(f"Saved comparison plot for {base_key}")
     
     # this part focuses on input & hidden analysis only 
     # drop the two baseline columns from ihtask_accs so its layout matches select_props:
@@ -91,12 +153,12 @@ if __name__ == "__main__":
     print(f"ihtask_accs: {ihtask_accs.shape} -> no_baseline: {ihtask_accs_no_baseline.shape}; select_props: {select_props.shape}")
 
     corr_matrices = results["cluster_similarity"]["corr_matrices"]
-    pre_n = len(corr_matrices["input"])
-    post_n = len(corr_matrices["hidden"])
+    pre_n = len(corr_matrices["input_normalized"])
+    post_n = len(corr_matrices["hidden_normalized"])
     # columns [0:pre_n] = input clusters, [pre_n:pre_n+post_n] = hidden clusters
     slices = {
-        "input":  slice(0, pre_n),
-        "hidden": slice(pre_n, pre_n + post_n),
+        "input_normalized":  slice(0, pre_n),
+        "hidden_normalized": slice(pre_n, pre_n + post_n),
     }
 
     metrics = [
@@ -162,7 +224,7 @@ if __name__ == "__main__":
             ax2.set_title(f"{name} clusters: scatter")
 
         fig.tight_layout()
-        fig.savefig(f"./multiple_tasks_perf/cluster_corr_vs_{savesuffix}_{aname}.png", dpi=300)
+        fig.savefig(f"{save_dir}/cluster_corr_vs_{savesuffix}_{aname}.png", dpi=300)
         plt.close(fig)  
         
         
