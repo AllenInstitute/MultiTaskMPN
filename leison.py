@@ -223,7 +223,8 @@ def main(seed, feature):
 
     def leison_modulation_inplace(net, cluster_index, mod_col_clusters_, MM_, M_, random=False):
         """Lesion a modulation cluster by zeroing mp_layer1.W[post, pre] entries.
-        flat_idx k → pre = k // M_, post = k % M_ → W[post, pre].
+        modulation_W shape is (post, pre): previously assumed (pre, post).
+        flat_idx k → post = k // M_, pre = k % M_ → W[post, pre].
         Returns (saved_state, n_lesioned)."""
         if cluster_index is None:
             return {}, 0
@@ -231,8 +232,9 @@ def main(seed, feature):
         n = len(flat_idxs)
         if random:
             flat_idxs = np.random.choice(MM_, size=n, replace=False)
-        pre_t = torch.tensor(flat_idxs // M_, dtype=torch.long, device=net.mp_layer1.W.device)
-        post_t = torch.tensor(flat_idxs % M_, dtype=torch.long, device=net.mp_layer1.W.device)
+        # modulation_W shape is (post, pre): previously assumed (pre, post)
+        post_t = torch.tensor(flat_idxs // M_, dtype=torch.long, device=net.mp_layer1.W.device)
+        pre_t = torch.tensor(flat_idxs % M_, dtype=torch.long, device=net.mp_layer1.W.device)
         with torch.no_grad():
             saved = {
                 "preorpost": "modulation",
@@ -246,6 +248,7 @@ def main(seed, feature):
     def leison_modulation_freeze_inplace(net, cluster_index, mod_col_clusters_, MM_, M_, random=False):
         """Freeze plasticity at a modulation cluster: M stays at its initial value
         at those (post, pre) positions throughout the trial, but W is untouched.
+        modulation_W shape is (post, pre): previously assumed (pre, post).
         Returns (saved_state, n_frozen)."""
         if cluster_index is None:
             return {}, 0
@@ -253,8 +256,9 @@ def main(seed, feature):
         n = len(flat_idxs)
         if random:
             flat_idxs = np.random.choice(MM_, size=n, replace=False)
-        pre_t = torch.tensor(flat_idxs // M_, dtype=torch.long, device=net.mp_layer1.W.device)
-        post_t = torch.tensor(flat_idxs % M_, dtype=torch.long, device=net.mp_layer1.W.device)
+        # modulation_W shape is (post, pre): previously assumed (pre, post)
+        post_t = torch.tensor(flat_idxs // M_, dtype=torch.long, device=net.mp_layer1.W.device)
+        pre_t = torch.tensor(flat_idxs % M_, dtype=torch.long, device=net.mp_layer1.W.device)
         net.mp_layer1.set_plasticity_freeze(post_t, pre_t)
         saved = {
             "preorpost": "modulation_freeze",

@@ -35,13 +35,18 @@ def _precompute_pair_arrays(N, M, pre_cluster, post_cluster, flat_idx=None):
 
     flat_idx : optional array of original flat indices (length N).
         Pass when col_all has been filtered (e.g. unresponsive entries removed)
-        so that pre = flat_idx // M and post = flat_idx % M remain correct.
+        so that post = flat_idx // M and pre = flat_idx % M remain correct.
         Defaults to np.arange(N).
+
+    Note: modulation_W has shape (post, pre), so C-order flattening gives
+    flat_idx // M = post (hidden) and flat_idx % M = pre (input).
+    Previously this assumed (pre, post); fixed 2026-05-02.
     """
     if flat_idx is None:
         flat_idx = np.arange(N)
-    pre_all = flat_idx // M
-    post_all = flat_idx % M
+    # modulation_W shape is (post, pre): previously assumed (pre, post)
+    pre_all = flat_idx % M
+    post_all = flat_idx // M
 
     pre_to_cluster, n_pre_clusters = _build_reverse_map(pre_cluster, pre_all.max() + 1)
     post_to_cluster, n_post_clusters = _build_reverse_map(post_cluster, post_all.max() + 1)
@@ -135,8 +140,8 @@ def count_pairs_with_clusters(col_all,
 
     Returns a tuple:
       (
-        same_pre_all,                  # i//M equal
-        same_post_all,                 # i%M equal
+        same_pre_all,                  # i%M equal
+        same_post_all,                 # i//M equal
         no_same_all,                   # neither same pre nor same post
 
         same_pre_cluster_all,          # same pre *cluster*
@@ -285,8 +290,9 @@ def unresponsive_enrichment_test(col_labels, col_k, M,
         return None
 
     flat_idx = np.arange(MM)
-    pre_idx  = flat_idx // M
-    post_idx = flat_idx % M
+    # modulation_W shape is (post, pre): previously assumed (pre, post)
+    pre_idx  = flat_idx % M
+    post_idx = flat_idx // M
 
     is_unres_pre  = np.isin(pre_idx,  list(unres_input_set))
     is_unres_post = np.isin(post_idx, list(unres_hidden_set))

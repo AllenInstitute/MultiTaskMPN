@@ -528,6 +528,7 @@ def main(seed, feature):
         )
         
         figmodulation, axsmodulation = plt.subplots(1,1,figsize=(10, 12))
+        # modulation_W shape is (post, pre); .T gives (pre, post) so rows=pre, cols=post
         heatmap_with_top_left_marginals(
             modulation_W.T,
             ax=axsmodulation,
@@ -535,8 +536,8 @@ def main(seed, feature):
             center=0,
             vmin=np.nanmin(modulation_W),
             vmax=np.nanmax(modulation_W),
-            xlabel="Hidden 1 Index",
-            ylabel="Hidden 2 Index",
+            xlabel="Post (Hidden) Index",
+            ylabel="Pre (Input) Index",
             square=False
         )
 
@@ -865,10 +866,11 @@ def main(seed, feature):
         if "var_weighted" in clustering_name:
             cell_vars_rules_norm = cell_vars_rules_norm * modulation_W.flatten()[np.newaxis, :]
 
-        # modulation only, reshape to (N, pre, post) shape after calculating the variance
+        # modulation only, reshape to (N, post, pre) shape after calculating the variance
+        # modulation_W shape is (post, pre): previously assumed (pre, post)
         # N here as the number of sessions after breakdown
         # 2026-04-06: the code implicitly requires the modulation to be a square matrix
-        if "all" in clustering_name: 
+        if "all" in clustering_name:
             N, MM = cell_vars_rules_norm.shape
             M = int(np.sqrt(MM))
             cell_vars_rules_norm_keepshape = cell_vars_rules_norm.reshape(N, M, M)
@@ -1697,13 +1699,15 @@ def main(seed, feature):
 
             input_order_col_ind  = clustering_corr_info["input_normalized"][2]
             hidden_order_col_ind = clustering_corr_info["hidden_normalized"][2]
-            # cell_vars_rules_norm_keepshape: 3D array
-            # sort the modulation matrix based on the pre (input) and post (hidden) neuron ordering
-            cell_vars_rules_norm_keepshape_ih = cell_vars_rules_norm_keepshape[:, input_order_col_ind, :]
-            cell_vars_rules_norm_keepshape_ih = cell_vars_rules_norm_keepshape_ih[:, :, hidden_order_col_ind]
+            # cell_vars_rules_norm_keepshape: 3D array with shape (N, post, pre)
+            # modulation_W shape is (post, pre): previously assumed (pre, post)
+            # axis 1 = post (hidden), axis 2 = pre (input)
+            cell_vars_rules_norm_keepshape_ih = cell_vars_rules_norm_keepshape[:, hidden_order_col_ind, :]
+            cell_vars_rules_norm_keepshape_ih = cell_vars_rules_norm_keepshape_ih[:, :, input_order_col_ind]
 
-            flatten_by_pre = cell_vars_rules_norm_keepshape_ih.reshape(N, M*M)
-            flatten_by_post = cell_vars_rules_norm_keepshape_ih.transpose(0,2,1).reshape(N, M*M)
+            # shape is (N, post, pre): no transpose groups by post; transpose groups by pre
+            flatten_by_post = cell_vars_rules_norm_keepshape_ih.reshape(N, M*M)
+            flatten_by_pre = cell_vars_rules_norm_keepshape_ih.transpose(0,2,1).reshape(N, M*M)
 
             fig, axs = plt.subplots(2,1,figsize=(24,8*2))
             sns.heatmap(flatten_by_pre, ax=axs[0], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
@@ -1736,7 +1740,9 @@ def main(seed, feature):
                     nc1_input, nc2_hidden = cluster_input[c1], cluster_hidden[c2]
                     nc_combine = [(int(i),int(j)) for i in nc1_input for j in nc2_hidden]
                     # transform to reshaped matrix index
-                    nc_combine = [cc[0] * M + cc[1] for cc in nc_combine]
+                    # modulation_W shape is (post, pre): previously assumed (pre, post)
+                    # flat index in (post, pre) layout: post * M + pre
+                    nc_combine = [cc[1] * M + cc[0] for cc in nc_combine]
                     cluster_combine[newc] = nc_combine
 
             # 2026-10-08: qualitatively, training MPN without regularization will cause more hidden cluster
@@ -1867,14 +1873,18 @@ def main(seed, feature):
 
             # 2026-04-10: just a buffer to save the 4D shape of the modulation matrix
             assert len(clustering_data_old.shape) == 4
-            pre_num, post_num = clustering_data_old.shape[2], clustering_data_old.shape[3]
-            feature_group_post = [] 
-            for i in range(post_num):
-                feature_group_post.append(helper.basic_sort([i + j * post_num 
-                                                             for j in range(pre_num)], sort_idxs))
+            # clustering_data_old shape is (N, T, post, pre) = (N, T, hidden, input)
+            post_num, pre_num = clustering_data_old.shape[2], clustering_data_old.shape[3]
+            # C-order flat: flat_idx = post_idx * pre_num + pre_idx
+            # Group by shared pre (input) neuron: strided pattern {i, i+pre_num, ...}
             feature_group_pre = []
             for i in range(pre_num):
-                feature_group_pre.append(helper.basic_sort([j for j in range(post_num * i, post_num * (i+1))], sort_idxs))
+                feature_group_pre.append(helper.basic_sort([i + j * pre_num
+                                                             for j in range(post_num)], sort_idxs))
+            # Group by shared post (hidden) neuron: contiguous blocks of size pre_num
+            feature_group_post = []
+            for i in range(post_num):
+                feature_group_post.append(helper.basic_sort([j for j in range(pre_num * i, pre_num * (i+1))], sort_idxs))
 
             result_pre = clustering.cluster_variance_matrix_forgroup(V_for_clustering_mod,
                                                                     row_groups=None,
@@ -2072,110 +2082,170 @@ def main(seed, feature):
                 # but they may still share the same neuron cluster
                 # here we are curious about their collective behavior and calculate the total summation of count
                 row_all, col_all = result_all["row_labels"], result_all["col_labels"]
-                # assert np.max(col_all) in (result_all["col_k"], result_all["col_k"] + 1)
-                
+
                 print(f"col_all: {col_all}")
-                    
-                # Exclude the unresponsive modulation cluster (label = col_k + 1).
-                # flat_idx preserves original positions so i//M and i%M stay correct.
-                # Note: when clustering_normalize=True, skip_unresponsive_detection=True is
-                # passed to cluster_variance_matrix_forgroup, so col_all only contains labels
-                # 1..col_k and the mask is all-True (no-op). The exclusion is only meaningful
-                # when clustering_normalize=False, where unresponsive modulations get label col_k+1.
-                _unres_mod_label = result_all["col_k"] + 1
-                _active_mod_mask = col_all != _unres_mod_label
-                _col_all_active  = col_all[_active_mod_mask]
-                _flat_idx_active = np.where(_active_mod_mask)[0]
-                _n_drop_unres_mod = int((~_active_mod_mask).sum())
-                _n_drop_endpoint  = 0
 
-                # Additionally exclude modulations whose pre-neuron (input) or post-neuron
-                # (hidden) is in the unresponsive neuron cluster.  This gives "fully responsive
-                # triplets": the modulation itself AND both its endpoints are task-sensitive.
-                # Only meaningful when clustering_normalize=False (unresponsive detection was run
-                # for input/hidden neurons).  When clustering_normalize=True this block is a no-op
-                # because no col_k+1 label was assigned to input/hidden neurons.
-                if not clustering_normalize:
-                    _input_col_k  = cluster_info_save["input_unnormalized"]["result"]["col_tol_k"]
-                    _hidden_col_k = cluster_info_save["hidden_unnormalized"]["result"]["col_tol_k"]
-                    _unres_input_neurons  = set(cluster_input.get(_input_col_k  + 1, []))
-                    _unres_hidden_neurons = set(cluster_hidden.get(_hidden_col_k + 1, []))
+                # Two exclusion modes:
+                #   "mod_only"        — exclude only the silent modulation cluster
+                #   "mod_and_endpoint" — also exclude modulations whose pre/post neuron
+                #                        belongs to the unresponsive input/hidden cluster
+                # When clustering_normalize=True both modes are identical (no unresponsive
+                # detection was run), so we only run "mod_only" to avoid redundant work.
+                if clustering_normalize:
+                    _exclusion_modes = ["mod_only"]
+                else:
+                    _exclusion_modes = ["mod_only", "mod_and_endpoint"]
 
-                    if _unres_input_neurons or _unres_hidden_neurons:
-                        _pre_idx  = _flat_idx_active // M
-                        _post_idx = _flat_idx_active % M
-                        _endpoint_mask = (
-                            ~np.isin(_pre_idx,  list(_unres_input_neurons)) &
-                            ~np.isin(_post_idx, list(_unres_hidden_neurons))
-                        )
-                        _col_all_active  = _col_all_active[_endpoint_mask]
-                        _flat_idx_active = _flat_idx_active[_endpoint_mask]
-                        n_dropped = int((~_endpoint_mask).sum())
-                        _n_drop_endpoint = n_dropped
-                        print(f"  Endpoint mask: dropped {n_dropped} modulations touching "
-                              f"unresponsive pre/post neurons "
-                              f"({len(_unres_input_neurons)} unresponsive input, "
-                              f"{len(_unres_hidden_neurons)} unresponsive hidden neurons)")
+                for _excl_mode in _exclusion_modes:
+                    print(f"  --- Exclusion mode: {_excl_mode} ---")
 
-                # Record per-G mask breakdown (kept + two drop categories == MM).
-                mask_breakdown_lst.append({
-                    "G": G,
-                    "n_total":           int(col_all.size),
-                    "n_drop_unres_mod":  _n_drop_unres_mod,
-                    "n_drop_endpoint":   _n_drop_endpoint,
-                    "n_kept":            int(_col_all_active.size),
-                })
+                    # Stage 1: exclude the unresponsive modulation cluster (label = col_k + 1).
+                    # flat_idx preserves original positions so post=i//M and pre=i%M stay correct.
+                    _unres_mod_label = result_all["col_k"] + 1
+                    _active_mod_mask = col_all != _unres_mod_label
+                    _col_all_active  = col_all[_active_mod_mask]
+                    _flat_idx_active = np.where(_active_mod_mask)[0]
+                    _n_drop_unres_mod = int((~_active_mod_mask).sum())
+                    _n_drop_endpoint  = 0
 
-                # 2025-10-21: membership using the actual clustering information
-                same_pre_all, same_post_all, no_same_pre_post_all, same_pre_cluster_all, same_post_cluster_all, \
-                    same_pre_post_cluster_all, no_same_pre_post_cluster_all = clustering_metric.count_pairs_with_clusters(
-                        _col_all_active, M, cluster_input, cluster_hidden,
-                        flat_idx=_flat_idx_active)
-                # (control) membership using the random clustering information
-                # 2026-03-03: increase the repeat times for a more reliable null distribution
-                same_pre_all_c, same_post_all_c, no_same_pre_post_all_c, same_pre_cluster_all_c, same_post_cluster_all_c, \
-                    same_pre_post_cluster_all_c, no_same_pre_post_cluster_all_c = clustering_metric.count_pairs_with_clusters_control(
-                        _col_all_active, M, cluster_input, cluster_hidden,
-                        repeat=10000, flat_idx=_flat_idx_active)
-                
-                print(f"same_pre_all: {same_pre_all}; same_post_all: {same_post_all}; no_same_pre_post_all: {no_same_pre_post_all}")
-                print(f"same_pre_cluster_all: {same_pre_cluster_all}; same_post_cluster_all: {same_post_cluster_all}")
-                print(f"same_pre_post_cluster_all: {same_pre_post_cluster_all}; no_same_pre_post_cluster_all: {no_same_pre_post_cluster_all}")
+                    # Sub-breakdown of unresponsive modulations by endpoint status:
+                    # among modulations in the silent mod cluster, how many have
+                    # unresponsive pre, post, both, or neither endpoint.
+                    _n_unres_mod_pre_only  = 0
+                    _n_unres_mod_post_only = 0
+                    _n_unres_mod_both      = 0
+                    _n_unres_mod_neither   = 0
+                    _n_unres_input_neurons = 0
+                    _n_unres_hidden_neurons = 0
+                    if _n_drop_unres_mod > 0 and not clustering_normalize:
+                        _input_col_k_um  = cluster_info_save["input_unnormalized"]["result"]["col_tol_k"]
+                        _hidden_col_k_um = cluster_info_save["hidden_unnormalized"]["result"]["col_tol_k"]
+                        _unres_input_um  = set(cluster_input.get(_input_col_k_um  + 1, []))
+                        _unres_hidden_um = set(cluster_hidden.get(_hidden_col_k_um + 1, []))
+                        _n_unres_input_neurons = len(_unres_input_um)
+                        _n_unres_hidden_neurons = len(_unres_hidden_um)
+                        _flat_unres_mod  = np.where(~_active_mod_mask)[0]
+                        # modulation_W shape is (post, pre)
+                        _um_post = _flat_unres_mod // M
+                        _um_pre  = _flat_unres_mod % M
+                        _um_is_pre  = np.isin(_um_pre,  list(_unres_input_um))
+                        _um_is_post = np.isin(_um_post, list(_unres_hidden_um))
+                        _n_unres_mod_pre_only  = int((_um_is_pre & ~_um_is_post).sum())
+                        _n_unres_mod_post_only = int((~_um_is_pre & _um_is_post).sum())
+                        _n_unres_mod_both      = int((_um_is_pre & _um_is_post).sum())
+                        _n_unres_mod_neither   = int((~_um_is_pre & ~_um_is_post).sum())
+                        print(f"    Unres mod endpoint breakdown: "
+                              f"pre_only={_n_unres_mod_pre_only}, post_only={_n_unres_mod_post_only}, "
+                              f"both={_n_unres_mod_both}, neither={_n_unres_mod_neither}")
 
-                print(f"same_pre_all_c: {same_pre_all_c}; same_post_all_c: {same_post_all_c}; no_same_pre_post_all_c: {no_same_pre_post_all_c}")
-                print(f"same_pre_cluster_all_c: {same_pre_cluster_all_c}; same_post_cluster_all_c: {same_post_cluster_all_c}")
-                print(f"same_pre_post_cluster_all_c: {same_pre_post_cluster_all_c}; no_same_pre_post_cluster_all_c: {no_same_pre_post_cluster_all_c}")
-        
-                bar_all_lst = [[same_pre_all, same_post_all, no_same_pre_post_all], 
-                               [same_pre_cluster_all, same_post_cluster_all, 
-                                same_pre_post_cluster_all, no_same_pre_post_cluster_all]]
-                bar_all_ctrl_lst = [[same_pre_all_c, same_post_all_c, no_same_pre_post_all_c], 
-                                    [same_pre_cluster_all_c, same_post_cluster_all_c, 
-                                     same_pre_post_cluster_all_c, no_same_pre_post_cluster_all_c]]
-                bar_name_lst = [["Share-Pre", "Share-Post", "Neither"], 
-                                ["Share-Pre-Cluster", "Share-Post-Cluster", "Share-Both-Cluster", "Neither"]]
+                    # Stage 2 (mod_and_endpoint only): additionally exclude modulations
+                    # whose pre-neuron (input) or post-neuron (hidden) is in the
+                    # unresponsive neuron cluster.
+                    _n_drop_pre_only  = 0
+                    _n_drop_post_only = 0
+                    _n_drop_both      = 0
+                    if _excl_mode == "mod_and_endpoint" and not clustering_normalize:
+                        _input_col_k  = cluster_info_save["input_unnormalized"]["result"]["col_tol_k"]
+                        _hidden_col_k = cluster_info_save["hidden_unnormalized"]["result"]["col_tol_k"]
+                        _unres_input_neurons  = set(cluster_input.get(_input_col_k  + 1, []))
+                        _unres_hidden_neurons = set(cluster_hidden.get(_hidden_col_k + 1, []))
 
-                N_cluster = np.max(col_all)
-                
-                ppshare_row_names = ["Same Neuron Check", "Same Neuron Cluster Check"]
-                n_pre_clusters  = len(cluster_input)
-                n_post_clusters = len(cluster_hidden)
-                for idx in range(len(bar_all_lst)):
-                    bar_all = np.array(bar_all_lst[idx])
-                    bar_all_c = np.array(bar_all_ctrl_lst[idx])
+                        if _unres_input_neurons or _unres_hidden_neurons:
+                            # modulation_W shape is (post, pre): previously assumed (pre, post)
+                            _post_idx = _flat_idx_active // M
+                            _pre_idx  = _flat_idx_active % M
+                            _is_unres_pre  = np.isin(_pre_idx,  list(_unres_input_neurons))
+                            _is_unres_post = np.isin(_post_idx, list(_unres_hidden_neurons))
+                            _endpoint_mask = ~(_is_unres_pre | _is_unres_post)
 
-                    over_membership = (bar_all - bar_all_c) / bar_all_c
+                            # Sub-breakdown: pre-only, post-only, both silent
+                            _n_drop_pre_only  = int((_is_unres_pre & ~_is_unres_post).sum())
+                            _n_drop_post_only = int((~_is_unres_pre & _is_unres_post).sum())
+                            _n_drop_both      = int((_is_unres_pre & _is_unres_post).sum())
 
-                    axsppshare[idx,G_idx].bar([i for i in range(len(over_membership))], over_membership)
-                    axsppshare[idx,G_idx].set_xticks([i for i in range(len(over_membership))])
-                    axsppshare[idx,G_idx].set_xticklabels(bar_name_lst[idx], rotation=45, ha="right")
-                    axsppshare[idx,G_idx].set_ylabel("Over-membership", fontsize=15)
-                    if idx == 0:
-                        title = f"{ppshare_row_names[idx]} | G={G}; #Cluster={N_cluster}"
-                    else:
-                        title = (f"{ppshare_row_names[idx]} | G={G}; #Cluster={N_cluster}\n"
-                                 f"#PreCluster={n_pre_clusters}; #PostCluster={n_post_clusters}")
-                    axsppshare[idx,G_idx].set_title(title)
+                            _col_all_active  = _col_all_active[_endpoint_mask]
+                            _flat_idx_active = _flat_idx_active[_endpoint_mask]
+                            _n_drop_endpoint = _n_drop_pre_only + _n_drop_post_only + _n_drop_both
+                            print(f"    Endpoint mask: dropped {_n_drop_endpoint} modulations "
+                                  f"(pre_only={_n_drop_pre_only}, post_only={_n_drop_post_only}, "
+                                  f"both={_n_drop_both}; "
+                                  f"{len(_unres_input_neurons)} unresponsive input, "
+                                  f"{len(_unres_hidden_neurons)} unresponsive hidden neurons)")
+
+                    print(f"    kept={_col_all_active.size} / {col_all.size} "
+                          f"(drop_mod={_n_drop_unres_mod}, drop_endpoint={_n_drop_endpoint})")
+
+                    # Record per-G mask breakdown.
+                    mask_breakdown_lst.append({
+                        "G": G,
+                        "exclusion_mode":    _excl_mode,
+                        "n_total":           int(col_all.size),
+                        "n_drop_unres_mod":          _n_drop_unres_mod,
+                        "n_unres_mod_pre_only":      _n_unres_mod_pre_only,
+                        "n_unres_mod_post_only":     _n_unres_mod_post_only,
+                        "n_unres_mod_both":          _n_unres_mod_both,
+                        "n_unres_mod_neither":       _n_unres_mod_neither,
+                        "n_drop_endpoint":           _n_drop_endpoint,
+                        "n_drop_pre_only":           _n_drop_pre_only,
+                        "n_drop_post_only":          _n_drop_post_only,
+                        "n_drop_both":               _n_drop_both,
+                        "n_kept":                    int(_col_all_active.size),
+                        "n_unres_input_neurons":     _n_unres_input_neurons,
+                        "n_unres_hidden_neurons":    _n_unres_hidden_neurons,
+                    })
+
+                    # Membership using the actual clustering information
+                    same_pre_all, same_post_all, no_same_pre_post_all, same_pre_cluster_all, same_post_cluster_all, \
+                        same_pre_post_cluster_all, no_same_pre_post_cluster_all = clustering_metric.count_pairs_with_clusters(
+                            _col_all_active, M, cluster_input, cluster_hidden,
+                            flat_idx=_flat_idx_active)
+                    # (control) membership using random shuffled clustering information
+                    same_pre_all_c, same_post_all_c, no_same_pre_post_all_c, same_pre_cluster_all_c, same_post_cluster_all_c, \
+                        same_pre_post_cluster_all_c, no_same_pre_post_cluster_all_c = clustering_metric.count_pairs_with_clusters_control(
+                            _col_all_active, M, cluster_input, cluster_hidden,
+                            repeat=10000, flat_idx=_flat_idx_active)
+
+                    print(f"    same_pre_all: {same_pre_all}; same_post_all: {same_post_all}; no_same_pre_post_all: {no_same_pre_post_all}")
+                    print(f"    same_pre_cluster_all: {same_pre_cluster_all}; same_post_cluster_all: {same_post_cluster_all}")
+                    print(f"    same_pre_post_cluster_all: {same_pre_post_cluster_all}; no_same_pre_post_cluster_all: {no_same_pre_post_cluster_all}")
+
+                    print(f"    same_pre_all_c: {same_pre_all_c}; same_post_all_c: {same_post_all_c}; no_same_pre_post_all_c: {no_same_pre_post_all_c}")
+                    print(f"    same_pre_cluster_all_c: {same_pre_cluster_all_c}; same_post_cluster_all_c: {same_post_cluster_all_c}")
+                    print(f"    same_pre_post_cluster_all_c: {same_pre_post_cluster_all_c}; no_same_pre_post_cluster_all_c: {no_same_pre_post_cluster_all_c}")
+
+                    bar_all_lst = [[same_pre_all, same_post_all, no_same_pre_post_all],
+                                   [same_pre_cluster_all, same_post_cluster_all,
+                                    same_pre_post_cluster_all, no_same_pre_post_cluster_all]]
+                    bar_all_ctrl_lst = [[same_pre_all_c, same_post_all_c, no_same_pre_post_all_c],
+                                        [same_pre_cluster_all_c, same_post_cluster_all_c,
+                                         same_pre_post_cluster_all_c, no_same_pre_post_cluster_all_c]]
+                    bar_name_lst = [["Share-Pre", "Share-Post", "Neither"],
+                                    ["Share-Pre-Cluster", "Share-Post-Cluster", "Share-Both-Cluster", "Neither"]]
+
+                    N_cluster = np.max(col_all)
+
+                    ppshare_row_names = ["Same Neuron Check", "Same Neuron Cluster Check"]
+                    n_pre_clusters  = len(cluster_input)
+                    n_post_clusters = len(cluster_hidden)
+                    for idx in range(len(bar_all_lst)):
+                        bar_all = np.array(bar_all_lst[idx])
+                        bar_all_c = np.array(bar_all_ctrl_lst[idx])
+
+                        over_membership = (bar_all - bar_all_c) / bar_all_c
+
+                        axsppshare[idx,G_idx].bar([i for i in range(len(over_membership))], over_membership,
+                                                  alpha=0.7 if _excl_mode == "mod_only" else 1.0,
+                                                  label=_excl_mode)
+                        axsppshare[idx,G_idx].set_xticks([i for i in range(len(over_membership))])
+                        axsppshare[idx,G_idx].set_xticklabels(bar_name_lst[idx], rotation=45, ha="right")
+                        axsppshare[idx,G_idx].set_ylabel("Over-membership", fontsize=15)
+                        if idx == 0:
+                            title = f"{ppshare_row_names[idx]} | G={G}; #Cluster={N_cluster}"
+                        else:
+                            title = (f"{ppshare_row_names[idx]} | G={G}; #Cluster={N_cluster}\n"
+                                     f"#PreCluster={n_pre_clusters}; #PostCluster={n_post_clusters}")
+                        axsppshare[idx,G_idx].set_title(title)
+                        axsppshare[idx,G_idx].legend(fontsize=7)
 
                 # 2025-10-21: next analyze for each individual modulation cluster, 
                 # the belonging to different individual 
@@ -2183,7 +2253,6 @@ def main(seed, feature):
                 # 2025-11-17: revise to plot for G=300 case
                 if G_idx == 1:
                     print(f"Plot for G={G_lst[G_idx]} Case")
-                    mp = 5; cnt = 0
                     # Use active (responsive) modulations only, consistent with count_pairs_with_clusters.
                     # _col_all_active / _flat_idx_active are all-inclusive no-ops when
                     # clustering_normalize=True (unresponsive detection is skipped).
@@ -2202,15 +2271,6 @@ def main(seed, feature):
                     flat_all_num = all_num.flatten()
                     n_in, n_hid = len(cluster_input), len(cluster_hidden)
 
-                    figac, axac = plt.subplots(1,1,figsize=(4,4))
-                    sns.heatmap(all_num, ax=axac, cmap=cs)
-                    axac.set_xlabel("Hidden Cluster Index", fontsize=15)
-                    axac.set_ylabel("Input Cluster Index", fontsize=15)
-                    axac.set_title("Number of Total Modulation", fontsize=15)
-                    figac.tight_layout()
-                    figac.savefig(f"{save_dir}/{clustering_name}_inhidpair_num_{savefigure_name}.png", dpi=300)
-                    plt.close(figac)
-
                     # Precompute neuron -> cluster index (0-based) lookup arrays once.
                     # Keys in cluster_input/cluster_hidden are 1-indexed, so subtract 1.
                     max_pre = max(max(v) for v in cluster_input.values())
@@ -2222,17 +2282,16 @@ def main(seed, feature):
                     for key, neurons in cluster_hidden.items():
                         post_lookup[np.asarray(neurons)] = key - 1
 
-                    # Precompute cluster assignment using original flat positions (_flat_idx_active)
-                    # so that pre = flat_idx // M and post = flat_idx % M remain correct after
-                    # unresponsive entries are removed.
-                    pre_clusters  = pre_lookup[_flat_idx_active // M]   # shape (N_active,), 0-based
-                    post_clusters = post_lookup[_flat_idx_active % M]   # shape (N_active,), 0-based
+                    # Precompute cluster assignment using original flat positions (_flat_idx_active).
+                    # modulation_W shape is (post, pre): previously assumed (pre, post)
+                    # so flat_idx // M = post (hidden), flat_idx % M = pre (input).
+                    pre_clusters  = pre_lookup[_flat_idx_active % M]    # shape (N_active,), 0-based
+                    post_clusters = post_lookup[_flat_idx_active // M]  # shape (N_active,), 0-based
 
                     corr_lst, om_lst, num_lst = [], [], []
                     over_membership_lst = []
                     z_count_lst = []
 
-                    figsm, axsm = plt.subplots(2,mp,figsize=(4*mp,4*2))
                     for cidx, cluster_num in enumerate(all_choice_order):
                         idx = np.where(_col_all_active == cluster_num)[0]
 
@@ -2250,20 +2309,6 @@ def main(seed, feature):
                         om_lst.append(om); num_lst.append(len(idx))
                         over_membership_lst.append(over_membership)
                         z_count_lst.append(Z_count)
-
-                        if cnt < mp:
-                            sns.heatmap(Z_count, ax=axsm[0,cnt], cmap=cs)
-                            sns.heatmap(over_membership, ax=axsm[1,cnt], cmap=cs, vmin=0, vmax=2)
-                            for axindex in range(2):
-                                axsm[axindex,cnt].set_xlabel("Hidden Cluster Index", fontsize=15)
-                                axsm[axindex,cnt].set_ylabel("Input Cluster Index", fontsize=15)
-                            axsm[0,cnt].set_title(f"Modulation Cluster {cluster_num}; corr: {corr:.3f}", fontsize=12)
-                            axsm[1,cnt].set_title(f"Modulation Cluster {cluster_num}; om: {om:.3f}", fontsize=12)
-                            cnt += 1
-
-                    figsm.tight_layout()
-                    figsm.savefig(f"{save_dir}/{clustering_name}_specific_case_{savefigure_name}.png", dpi=300)
-                    plt.close(figsm)
 
                     # Directional asymmetry analysis:
                     # Each modulation cluster groups synapses (pre, post) with similar Hebbian dynamics.
@@ -2640,22 +2685,27 @@ def main(seed, feature):
             figppshare.savefig(f"{save_dir}/{clustering_name}_prepost_belonging_{savefigure_name}.png", dpi=300)
             plt.close(figppshare)
 
-            # Modulation masking breakdown: for each G, show how many modulations are
-            # dropped by mask 1 (unresponsive mod cluster, label = col_k+1) vs. mask 2
-            # (pre/post endpoint in unresponsive input/hidden cluster) vs. kept.
-            # For clustering_normalize=True both masks are no-ops, so the figure still
-            # renders with ~100% kept — useful contrast against the unnormalized pass.
+            # Modulation masking breakdown: 5 stacked categories per bar.
+            # 1) Kept (active), 2) Drop: unresponsive mod cluster,
+            # 3) Drop: pre (input) silent only, 4) Drop: post (hidden) silent only,
+            # 5) Drop: both pre & post silent.
+            # For clustering_normalize=True or mod_only mode the endpoint sub-counts
+            # are all zero, so only the first two segments are visible.
             figmask, axmask = plt.subplots(1, 1, figsize=(max(4, 1.4 * len(mask_breakdown_lst) + 2), 5))
             _x = np.arange(len(mask_breakdown_lst))
-            _m1  = np.array([d["n_drop_unres_mod"] for d in mask_breakdown_lst], dtype=float)
-            _m2  = np.array([d["n_drop_endpoint"]  for d in mask_breakdown_lst], dtype=float)
-            _kept = np.array([d["n_kept"]          for d in mask_breakdown_lst], dtype=float)
-            _totals = np.array([d["n_total"]       for d in mask_breakdown_lst], dtype=float)
+            _m1       = np.array([d["n_drop_unres_mod"] for d in mask_breakdown_lst], dtype=float)
+            _ep_pre   = np.array([d["n_drop_pre_only"]  for d in mask_breakdown_lst], dtype=float)
+            _ep_post  = np.array([d["n_drop_post_only"] for d in mask_breakdown_lst], dtype=float)
+            _ep_both  = np.array([d["n_drop_both"]      for d in mask_breakdown_lst], dtype=float)
+            _kept     = np.array([d["n_kept"]           for d in mask_breakdown_lst], dtype=float)
+            _totals   = np.array([d["n_total"]          for d in mask_breakdown_lst], dtype=float)
             _bar_w = 0.6
             _seg_specs = [
-                (_kept, "Kept (active)",               c_vals[2], np.zeros_like(_kept)),
-                (_m1,   "Drop: unresponsive mod",      c_vals[0], _kept),
-                (_m2,   "Drop: unresponsive endpoint", c_vals[1], _kept + _m1),
+                (_kept,    "Kept (active)",              c_vals[2], np.zeros_like(_kept)),
+                (_m1,      "Drop: unresponsive mod",     c_vals[0], _kept),
+                (_ep_pre,  "Drop: pre (input) silent",   c_vals[1], _kept + _m1),
+                (_ep_post, "Drop: post (hidden) silent", c_vals[3], _kept + _m1 + _ep_pre),
+                (_ep_both, "Drop: both pre & post silent", c_vals[4], _kept + _m1 + _ep_pre + _ep_post),
             ]
             for _vals, _lbl, _col, _bot in _seg_specs:
                 axmask.bar(_x, _vals, width=_bar_w, bottom=_bot, color=_col,
@@ -2665,109 +2715,110 @@ def main(seed, feature):
                         continue
                     axmask.text(_xi, _b + _v / 2.0,
                                 f"{int(_v)}\n({100.0 * _v / _tot:.1f}%)",
-                                ha="center", va="center", fontsize=9,
+                                ha="center", va="center", fontsize=8,
                                 color="white" if _lbl.startswith("Kept") else "black")
             axmask.set_xticks(_x)
             axmask.set_xticklabels(
-                [f"G={d['G']}\n(MM={d['n_total']})" for d in mask_breakdown_lst]
+                [f"G={d['G']}\n{d['exclusion_mode']}\n(MM={d['n_total']})" for d in mask_breakdown_lst]
             )
             axmask.set_ylabel("Number of modulations", fontsize=13)
             axmask.set_title(
                 f"Modulation mask breakdown ({'normalized' if clustering_normalize else 'unnormalized'})",
                 fontsize=13,
             )
-            axmask.legend(loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=3, frameon=False)
-            figmask.tight_layout()
-            figmask.savefig(f"{save_dir}/{clustering_name}_mask_breakdown_{savefigure_name}.png", dpi=300)
+            axmask.legend(loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=2, frameon=False, fontsize=8)
+            figmask.savefig(f"{save_dir}/{clustering_name}_mask_breakdown_{savefigure_name}.png",
+                            dpi=300, bbox_inches="tight")
             plt.close(figmask)
 
-            # Unresponsive enrichment: are modulations in the unresponsive modulation
-            # cluster more likely to connect unresponsive input/hidden neurons?
-            # Only meaningful for unnormalized data where unresponsive detection is active.
-            if not clustering_normalize:
-                _input_col_k_enr  = cluster_info_save["input_unnormalized"]["result"]["col_tol_k"]
-                _hidden_col_k_enr = cluster_info_save["hidden_unnormalized"]["result"]["col_tol_k"]
+            # Companion figure: grouped bars on log scale (mod_and_endpoint only).
+            # 8 categories: Kept, then 4 sub-categories of unresponsive mod (by endpoint
+            # status: pre-only, post-only, both, neither silent endpoint), then 3 active-
+            # endpoint drop categories (pre-only, post-only, both).
+            _mbd_log = [d for d in mask_breakdown_lst if d["exclusion_mode"] == "mod_and_endpoint"]
+            if not _mbd_log:
+                _mbd_log = mask_breakdown_lst  # fallback for normalized (mod_only only)
+            _n_groups_log = len(_mbd_log)
+            _x_log = np.arange(_n_groups_log)
+            _kept_log    = np.array([d["n_kept"]               for d in _mbd_log], dtype=float)
+            _m1_log      = np.array([d["n_drop_unres_mod"]     for d in _mbd_log], dtype=float)
+            _um_pre_log  = np.array([d["n_unres_mod_pre_only"] for d in _mbd_log], dtype=float)
+            _um_post_log = np.array([d["n_unres_mod_post_only"]for d in _mbd_log], dtype=float)
+            _um_both_log = np.array([d["n_unres_mod_both"]     for d in _mbd_log], dtype=float)
+            _um_neit_log = np.array([d["n_unres_mod_neither"]  for d in _mbd_log], dtype=float)
+            _ep_pre_log  = np.array([d["n_drop_pre_only"]      for d in _mbd_log], dtype=float)
+            _ep_post_log = np.array([d["n_drop_post_only"]     for d in _mbd_log], dtype=float)
+            _ep_both_log = np.array([d["n_drop_both"]          for d in _mbd_log], dtype=float)
 
-                enrichment_results = []
-                for _g_idx, (_g, _res) in enumerate(zip(G_lst, result_all_lst)):
-                    _enr = clustering_metric.unresponsive_enrichment_test(
-                        col_labels=np.asarray(_res["col_labels"]),
-                        col_k=_res["col_k"],
-                        M=M,
-                        cluster_input=cluster_input,
-                        cluster_hidden=cluster_hidden,
-                        input_col_k=_input_col_k_enr,
-                        hidden_col_k=_hidden_col_k_enr,
-                        n_repeats=10000,
-                        batch_size=500,
-                    )
-                    enrichment_results.append(_enr)
-                    if _enr is not None:
-                        print(
-                            f"[Unres enrichment G={_g}] "
-                            f"n_unres_mod={_enr['n_unres_mod']}/{_enr['n_total_mod']}  |  "
-                            f"pre: obs={_enr['obs_pre']} exp={_enr['mean_null_pre']:.1f} "
-                            f"enrich={_enr['enrichment_pre']:+.3f} p={_enr['pval_pre']:.2e}  |  "
-                            f"post: obs={_enr['obs_post']} exp={_enr['mean_null_post']:.1f} "
-                            f"enrich={_enr['enrichment_post']:+.3f} p={_enr['pval_post']:.2e}  |  "
-                            f"both: obs={_enr['obs_both']} exp={_enr['mean_null_both']:.1f} "
-                            f"enrich={_enr['enrichment_both']:+.3f} p={_enr['pval_both']:.2e}"
+            # Order follows the filtering pipeline:
+            # 1) Stage 1: unresponsive modulation cluster (broken down by endpoint)
+            # 2) Stage 2: responsive mod cluster but unresponsive pre/post endpoint
+            # 3) Kept: survived both stages
+            _cat_labels_log = [
+                "Unres mod: pre silent",  "Unres mod: post silent",
+                "Unres mod: both silent", "Unres mod: neither silent",
+                "Drop: pre silent",  "Drop: post silent", "Drop: both silent",
+                "Kept",
+            ]
+            _cat_colors_log = [
+                c_vals_l[0], c_vals_l[1], c_vals_l[3], c_vals_l[6],
+                c_vals[1], c_vals[3], c_vals[4],
+                c_vals[2],
+            ]
+            _cat_vals_log = np.array([
+                _um_pre_log, _um_post_log, _um_both_log, _um_neit_log,
+                _ep_pre_log, _ep_post_log, _ep_both_log,
+                _kept_log,
+            ])  # (8, n_groups_log)
+            _totals_log = np.array([d["n_total"] for d in _mbd_log], dtype=float)
+            assert np.allclose(_cat_vals_log.sum(axis=0), _totals_log), (
+                f"Mask breakdown categories do not sum to total: "
+                f"{_cat_vals_log.sum(axis=0)} vs {_totals_log}"
+            )
+            _n_cats_log = len(_cat_labels_log)
+            _grp_w = 0.85
+            _bar_w_log = _grp_w / _n_cats_log
+            _offsets_log = np.arange(_n_cats_log) * _bar_w_log - (_n_cats_log - 1) * _bar_w_log / 2
+
+            figmask_log, axmask_log = plt.subplots(
+                1, 1, figsize=(max(8, 2.5 * _n_groups_log + 2), 6)
+            )
+            for ci in range(_n_cats_log):
+                vals = _cat_vals_log[ci]
+                axmask_log.bar(
+                    _x_log + _offsets_log[ci], vals, width=_bar_w_log,
+                    color=_cat_colors_log[ci], edgecolor="black", linewidth=0.4,
+                    label=_cat_labels_log[ci],
+                )
+                for xi, v in enumerate(vals):
+                    if v > 0:
+                        axmask_log.text(
+                            xi + _offsets_log[ci], v * 1.15,
+                            f"{int(v)}",
+                            ha="center", va="bottom", fontsize=6,
                         )
-                    else:
-                        print(f"[Unres enrichment G={_g}] skipped (no unres modulations or neurons)")
-
-                # Plot: grouped bar chart of over-membership per G
-                _valid = [(i, G_lst[i], enrichment_results[i])
-                          for i in range(len(G_lst)) if enrichment_results[i] is not None]
-                if _valid:
-                    _bar_labels = ["Unres. Pre", "Unres. Post", "Both Unres."]
-                    _n_bars = len(_bar_labels)
-                    _n_groups = len(_valid)
-                    _bar_w = 0.22
-                    _offsets = np.arange(_n_bars) * _bar_w - (_n_bars - 1) * _bar_w / 2
-
-                    fig_enr, ax_enr = plt.subplots(1, 1, figsize=(max(5, 2.5 * _n_groups + 1), 5))
-                    _x = np.arange(_n_groups)
-                    _bar_colors = [c_vals[0], c_vals[1], c_vals[3] if len(c_vals) > 3 else "purple"]
-
-                    for _bi in range(_n_bars):
-                        _vals = []
-                        _pvals = []
-                        for _, _g, _enr in _valid:
-                            _vals.append([_enr["enrichment_pre"],
-                                          _enr["enrichment_post"],
-                                          _enr["enrichment_both"]][_bi])
-                            _pvals.append([_enr["pval_pre"],
-                                           _enr["pval_post"],
-                                           _enr["pval_both"]][_bi])
-                        _vals = np.array(_vals)
-                        bars = ax_enr.bar(_x + _offsets[_bi], _vals, width=_bar_w,
-                                          color=_bar_colors[_bi], edgecolor="black",
-                                          linewidth=0.5, label=_bar_labels[_bi])
-                        for _xi, (_v, _p) in enumerate(zip(_vals, _pvals)):
-                            _star = "***" if _p < 0.001 else "**" if _p < 0.01 else "*" if _p < 0.05 else "n.s."
-                            _y_pos = _v + 0.02 if _v >= 0 else _v - 0.06
-                            ax_enr.text(_xi + _offsets[_bi], _y_pos, _star,
-                                        ha="center", va="bottom" if _v >= 0 else "top",
-                                        fontsize=9, fontweight="bold")
-
-                    ax_enr.axhline(0, color="black", lw=0.8)
-                    ax_enr.set_xticks(_x)
-                    ax_enr.set_xticklabels([f"G={_g}\n(n_unres={_enr['n_unres_mod']})"
-                                            for _, _g, _enr in _valid])
-                    ax_enr.set_ylabel("Enrichment  (obs - exp) / exp", fontsize=12)
-                    ax_enr.set_title(
-                        "Unresponsive endpoint enrichment\n"
-                        "in unresponsive modulation cluster (unnormalized)",
-                        fontsize=12,
-                    )
-                    ax_enr.legend(loc="best", fontsize=9)
-                    fig_enr.tight_layout()
-                    fig_enr.savefig(
-                        f"{save_dir}/{clustering_name}_unres_enrichment_{savefigure_name}.png",
-                        dpi=300,
-                    )
-                    plt.close(fig_enr)
+            axmask_log.set_yscale("log")
+            axmask_log.set_xticks(_x_log)
+            axmask_log.set_xticklabels(
+                [f"G={d['G']}  (MM={d['n_total']})\n"
+                 f"unres pre={d['n_unres_input_neurons']}, "
+                 f"unres post={d['n_unres_hidden_neurons']}"
+                 for d in _mbd_log],
+                fontsize=8,
+            )
+            axmask_log.set_ylabel("Number of modulations (log scale)", fontsize=13)
+            axmask_log.set_title(
+                f"Modulation mask breakdown — log scale, mod_and_endpoint "
+                f"({'normalized' if clustering_normalize else 'unnormalized'})",
+                fontsize=12,
+            )
+            axmask_log.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15),
+                              ncol=3, frameon=False, fontsize=7)
+            figmask_log.savefig(
+                f"{save_dir}/{clustering_name}_mask_breakdown_log_{savefigure_name}.png",
+                dpi=300, bbox_inches="tight",
+            )
+            plt.close(figmask_log)
 
             # all following analysis based on the maximal G (G_lst[-1])
             cell_vars_rules_sorted_norm_pre = cell_vars_rules_sorted_norm[np.ix_(result_pre["row_order"], result_pre["col_order"])]
