@@ -36,7 +36,7 @@ def main(seed, feature):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    repeat_num = 100
+    repeat_num = 10
 
     aname = f"everything_seed{seed}_{feature}+hidden300+batch128+angle"
 
