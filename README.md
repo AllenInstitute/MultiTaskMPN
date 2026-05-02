@@ -148,3 +148,9 @@ Model checkpoints and result files use a shared identifier string:
 ```
 
 All analysis scripts read `aname` from this pattern to locate the correct files.
+
+---
+
+## Acknowledgements
+
+Parts of this codebase were written with the assistance of [Claude Code](https://claude.ai/claude-code).

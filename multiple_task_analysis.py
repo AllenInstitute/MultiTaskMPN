@@ -2820,6 +2820,92 @@ def main(seed, feature):
             )
             plt.close(figmask_log)
 
+            # Decision-tree diagram of the filtering hierarchy (one per G).
+            for _di, _d in enumerate(_mbd_log):
+                _total = _d["n_total"]
+                _n_unres = _d["n_drop_unres_mod"]
+                _n_resp  = _total - _n_unres
+                _pct_of = lambda v, base: f"{100.0 * v / base:.1f}%" if base > 0 else "—"
+
+                fig_tree, ax_tree = plt.subplots(1, 1, figsize=(14, 7))
+                ax_tree.set_xlim(0, 10)
+                ax_tree.set_ylim(0, 10)
+                ax_tree.axis("off")
+
+                # Node style
+                _box = dict(boxstyle="round,pad=0.35", facecolor="white", edgecolor="black", linewidth=1.2)
+                _arrow = dict(arrowstyle="->, head_width=0.15", color="black", lw=1.2)
+
+                # Level 0: root
+                ax_tree.annotate(
+                    f"Total\n{_total}", xy=(5, 9.5), fontsize=10, ha="center", va="center", bbox=_box)
+
+                # Level 1: two branches
+                ax_tree.annotate("", xy=(2.5, 8.3), xytext=(5, 9.1), arrowprops=_arrow)
+                ax_tree.annotate("", xy=(7.5, 8.3), xytext=(5, 9.1), arrowprops=_arrow)
+
+                ax_tree.annotate(
+                    f"Unres mod cluster\n{_n_unres} ({_pct_of(_n_unres, _total)} of total)",
+                    xy=(2.5, 8.0), fontsize=9, ha="center", va="center",
+                    bbox={**_box, "facecolor": "#fee2e2"})
+                ax_tree.annotate(
+                    f"Responsive mod cluster\n{_n_resp} ({_pct_of(_n_resp, _total)} of total)",
+                    xy=(7.5, 8.0), fontsize=9, ha="center", va="center",
+                    bbox={**_box, "facecolor": "#dbeafe"})
+
+                # Level 2 left: unres mod sub-breakdown
+                _um_vals = [
+                    ("pre silent",  _d["n_unres_mod_pre_only"],  c_vals_l[0]),
+                    ("post silent", _d["n_unres_mod_post_only"], c_vals_l[1]),
+                    ("both silent", _d["n_unres_mod_both"],      c_vals_l[3]),
+                    ("neither",     _d["n_unres_mod_neither"],   c_vals_l[6]),
+                ]
+                _left_xs = [0.8, 1.8, 3.2, 4.2]
+                for (_lbl, _v, _fc), _lx in zip(_um_vals, _left_xs):
+                    ax_tree.annotate("", xy=(_lx, 6.3), xytext=(2.5, 7.6), arrowprops=_arrow)
+                    ax_tree.annotate(
+                        f"{_lbl}\n{_v}\n({_pct_of(_v, _total)} of total"
+                        f", {_pct_of(_v, _n_unres)} of parent)",
+                        xy=(_lx, 5.7), fontsize=7, ha="center", va="center",
+                        bbox={**_box, "facecolor": _fc})
+
+                # Level 2 right: responsive mod sub-breakdown
+                _ep_vals = [
+                    ("pre silent",  _d["n_drop_pre_only"],  c_vals[1]),
+                    ("post silent", _d["n_drop_post_only"], c_vals[3]),
+                    ("both silent", _d["n_drop_both"],      c_vals[4]),
+                    ("Kept",        _d["n_kept"],           c_vals[2]),
+                ]
+                _right_xs = [5.8, 6.8, 8.2, 9.2]
+                for (_lbl, _v, _fc), _rx in zip(_ep_vals, _right_xs):
+                    ax_tree.annotate("", xy=(_rx, 6.3), xytext=(7.5, 7.6), arrowprops=_arrow)
+                    ax_tree.annotate(
+                        f"{_lbl}\n{_v}\n({_pct_of(_v, _total)} of total"
+                        f", {_pct_of(_v, _n_resp)} of parent)",
+                        xy=(_rx, 5.7), fontsize=7, ha="center", va="center",
+                        bbox={**_box, "facecolor": _fc},
+                        fontweight="bold" if _lbl == "Kept" else "normal")
+
+                # Subtitle with G and unresponsive neuron counts
+                ax_tree.text(
+                    5, 4.2,
+                    f"G={_d['G']}  |  MM={_total}  |  "
+                    f"unres input neurons={_d['n_unres_input_neurons']}, "
+                    f"unres hidden neurons={_d['n_unres_hidden_neurons']}",
+                    fontsize=9, ha="center", va="center", style="italic",
+                )
+
+                fig_tree.suptitle(
+                    f"Modulation filtering hierarchy "
+                    f"({'normalized' if clustering_normalize else 'unnormalized'})",
+                    fontsize=12,
+                )
+                fig_tree.savefig(
+                    f"{save_dir}/{clustering_name}_mask_tree_G{_d['G']}_{savefigure_name}.png",
+                    dpi=300, bbox_inches="tight",
+                )
+                plt.close(fig_tree)
+
             # all following analysis based on the maximal G (G_lst[-1])
             cell_vars_rules_sorted_norm_pre = cell_vars_rules_sorted_norm[np.ix_(result_pre["row_order"], result_pre["col_order"])]
             cell_vars_rules_sorted_norm_post = cell_vars_rules_sorted_norm[np.ix_(result_post["row_order"], result_post["col_order"])]
