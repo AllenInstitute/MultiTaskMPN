@@ -50,4 +50,7 @@ data/
 CLAUDE.md
 
 # Codex
-.codex/config.toml
+.codex/
+
+# Normalized lesion output
+multiple_tasks_norm/
