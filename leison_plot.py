@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import pandas as pd
 
@@ -5,7 +6,7 @@ import pickle
 from scipy.stats import linregress
 
 import matplotlib.pyplot as plt
-import matplotlib as mpl 
+import matplotlib as mpl
 
 import helper
 
@@ -24,8 +25,10 @@ mpl.rcParams.update({
 def main(seed, feature):
     aname = f"everything_seed{seed}_{feature}+hidden300+batch128+angle"
 
-    save_dir = f"./multiple_tasks_perf/{aname}"
-    pickle_name = f"{save_dir}/lesion_prune_results_{aname}.pkl"
+    pickle_dir = f"./multiple_tasks_perf/{aname}"
+    save_dir = f"./multiple_tasks_norm/{aname}"
+    os.makedirs(save_dir, exist_ok=True)
+    pickle_name = f"{pickle_dir}/lesion_prune_results_{aname}.pkl"
     with open(pickle_name, 'rb') as f:
         results = pickle.load(f)
         
@@ -114,31 +117,34 @@ def main(seed, feature):
 
         zw = modes_dict["zero_W"]["select_props"]
         fm = modes_dict["freeze_M"]["select_props"]
-        cluster_names = modes_dict["zero_W"]["cluster_names"]
-        diff = fm - zw
-
-        vabs = max(np.nanmax(np.abs(zw)), np.nanmax(np.abs(fm)))
-        dabs = np.nanmax(np.abs(diff))
 
         base_tag = base_key.replace("modulation_all_", "").replace("_", "-")
 
-        fig, axes = plt.subplots(1, 3, figsize=(5 * 3, 0.4 * len(all_tasks) + 1.5))
+        x = zw.ravel()
+        y = fm.ravel()
+        valid = np.isfinite(x) & np.isfinite(y)
+        x, y = x[valid], y[valid]
 
-        panels = [
-            (axes[0], zw,   "zero_W",  "RdBu_r", -vabs, vabs),
-            (axes[1], fm,   "freeze_M", "RdBu_r", -vabs, vabs),
-            (axes[2], diff, "freeze_M − zero_W", "PiYG", -dabs, dabs),
-        ]
-        for ax, mat, title, cmap, vlo, vhi in panels:
-            im = ax.imshow(mat, aspect="auto", cmap=cmap, vmin=vlo, vmax=vhi)
-            fig.colorbar(im, ax=ax, shrink=0.6, label="Normalized Accuracy")
-            ax.set_xticks(range(len(cluster_names)))
-            ax.set_xticklabels(cluster_names, rotation=45, ha="right")
-            ax.set_yticks(range(len(all_tasks)))
-            ax.set_yticklabels(all_tasks)
-            ax.set_xlabel("Modulation Cluster")
-            ax.set_ylabel("Task")
-            ax.set_title(f"{base_tag}: {title}")
+        slope, intercept, r, p, _ = linregress(x, y)
+
+        fig, ax = plt.subplots(figsize=(4.5, 4.5), dpi=300)
+        ax.scatter(x, y, alpha=0.5, s=20, edgecolors="none", color="steelblue")
+
+        x_line = np.linspace(x.min(), x.max(), 100)
+        ax.plot(x_line, slope * x_line + intercept, color="tomato", linewidth=1.2)
+
+        p_str = f"p = {p:.2e}" if p < 0.001 else f"p = {p:.3f}"
+        ax.text(0.05, 0.95, f"r = {r:.2f}, slope = {slope:.2f}\n{p_str}",
+                transform=ax.transAxes, va="top", ha="left", fontsize=8)
+
+        lims = [min(x.min(), y.min()), max(x.max(), y.max())]
+        ax.plot(lims, lims, color="grey", linewidth=0.6, linestyle="--", alpha=0.5)
+
+        ax.set_xlabel("zero_W (normalized effect)")
+        ax.set_ylabel("freeze_M (normalized effect)")
+        ax.set_title(f"{base_tag}: zero_W vs freeze_M")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
 
         fig.tight_layout()
         fig.savefig(f"{save_dir}/normalized_mod_leison_compare_{base_tag}_{aname}.png", dpi=300)

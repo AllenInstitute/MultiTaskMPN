@@ -1948,6 +1948,7 @@ def main(seed, feature):
             # Per-G breakdown of how many modulations survive each mask
             # (mask 1: unresponsive mod cluster; mask 2: endpoint in unresponsive input/hidden)
             mask_breakdown_lst = []
+            global_assignment_cache = None
 
             # 2025-11-04: input cluster & hidden cluster along the neuron dimension (N)
             if clustering_normalize:
@@ -2321,6 +2322,15 @@ def main(seed, feature):
                     # hidden identity, suggesting pre-synaptic organisation of plasticity.
                     om_stack = np.stack(over_membership_lst)           # (N_cls, n_in, n_hid)
                     N_cls = len(over_membership_lst)
+
+                    global_assignment_cache = {
+                        "om_stack": om_stack,
+                        "all_choice_order": all_choice_order,
+                        "cluster_size_percent": cluster_size_percent,
+                        "n_in": n_in,
+                        "n_hid": n_hid,
+                    }
+
                     # Mean |OM| collapsed over the other dimension
                     over_membership_array_input  = np.mean(np.abs(om_stack), axis=2)  # (N_cls, n_in)
                     over_membership_array_hidden = np.mean(np.abs(om_stack), axis=1)  # (N_cls, n_hid)
@@ -3209,6 +3219,7 @@ def main(seed, feature):
                 "result_all_name_lst": result_all_name_lst,
                 "tb_break_name": tb_break_name,
                 "cell_vars_rules_sorted_norm": cell_vars_rules_sorted_norm,
+                "global_assignment": global_assignment_cache,
             }
     
     # save this only at the end     

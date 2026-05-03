@@ -59,7 +59,7 @@ if __name__ == "__main__":
     print(f"Found {len(param_lst)} saved models: {param_lst}")
 
     # Override to run specific experiments:
-    # param_lst = [(749, "L21e4")]
+    param_lst = [(749, "L21e4")]
 
     for seed, feature in param_lst:
         run_pipeline(seed, feature)
