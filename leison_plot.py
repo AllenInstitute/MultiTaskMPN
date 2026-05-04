@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import numpy as np
 import pandas as pd
 
@@ -28,6 +29,10 @@ def main(seed, feature):
     pickle_dir = f"./multiple_tasks_perf/{aname}"
     save_dir = f"./multiple_tasks_norm/{aname}"
     os.makedirs(save_dir, exist_ok=True)
+    for _old in Path(save_dir).iterdir():
+        if _old.is_file():
+            _old.unlink()
+
     pickle_name = f"{pickle_dir}/lesion_prune_results_{aname}.pkl"
     with open(pickle_name, 'rb') as f:
         results = pickle.load(f)
@@ -36,11 +41,15 @@ def main(seed, feature):
     baseline_keys = {"pre_cNone", "post_cNone", "pre_noleison", "post_noleison"}
 
     def compute_and_plot_normalized_lesion(leison_key, random_key, savename, xlabel_suffix=""):
-        """Compute normalized lesion effect (random - cluster) and plot heatmap.
+        """Compute normalized lesion effect (random - cluster), plot heatmap + violin.
         Returns (select_props, all_comb_names_filtered, ihtask_accs) for downstream use.
         """
+        import seaborn as sns
+
         all_comb_names = results[leison_key]["all_comb_names_leison"]
-        all_comb_names_filtered = [k for k in all_comb_names if k not in baseline_keys]
+        def _rename(k):
+            return k.replace("pre_c", "i").replace("post_c", "h")
+        all_comb_names_filtered = [_rename(k) for k in all_comb_names if k not in baseline_keys]
         tasks = results[leison_key]["all_tasks"]
 
         ihtask = np.asarray(results[leison_key]["ihtask_accs"], dtype=float)
@@ -51,7 +60,7 @@ def main(seed, feature):
             if key not in baseline_keys:
                 props.append(ihrandom[:, key_idx] - ihtask[:, key_idx])
 
-        props = np.array(props).T
+        props = np.array(props).T  # (n_tasks, n_clusters)
         suffix = f" {xlabel_suffix}" if xlabel_suffix else ""
         print(f"[{savename}] select_props: {props.shape}")
 
@@ -59,6 +68,37 @@ def main(seed, feature):
                             xlabel=f"Lesion Condition{suffix}", ylabel="Task",
                             savename=savename, aname=aname, label="Normalized Accuracy",
                             vmin=None, vmax=None, save_dir=save_dir)
+
+        # Violin plot: distribution of normalized lesion effect across tasks per cluster
+        n_clusters = len(all_comb_names_filtered)
+        fig_v, ax_v = plt.subplots(
+            figsize=(max(4, 0.6 * n_clusters + 1.5), 3.5), dpi=300,
+        )
+        violin_data = [props[:, ci] * 100 for ci in range(n_clusters)]
+        parts = ax_v.violinplot(violin_data, positions=range(n_clusters),
+                                showmeans=True, showmedians=False, showextrema=False)
+        for pc in parts["bodies"]:
+            pc.set_facecolor("steelblue")
+            pc.set_alpha(0.6)
+        parts["cmeans"].set_color("tomato")
+        parts["cmeans"].set_linewidth(1.2)
+
+        for ci in range(n_clusters):
+            ax_v.scatter(
+                np.full(len(violin_data[ci]), ci), violin_data[ci],
+                color="black", s=8, alpha=0.4, zorder=3,
+            )
+
+        ax_v.axhline(0, color="grey", linewidth=0.6, linestyle="--", alpha=0.5)
+        ax_v.set_xticks(range(n_clusters))
+        ax_v.set_xticklabels(all_comb_names_filtered, rotation=45, ha="right", fontsize=7)
+        ax_v.set_ylabel("Normalized lesion effect (%)", fontsize=8)
+        ax_v.set_xlabel(f"Lesion Condition{suffix}", fontsize=8)
+        ax_v.spines["top"].set_visible(False)
+        ax_v.spines["right"].set_visible(False)
+        fig_v.tight_layout()
+        fig_v.savefig(f"{save_dir}/{savename}_violin_{aname}.png", dpi=300)
+        plt.close(fig_v)
 
         return props, all_comb_names_filtered, ihtask
 
@@ -107,8 +147,8 @@ def main(seed, feature):
     mod_baseline_keys = {"mod_noleison"}
     mod_leison_results = results["mod_leison"]
 
-    # First pass: compute normalized effect for each entry and plot individual heatmaps.
-    # Also collect results grouped by clustering type for cross-method comparison.
+    # First pass: compute normalized effect and collect by clustering type.
+    # Individual heatmaps are not plotted; combined (zero_W | freeze_M) panels are plotted below.
     from collections import defaultdict
     mod_by_type = defaultdict(dict)
 
@@ -121,29 +161,17 @@ def main(seed, feature):
         mod_select_props = []
         for key_idx, key in enumerate(all_comb_names_mod):
             if key not in mod_baseline_keys:
-                leison = modtask_accs[:, key_idx]
-                random_leison = modrandomtask_accs[:, key_idx]
-                mod_select_props.append(random_leison - leison)
+                mod_select_props.append(modrandomtask_accs[:, key_idx] - modtask_accs[:, key_idx])
 
         mod_select_props = np.array(mod_select_props).T
 
         if "__" in mod_type_key:
             base_key, mode = mod_type_key.rsplit("__", 1)
-            type_tag = base_key.replace("modulation_all_", "").replace("_", "-") + "_" + mode.replace("_", "-")
         else:
             base_key = mod_type_key
             mode = mod_data.get("mod_lesion_mode", "zero_W")
-            type_tag = base_key.replace("modulation_all_", "").replace("_", "-")
 
-        lesion_mode_label = mod_data.get("mod_lesion_mode", "zero_W")
         print(f"[{mod_type_key}] mod_select_props: {mod_select_props.shape}")
-
-        helper.plot_heatmap(mod_select_props, all_comb_names_mod_, all_tasks,
-                            xlabel=f"Modulation Lesion Condition ({lesion_mode_label})",
-                            ylabel="Task",
-                            savename=f"normalized_mod_leison_{type_tag}",
-                            aname=aname, label="Normalized Accuracy",
-                            vmin=None, vmax=None, save_dir=save_dir)
 
         mod_by_type[base_key][mode] = {
             "select_props": mod_select_props,
@@ -151,18 +179,78 @@ def main(seed, feature):
         }
 
     # Second pass: for each clustering type that has both lesion modes,
-    # plot a side-by-side comparison (zero_W | freeze_M | difference).
+    # plot side-by-side heatmaps and a scatter comparison.
+    import seaborn as sns
+    from matplotlib.ticker import MaxNLocator
+
     for base_key, modes_dict in mod_by_type.items():
-        if len(modes_dict) < 2:
-            continue
-        if "zero_W" not in modes_dict or "freeze_M" not in modes_dict:
+        base_tag = base_key.replace("modulation_all_", "").replace("_", "-")
+
+        # If only one mode, plot a single heatmap and skip comparison
+        if len(modes_dict) < 2 or "zero_W" not in modes_dict or "freeze_M" not in modes_dict:
+            for mode, mode_data in modes_dict.items():
+                mode_tag = mode.replace("_", "-")
+                helper.plot_heatmap(
+                    mode_data["select_props"], mode_data["cluster_names"], all_tasks,
+                    xlabel=f"Modulation Lesion ({mode})", ylabel="Task",
+                    savename=f"normalized_mod_leison_{base_tag}_{mode_tag}",
+                    aname=aname, label="Normalized Accuracy",
+                    vmin=None, vmax=None, save_dir=save_dir,
+                )
             continue
 
         zw = modes_dict["zero_W"]["select_props"]
         fm = modes_dict["freeze_M"]["select_props"]
+        cluster_names = modes_dict["zero_W"]["cluster_names"]
 
         base_tag = base_key.replace("modulation_all_", "").replace("_", "-")
 
+        # --- Side-by-side heatmaps (zero_W | freeze_M) with shared color scale ---
+        abs_max = max(np.nanmax(np.abs(zw)), np.nanmax(np.abs(fm))) * 100
+        vmin_shared, vmax_shared = -abs_max, abs_max
+
+        n_tasks_ = len(all_tasks)
+        n_conds_ = len(cluster_names)
+        panel_w = max(3, 0.35 * n_conds_ + 1.4)
+        fig_h = max(3, 0.35 * n_tasks_ + 1.2)
+        fig_hm, axes_hm = plt.subplots(
+            1, 2, figsize=(panel_w * 2 + 1.0, fig_h), dpi=300,
+        )
+
+        for ax_hm, mat, mode_label in [
+            (axes_hm[0], zw, "zero_W"),
+            (axes_hm[1], fm, "freeze_M"),
+        ]:
+            hm = sns.heatmap(
+                mat * 100, cmap="RdBu_r",
+                vmin=vmin_shared, vmax=vmax_shared, center=0.0,
+                annot=False,
+                linewidths=0.3, linecolor="white",
+                cbar_kws={"label": "Normalized effect (%)", "shrink": 0.75,
+                           "pad": 0.03, "aspect": 25},
+                xticklabels=cluster_names, yticklabels=all_tasks, ax=ax_hm,
+            )
+            ax_hm.set_xticklabels(cluster_names, rotation=45, ha="right", fontsize=7)
+            ax_hm.set_yticklabels(all_tasks, rotation=0, fontsize=7)
+            ax_hm.set_xlabel("Modulation Cluster", fontsize=8)
+            ax_hm.set_ylabel("Task", fontsize=8)
+            ax_hm.set_title(mode_label, fontsize=9)
+            ax_hm.tick_params(axis="both", length=1.5, pad=2, width=0.5)
+            for spine in ax_hm.spines.values():
+                spine.set_linewidth(0.5)
+            cbar = hm.collections[0].colorbar
+            cbar.ax.tick_params(labelsize=6, length=2, width=0.5)
+            cbar.ax.yaxis.label.set_size(7)
+            cbar.outline.set_linewidth(0.5)
+
+        fig_hm.suptitle(f"Normalized modulation lesion effect — {base_tag}", fontsize=10)
+        fig_hm.tight_layout()
+        _hm_path = f"{save_dir}/normalized_mod_leison_{base_tag}_combined_heatmap_{aname}"
+        fig_hm.savefig(f"{_hm_path}.png", dpi=300)
+        plt.close(fig_hm)
+        print(f"Saved combined heatmap for {base_key}")
+
+        # --- Scatter: zero_W vs freeze_M ---
         x = zw.ravel()
         y = fm.ravel()
         valid = np.isfinite(x) & np.isfinite(y)
@@ -192,7 +280,7 @@ def main(seed, feature):
         fig.tight_layout()
         fig.savefig(f"{save_dir}/normalized_mod_leison_compare_{base_tag}_{aname}.png", dpi=300)
         plt.close(fig)
-        print(f"Saved comparison plot for {base_key}")
+        print(f"Saved comparison scatter for {base_key}")
     
     # ── Overmembership vs lesion difference ──
     def plot_overmembership_vs_lesion_diff(

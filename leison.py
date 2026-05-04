@@ -93,75 +93,97 @@ def main(seed, feature):
     
     all_tasks = task_params_c['rules']
     
-    pre_n = len(cluster_info["input_normalized"]["col_clusters"])
-    post_n = len(cluster_info["hidden_normalized"]["col_clusters"])
+    # Use fixed k=20 clustering for all lesion experiments.
+    # The k20 variants cut the same dendrogram at k=20 instead of the optimal k.
+    FIXED_K = 20
+    _input_norm_key  = f"input_normalized_k{FIXED_K}"
+    _hidden_norm_key = f"hidden_normalized_k{FIXED_K}"
+    _input_unnorm_key  = f"input_unnormalized_k{FIXED_K}"
+    _hidden_unnorm_key = f"hidden_unnormalized_k{FIXED_K}"
 
-    pre_n_unnorm = len(cluster_info["input_unnormalized"]["col_clusters"])
-    post_n_unnorm = len(cluster_info["hidden_unnormalized"]["col_clusters"])
+    for _required in [_input_norm_key, _hidden_norm_key, _input_unnorm_key, _hidden_unnorm_key]:
+        assert _required in cluster_info, (
+            f"{_required} not found in cluster_info — "
+            f"re-run multiple_task_analysis.py to generate fixed-k variants"
+        )
 
-    # Cluster mean correlation matrices, ordered by cluster number (1..n_clusters),
-    # consistent with the lesion order used in leison_prepost (all_comb below).
-    # For each neuron cluster: average across neurons → length-n_tasks profile.
-    # Then correlate those profiles pairwise across neuron clusters.
+    pre_n = len(cluster_info[_input_norm_key]["col_clusters"])
+    post_n = len(cluster_info[_hidden_norm_key]["col_clusters"])
+    pre_n_unnorm = len(cluster_info[_input_unnorm_key]["col_clusters"])
+    post_n_unnorm = len(cluster_info[_hidden_unnorm_key]["col_clusters"])
+    print(f"Fixed k={FIXED_K}: norm pre={pre_n}, post={post_n}; unnorm pre={pre_n_unnorm}, post={post_n_unnorm}")
+
+    # Variant strings for cluster_info lookup (leison_prepost_inplace builds
+    # the key as f"input_{variant}" / f"hidden_{variant}")
+    VARIANT_NORM = f"normalized_k{FIXED_K}"
+    VARIANT_UNNORM = f"unnormalized_k{FIXED_K}"
+
+    # Cluster mean correlation matrices
     corr_matrices = {}
     l1_dist_matrices = {}
     cluster_means_cache = {}
-    for name, n_clusters in [("input_normalized", pre_n), ("hidden_normalized", post_n)]:
-        V = cluster_info[name]["cell_vars_rules_sorted_norm"]  # (n_tasks, n_neurons)
-        col_clusters = cluster_info[name]["col_clusters"]      # {label: neuron indices}, 1-based
+    for name, n_clusters in [(_input_norm_key, pre_n), (_hidden_norm_key, post_n)]:
+        V = cluster_info[name]["cell_vars_rules_sorted_norm"]
+        col_clusters = cluster_info[name]["col_clusters"]
         cluster_means = np.stack(
             [V[:, col_clusters[c]].mean(axis=1) for c in range(1, n_clusters + 1)],
             axis=1
-        )  # (n_tasks, n_clusters)
+        )
         cluster_means_cache[name] = cluster_means
-        corr_matrices[name] = np.corrcoef(cluster_means.T)  # (n_clusters, n_clusters)
-        l1_dist_matrices[name] = squareform(pdist(cluster_means.T, metric="cityblock"))  # (n_clusters, n_clusters)
+        corr_matrices[name] = np.corrcoef(cluster_means.T)
+        l1_dist_matrices[name] = squareform(pdist(cluster_means.T, metric="cityblock"))
         print(f"{name} cluster corr matrix shape: {corr_matrices[name].shape}")
 
-    # plot the heatmaps for both correlation and L1 distance matrices for input and hidden clusters
-    for name, n_clusters in [("input_normalized", pre_n), ("hidden_normalized", post_n)]:
+    for name, n_clusters in [(_input_norm_key, pre_n), (_hidden_norm_key, post_n)]:
         corr = corr_matrices[name]
         l1_dist = l1_dist_matrices[name]
 
         tick_labels = [f"c{c}" for c in range(1, n_clusters + 1)]
         upper_mask = np.triu(np.ones((n_clusters, n_clusters), dtype=bool), k=1)
-        fig, axes = plt.subplots(1, 2, figsize=(10, 5), dpi=300)
+        panel_size = max(2.5, 0.35 * n_clusters + 1.0)
+        fig, axes = plt.subplots(1, 2, figsize=(panel_size * 2 + 1.0, panel_size), dpi=300)
 
         for ax, mat, title, cmap, vmin, vmax in [
-            (axes[0], corr,    f"Correlation Between {name} Clusters",  "coolwarm", 0.0, 1.0),
-            (axes[1], l1_dist, f"L1 Distance Between {name} Clusters",  "coolwarm", None, None),
+            (axes[0], corr,    f"{name}: correlation",  "RdBu_r", 0.0, 1.0),
+            (axes[1], l1_dist, f"{name}: L1 distance",  "RdBu_r", None, None),
         ]:
-            sns.heatmap(mat, mask=upper_mask, cmap=cmap, vmin=vmin, vmax=vmax, 
+            hm = sns.heatmap(mat, mask=upper_mask, cmap=cmap, vmin=vmin, vmax=vmax,
                         square=True, cbar=True,
+                        linewidths=0.3, linecolor="white",
+                        cbar_kws={"shrink": 0.75, "aspect": 25},
                         xticklabels=tick_labels, yticklabels=tick_labels, ax=ax)
-            ax.set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=9)
-            ax.set_yticklabels(tick_labels, rotation=0, fontsize=9)
-            ax.set_xlabel("Neuron Clusters", fontsize=15)
-            ax.set_ylabel("Neuron Clusters", fontsize=15)
-            ax.set_title(title, fontsize=12)
+            ax.set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=7)
+            ax.set_yticklabels(tick_labels, rotation=0, fontsize=7)
+            ax.set_xlabel("Neuron Clusters", fontsize=8)
+            ax.set_ylabel("Neuron Clusters", fontsize=8)
+            ax.set_title(title, fontsize=9)
+            ax.tick_params(axis="both", length=1.5, pad=2, width=0.5)
+            for spine in ax.spines.values():
+                spine.set_linewidth(0.5)
+            cbar = hm.collections[0].colorbar
+            cbar.ax.tick_params(labelsize=6, length=2, width=0.5)
+            cbar.outline.set_linewidth(0.5)
 
         fig.tight_layout()
         fig.savefig(f"{save_dir}/cluster_corr_{name}_{aname}.png", dpi=300)
         plt.close(fig)
-        
-    print(f"Plot the heatmaps for both correlation and L1 distance matrices for input and hidden clusters done.")
-    
+
+    print(f"Cluster corr/L1 heatmaps done (k={FIXED_K}).")
+
     all_comb = (
         [("pre", None)] + [("pre", i) for i in range(1, pre_n + 1)] +
         [("post", None)] + [("post", i) for i in range(1, post_n + 1)]
     )
-
     rename = {"pre_cNone": "pre_noleison", "post_cNone": "post_noleison"}
     all_comb_names_leison = [rename.get(f"{tag}_c{i}", f"{tag}_c{i}") for tag, i in all_comb]
     print(f"all_comb_names_leison: {all_comb_names_leison}")
-    
+
     print(model.W_initial_linear.weight.shape, model.mp_layer1.W.shape, model.mp_layer1.b.shape, model.W_output.shape)
-    
+
     # Precompute max_N for each cluster name (used for random lesion sampling)
     max_N_cache = {
         name: max(arr.max() for arr in cluster_info[name]["col_clusters"].values())
-        for name in ["input_normalized", "hidden_normalized",
-                     "input_unnormalized", "hidden_unnormalized"]
+        for name in [_input_norm_key, _hidden_norm_key, _input_unnorm_key, _hidden_unnorm_key]
     }
 
     # All modulation clustering types to run lesion experiments on.
@@ -294,13 +316,12 @@ def main(seed, feature):
     def plot_lesion_unit_distribution(all_comb_, all_comb_names_, pre_n_, post_n_,
                                       variant_label, cluster_info_, savepath):
         """Bar chart showing how many neurons each lesion condition removes."""
-        variant = "normalized" if "unnorm" not in variant_label else "unnormalized"
         units = []
         for tag, ci in all_comb_:
             if ci is None:
                 units.append(0)
             else:
-                name = f"input_{variant}" if tag == "pre" else f"hidden_{variant}"
+                name = f"input_{variant_label}" if tag == "pre" else f"hidden_{variant_label}"
                 units.append(len(cluster_info_[name]["col_clusters"][ci]))
         for idx, u in enumerate(units):
             print(f"[{variant_label}] Lesion condition: {all_comb_names_[idx]}, lesioned units: {u}")
@@ -315,39 +336,42 @@ def main(seed, feature):
                 bar_colors.append("#e6550d")
 
         n_bars = len(all_comb_names_)
-        fig, ax = plt.subplots(1, 1, figsize=(max(3.5, 0.35 * n_bars + 1), 2.8), dpi=300)
+        fig, ax = plt.subplots(1, 1, figsize=(max(3.5, 0.35 * n_bars + 1), 2.5), dpi=300)
         x = np.arange(n_bars)
-        ax.bar(x, units, width=0.7, color=bar_colors, edgecolor="black", linewidth=0.4)
+        ax.bar(x, units, width=0.7, color=bar_colors, edgecolor="black", linewidth=0.3)
 
         max_u = max(units) if max(units) > 0 else 1
         for xi, v in enumerate(units):
             if v > 0:
                 ax.text(xi, v + max_u * 0.02, str(v),
-                        ha="center", va="bottom", fontsize=6)
+                        ha="center", va="bottom", fontsize=5.5)
 
         ax.set_xticks(x)
         ax.set_xticklabels(all_comb_names_, rotation=45, ha="right", fontsize=7)
         ax.set_ylabel("Lesioned neurons", fontsize=8)
         ax.set_xlabel("")
-        ax.tick_params(axis="y", length=2, pad=2)
+        ax.tick_params(axis="y", length=1.5, pad=2, width=0.5)
         ax.tick_params(axis="x", length=0, pad=2)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        ax.spines["left"].set_linewidth(0.6)
-        ax.spines["bottom"].set_linewidth(0.6)
+        ax.spines["left"].set_linewidth(0.5)
+        ax.spines["bottom"].set_linewidth(0.5)
 
-        ax.axvline(pre_n_ + 0.5, color="black", linewidth=0.5, linestyle="--", alpha=0.5)
+        ax.axvline(pre_n_ + 0.5, color="black", linewidth=0.4, linestyle="--", alpha=0.5)
         ax.text(0.5 * pre_n_, max_u * 1.12,
                 "Pre (input)", ha="center", fontsize=7, color="#4292c6", fontweight="bold")
         ax.text(pre_n_ + 1 + 0.5 * post_n_, max_u * 1.12,
                 "Post (hidden)", ha="center", fontsize=7, color="#e6550d", fontweight="bold")
 
-        fig.savefig(savepath, dpi=300, bbox_inches="tight")
+        fig.tight_layout()
+        _base = savepath.rsplit(".", 1)[0]
+        fig.savefig(f"{_base}.png", dpi=300, bbox_inches="tight")
+        fig.savefig(f"{_base}.pdf", bbox_inches="tight")
         plt.close(fig)
 
     plot_lesion_unit_distribution(
         all_comb, all_comb_names_leison, pre_n, post_n,
-        "normalized", cluster_info,
+        VARIANT_NORM, cluster_info,
         f"{save_dir}/lesion_units_{aname}.png",
     )
     
@@ -427,9 +451,9 @@ def main(seed, feature):
 
         return ihtask_accs_, ihrandomtask_accs_
 
-    # ── Normalized cluster lesion ──
+    # ── Normalized cluster lesion (k=FIXED_K) ──
     ihtask_accs, ihrandomtask_accs = run_cluster_lesion(
-        all_comb, all_comb_names_leison, variant="normalized", label="norm"
+        all_comb, all_comb_names_leison, variant=VARIANT_NORM, label="norm"
     )
 
     # Pruning (normalized only) — runs in its own task loop
@@ -474,7 +498,7 @@ def main(seed, feature):
         save_dir=save_dir,
     )
 
-    # ── Unnormalized cluster lesion ──
+    # ── Unnormalized cluster lesion (k=FIXED_K) ──
     all_comb_unnorm = (
         [("pre", None)] + [("pre", i) for i in range(1, pre_n_unnorm + 1)] +
         [("post", None)] + [("post", i) for i in range(1, post_n_unnorm + 1)]
@@ -487,12 +511,12 @@ def main(seed, feature):
 
     plot_lesion_unit_distribution(
         all_comb_unnorm, all_comb_names_leison_unnorm, pre_n_unnorm, post_n_unnorm,
-        "unnormalized", cluster_info,
+        VARIANT_UNNORM, cluster_info,
         f"{save_dir}/lesion_units_unnorm_{aname}.png",
     )
 
     ihtask_accs_unnorm, ihrandomtask_accs_unnorm = run_cluster_lesion(
-        all_comb_unnorm, all_comb_names_leison_unnorm, variant="unnormalized", label="unnorm"
+        all_comb_unnorm, all_comb_names_leison_unnorm, variant=VARIANT_UNNORM, label="unnorm"
     )
 
     helper.plot_heatmap(
@@ -510,8 +534,8 @@ def main(seed, feature):
     # Result shape per variant: (n_tasks, pre_n, post_n)
     _combined_cache = {}
     for variant, pre_n_v, post_n_v in [
-        ("normalized",   pre_n,        post_n),
-        ("unnormalized", pre_n_unnorm, post_n_unnorm),
+        (VARIANT_NORM,   pre_n,        post_n),
+        (VARIANT_UNNORM, pre_n_unnorm, post_n_unnorm),
     ]:
         print(f"\n[combined lesion ({variant})] {pre_n_v} input × {post_n_v} hidden = {pre_n_v * post_n_v} combinations")
 
@@ -581,7 +605,7 @@ def main(seed, feature):
         combined_accs_flat = combined_accs.reshape(len(all_tasks), -1)
         combined_random_flat = combined_random_accs.reshape(len(all_tasks), -1)
 
-        vtag = "norm" if variant == "normalized" else "unnorm"
+        vtag = "norm" if "unnormalized" not in variant else "unnorm"
         helper.plot_heatmap(
             combined_accs_flat, flat_names, all_tasks,
             xlabel=f"Combined Lesion (input, hidden) [{vtag}]", ylabel="Task",
@@ -630,16 +654,22 @@ def main(seed, feature):
         mod_cluster_labels = [f"c{ci}" for ci in mod_cluster_ids_sorted]
         type_tag_size = mod_type_key.replace("modulation_all_", "").replace("_", "-")
 
-        fig_sz, ax_sz = plt.subplots(1, 1, figsize=(max(4, 0.5 * len(mod_cluster_ids_sorted)), 3))
-        ax_sz.bar(mod_cluster_labels, mod_cluster_sizes)
-        ax_sz.set_xticks(range(len(mod_cluster_labels)))
-        ax_sz.set_xticklabels(mod_cluster_labels, rotation=45, ha="right")
-        ax_sz.set_ylabel("# Synapses in Cluster", fontsize=10)
-        ax_sz.set_xlabel(f"Modulation Cluster ({type_tag_size})", fontsize=10)
-        ax_sz.set_title(f"Modulation cluster sizes — {type_tag_size}")
-        ax_sz.tick_params(axis="both", length=2, pad=2)
+        n_mod = len(mod_cluster_ids_sorted)
+        fig_sz, ax_sz = plt.subplots(1, 1, figsize=(max(3.5, 0.35 * n_mod + 1), 2.5), dpi=300)
+        ax_sz.bar(mod_cluster_labels, mod_cluster_sizes,
+                  color="steelblue", edgecolor="black", linewidth=0.3)
+        ax_sz.set_xticks(range(n_mod))
+        ax_sz.set_xticklabels(mod_cluster_labels, rotation=45, ha="right", fontsize=7)
+        ax_sz.set_ylabel("# Synapses", fontsize=8)
+        ax_sz.set_xlabel(f"Modulation Cluster ({type_tag_size})", fontsize=8)
+        ax_sz.tick_params(axis="both", length=1.5, pad=2, width=0.5)
+        ax_sz.spines["top"].set_visible(False)
+        ax_sz.spines["right"].set_visible(False)
+        ax_sz.spines["left"].set_linewidth(0.5)
+        ax_sz.spines["bottom"].set_linewidth(0.5)
         fig_sz.tight_layout()
         fig_sz.savefig(f"{save_dir}/mod_lesion_units_{type_tag_size}_{aname}.png", dpi=300)
+        fig_sz.savefig(f"{save_dir}/mod_lesion_units_{type_tag_size}_{aname}.pdf")
         plt.close(fig_sz)
         print(f"  Saved modulation cluster sizes for {mod_type_key}: {dict(zip(mod_cluster_labels, mod_cluster_sizes))}")
 
@@ -758,10 +788,11 @@ def main(seed, feature):
         "combined_leison_unnorm": _combined_cache.get("combined_leison_unnorm", {}),
         "mod_leison": mod_leison_results,
         "cluster_similarity": {
-            "corr_matrices": corr_matrices,       # {name: (n_clusters, n_clusters)}
-            "l1_dist_matrices": l1_dist_matrices, # {name: (n_clusters, n_clusters)}
-            "cluster_means": cluster_means_cache, # {name: (n_tasks, n_clusters)}
+            "corr_matrices": corr_matrices,
+            "l1_dist_matrices": l1_dist_matrices,
+            "cluster_means": cluster_means_cache,
         },
+        "fixed_k": FIXED_K,
     }
 
     with open(f"{save_dir}/lesion_prune_results_{aname}.pkl", "wb") as f:

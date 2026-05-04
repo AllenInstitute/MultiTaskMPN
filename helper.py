@@ -29,41 +29,45 @@ def plot_heatmap(input_matrix,
     """
     A = np.asarray(input_matrix, dtype=float)
     mask = ~np.isfinite(A)
-    fig_h = max(6, 0.55 * len(all_tasks_) + 2.5)
-    fig_w = max(4, 0.40 * len(all_comb_names_) + 2.0)
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=200)
-    
+
+    n_rows, n_cols = len(all_tasks_), len(all_comb_names_)
+    fig_h = max(3, 0.35 * n_rows + 1.2)
+    fig_w = max(3, 0.35 * n_cols + 1.4)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=300)
+
+    if vmin is not None and vmax is not None:
+        vmin_plot, vmax_plot, center = vmin * 100, vmax * 100, 50.0
+    else:
+        abs_max = np.nanmax(np.abs(A)) * 100
+        vmin_plot, vmax_plot, center = -abs_max, abs_max, 0.0
+
     hm = sns.heatmap(
-        A * 100, 
+        A * 100,
         mask=mask,
-        cmap="coolwarm",
-        vmin=vmin * 100 if vmin is not None else None, 
-        vmax=vmax * 100 if vmax is not None else None,    
-        center=50.0 if vmin is not None and vmax is not None else 0.0,            
-        annot=True,
-        fmt=".1f",                          
-        annot_kws={"fontsize": 8},
-        linewidths=0.4,
-        linecolor="white",
-        cbar_kws={"label": label, "shrink": 0.9, "pad": 0.02},
+        cmap="RdBu_r",
+        vmin=vmin_plot, vmax=vmax_plot, center=center,
+        annot=False,
+        linewidths=0.3, linecolor="white",
+        cbar_kws={"label": label, "shrink": 0.75, "pad": 0.03, "aspect": 25},
+        square=False,
         ax=ax,
     )
 
-    ax.set_xticklabels(all_comb_names_, rotation=45, ha="right")
-    ax.set_yticklabels(all_tasks_, rotation=0)    
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.tick_params(axis="both", length=2, pad=2)
+    ax.set_xticks(np.arange(n_cols) + 0.5)
+    ax.set_yticks(np.arange(n_rows) + 0.5)
+    ax.set_xticklabels(all_comb_names_, rotation=45, ha="right", fontsize=7)
+    ax.set_yticklabels(all_tasks_, rotation=0, fontsize=7)
+    ax.set_xlabel(xlabel, fontsize=8)
+    ax.set_ylabel(ylabel, fontsize=8)
+    ax.tick_params(axis="both", length=1.5, pad=2, width=0.5)
+
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.5)
 
     cbar = hm.collections[0].colorbar
-    cbar.ax.yaxis.set_major_locator(MaxNLocator(6))
-
-    for t in hm.texts:
-        try:
-            v = float(t.get_text())
-            t.set_color("white" if v < 0.55 else "black")
-        except ValueError:
-            pass
+    cbar.ax.tick_params(labelsize=6, length=2, width=0.5)
+    cbar.ax.yaxis.label.set_size(7)
+    cbar.outline.set_linewidth(0.5)
 
     fig.tight_layout()
     fig.savefig(f"{save_dir}/{savename}_heatmap_{aname}.png", dpi=300)

@@ -1081,7 +1081,44 @@ def main(seed, feature):
                 "cell_vars_rules_sorted_norm": cell_vars_rules_sorted_norm,
                 "result": result,
             }
-            
+
+            # Fixed-k variants: cut the same dendrogram at hardcoded k values
+            # to allow lesion analysis at different granularities.
+            fixed_k_variants = {
+                "input_normalized":   [20],
+                "input_unnormalized":  [20],
+                "hidden_normalized":   [20],
+                "hidden_unnormalized": [20],
+            }
+            if clustering_save_name in fixed_k_variants:
+                from scipy.cluster.hierarchy import fcluster as _fcluster
+                _col_linkage = result["col_linkage"]
+                _tol_k = result["col_tol_k"]
+                _tol_labels = result["col_tol_labels"]
+                _unres_mask = _tol_labels == (_tol_k + 1)
+
+                for _fixed_k in fixed_k_variants[clustering_save_name]:
+                    _active_labels = _fcluster(_col_linkage, _fixed_k, criterion="maxclust")
+                    _full_labels = np.zeros(len(_tol_labels), dtype=int)
+                    _full_labels[~_unres_mask] = _active_labels
+                    if _unres_mask.any():
+                        _full_labels[_unres_mask] = _fixed_k + 1
+                    _fixed_col_clusters = {
+                        int(lab): np.where(_full_labels == lab)[0]
+                        for lab in np.unique(_full_labels)
+                    }
+                    _fixed_save_name = f"{clustering_save_name}_k{_fixed_k}"
+                    col_clusters_all[_fixed_save_name] = _fixed_col_clusters
+                    cluster_info_save[_fixed_save_name] = {
+                        "col_clusters": _fixed_col_clusters,
+                        "row_clusters": row_clusters,
+                        "tb_break_name": tb_break_name,
+                        "cell_vars_rules_sorted_norm": cell_vars_rules_sorted_norm,
+                        "result": result,
+                    }
+                    print(f"  Fixed-k variant: {_fixed_save_name} → {len(_fixed_col_clusters)} clusters "
+                          f"(including unresponsive: {_unres_mask.any()})")
+
             # plot the optimization score as a function of number of clustering
             # also plot the indicator for the optimal number of cluster (and with tolerance version)
             # 2026-04-16: add more details in the plotting
@@ -2831,14 +2868,17 @@ def main(seed, feature):
             plt.close(figmask_log)
 
             # Decision-tree diagram of the filtering hierarchy (one per G).
-            for _di, _d in enumerate(_mbd_log):
+            # Skip for normalized data: no unresponsive detection, so the tree is trivial
+            # (all synapses are kept, all endpoint drops are zero).
+            _mbd_tree = [] if clustering_normalize else _mbd_log
+            for _di, _d in enumerate(_mbd_tree):
                 _total = _d["n_total"]
                 _n_unres = _d["n_drop_unres_mod"]
                 _n_resp  = _total - _n_unres
                 _pct_of = lambda v, base: f"{100.0 * v / base:.1f}%" if base > 0 else "—"
 
-                fig_tree, ax_tree = plt.subplots(1, 1, figsize=(14, 7))
-                ax_tree.set_xlim(0, 10)
+                fig_tree, ax_tree = plt.subplots(1, 1, figsize=(20, 9))
+                ax_tree.set_xlim(0, 20)
                 ax_tree.set_ylim(0, 10)
                 ax_tree.axis("off")
 
@@ -2848,19 +2888,20 @@ def main(seed, feature):
 
                 # Level 0: root
                 ax_tree.annotate(
-                    f"Total\n{_total}", xy=(5, 9.5), fontsize=10, ha="center", va="center", bbox=_box)
+                    f"Total\n{_total}", xy=(10, 9.5), fontsize=10, ha="center", va="center", bbox=_box)
 
                 # Level 1: two branches
-                ax_tree.annotate("", xy=(2.5, 8.3), xytext=(5, 9.1), arrowprops=_arrow)
-                ax_tree.annotate("", xy=(7.5, 8.3), xytext=(5, 9.1), arrowprops=_arrow)
+                _l1_left, _l1_right = 5.0, 15.0
+                ax_tree.annotate("", xy=(_l1_left, 8.3), xytext=(10, 9.1), arrowprops=_arrow)
+                ax_tree.annotate("", xy=(_l1_right, 8.3), xytext=(10, 9.1), arrowprops=_arrow)
 
                 ax_tree.annotate(
                     f"Unres mod cluster\n{_n_unres} ({_pct_of(_n_unres, _total)} of total)",
-                    xy=(2.5, 8.0), fontsize=9, ha="center", va="center",
+                    xy=(_l1_left, 8.0), fontsize=9, ha="center", va="center",
                     bbox={**_box, "facecolor": "#fee2e2"})
                 ax_tree.annotate(
                     f"Responsive mod cluster\n{_n_resp} ({_pct_of(_n_resp, _total)} of total)",
-                    xy=(7.5, 8.0), fontsize=9, ha="center", va="center",
+                    xy=(_l1_right, 8.0), fontsize=9, ha="center", va="center",
                     bbox={**_box, "facecolor": "#dbeafe"})
 
                 # Level 2 left: unres mod sub-breakdown
@@ -2870,13 +2911,14 @@ def main(seed, feature):
                     ("both silent", _d["n_unres_mod_both"],      c_vals_l[3]),
                     ("neither",     _d["n_unres_mod_neither"],   c_vals_l[6]),
                 ]
-                _left_xs = [0.8, 1.8, 3.2, 4.2]
-                for (_lbl, _v, _fc), _lx in zip(_um_vals, _left_xs):
-                    ax_tree.annotate("", xy=(_lx, 6.3), xytext=(2.5, 7.6), arrowprops=_arrow)
+                _left_xs = [1.5, 3.5, 6.5, 8.5]
+                _left_ys = [5.5, 4.5, 5.5, 4.5]
+                for (_lbl, _v, _fc), _lx, _ly in zip(_um_vals, _left_xs, _left_ys):
+                    ax_tree.annotate("", xy=(_lx, _ly + 0.8), xytext=(_l1_left, 7.6), arrowprops=_arrow)
                     ax_tree.annotate(
                         f"{_lbl}\n{_v}\n({_pct_of(_v, _total)} of total"
                         f", {_pct_of(_v, _n_unres)} of parent)",
-                        xy=(_lx, 5.7), fontsize=7, ha="center", va="center",
+                        xy=(_lx, _ly), fontsize=7, ha="center", va="center",
                         bbox={**_box, "facecolor": _fc})
 
                 # Level 2 right: responsive mod sub-breakdown
@@ -2886,19 +2928,20 @@ def main(seed, feature):
                     ("both silent", _d["n_drop_both"],      c_vals[4]),
                     ("Kept",        _d["n_kept"],           c_vals[2]),
                 ]
-                _right_xs = [5.8, 6.8, 8.2, 9.2]
-                for (_lbl, _v, _fc), _rx in zip(_ep_vals, _right_xs):
-                    ax_tree.annotate("", xy=(_rx, 6.3), xytext=(7.5, 7.6), arrowprops=_arrow)
+                _right_xs = [11.5, 13.5, 16.5, 18.5]
+                _right_ys = [5.5, 4.5, 5.5, 4.5]
+                for (_lbl, _v, _fc), _rx, _ry in zip(_ep_vals, _right_xs, _right_ys):
+                    ax_tree.annotate("", xy=(_rx, _ry + 0.8), xytext=(_l1_right, 7.6), arrowprops=_arrow)
                     ax_tree.annotate(
                         f"{_lbl}\n{_v}\n({_pct_of(_v, _total)} of total"
                         f", {_pct_of(_v, _n_resp)} of parent)",
-                        xy=(_rx, 5.7), fontsize=7, ha="center", va="center",
+                        xy=(_rx, _ry), fontsize=7, ha="center", va="center",
                         bbox={**_box, "facecolor": _fc},
                         fontweight="bold" if _lbl == "Kept" else "normal")
 
                 # Subtitle with G and unresponsive neuron counts
                 ax_tree.text(
-                    5, 4.2,
+                    10, 2.5,
                     f"G={_d['G']}  |  MM={_total}  |  "
                     f"unres input neurons={_d['n_unres_input_neurons']}, "
                     f"unres hidden neurons={_d['n_unres_hidden_neurons']}",
