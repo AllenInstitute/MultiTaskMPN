@@ -78,15 +78,41 @@ Implements hierarchical clustering (`clustering_metric.py`) with silhouette-scor
 python leison.py
 ```
 
-Given a trained model and its cluster assignments, runs two experiments:
+Given a trained model and its cluster assignments, runs lesion experiments using a **fixed number of clusters** (`FIXED_K`, inferred from the upstream `multiple_task_analysis.py` pickle). The same dendrogram is cut at this fixed k for input, hidden, and modulation clusters, ensuring consistent granularity across all analyses.
 
-**Cluster lesion**: for each identified neuron cluster, zeros out all connections to/from that cluster and measures per-task accuracy. Pre-synaptic ("pre") and post-synaptic ("post") clusters are each lesioned independently in leave-one-out fashion.
+#### Experiments
 
-**Random lesion**: lesions a size-matched random set of neurons (repeated 10×) as a control.
+**Single-cluster lesion (input & hidden)**: For each neuron cluster (both normalized and unnormalized variants), zeros out all connections to/from that cluster and measures per-task accuracy. Input ("pre") and hidden ("post") clusters are each lesioned independently in leave-one-out fashion.
 
-**Magnitude pruning**: zeros the lowest-magnitude fraction of `mp_layer1.W` at increasing sparsity levels (0–99.9%) to assess how much of the plastic weight matrix is functionally necessary.
+**Random lesion**: For each cluster lesion condition, lesions a size-matched random set of neurons as a control. The normalized lesion effect is computed as `random_accuracy - cluster_accuracy`.
 
-Results are saved to `multiple_tasks_perf/lesion_prune_results_{aname}.pkl`.
+**Combined lesion (input × hidden)**: Simultaneously lesions one input cluster and one hidden cluster for all (pre_i, post_j) combinations. Random combined lesion serves as control.
+
+**Modulation lesion**: For each modulation synapse cluster (derived from `col_labels_by_k[FIXED_K]`), two modes are tested:
+- `zero_W`: zeros the static weight W at cluster synapses (removes connectivity)
+- `freeze_M`: keeps W intact but freezes plasticity M at those synapses (removes learning)
+
+**Magnitude pruning**: Zeros the lowest-magnitude fraction of `mp_layer1.W` at increasing sparsity levels (0–99.9%) to assess how much of the plastic weight matrix is functionally necessary.
+
+#### Outputs
+
+Results are saved to `multiple_tasks_perf/{aname}/lesion_prune_results_{aname}.pkl`.
+
+### 4b. Lesion Plotting & Normalized Analysis
+
+```bash
+python leison_plot.py
+```
+
+Post-processes the lesion results to compute normalized effects and cross-analyses:
+
+- **Normalized lesion heatmaps**: `random - cluster` effect for input/hidden and modulation clusters
+- **Combined heatmaps**: Side-by-side `zero_W` vs `freeze_M` with shared color scale
+- **Violin plots**: Distribution of normalized effect across tasks per cluster
+- **Cluster similarity vs lesion effect**: Correlates cluster tuning similarity with functional lesion similarity (tests whether similar clusters have similar roles)
+- **Overmembership vs lesion difference**: Relates modulation cluster enrichment in (input, hidden) pairs to the functional similarity between modulation lesion and combined lesion effects
+
+Outputs are saved to `multiple_tasks_norm/{aname}/`.
 
 ### 5. State Space Analysis
 
