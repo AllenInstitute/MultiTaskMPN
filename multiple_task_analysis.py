@@ -1082,43 +1082,6 @@ def main(seed, feature):
                 "result": result,
             }
 
-            # Fixed-k variants: cut the same dendrogram at hardcoded k values
-            # to allow lesion analysis at different granularities.
-            fixed_k_variants = {
-                "input_normalized":   [20],
-                "input_unnormalized":  [20],
-                "hidden_normalized":   [20],
-                "hidden_unnormalized": [20],
-            }
-            if clustering_save_name in fixed_k_variants:
-                from scipy.cluster.hierarchy import fcluster as _fcluster
-                _col_linkage = result["col_linkage"]
-                _tol_k = result["col_tol_k"]
-                _tol_labels = result["col_tol_labels"]
-                _unres_mask = _tol_labels == (_tol_k + 1)
-
-                for _fixed_k in fixed_k_variants[clustering_save_name]:
-                    _active_labels = _fcluster(_col_linkage, _fixed_k, criterion="maxclust")
-                    _full_labels = np.zeros(len(_tol_labels), dtype=int)
-                    _full_labels[~_unres_mask] = _active_labels
-                    if _unres_mask.any():
-                        _full_labels[_unres_mask] = _fixed_k + 1
-                    _fixed_col_clusters = {
-                        int(lab): np.where(_full_labels == lab)[0]
-                        for lab in np.unique(_full_labels)
-                    }
-                    _fixed_save_name = f"{clustering_save_name}_k{_fixed_k}"
-                    col_clusters_all[_fixed_save_name] = _fixed_col_clusters
-                    cluster_info_save[_fixed_save_name] = {
-                        "col_clusters": _fixed_col_clusters,
-                        "row_clusters": row_clusters,
-                        "tb_break_name": tb_break_name,
-                        "cell_vars_rules_sorted_norm": cell_vars_rules_sorted_norm,
-                        "result": result,
-                    }
-                    print(f"  Fixed-k variant: {_fixed_save_name} → {len(_fixed_col_clusters)} clusters "
-                          f"(including unresponsive: {_unres_mask.any()})")
-
             # plot the optimization score as a function of number of clustering
             # also plot the indicator for the optimal number of cluster (and with tolerance version)
             # 2026-04-16: add more details in the plotting
@@ -1986,6 +1949,8 @@ def main(seed, feature):
             # (mask 1: unresponsive mod cluster; mask 2: endpoint in unresponsive input/hidden)
             mask_breakdown_lst = []
             global_assignment_cache = None
+            FIXED_K_OM = 20
+            global_assignment_fixed_k_cache = None
 
             # 2025-11-04: input cluster & hidden cluster along the neuron dimension (N)
             if clustering_normalize:
@@ -2326,25 +2291,17 @@ def main(seed, feature):
                     pre_clusters  = pre_lookup[_flat_idx_active % M]    # shape (N_active,), 0-based
                     post_clusters = post_lookup[_flat_idx_active // M]  # shape (N_active,), 0-based
 
-                    corr_lst, om_lst, num_lst = [], [], []
                     over_membership_lst = []
                     z_count_lst = []
 
                     for cidx, cluster_num in enumerate(all_choice_order):
                         idx = np.where(_col_all_active == cluster_num)[0]
 
-                        # Build Z_count via bincount on linearised (pre, post) indices —
-                        # replaces the per-element Python loop + dict lookup.
                         flat_idx = pre_clusters[idx] * n_hid + post_clusters[idx]
                         Z_count = np.bincount(flat_idx, minlength=n_in * n_hid).reshape(n_in, n_hid).astype(float)
 
-                        corr = np.corrcoef(flat_all_num, Z_count.flatten())[0, 1]
-                        corr_lst.append(corr)
-
                         all_num_avg = all_num * cluster_size_percent[cidx]
                         over_membership = Z_count / all_num_avg
-                        om = np.mean(np.abs(over_membership))
-                        om_lst.append(om); num_lst.append(len(idx))
                         over_membership_lst.append(over_membership)
                         z_count_lst.append(Z_count)
 
@@ -2367,6 +2324,86 @@ def main(seed, feature):
                         "n_in": n_in,
                         "n_hid": n_hid,
                     }
+
+                    # ── Fixed-k overmembership (for leison_plot.py) ──
+                    # Recompute overmembership using FIXED_K_OM for input, hidden,
+                    # and modulation clusters so it aligns with the fixed-k lesion.
+                    from scipy.cluster.hierarchy import fcluster as _fcluster_om
+
+                    def _fk_col_clusters_om(ci_entry, fk):
+                        """Cut dendrogram at fk, return {1-based label: neuron_indices}."""
+                        res = ci_entry["result"]
+                        lnk = res["col_linkage"]
+                        tol_k = res["col_tol_k"]
+                        tol_labels = res["col_tol_labels"]
+                        unres_mask = tol_labels == (tol_k + 1)
+                        active_labels = _fcluster_om(lnk, fk, criterion="maxclust")
+                        full = np.zeros(len(tol_labels), dtype=int)
+                        full[~unres_mask] = active_labels
+                        if unres_mask.any():
+                            full[unres_mask] = fk + 1
+                        return {int(lab): np.where(full == lab)[0] for lab in np.unique(full) if lab > 0}
+
+                    _input_base_om = "input_normalized" if clustering_normalize else "input_unnormalized"
+                    _hidden_base_om = "hidden_normalized" if clustering_normalize else "hidden_unnormalized"
+                    _fk_input = _fk_col_clusters_om(cluster_info_save[_input_base_om], FIXED_K_OM)
+                    _fk_hidden = _fk_col_clusters_om(cluster_info_save[_hidden_base_om], FIXED_K_OM)
+                    _fk_n_in = len(_fk_input)
+                    _fk_n_hid = len(_fk_hidden)
+
+                    # Build neuron -> fixed-k cluster lookup (0-based)
+                    _fk_max_pre = max(max(v) for v in _fk_input.values())
+                    _fk_max_post = max(max(v) for v in _fk_hidden.values())
+                    _fk_pre_lookup = np.empty(_fk_max_pre + 1, dtype=int)
+                    for key, neurons in _fk_input.items():
+                        _fk_pre_lookup[np.asarray(neurons)] = key - 1
+                    _fk_post_lookup = np.empty(_fk_max_post + 1, dtype=int)
+                    for key, neurons in _fk_hidden.items():
+                        _fk_post_lookup[np.asarray(neurons)] = key - 1
+
+                    _fk_pre_clusters = _fk_pre_lookup[_flat_idx_active % M]
+                    _fk_post_clusters = _fk_post_lookup[_flat_idx_active // M]
+
+                    # Fixed-k modulation cluster labels
+                    if "col_labels_by_k" in result_all and FIXED_K_OM in result_all["col_labels_by_k"]:
+                        _fk_mod_labels_full = result_all["col_labels_by_k"][FIXED_K_OM]
+                    elif "col_labels_by_k" in result_all and result_all["col_labels_by_k"]:
+                        _fk_avail = sorted(result_all["col_labels_by_k"].keys())
+                        _fk_mod_labels_full = result_all["col_labels_by_k"][_fk_avail[0]]
+                        print(f"    [fixed-k OM] mod k={FIXED_K_OM} not available, using k={_fk_avail[0]}")
+                    else:
+                        _fk_mod_labels_full = None
+
+                    if _fk_mod_labels_full is not None:
+                        # Get mod labels for active synapses only
+                        _fk_mod_active = _fk_mod_labels_full[_flat_idx_active]
+                        _fk_mod_order_dict = helper.value_counts_desc(_fk_mod_active)
+                        _fk_mod_order = list(_fk_mod_order_dict.keys())
+                        _fk_mod_sizes = np.array([_fk_mod_order_dict[k] for k in _fk_mod_order])
+                        _fk_mod_pct = _fk_mod_sizes / _fk_mod_sizes.sum()
+
+                        _fk_in_num = np.array([len(_fk_input[k]) for k in sorted(_fk_input.keys())])
+                        _fk_hid_num = np.array([len(_fk_hidden[k]) for k in sorted(_fk_hidden.keys())])
+                        _fk_all_num = np.outer(_fk_in_num, _fk_hid_num).astype(float)
+
+                        _fk_om_lst = []
+                        for cidx, cnum in enumerate(_fk_mod_order):
+                            idx = np.where(_fk_mod_active == cnum)[0]
+                            flat_idx_fk = _fk_pre_clusters[idx] * _fk_n_hid + _fk_post_clusters[idx]
+                            Z_count_fk = np.bincount(flat_idx_fk, minlength=_fk_n_in * _fk_n_hid).reshape(_fk_n_in, _fk_n_hid).astype(float)
+                            all_num_avg_fk = _fk_all_num * _fk_mod_pct[cidx]
+                            _fk_om_lst.append(Z_count_fk / all_num_avg_fk)
+
+                        global_assignment_fixed_k_cache = {
+                            "om_stack": np.stack(_fk_om_lst),
+                            "all_choice_order": _fk_mod_order,
+                            "cluster_size_percent": _fk_mod_pct,
+                            "n_in": _fk_n_in,
+                            "n_hid": _fk_n_hid,
+                            "fixed_k": FIXED_K_OM,
+                        }
+                        print(f"    [fixed-k OM] computed: {len(_fk_mod_order)} mod clusters × "
+                              f"{_fk_n_in} input × {_fk_n_hid} hidden (k={FIXED_K_OM})")
 
                     # Mean |OM| collapsed over the other dimension
                     over_membership_array_input  = np.mean(np.abs(om_stack), axis=2)  # (N_cls, n_in)
@@ -2457,47 +2494,6 @@ def main(seed, feature):
                     figomcluster.tight_layout()
                     figomcluster.savefig(f"{save_dir}/{clustering_name}_om_across_cluster_{savefigure_name}.png", dpi=300)
                     plt.close(figomcluster)
-
-                    corr_arr = np.array(corr_lst)
-                    om_arr   = np.array(om_lst)
-                    num_arr  = np.array(num_lst)
-
-                    figgroupcorr, axsgroupcorr = plt.subplots(1,5,figsize=(4*5,4))
-                    axsgroupcorr[0].hist(corr_arr, bins="auto")
-                    axsgroupcorr[0].set_xlabel("Correlation per Group", fontsize=15)
-                    axsgroupcorr[1].hist(om_arr, bins="auto")
-                    axsgroupcorr[1].set_xlabel("Mean Absolute Average OM", fontsize=15)
-                    axsgroupcorr[2].scatter(corr_arr, om_arr, c=c_vals[0], alpha=0.7)
-                    axsgroupcorr[3].scatter(num_arr, corr_arr, c=c_vals[0], alpha=0.7)
-                    axsgroupcorr[4].scatter(num_arr, om_arr,  c=c_vals[0], alpha=0.7)
-
-                    x_fit0, y_fit0, r0, slope0, _, p0 = helper.linear_regression(
-                        corr_lst, om_lst, log=False, through_origin=False)
-                    axsgroupcorr[2].plot(x_fit0, y_fit0,
-                        label=f"R={r0:.3f}; slope={slope0:.3f}; p={p0:.3e}")
-
-                    x_fit, y_fit, r1, slope1, _, p1 = helper.linear_regression(
-                        num_lst, corr_lst, log=False, through_origin=False)
-                    axsgroupcorr[3].plot(x_fit, y_fit,
-                        label=f"R={r1:.3f}; slope={slope1:.3f}; p={p1:.3e}")
-
-                    x_fit2, y_fit2, r2, slope2, _, p2 = helper.linear_regression(
-                        num_lst, om_lst, log=False, through_origin=False)
-                    axsgroupcorr[4].plot(x_fit2, y_fit2,
-                        label=f"R={r2:.3f}; slope={slope2:.3f}; p={p2:.3e}")
-
-                    axsgroupcorr[2].set_xlabel("Corr", fontsize=15)
-                    axsgroupcorr[2].set_ylabel("OM", fontsize=15)
-                    axsgroupcorr[3].set_xlabel("Modulation Cluster Size", fontsize=15)
-                    axsgroupcorr[3].set_ylabel("Corr", fontsize=15)
-                    axsgroupcorr[4].set_xlabel("Modulation Cluster Size", fontsize=15)
-                    axsgroupcorr[4].set_ylabel("OM", fontsize=15)
-                    for _ax in axsgroupcorr[2:]:
-                        _ax.legend(fontsize=7)
-
-                    figgroupcorr.tight_layout()
-                    figgroupcorr.savefig(f"{save_dir}/{clustering_name}_corr_allgroup_case_{savefigure_name}.png", dpi=300)
-                    plt.close(figgroupcorr)
 
                     # Global assignment heatmap: all modulation clusters × flattened
                     # (input-cluster, hidden-cluster) pairs.  Each row is one modulation
@@ -3263,6 +3259,7 @@ def main(seed, feature):
                 "tb_break_name": tb_break_name,
                 "cell_vars_rules_sorted_norm": cell_vars_rules_sorted_norm,
                 "global_assignment": global_assignment_cache,
+                f"global_assignment_fixed_k{FIXED_K_OM}": global_assignment_fixed_k_cache,
             }
     
     # save this only at the end     

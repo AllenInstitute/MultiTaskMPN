@@ -307,9 +307,15 @@ def main(seed, feature):
         if mod_type_key not in cluster_info_mod:
             print(f"[om_vs_lesion] skipping: {mod_type_key} not in cluster_info_mod")
             return
-        ga = cluster_info_mod[mod_type_key].get("global_assignment")
+        # Find the fixed-k overmembership key dynamically
+        _mod_keys = cluster_info_mod[mod_type_key]
+        _fk_ga_keys = [k for k in _mod_keys if k.startswith("global_assignment_fixed_k")]
+        if _fk_ga_keys:
+            ga = _mod_keys[_fk_ga_keys[0]]
+        else:
+            ga = _mod_keys.get("global_assignment")
         if ga is None:
-            print(f"[om_vs_lesion] skipping: global_assignment is None for {mod_type_key}")
+            print(f"[om_vs_lesion] skipping: no overmembership data for {mod_type_key}")
             return
 
         # --- Overmembership data ---
@@ -320,29 +326,19 @@ def main(seed, feature):
         om_id_to_idx = {cid: idx for idx, cid in enumerate(all_choice_order)}
 
         # --- Identify unresponsive cluster indices (0-based) to exclude ---
-        # For unnormalized: last cluster in input/hidden is unresponsive.
-        # For normalized: skip_unresponsive_detection=True, no unresponsive cluster.
-        # Modulation unresponsive cluster is already excluded from all_choice_order.
+        # The overmembership om_stack uses fixed-k clusters. For unnormalized data,
+        # the unresponsive cluster is the last one (index n_in-1 / n_hid-1).
+        # For normalized: no unresponsive cluster exists.
+        # Fixed-k modulation labels (from col_labels_by_k) have no separate
+        # unresponsive cluster, so no modulation exclusion is needed.
         skip_input = set()
         skip_hidden = set()
         if variant == "unnorm":
-            input_key = "input_unnormalized"
-            hidden_key = "hidden_unnormalized"
-            if input_key in cluster_info and "result" in cluster_info[input_key]:
-                input_k = cluster_info[input_key]["result"]["col_tol_k"]
-                skip_input.add(input_k)  # 0-based index of unresponsive cluster
-                print(f"[om_vs_lesion] excluding unresponsive input cluster (0-based idx={input_k})")
-            if hidden_key in cluster_info and "result" in cluster_info[hidden_key]:
-                hidden_k = cluster_info[hidden_key]["result"]["col_tol_k"]
-                skip_hidden.add(hidden_k)
-                print(f"[om_vs_lesion] excluding unresponsive hidden cluster (0-based idx={hidden_k})")
+            skip_input.add(n_in - 1)
+            skip_hidden.add(n_hid - 1)
+            print(f"[om_vs_lesion] excluding unresponsive: input idx={n_in-1}, hidden idx={n_hid-1}")
 
-            # Also exclude unresponsive modulation cluster from lesion effects
-            mod_result_all = cluster_info_mod[mod_type_key]["result_all_lst"]
-            mod_G_idx = results["mod_leison"][mod_result_key].get("mod_G_idx", 1)
-            unres_mod_label = mod_result_all[mod_G_idx]["col_k"] + 1
-        else:
-            unres_mod_label = None
+        unres_mod_label = None
 
         # --- Modulation lesion effect (random - cluster), per task ---
         mod_data = results["mod_leison"][mod_result_key]
@@ -519,11 +515,14 @@ def main(seed, feature):
 
     # --- Normalized variant ---
     corr_matrices_norm = results["cluster_similarity"]["corr_matrices"]
-    pre_n = len(corr_matrices_norm["input_normalized"])
-    post_n = len(corr_matrices_norm["hidden_normalized"])
+    # Keys may be "input_normalized" or "input_normalized_k{N}" depending on FIXED_K
+    _input_norm_key = [k for k in corr_matrices_norm if k.startswith("input_normalized")][0]
+    _hidden_norm_key = [k for k in corr_matrices_norm if k.startswith("hidden_normalized")][0]
+    pre_n = len(corr_matrices_norm[_input_norm_key])
+    post_n = len(corr_matrices_norm[_hidden_norm_key])
     slices_norm = {
-        "input_normalized":  slice(0, pre_n),
-        "hidden_normalized": slice(pre_n, pre_n + post_n),
+        _input_norm_key:  slice(0, pre_n),
+        _hidden_norm_key: slice(pre_n, pre_n + post_n),
     }
     plot_cluster_corr_vs_lesion(
         corr_matrices_norm, select_props, slices_norm,
@@ -539,26 +538,48 @@ def main(seed, feature):
             with open(cluster_path, "rb") as f:
                 cluster_info = pickle.load(f)
 
+        # Derive fixed-k clusters on the fly (same as leison.py) to match select_props_unnorm
+        from scipy.cluster.hierarchy import fcluster as _fcluster_plot
+        _fixed_k_plot = results.get("fixed_k", 20)
+
+        def _derive_fk_clusters_plot(ci_entry, fk):
+            res = ci_entry["result"]
+            lnk = res["col_linkage"]
+            tol_k = res["col_tol_k"]
+            tol_labels = res["col_tol_labels"]
+            unres_mask = tol_labels == (tol_k + 1)
+            active_labels = _fcluster_plot(lnk, fk, criterion="maxclust")
+            full_labels = np.zeros(len(tol_labels), dtype=int)
+            full_labels[~unres_mask] = active_labels
+            if unres_mask.any():
+                full_labels[unres_mask] = fk + 1
+            return {int(lab): np.where(full_labels == lab)[0] for lab in np.unique(full_labels) if lab > 0}
+
         corr_matrices_unnorm = {}
+        _unnorm_keys = {}
         for name in ["input_unnormalized", "hidden_unnormalized"]:
             if name not in cluster_info:
                 continue
             ci = cluster_info[name]
             V = ci["cell_vars_rules_sorted_norm"]
-            col_clusters = ci["col_clusters"]
+            col_clusters = _derive_fk_clusters_plot(ci, _fixed_k_plot)
             n_clusters = len(col_clusters)
             cluster_means = np.stack(
                 [V[:, col_clusters[c]].mean(axis=1) for c in range(1, n_clusters + 1)],
                 axis=1,
             )
-            corr_matrices_unnorm[name] = np.corrcoef(cluster_means.T)
+            fk_name = f"{name}_k{_fixed_k_plot}"
+            corr_matrices_unnorm[fk_name] = np.corrcoef(cluster_means.T)
+            _unnorm_keys[name] = fk_name
 
-        if "input_unnormalized" in corr_matrices_unnorm and "hidden_unnormalized" in corr_matrices_unnorm:
-            pre_n_u = len(corr_matrices_unnorm["input_unnormalized"])
-            post_n_u = len(corr_matrices_unnorm["hidden_unnormalized"])
+        if "input_unnormalized" in _unnorm_keys and "hidden_unnormalized" in _unnorm_keys:
+            _ik = _unnorm_keys["input_unnormalized"]
+            _hk = _unnorm_keys["hidden_unnormalized"]
+            pre_n_u = len(corr_matrices_unnorm[_ik])
+            post_n_u = len(corr_matrices_unnorm[_hk])
             slices_unnorm = {
-                "input_unnormalized":  slice(0, pre_n_u),
-                "hidden_unnormalized": slice(pre_n_u, pre_n_u + post_n_u),
+                _ik: slice(0, pre_n_u),
+                _hk: slice(pre_n_u, pre_n_u + post_n_u),
             }
             plot_cluster_corr_vs_lesion(
                 corr_matrices_unnorm, select_props_unnorm, slices_unnorm,
@@ -567,9 +588,8 @@ def main(seed, feature):
 
     # --- Modulation variant ---
     # For each modulation clustering type × lesion mode, compute cluster similarity
-    # from cell_vars_rules_sorted_norm + col_labels at G=300 (index 1), then compare
-    # against the normalized modulation lesion effect.
-    MOD_G_IDX = 1
+    # from cell_vars_rules_sorted_norm + the actual cluster assignments used in lesion,
+    # then compare against the normalized modulation lesion effect.
     if os.path.exists(cluster_mod_path):
         try:
             cluster_info_mod
@@ -582,12 +602,14 @@ def main(seed, feature):
                 continue
             mod_ci = cluster_info_mod[mod_type_key]
             V_mod = mod_ci["cell_vars_rules_sorted_norm"]   # (n_tasks, n_synapses)
-            result_all = mod_ci["result_all_lst"][MOD_G_IDX]
-            col_labels_mod = result_all["col_labels"]
 
-            # Build cluster-mean profiles (same approach as input/hidden)
-            unique_labels = sorted(set(int(l) for l in col_labels_mod))
-            col_clusters_mod = {lab: np.where(col_labels_mod == lab)[0] for lab in unique_labels}
+            # Use the actual cluster assignments saved in the lesion pickle
+            # (guaranteed to match mod_select_props columns).
+            _any_mode = next(iter(modes_dict.values()))
+            _result_key = f"{mod_type_key}__{next(iter(modes_dict.keys()))}"
+            mod_data_ref = mod_leison_results[_result_key]
+            col_clusters_mod = mod_data_ref["mod_col_clusters"]
+            unique_labels = sorted(col_clusters_mod.keys())
             n_mod_clusters = len(unique_labels)
             cluster_means_mod = np.stack(
                 [V_mod[:, col_clusters_mod[lab]].mean(axis=1) for lab in unique_labels],

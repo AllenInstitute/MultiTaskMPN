@@ -93,19 +93,66 @@ def main(seed, feature):
     
     all_tasks = task_params_c['rules']
     
-    # Use fixed k=20 clustering for all lesion experiments.
-    # The k20 variants cut the same dendrogram at k=20 instead of the optimal k.
-    FIXED_K = 20
-    _input_norm_key  = f"input_normalized_k{FIXED_K}"
-    _hidden_norm_key = f"hidden_normalized_k{FIXED_K}"
+    # ── Fixed-k clustering for lesion experiments ──
+    # Cut the saved dendrograms at FIXED_K instead of using the optimal k.
+    # For input/hidden: use fcluster on result["col_linkage"].
+    # For modulation: use result_all["col_labels_by_k"][FIXED_K] (already saved).
+    # FIXED_K is inferred from the upstream pickle (global_assignment_fixed_k{N} key).
+    from scipy.cluster.hierarchy import fcluster as _fcluster
+    import re as _re
+
+    _first_mod_type = next(iter(cluster_info_mod))
+    _fk_keys = [k for k in cluster_info_mod[_first_mod_type] if k.startswith("global_assignment_fixed_k")]
+    if _fk_keys:
+        _fk_match = _re.search(r"fixed_k(\d+)", _fk_keys[0])
+        FIXED_K = int(_fk_match.group(1))
+        print(f"Inferred FIXED_K={FIXED_K} from upstream pickle key: {_fk_keys[0]}")
+    else:
+        FIXED_K = 20
+        print(f"No global_assignment_fixed_k* found in cluster_info_mod; defaulting FIXED_K={FIXED_K}")
+
+    def _derive_fixed_k_clusters(ci_entry, fixed_k):
+        """Cut the saved dendrogram at fixed_k and return col_clusters dict.
+        Handles unresponsive neurons (label = optimal_k + 1) by assigning them
+        label fixed_k + 1 in the new clustering."""
+        result = ci_entry["result"]
+        linkage = result["col_linkage"]
+        tol_k = result["col_tol_k"]
+        tol_labels = result["col_tol_labels"]
+        unres_mask = tol_labels == (tol_k + 1)
+
+        active_labels = _fcluster(linkage, fixed_k, criterion="maxclust")
+        full_labels = np.zeros(len(tol_labels), dtype=int)
+        full_labels[~unres_mask] = active_labels
+        if unres_mask.any():
+            full_labels[unres_mask] = fixed_k + 1
+
+        col_clusters = {
+            int(lab): np.where(full_labels == lab)[0]
+            for lab in np.unique(full_labels)
+        }
+        return col_clusters
+
+    # Derive fixed-k clusters for input/hidden and inject into cluster_info
+    # so that leison_prepost_inplace can look them up via the variant string.
+    _base_names = ["input_normalized", "hidden_normalized",
+                   "input_unnormalized", "hidden_unnormalized"]
+    for _base in _base_names:
+        _fk_key = f"{_base}_k{FIXED_K}"
+        _fk_clusters = _derive_fixed_k_clusters(cluster_info[_base], FIXED_K)
+        cluster_info[_fk_key] = {
+            "col_clusters": _fk_clusters,
+            "row_clusters": cluster_info[_base]["row_clusters"],
+            "tb_break_name": cluster_info[_base]["tb_break_name"],
+            "cell_vars_rules_sorted_norm": cluster_info[_base]["cell_vars_rules_sorted_norm"],
+            "result": cluster_info[_base]["result"],
+        }
+        print(f"Derived {_fk_key}: {len(_fk_clusters)} clusters")
+
+    _input_norm_key    = f"input_normalized_k{FIXED_K}"
+    _hidden_norm_key   = f"hidden_normalized_k{FIXED_K}"
     _input_unnorm_key  = f"input_unnormalized_k{FIXED_K}"
     _hidden_unnorm_key = f"hidden_unnormalized_k{FIXED_K}"
-
-    for _required in [_input_norm_key, _hidden_norm_key, _input_unnorm_key, _hidden_unnorm_key]:
-        assert _required in cluster_info, (
-            f"{_required} not found in cluster_info — "
-            f"re-run multiple_task_analysis.py to generate fixed-k variants"
-        )
 
     pre_n = len(cluster_info[_input_norm_key]["col_clusters"])
     post_n = len(cluster_info[_hidden_norm_key]["col_clusters"])
@@ -113,8 +160,6 @@ def main(seed, feature):
     post_n_unnorm = len(cluster_info[_hidden_unnorm_key]["col_clusters"])
     print(f"Fixed k={FIXED_K}: norm pre={pre_n}, post={post_n}; unnorm pre={pre_n_unnorm}, post={post_n_unnorm}")
 
-    # Variant strings for cluster_info lookup (leison_prepost_inplace builds
-    # the key as f"input_{variant}" / f"hidden_{variant}")
     VARIANT_NORM = f"normalized_k{FIXED_K}"
     VARIANT_UNNORM = f"unnormalized_k{FIXED_K}"
 
@@ -366,7 +411,6 @@ def main(seed, feature):
         fig.tight_layout()
         _base = savepath.rsplit(".", 1)[0]
         fig.savefig(f"{_base}.png", dpi=300, bbox_inches="tight")
-        fig.savefig(f"{_base}.pdf", bbox_inches="tight")
         plt.close(fig)
 
     plot_lesion_unit_distribution(
@@ -606,16 +650,19 @@ def main(seed, feature):
         combined_random_flat = combined_random_accs.reshape(len(all_tasks), -1)
 
         vtag = "norm" if "unnormalized" not in variant else "unnorm"
-        helper.plot_heatmap(
-            combined_accs_flat, flat_names, all_tasks,
-            xlabel=f"Combined Lesion (input, hidden) [{vtag}]", ylabel="Task",
-            savename=f"combined_lesion_{vtag}", aname=aname, save_dir=save_dir,
-        )
-        helper.plot_heatmap(
-            combined_random_flat, flat_names, all_tasks,
-            xlabel=f"Random Combined Lesion (input, hidden) [{vtag}]", ylabel="Task",
-            savename=f"combined_random_lesion_{vtag}", aname=aname, save_dir=save_dir,
-        )
+        if pre_n_v * post_n_v <= 100:
+            helper.plot_heatmap(
+                combined_accs_flat, flat_names, all_tasks,
+                xlabel=f"Combined Lesion (input, hidden) [{vtag}]", ylabel="Task",
+                savename=f"combined_lesion_{vtag}", aname=aname, save_dir=save_dir,
+            )
+            helper.plot_heatmap(
+                combined_random_flat, flat_names, all_tasks,
+                xlabel=f"Random Combined Lesion (input, hidden) [{vtag}]", ylabel="Task",
+                savename=f"combined_random_lesion_{vtag}", aname=aname, save_dir=save_dir,
+            )
+        else:
+            print(f"  [{vtag}] Skipping combined heatmap: {pre_n_v} × {post_n_v} = {pre_n_v * post_n_v} > 100")
 
         saved_dict_key = f"combined_leison_{vtag}"
         # store temporarily; will be added to saved_dict later
@@ -639,7 +686,19 @@ def main(seed, feature):
         print(f"\n[modulation lesion] type={mod_type_key}  G={G_lst_leison[mod_G_idx_cur]}")
 
         mod_result_cur = cluster_info_mod[mod_type_key]["result_all_lst"][mod_G_idx_cur]
-        mod_col_labels_cur = mod_result_cur["col_labels"]
+        # Use fixed-k labels if available; if FIXED_K is below k_min, use smallest available k
+        if "col_labels_by_k" in mod_result_cur and FIXED_K in mod_result_cur["col_labels_by_k"]:
+            mod_col_labels_cur = mod_result_cur["col_labels_by_k"][FIXED_K]
+            print(f"  Using fixed k={FIXED_K} for modulation clustering")
+        elif "col_labels_by_k" in mod_result_cur and mod_result_cur["col_labels_by_k"]:
+            _available_ks = sorted(mod_result_cur["col_labels_by_k"].keys())
+            _fallback_k = _available_ks[0]
+            mod_col_labels_cur = mod_result_cur["col_labels_by_k"][_fallback_k]
+            print(f"  Fixed k={FIXED_K} not in col_labels_by_k (range [{_available_ks[0]},{_available_ks[-1]}]); "
+                  f"using smallest available k={_fallback_k}")
+        else:
+            mod_col_labels_cur = mod_result_cur["col_labels"]
+            print(f"  col_labels_by_k not available, using optimal k={mod_result_cur['col_k']}")
         mod_col_clusters_cur = {}
         for flat_idx, label in enumerate(mod_col_labels_cur):
             mod_col_clusters_cur.setdefault(int(label), []).append(flat_idx)
@@ -669,7 +728,6 @@ def main(seed, feature):
         ax_sz.spines["bottom"].set_linewidth(0.5)
         fig_sz.tight_layout()
         fig_sz.savefig(f"{save_dir}/mod_lesion_units_{type_tag_size}_{aname}.png", dpi=300)
-        fig_sz.savefig(f"{save_dir}/mod_lesion_units_{type_tag_size}_{aname}.pdf")
         plt.close(fig_sz)
         print(f"  Saved modulation cluster sizes for {mod_type_key}: {dict(zip(mod_cluster_labels, mod_cluster_sizes))}")
 
@@ -710,7 +768,7 @@ def main(seed, feature):
                     gc.collect()
 
                     rset = []
-                    for _ in range(random_leison_repeat):
+                    for _ in range(repeat_num):
                         saved_r, _ = _lesion_fn(
                             model, cluster_index=ci,
                             mod_col_clusters_=mod_col_clusters_cur, MM_=MM, M_=M,
