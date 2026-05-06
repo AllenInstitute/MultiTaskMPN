@@ -85,18 +85,27 @@ def main(seed, feature):
             "normalized_leison_unnorm", xlabel_suffix="(unnorm)",
         )
 
-    # Combined violin: normalized + unnormalized input/hidden in one figure (2 panels)
+    # Combined violin: 4 panels — input/hidden × normalized/unnormalized
     if select_props_unnorm is not None:
+        _n_input_norm_v = len([n for n in all_comb_names_leison_ if n.startswith("i")])
+        _n_input_unnorm_v = len([n for n in all_comb_names_unnorm_ if n.startswith("i")])
+
         _ih_panels = [
-            ("normalized", select_props, all_comb_names_leison_),
-            ("unnormalized", select_props_unnorm, all_comb_names_unnorm_),
+            ("Input (normalized)", select_props[:, :_n_input_norm_v],
+             [n for n in all_comb_names_leison_ if n.startswith("i")]),
+            ("Hidden (normalized)", select_props[:, _n_input_norm_v:],
+             [n for n in all_comb_names_leison_ if n.startswith("h")]),
+            ("Input (unnormalized)", select_props_unnorm[:, :_n_input_unnorm_v],
+             [n for n in all_comb_names_unnorm_ if n.startswith("i")]),
+            ("Hidden (unnormalized)", select_props_unnorm[:, _n_input_unnorm_v:],
+             [n for n in all_comb_names_unnorm_ if n.startswith("h")]),
         ]
         max_cls = max(p.shape[1] for _, p, _ in _ih_panels)
         _all_ih_vals = np.concatenate([p.ravel() * 100 for _, p, _ in _ih_panels])
         _ih_ylim = (min(_all_ih_vals.min() * 1.1, -1), max(_all_ih_vals.max() * 1.1, 1))
 
         fig_w = max(4, 0.45 * max_cls + 1.5)
-        fig_ih, axes_ih = plt.subplots(2, 1, figsize=(fig_w, 2.2 * 2), dpi=300)
+        fig_ih, axes_ih = plt.subplots(4, 1, figsize=(fig_w, 1.8 * 4), dpi=300)
 
         for panel_idx, (label, props_panel, cnames_panel) in enumerate(_ih_panels):
             ax_v = axes_ih[panel_idx]
@@ -118,18 +127,18 @@ def main(seed, feature):
 
             ax_v.axhline(0, color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
             ax_v.set_xticks(range(n_cls))
-            ax_v.set_xticklabels(cnames_panel, rotation=45, ha="right", fontsize=6)
+            ax_v.set_xticklabels(cnames_panel, rotation=45, ha="right", fontsize=8)
             ax_v.set_ylim(_ih_ylim)
-            ax_v.set_ylabel("Effect (%)", fontsize=7)
-            ax_v.set_title(f"Input & Hidden ({label})", fontsize=8)
+            ax_v.set_ylabel("Effect (%)", fontsize=9)
+            ax_v.set_title(label, fontsize=9)
             ax_v.spines["top"].set_visible(False)
             ax_v.spines["right"].set_visible(False)
-            ax_v.tick_params(labelsize=6)
+            ax_v.tick_params(labelsize=8)
 
         fig_ih.tight_layout()
         fig_ih.savefig(f"{save_dir}/normalized_leison_violin_all_{aname}.png", dpi=300)
         plt.close(fig_ih)
-        print("Saved combined input/hidden violin plot (2 panels)")
+        print("Saved combined input/hidden violin plot (4 panels)")
 
     # Histogram of mean lesion effect per cluster for input/hidden (4 categories)
     _fixed_k_val = results.get("fixed_k", 20)
@@ -391,7 +400,7 @@ def main(seed, feature):
         _ylim = (min(_all_vals.min() * 1.1, -1), max(_all_vals.max() * 1.1, 1))
 
         fig_w = max(4, 0.45 * max_clusters + 1.5)
-        fig_v, axes_v = plt.subplots(n_panels, 1, figsize=(fig_w, 2.2 * n_panels), dpi=300)
+        fig_v, axes_v = plt.subplots(n_panels, 1, figsize=(fig_w, 1.8 * n_panels), dpi=300)
         if n_panels == 1:
             axes_v = [axes_v]
 
@@ -419,13 +428,13 @@ def main(seed, feature):
 
             ax_v.axhline(0, color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
             ax_v.set_xticks(range(n_cls))
-            ax_v.set_xticklabels(cnames, rotation=45, ha="right", fontsize=6)
+            ax_v.set_xticklabels(cnames, rotation=45, ha="right", fontsize=8)
             ax_v.set_ylim(_ylim)
-            ax_v.set_ylabel("Effect (%)", fontsize=7)
-            ax_v.set_title(f"{type_tag} (zero_W)", fontsize=8)
+            ax_v.set_ylabel("Effect (%)", fontsize=9)
+            ax_v.set_title(f"{type_tag} (zero_W)", fontsize=9)
             ax_v.spines["top"].set_visible(False)
             ax_v.spines["right"].set_visible(False)
-            ax_v.tick_params(labelsize=6)
+            ax_v.tick_params(labelsize=8)
 
         fig_v.tight_layout()
         fig_v.savefig(f"{save_dir}/normalized_mod_leison_violin_all_{aname}.png", dpi=300)
