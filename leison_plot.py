@@ -156,56 +156,59 @@ def main(seed, feature):
         _hist_data["Hidden (unnorm)"] = select_props_unnorm[:, _n_input_unnorm:].mean(axis=0) * 100
 
     if _hist_data:
-        from scipy.stats import mannwhitneyu
-        import seaborn as sns
-
         _hist_colors = {"Input (norm)": "#2171b5", "Hidden (norm)": "#cb181d",
                         "Input (unnorm)": "#6baed6", "Hidden (unnorm)": "#fc9272"}
+
+        # Build task-specific data (all task × cluster values, not averaged)
+        _hist_data_individual = {}
+        _hist_data_individual["Input (norm)"] = select_props[:, :_n_input_norm].ravel() * 100
+        _hist_data_individual["Hidden (norm)"] = select_props[:, _n_input_norm:].ravel() * 100
+        if select_props_unnorm is not None and all_comb_names_unnorm_ is not None:
+            _n_input_unnorm = len([n for n in all_comb_names_unnorm_ if n.startswith("i")])
+            _hist_data_individual["Input (unnorm)"] = select_props_unnorm[:, :_n_input_unnorm].ravel() * 100
+            _hist_data_individual["Hidden (unnorm)"] = select_props_unnorm[:, _n_input_unnorm:].ravel() * 100
+
         _all_hist_vals = np.concatenate(list(_hist_data.values()))
         _hist_bins = np.linspace(_all_hist_vals.min(), _all_hist_vals.max(), 15)
+        _all_indiv_vals = np.concatenate(list(_hist_data_individual.values()))
+        _hist_bins_indiv = np.linspace(_all_indiv_vals.min(), _all_indiv_vals.max(), 25)
 
-        _ih_labels = list(_hist_data.keys())
-        _ih_n = len(_ih_labels)
-        _ih_pvals = np.full((_ih_n, _ih_n), np.nan)
-        for i in range(1, _ih_n):
-            for j in range(i):
-                _, p = mannwhitneyu(_hist_data[_ih_labels[i]], _hist_data[_ih_labels[j]],
-                                    alternative="less")
-                _ih_pvals[i, j] = p
+        fig_hist, (ax_mean, ax_indiv) = plt.subplots(1, 2, figsize=(8, 3), dpi=300)
 
-        fig_hp, (ax_hist, ax_p) = plt.subplots(1, 2, figsize=(7.5, 3), dpi=300,
-                                                gridspec_kw={"width_ratios": [1.3, 1]})
+        # Left: cluster-averaged
         for label, vals in _hist_data.items():
             _mean = np.mean(vals)
             _med = np.median(vals)
             _lbl = f"{label} (μ={_mean:.2f}, md={_med:.2f})"
-            ax_hist.hist(vals, bins=_hist_bins, alpha=0.5, label=_lbl, color=_hist_colors.get(label))
-        ax_hist.axvline(0, color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
-        ax_hist.set_xlabel("Mean normalized lesion effect (%)", fontsize=8)
-        ax_hist.set_ylabel("# Clusters", fontsize=8)
-        ax_hist.legend(fontsize=6, frameon=False)
-        ax_hist.spines["top"].set_visible(False)
-        ax_hist.spines["right"].set_visible(False)
-        ax_hist.tick_params(labelsize=7)
+            ax_mean.hist(vals, bins=_hist_bins, alpha=0.5, label=_lbl, color=_hist_colors.get(label))
+        ax_mean.axvline(0, color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
+        ax_mean.set_xlabel("Mean effect per cluster (%)", fontsize=8)
+        ax_mean.set_ylabel("# Clusters", fontsize=8)
+        ax_mean.set_title("Cluster-averaged", fontsize=8)
+        ax_mean.legend(fontsize=5.5, frameon=False)
+        ax_mean.spines["top"].set_visible(False)
+        ax_mean.spines["right"].set_visible(False)
+        ax_mean.tick_params(labelsize=7)
 
-        from matplotlib.colors import LogNorm
-        _lower_mask = np.triu(np.ones((_ih_n, _ih_n), dtype=bool), k=0)
-        _pvals_plot = np.where(np.isnan(_ih_pvals), 1.0, _ih_pvals)
-        _pvals_plot = np.clip(_pvals_plot, 1e-10, 1.0)
-        sns.heatmap(_pvals_plot, mask=_lower_mask, annot=True, fmt=".2g",
-                    cmap="YlOrRd_r", norm=LogNorm(vmin=1e-4, vmax=1.0),
-                    xticklabels=_ih_labels, yticklabels=_ih_labels,
-                    cbar_kws={"label": "p-value", "shrink": 0.8}, ax=ax_p,
-                    linewidths=0.5, linecolor="white", square=True)
-        ax_p.set_xticklabels(_ih_labels, rotation=45, ha="right", fontsize=6)
-        ax_p.set_yticklabels(_ih_labels, rotation=0, fontsize=6)
-        ax_p.set_title("MW-U (row < col)", fontsize=8)
-        ax_p.tick_params(labelsize=6)
+        # Right: task-specific (all individual values)
+        for label, vals in _hist_data_individual.items():
+            _std = np.std(vals)
+            _pct_pos = (vals > 0).mean() * 100
+            _lbl = f"{label} (σ={_std:.1f}, {_pct_pos:.0f}%>0)"
+            ax_indiv.hist(vals, bins=_hist_bins_indiv, alpha=0.5, label=_lbl, color=_hist_colors.get(label))
+        ax_indiv.axvline(0, color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
+        ax_indiv.set_xlabel("Effect per (task, cluster) (%)", fontsize=8)
+        ax_indiv.set_ylabel("# (task, cluster) pairs", fontsize=8)
+        ax_indiv.set_title("Task-specific", fontsize=8)
+        ax_indiv.legend(fontsize=5.5, frameon=False)
+        ax_indiv.spines["top"].set_visible(False)
+        ax_indiv.spines["right"].set_visible(False)
+        ax_indiv.tick_params(labelsize=7)
 
-        fig_hp.tight_layout()
-        fig_hp.savefig(f"{save_dir}/normalized_leison_hist_mean_{aname}.png", dpi=300)
-        plt.close(fig_hp)
-        print("Saved input/hidden histogram + p-value heatmap")
+        fig_hist.tight_layout()
+        fig_hist.savefig(f"{save_dir}/normalized_leison_hist_mean_{aname}.png", dpi=300)
+        plt.close(fig_hist)
+        print("Saved input/hidden histogram (cluster-averaged + task-specific)")
 
     # Normalized combined lesion effect (input × hidden) for both norm and unnorm
     for vtag in ["norm", "unnorm"]:
@@ -441,64 +444,89 @@ def main(seed, feature):
         plt.close(fig_v)
         print(f"Saved combined modulation violin plot ({n_panels} panels)")
 
-        # Histogram + p-value heatmap for modulation (one figure, two panels)
-        from scipy.stats import mannwhitneyu as _mwu_mod
-        import seaborn as _sns_mod
+        # Ranked mean effect comparison: sorted cluster rank vs mean effect per type.
+        # Steeper curve = better separation between critical and dispensable clusters.
+        _rank_colors = {
+            "normalized": "#1b9e77",
+            "unnormalized": "#d95f02",
+            "var-weighted-unnormalized": "#e7298a",
+            "weighted-unnormalized": "#7570b3",
+        }
+        fig_rank, ax_rank = plt.subplots(figsize=(4.5, 3.2), dpi=300)
+        for bk, mode_data in _mod_violin_data:
+            type_tag = bk.replace("modulation_all_", "").replace("_", "-")
+            mean_per_cluster = mode_data["select_props"].mean(axis=0) * 100
+            sorted_vals = np.sort(mean_per_cluster)[::-1]
+            ax_rank.plot(range(1, len(sorted_vals) + 1), sorted_vals,
+                         marker="o", markersize=4, linewidth=1.2,
+                         color=_rank_colors.get(type_tag), label=type_tag, alpha=0.8)
+        ax_rank.axhline(0, color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
+        ax_rank.set_xlabel("Cluster rank (sorted by effect)", fontsize=9)
+        ax_rank.set_ylabel("Mean normalized effect (%)", fontsize=9)
+        ax_rank.set_title("Ranked cluster importance", fontsize=9)
+        ax_rank.legend(fontsize=7, frameon=False)
+        ax_rank.spines["top"].set_visible(False)
+        ax_rank.spines["right"].set_visible(False)
+        ax_rank.tick_params(labelsize=8)
+        fig_rank.tight_layout()
+        fig_rank.savefig(f"{save_dir}/normalized_mod_leison_ranked_{aname}.png", dpi=300)
+        plt.close(fig_rank)
+        print("Saved modulation ranked effect plot")
 
+        # Histogram for modulation (cluster-averaged + task-specific)
         _mod_hist_colors = {
             "normalized": "#1b9e77",
             "unnormalized": "#d95f02",
             "var-weighted-unnormalized": "#e7298a",
             "weighted-unnormalized": "#7570b3",
         }
-        _mod_labels = [bk.replace("modulation_all_", "").replace("_", "-") for bk, _ in _mod_violin_data]
-        _mod_means_lst = [d["select_props"].mean(axis=0) * 100 for _, d in _mod_violin_data]
-        _all_mod_means = np.concatenate(_mod_means_lst)
+        _all_mod_means = np.concatenate([d["select_props"].mean(axis=0) * 100 for _, d in _mod_violin_data])
         _mod_hist_bins = np.linspace(_all_mod_means.min(), _all_mod_means.max(), 15)
+        _all_mod_indiv = np.concatenate([d["select_props"].ravel() * 100 for _, d in _mod_violin_data])
+        _mod_hist_bins_indiv = np.linspace(_all_mod_indiv.min(), _all_mod_indiv.max(), 25)
 
-        _mod_n = len(_mod_labels)
-        _mod_pvals = np.full((_mod_n, _mod_n), np.nan)
-        for i in range(1, _mod_n):
-            for j in range(i):
-                _, p = _mwu_mod(_mod_means_lst[i], _mod_means_lst[j], alternative="less")
-                _mod_pvals[i, j] = p
+        fig_mhist, (ax_mmean, ax_mindiv) = plt.subplots(1, 2, figsize=(8, 3), dpi=300)
 
-        fig_mhp, (ax_mhist, ax_mp) = plt.subplots(1, 2, figsize=(7.5, 3), dpi=300,
-                                                    gridspec_kw={"width_ratios": [1.3, 1]})
+        # Left: cluster-averaged
         for bk, mode_data in _mod_violin_data:
             type_tag = bk.replace("modulation_all_", "").replace("_", "-")
             mean_per_cluster = mode_data["select_props"].mean(axis=0) * 100
             _mean = np.mean(mean_per_cluster)
             _med = np.median(mean_per_cluster)
             _lbl = f"{type_tag} (μ={_mean:.2f}, md={_med:.2f})"
-            ax_mhist.hist(mean_per_cluster, bins=_mod_hist_bins, alpha=0.5,
+            ax_mmean.hist(mean_per_cluster, bins=_mod_hist_bins, alpha=0.5,
                           label=_lbl, color=_mod_hist_colors.get(type_tag, None))
-        ax_mhist.axvline(0, color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
-        ax_mhist.set_xlabel("Mean normalized lesion effect (%)", fontsize=8)
-        ax_mhist.set_ylabel("# Clusters", fontsize=8)
-        ax_mhist.legend(fontsize=6, frameon=False)
-        ax_mhist.spines["top"].set_visible(False)
-        ax_mhist.spines["right"].set_visible(False)
-        ax_mhist.tick_params(labelsize=7)
+        ax_mmean.axvline(0, color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
+        ax_mmean.set_xlabel("Mean effect per cluster (%)", fontsize=8)
+        ax_mmean.set_ylabel("# Clusters", fontsize=8)
+        ax_mmean.set_title("Cluster-averaged", fontsize=8)
+        ax_mmean.legend(fontsize=5.5, frameon=False)
+        ax_mmean.spines["top"].set_visible(False)
+        ax_mmean.spines["right"].set_visible(False)
+        ax_mmean.tick_params(labelsize=7)
 
-        from matplotlib.colors import LogNorm as _LogNorm_mod
-        _mod_lower_mask = np.triu(np.ones((_mod_n, _mod_n), dtype=bool), k=0)
-        _mod_pvals_plot = np.where(np.isnan(_mod_pvals), 1.0, _mod_pvals)
-        _mod_pvals_plot = np.clip(_mod_pvals_plot, 1e-10, 1.0)
-        _sns_mod.heatmap(_mod_pvals_plot, mask=_mod_lower_mask, annot=True, fmt=".2g",
-                         cmap="YlOrRd_r", norm=_LogNorm_mod(vmin=1e-4, vmax=1.0),
-                         xticklabels=_mod_labels, yticklabels=_mod_labels,
-                         cbar_kws={"label": "p-value", "shrink": 0.8}, ax=ax_mp,
-                         linewidths=0.5, linecolor="white", square=True)
-        ax_mp.set_xticklabels(_mod_labels, rotation=45, ha="right", fontsize=6)
-        ax_mp.set_yticklabels(_mod_labels, rotation=0, fontsize=6)
-        ax_mp.set_title("MW-U (row < col)", fontsize=8)
-        ax_mp.tick_params(labelsize=6)
+        # Right: task-specific (all individual values)
+        for bk, mode_data in _mod_violin_data:
+            type_tag = bk.replace("modulation_all_", "").replace("_", "-")
+            all_vals = mode_data["select_props"].ravel() * 100
+            _std = np.std(all_vals)
+            _pct_pos = (all_vals > 0).mean() * 100
+            _lbl = f"{type_tag} (σ={_std:.1f}, {_pct_pos:.0f}%>0)"
+            ax_mindiv.hist(all_vals, bins=_mod_hist_bins_indiv, alpha=0.5,
+                           label=_lbl, color=_mod_hist_colors.get(type_tag, None))
+        ax_mindiv.axvline(0, color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
+        ax_mindiv.set_xlabel("Effect per (task, cluster) (%)", fontsize=8)
+        ax_mindiv.set_ylabel("# (task, cluster) pairs", fontsize=8)
+        ax_mindiv.set_title("Task-specific", fontsize=8)
+        ax_mindiv.legend(fontsize=5.5, frameon=False)
+        ax_mindiv.spines["top"].set_visible(False)
+        ax_mindiv.spines["right"].set_visible(False)
+        ax_mindiv.tick_params(labelsize=7)
 
-        fig_mhp.tight_layout()
-        fig_mhp.savefig(f"{save_dir}/normalized_mod_leison_hist_mean_{aname}.png", dpi=300)
-        plt.close(fig_mhp)
-        print("Saved modulation histogram + p-value heatmap")
+        fig_mhist.tight_layout()
+        fig_mhist.savefig(f"{save_dir}/normalized_mod_leison_hist_mean_{aname}.png", dpi=300)
+        plt.close(fig_mhist)
+        print("Saved modulation histogram (cluster-averaged + task-specific)")
 
     # Second pass: for each clustering type that has both lesion modes,
     # plot side-by-side heatmaps and a scatter comparison.
