@@ -163,7 +163,7 @@ class MultiPlasticLayer(BaseNetworkFunctions):
         Resets/initializes modulations values
         """
 
-        self.M = torch.ones(B, *self.W.shape, device=self.W.device) #shape: (B, n_input, n_output)
+        self.M = torch.ones(B, *self.W.shape, device=self.W.device) #shape: (B, n_output, n_input) = (B, post, pre)
         self.M = self.M * self.M_init.unsqueeze(0) # (B, n_input, n_output) x (1, n_input, n_output)
 
         self.M_pre = torch.zeros_like(self.M)
