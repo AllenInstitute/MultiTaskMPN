@@ -25,6 +25,7 @@ mpl.rcParams.update({
 
 def main(seed, feature):
     aname = f"everything_seed{seed}_{feature}+hidden300+batch128+angle"
+    print(f"aname: {aname}")
 
     pickle_dir = f"./multiple_tasks_perf/{aname}"
     save_dir = f"./multiple_tasks_norm/{aname}"
@@ -39,6 +40,38 @@ def main(seed, feature):
         
     # handle both old pickle names ("pre_cNone") and new ("pre_noleison") after rename fix
     baseline_keys = {"pre_cNone", "post_cNone", "pre_noleison", "post_noleison"}
+
+    from scipy.cluster.hierarchy import fcluster as _fcluster
+
+    def _derive_fixed_k_clusters(ci_entry, fk):
+        """Cut dendrogram at fk, return col_clusters dict {label: indices}.
+        Unresponsive neurons get label fk+1."""
+        res = ci_entry["result"]
+        lnk = res["col_linkage"]
+        tol_k = res["col_tol_k"]
+        tol_labels = res["col_tol_labels"]
+        unres_mask = tol_labels == (tol_k + 1)
+        active_labels = _fcluster(lnk, fk, criterion="maxclust")
+        full_labels = np.zeros(len(tol_labels), dtype=int)
+        full_labels[~unres_mask] = active_labels
+        if unres_mask.any():
+            full_labels[unres_mask] = fk + 1
+        return {int(lab): np.where(full_labels == lab)[0] for lab in np.unique(full_labels) if lab > 0}
+
+    def _derive_fixed_k_labels(ci_entry, fk):
+        """Cut dendrogram at fk, return full label array (same as _derive_fixed_k_clusters
+        but returns the raw array instead of a dict)."""
+        res = ci_entry["result"]
+        lnk = res["col_linkage"]
+        tol_k = res["col_tol_k"]
+        tol_labels = res["col_tol_labels"]
+        unres_mask = tol_labels == (tol_k + 1)
+        active_labels = _fcluster(lnk, fk, criterion="maxclust")
+        full_labels = np.zeros(len(tol_labels), dtype=int)
+        full_labels[~unres_mask] = active_labels
+        if unres_mask.any():
+            full_labels[unres_mask] = fk + 1
+        return full_labels
 
     def compute_and_plot_normalized_lesion(leison_key, random_key, savename, xlabel_suffix=""):
         """Compute normalized lesion effect (random - cluster), plot heatmap + violin.
@@ -127,7 +160,7 @@ def main(seed, feature):
 
             ax_v.axhline(0, color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
             ax_v.set_xticks(range(n_cls))
-            ax_v.set_xticklabels(cnames_panel, rotation=45, ha="right", fontsize=8)
+            ax_v.set_xticklabels(cnames_panel, rotation=25, ha="right", fontsize=8)
             ax_v.set_ylim(_ih_ylim)
             ax_v.set_ylabel("Effect (%)", fontsize=9)
             ax_v.set_title(label, fontsize=9)
@@ -173,7 +206,8 @@ def main(seed, feature):
         _all_indiv_vals = np.concatenate(list(_hist_data_individual.values()))
         _hist_bins_indiv = np.linspace(_all_indiv_vals.min(), _all_indiv_vals.max(), 25)
 
-        fig_hist, (ax_mean, ax_indiv) = plt.subplots(1, 2, figsize=(8, 3), dpi=300)
+        fig_hist, (ax_mean, ax_indiv, ax_stats) = plt.subplots(
+            1, 3, figsize=(11, 3), dpi=300, gridspec_kw={"width_ratios": [1, 1, 0.7]})
 
         # Left: cluster-averaged
         for label, vals in _hist_data.items():
@@ -190,12 +224,9 @@ def main(seed, feature):
         ax_mean.spines["right"].set_visible(False)
         ax_mean.tick_params(labelsize=7)
 
-        # Right: task-specific (all individual values)
+        # Middle: task-specific (all individual values)
         for label, vals in _hist_data_individual.items():
-            _std = np.std(vals)
-            _pct_pos = (vals > 0).mean() * 100
-            _lbl = f"{label} (σ={_std:.1f}, {_pct_pos:.0f}%>0)"
-            ax_indiv.hist(vals, bins=_hist_bins_indiv, alpha=0.5, label=_lbl, color=_hist_colors.get(label))
+            ax_indiv.hist(vals, bins=_hist_bins_indiv, alpha=0.5, label=label, color=_hist_colors.get(label))
         ax_indiv.axvline(0, color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
         ax_indiv.set_xlabel("Effect per (task, cluster) (%)", fontsize=8)
         ax_indiv.set_ylabel("# (task, cluster) pairs", fontsize=8)
@@ -205,10 +236,34 @@ def main(seed, feature):
         ax_indiv.spines["right"].set_visible(False)
         ax_indiv.tick_params(labelsize=7)
 
+        # Right: summary statistics (std and %>0) as grouped bars
+        _ih_type_tags = list(_hist_data_individual.keys())
+        _ih_stds = [np.std(v) for v in _hist_data_individual.values()]
+        _ih_pct_pos = [(v > 0).mean() * 100 for v in _hist_data_individual.values()]
+
+        _x_stats = np.arange(len(_ih_type_tags))
+        _bar_w = 0.35
+        ax_stats_twin = ax_stats.twinx()
+        ax_stats.bar(_x_stats - _bar_w / 2, _ih_stds, _bar_w,
+                     color="steelblue", alpha=0.7, label="Std (%)")
+        ax_stats_twin.bar(_x_stats + _bar_w / 2, _ih_pct_pos, _bar_w,
+                          color="tomato", alpha=0.7, label="% > 0")
+        ax_stats.set_xticks(_x_stats)
+        ax_stats.set_xticklabels(_ih_type_tags, rotation=25, ha="right", fontsize=6)
+        ax_stats.set_ylabel("Std (%)", fontsize=8, color="steelblue")
+        ax_stats_twin.set_ylabel("% > 0", fontsize=8, color="tomato")
+        ax_stats.set_title("Informativeness", fontsize=8)
+        ax_stats.spines["top"].set_visible(False)
+        ax_stats_twin.spines["top"].set_visible(False)
+        ax_stats.tick_params(labelsize=7)
+        ax_stats_twin.tick_params(labelsize=7)
+        ax_stats.legend(loc="upper left", fontsize=6, frameon=False)
+        ax_stats_twin.legend(loc="upper right", fontsize=6, frameon=False)
+
         fig_hist.tight_layout()
         fig_hist.savefig(f"{save_dir}/normalized_leison_hist_mean_{aname}.png", dpi=300)
         plt.close(fig_hist)
-        print("Saved input/hidden histogram (cluster-averaged + task-specific)")
+        print("Saved input/hidden histogram (cluster-averaged + task-specific + stats)")
 
     # Normalized combined lesion effect (input × hidden) for both norm and unnorm
     for vtag in ["norm", "unnorm"]:
@@ -431,7 +486,7 @@ def main(seed, feature):
 
             ax_v.axhline(0, color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
             ax_v.set_xticks(range(n_cls))
-            ax_v.set_xticklabels(cnames, rotation=45, ha="right", fontsize=8)
+            ax_v.set_xticklabels(cnames, rotation=25, ha="right", fontsize=8)
             ax_v.set_ylim(_ylim)
             ax_v.set_ylabel("Effect (%)", fontsize=9)
             ax_v.set_title(f"{type_tag} (zero_W)", fontsize=9)
@@ -473,7 +528,46 @@ def main(seed, feature):
         plt.close(fig_rank)
         print("Saved modulation ranked effect plot")
 
-        # Histogram for modulation (cluster-averaged + task-specific)
+        # Cluster size vs normalized lesion effect
+        # Tests whether larger clusters are more important after size-matching control.
+        _size_colors = {
+            "normalized": "#1b9e77",
+            "unnormalized": "#d95f02",
+            "var-weighted-unnormalized": "#e7298a",
+            "weighted-unnormalized": "#7570b3",
+        }
+        fig_size, ax_size = plt.subplots(figsize=(4.5, 3.5), dpi=300)
+        for bk, mode_data in _mod_violin_data:
+            type_tag = bk.replace("modulation_all_", "").replace("_", "-")
+            mean_per_cluster = mode_data["select_props"].mean(axis=0) * 100
+            # Get cluster sizes from the lesion pickle
+            _mod_rkey = f"{bk}__zero_W"
+            if _mod_rkey in mod_leison_results:
+                _col_cls = mod_leison_results[_mod_rkey]["mod_col_clusters"]
+                _sorted_ids = sorted(_col_cls.keys())
+                sizes = np.array([len(_col_cls[cid]) for cid in _sorted_ids])
+                _sl, _ic, _r, _p, _ = linregress(sizes, mean_per_cluster)
+                _lbl = f"{type_tag} (r={_r:.2f}, sl={_sl:.2e})"
+                ax_size.scatter(sizes, mean_per_cluster, alpha=0.6, s=25,
+                                edgecolors="none", color=_size_colors.get(type_tag),
+                                label=_lbl)
+                _xfit = np.linspace(sizes.min(), sizes.max(), 50)
+                ax_size.plot(_xfit, _sl * _xfit + _ic,
+                             color=_size_colors.get(type_tag), linewidth=0.8, alpha=0.7)
+        ax_size.axhline(0, color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
+        ax_size.set_xlabel("Cluster size (# synapses)", fontsize=8)
+        ax_size.set_ylabel("Mean normalized effect (%)", fontsize=8)
+        ax_size.set_title("Cluster size vs functional importance", fontsize=9)
+        ax_size.legend(fontsize=7, frameon=False)
+        ax_size.spines["top"].set_visible(False)
+        ax_size.spines["right"].set_visible(False)
+        ax_size.tick_params(labelsize=7)
+        fig_size.tight_layout()
+        fig_size.savefig(f"{save_dir}/normalized_mod_leison_size_vs_effect_{aname}.png", dpi=300)
+        plt.close(fig_size)
+        print("Saved modulation cluster size vs effect plot")
+
+        # Histogram for modulation (cluster-averaged + task-specific + summary stats)
         _mod_hist_colors = {
             "normalized": "#1b9e77",
             "unnormalized": "#d95f02",
@@ -485,7 +579,8 @@ def main(seed, feature):
         _all_mod_indiv = np.concatenate([d["select_props"].ravel() * 100 for _, d in _mod_violin_data])
         _mod_hist_bins_indiv = np.linspace(_all_mod_indiv.min(), _all_mod_indiv.max(), 25)
 
-        fig_mhist, (ax_mmean, ax_mindiv) = plt.subplots(1, 2, figsize=(8, 3), dpi=300)
+        fig_mhist, (ax_mmean, ax_mindiv, ax_stats) = plt.subplots(
+            1, 3, figsize=(11, 3), dpi=300, gridspec_kw={"width_ratios": [1, 1, 0.7]})
 
         # Left: cluster-averaged
         for bk, mode_data in _mod_violin_data:
@@ -505,15 +600,12 @@ def main(seed, feature):
         ax_mmean.spines["right"].set_visible(False)
         ax_mmean.tick_params(labelsize=7)
 
-        # Right: task-specific (all individual values)
+        # Middle: task-specific (all individual values)
         for bk, mode_data in _mod_violin_data:
             type_tag = bk.replace("modulation_all_", "").replace("_", "-")
             all_vals = mode_data["select_props"].ravel() * 100
-            _std = np.std(all_vals)
-            _pct_pos = (all_vals > 0).mean() * 100
-            _lbl = f"{type_tag} (σ={_std:.1f}, {_pct_pos:.0f}%>0)"
             ax_mindiv.hist(all_vals, bins=_mod_hist_bins_indiv, alpha=0.5,
-                           label=_lbl, color=_mod_hist_colors.get(type_tag, None))
+                           label=type_tag, color=_mod_hist_colors.get(type_tag, None))
         ax_mindiv.axvline(0, color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
         ax_mindiv.set_xlabel("Effect per (task, cluster) (%)", fontsize=8)
         ax_mindiv.set_ylabel("# (task, cluster) pairs", fontsize=8)
@@ -523,10 +615,97 @@ def main(seed, feature):
         ax_mindiv.spines["right"].set_visible(False)
         ax_mindiv.tick_params(labelsize=7)
 
+        # Right: summary statistics (std and %>0) as grouped bars
+        _mod_type_tags = []
+        _mod_stds = []
+        _mod_pct_pos = []
+        for bk, mode_data in _mod_violin_data:
+            type_tag = bk.replace("modulation_all_", "").replace("_", "-")
+            all_vals = mode_data["select_props"].ravel() * 100
+            _mod_type_tags.append(type_tag)
+            _mod_stds.append(np.std(all_vals))
+            _mod_pct_pos.append((all_vals > 0).mean() * 100)
+
+        _x_stats = np.arange(len(_mod_type_tags))
+        _bar_w = 0.35
+        ax_stats_twin = ax_stats.twinx()
+        bars1 = ax_stats.bar(_x_stats - _bar_w / 2, _mod_stds, _bar_w,
+                             color="steelblue", alpha=0.7, label="Std (%)")
+        bars2 = ax_stats_twin.bar(_x_stats + _bar_w / 2, _mod_pct_pos, _bar_w,
+                                   color="tomato", alpha=0.7, label="% > 0")
+        ax_stats.set_xticks(_x_stats)
+        ax_stats.set_xticklabels(_mod_type_tags, rotation=25, ha="right", fontsize=7)
+        ax_stats.set_ylabel("Std (%)", fontsize=8, color="steelblue")
+        ax_stats_twin.set_ylabel("% > 0", fontsize=8, color="tomato")
+        ax_stats.set_title("Informativeness", fontsize=8)
+        ax_stats.spines["top"].set_visible(False)
+        ax_stats_twin.spines["top"].set_visible(False)
+        ax_stats.tick_params(labelsize=7)
+        ax_stats_twin.tick_params(labelsize=7)
+        ax_stats.legend(loc="upper left", fontsize=6, frameon=False)
+        ax_stats_twin.legend(loc="upper right", fontsize=6, frameon=False)
+
         fig_mhist.tight_layout()
         fig_mhist.savefig(f"{save_dir}/normalized_mod_leison_hist_mean_{aname}.png", dpi=300)
         plt.close(fig_mhist)
-        print("Saved modulation histogram (cluster-averaged + task-specific)")
+        print("Saved modulation histogram (cluster-averaged + task-specific + stats)")
+
+    # Pairwise ARI between modulation clustering types
+    # Uses the cluster assignments from the lesion pickle (mod_col_clusters)
+    # to compute adjusted Rand index — measures how similar two clusterings are.
+    if len(mod_by_type) >= 2:
+        from sklearn.metrics import adjusted_rand_score
+        import seaborn as _sns_ari
+
+        _ari_types = []
+        _ari_labels_lst = []
+        for mod_result_key, mod_data in mod_leison_results.items():
+            if "zero_W" not in mod_result_key:
+                continue
+            base_key = mod_result_key.rsplit("__", 1)[0]
+            type_tag = base_key.replace("modulation_all_", "").replace("_", "-")
+            col_clusters = mod_data["mod_col_clusters"]
+            # Reconstruct full label array from col_clusters dict
+            max_idx = max(max(v) for v in col_clusters.values())
+            labels = np.zeros(max_idx + 1, dtype=int)
+            for lab, idxs in col_clusters.items():
+                labels[np.array(idxs)] = lab
+            _ari_types.append(type_tag)
+            _ari_labels_lst.append(labels)
+
+        _n_ari = len(_ari_types)
+        if _n_ari >= 2:
+            _ari_mat = np.full((_n_ari, _n_ari), np.nan)
+            for i in range(1, _n_ari):
+                for j in range(i):
+                    ari = adjusted_rand_score(_ari_labels_lst[i], _ari_labels_lst[j])
+                    _ari_mat[i, j] = ari
+
+            # Plot modulation ARI heatmap only
+            _ari_mask = np.triu(np.ones((_n_ari, _n_ari), dtype=bool), k=0)
+            fig_ari, ax_ari = plt.subplots(figsize=(4, 3.5), dpi=300)
+            hm_ari = _sns_ari.heatmap(
+                _ari_mat, mask=_ari_mask, annot=True, fmt=".2f",
+                cmap="RdBu_r", vmin=0.0, vmax=1.0, center=0.5,
+                xticklabels=_ari_types, yticklabels=_ari_types,
+                cbar_kws={"label": "ARI", "shrink": 0.75, "aspect": 20},
+                linewidths=0.5, linecolor="white", square=True, ax=ax_ari,
+                annot_kws={"fontsize": 10, "fontweight": "bold"},
+            )
+            ax_ari.set_xticklabels(_ari_types, rotation=25, ha="right", fontsize=8)
+            ax_ari.set_yticklabels(_ari_types, rotation=0, fontsize=8)
+            ax_ari.set_title("Pairwise ARI (modulation)", fontsize=9)
+            ax_ari.tick_params(axis="both", length=1.5, width=0.5)
+            for spine in ax_ari.spines.values():
+                spine.set_linewidth(0.5)
+            cbar = hm_ari.collections[0].colorbar
+            cbar.ax.tick_params(labelsize=7, length=2, width=0.5)
+            cbar.ax.yaxis.label.set_size(8)
+            cbar.outline.set_linewidth(0.5)
+            fig_ari.tight_layout()
+            fig_ari.savefig(f"{save_dir}/clustering_ari_{aname}.png", dpi=300)
+            plt.close(fig_ari)
+            print(f"Saved modulation ARI comparison ({_n_ari} types)")
 
     # Second pass: for each clustering type that has both lesion modes,
     # plot side-by-side heatmaps and a scatter comparison.
@@ -580,7 +759,7 @@ def main(seed, feature):
                            "pad": 0.03, "aspect": 25},
                 xticklabels=cluster_names, yticklabels=all_tasks, ax=ax_hm,
             )
-            ax_hm.set_xticklabels(cluster_names, rotation=45, ha="right", fontsize=7)
+            ax_hm.set_xticklabels(cluster_names, rotation=25, ha="right", fontsize=7)
             ax_hm.set_yticklabels(all_tasks, rotation=0, fontsize=7)
             ax_hm.set_xlabel("Modulation Cluster", fontsize=8)
             ax_hm.set_ylabel("Task", fontsize=8)
@@ -861,8 +1040,54 @@ def main(seed, feature):
         if len(mode_data_all) < 2:
             return
 
-        fig, axes = plt.subplots(1, 2, figsize=(7, 3.2), dpi=300)
-        for ax, mode in zip(axes, ["zero_W", "freeze_M"]):
+        # Panel 3: per-cluster prediction — use OM-weighted combined effect to predict
+        # modulation cluster's mean lesion effect (one point per cluster).
+        # For each mod cluster: predicted_effect = sum(OM[i,j] * combined_effect_mean[i,j]) / sum(OM[i,j])
+        # Uses zero_W mode for the prediction.
+        _pred_x, _pred_y = [], []
+        mod_result_key_zw = f"{base_key}__zero_W"
+        if mod_result_key_zw in results["mod_leison"] and base_key in cluster_info_mod:
+            _mod_keys_p = cluster_info_mod[base_key]
+            _fk_ga_keys_p = [k for k in _mod_keys_p if k.startswith("global_assignment_fixed_k")]
+            ga_p = _mod_keys_p[_fk_ga_keys_p[0]] if _fk_ga_keys_p else _mod_keys_p.get("global_assignment")
+            if ga_p is not None:
+                om_stack_p = ga_p["om_stack"]
+                all_choice_order_p = ga_p["all_choice_order"]
+                n_in_p, n_hid_p = ga_p["n_in"], ga_p["n_hid"]
+                om_id_to_idx_p = {cid: idx for idx, cid in enumerate(all_choice_order_p)}
+
+                ckey_p = f"combined_leison_{variant}"
+                if ckey_p in results and results[ckey_p]:
+                    cdata_p = results[ckey_p]
+                    comb_eff_p = (np.asarray(cdata_p["combined_random_accs"], dtype=float)
+                                  - np.asarray(cdata_p["combined_accs"], dtype=float))
+                    comb_mean_p = comb_eff_p.mean(axis=0)  # (pre_n, post_n)
+
+                    mod_data_p = results["mod_leison"][mod_result_key_zw]
+                    _mt_p = np.asarray(mod_data_p["modtask_accs"], dtype=float)
+                    _mr_p = np.asarray(mod_data_p["modrandomtask_accs"], dtype=float)
+                    for key_idx, key in enumerate(mod_data_p["all_comb_names_mod"]):
+                        if key == "mod_noleison":
+                            continue
+                        cid = int(key.replace("mod_c", ""))
+                        if cid not in om_id_to_idx_p:
+                            continue
+                        om_idx = om_id_to_idx_p[cid]
+                        om_profile = om_stack_p[om_idx]  # (n_in, n_hid)
+                        # Predicted effect: OM-weighted average of combined effects
+                        if om_profile.sum() > 0:
+                            predicted = (om_profile * comb_mean_p).sum() / om_profile.sum()
+                        else:
+                            predicted = 0.0
+                        actual = (_mr_p[:, key_idx] - _mt_p[:, key_idx]).mean()
+                        _pred_x.append(predicted * 100)
+                        _pred_y.append(actual * 100)
+
+        _has_pred = len(_pred_x) >= 3
+
+        fig, axes = plt.subplots(1, 3 if _has_pred else 2,
+                                 figsize=(10.5 if _has_pred else 7, 3.2), dpi=300)
+        for ax, mode in zip(axes[:2], ["zero_W", "freeze_M"]):
             if mode not in mode_data_all:
                 ax.set_visible(False)
                 continue
@@ -884,7 +1109,30 @@ def main(seed, feature):
             ax.spines["right"].set_visible(False)
             ax.tick_params(labelsize=7)
 
-        fig.suptitle(f"OM vs lesion diff — {type_tag} [{variant}]", fontsize=9)
+        # Panel 3: predicted vs actual per cluster
+        if _has_pred:
+            ax_pred = axes[2]
+            _pred_x = np.array(_pred_x)
+            _pred_y = np.array(_pred_y)
+            slope_p, intercept_p, r_p, p_p, _ = linregress(_pred_x, _pred_y)
+
+            ax_pred.scatter(_pred_x, _pred_y, alpha=0.6, s=25, edgecolors="none", color="steelblue")
+            _lim_p = [min(_pred_x.min(), _pred_y.min()), max(_pred_x.max(), _pred_y.max())]
+            ax_pred.plot(_lim_p, _lim_p, color="black", linewidth=0.6, linestyle="--", alpha=0.5)
+            x_fit_p = np.linspace(_pred_x.min(), _pred_x.max(), 100)
+            ax_pred.plot(x_fit_p, slope_p * x_fit_p + intercept_p, color="tomato", linewidth=1.0)
+
+            p_str_p = f"p = {p_p:.2e}" if p_p < 0.001 else f"p = {p_p:.3f}"
+            ax_pred.text(0.05, 0.95, f"r = {r_p:.2f}\n{p_str_p}\nn = {len(_pred_x)}",
+                         transform=ax_pred.transAxes, va="top", ha="left", fontsize=7)
+            ax_pred.set_xlabel("OM-predicted effect (%)", fontsize=8)
+            ax_pred.set_ylabel("Actual mod lesion effect (%)", fontsize=8)
+            ax_pred.set_title("Per-cluster prediction", fontsize=9)
+            ax_pred.spines["top"].set_visible(False)
+            ax_pred.spines["right"].set_visible(False)
+            ax_pred.tick_params(labelsize=7)
+
+        fig.suptitle(f"OM vs lesion — {type_tag} [{variant}]", fontsize=9)
         fig.tight_layout()
         savepath = f"{save_dir}/om_vs_lesion_diff_{type_tag}_combined_{variant}_{aname}.png"
         fig.savefig(savepath, dpi=300)
@@ -1018,22 +1266,7 @@ def main(seed, feature):
             with open(cluster_path, "rb") as f:
                 cluster_info = pickle.load(f)
 
-        # Derive fixed-k clusters on the fly (same as leison.py) to match select_props_unnorm
-        from scipy.cluster.hierarchy import fcluster as _fcluster_plot
         _fixed_k_plot = results.get("fixed_k", 20)
-
-        def _derive_fk_clusters_plot(ci_entry, fk):
-            res = ci_entry["result"]
-            lnk = res["col_linkage"]
-            tol_k = res["col_tol_k"]
-            tol_labels = res["col_tol_labels"]
-            unres_mask = tol_labels == (tol_k + 1)
-            active_labels = _fcluster_plot(lnk, fk, criterion="maxclust")
-            full_labels = np.zeros(len(tol_labels), dtype=int)
-            full_labels[~unres_mask] = active_labels
-            if unres_mask.any():
-                full_labels[unres_mask] = fk + 1
-            return {int(lab): np.where(full_labels == lab)[0] for lab in np.unique(full_labels) if lab > 0}
 
         corr_matrices_unnorm = {}
         _unnorm_keys = {}
@@ -1042,7 +1275,7 @@ def main(seed, feature):
                 continue
             ci = cluster_info[name]
             V = ci["cell_vars_rules_sorted_norm"]
-            col_clusters = _derive_fk_clusters_plot(ci, _fixed_k_plot)
+            col_clusters = _derive_fixed_k_clusters(ci, _fixed_k_plot)
             n_clusters = len(col_clusters)
             cluster_means = np.stack(
                 [V[:, col_clusters[c]].mean(axis=1) for c in range(1, n_clusters + 1)],
@@ -1123,3 +1356,4 @@ def main(seed, feature):
 
 if __name__ == "__main__":
     main(749, "L21e4")
+    main(408, "L21e4")
