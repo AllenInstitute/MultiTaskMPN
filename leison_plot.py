@@ -40,6 +40,7 @@ def main(seed, feature):
         
     # handle both old pickle names ("pre_cNone") and new ("pre_noleison") after rename fix
     baseline_keys = {"pre_cNone", "post_cNone", "pre_noleison", "post_noleison"}
+    mod_leison_results = results.get("mod_leison", {})
 
     from scipy.cluster.hierarchy import fcluster as _fcluster
 
@@ -265,6 +266,96 @@ def main(seed, feature):
         plt.close(fig_hist)
         print("Saved input/hidden histogram (cluster-averaged + task-specific + stats)")
 
+    # ── Ranked cluster importance ──
+    def _plot_ranked_effect(data_dict, colors, title, savepath):
+        """Plot sorted mean effect per category on one axis."""
+        fig, ax = plt.subplots(figsize=(4.5, 3.2), dpi=300)
+        for label, vals in data_dict.items():
+            sorted_vals = np.sort(vals)[::-1]
+            ax.plot(range(1, len(sorted_vals) + 1), sorted_vals,
+                    marker="o", markersize=4, linewidth=1.2,
+                    color=colors.get(label), label=label, alpha=0.8)
+        ax.axhline(0, color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
+        ax.set_xlabel("Cluster rank (sorted by effect)", fontsize=9)
+        ax.set_ylabel("Mean normalized effect (%)", fontsize=9)
+        ax.set_title(title, fontsize=9)
+        ax.legend(fontsize=7, frameon=False)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.tick_params(labelsize=8)
+        fig.tight_layout()
+        fig.savefig(savepath, dpi=300)
+        plt.close(fig)
+        print(f"Saved {os.path.basename(savepath)}")
+
+    # Ranked effect for input/hidden
+    if _hist_data:
+        _ih_rank_colors = {"Input (norm)": "#2171b5", "Hidden (norm)": "#cb181d",
+                           "Input (unnorm)": "#6baed6", "Hidden (unnorm)": "#fc9272"}
+        _plot_ranked_effect(_hist_data, _ih_rank_colors,
+                            "Ranked cluster importance (input/hidden)",
+                            f"{save_dir}/normalized_leison_ranked_{aname}.png")
+
+    # ── Task-specific lesion trajectories per modulation type ──
+    # For each modulation type (subpanel), sort clusters by mean effect,
+    # then plot each task as a line across the sorted cluster ranks.
+    # This shows how individual tasks respond to each cluster's removal.
+    _traj_mod_data = []
+    _traj_order = [
+        "modulation_all_normalized",
+        "modulation_all_unnormalized",
+        "modulation_all_var_weighted_unnormalized",
+        "modulation_all_weighted_unnormalized",
+    ]
+    for bk in _traj_order:
+        rkey = f"{bk}__zero_W"
+        if rkey not in mod_leison_results:
+            continue
+        mod_data = mod_leison_results[rkey]
+        mt = np.asarray(mod_data["modtask_accs"], dtype=float)
+        mr = np.asarray(mod_data["modrandomtask_accs"], dtype=float)
+        effect = (mr[:, 1:] - mt[:, 1:]) * 100  # (n_tasks, n_clusters)
+        type_tag = bk.replace("modulation_all_", "").replace("_", "-")
+        _traj_mod_data.append((type_tag, effect))
+
+    if _traj_mod_data:
+        n_panels = len(_traj_mod_data)
+        fig_traj, axes_traj = plt.subplots(n_panels, 1,
+                                            figsize=(5, 2.2 * n_panels), dpi=300)
+        if n_panels == 1:
+            axes_traj = [axes_traj]
+
+        # Use a colormap for tasks
+        _task_cmap = plt.cm.get_cmap("tab20", len(all_tasks))
+
+        for panel_idx, (type_tag, effect) in enumerate(_traj_mod_data):
+            ax = axes_traj[panel_idx]
+            n_cls = effect.shape[1]
+
+            # Each task sorts clusters by its own effect (descending)
+            for ti, task in enumerate(all_tasks):
+                sorted_vals = np.sort(effect[ti])[::-1]
+                ax.plot(range(n_cls), sorted_vals, alpha=0.5, linewidth=0.8,
+                        color=_task_cmap(ti), label=task if panel_idx == 0 else None)
+
+            ax.axhline(0, color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
+            ax.set_xlim(-0.5, n_cls - 0.5)
+            ax.set_xlabel("Cluster rank (sorted by mean effect)", fontsize=8)
+            ax.set_ylabel("Effect (%)", fontsize=8)
+            ax.set_title(f"{type_tag} (zero_W)", fontsize=9)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.tick_params(labelsize=7)
+
+        # Single legend for all panels
+        axes_traj[0].legend(fontsize=5, frameon=False, ncol=3, loc="upper right")
+
+        fig_traj.tight_layout()
+        fig_traj.savefig(f"{save_dir}/task_trajectories_mod_{aname}.png", dpi=300)
+        plt.close(fig_traj)
+        print("Saved modulation task trajectories plot")
+
+
     # Normalized combined lesion effect (input × hidden) for both norm and unnorm
     for vtag in ["norm", "unnorm"]:
         ckey = f"combined_leison_{vtag}"
@@ -404,7 +495,6 @@ def main(seed, feature):
 
     # Normalized modulation lesion effect for each clustering type
     mod_baseline_keys = {"mod_noleison"}
-    mod_leison_results = results["mod_leison"]
 
     # First pass: compute normalized effect and collect by clustering type.
     # Individual heatmaps are not plotted; combined (zero_W | freeze_M) panels are plotted below.
@@ -507,26 +597,13 @@ def main(seed, feature):
             "var-weighted-unnormalized": "#e7298a",
             "weighted-unnormalized": "#7570b3",
         }
-        fig_rank, ax_rank = plt.subplots(figsize=(4.5, 3.2), dpi=300)
-        for bk, mode_data in _mod_violin_data:
-            type_tag = bk.replace("modulation_all_", "").replace("_", "-")
-            mean_per_cluster = mode_data["select_props"].mean(axis=0) * 100
-            sorted_vals = np.sort(mean_per_cluster)[::-1]
-            ax_rank.plot(range(1, len(sorted_vals) + 1), sorted_vals,
-                         marker="o", markersize=4, linewidth=1.2,
-                         color=_rank_colors.get(type_tag), label=type_tag, alpha=0.8)
-        ax_rank.axhline(0, color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
-        ax_rank.set_xlabel("Cluster rank (sorted by effect)", fontsize=9)
-        ax_rank.set_ylabel("Mean normalized effect (%)", fontsize=9)
-        ax_rank.set_title("Ranked cluster importance", fontsize=9)
-        ax_rank.legend(fontsize=7, frameon=False)
-        ax_rank.spines["top"].set_visible(False)
-        ax_rank.spines["right"].set_visible(False)
-        ax_rank.tick_params(labelsize=8)
-        fig_rank.tight_layout()
-        fig_rank.savefig(f"{save_dir}/normalized_mod_leison_ranked_{aname}.png", dpi=300)
-        plt.close(fig_rank)
-        print("Saved modulation ranked effect plot")
+        _mod_rank_data = {
+            bk.replace("modulation_all_", "").replace("_", "-"): d["select_props"].mean(axis=0) * 100
+            for bk, d in _mod_violin_data
+        }
+        _plot_ranked_effect(_mod_rank_data, _rank_colors,
+                            "Ranked cluster importance (modulation)",
+                            f"{save_dir}/normalized_mod_leison_ranked_{aname}.png")
 
         # Cluster size vs normalized lesion effect
         # Tests whether larger clusters are more important after size-matching control.
