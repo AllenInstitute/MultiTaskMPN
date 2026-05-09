@@ -1,5 +1,42 @@
 #!/usr/bin/env python
 # coding: utf-8
+"""
+Pretraining → Post-training transfer experiment.
+
+Tests whether an MPN's Hebbian plasticity can support learning a new task
+when all network parameters are frozen except the task-indicator input column.
+
+Protocol:
+  Stage 1 (Pretraining):  Train a DeepMultiPlasticNet (200 hidden units) on
+                           a pair of tasks (e.g. fdgo + delaygo) until
+                           convergence. The input layer W_initial_linear is
+                           created with one extra column (pretraining_shift_pre=1)
+                           to reserve space for the post-training task indicator;
+                           this column receives zeros during Stage 1. All
+                           parameters are trainable.
+
+  Stage 2 (Post-training): Load the pretrained network and freeze ALL
+                           parameters via expand_and_freeze(option=1). A
+                           gradient hook restricts learning to only the last
+                           column of W_initial_linear — the task-indicator
+                           input weights. The held-out task (e.g. delayanti)
+                           is trained using input data zero-padded in the
+                           Stage 1 task-indicator slots (pretraining_shift=2).
+                           The plasticity matrix M still evolves within-trial
+                           via the Hebbian rule (eta, lam), but eta, lam, the
+                           static recurrent weight W, and the output layer
+                           W_output are all frozen.
+
+The experiment is repeated over multiple random seeds (outer loop) to
+assess robustness. For each seed the script saves:
+  - Network checkpoint (.pt)
+  - Hyperparameters (.json)
+  - Hidden states, modulation matrices, and activations for both stages (.npz)
+  - Validation outputs at each stage (.npz)
+  - Diagnostic figures (input weight comparison, loss curves, sample I/O)
+
+All outputs are written to ./pretraining/.
+"""
 
 # In[1]:
 
@@ -9,7 +46,8 @@ import sys
 import time
 import gc
 import random
-import copy 
+import copy
+import pickle
 from mpl_toolkits.mplot3d import Axes3D
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -78,9 +116,7 @@ reload(nets)
 reload(net_helpers)
 
 for _ in range(5): 
-    # Reload modules if changes have been made to them
-    fixseed = False # randomize setting the seed may lead to not perfectly solved results
-    seed = random.randint(1,1000) if not fixseed else 8 # random set the seed to test robustness by default
+    seed = random.randint(1,1000)
     print(f"Set seed {seed}")
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -186,9 +222,10 @@ for _ in range(5):
         net_params = {
             'net_type': hyp_dict_input['chosen_network'], # mpn1, dmpn, vanilla
             'n_neurons': [1] + [n_hidden] * mpn_depth + [1],
-            'output_bias': True, 
+            'linear_embed': 200, 
+            'output_bias': False, 
             'hidden_bias': False, 
-            'input_bias': True, 
+            'input_bias': False, 
             'loss_type': 'MSE', # XE, MSE
             'activation': 'tanh', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside
             'W_rec_init': 'diag', 
@@ -199,9 +236,9 @@ for _ in range(5):
             'output_matrix': '', # "" (default); "untrained", or "orthogonal"
             'input_layer_add': True, 
             'input_layer_add_trainable': True, # revise this is effectively to [randomize_inputs], tune this
-            'input_layer_bias': True, 
+            'input_layer_bias': False,
             'input_layer': "trainable", # for RNN only
-            'acc_measure': 'stimulus', 
+            'acc_measure': 'angle', 
             
             # for one-layer MPN, GRU or Vanilla
             'ml_params': {
@@ -247,7 +284,7 @@ for _ in range(5):
 
     task_params, train_params, net_params = current_basic_params(hyp_dict_old)
 
-    print("Accuracy Measure: {net_params['acc_measure']}")
+    print(f"Accuracy Measure: {net_params['acc_measure']}")
 
     # 2025-11-19: this part should either have "+L2" or not 
     hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}"
@@ -319,10 +356,6 @@ for _ in range(5):
     test_n_batch = train_params["valid_n_batch"]
     color_by = "stim" # or "resp" 
 
-    task_random_fix = True
-    if task_random_fix:
-        print(f"Align {task_params['rules']} With Same Time")
-
     # how much the second stage input should be shifted/paddled 
     # zero-paddle to the training data of post-training; pretraining_shift = number of pre-training task
     pretraining_shift = len(task_params['rules']) 
@@ -344,17 +377,17 @@ for _ in range(5):
         task_params_test = copy.deepcopy(task_params)
         long_response_change = "normal"
         task_params_test["long_response"] = long_response_change
-        test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params_test, test_n_batch, 
-                                                                    rules=task_params_test['rules'], mode_input=test_mode_for_all, 
-                                                                    fix=task_random_fix, pretraining_shift_pre=pretraining_shift_pre)
+        test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params_test, test_n_batch,
+                                                                    rules=task_params_test['rules'], mode_input=test_mode_for_all,
+                                                                    pretraining_shift_pre=pretraining_shift_pre)
 
         # Oct 15th: make the response period to be longer
         # so that the hidden activity analysis might be more reliable
         task_params2_test = copy.deepcopy(task_params2)
         task_params2_test["long_response"] = long_response_change
-        test_data2, test_trials_extra2 = mpn_tasks.generate_trials_wrap(task_params2_test, test_n_batch, 
-                                                                        rules=task_params2_test['rules'], mode_input=test_mode_for_all, 
-                                                                        fix=task_random_fix, pretraining_shift=pretraining_shift )
+        test_data2, test_trials_extra2 = mpn_tasks.generate_trials_wrap(task_params2_test, test_n_batch,
+                                                                        rules=task_params2_test['rules'], mode_input=test_mode_for_all,
+                                                                        pretraining_shift=pretraining_shift)
         _, test_trials, test_rule_idxs = test_trials_extra
         _, test_trials2, test_rule_idxs2 = test_trials_extra2
         
@@ -679,7 +712,7 @@ for _ in range(5):
     def modulation_extraction(db_, max_seq_len_, layer_index, half=False, nettype="dmpn"):
         """
         """
-        print(db.keys())
+        print(db_.keys())
         devider = 1 if not half else 2
         n_batch_all_ = test_input.shape[0]
         
@@ -774,7 +807,29 @@ for _ in range(5):
     torch.save(save_dict, netpathname)
     print("Network parameter saving is done")
 
-    # # try to reload 
+    # Save training history for both stages
+    def _hist_to_serializable(hist):
+        """Convert hist dict to numpy-friendly format for pickling."""
+        out = {}
+        for k, v in hist.items():
+            if isinstance(v, torch.Tensor):
+                out[k] = v.detach().cpu().numpy()
+            elif isinstance(v, list) and len(v) > 0 and isinstance(v[0], torch.Tensor):
+                out[k] = [t.detach().cpu().numpy() for t in v]
+            else:
+                out[k] = v
+        return out
+
+    hist_pathname = f"./pretraining/hist_{hyp_dict_old['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}.pkl"
+    with open(hist_pathname, "wb") as f:
+        pickle.dump({
+            "stage1": _hist_to_serializable(net_stage1.hist),
+            "stage2": _hist_to_serializable(net.hist),
+            "pretrain_stop": pretrain_stop,
+        }, f)
+    print(f"Training history saved: {hist_pathname}")
+
+    # # try to reload
     # checkpoint = torch.load(netpathname, map_location="cpu", weights_only=True)
     # net_params_loaded = checkpoint["net_params"]
 

@@ -33,6 +33,7 @@ The full network (`DeepMultiPlasticNet`) has three weight matrices:
 
 ```
 Training → Analysis → Clustering → Lesion / Pruning
+Pretraining → Post-training Transfer
 ```
 
 ### 1. Training
@@ -122,6 +123,38 @@ python state_space_shift.py
 
 Analyzes how the network's hidden-state geometry shifts across tasks using PCA and subspace angles.
 
+### 6. Pretraining Transfer Experiment
+
+```bash
+python pretraining.py
+```
+
+Tests whether Hebbian plasticity alone can support learning a new task when input weights are frozen.
+
+#### Protocol
+
+1. **Stage 1 (Pretraining)**: Train a `DeepMultiPlasticNet` (200 hidden units) on a pair of tasks (e.g. `fdanti` + `delaygo`) until convergence (~60k datasets, with early stopping).
+2. **Stage 2 (Post-training)**: Freeze the input layer weights and continue training on a held-out task (e.g. `delayanti`) for 80k datasets. Only recurrent plastic weights (`W`, `M`) and the output layer are free to adapt.
+
+The experiment repeats over 5 random seeds. A sanity-check assertion verifies that input weights remain unchanged between stages.
+
+#### Key parameters
+
+- Ruleset: `fdanti_delaygo` (pretraining) → `delayanti` (post-training)
+- Hidden units: 200
+- Task-indicator inputs are zero-padded so each stage is aware of the other's task slots
+- L2 regularization: 1e-4
+
+#### Outputs (saved to `pretraining/`)
+
+| File pattern | Contents |
+|---|---|
+| `savednet_{ruleset}_{net}_{seed}_{addon}.pt` | Network checkpoint (both stages) |
+| `param_{ruleset}_{seed}_{addon}_param.json` | Hyperparameters |
+| `param_{ruleset}_{net}_{seed}_{addon}_result.npz` | Hidden states, modulation, activations |
+| `output_{ruleset}_{net}_{seed}_{addon}_stage{1,2}.npz` | Validation outputs per stage |
+| `loss_*.png`, `lowD_*.png`, `input_prepost_*.png` | Diagnostic figures |
+
 ---
 
 ## Key Files
@@ -138,6 +171,7 @@ Analyzes how the network's hidden-state geometry shifts across tasks using PCA a
 | `leison.py` | Lesion and pruning experiments |
 | `leison_plot.py` | Plotting utilities for lesion results |
 | `state_space_shift.py` | State space / PCA analysis |
+| `pretraining.py` | Pretraining → post-training transfer experiment |
 | `helper.py` | Shared utilities |
 | `color_func.py` | Color palettes for plotting |
 
@@ -150,6 +184,7 @@ Analyzes how the network's hidden-state geometry shifts across tasks using PCA a
 | `multiple_tasks/` | Checkpoints, training curves, cluster info |
 | `multiple_tasks_perf/` | Lesion/pruning heatmaps and result pickles |
 | `state_space/` | State space figures |
+| `pretraining/` | Pretraining transfer experiment outputs |
 
 ---
 

@@ -1948,6 +1948,7 @@ def main(seed, feature):
             # Per-G breakdown of how many modulations survive each mask
             # (mask 1: unresponsive mod cluster; mask 2: endpoint in unresponsive input/hidden)
             mask_breakdown_lst = []
+            prepost_belonging_results = []
             global_assignment_cache = None
             FIXED_K_OM = 20
             global_assignment_fixed_k_cache = None
@@ -2097,7 +2098,7 @@ def main(seed, feature):
                 if clustering_normalize:
                     _exclusion_modes = ["mod_only"]
                 else:
-                    _exclusion_modes = ["mod_only", "mod_and_endpoint"]
+                    _exclusion_modes = ["mod_only"]
 
                 for _excl_mode in _exclusion_modes:
                     print(f"  --- Exclusion mode: {_excl_mode} ---")
@@ -2200,13 +2201,11 @@ def main(seed, feature):
                     # Membership using the actual clustering information
                     same_pre_all, same_post_all, no_same_pre_post_all, same_pre_cluster_all, same_post_cluster_all, \
                         same_pre_post_cluster_all, no_same_pre_post_cluster_all = clustering_metric.count_pairs_with_clusters(
-                            _col_all_active, M, cluster_input, cluster_hidden,
-                            flat_idx=_flat_idx_active)
+                            _col_all_active, M, cluster_input, cluster_hidden, flat_idx=_flat_idx_active)
                     # (control) membership using random shuffled clustering information
                     same_pre_all_c, same_post_all_c, no_same_pre_post_all_c, same_pre_cluster_all_c, same_post_cluster_all_c, \
                         same_pre_post_cluster_all_c, no_same_pre_post_cluster_all_c = clustering_metric.count_pairs_with_clusters_control(
-                            _col_all_active, M, cluster_input, cluster_hidden,
-                            repeat=10000, flat_idx=_flat_idx_active)
+                            _col_all_active, M, cluster_input, cluster_hidden, repeat=10000, flat_idx=_flat_idx_active)
 
                     print(f"    same_pre_all: {same_pre_all}; same_post_all: {same_post_all}; no_same_pre_post_all: {no_same_pre_post_all}")
                     print(f"    same_pre_cluster_all: {same_pre_cluster_all}; same_post_cluster_all: {same_post_cluster_all}")
@@ -2250,8 +2249,105 @@ def main(seed, feature):
                         axsppshare[idx,G_idx].set_title(title)
                         axsppshare[idx,G_idx].legend(fontsize=7)
 
-                # 2025-10-21: next analyze for each individual modulation cluster, 
-                # the belonging to different individual 
+                    if _excl_mode == "mod_only":
+                        prepost_belonging_results.append({
+                            "G": G,
+                            "N_cluster": int(N_cluster),
+                            "n_pre_clusters": n_pre_clusters,
+                            "n_post_clusters": n_post_clusters,
+                            "bar_all_lst": [np.array(b) for b in bar_all_lst],
+                            "bar_all_ctrl_lst": [np.array(b) for b in bar_all_ctrl_lst],
+                            "bar_name_lst": bar_name_lst,
+                        })
+
+                # ── Fixed-k prepost_belonging (k=FIXED_K_OM for input, hidden, modulation) ──
+                from scipy.cluster.hierarchy import fcluster as _fcluster_ppb
+
+                def _fk_col_clusters_ppb(ci_entry, fk):
+                    """Cut dendrogram at fk, return {1-based label: neuron_indices}."""
+                    res = ci_entry["result"]
+                    lnk = res["col_linkage"]
+                    tol_k = res["col_tol_k"]
+                    tol_labels = res["col_tol_labels"]
+                    unres_mask = tol_labels == (tol_k + 1)
+                    active_labels = _fcluster_ppb(lnk, fk, criterion="maxclust")
+                    full = np.zeros(len(tol_labels), dtype=int)
+                    full[~unres_mask] = active_labels
+                    if unres_mask.any():
+                        full[unres_mask] = fk + 1
+                    return {int(lab): np.where(full == lab)[0] for lab in np.unique(full) if lab > 0}
+
+                _ppb_input_key = "input_normalized" if clustering_normalize else "input_unnormalized"
+                _ppb_hidden_key = "hidden_normalized" if clustering_normalize else "hidden_unnormalized"
+                _ppb_fk_input = _fk_col_clusters_ppb(cluster_info_save[_ppb_input_key], FIXED_K_OM)
+                _ppb_fk_hidden = _fk_col_clusters_ppb(cluster_info_save[_ppb_hidden_key], FIXED_K_OM)
+                _ppb_fk_input = dict(sorted(_ppb_fk_input.items()))
+                _ppb_fk_hidden = dict(sorted(_ppb_fk_hidden.items()))
+
+                # Fixed-k modulation cluster labels
+                if "col_labels_by_k" in result_all and FIXED_K_OM in result_all["col_labels_by_k"]:
+                    _ppb_fk_mod_labels = result_all["col_labels_by_k"][FIXED_K_OM]
+                elif "col_labels_by_k" in result_all and result_all["col_labels_by_k"]:
+                    _ppb_fk_avail = sorted(result_all["col_labels_by_k"].keys())
+                    _ppb_fk_mod_labels = result_all["col_labels_by_k"][_ppb_fk_avail[0]]
+                    print(f"    [fixed-k ppb] mod k={FIXED_K_OM} not available, using k={_ppb_fk_avail[0]}")
+                else:
+                    _ppb_fk_mod_labels = None
+
+                if _ppb_fk_mod_labels is not None:
+                    # Exclude unresponsive modulation cluster (mod_only mode)
+                    _ppb_unres_label = result_all["col_k"] + 1
+                    _ppb_active_mask = col_all != _ppb_unres_label
+                    _ppb_fk_col_active = _ppb_fk_mod_labels[_ppb_active_mask]
+                    _ppb_fk_flat_idx = np.where(_ppb_active_mask)[0]
+
+                    _ppb_fk_same_pre, _ppb_fk_same_post, _ppb_fk_no_same, \
+                        _ppb_fk_same_preC, _ppb_fk_same_postC, \
+                        _ppb_fk_same_bothC, _ppb_fk_no_bothC = \
+                        clustering_metric.count_pairs_with_clusters(
+                            _ppb_fk_col_active, M, _ppb_fk_input, _ppb_fk_hidden,
+                            flat_idx=_ppb_fk_flat_idx)
+
+                    _ppb_fk_same_pre_c, _ppb_fk_same_post_c, _ppb_fk_no_same_c, \
+                        _ppb_fk_same_preC_c, _ppb_fk_same_postC_c, \
+                        _ppb_fk_same_bothC_c, _ppb_fk_no_bothC_c = \
+                        clustering_metric.count_pairs_with_clusters_control(
+                            _ppb_fk_col_active, M, _ppb_fk_input, _ppb_fk_hidden,
+                            repeat=10000, flat_idx=_ppb_fk_flat_idx)
+
+                    _ppb_fk_bar_all = [
+                        [_ppb_fk_same_pre, _ppb_fk_same_post, _ppb_fk_no_same],
+                        [_ppb_fk_same_preC, _ppb_fk_same_postC,
+                         _ppb_fk_same_bothC, _ppb_fk_no_bothC],
+                    ]
+                    _ppb_fk_bar_ctrl = [
+                        [_ppb_fk_same_pre_c, _ppb_fk_same_post_c, _ppb_fk_no_same_c],
+                        [_ppb_fk_same_preC_c, _ppb_fk_same_postC_c,
+                         _ppb_fk_same_bothC_c, _ppb_fk_no_bothC_c],
+                    ]
+                    _ppb_fk_bar_names = [
+                        ["Share-Pre", "Share-Post", "Neither"],
+                        ["Share-Pre-Cluster", "Share-Post-Cluster",
+                         "Share-Both-Cluster", "Neither"],
+                    ]
+
+                    _ppb_fk_N_cluster = int(np.max(_ppb_fk_col_active))
+                    prepost_belonging_results.append({
+                        "G": G,
+                        "fixed_k": FIXED_K_OM,
+                        "N_cluster": _ppb_fk_N_cluster,
+                        "n_pre_clusters": len(_ppb_fk_input),
+                        "n_post_clusters": len(_ppb_fk_hidden),
+                        "bar_all_lst": [np.array(b) for b in _ppb_fk_bar_all],
+                        "bar_all_ctrl_lst": [np.array(b) for b in _ppb_fk_bar_ctrl],
+                        "bar_name_lst": _ppb_fk_bar_names,
+                    })
+
+                    print(f"    [fixed-k ppb] G={G}, mod_clusters={_ppb_fk_N_cluster}, "
+                          f"input_clusters={len(_ppb_fk_input)}, hidden_clusters={len(_ppb_fk_hidden)}")
+
+                # 2025-10-21: next analyze for each individual modulation cluster,
+                # the belonging to different individual
                 # pre and post cluster; only test in the minimal modulation cluster selection case
                 # 2025-11-17: revise to plot for G=300 case
                 if G_idx == 1:
@@ -2727,6 +2823,54 @@ def main(seed, feature):
             figppshare.tight_layout()
             figppshare.savefig(f"{save_dir}/{clustering_name}_prepost_belonging_{savefigure_name}.png", dpi=300)
             plt.close(figppshare)
+
+            with open(f"{save_dir}/{clustering_name}_prepost_belonging_{savefigure_name}.pkl", "wb") as f:
+                pickle.dump({
+                    "prepost_belonging_results": prepost_belonging_results,
+                    "G_lst": G_lst,
+                    "clustering_name": clustering_name,
+                    "clustering_normalize": clustering_normalize,
+                    "n_input_clusters": len(cluster_input),
+                    "n_hidden_clusters": len(cluster_hidden),
+                    "FIXED_K": FIXED_K_OM,
+                }, f)
+
+            # Fixed-k prepost_belonging figure
+            _fk_entries = [r for r in prepost_belonging_results if "fixed_k" in r]
+            if _fk_entries:
+                figppfk, axsppfk = plt.subplots(2, len(_fk_entries), figsize=(4 * len(_fk_entries), 4 * 2))
+                if len(_fk_entries) == 1:
+                    axsppfk = axsppfk[:, np.newaxis]
+                ppfk_row_names = ["Same Neuron Check", "Same Neuron Cluster Check"]
+                for gi, entry in enumerate(_fk_entries):
+                    for idx in range(len(entry["bar_all_lst"])):
+                        bar_all = np.array(entry["bar_all_lst"][idx])
+                        bar_all_c = np.array(entry["bar_all_ctrl_lst"][idx])
+                        over_membership = (bar_all - bar_all_c) / bar_all_c
+                        axsppfk[idx, gi].bar(range(len(over_membership)), over_membership, alpha=0.7)
+                        axsppfk[idx, gi].set_xticks(range(len(over_membership)))
+                        axsppfk[idx, gi].set_xticklabels(entry["bar_name_lst"][idx], rotation=45, ha="right")
+                        axsppfk[idx, gi].set_ylabel("Over-membership", fontsize=12)
+                        if idx == 0:
+                            title = (f"{ppfk_row_names[idx]} | G={entry['G']}; "
+                                     f"#ModCluster={entry['N_cluster']} (fixed k={entry['fixed_k']})")
+                        else:
+                            title = (f"{ppfk_row_names[idx]} | G={entry['G']}; "
+                                     f"#ModCluster={entry['N_cluster']} (fixed k={entry['fixed_k']})\n"
+                                     f"#PreCluster={entry['n_pre_clusters']}; "
+                                     f"#PostCluster={entry['n_post_clusters']}")
+                        axsppfk[idx, gi].set_title(title, fontsize=9)
+                figppfk.suptitle(
+                    f"Fixed-k={FIXED_K_OM} prepost belonging "
+                    f"({'normalized' if clustering_normalize else 'unnormalized'})",
+                    fontsize=12,
+                )
+                figppfk.tight_layout()
+                figppfk.savefig(
+                    f"{save_dir}/{clustering_name}_prepost_belonging_fixedk{FIXED_K_OM}_{savefigure_name}.png",
+                    dpi=300,
+                )
+                plt.close(figppfk)
 
             # Modulation masking breakdown: 5 stacked categories per bar.
             # 1) Kept (active), 2) Drop: unresponsive mod cluster,
