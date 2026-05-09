@@ -1,3 +1,26 @@
+"""
+Post-processing and visualization of lesion experiment results.
+
+Reads the raw lesion pickle produced by leison.py and computes normalized
+effects (random_accuracy - cluster_accuracy) to identify which neuron or
+synapse clusters are selectively important for specific tasks. Produces:
+
+1. Normalized lesion heatmaps — (cluster × task) matrices showing how much
+   each cluster lesion impairs each task beyond the random-lesion baseline.
+2. Combined heatmaps — side-by-side zero_W vs freeze_M modulation lesions
+   with shared color scale, revealing whether a synapse cluster's contribution
+   comes from static connectivity or dynamic plasticity.
+3. Violin plots — distribution of normalized effect across tasks for each
+   cluster, highlighting clusters with broad vs. task-specific roles.
+4. Cluster similarity vs lesion effect — correlates cluster tuning similarity
+   (from activity profiles) with functional lesion similarity (from accuracy
+   patterns) to test whether similarly-tuned clusters have similar causal roles.
+5. Overmembership vs lesion difference — relates modulation cluster enrichment
+   in (input, hidden) neuron pairs to the functional similarity between
+   modulation lesion and combined neuron lesion effects.
+
+Outputs saved to ./multiple_tasks_norm/{aname}/.
+"""
 import os
 from pathlib import Path
 import numpy as np

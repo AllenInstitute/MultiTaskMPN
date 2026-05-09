@@ -1,3 +1,30 @@
+"""
+Lesion and pruning experiments for a trained multi-task MPN.
+
+Given a trained DeepMultiPlasticNet and its neuron/synapse cluster assignments
+(from multiple_task_analysis.py), this script systematically ablates groups of
+neurons or synapses and measures the resulting per-task accuracy change. The
+goal is to identify which clusters are functionally necessary for which tasks,
+revealing the network's modular organization.
+
+Experiments:
+1. Single-cluster lesion (input & hidden) — zero all connections to/from one
+   neuron cluster at a time and measure per-task accuracy. A size-matched
+   random lesion serves as control; normalized effect = random - cluster.
+2. Combined lesion (input × hidden) — simultaneously lesion one input cluster
+   and one hidden cluster for all (i, j) combinations to test interactions.
+3. Modulation lesion — for each synapse cluster in M, either zero the static
+   weight W at those synapses (remove connectivity) or freeze M at those
+   synapses (remove plasticity), to dissect the contributions of static vs.
+   plastic pathways.
+4. Magnitude pruning — zero the lowest-magnitude fraction of W at increasing
+   sparsity levels (0–99.9%) to assess weight redundancy.
+
+Outputs:
+  - Heatmaps of per-task accuracy under each lesion condition
+  - lesion_prune_results_{aname}.pkl — full results dict for downstream
+    analysis in leison_plot.py
+"""
 from pathlib import Path
 import json
 import os

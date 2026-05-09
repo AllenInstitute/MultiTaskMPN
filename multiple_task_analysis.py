@@ -1,3 +1,27 @@
+"""
+Post-training analysis of a multi-task MPN.
+
+Loads a trained DeepMultiPlasticNet checkpoint and its recorded hidden states,
+modulation matrices (M), and input activations, then characterizes how the
+network organizes task-specific computation:
+
+1. Weight structure visualization — heatmaps of W_initial_linear, W (recurrent),
+   and W_output to inspect static connectivity.
+2. Task-conditioned activity — averages hidden-layer and modulation responses
+   per task to build neuron × task tuning profiles.
+3. Hierarchical clustering — clusters input neurons (by their tuning across
+   tasks) and hidden neurons (likewise), with automatic k selection via
+   silhouette score. Also clusters modulation synapses (columns of M) by their
+   task-tuning patterns.
+4. Low-dimensional trajectory plots — PCA projections of hidden-state
+   trajectories colored by task/stimulus/response.
+
+Outputs:
+  - Figures saved to ./multiple_tasks/{aname}/
+  - cluster_info_{aname}.pkl — neuron cluster assignments for downstream
+    lesion experiments
+  - cluster_info_mod_{aname}.pkl — modulation synapse cluster assignments
+"""
 # %%
 import os
 import numpy as np

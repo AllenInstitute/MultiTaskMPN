@@ -1,6 +1,31 @@
-from pathlib import Path 
-import json 
-import numpy as np 
+"""
+State space geometry analysis across tasks.
+
+Examines how the network's internal representations (hidden states, modulation
+matrices, effective modulation) are geometrically organized across tasks in
+high-dimensional space. Inspired by Fig 4C of Yang et al. (2024, Nature
+Neuroscience), this script tests whether tasks that start from nearby initial
+conditions also produce similar dynamical trajectories.
+
+Analyses:
+1. Context-end PCA — projects hidden/modulation states at the end of the
+   fixation period (just before stimulus onset) into 2D via PCA, colored by
+   task and by computational category (pro/anti, delayed/reaction, etc.).
+2. Initial condition distance vs. trajectory angle — for each pair of tasks
+   sharing the same stimulus, computes the Euclidean distance between their
+   pre-stimulus states (initial conditions) and the angle between their
+   first-step displacement vectors after stimulus onset. A positive correlation
+   indicates that the network separates tasks via distinct initial conditions
+   that lead to diverging trajectories.
+
+These analyses are run on three representations: hidden states, raw modulation
+M, and effective modulation (W ⊙ M).
+
+Outputs saved to ./state_space/.
+"""
+from pathlib import Path
+import json
+import numpy as np
 import seaborn as sns 
 import pickle
 import copy 

@@ -129,20 +129,23 @@ Analyzes how the network's hidden-state geometry shifts across tasks using PCA a
 python pretraining.py
 ```
 
-Tests whether Hebbian plasticity alone can support learning a new task when input weights are frozen.
+Tests whether within-trial Hebbian plasticity can support learning a new task when all gradient-trained parameters are frozen except the task-indicator input column.
 
 #### Protocol
 
-1. **Stage 1 (Pretraining)**: Train a `DeepMultiPlasticNet` (200 hidden units) on a pair of tasks (e.g. `fdanti` + `delaygo`) until convergence (~60k datasets, with early stopping).
-2. **Stage 2 (Post-training)**: Freeze the input layer weights and continue training on a held-out task (e.g. `delayanti`) for 80k datasets. Only recurrent plastic weights (`W`, `M`) and the output layer are free to adapt.
+1. **Stage 1 (Pretraining)**: Train a `DeepMultiPlasticNet` (200 hidden units) on a pair of tasks (e.g. `fdgo` + `delaygo`) until convergence (~60k datasets, with early stopping). All parameters are trainable. The input layer `W_initial_linear` is created with one extra column (zero-padded) to reserve space for the post-training task indicator.
+2. **Stage 2 (Post-training)**: Freeze all parameters via `expand_and_freeze(option=1)`. Only the last column of `W_initial_linear` — the task-indicator-to-hidden weights for the new task — is trainable (via a gradient hook that masks all other columns). Train on a held-out task (e.g. `delayanti`) for 80k datasets. The plasticity matrix **M** still evolves within-trial via the Hebbian rule (eta, lam), but eta, lam, the static recurrent weight W, and the output layer W_output are all frozen.
 
-The experiment repeats over 5 random seeds. A sanity-check assertion verifies that input weights remain unchanged between stages.
+The input is 9-dimensional: 6 stimulus/fixation channels + 3 task indicator channels (2 for pre-training tasks, 1 for post-training task). Each stage zero-pads the other stage's task indicator slots.
+
+The experiment repeats over 5 random seeds. A sanity-check assertion verifies that all input weights except the last column remain unchanged between stages.
 
 #### Key parameters
 
-- Ruleset: `fdanti_delaygo` (pretraining) → `delayanti` (post-training)
+- Ruleset: `fdgo_delaygo` (pretraining) → `delayanti` (post-training)
 - Hidden units: 200
-- Task-indicator inputs are zero-padded so each stage is aware of the other's task slots
+- Input layout: `[fix1, fix2, r1cos, r1sin, r2cos, r2sin, task1, task2, task3]` — task slots are zero-padded per stage
+- Stage 2 trainable parameters: last column of `W_initial_linear` only (200 weights)
 - L2 regularization: 1e-4
 
 #### Outputs (saved to `pretraining/`)
