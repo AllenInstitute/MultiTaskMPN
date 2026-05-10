@@ -36,6 +36,7 @@ onetask_data/
 twotasks/
 twotasks_data/
 pretraining/
+pretraining_analysis/
 state_space/
 mnist/
 flextask/
