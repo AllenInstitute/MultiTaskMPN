@@ -123,7 +123,7 @@ for _ in range(5):
 
     hyp_dict['task_type'] = 'multitask'
     hyp_dict['mode_for_all'] = "random_batch"
-    hyp_dict['ruleset'] = 'fdanti_delaygo'
+    hyp_dict['ruleset'] = 'fdgo_delaygo'
 
     accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti', 
                     'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 'dmsnogo', 'dmcnogo')

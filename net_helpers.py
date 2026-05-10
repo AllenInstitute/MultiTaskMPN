@@ -364,6 +364,11 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
     total_dataset = train_params['n_datasets']
     dataset_idx_early_stop = None
 
+    # Running weighted sum for adaptive task sampling (replaces full-history vstack).
+    # Recurrence: S_new = df * (S_prev + g_new), matching the original formula
+    #   all_adjust = sum_i g_i * df^(N+1-i) exactly.
+    S_running = None  # shape (n_tasks,), initialized on first dataset
+
     for dataset_idx in range(total_dataset):
         # generate training data
         train_data, train_trails = generate_train_data(device=device, verbose=(dataset_idx % GLOBAL_PRINT_FREQUENCY == 0))
@@ -444,41 +449,27 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
                         dataset_idx_early_stop = dataset_idx
                         break
                 
-            # calculate the change of task sampling proportion 
-            # aim for multi-task training (but clearly work for single-task)
-            # --- inputs ---------------------------------------------------------------
-            df   = task_params["adjust_task_decay"]          # scalar decay factor
+            # Adaptive task sampling proportion update.
+            # Original formula: all_adjust = sum_i g_i * df^(N+1-i)
+            # Equivalent recurrence (O(1) per step, same result):
+            #   S_new = df * (S_prev + g_new)
+            # This avoids rebuilding the full history every dataset (was O(n^2) total).
+            df = task_params["adjust_task_decay"]
 
-            # 2025-07-19: for pretraining
-            max_len = max(len(a) for a in goodness_history)
-            goodness_history = [
-                np.pad(a.astype(float),                     # ensure float → can hold NaN
-                       (0, max_len - len(a)),              # (pad_left, pad_right)
-                       constant_values=np.nan)              # fill value
-                for a in goodness_history
-            ]
-            
-            # print(f"goodness_history: {goodness_history}")
-            g = np.vstack(goodness_history)
-                        
-            # sanity-check: every row must have the same length
-            if len({len(row) for row in goodness_history}) != 1:
-                raise ValueError("`last_group_goodness` rows have unequal lengths.")
-
-            if pretraining_shift == 0: 
-                # --- compute weighted sum --------------------------------------------------
-                # exponent sequence: R, R-1, … , 1  (replicates original i_ = len-adji)
-                exp = np.arange(g.shape[0], 0, -1)[:, None]      # shape (R,1) for broadcasting
-                weights = df ** exp                              # shape (R,1)
-                all_adjust = (g * weights).sum(axis=0)           # shape (C,)
-    
-                # update the sampling probability
-                assert len(all_adjust) == len(task_params["rules"]) 
-                task_params['rules_probs'] = mpn_tasks.normalize_to_one(all_adjust)
-            else: # by default only one task, so probability trivally to 1
+            if pretraining_shift == 0:
+                last_goodness = np.asarray(goodness_history[-1], dtype=float)
+                if S_running is None:
+                    S_running = df * last_goodness
+                else:
+                    S_running = df * (S_running + last_goodness)
+                assert len(S_running) == len(task_params["rules"])
+                task_params['rules_probs'] = mpn_tasks.normalize_to_one(S_running)
+            else:
+                # Single post-training task: probability is trivially 1.
                 task_params['rules_probs'] = np.array([1])
 
-            if test_input is not None and (helper.is_power_of_n_or_zero(dataset_idx, 8) or dataset_idx == train_params['n_datasets'] - 1):
+            if test_input is not None and (helper.is_power_of_n_or_zero(dataset_idx, 8) 
+                                           or dataset_idx == train_params['n_datasets'] - 1):
                 loss_lst.append(monitor_loss)
                 acc_lst.append(monitor_acc)
     
@@ -1018,7 +1009,17 @@ class BaseNetwork(BaseNetworkFunctions):
         self.hist = None
 
         self.monitor_freq = net_params.get('monitor_freq', 1000)
-        self.monitor_valid_out = net_params.get('monitor_valid_out', 10)   
+        # How often to store full validation output arrays:
+        #   False/0  → never store
+        #   True     → store every 500 monitor calls (default)
+        #   int > 0  → store every N monitor calls
+        _mvo = net_params.get('monitor_valid_out', 500)
+        if _mvo is True:
+            self.monitor_valid_out_interval = 500
+        elif _mvo is False or _mvo == 0:
+            self.monitor_valid_out_interval = 0
+        else:
+            self.monitor_valid_out_interval = int(_mvo)
 
     def fit(self, train_params, train_data, train_trails, valid_batch=None, valid_trails=None,new_thresh=True, run_mode='minimal', datanum=None):
         """
@@ -1786,13 +1787,22 @@ class BaseNetwork(BaseNetworkFunctions):
         
             valid_output, valid_hidden, _ = self.iterate_sequence_batch(valid_inputs_batch)
 
-            if self.monitor_valid_out: # Saves validation output if needed
+            # Store full validation output only at sparse intervals to avoid
+            # unbounded memory growth (each array can be ~MB scale).
+            _n_stored = len(self.hist['valid_output'])
+            _should_store = (
+                self.monitor_valid_out_interval > 0
+                and (_n_stored == 0 or _n_stored % self.monitor_valid_out_interval == 0)
+            )
+            if _should_store:
                 self.hist['valid_output'].append(valid_output.cpu().numpy())
             else:
                 self.hist['valid_output'].append(None)
         
             if self.train_type in ('supervised',): # For supervised, gets valid loss and accuracies
-                valid_loss, valid_loss_components, _ = self.compute_loss(valid_output, valid_labels_batch, valid_masks_batch, 
+                valid_loss, valid_loss_components, _ = self.compute_loss(valid_output, 
+                                                                         valid_labels_batch, 
+                                                                         valid_masks_batch, 
                                                                          hidden=valid_hidden)  
             
                 self.hist['valid_loss'].append(valid_loss.item())

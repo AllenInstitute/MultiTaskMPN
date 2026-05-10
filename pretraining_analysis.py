@@ -20,14 +20,23 @@ import copy
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 from sklearn.decomposition import PCA
-
-import scienceplots
-plt.style.use('science')
-plt.style.use(['no-latex'])
 
 c_vals = ['#e53e3e', '#3182ce', '#38a169', '#805ad5', '#dd6b20',
           '#319795', '#718096', '#d53f8c', '#d69e2e'] * 10
+
+mpl.rcParams.update({
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],  
+    "font.size": 8,
+    "axes.labelsize": 8,
+    "axes.titlesize": 8,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+    "pdf.fonttype": 42,  
+    "ps.fonttype": 42,
+})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -38,9 +47,14 @@ outpath = "./pretraining_analysis"
 os.makedirs(outpath, exist_ok=True)
 
 # Pretraining ruleset key (must match rules_dict in pretraining.py)
-ruleset = "fdanti_delaygo"
-# Individual task names within the pretraining ruleset
-stage1_tasks = ["fdanti", "delaygo"]
+# ruleset = "fdanti_delaygo"
+ruleset = "fdgo_delaygo"
+if ruleset == "fdanti_delaygo":
+    # Individual task names within the pretraining ruleset
+    stage1_tasks = ["fdanti", "delaygo"]
+else:
+    stage1_tasks = ["fdgo", "delaygo"]
+
 # Post-training task
 final_task = "delayanti"
 
@@ -49,7 +63,8 @@ N = 200
 
 # Naming components that form addon_name in pretraining.py:
 #   addon_name = f"+hidden{N}+L21e4+batch{batch}+{metric}"
-addon_name = f"+hidden{N}+L21e4+batch128+stimulus"
+metric = "angle"
+addon_name = f"+hidden{N}+L21e4+batch128+{metric}"
 
 # Comparison: which pretraining task period to compare against post-training
 # stage1_tasks[0] → stimulus period; stage1_tasks[1] → go/response period
@@ -61,7 +76,6 @@ final_compare_period = {
     "stim": "stim1",
     "go": "go1",
 }
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Path construction (matches pretraining.py naming convention)
@@ -94,6 +108,11 @@ def discover_seeds():
 # Analysis utilities
 # ─────────────────────────────────────────────────────────────────────────────
 def _participation_ratio(cov_mat):
+    """
+    Effective dimensionality: (sum λ)² / sum λ².
+    Returns 1 for a rank-1 matrix and d for isotropic d-dimensional variance.
+    Higher PR → representations spread across more dimensions.
+    """
     eigvals = np.linalg.eigvalsh(cov_mat)
     eigvals = np.clip(eigvals, 0, None)
     s1 = np.sum(eigvals)
@@ -104,7 +123,12 @@ def _participation_ratio(cov_mat):
 
 
 def period_slice(op, epochs, task_name, key, *, shift_percentage=0, mask=None):
-    """Return op restricted to [start+shift:end] along time axis."""
+    """
+    Extract one task epoch from op (batch × time × features).
+    shift_percentage skips the leading fraction of the epoch (e.g. 0.25
+    discards the transient onset and focuses on the steady-state window).
+    mask selects a subset of trials (e.g. trials belonging to one task).
+    """
     start, end = epochs[task_name][key]
     shift = int((end - start) * shift_percentage)
     if mask is not None:
@@ -114,22 +138,61 @@ def period_slice(op, epochs, task_name, key, *, shift_percentage=0, mask=None):
 
 def pca_cross_variance(X, Y, n_components=None, center_on="X", datatype="hidden"):
     """
-    PCA on X features; project Y into X's PC basis.
+    Cross-validated PCA geometry analysis.
 
-    Returns dict with:
-        evr_X, cev_X, evr_Y, cev_Y, PR_X, PR_Y, PR_Y_in_Xbasis
+    Fits PCA on X (= post-training task, the "reference" subspace), then
+    projects Y (= pre-training task) into that basis.  The cumulative variance
+    explained (CVE) of Y in X's PCs measures how much the pre-training task
+    recycles the same representational geometry as the post-training task.
+
+    Interpretation of outputs
+    ─────────────────────────
+    cev_X  : CVE of X in its own PCs — should saturate to 1.0, confirming the
+             basis spans X's full variance (reference curve).
+    cev_Y  : CVE of Y projected into X's PCs.
+             High → pre-training representations largely overlap with post-training.
+             Low  → pre-training uses a distinct, orthogonal subspace.
+    PR_X / PR_Y : participation ratio (effective dimensionality) of each
+             representation in its native space.
+    PR_Y_in_Xbasis : effective dimensionality of Y after projection into X's
+             basis; lower than PR_Y means the shared subspace is more
+             concentrated than Y's full representation.
+
+    Observed pattern (fdgo_delaygo → delayanti)
+    ────────────────────────────────────────────
+    • Stimulus period: cev_Y is low (~0.5–0.7) — stimulus encoding is
+      task-specific; pre-training tasks use a different stimulus subspace.
+    • Response/go period: cev_Y is high (~0.9–1.0) — response-period dynamics
+      are shared; the post-training task reuses the same go-period subspace.
+    • Modulation (pre/post): mirrors the hidden-state pattern, confirming that
+      the reused geometry extends to the synaptic plasticity structure.
+    • Full modulation (n_hidden² dims): too high-dimensional to interpret via
+      CVE or PR; serves only as a sanity check that variance is captured.
+
+    datatype controls reshaping before PCA
+    ───────────────────────────────────────
+    "hidden"         — (batch×time, n_hidden): neuron activations
+    "modulation"     — (batch×time, n_hidden²): full M matrix flattened;
+                       PR skipped (uninformative at this dimensionality)
+    "modulation_pre" — each row of M as a pre-synaptic weight vector;
+                       shape (batch×time×n_hidden, n_hidden)
+    "modulation_post"— each column of M as a post-synaptic weight vector;
+                       shape (batch×time×n_hidden, n_hidden)
     """
-    # Reshape to 2D
     if datatype == "hidden":
         X2d = X.reshape(-1, X.shape[-1])
         Y2d = Y.reshape(-1, Y.shape[-1])
     elif datatype == "modulation":
+        # Full M flattened: n_hidden² features — very high-dimensional.
         X2d = X.reshape(-1, X.shape[-1] * X.shape[-2])
         Y2d = Y.reshape(-1, Y.shape[-1] * Y.shape[-2])
     elif datatype == "modulation_post":
+        # Each column of M = incoming plasticity weights onto one post-synaptic neuron.
         X2d = X.reshape(-1, X.shape[-1])
         Y2d = Y.reshape(-1, Y.shape[-1])
     elif datatype == "modulation_pre":
+        # Each row of M = outgoing plasticity weights from one pre-synaptic neuron.
+        # Swap last two axes so rows become the sample axis before flattening.
         X2d = np.swapaxes(X, -1, -2).reshape(-1, X.shape[-2])
         Y2d = np.swapaxes(Y, -1, -2).reshape(-1, Y.shape[-2])
     else:
@@ -143,6 +206,8 @@ def pca_cross_variance(X, Y, n_components=None, center_on="X", datatype="hidden"
     evr_X = pca.explained_variance_ratio_
     cev_X = np.cumsum(evr_X)
 
+    # Center Y on X's mean: asks how much of Y's variance falls in X's subspace
+    # when measured from X's origin (center_on="X" is the standard choice).
     if center_on == "X":
         Y_centered = Y2d - pca.mean_
     elif center_on == "Y":
@@ -150,12 +215,13 @@ def pca_cross_variance(X, Y, n_components=None, center_on="X", datatype="hidden"
     else:
         raise ValueError('center_on must be "X" or "Y"')
 
-    Y_proj = Y_centered @ pca.components_.T
+    Y_proj = Y_centered @ pca.components_.T  # project Y into X's PC basis
 
     var_total_Y = np.var(Y_centered, axis=0, ddof=0).sum()
     if var_total_Y == 0:
         evr_Y = np.zeros(pca.components_.shape[0])
     else:
+        # Fraction of Y's total variance captured by each of X's PCs.
         evr_Y = np.var(Y_proj, axis=0, ddof=0) / var_total_Y
     cev_Y = np.cumsum(evr_Y)
 
@@ -168,9 +234,11 @@ def pca_cross_variance(X, Y, n_components=None, center_on="X", datatype="hidden"
         cov_Y = (Y_c.T @ Y_c) / Y_c.shape[0]
         PR_Y = _participation_ratio(cov_Y)
 
+        # PR of Y after projection: how many of X's PCs does Y actually use?
         cov_Yp = (Y_proj.T @ Y_proj) / Y_proj.shape[0]
         PR_Y_in_Xbasis = _participation_ratio(cov_Yp)
     else:
+        # Full modulation is n_hidden²-dimensional; PR is not meaningful.
         PR_X, PR_Y, PR_Y_in_Xbasis = np.nan, np.nan, np.nan
 
     return {
@@ -313,9 +381,14 @@ if __name__ == "__main__":
 
             # Per-seed PCA figure
             n_plots = len(analysis_types)
-            fig, axs = plt.subplots(n_plots, 3, figsize=(15, 4 * n_plots))
+            fig, axs = plt.subplots(n_plots, 3, figsize=(9, 3 * n_plots))
             if n_plots == 1:
                 axs = axs[np.newaxis, :]
+
+            period_to_stage1 = {
+                "stimulus": stage1_tasks[0],
+                "response": stage1_tasks[1],
+            }
 
             for row, dtype in enumerate(analysis_types):
                 if dtype not in seed_result:
@@ -325,10 +398,12 @@ if __name__ == "__main__":
                 for period_idx, period in enumerate(["stimulus", "response"]):
                     res = seed_result[dtype][period]
                     xs = np.arange(1, len(res["cev_X"]) + 1)
+                    # X = post-training task (final_task, e.g. delayanti): PCA fit on this
+                    # Y = one pre-training task (period-specific): projected into X's PC basis
                     axs[row, period_idx].plot(xs, res["cev_X"], '-o', markersize=2,
-                                             color=c_vals[0], label="Post-train (fit)")
+                                             color=c_vals[0], label=f"{final_task} (fit)")
                     axs[row, period_idx].plot(xs, res["cev_Y"], '-o', markersize=2,
-                                             color=c_vals[1], label="Pre-train (proj)")
+                                             color=c_vals[1], label=f"{period_to_stage1[period]} (proj)")
                     axs[row, period_idx].set_xlim(0, x_up)
                     axs[row, period_idx].set_ylim(0, 1.05)
                     axs[row, period_idx].set_xlabel("# PCs")
@@ -372,6 +447,11 @@ if __name__ == "__main__":
         if n_plots == 1:
             axs = axs[np.newaxis, :]
 
+        period_to_stage1 = {
+            "stimulus": stage1_tasks[0],
+            "response": stage1_tasks[1],
+        }
+
         for row, dtype in enumerate(analysis_types):
             x_up = 20 if dtype != "modulation" else N**2 // 2
             for col, period in enumerate(["stimulus", "response"]):
@@ -385,19 +465,23 @@ if __name__ == "__main__":
                     all_cev_Y.append(res["cev_Y"])
 
                     xs = np.arange(1, len(res["cev_X"]) + 1)
+                    # thin lines = individual seeds; X = delayanti (fit), Y = one pre-train task (proj)
                     axs[row, col].plot(xs, res["cev_X"], color=c_vals[0], alpha=0.3)
                     axs[row, col].plot(xs, res["cev_Y"],
                                        color=c_vals[1 + all_seed_results.index(sr)],
                                        alpha=0.6, label=f"seed {sr['seed']}")
 
-                # Mean curves
+                # Mean curves across seeds (thick lines)
                 if all_cev_X:
                     min_len = min(len(c) for c in all_cev_X)
                     mean_X = np.mean([c[:min_len] for c in all_cev_X], axis=0)
                     mean_Y = np.mean([c[:min_len] for c in all_cev_Y], axis=0)
                     xs_mean = np.arange(1, min_len + 1)
-                    axs[row, col].plot(xs_mean, mean_X, color="black", linewidth=2.5)
-                    axs[row, col].plot(xs_mean, mean_Y, color="gray", linewidth=2.5)
+                    # black = delayanti mean (reference), gray = pre-train mean (projected)
+                    axs[row, col].plot(xs_mean, mean_X, color="black", linewidth=2.5,
+                                       label=f"{final_task} mean")
+                    axs[row, col].plot(xs_mean, mean_Y, color="gray", linewidth=2.5,
+                                       label=f"{period_to_stage1[period]} mean")
 
                 axs[row, col].set_xlim(0, x_up)
                 axs[row, col].set_ylim(0, 1.05)
