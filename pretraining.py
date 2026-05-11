@@ -89,11 +89,19 @@ import net_helpers
 import mpn_tasks
 import helper
 import mpn
-import clustering
 
-import scienceplots
-plt.style.use('science')
-plt.style.use(['no-latex'])
+import matplotlib as mpl 
+mpl.rcParams.update({
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],  
+    "font.size": 8,
+    "axes.labelsize": 8,
+    "axes.titlesize": 8,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+    "pdf.fonttype": 42,  
+    "ps.fonttype": 42,
+})
 
 # Memory Optimization
 gc.collect()

@@ -90,6 +90,11 @@ def build_paths(seed):
     }
 
 
+def hist_path(seed):
+    """Full training-history pickle path (see pretraining.py)."""
+    return f"{basepath}/hist_{ruleset}_{chosen_network}_seed{seed}_{addon_name}.pkl"
+
+
 def discover_seeds():
     """Find all available seeds by scanning the pretraining output directory."""
     pattern = re.compile(
@@ -371,6 +376,34 @@ if __name__ == "__main__":
                 "acc_pre": acc_pre,
             }
 
+            # Validation loss from training-history pickle.
+            # stage2 hist contains BOTH stages concatenated (net object is
+            # shared across stages in pretraining.py); split by pretrain_stop
+            # the same way as accuracy.
+            hp = hist_path(seed)
+            if os.path.exists(hp):
+                with open(hp, "rb") as f:
+                    hist = pickle.load(f)
+
+                full_iter = np.asarray(hist["stage2"]["iters_monitor"])[1:]
+                full_out = np.asarray(hist["stage2"]["valid_loss_output_label"])[1:]
+                full_reg = np.asarray(hist["stage2"]["valid_loss_reg_term"])[1:]
+                n = min(len(full_iter), len(full_out), len(full_reg))
+                full_iter, full_out, full_reg = full_iter[:n], full_out[:n], full_reg[:n]
+
+                post_m = full_iter > stop + 1
+                pre_m = full_iter < stop
+                seed_result["loss"] = {
+                    "pre_iter": full_iter[pre_m],
+                    "pre_out_loss": full_out[pre_m],
+                    "pre_reg_loss": full_reg[pre_m],
+                    "post_iter": full_iter[post_m] - stop,
+                    "post_out_loss": full_out[post_m],
+                    "post_reg_loss": full_reg[post_m],
+                }
+            else:
+                print(f"  WARNING: missing training history {hp} — loss plot will skip this seed")
+
             all_seed_results.append(seed_result)
 
             # Save individual seed result
@@ -525,5 +558,33 @@ if __name__ == "__main__":
         figacc.tight_layout()
         figacc.savefig(f"{outpath}/{ruleset}_{chosen_network}_accuracy.png", dpi=300)
         plt.close(figacc)
+
+        # ─── Validation loss summary (output loss only) ────────────────────
+        loss_seeds = [sr for sr in all_seed_results if "loss" in sr]
+        if loss_seeds:
+            figloss, axsloss = plt.subplots(1, 2, figsize=(4 * 2, 4))
+            for sr in loss_seeds:
+                ls = sr["loss"]
+                color = c_vals[1 + loss_seeds.index(sr)]
+                axsloss[0].plot(ls["post_iter"], ls["post_out_loss"],
+                                color=color, alpha=0.7, label=f"seed {sr['seed']}")
+                axsloss[1].plot(ls["pre_iter"], ls["pre_out_loss"],
+                                color=color, alpha=0.7, label=f"seed {sr['seed']}")
+
+            axsloss[0].set_title("Post-training — output loss")
+            axsloss[1].set_title("Pre-training — output loss")
+            axsloss[0].set_xlabel("# Datasets (post-training)")
+            axsloss[1].set_xlabel("# Datasets (pre-training)")
+            for ax in axsloss:
+                ax.set_ylabel("Validation loss")
+                ax.set_yscale("log")
+                ax.legend(fontsize=6)
+
+            figloss.suptitle(f"{ruleset} | {chosen_network} | Validation loss", fontsize=12)
+            figloss.tight_layout()
+            figloss.savefig(f"{outpath}/{ruleset}_{chosen_network}_loss.png", dpi=300)
+            plt.close(figloss)
+        else:
+            print("No training-history pickles found; skipping loss figure.")
 
         print(f"\nDone. Results saved to {outpath}/")
