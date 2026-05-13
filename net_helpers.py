@@ -369,83 +369,104 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
     #   all_adjust = sum_i g_i * df^(N+1-i) exactly.
     S_running = None  # shape (n_tasks,), initialized on first dataset
 
+    def _record_monitor_state(current_dataset_idx):
+        """
+        Snapshot test outputs + weights at the current training step.
+
+        Same body as the in-loop `helper.is_power_of_n_or_zero` block — pulled
+        out so it can also be invoked at early stop, so downstream plotting
+        sees the true end-of-training network rather than the last log-spaced
+        checkpoint (which otherwise can be hundreds of steps stale).
+
+        Runs under torch.no_grad() so that per-layer state (e.g. mp_layer.M)
+        doesn't end up holding autograd-tracked non-leaf tensors. Otherwise a
+        downstream copy.deepcopy(net) would raise "Only Tensors created
+        explicitly by the user (graph leaves) support the deepcopy protocol".
+        After the forward passes, re-run reset_state so the network looks
+        pristine for subsequent training / deepcopy in the caller.
+        """
+        counter_lst.append(current_dataset_idx)
+        with torch.no_grad():
+            for test_input_index, test_input_ in enumerate(test_input):
+                minibatch = 8
+                net_out_np = []
+                db = []
+                for start in range(0, test_input_.shape[0], minibatch):
+                    end = min(start + minibatch, test_input_.shape[0])
+                    test_input_batch = test_input_[start:end]
+                    net_out_batch, _, db_batch = net.iterate_sequence_batch(
+                        test_input_batch, run_mode='track_states')
+                    net_out_np.append(net_out_batch.detach().cpu().numpy())
+                    db.append({k: v.detach().cpu().numpy() for k, v in db_batch.items()})
+                    del net_out_batch, db_batch
+                    gc.collect(); torch.cuda.empty_cache()
+
+                net_out_np = np.concatenate(net_out_np, axis=0)
+                db_all = {}
+                for key in db[0].keys():
+                    db_all[key] = np.concatenate([db_[key] for db_ in db], axis=0)
+
+                netout_lst[test_input_index].append(net_out_np)
+                db_lst[test_input_index].append(db_all)
+
+            # Clear any lingering per-layer state from the monitor forward pass
+            # so the next training iteration / external deepcopy starts fresh.
+            if hasattr(net, "reset_state"):
+                try:
+                    net.reset_state(B=1)
+                except Exception:
+                    pass
+
+        Woutput_lst.append(net.W_output.detach().cpu().numpy())
+
+        if net_params["input_layer_add"] and net_params["net_type"] == "dmpn":
+            Winput_lst.append(net.W_initial_linear.weight.detach().cpu().numpy())
+            if net_params["input_layer_bias"]:
+                Winputbias_lst.append(net.W_initial_linear.bias.detach().cpu().numpy())
+        elif net_params["input_layer_add"] and net_params["net_type"] == "vanilla":
+            Winput_lst.append(net.W_input.detach().cpu().numpy())
+
+        W_all_ = []
+        if params[2]["net_type"] == "dmpn":
+            for i in range(len(net.mp_layers)):
+                W_all_.append(net.mp_layers[i].W.detach().cpu().numpy())
+        Wall_lst.append(W_all_)
+        marker_lst.append(current_dataset_idx)
+
     for dataset_idx in range(total_dataset):
         # generate training data
         train_data, train_trails = generate_train_data(device=device, verbose=(dataset_idx % GLOBAL_PRINT_FREQUENCY == 0))
         new_thresh = True if dataset_idx == 0 else False
 
-        if train: 
+        if train:
             # Jul 19th: test the network's output on the testing dataset at the different stage of the network
             # save and register the network's parameter and output
             if test_input is not None and (helper.is_power_of_n_or_zero(dataset_idx, 32) or dataset_idx == train_params['n_datasets'] - 1):
-                # print(f"How about Test Data at dataset {dataset_idx}")
-                counter_lst.append(dataset_idx)
-                # test data for each stage
-                for test_input_index, test_input_ in enumerate(test_input): 
-                    # 2025-07-16: should we separate and load the input, and stack the output later 
-                    # print(f"test_input_: {test_input_.shape}")
-                    minibatch = 8
-                    net_out_np = [] 
-                    db = [] 
-                    for start in range(0, test_input_.shape[0], minibatch): 
-                        end = min(start + minibatch, test_input_.shape[0])
-                        test_input_batch = test_input_[start:end]
-                        # both are in cuda
-                        net_out_batch, _, db_batch = net.iterate_sequence_batch(test_input_batch, run_mode='track_states')
-                        # register the values
-                        net_out_np.append(net_out_batch.detach().cpu().numpy())
-                        db.append({k: v.detach().cpu().numpy() for k, v in db_batch.items()})
+                _record_monitor_state(dataset_idx)
 
-                        del net_out_batch, db_batch
-                        gc.collect(); torch.cuda.empty_cache()
-
-                    # stack
-                    net_out_np = np.concatenate(net_out_np, axis=0)
-                    
-                    db_all = {}
-                    for key in db[0].keys():
-                        db_key = np.concatenate([db_[key] for db_ in db], axis=0)
-                        db_all[key] = db_key
-                    
-                    netout_lst[test_input_index].append(net_out_np)
-                    db_lst[test_input_index].append(db_all)
-            
-                Woutput_lst.append(net.W_output.detach().cpu().numpy())
-            
-                if net_params["input_layer_add"] and net_params["net_type"] == "dmpn":
-                    Winput_lst.append(net.W_initial_linear.weight.detach().cpu().numpy())
-                
-                    if net_params["input_layer_bias"]:
-                        Winputbias_lst.append(net.W_initial_linear.bias.detach().cpu().numpy())
-                    
-                elif net_params["input_layer_add"] and net_params["net_type"] == "vanilla":
-                    Winput_lst.append(net.W_input.detach().cpu().numpy())
-                    # no input bias is set for vanilla RNN in kyle's original design
-
-                W_all_ = []
-                if params[2]["net_type"] == "dmpn":
-                    for i in range(len(net.mp_layers)):
-                        W_all_.append(net.mp_layers[i].W.detach().cpu().numpy())
-                Wall_lst.append(W_all_)
-                marker_lst.append(dataset_idx)
-
-            _, monitor_loss, monitor_acc, goodness_history, valid_acc_history = net.fit(train_params, train_data, train_trails, 
-                                                                                        valid_batch=valid_data, valid_trails=valid_trails, 
+            _, monitor_loss, monitor_acc, goodness_history, valid_acc_history = net.fit(train_params, train_data, train_trails,
+                                                                                        valid_batch=valid_data, valid_trails=valid_trails,
                                                                                         new_thresh=new_thresh, run_mode=hyp_dict['run_mode'], datanum=dataset_idx)
 
-            if dataset_idx % GLOBAL_PRINT_FREQUENCY == 0: 
+            if dataset_idx % GLOBAL_PRINT_FREQUENCY == 0:
                 # 2025-11-13: we should consider loss temporal convolution with various decay factor
                 # to make sure the network has good performance across different levels
                 # i.e. if decay_factor is 1.00, equally focusing across the temporal window
                 # if decay_factor < 1.00, then allow gradual weight decaying for the past history
                 print(f"valid_acc_history: {valid_acc_history}")
-                
+
                 # if None, then no early stop option
-                # 2025-11-16: have some manual control to let the network has a minimum exposure to the 
-                # training dataset 
-                if train_params["valid_check"] is not None and dataset_idx >= train_params["pretrain_min"]: 
-                    if all(v > 0.97 for v in valid_acc_history): 
+                # 2025-11-16: have some manual control to let the network has a minimum exposure to the
+                # training dataset
+                if train_params["valid_check"] is not None and dataset_idx >= train_params["pretrain_min"]:
+                    if all(v > 0.97 for v in valid_acc_history):
                         print(f"valid_acc_history > 0.97; early stop!")
+                        # Record the post-update network state so downstream
+                        # plotting / PCA sees the actually-converged network
+                        # instead of the last log-spaced checkpoint (e.g. 32)
+                        # before the early-stop iter (e.g. 1000).
+                        if test_input is not None:
+                            _record_monitor_state(dataset_idx)
                         dataset_idx_early_stop = dataset_idx
                         break
                 

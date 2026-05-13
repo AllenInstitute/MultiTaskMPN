@@ -70,9 +70,6 @@ from hdf5plugin import Blosc
 
 # Style for Matplotlib
 import matplotlib.pyplot as plt
-import scienceplots
-plt.style.use('science')
-plt.style.use(['no-latex'])
 
 # Scientific Computing and Machine Learning
 import numpy as np
@@ -161,7 +158,7 @@ for _ in range(5):
     n_hidden = 200
 
     hyp_dict['addon_name'] = ""
-    hyp_dict['addon_name'] += f"+hidden{n_hidden}+L21e4"
+    hyp_dict['addon_name'] += f"+hidden{n_hidden}+L21e3"
 
     # for coding 
     if hyp_dict['chosen_network'] in ("gru", "vanilla"):
@@ -209,7 +206,7 @@ for _ in range(5):
             'n_epochs_per_set': 1,  
             'weight_reg': 'L2',
             'activity_reg': 'L2', 
-            'reg_lambda': 1e-4,
+            'reg_lambda': 1e-3,
             
             'scheduler': {
                 'type': 'ReduceLROnPlateau',  # or 'StepLR'
@@ -537,26 +534,22 @@ for _ in range(5):
     elif hyp_dict_old["chosen_network"] == "vanilla":
         input_after = net.W_input.detach().cpu().clone()                                                                                    
 
-    figin, axsin = plt.subplots(2,1,figsize=(20,5*2))
-    sns.heatmap(input_orig, ax=axsin[0], cmap="coolwarm", center=0)
-    sns.heatmap(input_after, ax=axsin[1], cmap="coolwarm", center=0)
-    # Aug 26th: input_orig and input_after has the same shape now
-    diff = (input_orig[:,:-1] - input_after[:, :-1]).abs()
-    # make sure the freeze (on except the last component) is actually working
+    # Sanity check that stage-2 freezing actually kept every column of the
+    # input layer except the last identical to its pretraining value.
+    # (The visual heatmap comparison was removed so this script only writes
+    # data artifacts; diagnostic plots live in pretraining_analysis.py.)
+    diff = (input_orig[:, :-1] - input_after[:, :-1]).abs()
     assert torch.all(diff < 1e-4)
-    figin.savefig(f"./pretraining/input_prepost_training_{hyp_dict_old['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)
 
     # In[ ]:
 
 
     if hyp_dict['chosen_network'] == "dmpn":
         if net_params["input_layer_add"]:
-            counter_lst = [x * epoch_multiply + 1 for x in counter_lst] # avoid log plot issue    
-            fignorm, axsnorm = plt.subplots(1,1,figsize=(4,4))
-            axsnorm.plot(counter_lst, [np.linalg.norm(Winput_matrix) for Winput_matrix in Winput_lst], "-o")
-            axsnorm.set_xscale("log")
-            axsnorm.set_ylabel("Frobenius Norm")
-            fignorm.savefig(f"./pretraining/input_norm_{hyp_dict_old['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)
+            # Keep the counter_lst transform because downstream code still
+            # expects the log-shifted iterations, even though the norm plot
+            # itself has been dropped.
+            counter_lst = [x * epoch_multiply + 1 for x in counter_lst]
 
 
     # In[ ]:
@@ -573,37 +566,16 @@ for _ in range(5):
     # In[ ]:
 
 
-    if train:
-        fig, ax = plt.subplots(1,1,figsize=(3,3))
-        ax.plot(net.hist['iters_monitor'][1:], net.hist['train_acc'][1:], 
-                color=c_vals[0], label='Full train accuracy')
-        ax.plot(net.hist['iters_monitor'][1:], net.hist['valid_acc'][1:], 
-                color=c_vals[1], label='Full valid accuracy')
-        if net.weight_reg is not None:
-            ax.plot(net.hist['iters_monitor'], net.hist['train_loss_output_label'], 
-                    color=c_vals_l[0], zorder=-1, label='Output label')
-            ax.plot(net.hist['iters_monitor'], net.hist['train_loss_reg_term'], 
-                    color=c_vals_l[0], zorder=-1, label='Reg term', linestyle='dashed')
-            ax.plot(net.hist['iters_monitor'], net.hist['valid_loss_output_label'], 
-                    color=c_vals_l[1], zorder=-1, label='Output valid label')
-            ax.plot(net.hist['iters_monitor'], net.hist['valid_loss_reg_term'], 
-                    color=c_vals_l[1], zorder=-1, label='Reg valid term', linestyle='dashed')
-        
-        ax.legend()
-        ax.set_ylim([0.5, 1.05])
-        # ax.set_yscale('log')
-        ax.set_ylabel('Accuracy')
-        ax.set_xlabel('# Batches')
-        fig.savefig(f"./pretraining/loss_{hyp_dict_old['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=200)
-        
     print('Done!')
 
 
     # In[ ]:
 
 
-    if train:
-        net_helpers.net_eta_lambda_analysis(net, net_params, hyp_dict)
+    # net_eta_lambda_analysis saves diagnostic eta/lambda figures under
+    # ./results/ — suppressed here so this script writes data artifacts only.
+    # The relevant eta/lambda info is accessible post-hoc from the saved
+    # state_dict if needed.
 
     # In[ ]:
 
@@ -636,48 +608,10 @@ for _ in range(5):
     # In[ ]:
 
 
-    def plot_input_output(test_input_np, labels_np, net_out, test_output_np, task_params, test_task=None, tag="", batch_num=5):
-        """
-        """
-        test_input_np = helper.to_ndarray(test_input_np)
-        net_out = helper.to_ndarray(net_out)
-        test_output_np = helper.to_ndarray(test_output_np)
-        
-        fig_all, axs_all = plt.subplots(batch_num,2,figsize=(4*2,batch_num*2))
-        
-        if test_output_np.shape[-1] == 1:
-            for batch_idx, ax in enumerate(axs):
-                ax.plot(net_out[batch_idx, :, 0], color=c_vals[batch_idx])
-                ax.plot(test_output_np[batch_idx, :, 0], color=c_vals_l[batch_idx])
-        
-        else:
-            for batch_idx in range(batch_num):
-                label_info = labels_np[batch_idx]
-                for out_idx in range(test_output_np.shape[-1]):
-                    axs_all[batch_idx,0].plot(net_out[batch_idx, :, out_idx], color=c_vals[out_idx], label=out_idx)
-                    axs_all[batch_idx,0].plot(test_output_np[batch_idx, :, out_idx], color=c_vals_l[out_idx], linewidth=5, alpha=0.3)
-                    if test_task is not None: 
-                        axs_all[batch_idx,0].set_title(f"{task_params['rules'][test_task[batch_idx]]}")
-        
-                input_batch = test_input_np[batch_idx,:,:]
-                if task_params["randomize_inputs"]: 
-                    input_batch = input_batch @ np.linalg.pinv(task_params["randomize_matrix"])
-                for inp_idx in range(input_batch.shape[-1]):
-                    axs_all[batch_idx,1].plot(input_batch[:,inp_idx], color=c_vals[inp_idx], label=inp_idx, alpha=1.0)
-                    if test_task is not None: 
-                        axs_all[batch_idx,1].set_title(f"{task_params['rules'][test_task[batch_idx]]}; label {label_info}")
-
-        for ax in axs_all.flatten(): 
-            ax.set_ylim([-2, 2])
-        fig_all.tight_layout()
-        fig_all.savefig(f"./pretraining/lowD_{hyp_dict_old['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}_{tag}.png", dpi=100)
-
-    # plot the sample input & output for the post-training task
-    plot_input_output(test_input_np, labels_np, net_out_stage1_final, test_output_np, task_params=task_params, test_task=test_task, tag="stage1", \
-                    batch_num=20 if len(rules_dict[hyp_dict['ruleset']]) > 1 else 10)
-
-    plot_input_output(test_input2_np, labels2_np, net_out_final, test_output2_np, task_params=task_params2, test_task=test_task2, tag="stage2", \
-                    batch_num=20 if len(rules_dict[hyp_dict['ruleset']]) > 1 else 10)
+    # Input/output qualitative visualization (`lowD_*_stage{1,2}.png`)
+    # was removed — see pretraining_analysis.py
+    # (`run_final_net_sanity_check`) for the post-hoc equivalent, which
+    # runs the reloaded network on both stages' inputs directly.
 
     # save to the output
     pathname_stage1output = f"./pretraining/output_{hyp_dict_old['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}_stage1.npz"
