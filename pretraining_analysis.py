@@ -17,13 +17,14 @@ import pickle
 import os
 import re
 import copy
-import shutil
+import json
 from pathlib import Path
 
 import torch
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 from sklearn.decomposition import PCA
+from scipy.linalg import subspace_angles
 
 import mpn
 
@@ -48,10 +49,10 @@ mpl.rcParams.update({
 # ─────────────────────────────────────────────────────────────────────────────
 basepath = "./pretraining"
 outpath = "./pretraining_analysis"
-# Wipe stale analysis outputs from previous runs so results can't be
-# confused across code versions — everything below is regenerated.
-if os.path.isdir(outpath):
-    shutil.rmtree(outpath)
+# Existing outputs are preserved across runs; new outputs only overwrite
+# files that share the same name. Aggregate figures embed `addon_name` in
+# their filenames so different model variants (e.g. L2 strength, batch
+# size) coexist in the same folder.
 os.makedirs(outpath, exist_ok=True)
 
 # Pretraining rulesets to run (must match rules_dict in pretraining.py).
@@ -65,7 +66,7 @@ rulesets_to_run = ["fdgo_delaygo", "fdanti_delaygo"]
 # every available seed for the final figures. When an int, seeds are
 # sampled randomly without replacement from all that exist on disk; the
 # random choice is reproducible via `seed_sample_rng_seed` below.
-n_seeds_per_ruleset = 2
+n_seeds_per_ruleset = None
 seed_sample_rng_seed = 0
 
 # Active ruleset / stage-1 tasks are (re)assigned at the top of each
@@ -89,7 +90,7 @@ ruleset_colors = {
 }
 
 chosen_network = "dmpn"
-N = 200
+N = 300
 # PCA component cap for modulation / modulation_weighted analyses.
 # Hidden uses N (the ambient dim). Modulation lives in N² = 40 000 dims, so a
 # larger cap is needed to see whether CVE eventually saturates. sklearn still
@@ -97,10 +98,18 @@ N = 200
 # that limit to stay safe.
 N_MOD_PCS = 1000
 
+# Top-k cap for principal-angle analysis. Subspace angles are computed
+# between the top-K PC bases of the pretraining and novel representations;
+# the returned spectrum has K ascending values. Keep it modest because the
+# cost scales like K³ and most of the interpretive content lies in the
+# first few angles (zero-angle directions = shared axes, π/2 = orthogonal).
+N_ANGLES = 20
+
 # Naming components that form addon_name in pretraining.py:
 #   addon_name = f"+hidden{N}+L21e4+batch{batch}+{metric}"
 metric = "angle"
-addon_name = f"+hidden{N}+L21e4+batch128+{metric}"
+reg = "L21e4"
+addon_name = f"+hidden{N}+{reg}+batch128+{metric}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Path construction (matches pretraining.py naming convention)
@@ -123,6 +132,21 @@ def hist_path(seed):
 def ckpt_path(seed):
     """Network checkpoint path (see pretraining.py)."""
     return f"{basepath}/savednet_{ruleset}_{chosen_network}_seed{seed}_{addon_name}.pt"
+
+
+def config_path(seed):
+    """
+    Hyperparameter JSON path (see pretraining.py). Note: unlike the other
+    per-seed files, this one omits `chosen_network` from its filename.
+    """
+    return f"{basepath}/param_{ruleset}_seed{seed}_{addon_name}_param.json"
+
+
+def load_train_params(seed):
+    """Load the stage-1 train_params dict saved alongside the checkpoint."""
+    with open(config_path(seed)) as f:
+        cfg = json.load(f)
+    return cfg["train_params"]
 
 
 def load_mpn_W(seed):
@@ -238,6 +262,111 @@ def _plot_input_output_panel(
     fig.tight_layout()
     fig.savefig(fig_path, dpi=120)
     plt.close(fig)
+
+
+def evaluate_backbone_on_delayanti(
+    seed, device, stage2_output, n_random_rule_inits=10, rng_seed=0,
+    n_batch=128,
+):
+    """
+    Measure the frozen backbone's starting-point competence on delayanti.
+
+    Protocol
+    ────────
+    Load the post-stage-2 checkpoint. Everything in that state_dict except
+    the last column of W_initial_linear is identical to the end-of-stage-1
+    network (stage 2 only trains that column via the gradient hook in
+    expand_and_freeze). We can therefore reconstruct the stage-2 STARTING
+    point by overwriting that last column with a fresh random init, then
+    run a forward pass on freshly generated delayanti test data to see how
+    close the backbone is to solving delayanti BEFORE any stage-2 gradient
+    step.
+
+    Loss and accuracy are computed via the network's own `compute_loss` /
+    `compute_acc` so the numbers are directly comparable to training-time
+    loss/accuracy. This requires the trial mask, which is not saved in the
+    npz, so a fresh batch is generated from the saved task_params.
+
+    Returns dict of per-sample numpy arrays (length n_random_rule_inits):
+        loss     — full training loss (output MSE + regularization)
+        loss_out — output-label-MSE component only
+        acc      — angle-based accuracy on the response period
+    """
+    import math
+    import mpn_tasks  # local import so the helper stays self-contained
+
+    # Load network and task config.
+    net = load_final_net(seed, device)
+
+    # compute_loss reads regularization attributes that are normally set by
+    # net.fit(train_params, ...) during training. load_state_dict doesn't
+    # restore those (they're not tensors), so we re-inject them from the
+    # saved JSON config to match the training-time loss computation.
+    train_params = load_train_params(seed)
+    net.weight_reg = train_params.get("weight_reg", None)
+    net.reg_lambda = train_params.get("reg_lambda", 0.0)
+    net.activity_reg = train_params.get("activity_reg", None)
+    net.reg_omit = train_params.get("reg_omit", [])
+    net.gradient_type = train_params.get("gradient_type", "backprop")
+
+    task_params = stage2_output["task_params"].item()
+
+    # Generate a fresh test batch for delayanti. pretraining_shift=2 pads
+    # the two stage-1 task-indicator slots with zeros so the input has the
+    # correct 9-channel layout the checkpoint expects.
+    task_params_test = copy.deepcopy(task_params)
+    task_params_test["long_response"] = "normal"
+    (test_input, test_output, test_mask), _ = mpn_tasks.generate_trials_wrap(
+        task_params_test, n_batch, device=device, rules=["delayanti"],
+        mode_input="random", pretraining_shift=2,
+    )
+
+    # Grab the trained rule-vector column so we can restore it afterward.
+    orig_col = net.W_initial_linear.weight.data[:, -1].detach().clone()
+
+    rng = np.random.default_rng(rng_seed + seed)
+    loss_full, loss_out_only, acc_vals = [], [], []
+    with torch.no_grad():
+        for _ in range(n_random_rule_inits):
+            # Kaiming-uniform init matching expand_and_freeze.
+            new_col = torch.empty_like(orig_col)
+            torch.manual_seed(int(rng.integers(0, 2**31)))
+            torch.nn.init.kaiming_uniform_(new_col.view(-1, 1).t(), a=math.sqrt(5))
+            net.W_initial_linear.weight.data[:, -1] = new_col
+
+            # Forward through the full batch at once; compute_loss/acc
+            # expect the whole batch, not mini-chunks.
+            net_out, hidden, _ = net.iterate_sequence_batch(
+                test_input, run_mode="minimal")
+
+            loss, loss_components, _ = net.compute_loss(
+                net_out, test_output, test_mask, hidden=hidden)
+            acc, _ = net.compute_acc(
+                net_out, test_output, test_mask, test_input,
+                isvalid=True, mode=net.acc_measure)
+
+            loss_full.append(float(loss.detach().cpu().item()))
+            # loss_components is (output_label_term, reg_term); keep the
+            # output-only term separately since reg_term is not meaningful
+            # for a random rule vector (it penalizes all weights equally
+            # regardless of the task-match).
+            loss_out_only.append(float(loss_components[0]))
+            acc_vals.append(float(acc.detach().cpu().item()))
+
+            # Clear per-layer state before the next init.
+            if hasattr(net, "reset_state"):
+                try:
+                    net.reset_state(B=1)
+                except Exception:
+                    pass
+
+    net.W_initial_linear.weight.data[:, -1] = orig_col
+
+    return {
+        "loss": np.array(loss_full),
+        "loss_out": np.array(loss_out_only),
+        "acc": np.array(acc_vals),
+    }
 
 
 def run_final_net_sanity_check(
@@ -358,6 +487,81 @@ def _stim_direction_indices(test_input_np, epochs, task_name, mask=None, n_dirs=
     return (np.round(thetas / bin_size).astype(int)) % n_dirs
 
 
+def direction_averaged_cve(
+    X_period, Y_period, dir_idxs_X, dir_idxs_Y,
+    n_components, datatype, n_dirs=8,
+):
+    """
+    Per-stimulus-direction CVE averaged across directions.
+
+    Variance-decomposition diagnostic: the pooled CVE marginalizes over
+    all stimulus directions before fitting PCA. If the two tasks share
+    a per-direction subspace structure (e.g. a ring attractor whose axial
+    geometry is identical at every θ but rotated), pooling washes that
+    out. Running the full CVE analysis within each direction bin and
+    averaging at the end reveals a shared structure that would otherwise
+    be hidden.
+
+    For each direction with trials on both sides, subset both period
+    slices to those trials and call `pca_cross_variance`. Average the
+    resulting `cev_Y` and `cev_Y_self` curves across directions. Returns
+    length-min_len arrays truncated to the shortest achievable curve
+    (a direction with few samples produces a shorter PCA spectrum).
+
+    Note: alignment is by *stimulus* direction, not response direction —
+    so for the go-period comparison a pro-task trial at stimulus θ is
+    paired with a delayanti trial at stimulus θ (which responds toward
+    θ+π). This tests whether the computational trajectories under the
+    same input differ, regardless of target response.
+
+    Returns
+    -------
+    dict with:
+      cev_Y_mean       : (k,) direction-averaged novel-in-pretraining CVE
+      cev_Y_self_mean  : (k,) direction-averaged novel-self CVE
+      n_dirs_used      : int, how many direction bins contributed
+    """
+    cev_Y_list = []
+    cev_Y_self_list = []
+    for d in range(n_dirs):
+        mask_X = (dir_idxs_X == d)
+        mask_Y = (dir_idxs_Y == d)
+        if not mask_X.any() or not mask_Y.any():
+            continue
+        X_d = X_period[mask_X]
+        Y_d = Y_period[mask_Y]
+        # Cap n_components to what this direction's subset can support
+        # (some bins have only a handful of trials × timesteps).
+        if datatype == "hidden":
+            nX = X_d.shape[0] * X_d.shape[1]
+            nY = Y_d.shape[0] * Y_d.shape[1]
+        else:
+            nX = X_d.shape[0] * X_d.shape[1]
+            nY = Y_d.shape[0] * Y_d.shape[1]
+        k_d = min(n_components, nX - 1, nY - 1)
+        if k_d < 1:
+            continue
+        res_d = pca_cross_variance(
+            X_d, Y_d, n_components=k_d, datatype=datatype)
+        cev_Y_list.append(res_d["cev_Y"])
+        cev_Y_self_list.append(res_d["cev_Y_self"])
+
+    if not cev_Y_list:
+        return {
+            "cev_Y_mean": np.array([]),
+            "cev_Y_self_mean": np.array([]),
+            "n_dirs_used": 0,
+        }
+    min_len = min(len(c) for c in cev_Y_list)
+    cev_Y_trunc = np.stack([c[:min_len] for c in cev_Y_list], axis=0)
+    cev_self_trunc = np.stack([c[:min_len] for c in cev_Y_self_list], axis=0)
+    return {
+        "cev_Y_mean": cev_Y_trunc.mean(axis=0),
+        "cev_Y_self_mean": cev_self_trunc.mean(axis=0),
+        "n_dirs_used": len(cev_Y_list),
+    }
+
+
 def _mean_M_by_direction(M_period, dir_idxs, n_dirs=8):
     """
     Per-direction mean of M over batch and time.
@@ -400,6 +604,60 @@ def _cosine_sim(A, B):
     if na == 0 or nb == 0:
         return float("nan")
     return float(a @ b / (na * nb))
+
+
+def principal_angles(X, Y, k, datatype="hidden"):
+    """
+    Principal angles (radians) between X's and Y's top-k PC subspaces.
+
+    Complements CVE: CVE asks "what fraction of Y's variance lives in X's
+    subspace?" which is variance-weighted. Principal angles ask "how
+    aligned are the K dominant directions of X with the K dominant
+    directions of Y?" — a per-direction geometric readout. 0 rad means a
+    shared axis; π/2 means orthogonal. Reveals cases where CVE is low
+    because the top-1 directions disagree but secondary directions still
+    align (or vice versa).
+
+    X, Y reshape follows the same rules as `pca_cross_variance`:
+      "hidden"              — (batch×time, n_hidden)
+      "modulation"          — (batch×time, n_hidden²)
+      "modulation_weighted" — same flatten; caller pre-multiplies W⊙M.
+
+    Returns
+    -------
+    angles : ndarray of shape (k_eff,), sorted ASCENDING. scipy's native
+             order is descending (largest angle first, smallest last), so
+             the returned array is reversed to put the most-aligned
+             direction at index 0. k_eff = min(k, rank(X basis), rank(Y
+             basis)) so you get at most k values.
+    """
+    if datatype == "hidden":
+        X2d = X.reshape(-1, X.shape[-1])
+        Y2d = Y.reshape(-1, Y.shape[-1])
+    elif datatype in ("modulation", "modulation_weighted"):
+        X2d = X.reshape(-1, X.shape[-1] * X.shape[-2])
+        Y2d = Y.reshape(-1, Y.shape[-1] * Y.shape[-2])
+    else:
+        raise ValueError(f"Unknown datatype: {datatype}")
+
+    # Clamp k to what each PCA can support.
+    k_eff = min(k, min(X2d.shape) - 1, min(Y2d.shape) - 1)
+    if k_eff < 1:
+        return np.array([])
+
+    pca_X = PCA(n_components=k_eff, svd_solver="randomized", random_state=0)
+    pca_X.fit(X2d)
+    pca_Y = PCA(n_components=k_eff, svd_solver="randomized", random_state=0)
+    pca_Y.fit(Y2d)
+
+    # components_ is (k, n_features); subspace_angles expects (n_features, k)
+    # columns spanning each subspace.
+    basis_X = pca_X.components_.T
+    basis_Y = pca_Y.components_.T
+    # scipy returns angles in descending order (largest first). Reverse
+    # so index 0 is the most-aligned (smallest) angle, matching the
+    # "top-k shared directions" convention used in the rest of the file.
+    return subspace_angles(basis_X, basis_Y)[::-1]
 
 
 def _pr_from_data(X_c):
@@ -624,6 +882,23 @@ if __name__ == "__main__":
                     print(f"  WARNING: final-net sanity check failed ({e}); "
                           f"continuing without it")
 
+                seed_result = {"seed": seed}
+
+                # Starting-point probe: reconstruct the stage-2 init state
+                # (rule-vector column reset to a random Kaiming-uniform) and
+                # measure delayanti loss over several random draws. This
+                # localizes the transfer advantage to the frozen backbone
+                # rather than to anything the stage-2 optimizer does.
+                try:
+                    backbone_probe = evaluate_backbone_on_delayanti(
+                        seed, sanity_device, stage2_output,
+                        n_random_rule_inits=10,
+                    )
+                    seed_result["backbone_probe"] = backbone_probe
+                except (FileNotFoundError, KeyError, RuntimeError) as e:
+                    print(f"  WARNING: backbone-probe failed ({e}); "
+                          f"continuing without it")
+
                 test_task = stage1_output["test_task"]
                 stage1_hs = final_param["hs_stage1"]
                 stage2_hs = final_param["hs_stage2"]
@@ -674,7 +949,21 @@ if __name__ == "__main__":
                     stage2_hs, stage2_rules_epochs, final_task, "go1",
                     shift_percentage=period_shift_percentage)
 
-                seed_result = {"seed": seed}
+                # Per-trial stimulus-direction index for each task, used
+                # by the direction-averaged (stimulus-aligned) CVE below.
+                # Alignment is by input stimulus direction, so a pro-task
+                # trial at θ gets paired with a delayanti trial at θ even
+                # though delayanti responds toward θ+π.
+                stage1_test_input = np.asarray(stage1_output["test_input_np"])
+                stage2_test_input = np.asarray(stage2_output["test_input_np"])
+                dir_task0 = _stim_direction_indices(
+                    stage1_test_input, stage1_rules_epochs,
+                    stage1_tasks[0], mask=mask0)
+                dir_task1 = _stim_direction_indices(
+                    stage1_test_input, stage1_rules_epochs,
+                    stage1_tasks[1], mask=mask1)
+                dir_final = _stim_direction_indices(
+                    stage2_test_input, stage2_rules_epochs, final_task)
 
                 # Hidden state analysis.
                 # Driscoll convention: X = pretraining (basis), Y = novel
@@ -685,9 +974,24 @@ if __name__ == "__main__":
                     stage1_stim, final_stim, n_components=N, datatype="hidden")
                 res_h_go = pca_cross_variance(
                     stage1_go, final_go, n_components=N, datatype="hidden")
+                # Direction-averaged variant: run CVE within each stimulus
+                # bin separately, then average. Diagnoses whether pooling
+                # over direction is what makes the pooled CVE look low.
+                dir_h_stim = direction_averaged_cve(
+                    stage1_stim, final_stim, dir_task0, dir_final,
+                    n_components=N, datatype="hidden")
+                dir_h_go = direction_averaged_cve(
+                    stage1_go, final_go, dir_task1, dir_final,
+                    n_components=N, datatype="hidden")
                 seed_result["hidden"] = {
                     "stimulus": res_h_stim,
                     "response": res_h_go,
+                    "stimulus_dir_avg": dir_h_stim,
+                    "response_dir_avg": dir_h_go,
+                    "angles_stimulus": principal_angles(
+                        stage1_stim, final_stim, k=N_ANGLES, datatype="hidden"),
+                    "angles_response": principal_angles(
+                        stage1_go, final_go, k=N_ANGLES, datatype="hidden"),
                 }
 
                 # Modulation analysis (dmpn only)
@@ -724,9 +1028,25 @@ if __name__ == "__main__":
                     res_m_go = pca_cross_variance(
                         stage1_go_m, final_go_m,
                         n_components=n_comp_go, datatype="modulation")
+                    k_angles_mod_stim = min(N_ANGLES, n_comp_stim)
+                    k_angles_mod_go = min(N_ANGLES, n_comp_go)
+                    dir_m_stim = direction_averaged_cve(
+                        stage1_stim_m, final_stim_m, dir_task0, dir_final,
+                        n_components=n_comp_stim, datatype="modulation")
+                    dir_m_go = direction_averaged_cve(
+                        stage1_go_m, final_go_m, dir_task1, dir_final,
+                        n_components=n_comp_go, datatype="modulation")
                     seed_result["modulation"] = {
                         "stimulus": res_m_stim,
                         "response": res_m_go,
+                        "stimulus_dir_avg": dir_m_stim,
+                        "response_dir_avg": dir_m_go,
+                        "angles_stimulus": principal_angles(
+                            stage1_stim_m, final_stim_m,
+                            k=k_angles_mod_stim, datatype="modulation"),
+                        "angles_response": principal_angles(
+                            stage1_go_m, final_go_m,
+                            k=k_angles_mod_go, datatype="modulation"),
                     }
 
                     # W⊙M analysis: multiplicative contribution of plasticity to
@@ -749,9 +1069,29 @@ if __name__ == "__main__":
                             stage1_go_wm, final_go_wm,
                             n_components=n_comp_go,
                             datatype="modulation_weighted")
+                        dir_wm_stim = direction_averaged_cve(
+                            stage1_stim_wm, final_stim_wm,
+                            dir_task0, dir_final,
+                            n_components=n_comp_stim,
+                            datatype="modulation_weighted")
+                        dir_wm_go = direction_averaged_cve(
+                            stage1_go_wm, final_go_wm,
+                            dir_task1, dir_final,
+                            n_components=n_comp_go,
+                            datatype="modulation_weighted")
                         seed_result["modulation_weighted"] = {
                             "stimulus": res_wm_stim,
                             "response": res_wm_go,
+                            "stimulus_dir_avg": dir_wm_stim,
+                            "response_dir_avg": dir_wm_go,
+                            "angles_stimulus": principal_angles(
+                                stage1_stim_wm, final_stim_wm,
+                                k=k_angles_mod_stim,
+                                datatype="modulation_weighted"),
+                            "angles_response": principal_angles(
+                                stage1_go_wm, final_go_wm,
+                                k=k_angles_mod_go,
+                                datatype="modulation_weighted"),
                         }
                     except (FileNotFoundError, KeyError) as e:
                         print(f"  WARNING: could not load W from checkpoint "
@@ -790,17 +1130,9 @@ if __name__ == "__main__":
                     # direction (8 bins), compute mean M per direction per
                     # (task, period), then take cosine and Frobenius of the
                     # difference per direction, and average those 8 values.
-                    stage1_test_input = np.asarray(stage1_output["test_input_np"])
-                    stage2_test_input = np.asarray(stage2_output["test_input_np"])
-
-                    dir_task0 = _stim_direction_indices(
-                        stage1_test_input, stage1_rules_epochs,
-                        stage1_tasks[0], mask=mask0)
-                    dir_task1 = _stim_direction_indices(
-                        stage1_test_input, stage1_rules_epochs,
-                        stage1_tasks[1], mask=mask1)
-                    dir_final = _stim_direction_indices(
-                        stage2_test_input, stage2_rules_epochs, final_task)
+                    # Direction indices dir_task0/dir_task1/dir_final are
+                    # already computed earlier in the per-seed block (used
+                    # there by the direction-averaged CVE).
 
                     M_final_stim_d = _mean_M_by_direction(final_stim_m, dir_final)
                     M_task0_stim_d = _mean_M_by_direction(stage1_stim_m, dir_task0)
@@ -1066,8 +1398,124 @@ if __name__ == "__main__":
 
         fig.suptitle(f"{ruleset} | {chosen_network} | {len(all_seed_results)} seeds", fontsize=12)
         fig.tight_layout()
-        fig.savefig(f"{outpath}/{ruleset}_{chosen_network}_aggregate.png", dpi=300)
+        fig.savefig(f"{outpath}/{ruleset}_{chosen_network}_{addon_name}_aggregate.png", dpi=300)
         plt.close(fig)
+
+        # ─── Stimulus-aligned (direction-averaged) CVE summary ─────────────
+        # Same layout as the pooled CVE aggregate above (no PR column).
+        # Each curve is already a per-seed direction-average across the 8
+        # stimulus bins — alignment is by input stimulus direction, not
+        # response direction.
+        fig_d, axs_d = plt.subplots(n_plots, 2, figsize=(4 * 2, 4 * n_plots))
+        if n_plots == 1:
+            axs_d = axs_d[np.newaxis, :]
+
+        for row, dtype in enumerate(analysis_types):
+            x_up = 20 if dtype == "hidden" else N_MOD_PCS
+            for col, period in enumerate(["stimulus", "response"]):
+                key = f"{period}_dir_avg"
+                all_self = []
+                all_cross = []
+                for sr_idx, sr in enumerate(all_seed_results):
+                    if dtype not in sr or key not in sr[dtype]:
+                        continue
+                    entry = sr[dtype][key]
+                    self_curve = np.asarray(entry.get("cev_Y_self_mean", []))
+                    cross_curve = np.asarray(entry.get("cev_Y_mean", []))
+                    if self_curve.size == 0 or cross_curve.size == 0:
+                        continue
+                    all_self.append(self_curve)
+                    all_cross.append(cross_curve)
+
+                    xs_self = np.arange(1, len(self_curve) + 1)
+                    xs_cross = np.arange(1, len(cross_curve) + 1)
+                    axs_d[row, col].plot(xs_self, self_curve,
+                                         color="black", alpha=0.2)
+                    axs_d[row, col].plot(xs_cross, cross_curve,
+                                         color=c_vals[1 + sr_idx],
+                                         alpha=0.6, label=f"seed {sr['seed']}")
+
+                if all_self:
+                    min_len = min(min(len(c) for c in all_self),
+                                  min(len(c) for c in all_cross))
+                    mean_self = np.mean([c[:min_len] for c in all_self], axis=0)
+                    mean_cross = np.mean([c[:min_len] for c in all_cross], axis=0)
+                    xs_mean = np.arange(1, min_len + 1)
+                    axs_d[row, col].plot(
+                        xs_mean, mean_self, color="black", linewidth=2.5,
+                        label=f"{final_task} in {final_task} PCs (mean)")
+                    pre_label = stage1_tasks[0] if period == "stimulus" else stage1_tasks[1]
+                    axs_d[row, col].plot(
+                        xs_mean, mean_cross, color="gray", linewidth=2.5,
+                        label=f"{final_task} in {pre_label} PCs (mean)")
+
+                axs_d[row, col].set_xlim(0, x_up)
+                axs_d[row, col].set_ylim(0, 1.05)
+                axs_d[row, col].set_xlabel("# PCs")
+                axs_d[row, col].set_ylabel(f"{final_task} variance explained")
+                axs_d[row, col].set_title(
+                    f"{dtype} — {period} (direction-averaged)")
+                axs_d[row, col].legend(fontsize=6)
+
+        fig_d.suptitle(
+            f"{ruleset} | {chosen_network} | stimulus-aligned CVE "
+            f"({len(all_seed_results)} seeds)", fontsize=12)
+        fig_d.tight_layout()
+        fig_d.savefig(
+            f"{outpath}/{ruleset}_{chosen_network}_{addon_name}_aggregate_stimaligned.png",
+            dpi=300)
+        plt.close(fig_d)
+
+        # ─── Principal-angle spectra summary ───────────────────────────────
+        # For each (datatype, period) pair, plot the top-k principal angles
+        # between the pretraining and novel-task PC bases. Per-seed thin
+        # lines + seed-mean thick line. Angle = 0 means the PC direction
+        # is shared, π/2 means orthogonal. Complements the CVE panel above:
+        # CVE is variance-weighted, angles are per-direction geometric.
+        figpa, axspa = plt.subplots(n_plots, 2, figsize=(4 * 2, 3 * n_plots))
+        if n_plots == 1:
+            axspa = axspa[np.newaxis, :]
+        for row, dtype in enumerate(analysis_types):
+            for col, period in enumerate(["stimulus", "response"]):
+                angle_key = f"angles_{period}"
+                all_angles = []
+                for sr_idx, sr in enumerate(all_seed_results):
+                    if dtype not in sr or angle_key not in sr[dtype]:
+                        continue
+                    angs = np.asarray(sr[dtype][angle_key])
+                    if angs.size == 0:
+                        continue
+                    all_angles.append(angs)
+                    xs = np.arange(1, len(angs) + 1)
+                    axspa[row, col].plot(
+                        xs, np.degrees(angs),
+                        color=c_vals[1 + sr_idx], alpha=0.4)
+
+                if all_angles:
+                    min_len = min(len(a) for a in all_angles)
+                    mean_deg = np.mean(
+                        [np.degrees(a[:min_len]) for a in all_angles], axis=0)
+                    xs_mean = np.arange(1, min_len + 1)
+                    axspa[row, col].plot(xs_mean, mean_deg, color="black",
+                                         linewidth=2.5, label="mean")
+                axspa[row, col].axhline(
+                    0, color="gray", linestyle="--", linewidth=0.8)
+                axspa[row, col].axhline(
+                    90, color="gray", linestyle="--", linewidth=0.8)
+                axspa[row, col].set_ylim([-5, 95])
+                axspa[row, col].set_xlabel("shared-direction index (1 = most aligned)")
+                axspa[row, col].set_ylabel("principal angle (deg)")
+                axspa[row, col].set_title(f"{dtype} — {period}")
+                axspa[row, col].legend(fontsize=6)
+
+        figpa.suptitle(
+            f"{ruleset} | {chosen_network} | principal angles "
+            f"(pretraining vs {final_task})", fontsize=11)
+        figpa.tight_layout()
+        figpa.savefig(
+            f"{outpath}/{ruleset}_{chosen_network}_{addon_name}_principal_angles.png",
+            dpi=300)
+        plt.close(figpa)
 
         # ─── Per-ruleset accuracy + loss figure ────────────────────────────
         # Layout: rows = (post-training, pre-training); cols = (accuracy, loss).
@@ -1107,7 +1555,7 @@ if __name__ == "__main__":
 
         figlc.suptitle(f"{ruleset} | {chosen_network} | Learning curves", fontsize=12)
         figlc.tight_layout()
-        figlc.savefig(f"{outpath}/{ruleset}_{chosen_network}_learning.png", dpi=300)
+        figlc.savefig(f"{outpath}/{ruleset}_{chosen_network}_{addon_name}_learning.png", dpi=300)
         plt.close(figlc)
 
         if not any("loss" in sr for sr in all_seed_results):
@@ -1177,7 +1625,7 @@ if __name__ == "__main__":
                                 fontsize=11)
                 figsim.tight_layout()
                 figsim.savefig(
-                    f"{outpath}/{ruleset}_{chosen_network}_{file_tag}.png",
+                    f"{outpath}/{ruleset}_{chosen_network}_{addon_name}_{file_tag}.png",
                     dpi=300)
                 plt.close(figsim)
 
@@ -1293,7 +1741,7 @@ if __name__ == "__main__":
         combined_tag = "_".join(all_results_by_ruleset.keys())
         figcmp.suptitle(f"{chosen_network} | Learning curves by ruleset", fontsize=12)
         figcmp.tight_layout()
-        figcmp.savefig(f"{outpath}/{combined_tag}_{chosen_network}_learning.png", dpi=300)
+        figcmp.savefig(f"{outpath}/{combined_tag}_{chosen_network}_{addon_name}_learning.png", dpi=300)
         plt.close(figcmp)
 
         # ─────────────────────────────────────────────────────────────────
@@ -1365,7 +1813,7 @@ if __name__ == "__main__":
                        fontsize=12)
         figts.tight_layout()
         figts.savefig(
-            f"{outpath}/{combined_tag}_{chosen_network}_transfer_speed.png",
+            f"{outpath}/{combined_tag}_{chosen_network}_{addon_name}_transfer_speed.png",
             dpi=300)
         plt.close(figts)
 
@@ -1449,9 +1897,84 @@ if __name__ == "__main__":
                 fontsize=12)
             figrv.tight_layout()
             figrv.savefig(
-                f"{outpath}/{combined_tag}_{chosen_network}_rule_vectors.png",
+                f"{outpath}/{combined_tag}_{chosen_network}_{addon_name}_rule_vectors.png",
                 dpi=300)
             plt.close(figrv)
+
+        # ─────────────────────────────────────────────────────────────────
+        # Backbone-probe figure: how close is the stage-2 STARTING state
+        # (random rule-vector init, everything else frozen from stage-1 end)
+        # to solving delayanti? Lower loss = pretraining backbone already
+        # "knows" delayanti; explains asymptote differences between
+        # rulesets directly.
+        # ─────────────────────────────────────────────────────────────────
+        have_probe = any(
+            "backbone_probe" in sr
+            for rs_srs in all_results_by_ruleset.values() for sr in rs_srs)
+        if have_probe:
+            print(f"\n[Backbone probe — stage-2 initial-state loss & "
+                  f"accuracy on {final_task}, per ruleset]")
+            # Collect per-seed stats: each seed's backbone_probe has
+            # per-random-init arrays; aggregate to a single scalar per seed
+            # (mean across random inits) so every seed contributes equally.
+            per_seed_loss = {}
+            per_seed_loss_out = {}
+            per_seed_acc = {}
+            for rs, seed_results in all_results_by_ruleset.items():
+                loss_list, loss_out_list, acc_list = [], [], []
+                for sr in seed_results:
+                    if "backbone_probe" not in sr:
+                        continue
+                    loss_list.append(float(np.mean(sr["backbone_probe"]["loss"])))
+                    loss_out_list.append(float(np.mean(sr["backbone_probe"]["loss_out"])))
+                    acc_list.append(float(np.mean(sr["backbone_probe"]["acc"])))
+                per_seed_loss[rs] = np.array(loss_list)
+                per_seed_loss_out[rs] = np.array(loss_out_list)
+                per_seed_acc[rs] = np.array(acc_list)
+                if loss_list:
+                    v_loss = np.array(loss_list)
+                    v_acc = np.array(acc_list)
+                    print(f"  {rs}  seeds={len(v_loss)}  "
+                          f"loss mean={v_loss.mean():.4f}±{v_loss.std():.4f}  "
+                          f"acc mean={v_acc.mean():.4f}±{v_acc.std():.4f}")
+
+            # Figure: three panels (full loss, output-only loss, accuracy).
+            # Each shows per-ruleset per-seed scatter + boxplot.
+            figbp, axbp = plt.subplots(1, 3, figsize=(12, 3.8))
+            panel_specs = [
+                ("Total loss (output + reg)", per_seed_loss, "loss"),
+                ("Output MSE (label only)", per_seed_loss_out, "output MSE"),
+                (f"{final_task} accuracy", per_seed_acc, "accuracy"),
+            ]
+            for panel_idx, (title, data_by_rs, ylabel) in enumerate(panel_specs):
+                ax = axbp[panel_idx]
+                rs_list_here = list(data_by_rs.keys())
+                positions = list(range(len(rs_list_here)))
+                box_data = [data_by_rs[rs] for rs in rs_list_here]
+                ax.boxplot(box_data, positions=positions, widths=0.5,
+                           showfliers=False, patch_artist=False)
+                for xpos, rs in enumerate(rs_list_here):
+                    color = ruleset_colors.get(rs, c_vals[0])
+                    vals = data_by_rs[rs]
+                    jitter = (np.arange(len(vals)) - (len(vals) - 1) / 2) * 0.04
+                    ax.plot(xpos + jitter, vals, "o", color=color,
+                            alpha=0.7, markersize=7)
+                ax.set_xticks(positions)
+                ax.set_xticklabels(rs_list_here, rotation=10)
+                ax.set_ylabel(ylabel)
+                ax.set_title(title)
+            # Accuracy panel: anchor to [0, 1] for readability.
+            axbp[2].set_ylim([-0.02, 1.02])
+
+            figbp.suptitle(
+                f"{chosen_network} | Backbone probe on {final_task} "
+                f"(random rule-vector init, compute_loss/compute_acc)",
+                fontsize=11)
+            figbp.tight_layout()
+            figbp.savefig(
+                f"{outpath}/{combined_tag}_{chosen_network}_{addon_name}_backbone_probe.png",
+                dpi=300)
+            plt.close(figbp)
 
         print(f"\nDone. Results saved to {outpath}/")
     else:

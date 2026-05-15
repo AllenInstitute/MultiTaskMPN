@@ -1455,5 +1455,25 @@ def main(seed, feature):
 
 
 if __name__ == "__main__":
-    main(749, "L21e4")
-    main(408, "L21e4")
+    import argparse
+    import re
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--feature", type=str, default=None,
+                        help="Only run models with this feature (e.g. 'L21e4')")
+    args = parser.parse_args()
+
+    saved_nets = sorted(Path("multiple_tasks").glob("savednet_everything_seed*+angle.pt"))
+    param_lst = []
+    for p in saved_nets:
+        m = re.match(r"savednet_everything_seed(\d+)_(\w+)\+hidden\d+\+batch\d+\+angle\.pt", p.name)
+        if m:
+            param_lst.append((int(m.group(1)), m.group(2)))
+
+    if args.feature:
+        param_lst = [(s, f) for s, f in param_lst if f == args.feature]
+
+    print(f"Running {len(param_lst)} models: {param_lst}")
+
+    for seed, feature in param_lst:
+        main(seed, feature)

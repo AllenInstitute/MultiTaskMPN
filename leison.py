@@ -884,6 +884,13 @@ def main(seed, feature):
         pickle.dump(saved_dict, f)
         
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--feature", type=str, default=None,
+                        help="Only run models with this feature (e.g. 'L21e4')")
+    args = parser.parse_args()
+
     saved_nets = sorted(Path("multiple_tasks").glob("savednet_everything_seed*+angle.pt"))
     param_lst = []
     for p in saved_nets:
@@ -891,9 +898,10 @@ if __name__ == "__main__":
         if m:
             param_lst.append((int(m.group(1)), m.group(2)))
 
-    print(f"Found {len(param_lst)} saved models: {param_lst}")
+    if args.feature:
+        param_lst = [(s, f) for s, f in param_lst if f == args.feature]
 
-    param_lst = [(749, "L21e4")]
+    print(f"Running {len(param_lst)} models: {param_lst}")
 
     for seed, feature in param_lst:
         aname = f"everything_seed{seed}_{feature}+hidden300+batch128+angle"

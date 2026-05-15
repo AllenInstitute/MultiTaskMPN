@@ -128,7 +128,7 @@ for _ in range(5):
 
     hyp_dict['task_type'] = 'multitask'
     hyp_dict['mode_for_all'] = "random_batch"
-    hyp_dict['ruleset'] = 'fdgo_delaygo'
+    hyp_dict['ruleset'] = 'fdanti_delaygo'
 
     accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti', 
                     'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 'dmsnogo', 'dmcnogo')
@@ -155,10 +155,10 @@ for _ in range(5):
     hyp_dict['chosen_network'] = "dmpn"
 
     mpn_depth = 1
-    n_hidden = 200
+    n_hidden = 100
 
     hyp_dict['addon_name'] = ""
-    hyp_dict['addon_name'] += f"+hidden{n_hidden}+L21e3"
+    hyp_dict['addon_name'] += f"+hidden{n_hidden}+L21e4"
 
     # for coding 
     if hyp_dict['chosen_network'] in ("gru", "vanilla"):
@@ -206,7 +206,7 @@ for _ in range(5):
             'n_epochs_per_set': 1,  
             'weight_reg': 'L2',
             'activity_reg': 'L2', 
-            'reg_lambda': 1e-3,
+            'reg_lambda': 1e-4,
             
             'scheduler': {
                 'type': 'ReduceLROnPlateau',  # or 'StepLR'
@@ -227,7 +227,7 @@ for _ in range(5):
         net_params = {
             'net_type': hyp_dict_input['chosen_network'], # mpn1, dmpn, vanilla
             'n_neurons': [1] + [n_hidden] * mpn_depth + [1],
-            'linear_embed': 200, 
+            'linear_embed': n_hidden, 
             'output_bias': False, 
             'hidden_bias': False, 
             'input_bias': False, 

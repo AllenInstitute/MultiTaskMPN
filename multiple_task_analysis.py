@@ -445,20 +445,26 @@ def main(seed, feature):
         vmax=None,
         xlabel="",
         ylabel="",
-        label_fs=15,
-        tick_fs=10,
-        marginal_frac=0.18,   # thickness of top/left strips (in ax coords)
-        marginal_pad=0.03,    # gap between heatmap and strips (in ax coords)
+        title="",
+        label_fs=11,
+        tick_fs=8,
+        marginal_frac=0.16,
+        marginal_pad=0.03,
         marginal_lw=1.2,
         cbar=True,
-        square=False
+        square=False,
+        n_xticks=8,
+        n_yticks=8,
     ):
         """
         Heatmap on `ax` + marginals:
-        - top inset:  col-wise sum(abs(M)) (length = n_cols)
-        - left inset: row-wise sum(abs(M)) (length = n_rows), plotted vertically
+        - top inset:  col-wise sum(|M|) aligned with heatmap columns
+        - left inset: row-wise sum(|M|) aligned with heatmap rows (rotated)
 
-        Layout: col-sum at top, row-sum at left. No child dirs, no extra axes elsewhere.
+        When one dimension is very small (e.g. ≤ 5 rows for the readout
+        matrix), the corresponding marginal is suppressed: a 3-bin curve
+        is uninformative and looks like noise. Tick labels at the two
+        endpoints are kept so the axis-direction stays readable.
         """
         M = np.asarray(M)
         n_rows, n_cols = M.shape
@@ -468,53 +474,73 @@ def main(seed, feature):
         if vmax is None:
             vmax = np.nanmax(M)
 
-        # ---- main heatmap
         sns.heatmap(
-            M,
-            ax=ax,
-            cmap=cmap,
-            vmin=vmin,
-            vmax=vmax,
-            center=center,
-            cbar=cbar,
-            square=square,
+            M, ax=ax, cmap=cmap, vmin=vmin, vmax=vmax, center=center,
+            cbar=cbar, square=square,
+            cbar_kws={"shrink": 0.6, "pad": 0.02} if cbar else None,
         )
         ax.set_xlabel(xlabel, fontsize=label_fs)
         ax.set_ylabel(ylabel, fontsize=label_fs)
-        ax.tick_params(labelsize=tick_fs)
+        if title:
+            ax.set_title(title, fontsize=label_fs + 1, pad=8)
 
-        # ---- marginals
-        col_sum = np.nansum(np.abs(M), axis=0)  # (n_cols,)
-        row_sum = np.nansum(np.abs(M), axis=1)  # (n_rows,)
+        # Endpoint tick labels for orientation; thin the others to
+        # `n_xticks` / `n_yticks` evenly-spaced positions.
+        x_tickpos = np.linspace(0, n_cols - 1, min(n_xticks, n_cols)).astype(int)
+        y_tickpos = np.linspace(0, n_rows - 1, min(n_yticks, n_rows)).astype(int)
+        ax.set_xticks(x_tickpos + 0.5)
+        ax.set_xticklabels(x_tickpos, fontsize=tick_fs, rotation=0)
+        ax.set_yticks(y_tickpos + 0.5)
+        ax.set_yticklabels(y_tickpos, fontsize=tick_fs, rotation=0)
 
-        # inset axes positions are in the parent ax's coordinate system
-        top_rect  = [0.0, 1.0 + marginal_pad, 1.0, marginal_frac]
-        left_rect = [-(marginal_frac + marginal_pad), 0.0, marginal_frac, 1.0]
+        col_sum = np.nansum(np.abs(M), axis=0)
+        row_sum = np.nansum(np.abs(M), axis=1)
 
-        ax_top  = ax.inset_axes(top_rect,  transform=ax.transAxes)
-        ax_left = ax.inset_axes(left_rect, transform=ax.transAxes)
+        # Marginals are only meaningful when the dimension has enough
+        # entries to form a curve; for very small dims, skip.
+        SHOW_MARGINAL_MIN = 6
+        ax_top = ax_left = None
 
-        # ---- top: col sums (aligned with heatmap columns)
-        x = np.arange(n_cols)
-        ax_top.plot(x, col_sum, lw=marginal_lw)
-        ax_top.set_xlim(-0.5, n_cols - 0.5)
-        ax_top.set_xticks([])
-        ax_top.tick_params(axis="y", labelsize=tick_fs)
-        ax_top.spines["top"].set_visible(False)
-        ax_top.spines["right"].set_visible(False)
+        if n_cols >= SHOW_MARGINAL_MIN:
+            top_rect = [0.0, 1.0 + marginal_pad, 1.0, marginal_frac]
+            ax_top = ax.inset_axes(top_rect, transform=ax.transAxes)
+            ax_top.plot(np.arange(n_cols), col_sum, lw=marginal_lw, color="#3182ce")
+            ax_top.fill_between(np.arange(n_cols), col_sum, 0,
+                                alpha=0.25, color="#3182ce")
+            ax_top.set_xlim(-0.5, n_cols - 0.5)
+            ax_top.set_ylim(0, max(col_sum.max() * 1.05, 1e-9))
+            ax_top.set_xticks([])
+            ax_top.tick_params(axis="y", labelsize=tick_fs - 1)
+            ax_top.set_ylabel("Σ|·|", fontsize=tick_fs)
+            for s in ("top", "right"):
+                ax_top.spines[s].set_visible(False)
 
-        # ---- left: row sums (vertical, aligned with heatmap rows)
-        y = np.arange(n_rows)
-        ax_left.plot(row_sum, y, lw=marginal_lw)  # x=row_sum, y=row index
-        ax_left.set_ylim(n_rows - 0.5, -0.5)      # match heatmap's y-direction (top row at top)
-        ax_left.set_yticks([])
-        ax_left.tick_params(axis="x", labelsize=tick_fs)
-        ax_left.spines["top"].set_visible(False)
-        ax_left.spines["right"].set_visible(False)
-        
-        ax.set_xticks([]); ax.set_yticks([]) 
+        if n_rows >= SHOW_MARGINAL_MIN:
+            left_rect = [-(marginal_frac + marginal_pad), 0.0, marginal_frac, 1.0]
+            ax_left = ax.inset_axes(left_rect, transform=ax.transAxes)
+            ax_left.plot(row_sum, np.arange(n_rows), lw=marginal_lw, color="#3182ce")
+            ax_left.fill_betweenx(np.arange(n_rows), row_sum, 0,
+                                  alpha=0.25, color="#3182ce")
+            ax_left.set_ylim(n_rows - 0.5, -0.5)
+            ax_left.set_xlim(0, max(row_sum.max() * 1.05, 1e-9))
+            ax_left.invert_xaxis()
+            ax_left.set_yticks([])
+            ax_left.tick_params(axis="x", labelsize=tick_fs - 1)
+            ax_left.set_xlabel("Σ|·|", fontsize=tick_fs)
+            for s in ("top", "right"):
+                ax_left.spines[s].set_visible(False)
 
         return ax, ax_top, ax_left
+
+    def _figsize_for_matrix(n_rows, n_cols, max_inch=8.0, min_inch=2.5,
+                            cell_inch_high=0.05, cell_inch_wide=0.05):
+        """Pick a figure size whose aspect roughly matches the matrix
+        shape, clamped to a sensible printed range. Skinny matrices
+        (e.g. 3 × 300) end up with low height instead of being stretched
+        to the same height as a 300 × 300 matrix."""
+        h = np.clip(n_rows * cell_inch_high, min_inch, max_inch)
+        w = np.clip(n_cols * cell_inch_wide, min_inch, max_inch)
+        return w, h
 
     def plot_weight_triplet_with_top_left_marginals(
         output_W,
@@ -524,59 +550,69 @@ def main(seed, feature):
         cs="coolwarm",
         save_dir="./multiple_tasks",
     ):
-        figoutput, axsoutput = plt.subplots(1,1,figsize=(10, 12))
+        """
+        Three weight matrices saved both as separate files and as a
+        single combined panel. Aspect ratios follow each matrix's
+        actual shape so the readout (small × n_hidden) doesn't stretch
+        to the same vertical extent as the recurrent matrix.
+        """
+        # Symmetric color limits per matrix (around 0) for readability.
+        def _sym(M):
+            v = float(np.nanmax(np.abs(M)))
+            return -v, v
 
-        heatmap_with_top_left_marginals(
-            output_W,
-            ax=axsoutput,
-            cmap=cs,
-            center=0,
-            vmin=np.nanmin(output_W),
-            vmax=np.nanmax(output_W),
-            xlabel="Hidden 2 Index",
-            ylabel="Output Index",
-            square=False
-        )
-        
-        figinput, axsinput = plt.subplots(1,1,figsize=(10, 12))
-        heatmap_with_top_left_marginals(
-            input_W.T,
-            ax=axsinput,
-            cmap=cs,
-            center=0,
-            vmin=np.nanmin(input_W),
-            vmax=np.nanmax(input_W),
-            xlabel="Hidden 1 Index",
-            ylabel="Input Index",
-            square=False
-        )
-        
-        figmodulation, axsmodulation = plt.subplots(1,1,figsize=(10, 12))
-        # modulation_W shape is (post, pre); .T gives (pre, post) so rows=pre, cols=post
-        heatmap_with_top_left_marginals(
-            modulation_W.T,
-            ax=axsmodulation,
-            cmap=cs,
-            center=0,
-            vmin=np.nanmin(modulation_W),
-            vmax=np.nanmax(modulation_W),
-            xlabel="Post (Hidden) Index",
-            ylabel="Pre (Input) Index",
-            square=False
-        )
+        # Three orientations:
+        #   output_W   : (n_output, n_hidden)         rows = output, cols = hidden
+        #   input_W.T  : (n_input,  n_hidden)         rows = input,  cols = hidden
+        #   modulation_W.T : (n_pre, n_post)          rows = pre,    cols = post
+        triplet = [
+            ("output", output_W,
+             "Hidden Index", "Output Index", "Output weight"),
+            ("input", input_W.T,
+             "Hidden Index", "Input Index", "Input weight"),
+            ("modulation", modulation_W.T,
+             "Post (Hidden) Index", "Pre (Hidden) Index", "Recurrent W"),
+        ]
 
-        figoutput.tight_layout()
-        figoutput.savefig(f"{save_dir}/weight_matrices_{aname}.png", dpi=300)
-        plt.close(figoutput)
-        
-        figinput.tight_layout()
-        figinput.savefig(f"{save_dir}/weight_matrices_input_{aname}.png", dpi=300)
-        plt.close(figinput)
-        
-        figmodulation.tight_layout()
-        figmodulation.savefig(f"{save_dir}/weight_matrices_modulation_{aname}.png", dpi=300)
-        plt.close(figmodulation)
-        
+        # Per-component figures with shape-aware sizes.
+        for tag, mat, xl, yl, title in triplet:
+            n_rows, n_cols = mat.shape
+            w, h = _figsize_for_matrix(n_rows, n_cols)
+            # Reserve room for marginals + colorbar + labels.
+            fig, ax = plt.subplots(
+                1, 1, figsize=(w + 1.6, h + 1.4))
+            vmin, vmax = _sym(mat)
+            heatmap_with_top_left_marginals(
+                mat, ax=ax, cmap=cs, center=0, vmin=vmin, vmax=vmax,
+                xlabel=xl, ylabel=yl, title=title, square=False)
+            fig.tight_layout()
+            outname = ("weight_matrices" if tag == "output"
+                       else f"weight_matrices_{tag}")
+            fig.savefig(f"{save_dir}/{outname}_{aname}.png",
+                        dpi=300, bbox_inches="tight")
+            plt.close(fig)
+
+        # Combined 3-panel figure stacked vertically. Heights scale with
+        # each matrix's row count so the readout doesn't dominate.
+        heights = [_figsize_for_matrix(*m.shape)[1] + 1.4
+                   for _, m, *_ in triplet]
+        widths  = [max(_figsize_for_matrix(*m.shape)[0] + 1.6
+                       for _, m, *_ in triplet)]
+
+        fig, axes = plt.subplots(
+            3, 1, figsize=(widths[0], sum(heights)),
+            gridspec_kw={"height_ratios": heights},
+        )
+        for ax, (tag, mat, xl, yl, title) in zip(axes, triplet):
+            vmin, vmax = _sym(mat)
+            heatmap_with_top_left_marginals(
+                mat, ax=ax, cmap=cs, center=0, vmin=vmin, vmax=vmax,
+                xlabel=xl, ylabel=yl, title=title, square=False)
+        fig.tight_layout()
+        fig.savefig(f"{save_dir}/weight_matrices_combined_{aname}.png",
+                    dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
         return
 
     def plot_static_pathway_analysis(
@@ -898,7 +934,202 @@ def main(seed, feature):
             N, MM = cell_vars_rules_norm.shape
             M = int(np.sqrt(MM))
             cell_vars_rules_norm_keepshape = cell_vars_rules_norm.reshape(N, M, M)
-        
+
+            # ── W-only over-membership analysis (no modulation clustering) ──
+            # Threshold the static recurrent weight |W| at fixed percentiles
+            # and ask whether the surviving (top-magnitude) synapses are
+            # over-represented on particular pre/post neurons or pre/post
+            # neuron clusters compared to a size-matched random subset.
+            # Independent of any modulation clustering; runs once at the
+            # start of the first modulation iteration and produces results
+            # for both normalized and unnormalized neuron clusterings.
+            #
+            # ─────────────────────────────────────────────────────────────
+            # IMPORTANT — this analysis answers a DIFFERENT question than
+            # the modulation `prepost_belonging` block downstream, even
+            # though both reuse `count_pairs_with_clusters[_control]`:
+            #
+            #   • W-threshold (here):
+            #       Universe = top-X% of synapses by |W|, all in ONE group.
+            #       Control  = pick same number of synapses uniformly at
+            #                  random from the full M*M space.
+            #       Question = "Does the static weight W concentrate
+            #                   strong synapses on specific pre/post
+            #                   neurons or neuron clusters?"
+            #       Tests the *spatial structure of W itself*.
+            #
+            #   • Modulation prepost_belonging (later):
+            #       Universe = all surviving synapses (post-mask),
+            #                  partitioned into many modulation clusters.
+            #       Control  = shuffle modulation cluster LABELS while
+            #                  keeping synapse positions fixed (so the
+            #                  spatial concentration of high-|W| synapses
+            #                  is already baked into both observed and
+            #                  control).
+            #       Question = "Given where these synapses sit, do
+            #                   modulation clusters add pre/post neuron
+            #                   information BEYOND that spatial layout?"
+            #       Tests *modulation-cluster organization on top of W*.
+            #
+            # Consequence: the W-threshold top row (per-neuron) often
+            # reads as a strong over-membership (W concentrates on a few
+            # neurons), while the modulation prepost top row reads as
+            # small (modulation clusters don't add much per-neuron info
+            # once W's concentration is taken as the baseline). This is
+            # not a contradiction — it's two stacked diagnostics.
+            # ─────────────────────────────────────────────────────────────
+            if clustering_name == "modulation_all" and clustering_normalize:
+                W_thresh_percentiles = [50, 90, 99]
+                W_thresh_variants = [
+                    ("normalized",   "input_normalized",   "hidden_normalized"),
+                    ("unnormalized", "input_unnormalized", "hidden_unnormalized"),
+                ]
+                w_threshold_results = {}
+                W_abs_flat = np.abs(modulation_W).ravel()  # (M*M,)
+                MM_total = W_abs_flat.size
+                for var_label, in_key, hi_key in W_thresh_variants:
+                    if in_key not in col_clusters_all or hi_key not in col_clusters_all:
+                        print(f"  [W-thresh OM] skipping {var_label}: cluster dict missing")
+                        continue
+                    cl_input  = col_clusters_all[in_key]
+                    cl_hidden = col_clusters_all[hi_key]
+                    var_results = []
+
+                    for pct in W_thresh_percentiles:
+                        thr = float(np.percentile(W_abs_flat, pct))
+                        flat_idx_above = np.where(W_abs_flat >= thr)[0]
+                        n_above = flat_idx_above.size
+                        if n_above < 2:
+                            print(f"  [W-thresh OM] {var_label} p{pct}: only {n_above} synapses, skipping")
+                            continue
+
+                        # Single-group analysis: every above-threshold synapse
+                        # is in group 0; the shuffled control reassigns which
+                        # synapses (out of M*M) belong to that single group.
+                        col_all_W = np.zeros(n_above, dtype=int)
+                        same_pre, same_post, no_same, \
+                            same_preC, same_postC, same_bothC, no_bothC = \
+                            clustering_metric.count_pairs_with_clusters(
+                                col_all_W, M, cl_input, cl_hidden,
+                                flat_idx=flat_idx_above)
+
+                        # The control needs to draw `n_above` synapses uniformly
+                        # at random from the full M*M space, not from the
+                        # already-thresholded subset. count_pairs_with_clusters_control
+                        # shuffles which positions belong to each group — we
+                        # achieve the right null by passing a length-MM_total
+                        # col_all where n_above entries are 0 (in-group) and
+                        # the rest are 1 (out-of-group); pair counts for the
+                        # in-group come back as the first group's stats.
+                        col_all_full = np.ones(MM_total, dtype=int)
+                        col_all_full[flat_idx_above] = 0
+                        flat_idx_full = np.arange(MM_total)
+                        # Observed: within-group counts for group 0 only.
+                        # Note: count_pairs_with_clusters returns *aggregated*
+                        # within-group counts across all groups, so we'd get
+                        # extra junk from the out-of-group pairs. Stay with
+                        # the n_above-only call above for the observed counts.
+                        same_pre_c, same_post_c, no_same_c, \
+                            same_preC_c, same_postC_c, same_bothC_c, no_bothC_c = \
+                            clustering_metric.count_pairs_with_clusters_control(
+                                col_all_full, M, cl_input, cl_hidden,
+                                repeat=10000, flat_idx=flat_idx_full)
+                        # The control returns aggregated counts over both
+                        # groups (in and out). For an unbiased null on the
+                        # in-group only, divide by the ratio of pair counts:
+                        # P(group 0) = C(n_above, 2) / (C(n_above,2) + C(MM-n_above,2)).
+                        n_out = MM_total - n_above
+                        pairs_in  = n_above * (n_above - 1) // 2
+                        pairs_out = n_out * (n_out - 1) // 2
+                        denom = pairs_in + pairs_out
+                        if denom > 0:
+                            scale = pairs_in / denom
+                        else:
+                            scale = 1.0
+                        same_pre_c   = same_pre_c   * scale
+                        same_post_c  = same_post_c  * scale
+                        no_same_c    = no_same_c    * scale
+                        same_preC_c  = same_preC_c  * scale
+                        same_postC_c = same_postC_c * scale
+                        same_bothC_c = same_bothC_c * scale
+                        no_bothC_c   = no_bothC_c   * scale
+
+                        bar_all_lst = [
+                            [same_pre, same_post, no_same],
+                            [same_preC, same_postC, same_bothC, no_bothC],
+                        ]
+                        bar_all_ctrl_lst = [
+                            [same_pre_c, same_post_c, no_same_c],
+                            [same_preC_c, same_postC_c, same_bothC_c, no_bothC_c],
+                        ]
+                        bar_name_lst = [
+                            ["Share-Pre", "Share-Post", "Neither"],
+                            ["Share-Pre-Cluster", "Share-Post-Cluster",
+                             "Share-Both-Cluster", "Neither"],
+                        ]
+                        var_results.append({
+                            "percentile":      pct,
+                            "threshold":       thr,
+                            "n_above":         int(n_above),
+                            "n_total":         int(MM_total),
+                            "n_pre_clusters":  len(cl_input),
+                            "n_post_clusters": len(cl_hidden),
+                            "bar_all_lst":     [np.array(b, dtype=float) for b in bar_all_lst],
+                            "bar_all_ctrl_lst":[np.array(b, dtype=float) for b in bar_all_ctrl_lst],
+                            "bar_name_lst":    bar_name_lst,
+                        })
+                        print(f"  [W-thresh OM] {var_label} p{pct}: thr={thr:.4f}, "
+                              f"n_above={n_above}/{MM_total}")
+
+                    w_threshold_results[var_label] = var_results
+
+                # Save raw results.
+                with open(f"{save_dir}/w_threshold_belonging_{savefigure_name_base}.pkl", "wb") as _f:
+                    pickle.dump({
+                        "percentiles": W_thresh_percentiles,
+                        "results_by_variant": w_threshold_results,
+                    }, _f)
+
+                # One figure per variant: 2 rows (neuron, neuron-cluster)
+                # × n_thresholds cols. Bars = (obs - ctrl) / ctrl over-membership.
+                for var_label, var_results in w_threshold_results.items():
+                    if not var_results:
+                        continue
+                    n_cols = len(var_results)
+                    figw, axsw = plt.subplots(2, n_cols, figsize=(4 * n_cols, 4 * 2))
+                    if n_cols == 1:
+                        axsw = axsw[:, np.newaxis]
+                    row_titles = ["Same Neuron Check", "Same Neuron Cluster Check"]
+                    for ci, entry in enumerate(var_results):
+                        for ri in range(len(entry["bar_all_lst"])):
+                            obs  = np.array(entry["bar_all_lst"][ri])
+                            ctrl = np.array(entry["bar_all_ctrl_lst"][ri])
+                            with np.errstate(divide="ignore", invalid="ignore"):
+                                over = np.where(ctrl > 0, (obs - ctrl) / ctrl, 0.0)
+                            axsw[ri, ci].bar(range(len(over)), over, alpha=0.7)
+                            axsw[ri, ci].set_xticks(range(len(over)))
+                            axsw[ri, ci].set_xticklabels(
+                                entry["bar_name_lst"][ri], rotation=45, ha="right")
+                            axsw[ri, ci].set_ylabel("Over-membership", fontsize=12)
+                            if ri == 0:
+                                title = (f"{row_titles[ri]} | p{entry['percentile']}; "
+                                         f"thr={entry['threshold']:.3f}\n"
+                                         f"n_above={entry['n_above']}/{entry['n_total']}")
+                            else:
+                                title = (f"{row_titles[ri]} | p{entry['percentile']}; "
+                                         f"thr={entry['threshold']:.3f}\n"
+                                         f"#PreCluster={entry['n_pre_clusters']}; "
+                                         f"#PostCluster={entry['n_post_clusters']}")
+                            axsw[ri, ci].set_title(title, fontsize=9)
+                    figw.suptitle(
+                        f"W-threshold over-membership ({var_label})",
+                        fontsize=12)
+                    figw.tight_layout()
+                    figw.savefig(
+                        f"{save_dir}/w_threshold_belonging_{var_label}_{savefigure_name_base}.png",
+                        dpi=300)
+                    plt.close(figw)
+
         # build rule-wise value lists and corresponding field names dynamically
         rule_vals  = [cell_vars_rules_norm[i].tolist() for i in range(n_rules)]
         # print(f"rule_vals: {rule_vals}")
@@ -2122,7 +2353,7 @@ def main(seed, feature):
                 if clustering_normalize:
                     _exclusion_modes = ["mod_only"]
                 else:
-                    _exclusion_modes = ["mod_only"]
+                    _exclusion_modes = ["mod_only", "mod_and_endpoint"]
 
                 for _excl_mode in _exclusion_modes:
                     print(f"  --- Exclusion mode: {_excl_mode} ---")
@@ -2253,25 +2484,29 @@ def main(seed, feature):
                     ppshare_row_names = ["Same Neuron Check", "Same Neuron Cluster Check"]
                     n_pre_clusters  = len(cluster_input)
                     n_post_clusters = len(cluster_hidden)
-                    for idx in range(len(bar_all_lst)):
-                        bar_all = np.array(bar_all_lst[idx])
-                        bar_all_c = np.array(bar_all_ctrl_lst[idx])
+                    # Only the mod_only over-membership is plotted; mod_and_endpoint
+                    # still feeds mask_breakdown_lst (above) so the breakdown figures
+                    # remain complete, but the over-membership panel stays clean
+                    # with one bar per category instead of two overlapping ones.
+                    if _excl_mode == "mod_only":
+                        for idx in range(len(bar_all_lst)):
+                            bar_all = np.array(bar_all_lst[idx])
+                            bar_all_c = np.array(bar_all_ctrl_lst[idx])
 
-                        over_membership = (bar_all - bar_all_c) / bar_all_c
+                            over_membership = (bar_all - bar_all_c) / bar_all_c
 
-                        axsppshare[idx,G_idx].bar([i for i in range(len(over_membership))], over_membership,
-                                                  alpha=0.7 if _excl_mode == "mod_only" else 1.0,
-                                                  label=_excl_mode)
-                        axsppshare[idx,G_idx].set_xticks([i for i in range(len(over_membership))])
-                        axsppshare[idx,G_idx].set_xticklabels(bar_name_lst[idx], rotation=45, ha="right")
-                        axsppshare[idx,G_idx].set_ylabel("Over-membership", fontsize=15)
-                        if idx == 0:
-                            title = f"{ppshare_row_names[idx]} | G={G}; #Cluster={N_cluster}"
-                        else:
-                            title = (f"{ppshare_row_names[idx]} | G={G}; #Cluster={N_cluster}\n"
-                                     f"#PreCluster={n_pre_clusters}; #PostCluster={n_post_clusters}")
-                        axsppshare[idx,G_idx].set_title(title)
-                        axsppshare[idx,G_idx].legend(fontsize=7)
+                            axsppshare[idx,G_idx].bar([i for i in range(len(over_membership))], over_membership,
+                                                      alpha=0.7, label=_excl_mode)
+                            axsppshare[idx,G_idx].set_xticks([i for i in range(len(over_membership))])
+                            axsppshare[idx,G_idx].set_xticklabels(bar_name_lst[idx], rotation=45, ha="right")
+                            axsppshare[idx,G_idx].set_ylabel("Over-membership", fontsize=15)
+                            if idx == 0:
+                                title = f"{ppshare_row_names[idx]} | G={G}; #Cluster={N_cluster}"
+                            else:
+                                title = (f"{ppshare_row_names[idx]} | G={G}; #Cluster={N_cluster}\n"
+                                         f"#PreCluster={n_pre_clusters}; #PostCluster={n_post_clusters}")
+                            axsppshare[idx,G_idx].set_title(title)
+                            axsppshare[idx,G_idx].legend(fontsize=7)
 
                     if _excl_mode == "mod_only":
                         prepost_belonging_results.append({
@@ -3178,10 +3413,9 @@ def main(seed, feature):
             cell_vars_rules_sorted_norm_all_save["cell_vars_rules_sorted_norm_all_lst"] = cell_vars_rules_sorted_norm_all_lst
 
             # 2025-10-30: modulation, clustering by G groups from MinibatchKmeans, "border" between clusters
-            modulation_cluster_norm = []
             modulation_cluster_boundary = []
             for k in range(len(cell_vars_rules_sorted_norm_all_lst)):
-                axprepost[3+k].set_yticklabels(tb_break_name[result_all_lst[k]["row_order"]], 
+                axprepost[3+k].set_yticklabels(tb_break_name[result_all_lst[k]["row_order"]],
                                                rotation=0, ha='right', va='center', fontsize=9)
                 result_all = result_all_lst[k]
                 rl_all = np.asarray(result_all["row_labels"])[result_all["row_order"]]
@@ -3194,23 +3428,10 @@ def main(seed, feature):
                 for cb in cbreaks_all_:
                     axprepost[3+k].axvline(cb, color="w", lw=3.0, zorder=3)
                     axprepost[3+k].axvline(cb, color="k", lw=0.8, zorder=4)
-                    
+
                 modulation_cluster_boundary.append([rbreaks_all_, cbreaks_all_])
 
-                # 2025-11-12: calculate the mean of the reordered covaraince matrix under different G value
-                # notice G indicates the group size, not the actual 
-                rbreaks_all_end = [0] + rbreaks_all_ + [cell_vars_rules_sorted_norm_all_lst[0].shape[0]]
-                cbreaks_all_end = [0] + cbreaks_all_ + [cell_vars_rules_sorted_norm_all_lst[0].shape[1]]
-
-                varmeanmod = np.zeros((len(rbreaks_all_end) - 1, len(cbreaks_all_end) - 1))
-                for rr in range(len(rbreaks_all_end) - 1):
-                    for cc in range(len(cbreaks_all_end) - 1):
-                        varmeanmod[rr,cc] = np.mean(cell_vars_rules_sorted_norm_all_lst[k][rbreaks_all_end[rr]:rbreaks_all_end[rr+1], 
-                                                                                        cbreaks_all_end[cc]:cbreaks_all_end[cc+1]])
-
-                modulation_cluster_norm.append(varmeanmod)    
-                
-            cell_vars_rules_sorted_norm_all_save["modulation_cluster_boundary"] = modulation_cluster_boundary      
+            cell_vars_rules_sorted_norm_all_save["modulation_cluster_boundary"] = modulation_cluster_boundary
                 
             axprepost[0].set_title("Original", fontsize=15)
             axprepost[1].set_title(f"Group by Pre (row_k={result_pre['row_k']}, col_k={result_pre['col_k']})", fontsize=15)
@@ -3249,17 +3470,6 @@ def main(seed, feature):
             # save the fitting result under different number of predefined modulation cluster
             with open(f"{save_dir}/{clustering_name}_clustering_result_all_{savefigure_name}.pkl", "wb") as f:
                 pickle.dump(cell_vars_rules_sorted_norm_all_save, f)
-
-            # plot the norm 
-            figmodnorm, axsmodnorm = plt.subplots(len(modulation_cluster_norm),1,figsize=(10,4*len(modulation_cluster_norm)))
-            for idx in range(len(modulation_cluster_norm)):
-                sns.heatmap(modulation_cluster_norm[idx], ax=axsmodnorm[idx], cmap=cs)
-                axsmodnorm[idx].set_xlabel("Modulation Index", fontsize=15)
-                axsmodnorm[idx].set_ylabel("Session Index", fontsize=15)
-
-            figmodnorm.tight_layout()
-            figmodnorm.savefig(f"{save_dir}/{clustering_name}_modulation_clusternorm_{savefigure_name}.png", dpi=300)
-            plt.close(figmodnorm)
 
             # plot the score
             def _gap_curve_mod(Z, k_vals):
@@ -3436,25 +3646,33 @@ def main(seed, feature):
         
 
 if __name__ == "__main__":
+    import argparse
+    import re
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--feature", type=str, default=None,
+                        help="Only run models with this feature (e.g. 'L21e4')")
+    args = parser.parse_args()
+
     # Clean up old output files
-    clean = True 
-    if clean: 
+    clean = True
+    if clean:
         for f in Path("multiple_tasks").glob("*.png"):
             f.unlink()
         for f in Path("multiple_tasks").glob("*.pkl"):
             f.unlink()
-        
-    import re
+
     saved_nets = sorted(Path("multiple_tasks").glob("savednet_everything_seed*+angle.pt"))
     param_lst = []
     for p in saved_nets:
         m = re.match(r"savednet_everything_seed(\d+)_(\w+)\+hidden\d+\+batch\d+\+angle\.pt", p.name)
         if m:
             param_lst.append((int(m.group(1)), m.group(2)))
-            
-    print(f"Found {len(param_lst)} saved models: {param_lst}")
-    
-    param_lst = [[749, "L21e4"]]
-    
+
+    if args.feature:
+        param_lst = [(s, f) for s, f in param_lst if f == args.feature]
+
+    print(f"Running {len(param_lst)} models: {param_lst}")
+
     for seed, feature in param_lst:
         main(seed, feature)
