@@ -60,6 +60,10 @@ import multiple_task_performance as mpf
 c_vals = color_func.rainbow_generate(15)
 c_vals_l = color_func.rainbow_generate(30)
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+
 def eval_one(netpathname):
     """
     """
@@ -75,19 +79,20 @@ def eval_one(netpathname):
     task_params, train_params, net_params = raw_cfg_param["task_params"], raw_cfg_param["train_params"], raw_cfg_param["net_params"]
     
     netpathname = "multiple_tasks/" + f"savednet_{aname}.pt"
-    checkpoint = torch.load(netpathname, map_location="cpu")
+    checkpoint = torch.load(netpathname, map_location=device)
 
     state_dict = checkpoint["state_dict"]
     print(state_dict.keys())
     load_net_params = checkpoint["net_params"]
     print(load_net_params)
-    
+
     model = mpn.DeepMultiPlasticNet(load_net_params, verbose=False, forzihan=True)
-    
+
     missing, unexpected = model.load_state_dict(checkpoint["state_dict"], strict=True)
     print("missing:", missing)
     print("unexpected:", unexpected)
 
+    model.to(device)
     model.eval()
     
     noise_level = 0.01
@@ -113,7 +118,11 @@ def eval_one(netpathname):
     )
     test_input, test_output, test_mask = test_data
     _, test_trials, test_rule_idxs = test_trials_extra
-    
+
+    test_input = test_input.to(device)
+    test_output = test_output.to(device)
+    test_mask = test_mask.to(device)
+
     with torch.no_grad():
         net_out, _, db_test = model.iterate_sequence_batch(test_input, run_mode='track_states')
         acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input, isvalid=True, mode=model.acc_measure)
@@ -162,7 +171,10 @@ def eval_one(netpathname):
     
     embed_data_names = ["hidden", "mod", "eff_mod"]
     embed_data = [hs, Ms, eff_Ms]
-    
+
+    # Collect PCA results for saving
+    pca_results = {}
+
     for data_name, data in zip(embed_data_names, embed_data):
         print(f"Processing {data_name}...")
         ctx_endfix = []
@@ -179,6 +191,12 @@ def eval_one(netpathname):
 
         pca = PCA(n_components=2)
         X_2d = pca.fit_transform(ctx_extract)
+
+        pca_results[data_name] = {
+            "X_2d": X_2d,
+            "ctx_rule_labels": ctx_rule_labels,
+            "explained_variance_ratio": pca.explained_variance_ratio_,
+        }
 
         fig, axs = plt.subplots(1,2,figsize=(4*2,4))
 
@@ -245,7 +263,20 @@ def eval_one(netpathname):
             dpi=300,
             bbox_inches="tight",
         )
-            
+        plt.close(fig)
+
+    # Save PCA data for paper_plot reuse
+    pca_save_path = f"./state_space/state_space_pca_{aname}_noise{noise_level}.pkl"
+    with open(pca_save_path, "wb") as f:
+        pickle.dump({
+            "pca_results": pca_results,
+            "all_rules": list(all_rules),
+            "rule_motif_mapping": rule_motif_mapping,
+            "noise_level": noise_level,
+            "aname": aname,
+        }, f)
+    print(f"Saved PCA data to {pca_save_path}")
+
     # distance between initial conditions vs. angle between first step (closer to Fig 4C)
     def fig4c(shift_time):
         fig, axs = plt.subplots(1, len(embed_data), figsize=(4*len(embed_data),4))
@@ -324,11 +355,21 @@ def eval_one(netpathname):
             
         fig.tight_layout()
         fig.savefig(f"./state_space/initial_condition_distance_vs_angle_{aname}_{shift_time+1}_noise{noise_level}.png", dpi=300)
-        
+        plt.close(fig)
+
         return rval_dict
     
     rval_dict = fig4c(shift_time=0)
-    
+
+    # Cleanup to prevent GPU/CPU memory compounding across experiments
+    del model, checkpoint, state_dict, net_out, db_test
+    del test_input, test_output, test_mask, test_data, test_trials_extra
+    del Ms_orig, eff_Ms_orig, Ms, eff_Ms, xs, hs
+    del embed_data
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     return aname, hidden_size, l2_info, rval_dict
 
 def run_all():
@@ -403,6 +444,7 @@ def summarize():
     
     fig.tight_layout()
     fig.savefig('./state_space/summary_r_values.png', dpi=300)
+    plt.close(fig)
     print("\nSaved summary plot to ./state_space/summary_r_values.png")
 
 if __name__ == "__main__":    
