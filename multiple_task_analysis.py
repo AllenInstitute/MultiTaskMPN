@@ -233,17 +233,17 @@ def main(seed, feature):
         elif addtask == "delaydm1":
             task_params_dmcgo["rules"] = ["delaydm1", "delaydm2"]
             
-        test_n_batch = 100
+        test_n_batch = 50
 
         task_params_dmcgo['hp']['batch_size_train'] = test_n_batch
         task_params_dmcgo["long_delay"] = "normal"
         
         test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params_dmcgo, 
-                                                                    test_n_batch, 
-                                                                    rules=task_params_dmcgo['rules'], 
-                                                                    mode_input="random", 
-                                                                    device="cpu",
-                                                                    verbose=True)
+                                                                      test_n_batch, 
+                                                                      rules=task_params_dmcgo['rules'], 
+                                                                      mode_input="random", 
+                                                                      device="cpu",
+                                                                      verbose=True)
         test_input, test_output, _ = test_data
 
         print(f"test_input.shape: {test_input.shape}")
@@ -696,7 +696,7 @@ def main(seed, feature):
     # should we re-evaluate the result? 
     reevaluate = True 
     if reevaluate:
-        test_n_batch = 80 # number of batches for each task 
+        test_n_batch = 50 # number of batches for each task 
         task_params_c['hp']['batch_size_train'] = test_n_batch
             
         test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(

@@ -55,3 +55,6 @@ CLAUDE.md
 
 # Normalized lesion output
 multiple_tasks_norm/
+
+# Paper figures
+paper_plot/

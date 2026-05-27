@@ -524,6 +524,332 @@ def plot_state_space_r_values():
     print(f"Saved: {out_path}")
 
 
+# ─── Figure: Over-membership ─────────────────────────────────────────────────
+
+def _plot_overmembership_single(pkl_name, out_filename):
+    """
+    Plot a 2×1 over-membership figure (top: same-neuron, bottom: same neuron-cluster)
+    for a single prepost_belonging pickle, G=100 optimal-k entry.
+    """
+    _ensure_out_dir()
+    pkl_path = DATA_DIR / pkl_name
+    if not pkl_path.exists():
+        print(f"  Skipped: {pkl_path} not found.")
+        return
+
+    with open(pkl_path, "rb") as f:
+        data = pickle.load(f)
+
+    entry = data["prepost_belonging_results"][0]  # G=100, optimal k
+
+    row_titles = ["Same Neuron", "Same Neuron Cluster"]
+    fig, axes = plt.subplots(2, 1, figsize=(2.5, 3.2))
+
+    for row_idx in range(2):
+        ax = axes[row_idx]
+        obs = np.array(entry["bar_all_lst"][row_idx], dtype=float)
+        ctrl = np.array(entry["bar_all_ctrl_lst"][row_idx], dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            over = np.where(ctrl > 0, (obs - ctrl) / ctrl, 0.0)
+
+        bar_names = entry["bar_name_lst"][row_idx]
+        short_names = [n.replace("Share-", "").replace("-Cluster", " Cl.") for n in bar_names]
+
+        colors = ["#3182ce", "#e53e3e", "#38a169", "#718096"][:len(over)]
+        ax.bar(range(len(over)), over, color=colors, edgecolor="k", linewidth=0.5, width=0.6)
+        ax.axhline(0, color="k", lw=0.5, zorder=0)
+        ax.set_xticks(range(len(over)))
+        ax.set_xticklabels(short_names, rotation=35, ha="right", fontsize=6)
+        ax.spines[["top", "right"]].set_visible(False)
+
+    fig.subplots_adjust(hspace=0.45)
+    out_path = OUT_DIR / out_filename
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def plot_overmembership_unnorm():
+    """Figure: Over-membership for unnormalized modulation (G=100)."""
+    _plot_overmembership_single(
+        f"modulation_all_prepost_belonging_{ANAME}_unnormalized.pkl",
+        "overmembership_unnormalized.png",
+    )
+
+
+def plot_overmembership_weighted():
+    """Figure: Over-membership for weighted unnormalized modulation (G=100)."""
+    _plot_overmembership_single(
+        f"modulation_all_weighted_prepost_belonging_{ANAME}_unnormalized.pkl",
+        "overmembership_weighted.png",
+    )
+
+
+# ─── Figure: Lesion heatmap ──────────────────────────────────────────────────
+
+LESION_DIR = Path("multiple_tasks_perf") / ANAME
+
+
+def _load_lesion_results():
+    """Load the lesion/prune results pickle."""
+    pkl_path = LESION_DIR / f"lesion_prune_results_{ANAME}.pkl"
+    if not pkl_path.exists():
+        return None
+    with open(pkl_path, "rb") as f:
+        return pickle.load(f)
+
+
+def plot_lesion_heatmap():
+    """
+    Figure: Normalized lesion effect heatmap (unnormalized clusters).
+
+    Two panels stacked vertically:
+      Top — input (pre) cluster lesion effect (tasks × input clusters)
+      Bottom — hidden (post) cluster lesion effect (tasks × hidden clusters)
+
+    Normalized effect = random_acc - cluster_acc (positive = cluster matters).
+    """
+    _ensure_out_dir()
+    data = _load_lesion_results()
+    if data is None:
+        print("  Skipped: lesion results not found. Run leison.py first.")
+        return
+
+    lu = data["leison_unnorm"]
+    ru = data["random_leison_unnorm"]
+
+    all_tasks = lu["all_tasks"]
+    comb_names = lu["all_comb_names_leison"]
+    ihtask_accs = np.array(lu["ihtask_accs"])
+    random_accs = np.array(ru["ihrandomtask_accs"])
+
+    pre_idx = [i for i, n in enumerate(comb_names) if n.startswith("pre_c")]
+    post_idx = [i for i, n in enumerate(comb_names) if n.startswith("post_c")]
+
+    effect_pre = (random_accs[:, pre_idx] - ihtask_accs[:, pre_idx]) * 100
+    effect_post = (random_accs[:, post_idx] - ihtask_accs[:, post_idx]) * 100
+
+    pre_labels = [f"C{i+1}" for i in range(len(pre_idx))]
+    post_labels = [f"C{i+1}" for i in range(len(post_idx))]
+
+    # Modulation freeze_M lesion (weighted unnormalized)
+    mod_entry = data["mod_leison"]["modulation_all_weighted_unnormalized__freeze_M"]
+    mod_accs = np.array(mod_entry["modtask_accs"])
+    mod_random = np.array(mod_entry["modrandomtask_accs"])
+    mod_comb = mod_entry["all_comb_names_mod"]
+    mod_idx = [i for i, n in enumerate(mod_comb) if n.startswith("mod_c")]
+    effect_mod = (mod_random[:, mod_idx] - mod_accs[:, mod_idx]) * 100
+    mod_labels = [f"C{i+1}" for i in range(len(mod_idx))]
+
+    vmax = max(np.abs(effect_pre).max(), np.abs(effect_post).max(), np.abs(effect_mod).max())
+
+    fig, axes = plt.subplots(
+        3, 1, figsize=(6, 8),
+        gridspec_kw={"height_ratios": [1, 1, 1], "hspace": 0.1},
+    )
+
+    panels = [
+        (axes[0], effect_pre, pre_labels),
+        (axes[1], effect_post, post_labels),
+        (axes[2], effect_mod, mod_labels),
+    ]
+
+    for idx, (ax, effect, cluster_labels) in enumerate(panels):
+        sns.heatmap(
+            effect, ax=ax, cmap="RdBu_r", center=0,
+            vmin=-vmax, vmax=vmax,
+            xticklabels=cluster_labels,
+            yticklabels=all_tasks,
+            cbar=False,
+        )
+        ax.set_ylabel("")
+        ax.tick_params(axis="y", labelsize=6, rotation=0)
+        ax.tick_params(axis="x", labelsize=6)
+        if idx < 2:
+            ax.set_xlabel("")
+            ax.tick_params(axis="x", labelbottom=False)
+        else:
+            ax.set_xlabel("Cluster", fontsize=8)
+
+    # Shared colorbar
+    norm = mpl.colors.Normalize(vmin=-vmax, vmax=vmax)
+    sm = mpl.cm.ScalarMappable(cmap="RdBu_r", norm=norm)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=axes, shrink=0.5, pad=0.04)
+    cbar.set_label("Normalized effect (%)", fontsize=8)
+    cbar.ax.tick_params(labelsize=7)
+    cbar.ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=5))
+    out_path = OUT_DIR / "lesion_heatmap_unnorm.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+# ─── Figure: OM vs lesion ────────────────────────────────────────────────────
+
+def _load_cluster_info_mod():
+    """Load the modulation cluster_info pickle for the target model."""
+    pkl_path = DATA_DIR / f"cluster_info_mod_{ANAME}.pkl"
+    if not pkl_path.exists():
+        return None
+    with open(pkl_path, "rb") as f:
+        return pickle.load(f)
+
+
+def plot_om_vs_lesion():
+    """
+    Figure: Over-membership predicts modulation lesion effect.
+
+    Panel 1 (left): OM vs |lesion effect diff| for freeze_M mode.
+    Panel 2 (right): Per-cluster OM-predicted effect vs actual mod lesion effect.
+
+    Uses weighted-unnormalized modulation, fixed_k20 global assignment,
+    and combined_leison_unnorm.
+    """
+    _ensure_out_dir()
+    from scipy.stats import linregress
+
+    results = _load_lesion_results()
+    if results is None:
+        print("  Skipped: lesion results not found.")
+        return
+
+    cluster_info_mod = _load_cluster_info_mod()
+    if cluster_info_mod is None:
+        print("  Skipped: cluster_info_mod not found.")
+        return
+
+    base_key = "modulation_all_weighted_unnormalized"
+    variant = "unnorm"
+
+    if base_key not in cluster_info_mod:
+        print(f"  Skipped: {base_key} not in cluster_info_mod.")
+        return
+
+    mod_keys = cluster_info_mod[base_key]
+    fk_ga_keys = [k for k in mod_keys if k.startswith("global_assignment_fixed_k")]
+    ga = mod_keys[fk_ga_keys[0]] if fk_ga_keys else mod_keys.get("global_assignment")
+    if ga is None:
+        print("  Skipped: no global_assignment found.")
+        return
+
+    om_stack = ga["om_stack"]
+    all_choice_order = ga["all_choice_order"]
+    n_in = ga["n_in"]
+    n_hid = ga["n_hid"]
+    om_id_to_idx = {cid: idx for idx, cid in enumerate(all_choice_order)}
+
+    # Skip unresponsive clusters (last index in unnorm)
+    skip_input = {n_in - 1}
+    skip_hidden = {n_hid - 1}
+
+    ckey = f"combined_leison_{variant}"
+    if ckey not in results:
+        print(f"  Skipped: {ckey} not in results.")
+        return
+    cdata = results[ckey]
+    combined_effect = np.asarray(cdata["combined_random_accs"], dtype=float) - np.asarray(cdata["combined_accs"], dtype=float)
+    comb_mean = combined_effect.mean(axis=0)  # (pre_n, post_n)
+
+    # --- Panel 1: OM vs |lesion effect diff| for freeze_M ---
+    mod_result_key_fm = f"{base_key}__freeze_M"
+    mod_data_fm = results["mod_leison"][mod_result_key_fm]
+    modtask_accs_fm = np.asarray(mod_data_fm["modtask_accs"], dtype=float)
+    modrandom_fm = np.asarray(mod_data_fm["modrandomtask_accs"], dtype=float)
+    all_comb_names_fm = mod_data_fm["all_comb_names_mod"]
+
+    mod_effects_fm = {}
+    for key_idx, key in enumerate(all_comb_names_fm):
+        if key == "mod_noleison":
+            continue
+        cid = int(key.replace("mod_c", ""))
+        mod_effects_fm[cid] = modrandom_fm[:, key_idx] - modtask_accs_fm[:, key_idx]
+
+    om_vals, lesion_diffs = [], []
+    for cid in sorted(mod_effects_fm.keys()):
+        if cid not in om_id_to_idx:
+            continue
+        om_idx = om_id_to_idx[cid]
+        mod_eff = mod_effects_fm[cid]
+        for pi in range(n_in):
+            if pi in skip_input:
+                continue
+            for qi in range(n_hid):
+                if qi in skip_hidden:
+                    continue
+                om_val = om_stack[om_idx, pi, qi]
+                comb_eff = combined_effect[:, pi, qi]
+                diff = np.abs(np.mean(mod_eff) - np.mean(comb_eff))
+                om_vals.append(om_val)
+                lesion_diffs.append(diff)
+
+    om_vals = np.array(om_vals)
+    lesion_diffs = np.array(lesion_diffs)
+
+    # --- Panel 2: per-cluster prediction (zero_W) ---
+    mod_result_key_zw = f"{base_key}__zero_W"
+    mod_data_zw = results["mod_leison"][mod_result_key_zw]
+    modtask_accs_zw = np.asarray(mod_data_zw["modtask_accs"], dtype=float)
+    modrandom_zw = np.asarray(mod_data_zw["modrandomtask_accs"], dtype=float)
+
+    pred_x, pred_y = [], []
+    for key_idx, key in enumerate(mod_data_zw["all_comb_names_mod"]):
+        if key == "mod_noleison":
+            continue
+        cid = int(key.replace("mod_c", ""))
+        if cid not in om_id_to_idx:
+            continue
+        om_idx = om_id_to_idx[cid]
+        om_profile = om_stack[om_idx]
+        if om_profile.sum() > 0:
+            predicted = (om_profile * comb_mean).sum() / om_profile.sum()
+        else:
+            predicted = 0.0
+        actual = (modrandom_zw[:, key_idx] - modtask_accs_zw[:, key_idx]).mean()
+        pred_x.append(predicted * 100)
+        pred_y.append(actual * 100)
+
+    pred_x = np.array(pred_x)
+    pred_y = np.array(pred_y)
+
+    # --- Plot ---
+    fig, axes = plt.subplots(1, 2, figsize=(5.5, 2.8))
+
+    # Panel 1: OM vs |lesion diff|
+    ax = axes[0]
+    slope, intercept, r, p, _ = linregress(om_vals, lesion_diffs)
+    ax.scatter(om_vals, lesion_diffs, alpha=0.3, s=10, edgecolors="none", color="steelblue")
+    x_line = np.linspace(om_vals.min(), om_vals.max(), 100)
+    ax.plot(x_line, slope * x_line + intercept, color="tomato", linewidth=1.2)
+    p_str = f"p = {p:.2e}" if p < 0.001 else f"p = {p:.3f}"
+    ax.text(0.05, 0.95, f"r = {r:.2f}\n{p_str}", transform=ax.transAxes,
+            va="top", ha="left", fontsize=7)
+    ax.set_xlabel("Over-membership", fontsize=8)
+    ax.set_ylabel("|Lesion effect diff|", fontsize=8)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    # Panel 2: predicted vs actual
+    ax = axes[1]
+    slope_p, intercept_p, r_p, p_p, _ = linregress(pred_x, pred_y)
+    ax.scatter(pred_x, pred_y, alpha=0.6, s=20, edgecolors="none", color="steelblue")
+    lim = [min(pred_x.min(), pred_y.min()), max(pred_x.max(), pred_y.max())]
+    ax.plot(lim, lim, color="black", linewidth=0.6, linestyle="--", alpha=0.5)
+    x_fit = np.linspace(pred_x.min(), pred_x.max(), 100)
+    ax.plot(x_fit, slope_p * x_fit + intercept_p, color="tomato", linewidth=1.2)
+    p_str_p = f"p = {p_p:.2e}" if p_p < 0.001 else f"p = {p_p:.3f}"
+    ax.text(0.05, 0.95, f"r = {r_p:.2f}\n{p_str_p}", transform=ax.transAxes,
+            va="top", ha="left", fontsize=7)
+    ax.set_xlabel("OM-predicted effect (%)", fontsize=8)
+    ax.set_ylabel("Actual mod lesion effect (%)", fontsize=8)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    fig.tight_layout()
+    out_path = OUT_DIR / "om_vs_lesion.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 ALL_FIGURES = {
@@ -533,6 +859,10 @@ ALL_FIGURES = {
     "l2_accuracy": plot_l2_vs_accuracy,
     "state_space_combined": plot_state_space_combined,
     "state_space_r_values": plot_state_space_r_values,
+    "overmembership_unnorm": plot_overmembership_unnorm,
+    "overmembership_weighted": plot_overmembership_weighted,
+    "lesion_heatmap": plot_lesion_heatmap,
+    "om_vs_lesion": plot_om_vs_lesion,
 }
 
 
@@ -540,6 +870,13 @@ def main():
     print(f"Experiment: {ANAME}")
     print(f"Output: {OUT_DIR}/")
     print()
+
+    # Clear old figures
+    _ensure_out_dir()
+    for f in OUT_DIR.iterdir():
+        if f.is_file():
+            f.unlink()
+
     for name, fn in ALL_FIGURES.items():
         print(f"── Generating: {name} ──")
         fn()
