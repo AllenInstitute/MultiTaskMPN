@@ -24,6 +24,7 @@ Outputs:
 """
 # %%
 import os
+import gc
 import numpy as np
 from numpy.linalg import norm
 from pathlib import Path
@@ -146,6 +147,7 @@ def main(seed, feature):
     aname = f"{task}_seed{seed}_{feature}+hidden{hidden}+batch{batch}{accfeature}"
     out_path_name = "multiple_tasks/" + f"param_{aname}_result.npz"
     out_path = Path(out_path_name)
+    reevaluate = True
 
     size_bytes = out_path.stat().st_size  
     size_gb = size_bytes / 1024**3 
@@ -156,14 +158,17 @@ def main(seed, feature):
         hyp_dict = data["hyp_dict"].item()
         all_rules = data["all_rules"]
         test_task = data["test_task"]
-        Ms_orig = data["Ms_orig"]
-        hs = data["hs"]
+        # Only load large arrays if we won't reevaluate (reevaluate overwrites them)
+        if not reevaluate:
+            Ms_orig = data["Ms_orig"]
+            hs = data["hs"]
+            xs = data["xs"]
         bs = data["bs"]
-        xs = data["xs"]
 
-    print(f"Ms_orig: {Ms_orig.shape}")
-    print(f"hs: {hs.shape}")
-    print(f"xs: {xs.shape}")
+    if not reevaluate:
+        print(f"Ms_orig: {Ms_orig.shape}")
+        print(f"hs: {hs.shape}")
+        print(f"xs: {xs.shape}")
     print(f"bs: {bs.shape}")
     print(f"test_task: {test_task.shape}")
     print(f"all_rules: {all_rules}")
@@ -188,9 +193,10 @@ def main(seed, feature):
 
     # %%
     # 2025-11-19: make sure the bias is only cell-dependent but not time- or trail-dependent
-    ref = bs[0, 0, :]              
-    same_per_k = np.all(bs == ref, axis=(0, 1))  
+    ref = bs[0, 0, :]
+    same_per_k = np.all(bs == ref, axis=(0, 1))
     all_k_constant = np.all(same_per_k)
+    del bs, ref, same_per_k
 
     # %%
     add_safe_globals([np.core.multiarray._reconstruct])
@@ -693,8 +699,6 @@ def main(seed, feature):
         save_dir=save_dir,
     )
 
-    # should we re-evaluate the result? 
-    reevaluate = True 
     if reevaluate:
         test_n_batch = 50 # number of batches for each task 
         task_params_c['hp']['batch_size_train'] = test_n_batch
@@ -3639,7 +3643,15 @@ def main(seed, feature):
                 "global_assignment": global_assignment_cache,
                 f"global_assignment_fixed_k{FIXED_K_OM}": global_assignment_fixed_k_cache,
             }
-    
+
+        # Free the reference to the large source array for this iteration
+        clustering_data_analysis[clustering_index] = None
+        gc.collect()
+
+    # Free the large modulation arrays now that all clustering iterations are done
+    del Ms_orig, weighted_Ms_orig
+    gc.collect()
+
     # save this only at the end     
     with open(f"{save_dir}/cluster_info_mod_{savefigure_name_base}.pkl", "wb") as f:
         pickle.dump(cluster_info_save_mod, f)

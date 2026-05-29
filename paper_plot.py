@@ -172,10 +172,14 @@ def _plot_clustered_variance(
 
     fig, ax = plt.subplots(1, 1, figsize=figsize)
 
-    sns.heatmap(
+    hm = sns.heatmap(
         ordered, ax=ax, cmap=cmap, vmin=vmin, vmax=vmax,
-        cbar=True, cbar_kws={"shrink": 0.75, "label": "Normalized variance"},
+        cbar=True, cbar_kws={"shrink": 0.4, "label": "Normalized variance"},
     )
+    cbar = hm.collections[0].colorbar
+    cbar.set_ticks([vmin, vmax])
+    cbar.set_ticklabels([f"{vmin:.0f}", f"{vmax:.0f}"])
+    cbar.ax.tick_params(labelsize=12)
 
     for rb in rbreaks:
         ax.axhline(rb, color="w", lw=2.5, zorder=3)
@@ -286,10 +290,14 @@ def plot_clustered_modulation(G_index=1):
 
     fig, ax = plt.subplots(1, 1, figsize=(16, 7))
 
-    sns.heatmap(
+    hm = sns.heatmap(
         ordered, ax=ax, cmap="coolwarm", vmin=0, vmax=1,
-        cbar=True, cbar_kws={"shrink": 0.75, "label": "Normalized variance"},
+        cbar=True, cbar_kws={"shrink": 0.4, "label": "Normalized variance"},
     )
+    cbar = hm.collections[0].colorbar
+    cbar.set_ticks([0, 1])
+    cbar.set_ticklabels(["0", "1"])
+    cbar.ax.tick_params(labelsize=12)
 
     for rb in rbreaks:
         ax.axhline(rb, color="w", lw=2.5, zorder=3)
@@ -585,6 +593,14 @@ def plot_overmembership_weighted():
     )
 
 
+def plot_overmembership_var_weighted():
+    """Figure: Over-membership for var-weighted unnormalized modulation (G=100)."""
+    _plot_overmembership_single(
+        f"modulation_all_var_weighted_prepost_belonging_{ANAME}_unnormalized.pkl",
+        "overmembership_var_weighted.png",
+    )
+
+
 # ─── Figure: Lesion heatmap ──────────────────────────────────────────────────
 
 LESION_DIR = Path("multiple_tasks_perf") / ANAME
@@ -677,8 +693,9 @@ def plot_lesion_heatmap():
     sm.set_array([])
     cbar = fig.colorbar(sm, ax=axes, shrink=0.5, pad=0.04)
     cbar.set_label("Normalized effect (%)", fontsize=8)
-    cbar.ax.tick_params(labelsize=7)
-    cbar.ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=5))
+    cbar.set_ticks([-vmax, vmax])
+    cbar.set_ticklabels([f"{-vmax:.0f}", f"{vmax:.0f}"])
+    cbar.ax.tick_params(labelsize=12)
     out_path = OUT_DIR / "lesion_heatmap_unnorm.png"
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -707,8 +724,6 @@ def plot_om_vs_lesion():
     and combined_leison_unnorm.
     """
     _ensure_out_dir()
-    from scipy.stats import linregress
-
     results = _load_lesion_results()
     if results is None:
         print("  Skipped: lesion results not found.")
@@ -719,7 +734,7 @@ def plot_om_vs_lesion():
         print("  Skipped: cluster_info_mod not found.")
         return
 
-    base_key = "modulation_all_weighted_unnormalized"
+    base_key = "modulation_all_var_weighted_unnormalized"
     variant = "unnorm"
 
     if base_key not in cluster_info_mod:
@@ -812,39 +827,450 @@ def plot_om_vs_lesion():
     pred_x = np.array(pred_x)
     pred_y = np.array(pred_y)
 
-    # --- Plot ---
-    fig, axes = plt.subplots(1, 2, figsize=(5.5, 2.8))
-
-    # Panel 1: OM vs |lesion diff|
-    ax = axes[0]
-    slope, intercept, r, p, _ = linregress(om_vals, lesion_diffs)
-    ax.scatter(om_vals, lesion_diffs, alpha=0.3, s=10, edgecolors="none", color="steelblue")
+    # --- Figure 1: OM vs |lesion diff| ---
+    from scipy.stats import linregress as _linregress
+    fig1, ax1 = plt.subplots(1, 1, figsize=(3, 2.8))
+    slope, intercept, r, p, _ = _linregress(om_vals, lesion_diffs)
+    ax1.scatter(om_vals, lesion_diffs, color="#3182ce", edgecolors="k",
+                linewidths=0.5, s=40, alpha=0.8, zorder=3)
     x_line = np.linspace(om_vals.min(), om_vals.max(), 100)
-    ax.plot(x_line, slope * x_line + intercept, color="tomato", linewidth=1.2)
+    ax1.plot(x_line, slope * x_line + intercept, color="tomato", linewidth=1.2, zorder=4)
     p_str = f"p = {p:.2e}" if p < 0.001 else f"p = {p:.3f}"
-    ax.text(0.05, 0.95, f"r = {r:.2f}\n{p_str}", transform=ax.transAxes,
-            va="top", ha="left", fontsize=7)
-    ax.set_xlabel("Over-membership", fontsize=8)
-    ax.set_ylabel("|Lesion effect diff|", fontsize=8)
-    ax.spines[["top", "right"]].set_visible(False)
+    ax1.legend([f"r = {r:.2f}, {p_str}"], loc="upper right", fontsize=7, frameon=True)
+    ax1.set_xlabel("Over-membership", fontsize=8)
+    ax1.set_ylabel("|Lesion effect diff|", fontsize=8)
+    ax1.spines[["top", "right"]].set_visible(False)
+    fig1.tight_layout()
+    out_path1 = OUT_DIR / "om_vs_lesion_scatter.png"
+    fig1.savefig(out_path1, dpi=300, bbox_inches="tight")
+    plt.close(fig1)
+    print(f"Saved: {out_path1}")
 
-    # Panel 2: predicted vs actual
-    ax = axes[1]
-    slope_p, intercept_p, r_p, p_p, _ = linregress(pred_x, pred_y)
-    ax.scatter(pred_x, pred_y, alpha=0.6, s=20, edgecolors="none", color="steelblue")
+    # --- Figure 2: predicted vs actual ---
+    fig2, ax2 = plt.subplots(1, 1, figsize=(3, 2.8))
+    slope_p, intercept_p, r_p, p_p, _ = _linregress(pred_x, pred_y)
+    ax2.scatter(pred_x, pred_y, color="#3182ce", edgecolors="k",
+                linewidths=0.5, s=40, alpha=0.8, zorder=3)
     lim = [min(pred_x.min(), pred_y.min()), max(pred_x.max(), pred_y.max())]
-    ax.plot(lim, lim, color="black", linewidth=0.6, linestyle="--", alpha=0.5)
+    ax2.plot(lim, lim, color="black", linewidth=0.6, linestyle="--", alpha=0.5)
     x_fit = np.linspace(pred_x.min(), pred_x.max(), 100)
-    ax.plot(x_fit, slope_p * x_fit + intercept_p, color="tomato", linewidth=1.2)
+    ax2.plot(x_fit, slope_p * x_fit + intercept_p, color="tomato", linewidth=1.2, zorder=4)
     p_str_p = f"p = {p_p:.2e}" if p_p < 0.001 else f"p = {p_p:.3f}"
-    ax.text(0.05, 0.95, f"r = {r_p:.2f}\n{p_str_p}", transform=ax.transAxes,
-            va="top", ha="left", fontsize=7)
-    ax.set_xlabel("OM-predicted effect (%)", fontsize=8)
-    ax.set_ylabel("Actual mod lesion effect (%)", fontsize=8)
+    ax2.legend([f"r = {r_p:.2f}, {p_str_p}"], loc="upper left", fontsize=7, frameon=True)
+    ax2.set_xlabel("OM-predicted effect (%)", fontsize=8)
+    ax2.set_ylabel("Actual mod lesion effect (%)", fontsize=8)
+    ax2.spines[["top", "right"]].set_visible(False)
+    fig2.tight_layout()
+    out_path2 = OUT_DIR / "om_vs_lesion_prediction.png"
+    fig2.savefig(out_path2, dpi=300, bbox_inches="tight")
+    plt.close(fig2)
+    print(f"Saved: {out_path2}")
+
+
+# ─── Figure: Transfer speed ──────────────────────────────────────────────────
+
+PRETRAINING_ANALYSIS_DIR = Path("pretraining_analysis")
+
+
+def plot_transfer_speed():
+    """
+    Figure: Transfer speed — iterations to reach accuracy thresholds during
+    post-training, comparing fdgo_delaygo vs fdanti_delaygo rulesets (L21e3).
+
+    Loads from the combined transfer_speed.pkl if available; otherwise falls
+    back to loading individual per-seed result pickles.
+    """
+    import re as _re
+
+    _ensure_out_dir()
+    if not PRETRAINING_ANALYSIS_DIR.exists():
+        print("  Skipped: pretraining_analysis/ not found.")
+        return
+
+    # Try loading the combined pickle first (saved by pretraining_analysis.py)
+    ts_pkl = list(PRETRAINING_ANALYSIS_DIR.glob("*_transfer_speed.pkl"))
+    if ts_pkl:
+        with open(ts_pkl[0], "rb") as f:
+            ts_data = pickle.load(f)
+        thresholds = ts_data["thresholds"]
+        by_ruleset_mats = ts_data["by_ruleset"]
+    else:
+        # Fallback: load individual seed pickles
+        addon_name = "+hidden200+L21e3+batch128+angle"
+        pkls = sorted(PRETRAINING_ANALYSIS_DIR.glob(f"*_dmpn_seed*_{addon_name}_result.pkl"))
+        if not pkls:
+            print("  Skipped: no pretraining result pickles found.")
+            return
+
+        by_ruleset_raw = {}
+        for p in pkls:
+            m = _re.match(
+                r'(.+)_dmpn_seed\d+_\+hidden200\+L21e3\+batch128\+angle_result\.pkl', p.name
+            )
+            if m:
+                ruleset = m.group(1)
+                with open(p, "rb") as f:
+                    by_ruleset_raw.setdefault(ruleset, []).append(pickle.load(f))
+
+        if not by_ruleset_raw:
+            print("  Skipped: no valid results loaded.")
+            return
+
+        def _first_iter_to(iters, acc, threshold):
+            iters = np.asarray(iters)
+            acc = np.asarray(acc)
+            hits = np.where(acc >= threshold)[0]
+            return float(iters[hits[0]]) if hits.size else np.nan
+
+        thresholds = np.array([0.50, 0.70, 0.80, 0.90, 0.95, 0.99])
+        by_ruleset_mats = {}
+        for rs, seed_results in by_ruleset_raw.items():
+            per_seed_mat = np.asarray([
+                [_first_iter_to(sr["learning"]["acc_iter_post"],
+                                sr["learning"]["acc_post"], th)
+                 for th in thresholds]
+                for sr in seed_results
+            ], dtype=float)
+            by_ruleset_mats[rs] = {"per_seed_iters": per_seed_mat, "n_seeds": len(seed_results)}
+
+    ys = thresholds * 100
+    ruleset_colors = {
+        "fdgo_delaygo": "#3182ce",
+        "fdanti_delaygo": "#e53e3e",
+    }
+    ruleset_labels = {
+        "fdgo_delaygo": "Improper motif",
+        "fdanti_delaygo": "Proper motif",
+    }
+
+    fig, ax = plt.subplots(1, 1, figsize=(3, 2.2))
+
+    for rs, rs_data in by_ruleset_mats.items():
+        color = ruleset_colors.get(rs, "#718096")
+        label = ruleset_labels.get(rs, rs)
+        per_seed_mat = np.asarray(rs_data["per_seed_iters"], dtype=float)
+        n_seeds = rs_data["n_seeds"]
+
+        mean_vals = np.nanmean(per_seed_mat, axis=0)
+        std_vals = np.nanstd(per_seed_mat, axis=0)
+        ax.plot(mean_vals, ys, "s-", color=color, linewidth=2.0,
+                markersize=5, label=label)
+        ax.fill_betweenx(ys, mean_vals - std_vals, mean_vals + std_vals,
+                         color=color, alpha=0.15)
+
+    ax.set_xlabel("Iterations to reach threshold")
+    ax.set_ylabel("Accuracy threshold (%)")
+    ax.set_xscale("log")
+    ax.set_yticks([50, 75, 100])
+    ax.legend(fontsize=6, frameon=True)
     ax.spines[["top", "right"]].set_visible(False)
 
     fig.tight_layout()
-    out_path = OUT_DIR / "om_vs_lesion.png"
+    out_path = OUT_DIR / "transfer_speed.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+# ─── Figure: Rule vectors ────────────────────────────────────────────────────
+
+def plot_rule_vectors():
+    """
+    Figure: Pairwise cosine similarity between rule-input vectors.
+
+    Shows how the novel task's learned rule vector relates to the two
+    pretrained rule vectors, for each ruleset (proper vs improper motif).
+    """
+    import re as _re
+
+    _ensure_out_dir()
+    if not PRETRAINING_ANALYSIS_DIR.exists():
+        print("  Skipped: pretraining_analysis/ not found.")
+        return
+
+    # Try combined pkl first
+    rv_pkls = list(PRETRAINING_ANALYSIS_DIR.glob("*_rule_vectors.pkl"))
+    if rv_pkls:
+        with open(rv_pkls[0], "rb") as f:
+            rv_data = pickle.load(f)
+        by_ruleset = rv_data["by_ruleset"]
+    else:
+        # Fallback: load from individual seed pickles
+        addon_name = "+hidden200+L21e3+batch128+angle"
+        pkls = sorted(PRETRAINING_ANALYSIS_DIR.glob(f"*_dmpn_seed*_{addon_name}_result.pkl"))
+        if not pkls:
+            print("  Skipped: no pretraining result pickles found.")
+            return
+
+        stage1_tasks_map = {
+            "fdgo_delaygo": ["fdgo", "delaygo"],
+            "fdanti_delaygo": ["fdanti", "delaygo"],
+        }
+        final_task = "delayanti"
+
+        by_ruleset = {}
+        for p in pkls:
+            m = _re.match(
+                r'(.+)_dmpn_seed\d+_\+hidden200\+L21e3\+batch128\+angle_result\.pkl', p.name
+            )
+            if m:
+                rs = m.group(1)
+                with open(p, "rb") as f:
+                    data = pickle.load(f)
+                if "rule_vectors" in data:
+                    entry = by_ruleset.setdefault(rs, {
+                        "cos_novel_pre0": [], "cos_novel_pre1": [],
+                        "cos_pre0_pre1": [], "in_span_fraction": [],
+                        "stage1_tasks": stage1_tasks_map.get(rs, [rs]),
+                        "final_task": final_task,
+                    })
+                    rv = data["rule_vectors"]
+                    entry["cos_novel_pre0"].append(rv["cos_novel_pre0"])
+                    entry["cos_novel_pre1"].append(rv["cos_novel_pre1"])
+                    entry["cos_pre0_pre1"].append(rv["cos_pre0_pre1"])
+                    entry["in_span_fraction"].append(rv["in_span_fraction"])
+
+    if not by_ruleset:
+        print("  Skipped: no rule vector data found.")
+        return
+
+    ruleset_colors = {
+        "fdgo_delaygo": "#3182ce",
+        "fdanti_delaygo": "#e53e3e",
+    }
+    ruleset_labels = {
+        "fdgo_delaygo": "Improper motif",
+        "fdanti_delaygo": "Proper motif",
+    }
+
+    task_display_names = {
+        "delayanti": "MemoryAnti",
+        "fdanti": "DelayAnti",
+        "fdgo": "DelayPro",
+        "delaygo": "MemoryPro",
+    }
+
+    cos_keys = ["cos_novel_pre0", "cos_novel_pre1", "cos_pre0_pre1"]
+    rs_list = sorted(by_ruleset.keys())
+
+    fig, ax = plt.subplots(1, 1, figsize=(4, 2.8))
+
+    group_step = len(cos_keys) + 0.5
+    bar_width = 0.7
+
+    all_x, all_labels = [], []
+    for rs_idx, rs in enumerate(rs_list):
+        color = ruleset_colors.get(rs, "#718096")
+        label = ruleset_labels.get(rs, rs)
+        s1_tasks = by_ruleset[rs].get("stage1_tasks", [rs])
+        final_task = by_ruleset[rs].get("final_task", "novel")
+
+        ft = task_display_names.get(final_task, final_task)
+        t0 = task_display_names.get(s1_tasks[0], s1_tasks[0])
+        t1 = task_display_names.get(s1_tasks[1], s1_tasks[1])
+
+        cos_labels = [
+            f"{ft}\n↔ {t0}",
+            f"{ft}\n↔ {t1}",
+            f"{t0}\n↔ {t1}",
+        ]
+
+        xs_group = rs_idx * group_step + np.arange(len(cos_keys))
+        means = np.array([np.mean(by_ruleset[rs][k]) for k in cos_keys])
+        stds = np.array([np.std(by_ruleset[rs][k]) for k in cos_keys])
+
+        ax.bar(xs_group, means, bar_width, yerr=stds, capsize=3,
+               color=color, alpha=0.8, edgecolor="k", linewidth=0.5,
+               label=label)
+
+        for k_idx, k in enumerate(cos_keys):
+            vals = np.array(by_ruleset[rs][k])
+            ax.plot(np.full_like(vals, xs_group[k_idx]), vals,
+                    "k.", markersize=4, alpha=0.6)
+
+        all_x.extend(xs_group.tolist())
+        all_labels.extend(cos_labels)
+
+    ax.set_xticks(all_x)
+    ax.set_xticklabels(all_labels, rotation=25, ha="center", fontsize=6)
+    ax.axhline(0.0, color="gray", linewidth=0.8, linestyle="--")
+    ax.set_ylabel("Cosine similarity")
+    ax.legend(fontsize=7, frameon=True)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    fig.tight_layout()
+    out_path = OUT_DIR / "rule_vectors.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+# ─── Figure: Aggregate CVE ───────────────────────────────────────────────────
+
+def plot_aggregate_cve():
+    """
+    Figure: Cumulative variance explained (CVE) of the novel task in its own
+    PCs vs in the pretraining task PCs. Overlays fdgo_delaygo (improper motif)
+    and fdanti_delaygo (proper motif) on the same axes.
+
+    Produces a 3×2 grid: rows = hidden, modulation, modulation_weighted;
+    columns = stimulus, response. Each panel saved as a separate file.
+    """
+    import re as _re
+
+    _ensure_out_dir()
+    if not PRETRAINING_ANALYSIS_DIR.exists():
+        print("  Skipped: pretraining_analysis/ not found.")
+        return
+
+    analysis_types = ["hidden", "modulation", "modulation_weighted"]
+    periods = ["stimulus", "response"]
+
+    # Try combined aggregate pkls first
+    agg_pkls = sorted(PRETRAINING_ANALYSIS_DIR.glob("*_dmpn_*_aggregate.pkl"))
+
+    by_ruleset = {}
+    if agg_pkls:
+        for p in agg_pkls:
+            with open(p, "rb") as f:
+                data = pickle.load(f)
+            rs = data["ruleset"]
+            by_ruleset[rs] = data
+    else:
+        # Fallback: reconstruct from individual seed pickles
+        addon_name = "+hidden200+L21e3+batch128+angle"
+        pkls = sorted(PRETRAINING_ANALYSIS_DIR.glob(f"*_dmpn_seed*_{addon_name}_result.pkl"))
+        if not pkls:
+            print("  Skipped: no pretraining result pickles found.")
+            return
+
+        raw_by_rs = {}
+        for p in pkls:
+            m = _re.match(
+                r'(.+)_dmpn_seed\d+_\+hidden200\+L21e3\+batch128\+angle_result\.pkl', p.name
+            )
+            if m:
+                rs = m.group(1)
+                with open(p, "rb") as f:
+                    raw_by_rs.setdefault(rs, []).append(pickle.load(f))
+
+        for rs, seed_results in raw_by_rs.items():
+            agg = {"ruleset": rs}
+            for dtype in analysis_types:
+                for period in periods:
+                    all_self, all_cross = [], []
+                    for sr in seed_results:
+                        if dtype not in sr:
+                            continue
+                        if period not in sr[dtype]:
+                            continue
+                        res = sr[dtype][period]
+                        all_self.append(res["cev_Y_self"])
+                        all_cross.append(res["cev_Y"])
+                    if all_self:
+                        min_len = min(min(len(c) for c in all_self),
+                                      min(len(c) for c in all_cross))
+                        agg[f"{dtype}_{period}_self"] = [c[:min_len] for c in all_self]
+                        agg[f"{dtype}_{period}_cross"] = [c[:min_len] for c in all_cross]
+            by_ruleset[rs] = agg
+
+    if not by_ruleset:
+        print("  Skipped: no aggregate data found.")
+        return
+
+    ruleset_colors = {
+        "fdgo_delaygo": "#3182ce",
+        "fdanti_delaygo": "#e53e3e",
+    }
+    ruleset_labels = {
+        "fdgo_delaygo": "Improper motif",
+        "fdanti_delaygo": "Proper motif",
+    }
+
+    # 2×2 combined figure: rows = [hidden, modulation_weighted], cols = [stimulus, response]
+    panel_layout = [
+        ("hidden", "stimulus"),
+        ("hidden", "response"),
+        ("modulation_weighted", "stimulus"),
+        ("modulation_weighted", "response"),
+    ]
+    x_lim_map = {"hidden": 20, "modulation_weighted": 1000}
+    x_tick_map = {"hidden": np.arange(0, 21, 5), "modulation_weighted": np.arange(0, 1001, 200)}
+
+    fig, axes = plt.subplots(2, 2, figsize=(6, 4.5))
+
+    for idx, (dtype, period) in enumerate(panel_layout):
+        row, col = idx // 2, idx % 2
+        ax = axes[row, col]
+
+        key_self = f"{dtype}_{period}_self"
+        key_cross = f"{dtype}_{period}_cross"
+
+        # Plot self (black) — same across rulesets, just use the first available
+        self_plotted = False
+        for rs in ["fdanti_delaygo", "fdgo_delaygo"]:
+            if rs not in by_ruleset:
+                continue
+            agg = by_ruleset[rs]
+            if key_self not in agg:
+                continue
+            if not self_plotted:
+                all_self = np.array(agg[key_self])
+                min_len = all_self.shape[1]
+                xs = np.arange(1, min_len + 1)
+                for i in range(all_self.shape[0]):
+                    ax.plot(xs, all_self[i], color="black", linewidth=0.5, alpha=0.2)
+                mean_self = np.mean(all_self, axis=0)
+                show_legend = (row == 0 and col == 0)
+                ax.plot(xs, mean_self, color="black", linewidth=2.0,
+                        label="Self" if show_legend else None)
+                self_plotted = True
+
+        # Plot cross (colored by ruleset)
+        for rs in ["fdanti_delaygo", "fdgo_delaygo"]:
+            if rs not in by_ruleset:
+                continue
+            agg = by_ruleset[rs]
+            if key_cross not in agg:
+                continue
+
+            color = ruleset_colors.get(rs, "#718096")
+            label = ruleset_labels.get(rs, rs)
+
+            all_cross = np.array(agg[key_cross])
+            min_len = all_cross.shape[1]
+            xs = np.arange(1, min_len + 1)
+
+            for i in range(all_cross.shape[0]):
+                ax.plot(xs, all_cross[i], color=color, linewidth=0.5,
+                        alpha=0.25, linestyle="--")
+
+            mean_cross = np.mean(all_cross, axis=0)
+
+            show_legend = (row == 0 and col == 0)
+            ax.plot(xs, mean_cross, color=color, linewidth=2.0, linestyle="--",
+                    label=label if show_legend else None)
+
+        dtype_titles = {"hidden": "Hidden", "modulation_weighted": "Effective Modulation"}
+        period_titles = {"stimulus": "Stimulus Period", "response": "Response Period"}
+        ax.set_title(f"{dtype_titles[dtype]} — {period_titles[period]}", fontsize=8, pad=4)
+
+        ax.set_xlim(0, x_lim_map[dtype])
+        ax.set_xticks(x_tick_map[dtype])
+        ax.set_ylim(0, 1.05)
+        ax.spines[["top", "right"]].set_visible(False)
+
+        if row == 0 and col == 0:
+            ax.legend(fontsize=7, frameon=True)
+
+        if col > 0:
+            ax.set_yticklabels([])
+
+    fig.text(0.5, 0.005, "# PCs", ha="center", fontsize=9)
+    fig.text(0.005, 0.5, "MemoryAnti Variance Explained", va="center",
+             rotation="vertical", fontsize=9)
+    fig.tight_layout(rect=[0.03, 0.02, 1, 1])
+    out_path = OUT_DIR / "aggregate_cve.png"
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out_path}")
@@ -861,8 +1287,12 @@ ALL_FIGURES = {
     "state_space_r_values": plot_state_space_r_values,
     "overmembership_unnorm": plot_overmembership_unnorm,
     "overmembership_weighted": plot_overmembership_weighted,
+    "overmembership_var_weighted": plot_overmembership_var_weighted,
     "lesion_heatmap": plot_lesion_heatmap,
     "om_vs_lesion": plot_om_vs_lesion,
+    "transfer_speed": plot_transfer_speed,
+    "rule_vectors": plot_rule_vectors,
+    "aggregate_cve": plot_aggregate_cve,
 }
 
 

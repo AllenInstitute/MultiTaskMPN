@@ -108,7 +108,7 @@ N_ANGLES = 20
 # Naming components that form addon_name in pretraining.py:
 #   addon_name = f"+hidden{N}+L21e4+batch{batch}+{metric}"
 metric = "angle"
-reg = "L21e4"
+reg = "L21e3"
 addon_name = f"+hidden{N}+{reg}+batch128+{metric}"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1401,6 +1401,29 @@ if __name__ == "__main__":
         fig.savefig(f"{outpath}/{ruleset}_{chosen_network}_{addon_name}_aggregate.png", dpi=300)
         plt.close(fig)
 
+        # Save aggregate CVE data for paper_plot reuse
+        aggregate_data = {"ruleset": ruleset, "analysis_types": analysis_types,
+                          "periods": ["stimulus", "response"],
+                          "final_task": final_task, "stage1_tasks": list(stage1_tasks)}
+        for dtype in analysis_types:
+            for period in ["stimulus", "response"]:
+                all_self, all_cross = [], []
+                for sr in all_seed_results:
+                    if dtype not in sr:
+                        continue
+                    res = sr[dtype][period]
+                    all_self.append(res["cev_Y_self"])
+                    all_cross.append(res["cev_Y"])
+                if all_self:
+                    min_len = min(min(len(c) for c in all_self),
+                                  min(len(c) for c in all_cross))
+                    aggregate_data[f"{dtype}_{period}_self"] = [c[:min_len] for c in all_self]
+                    aggregate_data[f"{dtype}_{period}_cross"] = [c[:min_len] for c in all_cross]
+        agg_pkl_path = f"{outpath}/{ruleset}_{chosen_network}_{addon_name}_aggregate.pkl"
+        with open(agg_pkl_path, "wb") as f:
+            pickle.dump(aggregate_data, f)
+        print(f"  Saved aggregate data: {agg_pkl_path}")
+
         # ─── Stimulus-aligned (direction-averaged) CVE summary ─────────────
         # Same layout as the pooled CVE aggregate above (no PR column).
         # Each curve is already a per-seed direction-average across the 8
@@ -1817,6 +1840,27 @@ if __name__ == "__main__":
             dpi=300)
         plt.close(figts)
 
+        # Save transfer speed data for paper_plot reuse
+        transfer_speed_data = {
+            "thresholds": thresholds,
+            "by_ruleset": {},
+        }
+        for rs, seed_results in all_results_by_ruleset.items():
+            per_seed_mat = np.asarray([
+                [_first_iter_to(sr["learning"]["acc_iter_post"],
+                                sr["learning"]["acc_post"], th)
+                 for th in thresholds]
+                for sr in seed_results
+            ], dtype=float)
+            transfer_speed_data["by_ruleset"][rs] = {
+                "per_seed_iters": per_seed_mat,
+                "n_seeds": len(seed_results),
+            }
+        ts_pkl_path = f"{outpath}/{combined_tag}_{chosen_network}_{addon_name}_transfer_speed.pkl"
+        with open(ts_pkl_path, "wb") as f:
+            pickle.dump(transfer_speed_data, f)
+        print(f"  Saved transfer speed data: {ts_pkl_path}")
+
         # ─────────────────────────────────────────────────────────────────
         # Rule-input vector geometry, compared across rulesets.
         # The 200-dim vector learned in stage 2 is the only thing stage 2
@@ -1900,6 +1944,23 @@ if __name__ == "__main__":
                 f"{outpath}/{combined_tag}_{chosen_network}_{addon_name}_rule_vectors.png",
                 dpi=300)
             plt.close(figrv)
+
+            # Save rule vector data for paper_plot reuse
+            rule_vec_data = {"by_ruleset": {}}
+            for rs in rs_list:
+                s1_tasks = _stage1_tasks_for(rs)
+                rule_vec_data["by_ruleset"][rs] = {
+                    "cos_novel_pre0": _vals(rs, "cos_novel_pre0").tolist(),
+                    "cos_novel_pre1": _vals(rs, "cos_novel_pre1").tolist(),
+                    "cos_pre0_pre1": _vals(rs, "cos_pre0_pre1").tolist(),
+                    "in_span_fraction": _vals(rs, "in_span_fraction").tolist(),
+                    "stage1_tasks": s1_tasks,
+                    "final_task": final_task,
+                }
+            rv_pkl_path = f"{outpath}/{combined_tag}_{chosen_network}_{addon_name}_rule_vectors.pkl"
+            with open(rv_pkl_path, "wb") as f:
+                pickle.dump(rule_vec_data, f)
+            print(f"  Saved rule vector data: {rv_pkl_path}")
 
         # ─────────────────────────────────────────────────────────────────
         # Backbone-probe figure: how close is the stage-2 STARTING state
