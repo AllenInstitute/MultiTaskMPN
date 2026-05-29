@@ -1277,16 +1277,35 @@ def main(seed, feature):
 
     # ── Cluster similarity vs normalized lesion effect ──
     def plot_cluster_corr_vs_lesion(corr_matrices_dict, select_props_mat, slices_dict,
-                                    savesuffix, aname, save_dir):
+                                    savesuffix, aname, save_dir,
+                                    l1_dist_matrices_dict=None, cluster_means_dict=None,
+                                    exclude_last_cluster=False):
         """3×N figure: for each cluster type (column),
-        row 0 = cluster similarity heatmap, row 1 = lesion effect correlation heatmap,
-        row 2 = scatter of similarity vs lesion effect correlation."""
+        row 0 = cluster tuning cosine similarity heatmap,
+        row 1 = lesion effect L1 distance heatmap,
+        row 2 = scatter of tuning cosine sim vs lesion L1 distance.
+
+        If exclude_last_cluster=True, the last cluster (unresponsive) is excluded
+        from the scatter plot (row 2) but still shown in the heatmaps."""
         n_cols = len(corr_matrices_dict)
         fig, axs = plt.subplots(3, n_cols, figsize=(4.5 * n_cols, 11), dpi=300,
                                 squeeze=False)
 
+        from sklearn.metrics.pairwise import cosine_similarity as _cosine_sim
+        from scipy.spatial.distance import squareform as _squareform, pdist as _pdist
+
+        scatter_save_data = {}
+
         for col, (name, corr_matrix) in enumerate(corr_matrices_dict.items()):
-            data_corr = np.corrcoef(select_props_mat[:, slices_dict[name]].T)
+            lesion_vecs = select_props_mat[:, slices_dict[name]].T  # (n_clusters, n_tasks)
+
+            # Cluster tuning: cosine similarity between cluster mean profiles
+            if cluster_means_dict is not None and name in cluster_means_dict:
+                tuning_cos = _cosine_sim(cluster_means_dict[name].T)
+            else:
+                tuning_cos = _cosine_sim(np.eye(corr_matrix.shape[0]))
+            # Lesion effect: L1 distance between lesion effect vectors
+            lesion_l1 = _squareform(_pdist(lesion_vecs, metric="cityblock"))
 
             n = corr_matrix.shape[0]
             tril_idx = np.tril_indices(n, k=-1)
@@ -1294,55 +1313,80 @@ def main(seed, feature):
 
             ax0 = axs[0, col]
             mat0 = np.full((n, n), np.nan)
-            mat0[tril_idx] = corr_matrix[tril_idx]
+            mat0[tril_idx] = tuning_cos[tril_idx]
             im0 = ax0.imshow(mat0, aspect="auto", cmap="RdBu_r", vmin=-1, vmax=1,
                              origin="upper")
-            fig.colorbar(im0, ax=ax0, shrink=0.8, label="Correlation")
+            fig.colorbar(im0, ax=ax0, shrink=0.8, label="Cosine sim.")
             ax0.set_xticks(range(n))
             ax0.set_yticks(range(n))
             ax0.set_xticklabels(cluster_labels)
             ax0.set_yticklabels(cluster_labels)
             ax0.set_xlabel("Cluster index")
             ax0.set_ylabel("Cluster index")
-            ax0.set_title(f"{name}: cluster similarity (corr_matrix)")
+            ax0.set_title(f"{name}: tuning cosine similarity")
 
             ax1 = axs[1, col]
             mat1 = np.full((n, n), np.nan)
-            mat1[tril_idx] = data_corr[tril_idx]
-            im1 = ax1.imshow(mat1, aspect="auto", cmap="RdBu_r", vmin=-1, vmax=1,
+            mat1[tril_idx] = lesion_l1[tril_idx]
+            im1 = ax1.imshow(mat1, aspect="auto", cmap="viridis",
                              origin="upper")
-            fig.colorbar(im1, ax=ax1, shrink=0.8, label="Correlation")
+            fig.colorbar(im1, ax=ax1, shrink=0.8, label="L1 distance")
             ax1.set_xticks(range(n))
             ax1.set_yticks(range(n))
             ax1.set_xticklabels(cluster_labels)
             ax1.set_yticklabels(cluster_labels)
             ax1.set_xlabel("Cluster index")
             ax1.set_ylabel("Cluster index")
-            ax1.set_title(f"{name}: Normalized lesion effect correlation")
+            ax1.set_title(f"{name}: lesion effect L1 distance")
 
             ax2 = axs[2, col]
-            x = corr_matrix[tril_idx]
-            y = data_corr[tril_idx]
+            if exclude_last_cluster and n > 1:
+                # Exclude pairs involving the last cluster (unresponsive)
+                n_active = n - 1
+                tril_idx_active = np.tril_indices(n_active, k=-1)
+                x = tuning_cos[:n_active, :n_active][tril_idx_active]
+                y = lesion_l1[:n_active, :n_active][tril_idx_active]
+            else:
+                x = tuning_cos[tril_idx]
+                y = lesion_l1[tril_idx]
             ax2.scatter(x, y, alpha=0.6, s=30, edgecolors="none", color="steelblue")
 
-            slope, intercept, r, p, _ = linregress(x, y)
-            x_line = np.linspace(x.min(), x.max(), 100)
-            ax2.plot(x_line, slope * x_line + intercept, color="tomato", linewidth=1.2)
+            if np.std(x) > 1e-12 and np.std(y) > 1e-12:
+                slope, intercept, r, p, _ = linregress(x, y)
+                x_line = np.linspace(x.min(), x.max(), 100)
+                ax2.plot(x_line, slope * x_line + intercept, color="tomato", linewidth=1.2)
 
-            p_str = f"p = {p:.2e}" if p < 0.001 else f"p = {p:.3f}"
-            ax2.text(0.05, 0.95, f"r = {r:.2f}\n{p_str}", transform=ax2.transAxes,
-                     va="top", ha="left", fontsize=8)
-            ax2.set_xlabel(f"{name} cluster similarity (corr_matrix)")
-            ax2.set_ylabel("Normalized lesion effect correlation")
-            ax2.set_title(f"{name} clusters: scatter")
+                p_str = f"p = {p:.2e}" if p < 0.001 else f"p = {p:.3f}"
+                ax2.text(0.05, 0.95, f"r = {r:.2f}\n{p_str}",
+                         transform=ax2.transAxes, va="top", ha="left", fontsize=8)
+            else:
+                ax2.text(0.05, 0.95, "constant x or y", transform=ax2.transAxes,
+                         va="top", ha="left", fontsize=8)
+
+            ax2.set_xlabel("Tuning cosine similarity")
+            ax2.set_ylabel("Lesion effect L1 distance")
+            ax2.set_title(f"{name} clusters")
+
+            scatter_save_data[name] = {
+                "tuning_cos_sim": x.tolist(),
+                "lesion_l1_dist": y.tolist(),
+            }
 
         fig.tight_layout()
         fig.savefig(f"{save_dir}/cluster_corr_vs_{savesuffix}_{aname}.png", dpi=300)
         plt.close(fig)
         print(f"Saved cluster_corr_vs_{savesuffix}")
 
+        # Save scatter data for paper_plot reuse
+        scatter_pkl_path = f"{save_dir}/cluster_corr_vs_{savesuffix}_{aname}.pkl"
+        with open(scatter_pkl_path, "wb") as _f:
+            pickle.dump(scatter_save_data, _f)
+        print(f"Saved scatter data: {scatter_pkl_path}")
+
     # --- Normalized variant ---
     corr_matrices_norm = results["cluster_similarity"]["corr_matrices"]
+    l1_dist_norm = results["cluster_similarity"]["l1_dist_matrices"]
+    cluster_means_norm = results["cluster_similarity"]["cluster_means"]
     # Keys may be "input_normalized" or "input_normalized_k{N}" depending on FIXED_K
     _input_norm_key = [k for k in corr_matrices_norm if k.startswith("input_normalized")][0]
     _hidden_norm_key = [k for k in corr_matrices_norm if k.startswith("hidden_normalized")][0]
@@ -1355,6 +1399,7 @@ def main(seed, feature):
     plot_cluster_corr_vs_lesion(
         corr_matrices_norm, select_props, slices_norm,
         "normalized_leison_effect", aname, save_dir,
+        l1_dist_matrices_dict=l1_dist_norm, cluster_means_dict=cluster_means_norm,
     )
 
     # --- Unnormalized variant ---
@@ -1369,6 +1414,8 @@ def main(seed, feature):
         _fixed_k_plot = results.get("fixed_k", 20)
 
         corr_matrices_unnorm = {}
+        l1_dist_unnorm = {}
+        cluster_means_unnorm = {}
         _unnorm_keys = {}
         for name in ["input_unnormalized", "hidden_unnormalized"]:
             if name not in cluster_info:
@@ -1383,6 +1430,9 @@ def main(seed, feature):
             )
             fk_name = f"{name}_k{_fixed_k_plot}"
             corr_matrices_unnorm[fk_name] = np.corrcoef(cluster_means.T)
+            from scipy.spatial.distance import squareform as _sq_u, pdist as _pd_u
+            l1_dist_unnorm[fk_name] = _sq_u(_pd_u(cluster_means.T, metric="cityblock"))
+            cluster_means_unnorm[fk_name] = cluster_means
             _unnorm_keys[name] = fk_name
 
         if "input_unnormalized" in _unnorm_keys and "hidden_unnormalized" in _unnorm_keys:
@@ -1397,6 +1447,8 @@ def main(seed, feature):
             plot_cluster_corr_vs_lesion(
                 corr_matrices_unnorm, select_props_unnorm, slices_unnorm,
                 "normalized_leison_effect_unnorm", aname, save_dir,
+                l1_dist_matrices_dict=l1_dist_unnorm, cluster_means_dict=cluster_means_unnorm,
+                exclude_last_cluster=True,
             )
 
     # --- Modulation variant ---
@@ -1446,11 +1498,17 @@ def main(seed, feature):
                 mode_tag = mode.replace("_", "-")
                 mod_name = f"{type_tag}_{mode_tag}"
 
+                from scipy.spatial.distance import squareform as _sq_m, pdist as _pd_m
+                l1_mod = _sq_m(_pd_m(cluster_means_mod.T, metric="cityblock"))
+                _is_unnorm_mod = "unnormalized" in mod_type_key
                 plot_cluster_corr_vs_lesion(
                     {mod_name: corr_matrix_mod},
                     mod_select_props,
                     {mod_name: slice(0, n_mod_clusters)},
                     f"mod_leison_effect_{type_tag}_{mode_tag}", aname, save_dir,
+                    l1_dist_matrices_dict={mod_name: l1_mod},
+                    cluster_means_dict={mod_name: cluster_means_mod},
+                    exclude_last_cluster=_is_unnorm_mod,
                 )
 
 

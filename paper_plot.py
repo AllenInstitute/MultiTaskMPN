@@ -867,6 +867,69 @@ def plot_om_vs_lesion():
     print(f"Saved: {out_path2}")
 
 
+# ─── Figure: Cluster tuning vs lesion effect ─────────────────────────────────
+
+LESION_NORM_DIR = Path("multiple_tasks_norm") / ANAME
+
+
+def plot_cluster_corr_vs_lesion():
+    """
+    Figure: Scatter of cluster tuning cosine similarity vs lesion effect L1 distance.
+
+    Produces separate figures for each variant (normalized, unnormalized).
+    Each figure has one subplot per cluster type (input, hidden).
+    """
+    from scipy.stats import linregress as _linregress
+
+    _ensure_out_dir()
+    if not LESION_NORM_DIR.exists():
+        print("  Skipped: multiple_tasks_norm dir not found. Run leison_plot.py first.")
+        return
+
+    variants = [
+        ("normalized_leison_effect", "norm"),
+        ("normalized_leison_effect_unnorm", "unnorm"),
+    ]
+
+    for suffix, short_tag in variants:
+        pkl_path = LESION_NORM_DIR / f"cluster_corr_vs_{suffix}_{ANAME}.pkl"
+        if not pkl_path.exists():
+            print(f"  Skipped: {pkl_path.name} not found.")
+            continue
+
+        with open(pkl_path, "rb") as f:
+            scatter_data = pickle.load(f)
+
+        for name, data in scatter_data.items():
+            fig, ax = plt.subplots(1, 1, figsize=(3, 2.8))
+            x = np.array(data["tuning_cos_sim"])
+            y = np.array(data["lesion_l1_dist"])
+
+            ax.scatter(x, y, color="#3182ce", edgecolors="k",
+                       linewidths=0.5, s=40, alpha=0.8, zorder=3)
+
+            if np.std(x) > 1e-12 and np.std(y) > 1e-12:
+                slope, intercept, r, p, _ = _linregress(x, y)
+                x_line = np.linspace(x.min(), x.max(), 100)
+                ax.plot(x_line, slope * x_line + intercept, color="tomato",
+                        linewidth=1.2, zorder=4)
+                p_str = f"p = {p:.2e}" if p < 0.001 else f"p = {p:.3f}"
+                ax.legend([f"r = {r:.2f}, {p_str}"], loc="upper right",
+                          fontsize=7, frameon=True)
+
+            ax.set_xlabel("Tuning cosine similarity", fontsize=8)
+            ax.set_ylabel("Lesion effect L1 distance", fontsize=8)
+            ax.spines[["top", "right"]].set_visible(False)
+
+            fig.tight_layout()
+            # e.g. "input_normalized_k20" -> "input_norm"
+            clean_name = name.replace("_normalized", "_norm").replace("_unnormalized", "_unnorm").replace("_k20", "")
+            out_path = OUT_DIR / f"cluster_corr_vs_lesion_{clean_name}.png"
+            fig.savefig(out_path, dpi=300, bbox_inches="tight")
+            plt.close(fig)
+            print(f"Saved: {out_path}")
+
+
 # ─── Figure: Transfer speed ──────────────────────────────────────────────────
 
 PRETRAINING_ANALYSIS_DIR = Path("pretraining_analysis")
@@ -1289,6 +1352,7 @@ ALL_FIGURES = {
     "overmembership_weighted": plot_overmembership_weighted,
     "overmembership_var_weighted": plot_overmembership_var_weighted,
     "lesion_heatmap": plot_lesion_heatmap,
+    "cluster_corr_vs_lesion": plot_cluster_corr_vs_lesion,
     "om_vs_lesion": plot_om_vs_lesion,
     "transfer_speed": plot_transfer_speed,
     "rule_vectors": plot_rule_vectors,
