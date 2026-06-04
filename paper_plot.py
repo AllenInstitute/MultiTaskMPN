@@ -867,6 +867,55 @@ def plot_om_vs_lesion():
     print(f"Saved: {out_path2}")
 
 
+# ─── Figure: Input weight correlation ────────────────────────────────────────
+
+def plot_input_weight_correlation():
+    """
+    Figure: Pearson correlation between columns of W_initial_linear (input weight).
+
+    Each column corresponds to an input feature: 6 stimulus channels + 15 task indicators.
+    """
+    import torch
+    import json as _json
+
+    _ensure_out_dir()
+
+    ckpt_path = Path("multiple_tasks") / f"savednet_{ANAME}.pt"
+    param_path = Path("multiple_tasks") / f"param_{ANAME}_param.json"
+
+    if not ckpt_path.exists():
+        print(f"  Skipped: {ckpt_path} not found.")
+        return
+
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    input_W = ckpt["state_dict"]["W_initial_linear.weight"].numpy()
+
+    with open(param_path) as f:
+        cfg = _json.load(f)
+    rules = cfg["task_params"]["rules"]
+
+    all_input = ["Fix On", "Fix Off", "Stim 1 Cos", "Stim 1 Sin", "Stim 2 Cos", "Stim 2 Sin"] + rules
+    input_corr = np.corrcoef(input_W.T)
+    mask = np.triu(np.ones_like(input_corr, dtype=bool), k=0)
+
+    fig, ax = plt.subplots(1, 1, figsize=(5, 5))
+    hm = sns.heatmap(input_corr, ax=ax, cmap="coolwarm", center=0, mask=mask,
+                     vmin=-1, vmax=1, square=True, cbar_kws={"shrink": 0.5})
+    cbar = hm.collections[0].colorbar
+    cbar.set_ticks([-1, 0, 1])
+    cbar.ax.tick_params(labelsize=9)
+    ax.set_xticks(np.arange(len(all_input)) + 0.5)
+    ax.set_xticklabels(all_input, rotation=90, fontsize=7)
+    ax.set_yticks(np.arange(len(all_input)) + 0.5)
+    ax.set_yticklabels(all_input, rotation=0, fontsize=7)
+
+    fig.tight_layout()
+    out_path = OUT_DIR / "input_weight_correlation.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
 # ─── Figure: Cluster tuning vs lesion effect ─────────────────────────────────
 
 LESION_NORM_DIR = Path("multiple_tasks_norm") / ANAME
@@ -1351,6 +1400,7 @@ ALL_FIGURES = {
     "overmembership_unnorm": plot_overmembership_unnorm,
     "overmembership_weighted": plot_overmembership_weighted,
     "overmembership_var_weighted": plot_overmembership_var_weighted,
+    "input_weight_correlation": plot_input_weight_correlation,
     "lesion_heatmap": plot_lesion_heatmap,
     "cluster_corr_vs_lesion": plot_cluster_corr_vs_lesion,
     "om_vs_lesion": plot_om_vs_lesion,
