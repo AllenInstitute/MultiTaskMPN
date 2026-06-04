@@ -32,9 +32,16 @@ mpl.rcParams.update({
 })
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
-ANAME = "everything_seed408_L21e4+hidden300+batch128+angle"
+ANAME = "everything_seed749_L21e4+hidden300+batch128+angle"
 DATA_DIR = Path("multiple_tasks") / ANAME
 OUT_DIR = Path("paper_plot")
+
+# Categorical color cycle (matches multiple_task_analysis.py)
+c_vals = [
+    "#e53e3e", "#3182ce", "#38a169", "#d69e2e", "#d53f8c",
+    "#4c51bf", "#dd6b20", "#0ea5e9", "#22c55e", "#a855f7",
+    "#f43f5e", "#0f766e", "#b83280", "#ca8a04", "#2b6cb0",
+] * 10
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -47,6 +54,102 @@ def _breaks(lbls):
     """Cluster boundary positions from an ordered label array."""
     idx = np.nonzero(np.diff(lbls))[0] + 1
     return idx.tolist()
+
+
+# Task name → Driscoll et al. 2024 display name
+_TASK_DISPLAY = {
+    "fdgo": "DelayPro",
+    "fdanti": "DelayAnti",
+    "delaygo": "MemoryPro",
+    "delayanti": "MemoryAnti",
+    "reactgo": "ReactGo",
+    "reactanti": "ReactAnti",
+    "delaydm1": "IntegrationModality1",
+    "delaydm2": "IntegrationModality2",
+    "contextdelaydm1": "ContextIntModality1",
+    "contextdelaydm2": "ContextIntModality2",
+    "multidelaydm": "IntegrationMultimodal",
+    "dmsgo": "ReactMatch2Sample",
+    "dmsnogo": "ReactNonMatch2Sample",
+    "dmcgo": "ReactCategoryPro",
+    "dmcnogo": "ReactCategoryAnti",
+}
+
+# Task → computation-category motif and color (matches state_space_shift.py)
+_RULE_MOTIF = {
+    "fdgo":            ("Pro Delayed",    "#3182ce"),  # blue
+    "fdanti":          ("Anti Delayed",   "#e53e3e"),  # red
+    "delaygo":         ("Pro Delayed",    "#3182ce"),
+    "delayanti":       ("Anti Delayed",   "#e53e3e"),
+    "reactgo":         ("Pro Reaction",   "#38a169"),  # green
+    "reactanti":       ("Anti Reaction",  "#dd6b20"),  # orange
+    "contextdelaydm1": ("Pro Integration", "#4682b4"),  # steelblue
+    "contextdelaydm2": ("Pro Integration", "#4682b4"),
+    "delaydm1":        ("Pro Integration", "#4682b4"),
+    "delaydm2":        ("Pro Integration", "#4682b4"),
+    "multidelaydm":    ("Pro Integration", "#4682b4"),
+    "dmsgo":           ("Categorization", "#38a169"),
+    "dmsnogo":         ("Categorization", "#dd6b20"),
+    "dmcgo":           ("Categorization", "#ff1493"),  # deeppink
+    "dmcnogo":         ("Categorization", "#ff1493"),
+}
+
+
+# Phase suffix → display name and background color
+_PHASE_DISPLAY = {
+    "stim1": "Stimulus 1",
+    "stim2": "Stimulus 2",
+    "delay1": "Memory 1",
+    "delay2": "Memory 2",
+    "go1": "Response",
+}
+_PHASE_COLORS = {
+    "stim1": "#c3b1e1",   # purple
+    "stim2": "#bfdbfe",   # light blue
+    "delay1": "#bbf7d0",  # light green
+    "delay2": "#fed7aa",  # light orange
+    "go1": "#d1d5db",     # light gray
+}
+
+
+def _relabel_tb_name(name):
+    """Convert '{rule}-{phase}' to '{DisplayRule}-{DisplayPhase}'."""
+    for phase, disp in _PHASE_DISPLAY.items():
+        if name.endswith(f"-{phase}"):
+            rule = name[: -(len(phase) + 1)]
+            rule_disp = _TASK_DISPLAY.get(rule, rule)
+            return f"{rule_disp}-{disp}"
+    return name
+
+
+def _phase_of(name):
+    """Return the phase suffix of a '{rule}-{phase}' label, or None."""
+    for phase in _PHASE_DISPLAY:
+        if name.endswith(f"-{phase}"):
+            return phase
+    return None
+
+
+def _color_phase_ticklabels(ax, ordered_names, axis="y"):
+    """Set a background highlight on each tick label based on its phase."""
+    labels = ax.get_yticklabels() if axis == "y" else ax.get_xticklabels()
+    for lab, name in zip(labels, ordered_names):
+        phase = _phase_of(name)
+        if phase is not None:
+            lab.set_bbox(dict(facecolor=_PHASE_COLORS[phase], edgecolor="none",
+                              boxstyle="round,pad=0.15", alpha=0.8))
+
+
+def _color_motif_ticklabels(ax, task_names, axis="y"):
+    """Set a background highlight on each tick label based on its task's
+    computation-category motif (see _RULE_MOTIF). `task_names` is the list of
+    raw rule names in tick order."""
+    labels = ax.get_yticklabels() if axis == "y" else ax.get_xticklabels()
+    for lab, task in zip(labels, task_names):
+        color = _RULE_MOTIF.get(task, (None, None))[1]
+        if color is not None:
+            lab.set_bbox(dict(facecolor=color, edgecolor="none",
+                              boxstyle="round,pad=0.15", alpha=0.5))
 
 
 def _load_cluster_info():
@@ -121,9 +224,53 @@ def _compute_order_from_labels(linkage, labels):
     return np.array(ordered, dtype=int)
 
 
+def _add_col_cluster_strip(ax, cl_ordered, cbreaks):
+    """Add a thin colored strip below the heatmap, one color per column cluster,
+    to visually group the x-axis columns by their cluster assignment."""
+    n_cols = len(cl_ordered)
+    # Cluster boundaries as [start, end) spans
+    bounds = [0] + list(cbreaks) + [n_cols]
+    n_clusters = len(bounds) - 1
+
+    strip = ax.inset_axes([0, -0.06, 1, 0.04], transform=ax.transAxes)
+    cmap_clusters = plt.get_cmap("tab20")
+    for ci in range(n_clusters):
+        start, end = bounds[ci], bounds[ci + 1]
+        strip.axvspan(start, end, color=cmap_clusters(ci % 20), lw=0)
+    strip.set_xlim(0, n_cols)
+    strip.set_ylim(0, 1)
+    strip.set_xticks([])
+    strip.set_yticks([])
+    for s in strip.spines.values():
+        s.set_visible(False)
+    return strip
+
+
+def _add_row_cluster_strip(ax, rl_ordered, rbreaks):
+    """Add a thin colored strip to the right of the heatmap, one color per row
+    cluster, to visually group the y-axis rows by their cluster assignment."""
+    n_rows = len(rl_ordered)
+    bounds = [0] + list(rbreaks) + [n_rows]
+    n_clusters = len(bounds) - 1
+
+    strip = ax.inset_axes([1.01, 0, 0.025, 1], transform=ax.transAxes)
+    cmap_clusters = plt.get_cmap("tab20")
+    for ci in range(n_clusters):
+        start, end = bounds[ci], bounds[ci + 1]
+        strip.axhspan(start, end, color=cmap_clusters(ci % 20), lw=0)
+    # Heatmap rows increase downward; match that orientation
+    strip.set_ylim(n_rows, 0)
+    strip.set_xlim(0, 1)
+    strip.set_xticks([])
+    strip.set_yticks([])
+    for s in strip.spines.values():
+        s.set_visible(False)
+    return strip
+
+
 def _plot_clustered_variance(
     cell_vars, result, tb_break_name,
-    title="", cmap="coolwarm", vmin=0, vmax=1,
+    title="", cmap="magma", vmin=0, vmax=1,
     figsize=(8, 7),
     row_k_override=None,
     col_k_override=None,
@@ -182,25 +329,22 @@ def _plot_clustered_variance(
     cbar.ax.tick_params(labelsize=12)
 
     for rb in rbreaks:
-        ax.axhline(rb, color="w", lw=2.5, zorder=3)
-        ax.axhline(rb, color="k", lw=1.0, zorder=4)
+        ax.axhline(rb, color="0.6", lw=0.5, zorder=3, alpha=0.6)
     for cb in cbreaks:
-        ax.axvline(cb, color="w", lw=2.5, zorder=3)
-        ax.axvline(cb, color="k", lw=1.0, zorder=4)
+        ax.axvline(cb, color="0.6", lw=0.5, zorder=3, alpha=0.6)
 
     ordered_names = tb_break_name[row_order]
+    display_names = [_relabel_tb_name(nm) for nm in ordered_names]
     ax.set_yticks(np.arange(len(ordered_names)) + 0.5)
-    ax.set_yticklabels(ordered_names, rotation=0, ha="right", va="center", fontsize=6)
+    ax.set_yticklabels(display_names, rotation=0, ha="right", va="center", fontsize=6)
+    _color_phase_ticklabels(ax, ordered_names, axis="y")
 
-    ax.set_title(f"{title}  (session clusters={row_k}, neuron clusters={col_k})",
-                 fontsize=10, pad=8)
-    ax.set_xlabel("Neuron index (clustered)", fontsize=9)
-    ax.set_ylabel("Task–phase condition (clustered)", fontsize=9)
+    ax.set_xticks([])
 
-    n_neurons = ordered.shape[1]
-    xtick_pos = np.linspace(0, n_neurons - 1, min(8, n_neurons)).astype(int)
-    ax.set_xticks(xtick_pos + 0.5)
-    ax.set_xticklabels(xtick_pos, fontsize=7)
+    # Column-cluster grouping strip beneath the x-axis
+    _add_col_cluster_strip(ax, cl, cbreaks)
+    # Row-cluster grouping strip to the right of the y-axis
+    _add_row_cluster_strip(ax, rl, rbreaks)
 
     fig.tight_layout()
     return fig, ax
@@ -291,7 +435,7 @@ def plot_clustered_modulation(G_index=1):
     fig, ax = plt.subplots(1, 1, figsize=(16, 7))
 
     hm = sns.heatmap(
-        ordered, ax=ax, cmap="coolwarm", vmin=0, vmax=1,
+        ordered, ax=ax, cmap="magma", vmin=0, vmax=1,
         cbar=True, cbar_kws={"shrink": 0.4, "label": "Normalized variance"},
     )
     cbar = hm.collections[0].colorbar
@@ -300,28 +444,22 @@ def plot_clustered_modulation(G_index=1):
     cbar.ax.tick_params(labelsize=12)
 
     for rb in rbreaks:
-        ax.axhline(rb, color="w", lw=2.5, zorder=3)
-        ax.axhline(rb, color="k", lw=1.0, zorder=4)
+        ax.axhline(rb, color="0.6", lw=0.5, zorder=3, alpha=0.6)
     for cb in cbreaks:
-        ax.axvline(cb, color="w", lw=2.5, zorder=3)
-        ax.axvline(cb, color="k", lw=0.8, zorder=4)
+        ax.axvline(cb, color="0.6", lw=0.5, zorder=3, alpha=0.6)
 
     ordered_names = tb_break_name[row_order]
+    display_names = [_relabel_tb_name(nm) for nm in ordered_names]
     ax.set_yticks(np.arange(len(ordered_names)) + 0.5)
-    ax.set_yticklabels(ordered_names, rotation=0, ha="right", va="center", fontsize=6)
+    ax.set_yticklabels(display_names, rotation=0, ha="right", va="center", fontsize=6)
+    _color_phase_ticklabels(ax, ordered_names, axis="y")
 
-    ax.set_title(
-        f"Modulation Layer — Normalized Task Variance  "
-        f"(session clusters={row_k}, synapse clusters={col_k}, G=300)",
-        fontsize=10, pad=8,
-    )
-    ax.set_xlabel("Synapse index (clustered)", fontsize=9)
-    ax.set_ylabel("Task–phase condition (clustered)", fontsize=9)
+    ax.set_xticks([])
 
-    n_synapses = ordered.shape[1]
-    xtick_pos = np.linspace(0, n_synapses - 1, min(10, n_synapses)).astype(int)
-    ax.set_xticks(xtick_pos + 0.5)
-    ax.set_xticklabels(xtick_pos, fontsize=7)
+    # Column-cluster grouping strip beneath the x-axis
+    _add_col_cluster_strip(ax, cl, cbreaks)
+    # Row-cluster grouping strip to the right of the y-axis
+    _add_row_cluster_strip(ax, rl, rbreaks)
 
     fig.tight_layout()
 
@@ -443,8 +581,8 @@ def plot_state_space_combined():
     fig, axes = plt.subplots(2, 1, figsize=(2.5, 4.5), sharex=True)
 
     panels = [
-        ("hidden", "Hidden state", True),
-        ("eff_mod", "Eff. modulation", False),
+        ("hidden", "Hidden state", False),
+        ("eff_mod", "Eff. modulation", True),
     ]
 
     for ax, (key, ylabel_prefix, show_legend) in zip(axes, panels):
@@ -534,39 +672,78 @@ def plot_state_space_r_values():
 
 # ─── Figure: Over-membership ─────────────────────────────────────────────────
 
-def _plot_overmembership_single(pkl_name, out_filename):
+def _find_experiment_dirs():
+    """Return all experiment subfolders under multiple_tasks/ matching the
+    same feature/hidden/batch signature as ANAME (any seed)."""
+    import re as _re
+    # ANAME = everything_seed{seed}_{feature}+hidden{h}+batch{b}+angle
+    m = _re.match(r"everything_seed\d+_(.+)$", ANAME)
+    suffix = m.group(1) if m else ""
+    base = Path("multiple_tasks")
+    dirs = sorted(base.glob(f"everything_seed*_{suffix}"))
+    return [d for d in dirs if d.is_dir()]
+
+
+def _plot_overmembership_single(pkl_template, out_filename):
     """
-    Plot a 2×1 over-membership figure (top: same-neuron, bottom: same neuron-cluster)
-    for a single prepost_belonging pickle, G=100 optimal-k entry.
+    Plot a 2×1 over-membership figure (top: same-neuron, bottom: same neuron-cluster),
+    aggregated across all available experiments (seeds) that have the matching
+    prepost_belonging pickle. Bars show the mean over-membership; error bars show
+    the standard error across experiments.
+
+    pkl_template: a filename template containing "{aname}", e.g.
+        "modulation_all_prepost_belonging_{aname}_unnormalized.pkl"
     """
     _ensure_out_dir()
-    pkl_path = DATA_DIR / pkl_name
-    if not pkl_path.exists():
-        print(f"  Skipped: {pkl_path} not found.")
+
+    # Collect per-experiment over-membership for each row (G=100, optimal-k entry).
+    per_row_over = {0: [], 1: []}      # row_idx -> list of (n_bars,) arrays
+    bar_name_lst = None
+    n_experiments = 0
+
+    for exp_dir in _find_experiment_dirs():
+        aname = exp_dir.name
+        pkl_path = exp_dir / pkl_template.format(aname=aname)
+        if not pkl_path.exists():
+            continue
+        with open(pkl_path, "rb") as f:
+            data = pickle.load(f)
+        entry = data["prepost_belonging_results"][0]  # G=100, optimal k
+        if bar_name_lst is None:
+            bar_name_lst = entry["bar_name_lst"]
+        for row_idx in range(2):
+            obs = np.array(entry["bar_all_lst"][row_idx], dtype=float)
+            ctrl = np.array(entry["bar_all_ctrl_lst"][row_idx], dtype=float)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                over = np.where(ctrl > 0, (obs - ctrl) / ctrl, 0.0)
+            per_row_over[row_idx].append(over)
+        n_experiments += 1
+
+    if n_experiments == 0:
+        print(f"  Skipped: no experiments with pickle '{pkl_template}'.")
         return
 
-    with open(pkl_path, "rb") as f:
-        data = pickle.load(f)
-
-    entry = data["prepost_belonging_results"][0]  # G=100, optimal k
-
-    row_titles = ["Same Neuron", "Same Neuron Cluster"]
     fig, axes = plt.subplots(2, 1, figsize=(2.5, 3.2))
 
     for row_idx in range(2):
         ax = axes[row_idx]
-        obs = np.array(entry["bar_all_lst"][row_idx], dtype=float)
-        ctrl = np.array(entry["bar_all_ctrl_lst"][row_idx], dtype=float)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            over = np.where(ctrl > 0, (obs - ctrl) / ctrl, 0.0)
+        stacked = np.vstack(per_row_over[row_idx])      # (n_exp, n_bars)
+        mean = stacked.mean(axis=0)
+        sem = stacked.std(axis=0, ddof=1) / np.sqrt(n_experiments) if n_experiments > 1 else np.zeros_like(mean)
 
-        bar_names = entry["bar_name_lst"][row_idx]
+        bar_names = bar_name_lst[row_idx]
         short_names = [n.replace("Share-", "").replace("-Cluster", " Cl.") for n in bar_names]
 
-        colors = ["#3182ce", "#e53e3e", "#38a169", "#718096"][:len(over)]
-        ax.bar(range(len(over)), over, color=colors, edgecolor="k", linewidth=0.5, width=0.6)
+        colors = ["#3182ce", "#e53e3e", "#38a169", "#718096"][:len(mean)]
+        x = np.arange(len(mean))
+        ax.bar(x, mean, yerr=sem, capsize=3, color=colors,
+               edgecolor="k", linewidth=0.5, width=0.6, zorder=2)
+        # Overlay individual experiment points
+        for over in per_row_over[row_idx]:
+            jitter = np.random.default_rng(0).uniform(-0.12, 0.12, len(over))
+            ax.scatter(x + jitter, over, color="k", s=8, alpha=0.5, zorder=3)
         ax.axhline(0, color="k", lw=0.5, zorder=0)
-        ax.set_xticks(range(len(over)))
+        ax.set_xticks(x)
         ax.set_xticklabels(short_names, rotation=35, ha="right", fontsize=6)
         ax.spines[["top", "right"]].set_visible(False)
 
@@ -574,29 +751,29 @@ def _plot_overmembership_single(pkl_name, out_filename):
     out_path = OUT_DIR / out_filename
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
-    print(f"Saved: {out_path}")
+    print(f"Saved: {out_path}  (n={n_experiments} experiments)")
 
 
 def plot_overmembership_unnorm():
-    """Figure: Over-membership for unnormalized modulation (G=100)."""
+    """Figure: Over-membership for unnormalized modulation (G=100), aggregated across seeds."""
     _plot_overmembership_single(
-        f"modulation_all_prepost_belonging_{ANAME}_unnormalized.pkl",
+        "modulation_all_prepost_belonging_{aname}_unnormalized.pkl",
         "overmembership_unnormalized.png",
     )
 
 
 def plot_overmembership_weighted():
-    """Figure: Over-membership for weighted unnormalized modulation (G=100)."""
+    """Figure: Over-membership for weighted unnormalized modulation (G=100), aggregated across seeds."""
     _plot_overmembership_single(
-        f"modulation_all_weighted_prepost_belonging_{ANAME}_unnormalized.pkl",
+        "modulation_all_weighted_prepost_belonging_{aname}_unnormalized.pkl",
         "overmembership_weighted.png",
     )
 
 
 def plot_overmembership_var_weighted():
-    """Figure: Over-membership for var-weighted unnormalized modulation (G=100)."""
+    """Figure: Over-membership for var-weighted unnormalized modulation (G=100), aggregated across seeds."""
     _plot_overmembership_single(
-        f"modulation_all_var_weighted_prepost_belonging_{ANAME}_unnormalized.pkl",
+        "modulation_all_var_weighted_prepost_belonging_{aname}_unnormalized.pkl",
         "overmembership_var_weighted.png",
     )
 
@@ -635,6 +812,7 @@ def plot_lesion_heatmap():
     ru = data["random_leison_unnorm"]
 
     all_tasks = lu["all_tasks"]
+    all_tasks_display = [_TASK_DISPLAY.get(t, t) for t in all_tasks]
     comb_names = lu["all_comb_names_leison"]
     ihtask_accs = np.array(lu["ihtask_accs"])
     random_accs = np.array(ru["ihrandomtask_accs"])
@@ -657,17 +835,16 @@ def plot_lesion_heatmap():
     effect_mod = (mod_random[:, mod_idx] - mod_accs[:, mod_idx]) * 100
     mod_labels = [f"C{i+1}" for i in range(len(mod_idx))]
 
-    vmax = max(np.abs(effect_pre).max(), np.abs(effect_post).max(), np.abs(effect_mod).max())
+    vmax = max(np.abs(effect_post).max(), np.abs(effect_mod).max())
 
     fig, axes = plt.subplots(
-        3, 1, figsize=(6, 8),
-        gridspec_kw={"height_ratios": [1, 1, 1], "hspace": 0.1},
+        2, 1, figsize=(6, 5.5),
+        gridspec_kw={"height_ratios": [1, 1], "hspace": 0.1},
     )
 
     panels = [
-        (axes[0], effect_pre, pre_labels),
-        (axes[1], effect_post, post_labels),
-        (axes[2], effect_mod, mod_labels),
+        (axes[0], effect_post, post_labels),
+        (axes[1], effect_mod, mod_labels),
     ]
 
     for idx, (ax, effect, cluster_labels) in enumerate(panels):
@@ -675,17 +852,20 @@ def plot_lesion_heatmap():
             effect, ax=ax, cmap="RdBu_r", center=0,
             vmin=-vmax, vmax=vmax,
             xticklabels=cluster_labels,
-            yticklabels=all_tasks,
+            yticklabels=all_tasks_display,
             cbar=False,
         )
         ax.set_ylabel("")
         ax.tick_params(axis="y", labelsize=6, rotation=0)
         ax.tick_params(axis="x", labelsize=6)
-        if idx < 2:
+        if idx < 1:
             ax.set_xlabel("")
             ax.tick_params(axis="x", labelbottom=False)
         else:
             ax.set_xlabel("Cluster", fontsize=8)
+
+        # Color each task tick label's background by its computation-category motif
+        _color_motif_ticklabels(ax, all_tasks, axis="y")
 
     # Shared colorbar
     norm = mpl.colors.Normalize(vmin=-vmax, vmax=vmax)
@@ -693,9 +873,12 @@ def plot_lesion_heatmap():
     sm.set_array([])
     cbar = fig.colorbar(sm, ax=axes, shrink=0.5, pad=0.04)
     cbar.set_label("Normalized effect (%)", fontsize=8)
-    cbar.set_ticks([-vmax, vmax])
-    cbar.set_ticklabels([f"{-vmax:.0f}", f"{vmax:.0f}"])
-    cbar.ax.tick_params(labelsize=12)
+    # Ticks every 30, symmetric around 0, within [-vmax, vmax]
+    _tick_max = int(np.floor(vmax / 30.0)) * 30
+    _ticks = np.arange(-_tick_max, _tick_max + 1, 30)
+    cbar.set_ticks(_ticks)
+    cbar.set_ticklabels([f"{t:.0f}" for t in _ticks])
+    cbar.ax.tick_params(labelsize=10)
     out_path = OUT_DIR / "lesion_heatmap_unnorm.png"
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -865,6 +1048,75 @@ def plot_om_vs_lesion():
     fig2.savefig(out_path2, dpi=300, bbox_inches="tight")
     plt.close(fig2)
     print(f"Saved: {out_path2}")
+
+
+# ─── Figure: Fixed-point PCA trajectories ────────────────────────────────────
+
+def plot_fixed_points(addtask="delaydm1", plot_name="e_modulation"):
+    """
+    Figure: Fixed-point trajectories in delay-period PCA space.
+
+    Plots how memory-state fixed points evolve as the stimulus is interpolated
+    between two conditions. One panel per PC pair (PC1-2, PC1-3, PC2-3).
+
+    addtask: "delaydm1" or "dmcgo"
+    plot_name: "hidden", "e_modulation", or "m_modulation"
+    """
+    _ensure_out_dir()
+
+    pkl_path = DATA_DIR / f"{addtask}_fixed_points_{ANAME}.pkl"
+    if not pkl_path.exists():
+        print(f"  Skipped: {pkl_path.name} not found. Run multiple_task_analysis.py shared_run first.")
+        return
+
+    with open(pkl_path, "rb") as f:
+        data = pickle.load(f)
+
+    if plot_name not in data:
+        print(f"  Skipped: '{plot_name}' not in {pkl_path.name}.")
+        return
+
+    entry = data[plot_name]
+    fixed_points_all_arr = np.asarray(entry["fixed_points_all_arr"])  # (n_alpha, n_stim, n_pc)
+    stim_labels = entry["stim_labels"]
+    trial_num = entry["trial_num"]
+
+    n_alpha, n_stim, n_pc = fixed_points_all_arr.shape
+    pcs = [[0, 1], [0, 2], [1, 2]]
+
+    fig, axes = plt.subplots(1, 3, figsize=(9, 3))
+
+    for pc_idx, (pc_x, pc_y) in enumerate(pcs):
+        ax = axes[pc_idx]
+        for stim in range(n_stim):
+            traj_fp = fixed_points_all_arr[:, stim, :]
+            color = c_vals[stim_labels[stim]]
+            ax.plot(traj_fp[:, pc_x], traj_fp[:, pc_y], "-o",
+                    color=color, linewidth=1.2, markersize=3, alpha=0.5,
+                    label=f"stim {(stim // trial_num + 1)}" if stim % trial_num == 0 else None)
+            ax.scatter(traj_fp[0, pc_x], traj_fp[0, pc_y], color=color,
+                       marker="s", s=40, zorder=3)
+            ax.scatter(traj_fp[-1, pc_x], traj_fp[-1, pc_y], color=color,
+                       marker="^", s=40, zorder=3)
+
+        ax.set_xlabel(f"Memory State PC{pc_x+1}", fontsize=9)
+        ax.set_ylabel(f"Memory State PC{pc_y+1}", fontsize=9)
+        ax.spines[["top", "right"]].set_visible(False)
+        if pc_idx == 0:
+            ax.legend(frameon=True, fontsize=6)
+
+    fig.tight_layout()
+    out_path = OUT_DIR / f"fixed_points_{addtask}_{plot_name}.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def plot_fixed_points_all():
+    """Generate fixed-point figures for both addtasks and all representations."""
+    for addtask in ["delaydm1", "dmcgo"]:
+        for plot_name in ["hidden", "e_modulation", "m_modulation"]:
+            plot_fixed_points(addtask=addtask, plot_name=plot_name)
 
 
 # ─── Figure: Input weight correlation ────────────────────────────────────────
@@ -1391,6 +1643,7 @@ def plot_aggregate_cve():
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 ALL_FIGURES = {
+    "fixed_points": plot_fixed_points_all,
     "input": plot_clustered_input,
     "hidden": plot_clustered_hidden,
     "modulation": plot_clustered_modulation,
@@ -1421,9 +1674,22 @@ def main():
         if f.is_file():
             f.unlink()
 
+    import traceback
+
+    failures = []
     for name, fn in ALL_FIGURES.items():
         print(f"── Generating: {name} ──")
-        fn()
+        try:
+            fn()
+        except Exception as exc:
+            print(f"  ERROR generating '{name}': {exc}")
+            traceback.print_exc()
+            failures.append(name)
+
+    if failures:
+        print(f"\nCompleted with {len(failures)} failed figure(s): {failures}")
+    else:
+        print("\nAll figures generated successfully.")
 
 
 if __name__ == "__main__":

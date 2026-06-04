@@ -130,7 +130,7 @@ linestyles = ["-", "--", "-."]
 cs = "coolwarm"
 
 
-def main(seed, feature): 
+def main(seed, feature, clean=True):
     """
     """
     mem = psutil.virtual_memory()
@@ -187,9 +187,10 @@ def main(seed, feature):
     # all outputs for this experiment go into their own subfolder
     save_dir = f"./multiple_tasks/{savefigure_name_base}"
     os.makedirs(save_dir, exist_ok=True)
-    for _old_file in Path(save_dir).iterdir():
-        if _old_file.is_file():
-            _old_file.unlink()
+    if clean:
+        for _old_file in Path(save_dir).iterdir():
+            if _old_file.is_file():
+                _old_file.unlink()
 
     # %%
     # 2025-11-19: make sure the bias is only cell-dependent but not time- or trail-dependent
@@ -226,12 +227,59 @@ def main(seed, feature):
         (task_params, train_params, net_params)
     )
 
-    def shared_run(addtask): 
+    def shared_run(addtask):
         """
-        Trying to replicate Fig 3D-E in Driscoll etal 2024
+        Probe how the network's delay-period memory geometry separates two
+        related tasks, replicating the input-interpolation analysis of
+        Driscoll et al. 2024 (Fig 3D-E).
+
+        The idea: take a pair of sibling tasks that share the same stimulus
+        set but demand different computations —
+            addtask="dmcgo"    → ["dmcgo", "dmcnogo"]      (match vs non-match)
+            addtask="delaydm1" → ["delaydm1", "delaydm2"]  (modality 1 vs 2)
+        — and ask whether the two tasks live in distinct regions of the
+        delay-period state space, and how the state morphs as the input is
+        continuously interpolated from one task's condition to the other's.
+
+        Procedure
+        ---------
+        1. Generate `test_n_batch` trials for the two sibling tasks and run
+           them through the (frozen) trained network, recording the
+           delay-period internal state in three representations:
+             - hidden        : recurrent activity  (db["hidden1"])
+             - m_modulation  : raw plasticity matrix M (db["M1"])
+             - e_modulation  : effective modulation  W ⊙ M
+        2. Fit a 3-component PCA on each representation's delay-period states,
+           giving a common low-D "memory subspace" per representation.
+        3. Group trials into 16 buckets — 2 tasks × 8 stimulus directions
+           (stim1) — and build matched input tensors `stacked_inputs[0]`
+           (task 0) and `stacked_inputs[1]` (task 1) that share the same
+           stimulus ordering, so they can be linearly interpolated.
+        4. For 20 interpolation weights α∈[0,1], feed (1-α)·task0 + α·task1
+           through the network, project the resulting end-of-delay state into
+           the PCA subspace, and record it as a "fixed point". Sweeping α
+           traces how each stimulus's memory state migrates from the task-0
+           attractor to the task-1 attractor.
+        5. Plot these fixed-point trajectories in the three PC planes
+           (PC1-2, PC1-3, PC2-3), one figure per representation, and save the
+           underlying arrays to a pickle for downstream paper plotting.
+
+        Also emits a per-task sanity figure of example input/output traces.
+        Results are written under `save_dir`:
+            {addtask}_{savefigure_name}.png                     — IO traces
+            {addtask}_fixed_points_{plot_name}_{...}.png        — PCA maps
+            {addtask}_fixed_points_{savefigure_name}.pkl        — raw data
         """
         assert addtask in ("dmcgo", "delaydm1", )
-        
+
+        # Device-resident copy of the plastic weight W so that elementwise
+        # products with on-device modulation tensors (db["M1"]) don't hit a
+        # CPU/GPU device mismatch.
+        W_dev = state_dict["mp_layer1.W"].to(device)
+
+        # Accumulator for fixed-point PCA data, saved for paper_plot reuse.
+        fixed_points_save = {}
+
         task_params_dmcgo = copy.deepcopy(task_params_c)
 
         if addtask == "dmcgo":
@@ -239,10 +287,10 @@ def main(seed, feature):
         elif addtask == "delaydm1":
             task_params_dmcgo["rules"] = ["delaydm1", "delaydm2"]
             
-        test_n_batch = 50
+        test_n_batch = 30
 
         task_params_dmcgo['hp']['batch_size_train'] = test_n_batch
-        task_params_dmcgo["long_delay"] = "normal"
+        task_params_dmcgo["long_delay"] = "long"
         
         test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params_dmcgo, 
                                                                       test_n_batch, 
@@ -275,8 +323,8 @@ def main(seed, feature):
         net_out, _, db_test = model.iterate_sequence_batch(test_input.to(device), run_mode='track_states')
 
         if addtask in ("dmcgo", "delaydm1", ):
-            hidden_test = db_test["hidden1"][:, delay_period[0]:delay_period[1]-1, :]
-            em_test = (db_test["M1"][:, delay_period[0]:delay_period[1]-1, :, :] * state_dict["mp_layer1.W"]).cpu().numpy()
+            hidden_test = db_test["hidden1"][:, delay_period[0]:delay_period[1]-1, :].cpu().numpy()
+            em_test = (db_test["M1"][:, delay_period[0]:delay_period[1]-1, :, :] * W_dev).cpu().numpy()
             m_test = db_test["M1"][:, delay_period[0]:delay_period[1]-1, :, :].cpu().numpy()
 
         print(f"hidden_test: {hidden_test.shape}; em_test: {em_test.shape}; m_test: {m_test.shape}")
@@ -312,13 +360,13 @@ def main(seed, feature):
         for i in range(2):
             for b in range(8):
                 # add multiple trials of the same kind of stimulus
-                trial_num = 5
+                trial_num = 1
                 for trial_idx in range(trial_num): 
                     # for trials that are considered to have the same stim1 and same task
                     # their input should be identical (quantified via sum) up to the end 
                     # of the delay period; only check for dmcgo since for delaydm1, the magnitude
                     # might be different across batches even the stim identity is the same 
-                    if addtask == "dmcgo":
+                    if addtask == "dmcgo" and trial_num > 1:
                         input_check = []
                         for key in idx_map[(i,b)]:
                             input_check.append(torch.sum(test_input[key,:delay_period[1],:]).item())
@@ -357,7 +405,7 @@ def main(seed, feature):
         plot_all = [["hidden", pca_delay_h], ["e_modulation", pca_delay_em], ["m_modulation", pca_delay_m]]
 
         for plot_name, pca_delay in plot_all:
-            # interpolate between the two conditions (stim1 and stim2) in the input space, 
+            # interpolate between the two conditions (stim1 and stim2) in the input space,
             # and track how the fixed points evolve in the PCA space of the delay period activity
             alpha_lst = np.linspace(0,1,20)
             interpolate_inputs = [(1-a) * stacked_inputs[0] + a * stacked_inputs[1] for a in alpha_lst]
@@ -414,15 +462,15 @@ def main(seed, feature):
 
                 # plot the trajectory during the delay period for the first and last alpha (i.e. the two original conditions)
                 delay_traj = False
-                if delay_traj: 
+                if delay_traj:
                     for be in range(len(traj_all)):
                         proj = traj_all[be]
                         for stim in range(proj.shape[0]):
                             xs = proj[stim, :, pc_x]
                             ys = proj[stim, :, pc_y]
-                            axsmap[pc_idx].plot(xs, ys, color=c_vals[stacked_inputs_labels[0][stim]], 
+                            axsmap[pc_idx].plot(xs, ys, color=c_vals[stacked_inputs_labels[0][stim]],
                                                 alpha=0.3, linewidth=1.0, linestyle=l_vals[be+1])
-                            axsmap[pc_idx].scatter(xs[0], ys[0], color=c_vals[stacked_inputs_labels[0][stim]], 
+                            axsmap[pc_idx].scatter(xs[0], ys[0], color=c_vals[stacked_inputs_labels[0][stim]],
                                                 marker="o", s=35, zorder=4, alpha=0.9)
 
                 axsmap[pc_idx].set_xlabel(f"Memory State PC{pc_x+1}", fontsize=12)
@@ -433,8 +481,24 @@ def main(seed, feature):
                 
             figmap.tight_layout()
             figmap.savefig(f"{save_dir}/{addtask}_fixed_points_{plot_name}_{savefigure_name}.png", dpi=300)
+            plt.close(figmap)
 
-    # shared_run("delaydm1") 
+            # Save the underlying data for paper_plot reuse
+            fixed_points_save[plot_name] = {
+                "fixed_points_all_arr": fixed_points_all_arr,   # (n_alpha, n_stim, n_pc)
+                "traj_all": [np.asarray(t) for t in traj_all],  # first/last alpha delay trajectories
+                "stim_labels": list(stacked_inputs_labels[0]),
+                "trial_num": trial_num,
+                "delay_period": list(delay_period),
+            }
+
+        # Save all fixed-point PCA data for this addtask
+        fp_pkl_path = f"{save_dir}/{addtask}_fixed_points_{savefigure_name}.pkl"
+        with open(fp_pkl_path, "wb") as _f:
+            pickle.dump(fixed_points_save, _f)
+        print(f"Saved fixed-point data: {fp_pkl_path}")
+
+    # shared_run("delaydm1")
     # shared_run("dmcgo")
 
     # analyze the fitted weight matrices; we focus on the first layer of modulation and the output layer, since they are more interpretable than the hidden layer
@@ -469,7 +533,7 @@ def main(seed, feature):
 
         When one dimension is very small (e.g. ≤ 5 rows for the readout
         matrix), the corresponding marginal is suppressed: a 3-bin curve
-        is uninformative and looks like noise. Tick labels at the two
+        is uninformative and looks like noise. Tick labels at Zthe two
         endpoints are kept so the axis-direction stays readable.
         """
         M = np.asarray(M)
@@ -3667,7 +3731,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Clean up old output files
-    clean = True
+    clean = False
     if clean:
         for f in Path("multiple_tasks").glob("*.png"):
             f.unlink()
@@ -3687,5 +3751,5 @@ if __name__ == "__main__":
     print(f"Running {len(param_lst)} models: {param_lst}")
 
     for seed, feature in param_lst:
-        main(seed, feature)
+        main(seed, feature, clean=clean)
         sys.exit()
