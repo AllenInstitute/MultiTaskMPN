@@ -278,7 +278,8 @@ def expand_and_freeze(net, option, nettype):
     
 def train_network(params, net=None, device=torch.device('cuda'), verbose=False, 
                   train=True, hyp_dict=None, netFunction=None, test_input=None, 
-                  pretraining_shift=0, pretraining_shift_pre=0, print_frequency=1
+                  pretraining_shift=0, pretraining_shift_pre=0, print_frequency=1,
+                  record_frequency=32
 ):
     """
     """
@@ -441,7 +442,7 @@ def train_network(params, net=None, device=torch.device('cuda'), verbose=False,
         if train:
             # Jul 19th: test the network's output on the testing dataset at the different stage of the network
             # save and register the network's parameter and output
-            if test_input is not None and (helper.is_power_of_n_or_zero(dataset_idx, 32) or dataset_idx == train_params['n_datasets'] - 1):
+            if test_input is not None and (helper.is_power_of_n_or_zero(dataset_idx, record_frequency) or dataset_idx == train_params['n_datasets'] - 1):
                 _record_monitor_state(dataset_idx)
 
             _, monitor_loss, monitor_acc, goodness_history, valid_acc_history = net.fit(train_params, train_data, train_trails,

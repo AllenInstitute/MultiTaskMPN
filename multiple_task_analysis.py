@@ -3752,4 +3752,3 @@ if __name__ == "__main__":
 
     for seed, feature in param_lst:
         main(seed, feature, clean=clean)
-        sys.exit()

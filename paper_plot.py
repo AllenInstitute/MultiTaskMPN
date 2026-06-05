@@ -1642,7 +1642,185 @@ def plot_aggregate_cve():
 
 # ─── Main ────────────────────────────────────────────────────────────────────
 
+# ─── Figure: single-task fixon/task cancellation ("show") ───────────────────
+
+ONETASK_DIR = Path("onetask")
+# Which single-task run to plot (set to the desired aname under onetask/{aname}/).
+ONETASK_ANAME = "delaygo_seed865_hidden200+batch128+angle"
+
+
+def plot_onetask_show():
+    """
+    Figure: per-stimulus fixon / task / combine modulation-component traces
+    (the single-task "cancellation" figure), reloaded from the pickle saved by
+    one_task_analysis.py. Shows how the fixon and task contributions cancel
+    until the response period.
+    """
+    _ensure_out_dir()
+    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"show_{ONETASK_ANAME}.pkl"
+    if not pkl_path.exists():
+        print(f"  Skipped: {pkl_path} not found. Run one_task_analysis.py first.")
+        return
+
+    with open(pkl_path, "rb") as f:
+        d = pickle.load(f)
+
+    per_stim = d["per_stimulus"]
+    stimulus_start = d.get("stimulus_start")
+    stimulus_end = d.get("stimulus_end")
+    response_start = d.get("response_start")
+    stim_labels = sorted(per_stim.keys())
+    # Show only the 2nd and 3rd stimulus panels.
+    sel_labels = stim_labels[1:3]
+    if len(sel_labels) < 2:
+        print(f"  Skipped: need >=3 stimuli, only {len(stim_labels)} available.")
+        return
+
+    # Trial periods: fixation | stimulus | memory(delay) | response, bounded by
+    # the saved break times. Shade each with the canonical phase colors.
+    period_spans = []
+    if stimulus_start is not None and stimulus_end is not None and response_start is not None:
+        period_spans = [
+            (0, stimulus_start, _PHASE_COLORS["stim1"], "Fixation"),
+            (stimulus_start, stimulus_end, _PHASE_COLORS["stim1"], "Stimulus"),
+            (stimulus_end, response_start, _PHASE_COLORS["delay1"], "Memory"),
+            (response_start, None, _PHASE_COLORS["go1"], "Response"),
+        ]
+        # Give fixation a neutral shade distinct from stimulus.
+        period_spans[0] = (0, stimulus_start, "#f0f0f0", "Fixation")
+
+    fig, axes = plt.subplots(len(sel_labels), 1, figsize=(3.4, 1.8 * len(sel_labels)),
+                             squeeze=False)
+    for i, lab in enumerate(sel_labels):
+        ax = axes[i, 0]
+        tr = per_stim[lab]
+        T = len(tr["combine"])
+        # Period shading behind the traces.
+        for start, end, color, _name in period_spans:
+            ax.axvspan(start, end if end is not None else T, color=color, alpha=0.35, lw=0, zorder=0)
+        ax.plot(tr["fixon"], color=c_vals[0], label="Fixon", zorder=2)
+        ax.plot(tr["task"], color=c_vals[1], label="Task", zorder=2)
+        ax.plot(tr["combine"], color=c_vals[2], linewidth=2.5, label="Combine", zorder=3)
+        ax.axhline(0, color="0.6", lw=0.8, zorder=1)
+        ax.set_xlim(0, T - 1)
+        ax.set_ylim([-2.0, 2.0])
+        ax.spines[["top", "right"]].set_visible(False)
+        if i == 0:
+            ax.legend(frameon=True, fontsize=6, loc="best")
+        if i == len(sel_labels) - 1:
+            ax.set_xlabel("Timestep", fontsize=9)
+        else:
+            ax.set_xticklabels([])
+
+    # Shared y-label centered across the panels.
+    fig.supylabel("Modulation component", fontsize=9)
+
+    fig.tight_layout()
+    out_path = OUT_DIR / "onetask_show.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def plot_onetask_modulation_heatmap():
+    """
+    Figure: per-stimulus change of the fixon-synapse modulation across the
+    hidden units, for the trained single-task network. Two stacked heatmaps
+    (rows = stimulus directions, cols = hidden neurons): top = change during
+    the stimulus period, bottom = change during the response period.
+    Reloaded from the pickle saved by one_task_analysis.py.
+    """
+    _ensure_out_dir()
+    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"modulation_heatmap_{ONETASK_ANAME}.pkl"
+    if not pkl_path.exists():
+        print(f"  Skipped: {pkl_path} not found. Run one_task_analysis.py first.")
+        return
+
+    with open(pkl_path, "rb") as f:
+        d = pickle.load(f)
+
+    stim_change = np.asarray(d["stim_change"])
+    resp_change = np.asarray(d["response_change"])
+    # Robust symmetric color limit: a few columns carry extreme values that
+    # would otherwise wash the bulk of the map to flat gray. Clip the scale to
+    # the 99th percentile of |change| so the typical structure is visible.
+    both = np.concatenate([np.abs(stim_change).ravel(), np.abs(resp_change).ravel()])
+    vmax = float(np.percentile(both, 99))
+
+    fig, axes = plt.subplots(2, 1, figsize=(4, 4),
+                             gridspec_kw={"hspace": 0.08})
+    n_stim, n_hidden = stim_change.shape
+    for ax, mat in [(axes[0], stim_change), (axes[1], resp_change)]:
+        im = ax.imshow(mat, cmap="coolwarm", vmin=-vmax, vmax=vmax,
+                       aspect="auto", interpolation="nearest")
+        # Keep short tick marks (no numeric labels) so the axes read cleanly.
+        ax.set_xticks(np.linspace(0, n_hidden - 1, 5))
+        ax.set_yticks(np.arange(n_stim))
+        ax.set_xticklabels([])
+        ax.set_yticklabels([])
+        ax.tick_params(axis="both", length=3, width=0.6, color="0.4")
+        for s in ax.spines.values():
+            s.set_visible(True)
+            s.set_linewidth(0.6)
+            s.set_edgecolor("0.4")
+
+    # Shared centered x / y labels placed close to the panels.
+    axes[1].set_xlabel("Hidden", fontsize=9)               # bottom panel only
+    fig.text(0.04, 0.5, "Stimuli", va="center", rotation="vertical", fontsize=9)
+
+    # Shared single colorbar across both panels.
+    cbar = fig.colorbar(im, ax=axes, shrink=0.5, pad=0.03)
+    cbar.ax.tick_params(labelsize=7)
+
+    out_path = OUT_DIR / "onetask_modulation_heatmap.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def plot_onetask_m_pca():
+    """
+    Figure: low-D PCA trajectory of the fixon-input modulation during the
+    stimulus period, colored by stimulus direction (one trace per trial), for
+    the trained single-task network. Only the PC1-PC2 plane is shown.
+    Reloaded from the pickle saved by one_task_analysis.py — the PCA basis was
+    fit on the fixon modulation itself (see one_task_analysis for rationale).
+    """
+    _ensure_out_dir()
+    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"m_pca_{ONETASK_ANAME}.pkl"
+    if not pkl_path.exists():
+        print(f"  Skipped: {pkl_path} not found. Run one_task_analysis.py first.")
+        return
+
+    with open(pkl_path, "rb") as f:
+        d = pickle.load(f)
+
+    lowd = np.asarray(d["lowd"])                 # (batch, T, n_pc)
+    labels = np.asarray(d["labels"]).reshape(-1)
+    s0, s1 = int(d["stimulus_start"]), int(d["stimulus_end"])
+
+    # Only the PC1-PC2 plane.
+    xpc, ypc = 0, 1
+    fig, ax = plt.subplots(1, 1, figsize=(3, 3))
+    for i in range(lowd.shape[0]):
+        color = c_vals[int(labels[i]) % len(c_vals)]
+        ax.plot(lowd[i, s0:s1, xpc], lowd[i, s0:s1, ypc],
+                marker="o", markersize=3, c=color, alpha=0.5)
+    ax.set_xlabel(f"PC {xpc+1}", fontsize=10)
+    ax.set_ylabel(f"PC {ypc+1}", fontsize=10)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    fig.tight_layout()
+    out_path = OUT_DIR / "onetask_m_pca.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
 ALL_FIGURES = {
+    "onetask_show": plot_onetask_show,
+    "onetask_modulation_heatmap": plot_onetask_modulation_heatmap,
+    "onetask_m_pca": plot_onetask_m_pca,
     "fixed_points": plot_fixed_points_all,
     "input": plot_clustered_input,
     "hidden": plot_clustered_hidden,
