@@ -8,6 +8,7 @@ single-task analyses:
 
 1. Loss / accuracy across training.
 2. Input weight matrix heatmap (W_initial_linear).
+2b. Example single-trial input & network/target output.
 3. Fixon vs task projection onto the readout — the "cancellation" mechanism
    (Eq. 2-7 sanity check) tracked across training. At the final stage also
    emits the exhaustive-search (es1/es2), fixon-task difference (diff), and
@@ -108,8 +109,10 @@ def main(aname):
     acc_lst = data["acc_lst"]
     # test_input_np is the SAVED validation set, kept because the per-stage
     # modulation traces (Ms_orig_stages etc.) are aligned to exactly these
-    # trials. Fresh I/O figures regenerate their own data from the checkpoint.
+    # trials.
     test_input_np = data["test_input_np"]
+    test_output_np = data["test_output_np"]
+    net_out_final = data["net_out_final"]   # final-stage network output on the test set
     input_matrix_final = data["input_matrix_final"]
     labels = data["labels"]
     Ms_orig_stages = data["Ms_orig_stages"]          # (stage, batch, T, hidden, input)
@@ -184,6 +187,49 @@ def main(aname):
         figinp.tight_layout()
         figinp.savefig(save_dir / f"input_weight_{aname}.png", dpi=300)
         plt.close(figinp)
+
+    # ── Example single-trial input & output ──────────────────────────────────
+    # One representative trial. Input layout (shift_index=1): channel 0 =
+    # fixation, channels [1,2] and [3,4] are two stimulus (cos,sin) groups, the
+    # last channel = task cue. Only ONE stimulus group is active per trial, so
+    # we plot 4 channels: Fixation, Stim Cos, Stim Sin, Task Cue.
+    # Output (3 channels): Fixation, Output Cos, Output Sin (network output).
+    b0 = 0
+    fix_ch = 0
+    task_ch = test_input_np.shape[-1] - 1
+    # The two candidate stimulus groups; pick the one carrying signal in trial b0.
+    groups = [(1, 2), (3, 4)]
+    group_energy = [np.abs(test_input_np[b0, :, list(g)]).sum() for g in groups]
+    cos_ch, sin_ch = groups[int(np.argmax(group_energy))]
+
+    figex, axex = plt.subplots(2, 1, figsize=(5, 5), sharex=True)
+
+    in_specs = [(fix_ch, "Fixation"), (cos_ch, "Stim Cos"),
+                (sin_ch, "Stim Sin"), (task_ch, "Task Cue")]
+    for k, (ch, lab) in enumerate(in_specs):
+        axex[0].plot(test_input_np[b0, :, ch], color=c_vals[k % len(c_vals)], label=lab)
+    axex[0].set_ylabel("Input", fontsize=12)
+    axex[0].set_title(f"Example trial (stimulus = {int(labels[b0, 0])})", fontsize=11)
+
+    out_labels = ["Fixation", "Output Cos", "Output Sin"]
+    for out_idx in range(min(test_output_np.shape[-1], len(out_labels))):
+        # Target output as a faded shadow (no legend entry), network output on top.
+        axex[1].plot(test_output_np[b0, :, out_idx], color=c_vals_l[out_idx % len(c_vals_l)],
+                     linewidth=4, alpha=0.6)
+        axex[1].plot(net_out_final[b0, :, out_idx], color=c_vals[out_idx % len(c_vals)],
+                     label=out_labels[out_idx])
+    axex[1].set_ylabel("Output", fontsize=12)
+    axex[1].set_xlabel("Time step", fontsize=12)
+
+    for ax in axex:
+        ax.legend(fontsize=7, frameon=True, loc="best", ncol=2)
+        ax.spines[["top", "right"]].set_visible(False)
+    figex.tight_layout()
+    figex.savefig(save_dir / f"example_trial_{aname}.png", dpi=300)
+    plt.close(figex)
+    print(f"  Saved example trial figure: {save_dir / f'example_trial_{aname}.png'}")
+    import sys as _sys
+    _sys.exit()
 
     # ── Fixon vs Task projection onto readout (cancellation) ─────────────────
     # For each training stage, project the modulated weight's response to the

@@ -5,10 +5,18 @@ Each public function produces one publication-ready figure and saves it
 to the `paper_plot/` directory. Run the script directly to generate all
 figures, or import individual functions as needed.
 
+Figures are grouped into three modes by the experiment they depend on:
+    one_task         single-task training analyses
+    multiple_tasks   full multi-task network (clustering, lesion, state space)
+    pretraining      pretraining → post-training transfer analyses
+
 Usage:
-    python paper_plot.py                  # generate all figures
-    python paper_plot.py --only input     # generate only the input figure
-    python paper_plot.py --only hidden    # generate only the hidden figure
+    python paper_plot.py                       # generate every mode
+    python paper_plot.py all                   # same as above
+    python paper_plot.py one_task              # only the one-task figures
+    python paper_plot.py multiple_tasks        # only the multi-task figures
+    python paper_plot.py pretraining           # only the pretraining figures
+    python paper_plot.py --only input          # generate a single figure
 """
 import pickle
 import numpy as np
@@ -1303,8 +1311,8 @@ def plot_transfer_speed():
         "fdanti_delaygo": "#e53e3e",
     }
     ruleset_labels = {
-        "fdgo_delaygo": "Improper motif",
-        "fdanti_delaygo": "Proper motif",
+        "fdgo_delaygo": "Irrelevant motif",
+        "fdanti_delaygo": "Relevant motif",
     }
 
     fig, ax = plt.subplots(1, 1, figsize=(3, 2.2))
@@ -1343,7 +1351,7 @@ def plot_rule_vectors():
     Figure: Pairwise cosine similarity between rule-input vectors.
 
     Shows how the novel task's learned rule vector relates to the two
-    pretrained rule vectors, for each ruleset (proper vs improper motif).
+    pretrained rule vectors, for each ruleset (relevant vs irrelevant motif).
     """
     import re as _re
 
@@ -1403,8 +1411,8 @@ def plot_rule_vectors():
         "fdanti_delaygo": "#e53e3e",
     }
     ruleset_labels = {
-        "fdgo_delaygo": "Improper motif",
-        "fdanti_delaygo": "Proper motif",
+        "fdgo_delaygo": "Irrelevant motif",
+        "fdanti_delaygo": "Relevant motif",
     }
 
     task_display_names = {
@@ -1417,13 +1425,26 @@ def plot_rule_vectors():
     cos_keys = ["cos_novel_pre0", "cos_novel_pre1", "cos_pre0_pre1"]
     rs_list = sorted(by_ruleset.keys())
 
-    fig, ax = plt.subplots(1, 1, figsize=(4, 2.8))
+    # Drop the within-pretraining baseline (pre0 ↔ pre1) so each motif keeps
+    # the two novel-vs-pretrained comparisons:
+    #   relevant   (fdanti_delaygo): MemoryAnti↔DelayAnti + MemoryAnti↔MemoryPro
+    #   irrelevant (fdgo_delaygo):   MemoryAnti↔DelayPro  + MemoryAnti↔MemoryPro
+    # Dropped: DelayAnti↔MemoryPro (fdanti↔delaygo), DelayPro↔MemoryPro (fdgo↔delaygo).
+    excluded_pairs = {
+        frozenset(("fdanti", "delaygo")),
+        frozenset(("fdgo", "delaygo")),
+    }
 
-    group_step = len(cos_keys) + 0.5
-    bar_width = 0.7
+    fig, ax = plt.subplots(1, 1, figsize=(3.6, 2.4))
+
+    # Bars are packed within a ruleset group; `group_gap` separates groups.
+    bar_step = 1.0
+    bar_width = 0.8
+    group_gap = 0.6
 
     all_x, all_labels = [], []
-    for rs_idx, rs in enumerate(rs_list):
+    next_x = 0.0  # running left edge for the next group
+    for rs in rs_list:
         color = ruleset_colors.get(rs, "#718096")
         label = ruleset_labels.get(rs, rs)
         s1_tasks = by_ruleset[rs].get("stage1_tasks", [rs])
@@ -1433,30 +1454,42 @@ def plot_rule_vectors():
         t0 = task_display_names.get(s1_tasks[0], s1_tasks[0])
         t1 = task_display_names.get(s1_tasks[1], s1_tasks[1])
 
-        cos_labels = [
-            f"{ft}\n↔ {t0}",
-            f"{ft}\n↔ {t1}",
-            f"{t0}\n↔ {t1}",
+        # (key, label, underlying raw task pair) for the three comparisons.
+        bar_specs = [
+            ("cos_novel_pre0", f"{ft}\n↔ {t0}", (final_task, s1_tasks[0])),
+            ("cos_novel_pre1", f"{ft}\n↔ {t1}", (final_task, s1_tasks[1])),
+            ("cos_pre0_pre1", f"{t0}\n↔ {t1}", (s1_tasks[0], s1_tasks[1])),
         ]
+        # Drop the excluded task pairs; keep remaining bars packed (no gaps).
+        bar_specs = [
+            (k, lbl, pair) for (k, lbl, pair) in bar_specs
+            if frozenset(pair) not in excluded_pairs
+        ]
+        if not bar_specs:
+            continue
 
-        xs_group = rs_idx * group_step + np.arange(len(cos_keys))
-        means = np.array([np.mean(by_ruleset[rs][k]) for k in cos_keys])
-        stds = np.array([np.std(by_ruleset[rs][k]) for k in cos_keys])
+        keys = [k for (k, _, _) in bar_specs]
+        cos_labels = [lbl for (_, lbl, _) in bar_specs]
 
-        ax.bar(xs_group, means, bar_width, yerr=stds, capsize=3,
+        xs_group = next_x + bar_step * np.arange(len(keys))
+        next_x = xs_group[-1] + bar_step + group_gap
+        means = np.array([np.mean(by_ruleset[rs][k]) for k in keys])
+        stds = np.array([np.std(by_ruleset[rs][k]) for k in keys])
+
+        ax.bar(xs_group, means, bar_width, yerr=stds, capsize=2,
                color=color, alpha=0.8, edgecolor="k", linewidth=0.5,
                label=label)
 
-        for k_idx, k in enumerate(cos_keys):
+        for k_idx, k in enumerate(keys):
             vals = np.array(by_ruleset[rs][k])
             ax.plot(np.full_like(vals, xs_group[k_idx]), vals,
-                    "k.", markersize=4, alpha=0.6)
+                    "k.", markersize=3, alpha=0.6)
 
         all_x.extend(xs_group.tolist())
         all_labels.extend(cos_labels)
 
     ax.set_xticks(all_x)
-    ax.set_xticklabels(all_labels, rotation=25, ha="center", fontsize=6)
+    ax.set_xticklabels(all_labels, rotation=0, ha="center", fontsize=6)
     ax.axhline(0.0, color="gray", linewidth=0.8, linestyle="--")
     ax.set_ylabel("Cosine similarity")
     ax.legend(fontsize=7, frameon=True)
@@ -1471,24 +1504,20 @@ def plot_rule_vectors():
 
 # ─── Figure: Aggregate CVE ───────────────────────────────────────────────────
 
-def plot_aggregate_cve():
+def _load_aggregate_cve_by_ruleset(analysis_types, periods):
     """
-    Figure: Cumulative variance explained (CVE) of the novel task in its own
-    PCs vs in the pretraining task PCs. Overlays fdgo_delaygo (improper motif)
-    and fdanti_delaygo (proper motif) on the same axes.
+    Load aggregate CVE curves keyed by ruleset.
 
-    Produces a 3×2 grid: rows = hidden, modulation, modulation_weighted;
-    columns = stimulus, response. Each panel saved as a separate file.
+    Prefers the combined `*_aggregate.pkl` files written by
+    pretraining_analysis.py; falls back to reconstructing the aggregate from
+    the per-seed `*_result.pkl` files. Returns a dict {ruleset: agg_dict}
+    where agg_dict holds `{dtype}_{period}_self` / `_cross` lists of per-seed
+    curves. Returns {} if no data is available.
     """
     import re as _re
 
-    _ensure_out_dir()
     if not PRETRAINING_ANALYSIS_DIR.exists():
-        print("  Skipped: pretraining_analysis/ not found.")
-        return
-
-    analysis_types = ["hidden", "modulation", "modulation_weighted"]
-    periods = ["stimulus", "response"]
+        return {}
 
     # Try combined aggregate pkls first
     agg_pkls = sorted(PRETRAINING_ANALYSIS_DIR.glob("*_dmpn_*_aggregate.pkl"))
@@ -1500,44 +1529,122 @@ def plot_aggregate_cve():
                 data = pickle.load(f)
             rs = data["ruleset"]
             by_ruleset[rs] = data
-    else:
-        # Fallback: reconstruct from individual seed pickles
-        addon_name = "+hidden200+L21e3+batch128+angle"
-        pkls = sorted(PRETRAINING_ANALYSIS_DIR.glob(f"*_dmpn_seed*_{addon_name}_result.pkl"))
-        if not pkls:
-            print("  Skipped: no pretraining result pickles found.")
-            return
+        return by_ruleset
 
-        raw_by_rs = {}
-        for p in pkls:
-            m = _re.match(
-                r'(.+)_dmpn_seed\d+_\+hidden200\+L21e3\+batch128\+angle_result\.pkl', p.name
-            )
-            if m:
-                rs = m.group(1)
-                with open(p, "rb") as f:
-                    raw_by_rs.setdefault(rs, []).append(pickle.load(f))
+    # Fallback: reconstruct from individual seed pickles
+    addon_name = "+hidden200+L21e3+batch128+angle"
+    pkls = sorted(PRETRAINING_ANALYSIS_DIR.glob(f"*_dmpn_seed*_{addon_name}_result.pkl"))
+    if not pkls:
+        return {}
 
-        for rs, seed_results in raw_by_rs.items():
-            agg = {"ruleset": rs}
-            for dtype in analysis_types:
-                for period in periods:
-                    all_self, all_cross = [], []
-                    for sr in seed_results:
-                        if dtype not in sr:
-                            continue
-                        if period not in sr[dtype]:
-                            continue
-                        res = sr[dtype][period]
-                        all_self.append(res["cev_Y_self"])
-                        all_cross.append(res["cev_Y"])
-                    if all_self:
-                        min_len = min(min(len(c) for c in all_self),
-                                      min(len(c) for c in all_cross))
-                        agg[f"{dtype}_{period}_self"] = [c[:min_len] for c in all_self]
-                        agg[f"{dtype}_{period}_cross"] = [c[:min_len] for c in all_cross]
-            by_ruleset[rs] = agg
+    raw_by_rs = {}
+    for p in pkls:
+        m = _re.match(
+            r'(.+)_dmpn_seed\d+_\+hidden200\+L21e3\+batch128\+angle_result\.pkl', p.name
+        )
+        if m:
+            rs = m.group(1)
+            with open(p, "rb") as f:
+                raw_by_rs.setdefault(rs, []).append(pickle.load(f))
 
+    for rs, seed_results in raw_by_rs.items():
+        agg = {"ruleset": rs}
+        for dtype in analysis_types:
+            for period in periods:
+                all_self, all_cross = [], []
+                for sr in seed_results:
+                    if dtype not in sr:
+                        continue
+                    if period not in sr[dtype]:
+                        continue
+                    res = sr[dtype][period]
+                    all_self.append(res["cev_Y_self"])
+                    all_cross.append(res["cev_Y"])
+                if all_self:
+                    min_len = min(min(len(c) for c in all_self),
+                                  min(len(c) for c in all_cross))
+                    agg[f"{dtype}_{period}_self"] = [c[:min_len] for c in all_self]
+                    agg[f"{dtype}_{period}_cross"] = [c[:min_len] for c in all_cross]
+        by_ruleset[rs] = agg
+
+    return by_ruleset
+
+
+def _plot_aggregate_cve_panel(ax, by_ruleset, dtype, period, ruleset_colors,
+                              ruleset_labels, x_lim, x_ticks, show_legend):
+    """
+    Draw one CVE panel: novel-in-own-PCs (self, black) plus novel-in-
+    pretraining-PCs (cross, colored per ruleset), with per-seed thin lines
+    and seed-mean thick lines. Shared by the full and stimulus-only figures.
+    """
+    key_self = f"{dtype}_{period}_self"
+    key_cross = f"{dtype}_{period}_cross"
+
+    # Plot self (black) — same across rulesets, just use the first available
+    self_plotted = False
+    for rs in ["fdanti_delaygo", "fdgo_delaygo"]:
+        if rs not in by_ruleset:
+            continue
+        agg = by_ruleset[rs]
+        if key_self not in agg:
+            continue
+        if not self_plotted:
+            all_self = np.array(agg[key_self])
+            min_len = all_self.shape[1]
+            xs = np.arange(1, min_len + 1)
+            for i in range(all_self.shape[0]):
+                ax.plot(xs, all_self[i], color="black", linewidth=0.5, alpha=0.2)
+            mean_self = np.mean(all_self, axis=0)
+            ax.plot(xs, mean_self, color="black", linewidth=2.0,
+                    label="Self" if show_legend else None)
+            self_plotted = True
+
+    # Plot cross (colored by ruleset)
+    for rs in ["fdanti_delaygo", "fdgo_delaygo"]:
+        if rs not in by_ruleset:
+            continue
+        agg = by_ruleset[rs]
+        if key_cross not in agg:
+            continue
+
+        color = ruleset_colors.get(rs, "#718096")
+        label = ruleset_labels.get(rs, rs)
+
+        all_cross = np.array(agg[key_cross])
+        min_len = all_cross.shape[1]
+        xs = np.arange(1, min_len + 1)
+
+        for i in range(all_cross.shape[0]):
+            ax.plot(xs, all_cross[i], color=color, linewidth=0.5,
+                    alpha=0.25, linestyle="--")
+
+        mean_cross = np.mean(all_cross, axis=0)
+        ax.plot(xs, mean_cross, color=color, linewidth=2.0, linestyle="--",
+                label=label if show_legend else None)
+
+    ax.set_xlim(0, x_lim)
+    ax.set_xticks(x_ticks)
+    ax.set_ylim(0, 1.05)
+    ax.spines[["top", "right"]].set_visible(False)
+    if show_legend:
+        ax.legend(fontsize=7, frameon=True)
+
+
+def plot_aggregate_cve():
+    """
+    Figure: Cumulative variance explained (CVE) of the novel task in its own
+    PCs vs in the pretraining task PCs. Overlays fdgo_delaygo (irrelevant motif)
+    and fdanti_delaygo (relevant motif) on the same axes.
+
+    Produces a 3×2 grid: rows = hidden, modulation, modulation_weighted;
+    columns = stimulus, response. Each panel saved as a separate file.
+    """
+    _ensure_out_dir()
+
+    analysis_types = ["hidden", "modulation", "modulation_weighted"]
+    periods = ["stimulus", "response"]
+
+    by_ruleset = _load_aggregate_cve_by_ruleset(analysis_types, periods)
     if not by_ruleset:
         print("  Skipped: no aggregate data found.")
         return
@@ -1547,8 +1654,8 @@ def plot_aggregate_cve():
         "fdanti_delaygo": "#e53e3e",
     }
     ruleset_labels = {
-        "fdgo_delaygo": "Improper motif",
-        "fdanti_delaygo": "Proper motif",
+        "fdgo_delaygo": "Irrelevant motif",
+        "fdanti_delaygo": "Relevant motif",
     }
 
     # 2×2 combined figure: rows = [hidden, modulation_weighted], cols = [stimulus, response]
@@ -1561,72 +1668,20 @@ def plot_aggregate_cve():
     x_lim_map = {"hidden": 20, "modulation_weighted": 1000}
     x_tick_map = {"hidden": np.arange(0, 21, 5), "modulation_weighted": np.arange(0, 1001, 200)}
 
+    dtype_titles = {"hidden": "Hidden", "modulation_weighted": "Effective Modulation"}
+    period_titles = {"stimulus": "Stimulus Period", "response": "Response Period"}
+
     fig, axes = plt.subplots(2, 2, figsize=(6, 4.5))
 
     for idx, (dtype, period) in enumerate(panel_layout):
         row, col = idx // 2, idx % 2
         ax = axes[row, col]
-
-        key_self = f"{dtype}_{period}_self"
-        key_cross = f"{dtype}_{period}_cross"
-
-        # Plot self (black) — same across rulesets, just use the first available
-        self_plotted = False
-        for rs in ["fdanti_delaygo", "fdgo_delaygo"]:
-            if rs not in by_ruleset:
-                continue
-            agg = by_ruleset[rs]
-            if key_self not in agg:
-                continue
-            if not self_plotted:
-                all_self = np.array(agg[key_self])
-                min_len = all_self.shape[1]
-                xs = np.arange(1, min_len + 1)
-                for i in range(all_self.shape[0]):
-                    ax.plot(xs, all_self[i], color="black", linewidth=0.5, alpha=0.2)
-                mean_self = np.mean(all_self, axis=0)
-                show_legend = (row == 0 and col == 0)
-                ax.plot(xs, mean_self, color="black", linewidth=2.0,
-                        label="Self" if show_legend else None)
-                self_plotted = True
-
-        # Plot cross (colored by ruleset)
-        for rs in ["fdanti_delaygo", "fdgo_delaygo"]:
-            if rs not in by_ruleset:
-                continue
-            agg = by_ruleset[rs]
-            if key_cross not in agg:
-                continue
-
-            color = ruleset_colors.get(rs, "#718096")
-            label = ruleset_labels.get(rs, rs)
-
-            all_cross = np.array(agg[key_cross])
-            min_len = all_cross.shape[1]
-            xs = np.arange(1, min_len + 1)
-
-            for i in range(all_cross.shape[0]):
-                ax.plot(xs, all_cross[i], color=color, linewidth=0.5,
-                        alpha=0.25, linestyle="--")
-
-            mean_cross = np.mean(all_cross, axis=0)
-
-            show_legend = (row == 0 and col == 0)
-            ax.plot(xs, mean_cross, color=color, linewidth=2.0, linestyle="--",
-                    label=label if show_legend else None)
-
-        dtype_titles = {"hidden": "Hidden", "modulation_weighted": "Effective Modulation"}
-        period_titles = {"stimulus": "Stimulus Period", "response": "Response Period"}
-        ax.set_title(f"{dtype_titles[dtype]} — {period_titles[period]}", fontsize=8, pad=4)
-
-        ax.set_xlim(0, x_lim_map[dtype])
-        ax.set_xticks(x_tick_map[dtype])
-        ax.set_ylim(0, 1.05)
-        ax.spines[["top", "right"]].set_visible(False)
-
-        if row == 0 and col == 0:
-            ax.legend(fontsize=7, frameon=True)
-
+        _plot_aggregate_cve_panel(
+            ax, by_ruleset, dtype, period, ruleset_colors, ruleset_labels,
+            x_lim=x_lim_map[dtype], x_ticks=x_tick_map[dtype],
+            show_legend=(row == 0 and col == 0))
+        ax.set_title(f"{dtype_titles[dtype]} — {period_titles[period]}",
+                     fontsize=8, pad=4)
         if col > 0:
             ax.set_yticklabels([])
 
@@ -1635,6 +1690,62 @@ def plot_aggregate_cve():
              rotation="vertical", fontsize=9)
     fig.tight_layout(rect=[0.03, 0.02, 1, 1])
     out_path = OUT_DIR / "aggregate_cve.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def plot_aggregate_cve_stimulus():
+    """
+    Figure: stimulus-period-only CVE. Single row, two columns — hidden (left)
+    and effective modulation (right) — overlaying the relevant and irrelevant
+    motif rulesets, same conventions as plot_aggregate_cve.
+    """
+    _ensure_out_dir()
+
+    analysis_types = ["hidden", "modulation", "modulation_weighted"]
+    periods = ["stimulus", "response"]
+
+    by_ruleset = _load_aggregate_cve_by_ruleset(analysis_types, periods)
+    if not by_ruleset:
+        print("  Skipped: no aggregate data found.")
+        return
+
+    ruleset_colors = {
+        "fdgo_delaygo": "#3182ce",
+        "fdanti_delaygo": "#e53e3e",
+    }
+    ruleset_labels = {
+        "fdgo_delaygo": "Irrelevant motif",
+        "fdanti_delaygo": "Relevant motif",
+    }
+
+    x_lim_map = {"hidden": 20, "modulation_weighted": 1000}
+    x_tick_map = {"hidden": np.arange(0, 21, 5),
+                  "modulation_weighted": np.arange(0, 1001, 200)}
+    dtype_titles = {"hidden": "Hidden", "modulation_weighted": "Effective Modulation"}
+
+    # One row, two columns: hidden | effective modulation, both stimulus period.
+    col_dtypes = ["hidden", "modulation_weighted"]
+
+    fig, axes = plt.subplots(1, 2, figsize=(6, 2.6))
+
+    for col, dtype in enumerate(col_dtypes):
+        ax = axes[col]
+        _plot_aggregate_cve_panel(
+            ax, by_ruleset, dtype, "stimulus", ruleset_colors, ruleset_labels,
+            x_lim=x_lim_map[dtype], x_ticks=x_tick_map[dtype],
+            show_legend=(col == 0))
+        ax.set_title(f"{dtype_titles[dtype]} — Stimulus Period",
+                     fontsize=8, pad=4)
+        if col > 0:
+            ax.set_yticklabels([])
+
+    fig.text(0.5, 0.005, "# PCs", ha="center", fontsize=9)
+    fig.text(0.005, 0.5, "MemoryAnti Variance Explained", va="center",
+             rotation="vertical", fontsize=9)
+    fig.tight_layout(rect=[0.03, 0.04, 1, 1])
+    out_path = OUT_DIR / "aggregate_cve_stimulus.png"
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out_path}")
@@ -1817,45 +1928,165 @@ def plot_onetask_m_pca():
     print(f"Saved: {out_path}")
 
 
+ONETASK_DATA_DIR = Path("onetask_data")
+
+
+def plot_onetask_corr_during_learning():
+    """
+    Figure: inter-stimulus cosine of the (fixon) modulation and hidden activity
+    across training, aggregated over ALL single-task runs in onetask_data/.
+
+    Each run contributes a corr_{aname}.npz (counter_lst, m_corr_stage,
+    h_corr_stage) written by one_task_analysis.py. Runs are truncated to a
+    common length; the mean across runs is plotted with a ±1 std band.
+    Top panel = modulation cosine, bottom = hidden-activity cosine.
+    """
+    import glob as _glob
+
+    _ensure_out_dir()
+    files = sorted(_glob.glob(str(ONETASK_DATA_DIR / "corr_*.npz")))
+    if not files:
+        print("  Skipped: no corr_*.npz in onetask_data/. Run one_task_analysis.py first.")
+        return
+
+    counters, m_all, h_all = [], [], []
+    for fpath in files:
+        dd = np.load(fpath)
+        counters.append(dd["counter_lst"])
+        m_all.append(dd["m_corr_stage"])
+        h_all.append(dd["h_corr_stage"])
+
+    common = min(len(c) for c in counters)
+    counters = np.array([c[:common] for c in counters])
+    m_all = np.array([m[:common] for m in m_all])
+    h_all = np.array([h[:common] for h in h_all])
+    mean_counter = np.mean(counters, axis=0)
+    n_runs = len(files)
+
+    fig, axm = plt.subplots(2, 1, figsize=(4, 4), sharex=True)
+    for ax, data, ylabel in [
+        (axm[0], m_all, "Modulation\nstimulus similarity"),
+        (axm[1], h_all, "Activity\nstimulus similarity"),
+    ]:
+        mean = data.mean(0)
+        std = data.std(0)
+        ax.plot(mean_counter, mean, "-o", color=c_vals[0], markersize=4)
+        ax.fill_between(mean_counter, mean - std, mean + std,
+                        color=c_vals[0], alpha=0.2)
+        ax.set_ylabel(ylabel, fontsize=10)
+        ax.spines[["top", "right"]].set_visible(False)
+    axm[1].set_xlabel("# Dataset", fontsize=11)
+    axm[1].set_xscale("log")
+    axm[0].set_title(f"n = {n_runs} runs", fontsize=9)
+
+    fig.tight_layout()
+    out_path = OUT_DIR / "onetask_corr_during_learning.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}  (n={n_runs} runs)")
+
+
+# ─── Figures grouped by mode ──────────────────────────────────────────────────
+# Each mode maps a figure name → its plotting function. Figures only depend on
+# the data produced by their corresponding experiment, so a mode can be run in
+# isolation without touching the others' inputs.
+#
+#   one_task        single-task training analyses (multiple_task single-task run)
+#   multiple_tasks  the full multi-task network: clustering, lesion, state space
+#   pretraining     pretraining → post-training transfer analyses
+FIGURES_BY_MODE = {
+    "one_task": {
+        "onetask_show": plot_onetask_show,
+        "onetask_modulation_heatmap": plot_onetask_modulation_heatmap,
+        "onetask_m_pca": plot_onetask_m_pca,
+        "onetask_corr_during_learning": plot_onetask_corr_during_learning,
+    },
+    "multiple_tasks": {
+        "fixed_points": plot_fixed_points_all,
+        "input": plot_clustered_input,
+        "hidden": plot_clustered_hidden,
+        "modulation": plot_clustered_modulation,
+        "l2_accuracy": plot_l2_vs_accuracy,
+        "state_space_combined": plot_state_space_combined,
+        "state_space_r_values": plot_state_space_r_values,
+        "overmembership_unnorm": plot_overmembership_unnorm,
+        "overmembership_weighted": plot_overmembership_weighted,
+        "overmembership_var_weighted": plot_overmembership_var_weighted,
+        "input_weight_correlation": plot_input_weight_correlation,
+        "lesion_heatmap": plot_lesion_heatmap,
+        "cluster_corr_vs_lesion": plot_cluster_corr_vs_lesion,
+        "om_vs_lesion": plot_om_vs_lesion,
+    },
+    "pretraining": {
+        "transfer_speed": plot_transfer_speed,
+        "rule_vectors": plot_rule_vectors,
+        "aggregate_cve": plot_aggregate_cve,
+        "aggregate_cve_stimulus": plot_aggregate_cve_stimulus,
+    },
+}
+
+# Flattened view: every figure across all modes, preserving mode order.
 ALL_FIGURES = {
-    "onetask_show": plot_onetask_show,
-    "onetask_modulation_heatmap": plot_onetask_modulation_heatmap,
-    "onetask_m_pca": plot_onetask_m_pca,
-    "fixed_points": plot_fixed_points_all,
-    "input": plot_clustered_input,
-    "hidden": plot_clustered_hidden,
-    "modulation": plot_clustered_modulation,
-    "l2_accuracy": plot_l2_vs_accuracy,
-    "state_space_combined": plot_state_space_combined,
-    "state_space_r_values": plot_state_space_r_values,
-    "overmembership_unnorm": plot_overmembership_unnorm,
-    "overmembership_weighted": plot_overmembership_weighted,
-    "overmembership_var_weighted": plot_overmembership_var_weighted,
-    "input_weight_correlation": plot_input_weight_correlation,
-    "lesion_heatmap": plot_lesion_heatmap,
-    "cluster_corr_vs_lesion": plot_cluster_corr_vs_lesion,
-    "om_vs_lesion": plot_om_vs_lesion,
-    "transfer_speed": plot_transfer_speed,
-    "rule_vectors": plot_rule_vectors,
-    "aggregate_cve": plot_aggregate_cve,
+    name: fn
+    for mode_figs in FIGURES_BY_MODE.values()
+    for name, fn in mode_figs.items()
 }
 
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Generate paper figures for one or more analysis modes."
+    )
+    parser.add_argument(
+        "mode",
+        nargs="?",
+        default="all",
+        choices=["all", *FIGURES_BY_MODE.keys()],
+        help="Which group of figures to generate. 'all' runs every mode "
+             "(default).",
+    )
+    parser.add_argument(
+        "--only",
+        metavar="FIGURE",
+        help="Generate a single figure by name (overrides mode).",
+    )
+    args = parser.parse_args()
+
+    # Resolve the set of figures to generate.
+    if args.only is not None:
+        if args.only not in ALL_FIGURES:
+            parser.error(
+                f"unknown figure '{args.only}'. "
+                f"Available: {', '.join(ALL_FIGURES)}"
+            )
+        figures = {args.only: ALL_FIGURES[args.only]}
+        modes_run = "only"
+    elif args.mode == "all":
+        figures = ALL_FIGURES
+        modes_run = "all"
+    else:
+        figures = FIGURES_BY_MODE[args.mode]
+        modes_run = args.mode
+
     print(f"Experiment: {ANAME}")
     print(f"Output: {OUT_DIR}/")
+    print(f"Mode: {modes_run} ({len(figures)} figure(s))")
     print()
 
-    # Clear old figures
+    # Clear old figures. Only wipe the whole directory on a full 'all' run;
+    # a single-mode (or --only) run leaves other modes' outputs untouched.
     _ensure_out_dir()
-    for f in OUT_DIR.iterdir():
-        if f.is_file():
-            f.unlink()
+    if modes_run == "all":
+        for f in OUT_DIR.iterdir():
+            if f.is_file():
+                f.unlink()
 
     import traceback
 
     failures = []
-    for name, fn in ALL_FIGURES.items():
+    for name, fn in figures.items():
         print(f"── Generating: {name} ──")
         try:
             fn()
