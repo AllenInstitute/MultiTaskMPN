@@ -178,6 +178,7 @@ def main(aname):
     fig.tight_layout()
     fig.savefig(save_dir / f"loss_acc_{aname}.png", dpi=300)
     plt.close(fig)
+    print(f"  Saved figure: {save_dir / f'loss_acc_{aname}.png'}")
 
     # ── Input weight matrix heatmap (notebook cell 9) ────────────────────────
     if net_params["input_layer_add"] and input_matrix_final.size > 0:
@@ -187,6 +188,7 @@ def main(aname):
         figinp.tight_layout()
         figinp.savefig(save_dir / f"input_weight_{aname}.png", dpi=300)
         plt.close(figinp)
+        print(f"  Saved figure: {save_dir / f'input_weight_{aname}.png'}")
 
     # ── Example single-trial input & output ──────────────────────────────────
     # One representative trial. Input layout (shift_index=1): channel 0 =
@@ -394,6 +396,7 @@ def main(aname):
             figpaper.tight_layout()
             figpaper.savefig(save_dir / f"show_{aname}.png", dpi=300)
             plt.close(figpaper)
+            print(f"  Saved figure: {save_dir / f'show_{aname}.png'}")
 
             # Save the underlying traces so paper_plot can re-render this figure.
             import pickle as _pickle
@@ -427,16 +430,19 @@ def main(aname):
             figexh1.tight_layout()
             figexh1.savefig(save_dir / f"es1_{aname}.png", dpi=300)
             plt.close(figexh1)
+            print(f"  Saved figure: {save_dir / f'es1_{aname}.png'}")
             figexh2.suptitle(f"Exhaustive Search 2 {color_by} Stage {stage_iter}")
             figexh2.tight_layout()
             figexh2.savefig(save_dir / f"es2_{aname}.png", dpi=300)
             plt.close(figexh2)
+            print(f"  Saved figure: {save_dir / f'es2_{aname}.png'}")
             axsdiff[0].set_title("Stimulus 1")
             axsdiff[1].set_title("Stimulus 2")
             figdiff.suptitle(f"Fixon-Task at Stage {stage_iter}")
             figdiff.tight_layout()
             figdiff.savefig(save_dir / f"diff_{aname}.png", dpi=300)
             plt.close(figdiff)
+            print(f"  Saved figure: {save_dir / f'diff_{aname}.png'}")
 
         return task_labels_across_batch, saver2, saver2_random
 
@@ -479,6 +485,7 @@ def main(aname):
     figc.tight_layout()
     figc.savefig(save_dir / f"cancel_{aname}.png", dpi=300)
     plt.close(figc)
+    print(f"  Saved figure: {save_dir / f'cancel_{aname}.png'}")
 
     # ── Modulation-change / synaptic & hidden correlation across learning ────
     modulation_dict_diff_lst, modulation_dict_lst = [], []
@@ -565,6 +572,7 @@ def main(aname):
             fig_hc.tight_layout()
             fig_hc.savefig(save_dir / f"modulation_heatmap_{aname}.png", dpi=300)
             plt.close(fig_hc)
+            print(f"  Saved figure: {save_dir / f'modulation_heatmap_{aname}.png'}")
 
             # Save the two heatmap matrices for paper_plot reuse.
             import pickle as _pickle
@@ -601,6 +609,7 @@ def main(aname):
     figmc.tight_layout()
     figmc.savefig(save_dir / f"modulation_change_{aname}.png", dpi=300)
     plt.close(figmc)
+    print(f"  Saved figure: {save_dir / f'modulation_change_{aname}.png'}")
 
     # Save the raw (un-normalized) mean cosine curves for cross-seed plotting.
     ONETASK_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -629,6 +638,7 @@ def main(aname):
     figt.tight_layout()
     figt.savefig(save_dir / f"length_hidden_state_{aname}.png", dpi=300)
     plt.close(figt)
+    print(f"  Saved figure: {save_dir / f'length_hidden_state_{aname}.png'}")
 
     # ── Weight-component projection to output across learning ────────────────
     fixon_task_projoutput = []
@@ -666,6 +676,7 @@ def main(aname):
     figw.tight_layout()
     figw.savefig(save_dir / f"w_to_output_{aname}.png", dpi=300)
     plt.close(figw)
+    print(f"  Saved figure: {save_dir / f'w_to_output_{aname}.png'}")
 
     # ── Low-D PCA of fixon modulation during the stimulus period (final stage) ─
     #
@@ -730,6 +741,7 @@ def main(aname):
     fighs.tight_layout()
     fighs.savefig(save_dir / f"m_pca_{aname}.png", dpi=300)
     plt.close(fighs)
+    print(f"  Saved figure: {save_dir / f'm_pca_{aname}.png'}")
 
     # Save the projected trajectories so paper_plot can re-render this figure.
     import pickle as _pickle

@@ -138,6 +138,20 @@ def _phase_of(name):
     return None
 
 
+def _task_display_name(name):
+    """Task-only display label for a '{rule}-{phase}' tick.
+
+    Drops the phase/session suffix (e.g. 'Response', 'Memory1') and returns
+    just the task display name (e.g. 'DelayPro'). Falls back to the full
+    relabeled name if no phase suffix is present.
+    """
+    phase = _phase_of(name)
+    if phase is not None:
+        rule = name[: -(len(phase) + 1)]
+        return _TASK_DISPLAY.get(rule, rule)
+    return _relabel_tb_name(name)
+
+
 def _color_phase_ticklabels(ax, ordered_names, axis="y"):
     """Set a background highlight on each tick label based on its phase."""
     labels = ax.get_yticklabels() if axis == "y" else ax.get_xticklabels()
@@ -342,7 +356,7 @@ def _plot_clustered_variance(
         ax.axvline(cb, color="0.6", lw=0.5, zorder=3, alpha=0.6)
 
     ordered_names = tb_break_name[row_order]
-    display_names = [_relabel_tb_name(nm) for nm in ordered_names]
+    display_names = [_task_display_name(nm) for nm in ordered_names]
     ax.set_yticks(np.arange(len(ordered_names)) + 0.5)
     ax.set_yticklabels(display_names, rotation=0, ha="right", va="center", fontsize=6)
     _color_phase_ticklabels(ax, ordered_names, axis="y")
@@ -457,7 +471,7 @@ def plot_clustered_modulation(G_index=1):
         ax.axvline(cb, color="0.6", lw=0.5, zorder=3, alpha=0.6)
 
     ordered_names = tb_break_name[row_order]
-    display_names = [_relabel_tb_name(nm) for nm in ordered_names]
+    display_names = [_task_display_name(nm) for nm in ordered_names]
     ax.set_yticks(np.arange(len(ordered_names)) + 0.5)
     ax.set_yticklabels(display_names, rotation=0, ha="right", va="center", fontsize=6)
     _color_phase_ticklabels(ax, ordered_names, axis="y")
