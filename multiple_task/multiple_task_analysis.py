@@ -312,9 +312,17 @@ def main(seed, feature, clean=True):
         def _gen(long_delay, test_n_batch):
             tp = copy.deepcopy(task_params_dmcgo)
             tp["long_delay"] = long_delay
+            # align_periods resets the shared RNG before each rule so the two
+            # sibling tasks (e.g. dmcgo/dmcnogo) draw IDENTICAL epoch timing
+            # (stim1_ons/offs, delay length, ...). Without it, mode='random'
+            # draws an independent timeline per rule, so the delay window would
+            # differ between tasks and the single shared delay_period used below
+            # (from test_trials[0]) would be wrong for the second task — making
+            # the cross-task memory-geometry comparison invalid.
             data, extra = mpn_tasks.generate_trials_wrap(
                 tp, test_n_batch, rules=tp["rules"],
-                mode_input="random", device="cpu", verbose=True)
+                mode_input="random", device="cpu", verbose=True,
+                align_periods=True)
             return data, extra
 
         # ── Normal-delay dataset: used for accuracy report + IO visualization ──
@@ -380,6 +388,19 @@ def main(seed, feature, clean=True):
         print(f"stim1_choices: {stim1_choices}")
 
         epochs = test_trials[0].epochs
+
+        # Guard: the downstream analysis reads a SINGLE delay window (from
+        # test_trials[0]) and applies it to BOTH tasks' trials, so it is only
+        # valid if the two sibling tasks share the same epochs. align_periods
+        # above should guarantee this; assert it so any regression fails loudly
+        # instead of silently slicing the second task at the wrong timesteps.
+        ep0 = tuple(test_trials[0].epochs["delay1"])
+        ep1 = tuple(test_trials[1].epochs["delay1"])
+        assert ep0 == ep1, (
+            f"[{addtask}] period mismatch across tasks: {task_params_dmcgo['rules'][0]} "
+            f"delay1={ep0} vs {task_params_dmcgo['rules'][1]} delay1={ep1}. "
+            f"Periods are not aligned (align_periods failed/changed)."
+        )
 
         if addtask in ("dmcgo", "delaydm1", ):
             delay_period = epochs["delay1"]

@@ -1954,10 +1954,14 @@ def main(aname):
                               for label, idx in period_markers.items()]
 
             for i in range(batch_num):
-                task = label_task_comb_longdelay[i, 1]
+                # Use the CURRENT variant's labels (label_task_comb_long), not
+                # the longdelay ones — variants can have different per-stimulus
+                # batch ordering, so indexing with longdelay mismatches colors
+                # (e.g. the "normal" figure collapsing 8 stimuli to ~4 colors).
+                task = label_task_comb_long[i, 1]
                 if task not in (0, 1):
                     continue
-                color = c_vals[label_task_comb_longdelay[i, 0]]
+                color = c_vals[label_task_comb_long[i, 0]]
                 ls = linestyles[task]
                 data_i = projected_data[i]
                 seg = slice(stim0, trial_end)
@@ -1986,14 +1990,14 @@ def main(aname):
             # the PCA-projected trajectories (batch, T, 3), the projected origin,
             # the readout projection (hidden only), the period/transition time
             # keys, and the time stamps + labels that drive coloring/markers.
-            # Note: trials are colored/filtered by label_task_comb_longdelay
-            # (the loop uses it for every variant), so that exact array is saved.
+            # Use this variant's own labels (label_task_comb_long), which for the
+            # normal variant is label_task_comb.
             if sname == "normal":
                 m_pca_normal_data[name] = {
                     "projected_data": np.asarray(projected_data),
                     "zeros_pca": np.asarray(zeros_pca),
                     "wout_proj": np.asarray(wout_proj) if name == "hidden" else None,
-                    "label_task_comb": np.asarray(label_task_comb_longdelay),
+                    "label_task_comb": np.asarray(label_task_comb_long),
                     "time_stamps": dict(time_stamp_long),
                     "combination": combination,
                     "phases": phases,
