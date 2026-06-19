@@ -67,6 +67,7 @@ mpl.rcParams.update({
 
 import plotly.graph_objects as go
 
+import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import networks as nets
 import net_helpers
 import mpn_tasks

@@ -32,6 +32,7 @@ from scipy.stats import linregress
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 
+import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import helper
 
 mpl.rcParams.update({

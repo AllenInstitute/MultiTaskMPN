@@ -8,6 +8,7 @@ import re
 import time
 from pathlib import Path
 
+import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import multiple_task_analysis
 import leison
 import leison_plot

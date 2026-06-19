@@ -26,6 +26,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import networks as nets
 import net_helpers
 import mpn_tasks

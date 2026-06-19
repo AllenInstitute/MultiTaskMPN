@@ -81,6 +81,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from scipy.stats import pearsonr
 from scipy.cluster.hierarchy import dendrogram
 
+import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import networks as nets  # Contains RNNs
 import net_helpers
 import mpn_tasks

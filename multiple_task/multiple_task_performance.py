@@ -14,6 +14,7 @@ import json
 
 import torch
 
+import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import mpn
 import mpn_tasks
 

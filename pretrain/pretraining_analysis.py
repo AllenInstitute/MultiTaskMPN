@@ -26,6 +26,7 @@ import matplotlib as mpl
 from sklearn.decomposition import PCA
 from scipy.linalg import subspace_angles
 
+import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import mpn
 
 c_vals = ['#e53e3e', '#3182ce', '#38a169', '#805ad5', '#dd6b20',

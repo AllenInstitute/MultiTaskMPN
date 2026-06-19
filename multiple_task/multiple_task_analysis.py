@@ -62,6 +62,7 @@ from sklearn.decomposition import PCA
 import torch
 from torch.serialization import add_safe_globals
 
+import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import helper
 import clustering
 import clustering_metric

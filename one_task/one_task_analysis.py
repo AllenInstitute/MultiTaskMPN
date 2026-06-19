@@ -40,6 +40,7 @@ import matplotlib.ticker as ticker
 ticker.Locator.MAXTICKS = 10000
 import seaborn as sns
 
+import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import helper
 
 # Match the plotting style used in multiple_task_analysis.py
