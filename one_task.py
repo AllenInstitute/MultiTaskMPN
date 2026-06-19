@@ -152,7 +152,7 @@ def current_basic_params(hyp_dict):
             'mp_type': 'mult',
             'm_update_type': 'hebb_assoc',
             'eta_type': 'scalar',
-            'eta_train': True,
+            'eta_train': False,
             'lam_type': 'scalar',
             'm_time_scale': 400,
             'lam_train': False,
@@ -460,3 +460,10 @@ if __name__ == "__main__":
     print(f"\nCompleted {len(anames)}/{len(seeds)} trials.")
     for a in anames:
         print(f"  {a}")
+
+    # Manifest of the runs produced THIS invocation, so a pipeline can analyze
+    # exactly what was just trained (rather than every run on disk).
+    manifest_path = OUT_DIR / "last_run_anames.txt"
+    with manifest_path.open("w") as mf:
+        mf.write("\n".join(anames) + ("\n" if anames else ""))
+    print(f"Wrote manifest: {manifest_path}")

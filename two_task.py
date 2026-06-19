@@ -54,14 +54,14 @@ if torch.cuda.is_available():
 
 # ─── Experiment-wide configuration ───────────────────────────────────────────
 # Number of independent trials (different random seeds) to train.
-N_TRIALS = 3
+N_TRIALS = 1
 # Fixed list of seeds, or None to draw N_TRIALS random seeds.
 SEED_LIST = None
 
 RULESET = 'delaygofamily'      # go/anti pair, e.g. [delaygo, delayanti]
 CHOSEN_NETWORK = "dmpn"
 N_HIDDEN = 200
-ADDON_NAME = "reg1e3"   # +hidden{N_HIDDEN} appended automatically below
+ADDON_NAME = "reg1e4"   # +hidden{N_HIDDEN} appended automatically below
 train = True
 verbose = True
 
@@ -136,12 +136,12 @@ def current_basic_params(hyp_dict):
         'batch_size': 128,
         'gradient_clip': 10,
         'valid_n_batch': 60,
-        'n_datasets': 3000,
+        'n_datasets': 6000,
         'valid_check': None,
         'n_epochs_per_set': 1,
         'weight_reg': 'L2',
         'activity_reg': 'L2',
-        'reg_lambda': 1e-3,
+        'reg_lambda': 1e-4,
 
         'scheduler': {
             'type': 'ReduceLROnPlateau',
@@ -303,16 +303,24 @@ def run_trial(seed):
     test_n_batch = train_params["valid_n_batch"]
     color_by = "stim"
 
+    task_params['hp']['batch_size_train'] = test_n_batch
+    test_mode_for_all = "random"
+
+    # Align the epoch timing of the two tasks so their periods (fixation /
+    # stimulus / delay / response) coincide. Without this, generate_trials_wrap
+    # draws an independent random timeline per rule, so e.g. delaygo and
+    # delayanti would have different delay-end timesteps while the analysis uses
+    # a single shared timeline — comparing the two tasks at mismatched times.
+    # align_periods resets the shared RNG before each rule so both draw identical
+    # scalar timing (requires mode_input='random').
     task_random_fix = True
     if task_random_fix:
         print(f"Align {task_params['rules']} With Same Time")
 
-    task_params['hp']['batch_size_train'] = test_n_batch
-    test_mode_for_all = "random"
-
     test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(
         task_params, test_n_batch, rules=task_params['rules'],
         mode_input=test_mode_for_all, device=device,
+        align_periods=task_random_fix,
     )
     _, test_trials, test_rule_idxs = test_trials_extra
 
@@ -322,6 +330,7 @@ def run_trial(seed):
         data, extra = mpn_tasks.generate_trials_wrap(
             tp, test_n_batch, rules=tp['rules'],
             mode_input=test_mode_for_all, device=device,
+            align_periods=task_random_fix,
         )
         _, trials, _ = extra
         return tp, data, trials
@@ -414,9 +423,22 @@ def run_trial(seed):
     }, net_path)
     print(f"Saved network: {net_path}")
 
-    # ─── Save full training bundle + test datasets + labels ───────────────────
+    # ─── Save training bundle + test datasets + labels ────────────────────────
     def to_np(t):
         return t.detach().cpu().numpy()
+
+    # Slim the giant per-stage traces down to exactly what two_task_analysis.py
+    # reads, before pickling. db_lst / netout_lst are indexed [variant][stage].
+    #   • db_lst: the normal variant (index 0) is consumed across ALL training
+    #     stages (the attractor-over-learning curves); the 4 long variants are
+    #     only ever read at the final stage. The long variants (T ~ 5x longer)
+    #     saved across every stage are what blow the bundle up to >100 GB, so we
+    #     keep only their final stage.
+    #   • netout_lst: only ever read at the final stage, for every variant.
+    # Both keep their [variant][stage] nesting so the analysis's [-1] / [0]
+    # indexing stays valid unchanged.
+    db_lst = [db_lst[0]] + [[stages[-1]] for stages in db_lst[1:]]
+    netout_lst = [[stages[-1]] for stages in netout_lst]
 
     bundle = {
         "aname": aname,
@@ -489,7 +511,7 @@ if __name__ == "__main__":
     if SEED_LIST is not None:
         seeds = list(SEED_LIST)
     else:
-        rng = random.Random(0)  # reproducible draw of distinct seeds
+        rng = random.Random()  # fresh entropy each run -> different seed pool
         seeds = rng.sample(range(1, 1000), N_TRIALS)
 
     print(f"Running {len(seeds)} independent trials: seeds={seeds}")
@@ -504,3 +526,10 @@ if __name__ == "__main__":
     print(f"\nCompleted {len(anames)}/{len(seeds)} trials.")
     for a in anames:
         print(f"  {a}")
+
+    # Manifest of the runs produced THIS invocation, so a pipeline can analyze
+    # exactly what was just trained (rather than every run on disk).
+    manifest_path = OUT_DIR / "last_run_anames.txt"
+    with manifest_path.open("w") as mf:
+        mf.write("\n".join(anames) + ("\n" if anames else ""))
+    print(f"Wrote manifest: {manifest_path}")

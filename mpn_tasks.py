@@ -1906,10 +1906,11 @@ def generate_trials_wrap(task_params,
                          device='cuda', 
                          verbose=False, 
                          rules=None,
-                         mode_input="random_batch", 
-                         pretraining_shift=0, 
+                         mode_input="random_batch",
+                         pretraining_shift=0,
                          pretraining_shift_pre=0,
-                         long_all=False):
+                         long_all=False,
+                         align_periods=False):
     """
     Wrapper to generate the raw datasets, including the inputs, labels, and masks.
 
@@ -1979,8 +1980,21 @@ def generate_trials_wrap(task_params,
     if long_all:
         assert mode_input == "random"
 
+    # align_periods: reset the shared RNG to the same state before each rule so
+    # that every rule in this call draws IDENTICAL epoch timing (stim_ons,
+    # stim_offs, fix_offs, tdim). In 'random' mode these are per-call scalars, so
+    # without this each rule would land on a different timeline and the two tasks'
+    # periods (delay etc.) would not be matched. Requires 'random' mode (the only
+    # mode with uniform-across-batch scalar timing).
+    if align_periods:
+        assert mode_input == "random", "align_periods requires mode_input='random'"
+        _align_rng = task_params['hp']['rng']
+        _align_rng_state = _align_rng.get_state()
+
     for rule, rule_idx in zip(rules, rule_idxs):
-        trial = generate_trials(rule, 
+        if align_periods:
+            _align_rng.set_state(_align_rng_state)
+        trial = generate_trials(rule,
                                 task_params['hp'], 
                                 mode_input, 
                                 batch_size=n_batches, 

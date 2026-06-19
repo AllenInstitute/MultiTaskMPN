@@ -62,12 +62,31 @@ from sklearn.decomposition import PCA
 import torch
 from torch.serialization import add_safe_globals
 
-import helper           
+import helper
 import clustering
 import clustering_metric
 import color_func
-import mpn 
+import mpn
 import mpn_tasks
+
+# Log every saved figure path (like paper_plot.py). Wrap Figure.savefig once so
+# all call sites — including multi-line ones — print their destination without
+# needing a print after each savefig.
+from matplotlib.figure import Figure as _Figure
+
+if not getattr(_Figure.savefig, "_logs_path", False):
+    _orig_savefig = _Figure.savefig
+
+    def _savefig_logged(self, fname, *args, **kwargs):
+        result = _orig_savefig(self, fname, *args, **kwargs)
+        try:
+            print(f"  Saved figure: {fname}")
+        except Exception:
+            pass
+        return result
+
+    _savefig_logged._logs_path = True
+    _Figure.savefig = _savefig_logged
 
 c_vals = [
     "#e53e3e",  # red
@@ -287,17 +306,66 @@ def main(seed, feature, clean=True):
         elif addtask == "delaydm1":
             task_params_dmcgo["rules"] = ["delaydm1", "delaydm2"]
             
-        test_n_batch = 30
+        task_params_dmcgo['hp']['batch_size_train'] = 30
 
-        task_params_dmcgo['hp']['batch_size_train'] = test_n_batch
-        task_params_dmcgo["long_delay"] = "long"
-        
-        test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params_dmcgo, 
-                                                                      test_n_batch, 
-                                                                      rules=task_params_dmcgo['rules'], 
-                                                                      mode_input="random", 
-                                                                      device="cpu",
-                                                                      verbose=True)
+        def _gen(long_delay, test_n_batch):
+            tp = copy.deepcopy(task_params_dmcgo)
+            tp["long_delay"] = long_delay
+            data, extra = mpn_tasks.generate_trials_wrap(
+                tp, test_n_batch, rules=tp["rules"],
+                mode_input="random", device="cpu", verbose=True)
+            return data, extra
+
+        # ── Normal-delay dataset: used for accuracy report + IO visualization ──
+        # The "long" delay used downstream is an out-of-distribution stress test
+        # for the memory geometry; accuracy should instead be reported on the
+        # in-distribution (normal) delay the network was trained on.
+        norm_data, norm_extra = _gen("normal", 100)
+        norm_input, norm_output, norm_mask = norm_data
+        norm_task = helper.find_task(task_params_dmcgo, norm_input.detach().cpu().numpy(), 0)
+        norm_task = [int(t - min(norm_task)) for t in norm_task]
+
+        norm_out, _, _ = model.iterate_sequence_batch(norm_input.to(device), run_mode='track_states')
+
+        # Accuracy on the normal-delay trials, overall and per sibling task.
+        norm_out_dev = norm_out.to(device)
+        norm_output_dev = norm_output.to(device)
+        norm_input_dev = norm_input.to(device)
+        norm_mask_dev = norm_mask.to(device)
+        acc_all, _ = model.compute_acc(norm_out_dev, norm_output_dev, norm_mask_dev,
+                                       norm_input_dev, isvalid=True, mode=model.acc_measure)
+        print(f"  [acc] {addtask} (normal delay, both tasks): {float(acc_all):.3f}")
+        norm_task_arr = np.asarray(norm_task)
+        for task_i, task_name in enumerate(task_params_dmcgo["rules"]):
+            sel = np.flatnonzero(norm_task_arr == task_i)
+            if sel.size == 0:
+                print(f"  [acc] {task_name}: no trials")
+                continue
+            sel_t = torch.as_tensor(sel, device=device)
+            acc_i, _ = model.compute_acc(
+                norm_out_dev.index_select(0, sel_t),
+                norm_output_dev.index_select(0, sel_t),
+                norm_mask_dev.index_select(0, sel_t),
+                norm_input_dev.index_select(0, sel_t),
+                isvalid=True, mode=model.acc_measure)
+            print(f"  [acc] {task_name} (normal delay): {float(acc_i):.3f}  (n={sel.size})")
+
+        # IO visualization on the normal-delay trials.
+        fig, axs = plt.subplots(5,2,figsize=(5*2,5*2))
+        for i in range(5):
+            for inp in range(norm_input.shape[2]):
+                axs[i,0].plot(norm_input[i,:,inp].detach().cpu().numpy(), color=c_vals[inp], alpha=0.5)
+            for inp in range(norm_out.shape[2]):
+                axs[i,1].plot(norm_out[i,:,inp].detach().cpu().numpy(), color=c_vals[inp], alpha=0.5)
+            for outp in range(norm_output.shape[2]):
+                axs[i,1].plot(norm_output[i,:,outp].detach().cpu().numpy(), color=c_vals[outp],
+                            alpha=0.5, linestyle="--")
+        fig.tight_layout()
+        fig.savefig(f"{save_dir}/{addtask}_{savefigure_name}.png", dpi=300)
+        del norm_out, norm_out_dev, norm_output_dev, norm_input_dev, norm_mask_dev
+
+        # ── Long-delay dataset: used for the downstream memory-geometry analysis ──
+        test_data, test_trials_extra = _gen("long", 30)
         test_input, test_output, _ = test_data
 
         print(f"test_input.shape: {test_input.shape}")
@@ -311,10 +379,10 @@ def main(seed, feature, clean=True):
         print(f"stim1_choices: {stim1_choices}")
 
         epochs = test_trials[0].epochs
-        
+
         if addtask in ("dmcgo", "delaydm1", ):
             delay_period = epochs["delay1"]
-        
+
         # is delay period start inclusive and end exclusive?
         print(f"delay_period: {delay_period}")
 
@@ -328,18 +396,6 @@ def main(seed, feature, clean=True):
             m_test = db_test["M1"][:, delay_period[0]:delay_period[1]-1, :, :].cpu().numpy()
 
         print(f"hidden_test: {hidden_test.shape}; em_test: {em_test.shape}; m_test: {m_test.shape}")
-
-        fig, axs = plt.subplots(5,2,figsize=(5*2,5*2))
-        for i in range(5):
-            for inp in range(test_input.shape[2]):
-                axs[i,0].plot(test_input[i,:,inp].detach().cpu().numpy(), color=c_vals[inp], alpha=0.5)
-            for inp in range(net_out.shape[2]):
-                axs[i,1].plot(net_out[i,:,inp].detach().cpu().numpy(), color=c_vals[inp], alpha=0.5)
-            for outp in range(test_output.shape[2]):
-                axs[i,1].plot(test_output[i,:,outp].detach().cpu().numpy(), color=c_vals[outp], 
-                            alpha=0.5, linestyle="--")
-        fig.tight_layout()  
-        fig.savefig(f"{save_dir}/{addtask}_{savefigure_name}.png", dpi=300)
 
         def combo_indices_16(A, B):
             A = np.asarray(A)
@@ -390,16 +446,17 @@ def main(seed, feature, clean=True):
         assert stacked_inputs_labels[0] == stacked_inputs_labels[1], "The two conditions should have the same set of stimuli for interpolation to make sense"
 
         # common delay period PCA
+        n_pcs = 6
         as_hidden_wantperiod = hidden_test.reshape(-1, hidden_test.shape[-1])
-        pca_delay_h = PCA(n_components=3, random_state=np.random.randint(0, 10000), svd_solver="auto")
+        pca_delay_h = PCA(n_components=n_pcs, random_state=np.random.randint(0, 10000), svd_solver="auto")
         pca_delay_h.fit(as_hidden_wantperiod)
 
         as_em_wantperiod = em_test.reshape(-1, em_test.shape[-1] * em_test.shape[-2])
-        pca_delay_em = PCA(n_components=3, random_state=np.random.randint(0, 10000), svd_solver="auto")
+        pca_delay_em = PCA(n_components=n_pcs, random_state=np.random.randint(0, 10000), svd_solver="auto")
         pca_delay_em.fit(as_em_wantperiod)
 
         as_m_wantperiod = m_test.reshape(-1, m_test.shape[-1] * m_test.shape[-2])
-        pca_delay_m = PCA(n_components=3, random_state=np.random.randint(0, 10000), svd_solver="auto")
+        pca_delay_m = PCA(n_components=n_pcs, random_state=np.random.randint(0, 10000), svd_solver="auto")
         pca_delay_m.fit(as_m_wantperiod)
 
         plot_all = [["hidden", pca_delay_h], ["e_modulation", pca_delay_em], ["m_modulation", pca_delay_m]]
@@ -443,45 +500,107 @@ def main(seed, feature, clean=True):
             print(f"fixed_points_all_arr: {fixed_points_all_arr.shape}")
             n_alpha, n_stim, n_pc = fixed_points_all_arr.shape
 
-            figmap, axsmap = plt.subplots(1,3,figsize=(5*3,5))
-            pcs = [[0,1],[0,2],[1,2]]
+            # 4x4 grid of pairwise PC planes: cell (row, col) plots PC(col+1) on x
+            # vs PC(row+1) on y. The diagonal (row == col) is left empty.
+            delay_traj = False
+            n_grid = min(n_pc, n_pcs)
 
-            for pc_idx, (pc_x, pc_y) in enumerate(pcs):
+            def _draw_pair(ax, pc_x, pc_y):
                 for stim in range(n_stim):
-                    traj_fp = fixed_points_all_arr[:, stim, :] 
-
-                    axsmap[pc_idx].plot(traj_fp[:, pc_x], traj_fp[:, pc_y], "-o", 
-                                        color=c_vals[stacked_inputs_labels[0][stim]], linewidth=1.5, markersize=4, 
-                                        alpha=0.5, 
-                                        label=f"stim {(stim // trial_num + 1)}" if stim % trial_num == 0 else None)  
-
-                    axsmap[pc_idx].scatter(traj_fp[0, pc_x],  traj_fp[0, pc_y],  color=c_vals[stacked_inputs_labels[0][stim]], 
-                                        marker="s", s=50, zorder=3)
-                    axsmap[pc_idx].scatter(traj_fp[-1, pc_x], traj_fp[-1, pc_y], color=c_vals[stacked_inputs_labels[0][stim]], 
-                                        marker="^", s=50, zorder=3)
-
-                # plot the trajectory during the delay period for the first and last alpha (i.e. the two original conditions)
-                delay_traj = False
+                    traj_fp = fixed_points_all_arr[:, stim, :]
+                    col = c_vals[stacked_inputs_labels[0][stim]]
+                    ax.plot(traj_fp[:, pc_x], traj_fp[:, pc_y], "-o",
+                            color=col, linewidth=1.5, markersize=4, alpha=0.5,
+                            label=f"stim {(stim // trial_num + 1)}" if stim % trial_num == 0 else None)
+                    ax.scatter(traj_fp[0, pc_x],  traj_fp[0, pc_y],  color=col, marker="s", s=50, zorder=3)
+                    ax.scatter(traj_fp[-1, pc_x], traj_fp[-1, pc_y], color=col, marker="^", s=50, zorder=3)
                 if delay_traj:
                     for be in range(len(traj_all)):
                         proj = traj_all[be]
                         for stim in range(proj.shape[0]):
-                            xs = proj[stim, :, pc_x]
-                            ys = proj[stim, :, pc_y]
-                            axsmap[pc_idx].plot(xs, ys, color=c_vals[stacked_inputs_labels[0][stim]],
-                                                alpha=0.3, linewidth=1.0, linestyle=l_vals[be+1])
-                            axsmap[pc_idx].scatter(xs[0], ys[0], color=c_vals[stacked_inputs_labels[0][stim]],
-                                                marker="o", s=35, zorder=4, alpha=0.9)
+                            col = c_vals[stacked_inputs_labels[0][stim]]
+                            ax.plot(proj[stim, :, pc_x], proj[stim, :, pc_y], color=col,
+                                    alpha=0.3, linewidth=1.0, linestyle=l_vals[be+1])
+                            ax.scatter(proj[stim, 0, pc_x], proj[stim, 0, pc_y], color=col,
+                                       marker="o", s=35, zorder=4, alpha=0.9)
+                ax.set_xlabel(f"Memory State PC{pc_x+1}", fontsize=10)
+                ax.set_ylabel(f"Memory State PC{pc_y+1}", fontsize=10)
 
-                axsmap[pc_idx].set_xlabel(f"Memory State PC{pc_x+1}", fontsize=12)
-                axsmap[pc_idx].set_ylabel(f"Memory State PC{pc_y+1}", fontsize=12)
-                axsmap[pc_idx].legend(frameon=True)
-                # axsmap[pc_idx].set_xscale("symlog", linthresh=1e-3)
-                # axsmap[pc_idx].set_yscale("symlog", linthresh=1e-3)
-                
+            figmap, axsmap = plt.subplots(n_grid, n_grid, figsize=(4*n_grid, 4*n_grid))
+            for row in range(n_grid):
+                for col in range(n_grid):
+                    ax = axsmap[row, col]
+                    if row == col:
+                        ax.axis("off")
+                        continue
+                    _draw_pair(ax, pc_x=col, pc_y=row)
+                    if row == 0 and col == 1:
+                        ax.legend(frameon=True, fontsize=8)
+
             figmap.tight_layout()
             figmap.savefig(f"{save_dir}/{addtask}_fixed_points_{plot_name}_{savefigure_name}.png", dpi=300)
             plt.close(figmap)
+
+            # ── Separate 4x4 grid: delay-period trajectories for the two original
+            # (non-interpolated) conditions, all stimuli — 8 stim x 2 task. traj_all
+            # holds the alpha=0 (task 0 / dmcgo) and alpha=1 (task 1 / dmcnogo) delay
+            # trajectories, each (n_stim, delay_timesteps, n_pc). Solid = task 0,
+            # dashed = task 1; open circle marks delay start, X marks delay end.
+            task_styles = ["-", "--"]
+            task_names_pair = task_params_dmcgo["rules"]
+
+            def _draw_delay_traj(ax, pc_x, pc_y):
+                for be in range(len(traj_all)):
+                    proj = traj_all[be]
+                    for stim in range(proj.shape[0]):
+                        col = c_vals[stacked_inputs_labels[0][stim]]
+                        ax.plot(proj[stim, :, pc_x], proj[stim, :, pc_y], color=col,
+                                alpha=0.7, linewidth=1.5,
+                                linestyle=task_styles[be % len(task_styles)])
+                        ax.scatter(proj[stim, 0, pc_x], proj[stim, 0, pc_y], color=col,
+                                   marker="o", facecolors="none", s=40, zorder=4)
+                        ax.scatter(proj[stim, -1, pc_x], proj[stim, -1, pc_y], color=col,
+                                   marker="x", s=45, zorder=4)
+                ax.set_xlabel(f"Memory State PC{pc_x+1}", fontsize=10)
+                ax.set_ylabel(f"Memory State PC{pc_y+1}", fontsize=10)
+
+            if len(traj_all) >= 1:
+                figdt, axsdt = plt.subplots(n_grid, n_grid, figsize=(4*n_grid, 4*n_grid))
+                for row in range(n_grid):
+                    for col in range(n_grid):
+                        ax = axsdt[row, col]
+                        if row == col:
+                            ax.axis("off")
+                            continue
+                        _draw_delay_traj(ax, pc_x=col, pc_y=row)
+                # task-style legend in the empty top-left diagonal cell
+                handles = [plt.Line2D([0], [0], color="k", linestyle=task_styles[i % len(task_styles)],
+                                      label=task_names_pair[i]) for i in range(len(traj_all))]
+                axsdt[0, 0].legend(handles=handles, frameon=True, fontsize=9, loc="center")
+                figdt.tight_layout()
+                figdt.savefig(f"{save_dir}/{addtask}_delay_traj_{plot_name}_{savefigure_name}.png", dpi=300)
+                plt.close(figdt)
+
+            # ── Combined 4x4 grid: the delay-period trajectories (8 stim x 2 task)
+            # overlaid on top of the alpha fixed-point interpolation, in the same
+            # PCA planes. Shows where the real dmcgo/dmcnogo memory states (with
+            # their delay dynamics) sit relative to the interpolation path between
+            # the two task attractors.
+            if len(traj_all) >= 1:
+                figov, axsov = plt.subplots(n_grid, n_grid, figsize=(4*n_grid, 4*n_grid))
+                for row in range(n_grid):
+                    for col in range(n_grid):
+                        ax = axsov[row, col]
+                        if row == col:
+                            ax.axis("off")
+                            continue
+                        _draw_pair(ax, pc_x=col, pc_y=row)        # alpha interpolation + endpoints
+                        _draw_delay_traj(ax, pc_x=col, pc_y=row)  # delay trajectories overlaid
+                        if row == 0 and col == 1:
+                            ax.legend(frameon=True, fontsize=7)
+                figov.tight_layout()
+                figov.savefig(f"{save_dir}/{addtask}_fixed_points_delaytraj_{plot_name}_{savefigure_name}.png", dpi=300)
+                plt.close(figov)
 
             # Save the underlying data for paper_plot reuse
             fixed_points_save[plot_name] = {
@@ -499,7 +618,8 @@ def main(seed, feature, clean=True):
         print(f"Saved fixed-point data: {fp_pkl_path}")
 
     # shared_run("delaydm1")
-    # shared_run("dmcgo")
+    shared_run("dmcgo")
+    sys.exit()
 
     # analyze the fitted weight matrices; we focus on the first layer of modulation and the output layer, since they are more interpretable than the hidden layer
     output_W = state_dict["W_output"].cpu().numpy()

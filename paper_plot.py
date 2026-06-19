@@ -5,10 +5,11 @@ Each public function produces one publication-ready figure and saves it
 to the `paper_plot/` directory. Run the script directly to generate all
 figures, or import individual functions as needed.
 
-Figures are grouped into three modes by the experiment they depend on:
+Figures are grouped into modes by the experiment they depend on:
     one_task         single-task training analyses
     multiple_tasks   full multi-task network (clustering, lesion, state space)
     pretraining      pretraining → post-training transfer analyses
+    two_task         two-task network (cross-task / cross-period PCA)
 
 Usage:
     python paper_plot.py                       # generate every mode
@@ -16,6 +17,7 @@ Usage:
     python paper_plot.py one_task              # only the one-task figures
     python paper_plot.py multiple_tasks        # only the multi-task figures
     python paper_plot.py pretraining           # only the pretraining figures
+    python paper_plot.py two_task              # only the two-task figures
     python paper_plot.py --only input          # generate a single figure
 """
 import pickle
@@ -43,6 +45,20 @@ mpl.rcParams.update({
 ANAME = "everything_seed749_L21e4+hidden300+batch128+angle"
 DATA_DIR = Path("multiple_tasks") / ANAME
 OUT_DIR = Path("paper_plot")
+
+# Two-task run used for the cross-task / cross-period PCA figure (d_combine).
+# The matching data file is written by two_task_analysis.py into
+# twotasks/{TWOTASK_ANAME}/d_combine_{TWOTASK_ANAME}.pkl.
+TWOTASK_ANAME = "delaygofamily_seed625_reg1e4+hidden200"
+TWOTASKS_DIR = Path("twotasks")
+
+
+def _twotask_seed_tag():
+    """Seed substring of TWOTASK_ANAME (e.g. 'seed894'), for figure filenames.
+    Falls back to the full aname if no 'seed<N>' token is present."""
+    import re as _re
+    m = _re.search(r"seed\d+", TWOTASK_ANAME)
+    return m.group(0) if m else TWOTASK_ANAME
 
 # Categorical color cycle (matches multiple_task_analysis.py)
 c_vals = [
@@ -1771,7 +1787,77 @@ def plot_aggregate_cve_stimulus():
 
 ONETASK_DIR = Path("onetask")
 # Which single-task run to plot (set to the desired aname under onetask/{aname}/).
-ONETASK_ANAME = "delaygo_seed865_hidden200+batch128+angle"
+ONETASK_ANAME = "delaygo_seed395_hidden200+batch128+angle"
+
+
+def plot_onetask_example_trial():
+    """
+    Figure: one representative single-task trial — input channels (top) and
+    network vs target output (bottom). Reloaded from the pickle saved by
+    one_task_analysis.py, re-rendered identically.
+    """
+    _ensure_out_dir()
+    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"example_trial_{ONETASK_ANAME}.pkl"
+    if not pkl_path.exists():
+        print(f"  Skipped: {pkl_path} not found. Run one_task_analysis.py first.")
+        return
+
+    with open(pkl_path, "rb") as f:
+        d = pickle.load(f)
+
+    inp = np.asarray(d["input"])              # (T, n_input)
+    net_out = np.asarray(d["net_output"])     # (T, n_output)
+    target = np.asarray(d["target_output"])   # (T, n_output)
+    input_specs = d["input_specs"]            # [(ch, label), ...]
+    out_labels = d["output_labels"]
+
+    # Light palette for the faded target-output shadows (matches one_task_analysis).
+    c_vals_l = ["#feb2b2", "#90cdf4", "#9ae6b4", "#d6bcfa", "#fbd38d",
+                "#81e6d9", "#e2e8f0", "#fbb6ce", "#faf089"] * 10
+
+    # Trial periods: fixation | stimulus | memory(delay) | response, shaded with
+    # the same scheme as onetask_show (fixation gets a neutral gray).
+    stimulus_start = d.get("stimulus_start")
+    stimulus_end = d.get("stimulus_end")
+    response_start = d.get("response_start")
+    period_spans = []
+    if stimulus_start is not None and stimulus_end is not None and response_start is not None:
+        period_spans = [
+            (0, stimulus_start, "#f0f0f0"),
+            (stimulus_start, stimulus_end, _PHASE_COLORS["stim1"]),
+            (stimulus_end, response_start, _PHASE_COLORS["delay1"]),
+            (response_start, None, _PHASE_COLORS["go1"]),
+        ]
+
+    T = inp.shape[0]
+    fig, axex = plt.subplots(2, 1, figsize=(5, 5), sharex=True)
+    for ax in axex:
+        for start, end, color in period_spans:
+            ax.axvspan(start, end if end is not None else T - 1,
+                       color=color, alpha=0.35, lw=0, zorder=0)
+    for k, (ch, lab) in enumerate(input_specs):
+        axex[0].plot(inp[:, ch], color=c_vals[k % len(c_vals)], label=lab, zorder=2)
+    axex[0].set_ylabel("Input", fontsize=12)
+    axex[0].set_title(f"Example trial (stimulus = {int(d['stimulus'])})", fontsize=11)
+
+    for out_idx in range(min(net_out.shape[-1], len(out_labels))):
+        # Target output as a faded shadow (no legend entry), network output on top.
+        axex[1].plot(target[:, out_idx], color=c_vals_l[out_idx % len(c_vals_l)],
+                     linewidth=4, alpha=0.6, zorder=2)
+        axex[1].plot(net_out[:, out_idx], color=c_vals[out_idx % len(c_vals)],
+                     label=out_labels[out_idx], zorder=3)
+    axex[1].set_ylabel("Output", fontsize=12)
+    axex[1].set_xlabel("Time step", fontsize=12)
+
+    for ax in axex:
+        ax.set_xlim(0, T - 1)
+        ax.legend(fontsize=7, frameon=True, loc="best", ncol=2)
+        ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+    out_path = OUT_DIR / "onetask_example_trial.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
 
 
 def plot_onetask_show():
@@ -1823,9 +1909,11 @@ def plot_onetask_show():
         # Period shading behind the traces.
         for start, end, color, _name in period_spans:
             ax.axvspan(start, end if end is not None else T, color=color, alpha=0.35, lw=0, zorder=0)
+        # Colors matched to onetask_example_trial: Fixon = Fixation (c_vals[0]),
+        # Task = Task Cue (c_vals[3]). Combine uses a new color not used there.
         ax.plot(tr["fixon"], color=c_vals[0], label="Fixon", zorder=2)
-        ax.plot(tr["task"], color=c_vals[1], label="Task", zorder=2)
-        ax.plot(tr["combine"], color=c_vals[2], linewidth=2.5, label="Combine", zorder=3)
+        ax.plot(tr["task"], color=c_vals[3], label="Task", zorder=2)
+        ax.plot(tr["combine"], color=c_vals[4], linewidth=2.5, label="Combine", zorder=3)
         ax.axhline(0, color="0.6", lw=0.8, zorder=1)
         ax.set_xlim(0, T - 1)
         ax.set_ylim([-2.0, 2.0])
@@ -2000,6 +2088,316 @@ def plot_onetask_corr_during_learning():
     print(f"Saved: {out_path}  (n={n_runs} runs)")
 
 
+def plot_two_task_d_combine():
+    """
+    Figure: cross-task / cross-period PCA explained-variance heatmaps for the
+    two-task network — one panel each for hidden activity and modulation.
+
+    Reads the self-contained d_combine pickle written by two_task_analysis.py
+    (twotasks/{TWOTASK_ANAME}/d_combine_{TWOTASK_ANAME}.pkl), which stores the
+    already-permuted 8x8 FVE matrix, its tick labels, and the color range for
+    each of "hidden" and "modulation".
+    """
+    _ensure_out_dir()
+    pkl_path = TWOTASKS_DIR / TWOTASK_ANAME / f"d_combine_{TWOTASK_ANAME}.pkl"
+    if not pkl_path.exists():
+        print(f"  Skipped: {pkl_path} not found. Run two_task_analysis.py first.")
+        return
+
+    with open(pkl_path, "rb") as f:
+        d_combine = pickle.load(f)
+
+    names = [n for n in ("hidden", "modulation") if n in d_combine]
+    # Shared color range across panels so a single colorbar applies to both.
+    vmin = min(d_combine[n].get("vmin", 0.0) for n in names)
+    vmax = max(d_combine[n].get("vmax", 1.0) for n in names)
+
+    fig, axs = plt.subplots(1, len(names), figsize=(4.2 * len(names), 3.9),
+                            gridspec_kw={"wspace": 0.45})
+    if len(names) == 1:
+        axs = [axs]
+    mesh = None
+    for i, (ax, name) in enumerate(zip(axs, names)):
+        e = d_combine[name]
+        sns.heatmap(np.asarray(e["fve_k_all"]), ax=ax,
+                    xticklabels=e["labels"], yticklabels=e["labels"],
+                    annot=True, fmt=".2f", vmin=vmin, vmax=vmax, square=True,
+                    cbar=False)
+        mesh = ax.collections[0]
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
+
+    # One shared colorbar for all panels.
+    fig.colorbar(mesh, ax=list(axs), shrink=0.8)
+    out_path = OUT_DIR / f"twotask_d_combine_{_twotask_seed_tag()}.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def _plot_m_pca_panels(data, title_prefix, out_name, legend_frameon=False,
+                       show_legend=True):
+    """Redraw the m_pca trajectory figure (PCA 1-2 only) from the data dict
+    stashed by two_task_analysis.py (cell 86, "normal" variant). Mirrors the
+    original alpha / marker / color conventions; tick/label sizing matches the
+    two_task_attractor figures."""
+    _ensure_out_dir()
+    projected = np.asarray(data["projected_data"])          # (batch, T, 3)
+    ltc = np.asarray(data["label_task_comb"])
+    ts = data["time_stamps"]
+    phases = data["phases"]
+    transitions = data["transitions"]
+    period_markers = data["period_markers"]
+    markers_vals = data["markers_vals"]
+    linestyles = data["linestyles"]
+
+    batch_num = projected.shape[0]
+    stim0, trial_end = ts["stimulus_start"], ts["trial_end"]
+    a, bb = 0, 1  # PCA 1-2 only
+
+    fig, ax = plt.subplots(1, 1, figsize=(5.5, 5))
+    legend_handles = [
+        plt.Line2D([0], [0], marker=markers_vals[idx], linestyle="None", markersize=10,
+                   markerfacecolor="k", markeredgecolor="k", label=label)
+        for label, idx in period_markers.items()
+    ]
+
+    for i in range(batch_num):
+        task = ltc[i, 1]
+        if task not in (0, 1):
+            continue
+        color = c_vals[ltc[i, 0]]
+        ls = linestyles[task]
+        data_i = projected[i]
+        seg = slice(stim0, trial_end)
+        ax.plot(data_i[seg, a], data_i[seg, bb], c=color, linestyle=ls, alpha=0.5)
+        for _, t0_key, t1_key, mk_idx in phases:
+            sl = slice(ts[t0_key], ts[t1_key])
+            ax.scatter(data_i[sl, a], data_i[sl, bb], c=color,
+                       marker=markers_vals[mk_idx], alpha=0.8)
+        for t_key, mk_idx in transitions:
+            t = ts[t_key] - 1
+            ax.scatter([data_i[t, a]], [data_i[t, bb]], c=color,
+                       marker=markers_vals[mk_idx], alpha=1.0, s=60,
+                       linewidths=0.6, zorder=10)
+    ax.set_xlabel("PCA 1", fontsize=20)
+    ax.set_ylabel("PCA 2", fontsize=20)
+    ax.tick_params(axis="both", labelsize=15)
+    if show_legend:
+        ax.legend(handles=legend_handles, loc="upper right",
+                  frameon=legend_frameon, fontsize=13)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    fig.tight_layout()
+    out_path = OUT_DIR / out_name
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def plot_two_task_m_pca():
+    """
+    Figure: PCA trajectories of hidden activity and modulation for the two-task
+    network ("normal" variant). Reads the self-contained m_pca pickle written
+    by two_task_analysis.py and emits one figure per panel type
+    (hidden / modulation).
+    """
+    run_dir = TWOTASKS_DIR / TWOTASK_ANAME
+    matches = sorted(run_dir.glob("m_pca_normal_*.pkl"))
+    if not matches:
+        print(f"  Skipped: no m_pca_normal_*.pkl in {run_dir}. Run two_task_analysis.py first.")
+        return
+
+    with open(matches[0], "rb") as f:
+        m_pca = pickle.load(f)
+
+    for name in ("hidden", "modulation"):
+        if name not in m_pca:
+            continue
+        _plot_m_pca_panels(m_pca[name], title_prefix=f"{name} (normal)",
+                           out_name=f"twotask_m_pca_{name}_{_twotask_seed_tag()}.png",
+                           legend_frameon=(name == "hidden"),
+                           show_legend=(name == "hidden"))
+
+
+def _draw_attractor_cycle_pc12(ax, entry, show_ylabel=True):
+    """Draw the PCA 1-2 fixed-point "cycle" for one (period, series) entry onto
+    ax. Per stimulus, connects the fixed points across alpha steps; overlays
+    dashed rings at the alpha indices in ring_indices. The x-label is shared at
+    the figure level (set by the caller), so it is not drawn here."""
+    pdf_all = np.asarray(entry["projected_data_fix_all"])  # (n_alpha, batch, 3)
+    interpolation_label = entry["interpolation_label"]
+    ring_indices = entry["ring_indices"]
+    comb = [0, 1]  # PCA 1-2 only
+
+    # Light shades for the dashed overlay rings (mirrors c_vals_l in analysis).
+    c_vals_l = ["#feb2b2", "#90cdf4", "#9ae6b4", "#fbd38d", "#fbb6ce"] * 10
+
+    for it_idx, it in enumerate(ring_indices):
+        xy = pdf_all[it][:, [comb[0], comb[1]]]
+        num_xy = xy.shape[0]
+        for j in range(num_xy):
+            ax.plot([xy[j % num_xy, 0], xy[(j + 1) % num_xy, 0]],
+                    [xy[j % num_xy, 1], xy[(j + 1) % num_xy, 1]],
+                    linestyle="--", linewidth=3, color=c_vals_l[it_idx])
+    for i in range(len(interpolation_label)):
+        fixed_points = pdf_all[:, i, :]
+        color = c_vals[interpolation_label[i]]
+        # Connecting line stays faint; the per-stimulus endpoint markers ramp
+        # their opacity from 0 -> 1 across the alpha interpolation steps, so the
+        # anti end is nearly transparent and the pro end is solid.
+        ax.plot(fixed_points[:, comb[0]], fixed_points[:, comb[1]],
+                "-", c=color, alpha=0.3, zorder=1)
+        n_steps = fixed_points.shape[0]
+        point_alphas = (np.linspace(0.0, 1.0, n_steps) if n_steps > 1
+                        else np.array([1.0]))
+        ax.scatter(fixed_points[:, comb[0]], fixed_points[:, comb[1]],
+                   c=color, alpha=point_alphas, marker="o", zorder=2)
+    if show_ylabel:
+        ax.set_ylabel("PCA 2", fontsize=20)
+    ax.tick_params(axis="both", labelsize=15)
+    ax.spines[["top", "right"]].set_visible(False)
+
+
+# Long-period variant -> clean display title.
+_PERIOD_TITLE = {
+    "longfixation": "Fixation",
+    "longstimulus": "Stimulus",
+    "longdelay": "Delay",
+    "longresponse": "Response",
+}
+
+
+def plot_two_task_attractor_cycle():
+    """
+    Figure: interpolation fixed-point "cycle" plots (PCA 1-2 only) for the
+    two-task network. One figure per series (hidden / modulation /
+    w_modulation), each a 1x4 row with one panel per long-period variant
+    (Fixation, Stimulus, Delay, Response). A single shared "PCA 1" x-label spans
+    the row. Reads the self-contained pickle written by two_task_analysis.py.
+    """
+    _ensure_out_dir()
+    run_dir = TWOTASKS_DIR / TWOTASK_ANAME
+    matches = sorted(run_dir.glob("m_pca_attractor_cycle_*.pkl"))
+    if not matches:
+        print(f"  Skipped: no m_pca_attractor_cycle_*.pkl in {run_dir}. "
+              f"Run two_task_analysis.py first.")
+        return
+
+    with open(matches[0], "rb") as f:
+        ac = pickle.load(f)
+
+    names = ["hidden", "modulation", "w_modulation"]
+    periods = ["longfixation", "longstimulus", "longdelay", "longresponse"]
+    plotted = 0
+    for name in names:
+        if not any(f"{sname}|{name}" in ac for sname in periods):
+            continue
+        fig, axs = plt.subplots(1, len(periods), figsize=(5 * len(periods), 5))
+        for col, (ax, sname) in enumerate(zip(axs, periods)):
+            key = f"{sname}|{name}"
+            if key not in ac:
+                ax.axis("off")
+                continue
+            _draw_attractor_cycle_pc12(ax, ac[key], show_ylabel=(col == 0))
+            ax.set_title(_PERIOD_TITLE.get(sname, sname), fontsize=22)
+        # Single shared x-label for the whole row.
+        fig.supxlabel("PCA 1", fontsize=20)
+        fig.tight_layout()
+        out_path = OUT_DIR / f"twotask_attractor_cycle_{name}_{_twotask_seed_tag()}.png"
+        fig.savefig(out_path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Saved: {out_path}")
+        plotted += 1
+    if plotted == 0:
+        print(f"  Skipped: no expected entries found in {matches[0].name}.")
+
+
+def plot_two_task_cancel():
+    """
+    Figure: fixon/task cancellation projection traces for the two-task network,
+    for selected stimuli (default 2 & 6) × both task columns — 2x2 panels. Each
+    panel shows Combine (= Fix On + Task + Bias), Fix On, Task+Bias, and Fixoff
+    (if fixate_off). Reads the self-contained cancel pickle written by
+    two_task_analysis.py.
+    """
+    _ensure_out_dir()
+    run_dir = TWOTASKS_DIR / TWOTASK_ANAME
+    matches = sorted(run_dir.glob("cancel_seed*.pkl"))
+    if not matches:
+        print(f"  Skipped: no cancel_seed*.pkl in {run_dir}. Run two_task_analysis.py first.")
+        return
+
+    with open(matches[0], "rb") as f:
+        saved = pickle.load(f)
+    stimuli = saved["stimuli"]
+    markers = saved["markers"]
+
+    stim_keys = sorted(stimuli.keys())
+    n_rows = len(stim_keys)
+
+    # Trial periods: fixation | stimulus | memory(delay) | response, bounded by
+    # the saved marker times. Shade each with the canonical phase colors,
+    # matching onetask_show (fixation gets a neutral gray).
+    fix_end = markers["fixation_end"]
+    stim_end = markers["stimulus_end"]
+    delay_end = markers["delay_end"]
+    period_spans = [
+        (0, fix_end, "#f0f0f0", "Fixation"),
+        (fix_end, stim_end, _PHASE_COLORS["stim1"], "Stimulus"),
+        (stim_end, delay_end, _PHASE_COLORS["delay1"], "Memory"),
+        (delay_end, None, _PHASE_COLORS["go1"], "Response"),
+    ]
+
+    fig, axs = plt.subplots(n_rows, 2, figsize=(3.4 * 2, 1.8 * n_rows),
+                            squeeze=False)
+    # column 0 = task1 (pro), column 1 = task2 (anti)
+    cols = [
+        ("fixon_proj1", "x_task1_proj", "fixoff_proj1", "Task 1 (pro)"),
+        ("fixon_proj2", "x_task2_proj", "fixoff_proj2", "Task 2 (anti)"),
+    ]
+    for r, si in enumerate(stim_keys):
+        e = stimuli[si]
+        bias = e["bias_proj"]
+        for c, (fixon_k, task_k, fixoff_k, col_name) in enumerate(cols):
+            ax = axs[r][c]
+            fixon = np.asarray(e[fixon_k])
+            task = np.asarray(e[task_k])
+            T = len(fixon)
+            # Period shading behind the traces.
+            for start, end, color, _name in period_spans:
+                ax.axvspan(start, end if end is not None else T - 1,
+                           color=color, alpha=0.35, lw=0, zorder=0)
+            ax.axhline(0, color="0.6", lw=0.8, zorder=1)
+            # Colors matched to onetask_show / onetask_example_trial:
+            # Fixon = c_vals[0], Task = c_vals[3], Combine = c_vals[4].
+            ax.plot(fixon, color=c_vals[0], label="Fixon", zorder=2)
+            ax.plot(task + bias, color=c_vals[3], label="Task", zorder=2)
+            if e.get("fixate_off"):
+                ax.plot(np.asarray(e[fixoff_k]), color=c_vals[5],
+                        label="Fixoff", zorder=2)
+            ax.plot(fixon + task + bias, color=c_vals[4], linewidth=2.5,
+                    label="Combine", zorder=3)
+            ax.set_xlim(0, T - 1)
+            ax.set_ylim([-1.5, 1.5])
+            ax.set_title(f"Stimulus {si}; {col_name}", fontsize=9)
+            ax.spines[["top", "right"]].set_visible(False)
+            if r == 0 and c == 0:
+                ax.legend(frameon=True, fontsize=6, loc="best")
+            if r == n_rows - 1:
+                ax.set_xlabel("Timestep", fontsize=9)
+            else:
+                ax.set_xticklabels([])
+
+    # Shared y-label centered across the panels.
+    fig.supylabel("Proj Cos Mag", fontsize=9)
+
+    fig.tight_layout()
+    out_path = OUT_DIR / f"twotask_cancel_{_twotask_seed_tag()}.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}  (stimuli {stim_keys})")
+
+
 # ─── Figures grouped by mode ──────────────────────────────────────────────────
 # Each mode maps a figure name → its plotting function. Figures only depend on
 # the data produced by their corresponding experiment, so a mode can be run in
@@ -2008,8 +2406,10 @@ def plot_onetask_corr_during_learning():
 #   one_task        single-task training analyses (multiple_task single-task run)
 #   multiple_tasks  the full multi-task network: clustering, lesion, state space
 #   pretraining     pretraining → post-training transfer analyses
+#   two_task        the two-task network: cross-task / cross-period PCA
 FIGURES_BY_MODE = {
     "one_task": {
+        "onetask_example_trial": plot_onetask_example_trial,
         "onetask_show": plot_onetask_show,
         "onetask_modulation_heatmap": plot_onetask_modulation_heatmap,
         "onetask_m_pca": plot_onetask_m_pca,
@@ -2037,6 +2437,12 @@ FIGURES_BY_MODE = {
         "aggregate_cve": plot_aggregate_cve,
         "aggregate_cve_stimulus": plot_aggregate_cve_stimulus,
     },
+    "two_task": {
+        "twotask_d_combine": plot_two_task_d_combine,
+        "twotask_m_pca": plot_two_task_m_pca,
+        "twotask_attractor_cycle": plot_two_task_attractor_cycle,
+        "twotask_cancel": plot_two_task_cancel,
+    },
 }
 
 # Flattened view: every figure across all modes, preserving mode order.
@@ -2055,11 +2461,11 @@ def main():
     )
     parser.add_argument(
         "mode",
-        nargs="?",
-        default="all",
+        nargs="*",
         choices=["all", *FIGURES_BY_MODE.keys()],
-        help="Which group of figures to generate. 'all' runs every mode "
-             "(default).",
+        help="Which group(s) of figures to generate. Accepts multiple modes "
+             "(e.g. 'one_task two_task'). 'all' runs every mode (default when "
+             "none given).",
     )
     parser.add_argument(
         "--only",
@@ -2077,25 +2483,45 @@ def main():
             )
         figures = {args.only: ALL_FIGURES[args.only]}
         modes_run = "only"
-    elif args.mode == "all":
-        figures = ALL_FIGURES
-        modes_run = "all"
     else:
-        figures = FIGURES_BY_MODE[args.mode]
-        modes_run = args.mode
+        modes = args.mode or ["all"]
+        if "all" in modes:
+            figures = ALL_FIGURES
+            modes_run = "all"
+        else:
+            # Union of the selected modes, de-duplicated, preserving order.
+            figures = {}
+            for m in modes:
+                figures.update(FIGURES_BY_MODE[m])
+            modes_run = "+".join(modes)
 
-    print(f"Experiment: {ANAME}")
+    # Each mode reads a different experiment; print the relevant name(s) so the
+    # source run is unambiguous. Pretraining aggregates across seeds, so it has
+    # no single identifier.
+    mode_experiment = {
+        "one_task": ONETASK_ANAME,
+        "multiple_tasks": ANAME,
+        "two_task": TWOTASK_ANAME,
+        "pretraining": "(aggregated across seeds)",
+    }
+    if modes_run in ("all", "only"):
+        printed_modes = list(FIGURES_BY_MODE.keys())
+    else:
+        printed_modes = modes
+    print("Experiment(s):")
+    for m in printed_modes:
+        print(f"  {m}: {mode_experiment.get(m, '?')}")
     print(f"Output: {OUT_DIR}/")
     print(f"Mode: {modes_run} ({len(figures)} figure(s))")
     print()
 
-    # Clear old figures. Only wipe the whole directory on a full 'all' run;
-    # a single-mode (or --only) run leaves other modes' outputs untouched.
+    # Clear old figures before (re)generating. The output directory is wiped on
+    # every run — including a single-mode or --only run — so stale outputs never
+    # linger.
     _ensure_out_dir()
-    if modes_run == "all":
-        for f in OUT_DIR.iterdir():
-            if f.is_file():
-                f.unlink()
+    for f in OUT_DIR.iterdir():
+        if f.is_file():
+            f.unlink()
 
     import traceback
 

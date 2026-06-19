@@ -470,12 +470,6 @@ def bin_by_sorted_x(x, y, nbins=100, drop_nonfinite=True, return_counts=False):
     return x_mean, y_mean
 
 
-def l2_consecutive_diff(X):
-    """Per-time-step L2 difference of an (T, N) trajectory. (Cell 84.)"""
-    d = np.diff(X, axis=0)
-    return np.linalg.norm(d, axis=1)
-
-
 def input_interpolation(test_input_long, test_output_long, label_task_comb_long, expand_stimulus=True):
     """Build alpha-interpolations between pro and anti task inputs. (Cell 81.)"""
     assert test_input_long.shape[0] == label_task_comb_long.shape[0]
@@ -746,30 +740,57 @@ def main(aname):
         net_out_ = helper.to_ndarray(net_out_)
         test_output_np_ = helper.to_ndarray(test_output_np_)
 
+        # Trials are blocked by task (all delaygo, then all delayanti), so the
+        # first batch_num rows would all be the same task. Instead pick rows that
+        # alternate between the tasks so both delaygo and delayanti are visible —
+        # this makes it easy to eyeball whether their periods are aligned.
+        if test_task_ is not None:
+            tt = np.asarray(test_task_)
+            per_task = {int(t): [k for k in range(len(tt)) if int(tt[k]) == int(t)]
+                        for t in np.unique(tt)}
+            order = []
+            ptr = {t: 0 for t in per_task}
+            tasks_cyc = sorted(per_task)
+            while len(order) < min(batch_num, len(tt)):
+                progressed = False
+                for t in tasks_cyc:
+                    if ptr[t] < len(per_task[t]):
+                        order.append(per_task[t][ptr[t]]); ptr[t] += 1
+                        progressed = True
+                        if len(order) >= min(batch_num, len(tt)):
+                            break
+                if not progressed:
+                    break
+            row_idxs = order
+        else:
+            row_idxs = list(range(min(batch_num, net_out_.shape[0])))
+
         fig_all, axs_all = plt.subplots(batch_num, 2, figsize=(4 * 2, batch_num * 2))
 
         if test_output_np_.shape[-1] == 1:
-            for batch_idx, ax in enumerate(axs_all):
-                ax.plot(net_out_[batch_idx, :, 0], color=c_vals[batch_idx])
-                ax.plot(test_output_np_[batch_idx, :, 0], color=c_vals_l[batch_idx])
+            for row, ax in enumerate(axs_all):
+                batch_idx = row_idxs[row]
+                ax.plot(net_out_[batch_idx, :, 0], color=c_vals[row])
+                ax.plot(test_output_np_[batch_idx, :, 0], color=c_vals_l[row])
         else:
-            for batch_idx in range(batch_num):
+            for row in range(batch_num):
+                batch_idx = row_idxs[row]
                 for out_idx in range(test_output_np_.shape[-1]):
-                    axs_all[batch_idx, 0].plot(net_out_[batch_idx, :, out_idx], color=c_vals[out_idx], label=out_idx)
-                    axs_all[batch_idx, 0].plot(test_output_np_[batch_idx, :, out_idx], color=c_vals_l[out_idx], linewidth=5, alpha=0.5)
+                    axs_all[row, 0].plot(net_out_[batch_idx, :, out_idx], color=c_vals[out_idx], label=out_idx)
+                    axs_all[row, 0].plot(test_output_np_[batch_idx, :, out_idx], color=c_vals_l[out_idx], linewidth=5, alpha=0.5)
                     if test_task_ is not None:
                         outname = f"{task_params['rules'][test_task_[batch_idx]]}; {tag}"
-                        axs_all[batch_idx, 0].set_title(outname)
-                    axs_all[batch_idx, 0].legend()
+                        axs_all[row, 0].set_title(outname)
+                    axs_all[row, 0].legend()
 
                 input_batch = test_input_np_[batch_idx, :, :]
                 if task_params["randomize_inputs"]:
                     input_batch = input_batch @ np.linalg.pinv(task_params["randomize_matrix"])
                 for inp_idx in range(input_batch.shape[-1]):
-                    axs_all[batch_idx, 1].plot(input_batch[:, inp_idx], color=c_vals[inp_idx], label=inp_idx)
+                    axs_all[row, 1].plot(input_batch[:, inp_idx], color=c_vals[inp_idx], label=inp_idx)
                     if test_task_ is not None:
-                        axs_all[batch_idx, 1].set_title(f"{task_params['rules'][test_task_[batch_idx]]}; {tag}")
-                    axs_all[batch_idx, 1].legend()
+                        axs_all[row, 1].set_title(f"{task_params['rules'][test_task_[batch_idx]]}; {tag}")
+                    axs_all[row, 1].legend()
 
         for ax in axs_all.flatten():
             ax.set_ylim([-2, 2])
@@ -809,6 +830,35 @@ def main(aname):
     label_task_comb_long_all = [label_task_comb, label_task_comb_longfixation, label_task_comb_longstimulus,
                                 label_task_comb_longdelay, label_task_comb_longresponse]
     time_stamps_usual, time_stamps_longfixation, time_stamps_longstimulus, time_stamps, time_stamps_longresponse = {}, {}, {}, {}, {}
+
+    # ── Guard: the analysis uses a SINGLE shared timeline (read from one batch)
+    # for both tasks, so it is only valid if the two tasks' periods are matched.
+    # Verify that the fixation-drop timestep (response onset) is identical for a
+    # task-0 trial and a task-1 trial in each variant; raise if not, since that
+    # means the bundle was generated without period alignment (two_task.py
+    # task_random_fix / align_periods) and cross-task comparisons would be made
+    # at mismatched times.
+    def _fix_drop_t(inp_long, trial_idx):
+        ch0 = inp_long[trial_idx, :, 0].detach().cpu()
+        nz = torch.nonzero(ch0 < 0.5, as_tuple=False)
+        return int(nz[0].item()) if nz.numel() else -1
+
+    def _assert_periods_matched(inp_long, ltc, name):
+        ltc = np.asarray(ltc)
+        t0 = [k for k, lst in enumerate(ltc) if int(lst[1]) == 0]
+        t1 = [k for k, lst in enumerate(ltc) if int(lst[1]) == 1]
+        if not t0 or not t1:
+            return  # only one task present; nothing to compare
+        d0, d1 = _fix_drop_t(inp_long, t0[0]), _fix_drop_t(inp_long, t1[0])
+        assert d0 == d1, (
+            f"[{name}] period mismatch across tasks: task0 response onset t={d0}, "
+            f"task1 t={d1}. The bundle was generated without aligned periods; "
+            f"regenerate with two_task.py (task_random_fix/align_periods=True)."
+        )
+
+    variant_names = ["normal", "longfixation", "longstimulus", "longdelay", "longresponse"]
+    for _i in range(5):
+        _assert_periods_matched(test_input_long_all[_i], label_task_comb_long_all[_i], variant_names[_i])
 
     cc = None
     for i in range(5):
@@ -1030,6 +1080,10 @@ def main(aname):
     m_save = modulation_save_time[-1]
     projs_all = [[], [], []]
 
+    # self-contained data to replot selected stimuli of the cancel figure
+    cancel_data = {}
+    cancel_save_stimuli = [2, 6]
+
     fig40, axs40 = plt.subplots(8, 2, figsize=(4 * 2, 8 * 2))
     for i in range(8):
         mod1_stim1 = m_save[0][i]
@@ -1101,6 +1155,21 @@ def main(aname):
             axs40[i, 1].plot(fixoff_proj2, color=c_vals[3], label="Fixoff")
         axs40[i, 1].plot(x_task2_proj + bias_proj, color=c_vals[2], label="Task + Bias")
 
+        # Stash the per-time-step projection traces for selected stimuli so
+        # paper_plot can redraw both task columns (col 0 = task1/pro, col 1 =
+        # task2/anti). Each "combine" = fixon + task + bias.
+        if i in cancel_save_stimuli:
+            cancel_data[i] = {
+                "fixon_proj1": np.asarray(fixon_proj1).ravel(),
+                "fixon_proj2": np.asarray(fixon_proj2).ravel(),
+                "x_task1_proj": np.asarray(x_task1_proj).ravel(),
+                "x_task2_proj": np.asarray(x_task2_proj).ravel(),
+                "fixoff_proj1": np.asarray(fixoff_proj1).ravel(),
+                "fixoff_proj2": np.asarray(fixoff_proj2).ravel(),
+                "bias_proj": float(np.asarray(bias_proj).ravel()[0]),
+                "fixate_off": bool(task_params["fixate_off"]),
+            }
+
         T_delayend = time_stamps_usual["delay_end"] - 1
         h1 = (W + W * mod1_stim1[T_delayend]) @ (W_in @ x_fix_on_all[T_delayend])
         h2 = (W + W * mod2_stim1[T_delayend]) @ (W_in @ x_fix_on_all[T_delayend])
@@ -1146,6 +1215,19 @@ def main(aname):
     fig40.savefig(fp(f"cancel_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
     print("  Saved figure: " + str(fp(f"cancel_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
     plt.close(fig40)
+
+    # Save the cancel projection traces (selected stimuli) next to the figures
+    # so paper_plot can replot them. Keyed by stimulus index (int).
+    if cancel_data:
+        cancel_save = {
+            "stimuli": cancel_data,
+            "markers": {k: time_stamps_usual[k]
+                        for k in ("fixation_end", "stimulus_end", "delay_end")},
+        }
+        cancel_path = save_dir / f"cancel_seed{seed}_{hyp_dict['addon_name']}.pkl"
+        with open(cancel_path, "wb") as f:
+            pickle.dump(cancel_save, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print("  Saved data: " + str(cancel_path))
 
     # Cell 41: cancellation magnitude scatter
     fig41, axs41 = plt.subplots(1, 2, figsize=(4 * 2, 4))
@@ -1225,6 +1307,7 @@ def main(aname):
         plt.close(fig46)
 
     fve_k_alls = []
+    d_combine_data = {}  # self-contained data to replot the d_combine heatmaps
     for name, res in data_all:  # cell 47
         fig47, axs47 = plt.subplots(1, 1, figsize=(4 * 1, 4))
         fve_k_all = res["__cross_task__"]["fve_k_all"]
@@ -1237,10 +1320,26 @@ def main(aname):
         sns.heatmap(fve_k_all, ax=axs47, xticklabels=labels_alt, yticklabels=labels_alt,
                     annot=True, fmt=".2f", vmin=0.0, vmax=1.0)
         fve_k_alls.append(fve_k_all)
+        # Everything paper_plot needs to redraw this exact heatmap: the permuted
+        # matrix, its tick labels, the color range, and top_k.
+        d_combine_data[name] = {
+            "fve_k_all": np.asarray(fve_k_all),
+            "labels": labels_alt,
+            "vmin": 0.0,
+            "vmax": 1.0,
+            "top_k": top_k,
+        }
         fig47.tight_layout()
         fig47.savefig(fp(f"d_combine_{hyp_dict['ruleset']}_seed{seed}_{name}_{hyp_dict['addon_name']}.png"), dpi=300)
         print("  Saved figure: " + str(fp(f"d_combine_{hyp_dict['ruleset']}_seed{seed}_{name}_{hyp_dict['addon_name']}.png")))
         plt.close(fig47)
+
+    # Save the d_combine matrices next to the figures so paper_plot can replot
+    # them. Keyed by name ("hidden" / "modulation").
+    d_combine_path = save_dir / f"d_combine_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.pkl"
+    with open(d_combine_path, "wb") as f:
+        pickle.dump(d_combine_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+    print("  Saved data: " + str(d_combine_path))
 
     # Cell 48: cross-run pickle summary
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1806,28 +1905,6 @@ def main(aname):
         [time_stamps_longfixation, test_input_longfixation, "longfixation", 1, "fixation_end", label_task_comb_longfixation],
     ]
 
-    # Cell 85: per-time-step L2 diff of hidden / modulation
-    for time_stamp_long, test_input_long, sname, db_index, end_time_name, _ in time_stamp_input_map:
-        end_time = time_stamp_long[end_time_name]
-        _, M_, h_, _ = modulation_extraction(test_input_long, db_lst[db_index][-1], layer_index)
-        M_ = M_.reshape(M_.shape[0], M_.shape[1], -1)
-        diff_h_all = np.array([l2_consecutive_diff(h_[bs_]) for bs_ in range(h_.shape[0])])
-        diff_M_all = np.array([l2_consecutive_diff(M_[bs_]) for bs_ in range(M_.shape[0])])
-        fig85, axs85 = plt.subplots(1, 2, figsize=(4 * 2, 4))
-        axs85[0].plot(np.mean(diff_h_all, axis=0), color=c_vals[0])
-        axs85[1].plot(np.mean(diff_M_all, axis=0), color=c_vals[0])
-        for ax in axs85:
-            ax.set_xlabel("Time Steps", fontsize=12)
-            ax.set_yscale("log")
-            ax.axvline(end_time, color=c_vals[1], linewidth=2)
-            ax.set_title(sname, fontsize=15)
-        axs85[0].set_ylabel("Hidden Per-Time-Step L2 Diff", fontsize=12)
-        axs85[1].set_ylabel("Modulation Per-Time-Step L2 Diff", fontsize=12)
-        fig85.tight_layout()
-        fig85.savefig(fp(f"l2_timee_diff_seed{seed}_{hyp_dict['addon_name']}_{sname}.png"), dpi=300)
-        print("  Saved figure: " + str(fp(f"l2_timee_diff_seed{seed}_{hyp_dict['addon_name']}_{sname}.png")))
-        plt.close(fig85)
-
     # ═════════════════════════════════════════════════════════════════════════
     # Cell 86: PCA trajectories of hidden / modulation per variant
     # ═════════════════════════════════════════════════════════════════════════
@@ -1835,6 +1912,7 @@ def main(aname):
     zeros_pca = None
     wout_proj = None
     batch_num = None
+    m_pca_normal_data = {}  # self-contained data to replot the "normal" m_pca figures
     for time_stamp_long, test_input_long, sname, db_index, _, label_task_comb_long in time_stamp_input_map:
         print(f"sname: {sname}; db_index: {db_index}")
         names = ["hidden", "modulation"]
@@ -1883,11 +1961,12 @@ def main(aname):
                 data_i = projected_data[i]
                 seg = slice(stim0, trial_end)
                 for ax, (a, bb) in zip(axshs, combination):
-                    ax.plot(data_i[seg, a], data_i[seg, bb], c=color, linestyle=ls, alpha=0.01)
+                    ax.plot(data_i[seg, a], data_i[seg, bb], c=color, linestyle=ls,
+                            alpha=0.05 if sname != "normal" else 0.25)
                     for _, t0_key, t1_key, mk_idx in phases:
                         sl = slice(time_stamp_long[t0_key], time_stamp_long[t1_key])
                         ax.scatter(data_i[sl, a], data_i[sl, bb], c=color, marker=markers_vals[mk_idx],
-                                   alpha=0.01 if sname != "normal" else 0.1)
+                                   alpha=0.05 if sname != "normal" else 0.5)
                     for t_key, mk_idx in transitions:
                         t = time_stamp_long[t_key] - 1
                         ax.scatter([data_i[t, a]], [data_i[t, bb]], c=color, marker=markers_vals[mk_idx],
@@ -1901,6 +1980,35 @@ def main(aname):
             fighs.savefig(fp(f"m_pca_{name}_seed{seed}_{hyp_dict['addon_name']}_{sname}.png"), dpi=300)
             print("  Saved figure: " + str(fp(f"m_pca_{name}_seed{seed}_{hyp_dict['addon_name']}_{sname}.png")))
             plt.close(fighs)
+
+            # Stash everything paper_plot needs to redraw the "normal" panels:
+            # the PCA-projected trajectories (batch, T, 3), the projected origin,
+            # the readout projection (hidden only), the period/transition time
+            # keys, and the time stamps + labels that drive coloring/markers.
+            # Note: trials are colored/filtered by label_task_comb_longdelay
+            # (the loop uses it for every variant), so that exact array is saved.
+            if sname == "normal":
+                m_pca_normal_data[name] = {
+                    "projected_data": np.asarray(projected_data),
+                    "zeros_pca": np.asarray(zeros_pca),
+                    "wout_proj": np.asarray(wout_proj) if name == "hidden" else None,
+                    "label_task_comb": np.asarray(label_task_comb_longdelay),
+                    "time_stamps": dict(time_stamp_long),
+                    "combination": combination,
+                    "phases": phases,
+                    "transitions": transitions,
+                    "period_markers": period_markers,
+                    "markers_vals": markers_vals,
+                    "linestyles": linestyles,
+                }
+
+    # Save the "normal" m_pca trajectory data next to the figures so paper_plot
+    # can replot them. Keyed by name ("hidden" / "modulation").
+    if m_pca_normal_data:
+        m_pca_path = save_dir / f"m_pca_normal_seed{seed}_{hyp_dict['addon_name']}.pkl"
+        with open(m_pca_path, "wb") as f:
+            pickle.dump(m_pca_normal_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print("  Saved data: " + str(m_pca_path))
 
     # ═════════════════════════════════════════════════════════════════════════
     # Cell 88: 3D PCA trajectories + readout plane (Plotly -> HTML) + projection
@@ -1964,6 +2072,9 @@ def main(aname):
     PCA_downsample = 3
     int_index = 0
     name = "hidden"
+    # self-contained data to replot the m_pca_attractor_cycle figures, keyed by
+    # (sname, name) -> dict. Holds the per-alpha fixed-point PCA projections.
+    attractor_cycle_data = {}
 
     for siindex, stacked_interpolation_ in enumerate(stacked_interpolation_lst):
         sname = stacked_interpolation_name_lst[siindex]
@@ -2072,6 +2183,20 @@ def main(aname):
             fighsadd.savefig(fp(f"m_pca_attractor_cycle_{name}_seed{seed}_{hyp_dict['addon_name']}_{int_index}_{sname}.png"), dpi=300)
             print("  Saved figure: " + str(fp(f"m_pca_attractor_cycle_{name}_seed{seed}_{hyp_dict['addon_name']}_{int_index}_{sname}.png")))
             plt.close(fighsadd)
+
+            # Stash everything paper_plot needs to redraw the attractor_cycle
+            # panels for this (sname, name). projected_data_fix is the per-alpha
+            # fixed-point PCA projection, shape (n_alpha, batch_num, 3) — all 3
+            # PCs are kept so any panel (incl. PC2) can be replotted. The cycle
+            # figure connects, per stimulus i, fixed_points across alpha steps,
+            # and overlays dashed rings for alpha indices [0, 10, -1].
+            attractor_cycle_data[(sname, name)] = {
+                "projected_data_fix_all": np.asarray(projected_data_fix_all),
+                "alpha_lst": np.asarray(alpha_lst),
+                "interpolation_label": list(interpolation_label),
+                "combination": [list(c) for c in combination],
+                "ring_indices": [0, 10, -1],
+            }
             fig3dfix.update_layout(
                 title=dict(text=f"name: {name}; sname: {sname}", x=0.5, xanchor="center", y=0.95, font=dict(size=14)),
                 scene=dict(domain=dict(x=[0.05, 0.95], y=[0.05, 0.95]),
@@ -2084,6 +2209,16 @@ def main(aname):
         raw_data_ring_all.append(raw_data_ring)
         raw_data_ring_magnitude_all.append(raw_data_ring_magnitude)
         projected_data_ring_all.append(projected_data_ring)
+
+    # Save the attractor_cycle fixed-point data next to the figures so paper_plot
+    # can replot them. Keys are stringified "{sname}|{name}" (sname in
+    # {longdelay, longresponse, longstimulus, longfixation}).
+    if attractor_cycle_data:
+        ac_save = {f"{sn}|{nm}": v for (sn, nm), v in attractor_cycle_data.items()}
+        ac_path = save_dir / f"m_pca_attractor_cycle_seed{seed}_{hyp_dict['addon_name']}.pkl"
+        with open(ac_path, "wb") as f:
+            pickle.dump(ac_save, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print("  Saved data: " + str(ac_path))
 
     # Cell 93: ring perimeter vs alpha
     fig93, axs93 = plt.subplots(2, 2, figsize=(4 * 2, 4 * 2), sharex=True)
@@ -2366,9 +2501,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--aname", type=str, default=None,
                         help="Experiment identifier. Omit to analyze ALL runs in ./twotasks/.")
+    parser.add_argument("--filter", type=str, default=None,
+                        help="Only analyze runs whose identifier contains this substring "
+                             "(e.g. 'reg1e4'). Ignored when --aname is given.")
     args = parser.parse_args()
 
-    anames = [args.aname] if args.aname else _discover_anames()
+    if args.aname:
+        anames = [args.aname]
+    else:
+        anames = _discover_anames()
+        if args.filter:
+            anames = [a for a in anames if args.filter in a]
     print(f"Analyzing {len(anames)} run(s).")
     for a in anames:
         print(f"\n── Analyzing: {a} ──")

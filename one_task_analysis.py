@@ -230,8 +230,27 @@ def main(aname):
     figex.savefig(save_dir / f"example_trial_{aname}.png", dpi=300)
     plt.close(figex)
     print(f"  Saved example trial figure: {save_dir / f'example_trial_{aname}.png'}")
-    import sys as _sys
-    _sys.exit()
+
+    # Save the exact traces so paper_plot can re-render this figure identically:
+    # the chosen trial's input channels (with their labels) and the network /
+    # target output channels.
+    import pickle as _pickle
+    example_trial_pkl = {
+        "aname": aname,
+        "stimulus": int(labels[b0, 0]),
+        "input_specs": [(int(ch), lab) for ch, lab in in_specs],
+        "input": np.asarray(test_input_np[b0]),          # (T, n_input)
+        "output_labels": list(out_labels),
+        "net_output": np.asarray(net_out_final[b0]),      # (T, n_output)
+        "target_output": np.asarray(test_output_np[b0]),  # (T, n_output)
+        # Trial-period boundaries, for shading sessions like onetask_show.
+        "stimulus_start": int(stimulus_start),
+        "stimulus_end": int(stimulus_end),
+        "response_start": int(response_start),
+    }
+    with open(save_dir / f"example_trial_{aname}.pkl", "wb") as _f:
+        _pickle.dump(example_trial_pkl, _f)
+    print(f"  Saved example trial data: {save_dir / f'example_trial_{aname}.pkl'}")
 
     # ── Fixon vs Task projection onto readout (cancellation) ─────────────────
     # For each training stage, project the modulated weight's response to the
