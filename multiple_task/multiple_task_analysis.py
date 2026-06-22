@@ -24,6 +24,7 @@ Outputs:
 """
 # %%
 import os
+import sys
 import gc
 import numpy as np
 from numpy.linalg import norm
@@ -269,20 +270,24 @@ def main(seed, feature, clean=True):
              - hidden        : recurrent activity  (db["hidden1"])
              - m_modulation  : raw plasticity matrix M (db["M1"])
              - e_modulation  : effective modulation  W ⊙ M
-        2. Fit a 3-component PCA on each representation's delay-period states,
-           giving a common low-D "memory subspace" per representation.
+        2. Fit a 6-component PCA (n_pcs) on each representation's delay-period
+           states, giving a common low-D "memory subspace" per representation.
         3. Group trials into 16 buckets — 2 tasks × 8 stimulus directions
            (stim1) — and build matched input tensors `stacked_inputs[0]`
-           (task 0) and `stacked_inputs[1]` (task 1) that share the same
-           stimulus ordering, so they can be linearly interpolated.
+           (task 0) and `stacked_inputs[1]` (task 1). For each stimulus, the
+           two endpoint trials are verified to have IDENTICAL stimulus input
+           through the delay (only the task cue differs), so the interpolation
+           morphs the TASK while holding the stimulus fixed.
         4. For 20 interpolation weights α∈[0,1], feed (1-α)·task0 + α·task1
            through the network, project the resulting end-of-delay state into
-           the PCA subspace, and record it as a "fixed point". Sweeping α
-           traces how each stimulus's memory state migrates from the task-0
-           attractor to the task-1 attractor.
-        5. Plot these fixed-point trajectories in the three PC planes
-           (PC1-2, PC1-3, PC2-3), one figure per representation, and save the
-           underlying arrays to a pickle for downstream paper plotting.
+           the PCA subspace, and record it as a "fixed point" (after asserting
+           the delay state has converged). Sweeping α traces how each
+           stimulus's memory state migrates from the task-0 attractor to the
+           task-1 attractor.
+        5. Plot these fixed-point trajectories in an n_pcs×n_pcs grid of
+           pairwise PC planes (diagonal blank), one figure per representation,
+           and save the underlying arrays to a pickle for downstream paper
+           plotting.
 
         Also emits a per-task sanity figure of example input/output traces.
         Results are written under `save_dir`:
@@ -433,38 +438,86 @@ def main(seed, feature, clean=True):
 
         idx_map = combo_indices_16(test_task, stim1_choices)
 
+        # ── Pick a STIM-MATCHED (task0, task1) trial pair per stim angle ──────
+        # The two sibling tasks differ only in the required RESPONSE (target),
+        # not in the stimulus input — so a meaningful α-interpolation (which
+        # should morph only the task, holding the stimulus fixed) requires the
+        # two endpoint trials to have IDENTICAL input through the delay period.
+        # Matching by stim1 angle alone is NOT enough: in mode='random', stim1
+        # modality is drawn per task, so two angle-matched trials can still
+        # differ in modality (and, pre-alignment, in timing). Here we verify the
+        # delay-period input actually matches and skip angles where it doesn't.
+        #
+        # For dmcgo/dmcnogo the input through the delay should be bit-identical,
+        # so we use a tight tolerance. For delaydm1/delaydm2 the stimulus
+        # magnitude can legitimately differ across trials of the same angle, so
+        # we relax the tolerance (timing must still match) and report.
+        de = delay_period[1]                       # end of delay window (exclusive)
+        strict = (addtask == "dmcgo")
+        rtol, atol = (0.0, 1e-5) if strict else (1e-2, 1e-2)
+
+        # The input is [6 stimulus/fixation channels] + [one task-cue column per
+        # rule] (see all_input label list). The two sibling tasks MUST differ in
+        # their task-cue columns — that is exactly what the interpolation morphs.
+        # So the stim-match check compares only the STIMULUS/FIXATION channels
+        # (the first 6); including the task cue would make every pair "mismatch".
+        n_stim_ch = 6
+
+        def _input_matches(k0, k1):
+            a = test_input[k0, :de, :n_stim_ch]
+            c = test_input[k1, :de, :n_stim_ch]
+            if a.shape != c.shape:
+                return False
+            # timing/support must coincide: same nonzero pattern (which stimulus
+            # channels are active at which timesteps). Catches modality / onset
+            # mismatches even when the relaxed magnitude tolerance is used.
+            if not torch.equal((a.abs() > 1e-8), (c.abs() > 1e-8)):
+                return False
+            return torch.allclose(a, c, rtol=rtol, atol=atol)
+
+        def _pick_matched_pair(b):
+            for k0 in idx_map[(0, b)]:
+                for k1 in idx_map[(1, b)]:
+                    if _input_matches(k0, k1):
+                        return k0, k1
+            return None
+
         stacked_inputs = [[], []]
         stacked_inputs_labels = [[], []]
+        skipped_angles = []
+        for b in range(8):
+            if not idx_map[(0, b)] or not idx_map[(1, b)]:
+                skipped_angles.append((b, "empty bucket"))
+                continue
+            pair = _pick_matched_pair(b)
+            if pair is None:
+                skipped_angles.append((b, "no stim-matched pair"))
+                continue
+            k0, k1 = pair
+            stacked_inputs[0].append(test_input[k0])
+            stacked_inputs[1].append(test_input[k1])
+            stacked_inputs_labels[0].append(b)
+            stacked_inputs_labels[1].append(b)
+
+        trial_num = 1  # one matched pair per retained stim angle
+        if skipped_angles:
+            print(f"  [stim-match] {addtask}: skipped angles {skipped_angles} "
+                  f"(strict={strict}, rtol={rtol}, atol={atol})")
+        n_kept = len(stacked_inputs_labels[0])
+        print(f"  [stim-match] {addtask}: kept {n_kept}/8 stim-matched angles: "
+              f"{stacked_inputs_labels[0]}")
+        if n_kept < 2:
+            print(f"  [stim-match] {addtask}: <2 matched angles; skipping "
+                  f"interpolation analysis.")
+            return
+
         for i in range(2):
-            for b in range(8):
-                # add multiple trials of the same kind of stimulus
-                trial_num = 1
-                for trial_idx in range(trial_num): 
-                    # for trials that are considered to have the same stim1 and same task
-                    # their input should be identical (quantified via sum) up to the end 
-                    # of the delay period; only check for dmcgo since for delaydm1, the magnitude
-                    # might be different across batches even the stim identity is the same 
-                    if addtask == "dmcgo" and trial_num > 1:
-                        input_check = []
-                        for key in idx_map[(i,b)]:
-                            input_check.append(torch.sum(test_input[key,:delay_period[1],:]).item())
-                        input_check = np.array(input_check, dtype=float)
-                        ok = np.all(np.isclose(input_check, input_check[0]))
-                        print(f"input_check: {input_check}")
-                        assert ok 
-                    
-                    idxs = idx_map[(i, b)][trial_idx]
-                    test_input_chosen = test_input[idxs]
-                    stacked_inputs[i].append(test_input_chosen)
-                    # add the stim1 label (for this trial) as well
-                    stacked_inputs_labels[i].append(b)
-                
-            xs = stacked_inputs[i]  
+            xs = stacked_inputs[i]
             stacked_inputs[i] = torch.stack(
                 [x if isinstance(x, torch.Tensor) else torch.as_tensor(x) for x in xs],
                 dim=0
             )
-            
+
         assert stacked_inputs_labels[0] == stacked_inputs_labels[1], "The two conditions should have the same set of stimuli for interpolation to make sense"
 
         # common delay period PCA
@@ -484,8 +537,9 @@ def main(seed, feature, clean=True):
         plot_all = [["hidden", pca_delay_h], ["e_modulation", pca_delay_em], ["m_modulation", pca_delay_m]]
 
         for plot_name, pca_delay in plot_all:
-            # interpolate between the two conditions (stim1 and stim2) in the input space,
-            # and track how the fixed points evolve in the PCA space of the delay period activity
+            # Interpolate between the two TASKS (task0 -> task1) in input space at
+            # a fixed stimulus, and track how the delay-period fixed point evolves
+            # in the PCA space of the delay-period activity.
             alpha_lst = np.linspace(0,1,20)
             interpolate_inputs = [(1-a) * stacked_inputs[0] + a * stacked_inputs[1] for a in alpha_lst]
             fixed_points_all = []
@@ -498,7 +552,12 @@ def main(seed, feature, clean=True):
                     data = db["hidden1"]
                     as_flat = data.reshape(-1, data.shape[-1])
                 elif plot_name == "e_modulation":
-                    data = (db["M1"] * state_dict["mp_layer1.W"]).cpu().numpy()
+                    # W ⊙ M, same definition as em_test (which fit the PCA basis).
+                    # Here db is saved with save_to_cpu=True, so db["M1"] may live
+                    # on CPU while W_dev is on the model device — multiply by a W
+                    # moved to db["M1"]'s device to avoid a device mismatch.
+                    W_same = W_dev.to(db["M1"].device)
+                    data = (db["M1"] * W_same).cpu().numpy()
                     as_flat = data.reshape(-1, data.shape[-1] * data.shape[-2])
                 elif plot_name == "m_modulation":
                     data = db["M1"]
@@ -510,7 +569,27 @@ def main(seed, feature, clean=True):
                 del data, as_flat  # intermediates no longer needed
 
                 if addtask in ("dmcgo", "delaydm1", ):
-                    fixed_points_all.append(projected_data[:,delay_period[1]-1,:])
+                    # The "fixed point" is the last delay-period frame. This is
+                    # only a genuine attractor state if the trajectory has
+                    # settled by then. Verify convergence: the per-step movement
+                    # over the final stretch of the delay must be small relative
+                    # to the overall delay-period excursion. Guards against
+                    # over-claiming "attractor migration" when the state is still
+                    # drifting at the readout time.
+                    delay_proj = projected_data[:, delay_period[0]:delay_period[1], :]
+                    if delay_proj.shape[1] >= 6:
+                        tail = delay_proj[:, -5:, :]
+                        tail_step = np.linalg.norm(np.diff(tail, axis=1), axis=-1).mean()
+                        excursion = np.linalg.norm(
+                            delay_proj[:, -1, :] - delay_proj[:, 0, :], axis=-1).mean()
+                        ratio = tail_step / (excursion + 1e-9)
+                        assert ratio < 0.05, (
+                            f"[{addtask}/{plot_name}] delay state not converged at "
+                            f"alpha-idx {idx}: mean tail per-step move / excursion = "
+                            f"{ratio:.3f} (>=0.05). The last delay frame is not a "
+                            f"settled fixed point."
+                        )
+                    fixed_points_all.append(projected_data[:, delay_period[1]-1, :])
 
                 if idx in (0, len(interpolate_inputs) - 1, ):
                     if addtask in ("dmcgo", "delaydm1", ):
@@ -522,9 +601,10 @@ def main(seed, feature, clean=True):
             print(f"fixed_points_all_arr: {fixed_points_all_arr.shape}")
             n_alpha, n_stim, n_pc = fixed_points_all_arr.shape
 
-            # 4x4 grid of pairwise PC planes: cell (row, col) plots PC(col+1) on x
-            # vs PC(row+1) on y. The diagonal (row == col) is left empty.
-            delay_traj = False
+            # n_grid x n_grid grid of pairwise PC planes: cell (row, col) plots
+            # PC(col+1) on x vs PC(row+1) on y. The diagonal (row == col) is
+            # left empty. (Delay-period trajectories are drawn in the separate
+            # delay-traj figure below, not overlaid here.)
             n_grid = min(n_pc, n_pcs)
 
             def _draw_pair(ax, pc_x, pc_y):
@@ -536,15 +616,6 @@ def main(seed, feature, clean=True):
                             label=f"stim {(stim // trial_num + 1)}" if stim % trial_num == 0 else None)
                     ax.scatter(traj_fp[0, pc_x],  traj_fp[0, pc_y],  color=col, marker="s", s=50, zorder=3)
                     ax.scatter(traj_fp[-1, pc_x], traj_fp[-1, pc_y], color=col, marker="^", s=50, zorder=3)
-                if delay_traj:
-                    for be in range(len(traj_all)):
-                        proj = traj_all[be]
-                        for stim in range(proj.shape[0]):
-                            col = c_vals[stacked_inputs_labels[0][stim]]
-                            ax.plot(proj[stim, :, pc_x], proj[stim, :, pc_y], color=col,
-                                    alpha=0.3, linewidth=1.0, linestyle=l_vals[be+1])
-                            ax.scatter(proj[stim, 0, pc_x], proj[stim, 0, pc_y], color=col,
-                                       marker="o", s=35, zorder=4, alpha=0.9)
                 ax.set_xlabel(f"Memory State PC{pc_x+1}", fontsize=10)
                 ax.set_ylabel(f"Memory State PC{pc_y+1}", fontsize=10)
 
@@ -3870,6 +3941,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--feature", type=str, default=None,
                         help="Only run models with this feature (e.g. 'L21e4')")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Only run the model with this seed (e.g. 749). "
+                             "Combine with --feature to disambiguate.")
     args = parser.parse_args()
 
     # Clean up old output files
@@ -3889,6 +3963,8 @@ if __name__ == "__main__":
 
     if args.feature:
         param_lst = [(s, f) for s, f in param_lst if f == args.feature]
+    if args.seed is not None:
+        param_lst = [(s, f) for s, f in param_lst if s == args.seed]
 
     print(f"Running {len(param_lst)} models: {param_lst}")
 
