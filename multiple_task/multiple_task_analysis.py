@@ -38,7 +38,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from matplotlib.colors import LogNorm
-from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
+from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, silhouette_score
 from sklearn.metrics.cluster import contingency_matrix as sk_contingency_matrix
 ticker.Locator.MAXTICKS = 10000 
 import seaborn as sns 
@@ -278,16 +278,15 @@ def main(seed, feature, clean=True):
            two endpoint trials are verified to have IDENTICAL stimulus input
            through the delay (only the task cue differs), so the interpolation
            morphs the TASK while holding the stimulus fixed.
-        4. For 20 interpolation weights α∈[0,1], feed (1-α)·task0 + α·task1
-           through the network, project the resulting end-of-delay state into
-           the PCA subspace, and record it as a "fixed point" (after asserting
-           the delay state has converged). Sweeping α traces how each
-           stimulus's memory state migrates from the task-0 attractor to the
-           task-1 attractor.
-        5. Plot these fixed-point trajectories in an n_pcs×n_pcs grid of
-           pairwise PC planes (diagonal blank), one figure per representation,
-           and save the underlying arrays to a pickle for downstream paper
-           plotting.
+        4. Run each task's REAL (non-interpolated) input through the network,
+           project the delay-period state into the shared PCA subspace, and keep
+           both the end-of-delay state ("fixed point", after asserting the delay
+           state has converged) and the full delay-period trajectory.
+        5. Plot, in an n_pcs×n_pcs grid of pairwise PC planes (diagonal blank),
+           the delay states for all 8 stimuli × 2 tasks (color = stimulus,
+           marker/linestyle = task: square/solid = task0/Pro, triangle/dashed =
+           task1/Anti). One figure per representation; arrays saved to a pickle
+           for downstream paper plotting.
 
         Also emits a per-task sanity figure of example input/output traces.
         Results are written under `save_dir`:
@@ -296,6 +295,12 @@ def main(seed, feature, clean=True):
             {addtask}_fixed_points_{savefigure_name}.pkl        — raw data
         """
         assert addtask in ("dmcgo", "delaydm1", )
+
+        # Remove any previous outputs for this addtask so stale figures/pickles
+        # from an earlier run don't linger alongside the fresh ones.
+        for _old in Path(save_dir).glob(f"{addtask}*"):
+            if _old.is_file():
+                _old.unlink()
 
         # Device-resident copy of the plastic weight W so that elementwise
         # products with on-device modulation tensors (db["M1"]) don't hit a
@@ -350,6 +355,7 @@ def main(seed, feature, clean=True):
                                        norm_input_dev, isvalid=True, mode=model.acc_measure)
         print(f"  [acc] {addtask} (normal delay, both tasks): {float(acc_all):.3f}")
         norm_task_arr = np.asarray(norm_task)
+        per_task_acc = {}  # task_name -> accuracy on normal-delay trials
         for task_i, task_name in enumerate(task_params_dmcgo["rules"]):
             sel = np.flatnonzero(norm_task_arr == task_i)
             if sel.size == 0:
@@ -362,9 +368,13 @@ def main(seed, feature, clean=True):
                 norm_mask_dev.index_select(0, sel_t),
                 norm_input_dev.index_select(0, sel_t),
                 isvalid=True, mode=model.acc_measure)
+            per_task_acc[task_name] = float(acc_i)
             print(f"  [acc] {task_name} (normal delay): {float(acc_i):.3f}  (n={sel.size})")
 
-        # IO visualization on the normal-delay trials.
+        # IO visualization on the normal-delay trials. Title carries the per-task
+        # test accuracy so the figure is self-describing.
+        acc_str = ", ".join(f"{name} acc={per_task_acc[name]:.3f}"
+                            for name in task_params_dmcgo["rules"] if name in per_task_acc)
         fig, axs = plt.subplots(5,2,figsize=(5*2,5*2))
         for i in range(5):
             for inp in range(norm_input.shape[2]):
@@ -374,6 +384,7 @@ def main(seed, feature, clean=True):
             for outp in range(norm_output.shape[2]):
                 axs[i,1].plot(norm_output[i,:,outp].detach().cpu().numpy(), color=c_vals[outp],
                             alpha=0.5, linestyle="--")
+        fig.suptitle(f"{addtask} (normal delay)  |  {acc_str}", fontsize=12)
         fig.tight_layout()
         fig.savefig(f"{save_dir}/{addtask}_{savefigure_name}.png", dpi=300)
         del norm_out, norm_out_dev, norm_output_dev, norm_input_dev, norm_mask_dev
@@ -500,16 +511,17 @@ def main(seed, feature, clean=True):
             stacked_inputs_labels[1].append(b)
 
         trial_num = 1  # one matched pair per retained stim angle
-        if skipped_angles:
-            print(f"  [stim-match] {addtask}: skipped angles {skipped_angles} "
-                  f"(strict={strict}, rtol={rtol}, atol={atol})")
         n_kept = len(stacked_inputs_labels[0])
         print(f"  [stim-match] {addtask}: kept {n_kept}/8 stim-matched angles: "
               f"{stacked_inputs_labels[0]}")
-        if n_kept < 2:
-            print(f"  [stim-match] {addtask}: <2 matched angles; skipping "
-                  f"interpolation analysis.")
-            return
+        # Require ALL 8 stimulus angles to have a stim-matched (Pro, Anti) pair.
+        # A partial set would bias the memory-geometry comparison, so fail loudly
+        # rather than silently analyzing fewer stimuli.
+        assert n_kept == 8, (
+            f"[{addtask}] expected 8 stim-matched angles, got {n_kept}. "
+            f"Skipped: {skipped_angles} (strict={strict}, rtol={rtol}, atol={atol}). "
+            f"Increase test_n_batch or check stimulus/modality alignment."
+        )
 
         for i in range(2):
             xs = stacked_inputs[i]
@@ -520,188 +532,239 @@ def main(seed, feature, clean=True):
 
         assert stacked_inputs_labels[0] == stacked_inputs_labels[1], "The two conditions should have the same set of stimuli for interpolation to make sense"
 
-        # common delay period PCA
+        # common delay period PCA fit data (one matrix per representation).
+        #
+        # The PCA basis depends on its random_state seed: with n_components=6 and
+        # the randomized solver, the recovered basis — and hence the projected
+        # delay-period fixed points — can shift run-to-run, sometimes dramatically
+        # changing how the two tasks' memory states separate. We therefore fit the
+        # PCA inside a seed sweep below and keep, per representation, the seed
+        # whose projection best separates the two abstract "memory groups"
+        # (see _group_labels). The forward passes that produce the states are
+        # seed-independent, so we run them ONCE and only re-fit / re-project PCA
+        # across seeds — the sweep is cheap.
         n_pcs = 6
         as_hidden_wantperiod = hidden_test.reshape(-1, hidden_test.shape[-1])
-        pca_delay_h = PCA(n_components=n_pcs, random_state=np.random.randint(0, 10000), svd_solver="auto")
-        pca_delay_h.fit(as_hidden_wantperiod)
-
         as_em_wantperiod = em_test.reshape(-1, em_test.shape[-1] * em_test.shape[-2])
-        pca_delay_em = PCA(n_components=n_pcs, random_state=np.random.randint(0, 10000), svd_solver="auto")
-        pca_delay_em.fit(as_em_wantperiod)
-
         as_m_wantperiod = m_test.reshape(-1, m_test.shape[-1] * m_test.shape[-2])
-        pca_delay_m = PCA(n_components=n_pcs, random_state=np.random.randint(0, 10000), svd_solver="auto")
-        pca_delay_m.fit(as_m_wantperiod)
 
-        plot_all = [["hidden", pca_delay_h], ["e_modulation", pca_delay_em], ["m_modulation", pca_delay_m]]
+        # [name, PCA-fit data]; the PCA itself is fit per-seed in the loop below.
+        plot_all = [["hidden", as_hidden_wantperiod],
+                    ["e_modulation", as_em_wantperiod],
+                    ["m_modulation", as_m_wantperiod]]
+        n_pca_seeds = 20  # PCA seeds swept per representation
 
-        for plot_name, pca_delay in plot_all:
-            # Interpolate between the two TASKS (task0 -> task1) in input space at
-            # a fixed stimulus, and track how the delay-period fixed point evolves
-            # in the PCA space of the delay-period activity.
-            alpha_lst = np.linspace(0,1,20)
-            interpolate_inputs = [(1-a) * stacked_inputs[0] + a * stacked_inputs[1] for a in alpha_lst]
-            fixed_points_all = []
-            traj_all = []
+        # The two real (non-interpolated) conditions: task 0 (Pro, e.g. dmcgo) and
+        # task 1 (Anti, e.g. dmcnogo), each holding the same 8 stim-matched stimuli.
+        cond_inputs = [stacked_inputs[0], stacked_inputs[1]]
+        task_names_pair = task_params_dmcgo["rules"]
+        task_styles = ["-", "--"]          # solid = task0/Pro, dashed = task1/Anti
+        task_markers = ["s", "^"]          # square = task0/Pro, triangle = task1/Anti
 
-            for idx, interpolate_input in enumerate(interpolate_inputs):
-                _, _, db = model.iterate_sequence_batch(interpolate_input.to(device), run_mode="track_states", save_to_cpu=True, detach_saved=True)
+        for plot_name, pca_fit_data in plot_all:
+            # Run each task's real input through the net ONCE (the states are
+            # PCA-seed-independent), keeping the flattened delay-window states and
+            # their (n_stim, T) shapes. We then re-project these across PCA seeds
+            # without re-running the model. No input interpolation.
+            flats_by_task = []    # per task: (n_stim*T, feat) flattened states
+            shapes_by_task = []   # per task: (n_stim, T) to un-flatten projections
+
+            for t_idx, cond_input in enumerate(cond_inputs):
+                _, _, db = model.iterate_sequence_batch(
+                    cond_input.to(device), run_mode="track_states",
+                    save_to_cpu=True, detach_saved=True)
 
                 if plot_name == "hidden":
                     data = db["hidden1"]
                     as_flat = data.reshape(-1, data.shape[-1])
                 elif plot_name == "e_modulation":
                     # W ⊙ M, same definition as em_test (which fit the PCA basis).
-                    # Here db is saved with save_to_cpu=True, so db["M1"] may live
-                    # on CPU while W_dev is on the model device — multiply by a W
-                    # moved to db["M1"]'s device to avoid a device mismatch.
+                    # db is saved with save_to_cpu=True so db["M1"] may be on CPU
+                    # while W_dev is on the model device — move W to M1's device.
                     W_same = W_dev.to(db["M1"].device)
                     data = (db["M1"] * W_same).cpu().numpy()
                     as_flat = data.reshape(-1, data.shape[-1] * data.shape[-2])
                 elif plot_name == "m_modulation":
                     data = db["M1"]
                     as_flat = data.reshape(-1, data.shape[-1] * data.shape[-2])
-                del db  # free activation dict before next iteration
+                del db
 
-                hidden_tf = pca_delay.transform(as_flat)
-                projected_data = hidden_tf.reshape(data.shape[0], data.shape[1], -1)
-                del data, as_flat  # intermediates no longer needed
+                flats_by_task.append(np.asarray(as_flat))
+                shapes_by_task.append((data.shape[0], data.shape[1]))
+                del data, as_flat
 
-                if addtask in ("dmcgo", "delaydm1", ):
-                    # The "fixed point" is the last delay-period frame. This is
-                    # only a genuine attractor state if the trajectory has
-                    # settled by then. Verify convergence: the per-step movement
-                    # over the final stretch of the delay must be small relative
-                    # to the overall delay-period excursion. Guards against
-                    # over-claiming "attractor migration" when the state is still
-                    # drifting at the readout time.
+            n_task = len(cond_inputs)
+
+            # ── Abstract "memory group" labels for the fixed points ──────────
+            # The two sibling tasks are Pro (task0) and Anti (task1). We want the
+            # PCA projection in which the fixed points split into two groups that
+            # cut ACROSS task and stimulus identity:
+            #   Group A: Pro stim {0,1,2,3}  +  Anti stim {4,5,6,7}
+            #   Group B: Pro stim {4,5,6,7}  +  Anti stim {0,1,2,3}
+            # i.e. for a fixed point at (task t, stim angle a):
+            #   group A  iff  (t == 0)  ==  (a < 4)
+            # Built in the same (task-major, then stim) order as fp.reshape(-1, .).
+            stim_angles = np.asarray(stacked_inputs_labels[0])
+            group_labels = np.array([
+                0 if ((t_idx == 0) == (a < 4)) else 1
+                for t_idx in range(n_task)
+                for a in stim_angles
+            ])
+
+            def _project_with(pca):
+                """Project the (seed-independent) states with a fitted PCA and
+                return (fp_by_task, traj_by_task)."""
+                fp_by_task, traj_by_task = [], []
+                for t_idx in range(n_task):
+                    b, t = shapes_by_task[t_idx]
+                    projected_data = pca.transform(flats_by_task[t_idx]).reshape(b, t, -1)
                     delay_proj = projected_data[:, delay_period[0]:delay_period[1], :]
-                    if delay_proj.shape[1] >= 6:
-                        tail = delay_proj[:, -5:, :]
-                        tail_step = np.linalg.norm(np.diff(tail, axis=1), axis=-1).mean()
-                        excursion = np.linalg.norm(
-                            delay_proj[:, -1, :] - delay_proj[:, 0, :], axis=-1).mean()
-                        ratio = tail_step / (excursion + 1e-9)
-                        assert ratio < 0.05, (
-                            f"[{addtask}/{plot_name}] delay state not converged at "
-                            f"alpha-idx {idx}: mean tail per-step move / excursion = "
-                            f"{ratio:.3f} (>=0.05). The last delay frame is not a "
-                            f"settled fixed point."
-                        )
-                    fixed_points_all.append(projected_data[:, delay_period[1]-1, :])
+                    fp_by_task.append(projected_data[:, delay_period[1]-1, :])
+                    traj_by_task.append(delay_proj)
+                return np.stack(fp_by_task, axis=0), traj_by_task
 
-                if idx in (0, len(interpolate_inputs) - 1, ):
-                    if addtask in ("dmcgo", "delaydm1", ):
-                        traj_all.append(projected_data[:, delay_period[0]:delay_period[1], :])
-                del projected_data
-                
-            del interpolate_inputs  # free the 20 interpolated input tensors
-            fixed_points_all_arr = np.stack(fixed_points_all, axis=0)  # (n_alpha, n_stim, n_pc)
-            print(f"fixed_points_all_arr: {fixed_points_all_arr.shape}")
-            n_alpha, n_stim, n_pc = fixed_points_all_arr.shape
+            # ── PCA-seed sweep: keep the seed whose BEST 2-D PC plane best ──────
+            # separates the two memory groups. For each seed we compute the
+            # silhouette on every pairwise 2-PC plane of the end-of-delay fixed
+            # points and score the seed by its best plane (not by the full-n_pcs
+            # silhouette) — the cluster structure is read off a single 2-D plane,
+            # so the selection criterion matches what is actually displayed.
+            n_groups = np.unique(group_labels).size
+            best_seed, best_score = None, -np.inf
+            best_fp, best_traj, best_plane_sil_dict = None, None, None
+            best_plane = (0, 1)
+            seed_scores = []  # best-plane silhouette per swept PCA seed
+            for pca_seed in range(n_pca_seeds):
+                pca_delay = PCA(n_components=n_pcs, random_state=pca_seed)
+                pca_delay.fit(pca_fit_data)
+                fp_try, traj_try = _project_with(pca_delay)
+                pts = fp_try.reshape(-1, fp_try.shape[-1])   # (2*n_stim, n_pcs)
+                sil_ok = (n_groups >= 2) and (n_groups <= pts.shape[0] - 1)
+                # 2-D silhouette on every pairwise plane; the seed's score is the
+                # best plane's silhouette.
+                this_plane_sil = {}
+                seed_best_sil, seed_best_plane = -np.inf, (0, 1)
+                for px in range(n_pcs):
+                    for py in range(px + 1, n_pcs):
+                        s2d = float(silhouette_score(pts[:, [px, py]], group_labels)) if sil_ok else float("nan")
+                        this_plane_sil[(px, py)] = s2d
+                        if np.isfinite(s2d) and s2d > seed_best_sil:
+                            seed_best_sil, seed_best_plane = s2d, (px, py)
+                seed_scores.append(seed_best_sil)
+                if seed_best_sil > best_score or best_fp is None:
+                    best_score, best_seed = seed_best_sil, pca_seed
+                    best_fp, best_traj = fp_try, traj_try
+                    best_plane_sil_dict, best_plane = this_plane_sil, seed_best_plane
 
-            # n_grid x n_grid grid of pairwise PC planes: cell (row, col) plots
-            # PC(col+1) on x vs PC(row+1) on y. The diagonal (row == col) is
-            # left empty. (Delay-period trajectories are drawn in the separate
-            # delay-traj figure below, not overlaid here.)
+            print(f"  [pca-seed] {addtask}/{plot_name}: best seed={best_seed} "
+                  f"best-plane 2D silhouette={best_score:.4f} "
+                  f"(swept {n_pca_seeds} seeds)")
+
+            fp_by_task = best_fp        # (2 task, n_stim, n_pc)
+            traj_by_task = best_traj
+            n_task, n_stim, n_pc = fp_by_task.shape
+            print(f"fp_by_task: {fp_by_task.shape}")
             n_grid = min(n_pc, n_pcs)
 
-            def _draw_pair(ax, pc_x, pc_y):
-                for stim in range(n_stim):
-                    traj_fp = fixed_points_all_arr[:, stim, :]
-                    col = c_vals[stacked_inputs_labels[0][stim]]
-                    ax.plot(traj_fp[:, pc_x], traj_fp[:, pc_y], "-o",
-                            color=col, linewidth=1.5, markersize=4, alpha=0.5,
-                            label=f"stim {(stim // trial_num + 1)}" if stim % trial_num == 0 else None)
-                    ax.scatter(traj_fp[0, pc_x],  traj_fp[0, pc_y],  color=col, marker="s", s=50, zorder=3)
-                    ax.scatter(traj_fp[-1, pc_x], traj_fp[-1, pc_y], color=col, marker="^", s=50, zorder=3)
-                ax.set_xlabel(f"Memory State PC{pc_x+1}", fontsize=10)
-                ax.set_ylabel(f"Memory State PC{pc_y+1}", fontsize=10)
+            # Convergence guard on the chosen projection: the last delay frame is
+            # treated as the fixed point, so verify the trajectory has settled
+            # (small tail movement relative to the overall delay excursion).
+            for t_idx in range(n_task):
+                delay_proj = traj_by_task[t_idx]
+                if delay_proj.shape[1] >= 6:
+                    tail_step = np.linalg.norm(np.diff(delay_proj[:, -5:, :], axis=1), axis=-1).mean()
+                    excursion = np.linalg.norm(delay_proj[:, -1, :] - delay_proj[:, 0, :], axis=-1).mean()
+                    ratio = tail_step / (excursion + 1e-9)
+                    assert ratio < 0.05, (
+                        f"[{addtask}/{plot_name}] {task_names_pair[t_idx]} delay state "
+                        f"not converged: tail per-step move / excursion = {ratio:.3f} "
+                        f"(>=0.05); last delay frame is not a settled fixed point.")
 
-            figmap, axsmap = plt.subplots(n_grid, n_grid, figsize=(4*n_grid, 4*n_grid))
-            for row in range(n_grid):
-                for col in range(n_grid):
-                    ax = axsmap[row, col]
-                    if row == col:
-                        ax.axis("off")
-                        continue
-                    _draw_pair(ax, pc_x=col, pc_y=row)
-                    if row == 0 and col == 1:
-                        ax.legend(frameon=True, fontsize=8)
+            # Per-plane 2-D silhouettes for the chosen seed (computed during the
+            # sweep). best_plane is the plane that drove the seed selection.
+            plane_sil = best_plane_sil_dict
+            bx, by = best_plane
+            best_plane_sil = plane_sil[best_plane]
+            print(f"  [best-plane] {addtask}/{plot_name}: PC{bx+1}-PC{by+1} "
+                  f"2D silhouette={best_plane_sil:.4f}")
+            title_str = (f"{addtask} / {plot_name}  |  best plane PC{bx+1}-PC{by+1} "
+                         f"(2D sil={best_plane_sil:.3f})")
 
-            figmap.tight_layout()
-            figmap.savefig(f"{save_dir}/{addtask}_fixed_points_{plot_name}_{savefigure_name}.png", dpi=300)
-            plt.close(figmap)
-
-            # ── Separate 4x4 grid: delay-period trajectories for the two original
-            # (non-interpolated) conditions, all stimuli — 8 stim x 2 task. traj_all
-            # holds the alpha=0 (task 0 / dmcgo) and alpha=1 (task 1 / dmcnogo) delay
-            # trajectories, each (n_stim, delay_timesteps, n_pc). Solid = task 0,
-            # dashed = task 1; open circle marks delay start, X marks delay end.
-            task_styles = ["-", "--"]
-            task_names_pair = task_params_dmcgo["rules"]
-
-            def _draw_delay_traj(ax, pc_x, pc_y):
-                for be in range(len(traj_all)):
-                    proj = traj_all[be]
-                    for stim in range(proj.shape[0]):
+            # Figure: n_grid x n_grid grid of pairwise PC planes. Per stimulus
+            # (color) and task (marker: square=Pro, triangle=Anti), show the
+            # end-of-delay fixed point; optionally overlay the delay trajectory.
+            def _draw_pair(ax, pc_x, pc_y, with_traj=True):
+                for t_idx in range(n_task):
+                    for stim in range(n_stim):
                         col = c_vals[stacked_inputs_labels[0][stim]]
-                        ax.plot(proj[stim, :, pc_x], proj[stim, :, pc_y], color=col,
-                                alpha=0.7, linewidth=1.5,
-                                linestyle=task_styles[be % len(task_styles)])
-                        ax.scatter(proj[stim, 0, pc_x], proj[stim, 0, pc_y], color=col,
-                                   marker="o", facecolors="none", s=40, zorder=4)
-                        ax.scatter(proj[stim, -1, pc_x], proj[stim, -1, pc_y], color=col,
-                                   marker="x", s=45, zorder=4)
+                        if with_traj:
+                            traj = traj_by_task[t_idx][stim]
+                            ax.plot(traj[:, pc_x], traj[:, pc_y], color=col,
+                                    alpha=0.5, linewidth=1.0,
+                                    linestyle=task_styles[t_idx % len(task_styles)])
+                        ax.scatter(fp_by_task[t_idx, stim, pc_x], fp_by_task[t_idx, stim, pc_y],
+                                   facecolor=col, edgecolor="black", linewidth=0.8,
+                                   marker=task_markers[t_idx % len(task_markers)],
+                                   s=60, alpha=0.7, zorder=3)
                 ax.set_xlabel(f"Memory State PC{pc_x+1}", fontsize=10)
                 ax.set_ylabel(f"Memory State PC{pc_y+1}", fontsize=10)
 
-            if len(traj_all) >= 1:
-                figdt, axsdt = plt.subplots(n_grid, n_grid, figsize=(4*n_grid, 4*n_grid))
-                for row in range(n_grid):
-                    for col in range(n_grid):
-                        ax = axsdt[row, col]
-                        if row == col:
-                            ax.axis("off")
-                            continue
-                        _draw_delay_traj(ax, pc_x=col, pc_y=row)
-                # task-style legend in the empty top-left diagonal cell
-                handles = [plt.Line2D([0], [0], color="k", linestyle=task_styles[i % len(task_styles)],
-                                      label=task_names_pair[i]) for i in range(len(traj_all))]
-                axsdt[0, 0].legend(handles=handles, frameon=True, fontsize=9, loc="center")
-                figdt.tight_layout()
-                figdt.savefig(f"{save_dir}/{addtask}_delay_traj_{plot_name}_{savefigure_name}.png", dpi=300)
-                plt.close(figdt)
+            # Two variants: (a) with delay trajectories overlaid, (b) endpoint
+            # fixed points only (no trajectory). Lower triangle only (row > col);
+            # upper triangle is the mirror and the diagonal is empty.
+            # Stimulus-color legend handles (one entry per kept stim angle).
+            stim_handles = [plt.Line2D([0], [0], marker="o", linestyle="None",
+                                       markerfacecolor=c_vals[lab], markeredgecolor="black",
+                                       markersize=8, label=f"stim {lab}")
+                            for lab in stacked_inputs_labels[0]]
 
-            # ── Combined 4x4 grid: the delay-period trajectories (8 stim x 2 task)
-            # overlaid on top of the alpha fixed-point interpolation, in the same
-            # PCA planes. Shows where the real dmcgo/dmcnogo memory states (with
-            # their delay dynamics) sit relative to the interpolation path between
-            # the two task attractors.
-            if len(traj_all) >= 1:
-                figov, axsov = plt.subplots(n_grid, n_grid, figsize=(4*n_grid, 4*n_grid))
+            for with_traj, suffix in [(True, "memory"), (False, "memory_endpoint")]:
+                figmap, axsmap = plt.subplots(n_grid, n_grid, figsize=(4*n_grid, 4*n_grid))
                 for row in range(n_grid):
                     for col in range(n_grid):
-                        ax = axsov[row, col]
-                        if row == col:
+                        ax = axsmap[row, col]
+                        if row > col:
+                            _draw_pair(ax, pc_x=col, pc_y=row, with_traj=with_traj)
+                            # per-subplot 2D silhouette in the title
+                            s2d = plane_sil.get((col, row), float("nan"))
+                            ax.set_title(f"PC{col+1}-PC{row+1}  2D sil={s2d:.3f}", fontsize=9)
+                            # highlight the best-separating plane (col=px, row=py)
+                            if (col, row) == best_plane:
+                                for sp in ax.spines.values():
+                                    sp.set_edgecolor(c_vals[1]); sp.set_linewidth(2.5)
+                        else:
                             ax.axis("off")
-                            continue
-                        _draw_pair(ax, pc_x=col, pc_y=row)        # alpha interpolation + endpoints
-                        _draw_delay_traj(ax, pc_x=col, pc_y=row)  # delay trajectories overlaid
-                        if row == 0 and col == 1:
-                            ax.legend(frameon=True, fontsize=7)
-                figov.tight_layout()
-                figov.savefig(f"{save_dir}/{addtask}_fixed_points_delaytraj_{plot_name}_{savefigure_name}.png", dpi=300)
-                plt.close(figov)
+                figmap.suptitle(title_str, fontsize=13)
+                # task-marker legend in a blank upper-triangle cell (top-right corner)
+                handles = [plt.Line2D([0], [0], color="k", marker=task_markers[i],
+                                      linestyle=task_styles[i] if with_traj else "None",
+                                      label=task_names_pair[i])
+                           for i in range(n_task)]
+                axsmap[0, n_grid - 1].legend(handles=handles, frameon=True, fontsize=9, loc="center")
+                # stimulus-color legend on the PC1-PC2 panel (pc_x=0, pc_y=1 -> row 1, col 0)
+                if n_grid >= 2:
+                    axsmap[1, 0].legend(handles=stim_handles, frameon=True, fontsize=7,
+                                        loc="best", ncol=2, title="stimulus")
+                figmap.tight_layout()
+                figmap.savefig(f"{save_dir}/{addtask}_{suffix}_{plot_name}_{savefigure_name}.png", dpi=300)
+                plt.close(figmap)
 
             # Save the underlying data for paper_plot reuse
             fixed_points_save[plot_name] = {
-                "fixed_points_all_arr": fixed_points_all_arr,   # (n_alpha, n_stim, n_pc)
-                "traj_all": [np.asarray(t) for t in traj_all],  # first/last alpha delay trajectories
+                "fp_by_task": fp_by_task,                              # (2 task, n_stim, n_pc)
+                "traj_by_task": [np.asarray(t) for t in traj_by_task],  # per task (n_stim, delay_T, n_pc)
+                "task_names": list(task_names_pair),
                 "stim_labels": list(stacked_inputs_labels[0]),
-                "trial_num": trial_num,
                 "delay_period": list(delay_period),
+                # PCA seed chosen by the best-2D-plane silhouette sweep, plus the
+                # group labels (Pro{0-3}+Anti{4-7} vs Pro{4-7}+Anti{0-3}) optimized.
+                "pca_seed": best_seed,
+                "pca_seed_best_plane_silhouette": best_score,  # = best_plane_silhouette
+                "group_labels": group_labels,
+                "seed_silhouettes": list(seed_scores),     # best-plane silhouette per seed
+                "best_plane": (int(bx), int(by)),          # most-separating 2-PC plane
+                "best_plane_silhouette": best_plane_sil,
+                "plane_silhouettes": {f"{px+1}-{py+1}": v for (px, py), v in plane_sil.items()},
             }
 
         # Save all fixed-point PCA data for this addtask

@@ -71,7 +71,21 @@ l_vals = ['solid', 'dashed', 'dotted', 'dashdot', '-', '--', '-.', ':', (0, (3, 
 markers_vals = ['o', 'v', '*', '+', '>', '1', '2', '3', '4', 's', 'p', '*', 'h', 'H', '+', 'x', 'D', 'd', '|', '_']
 linestyles = ["-", "--", "-."]
 
-hyp_dict = {}
+# ─── Experiment-wide configuration ───────────────────────────────────────────
+# Number of independent trials (different random seeds) to train, under the SAME
+# parameter setting. Mirrors two_task.py so the multi-task net can be trained
+# many times for robustness across seeds.
+N_TRIALS = 3
+# Fixed list of seeds, or None to draw N_TRIALS random seeds (fresh entropy each
+# run, so reruns explore different seeds).
+SEED_LIST = None
+
+RULESET = 'everything'          # low_dim, all, test, everything, ...
+CHOSEN_NETWORK = "dmpn"         # mpn1, dmpn, vanilla, gru
+N_HIDDEN = 300
+ADDON_NAME = "L21e4"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appended below
+train = True                    # whether or not to train the network
+verbose = True
 
 # Reload modules if changes have been made to them
 from importlib import reload
@@ -79,17 +93,7 @@ from importlib import reload
 reload(nets)
 reload(net_helpers)
 
-fixseed = False # randomize setting the seed may lead to not perfectly solved results
-seed = random.randint(1,1000) if not fixseed else 8 # random set the seed to test robustness by default
-print(f"Set seed {seed}")
-np.random.seed(seed)
-torch.manual_seed(seed)
-
-hyp_dict['task_type'] = 'multitask' # int, NeuroGym, multitask
-hyp_dict['mode_for_all'] = "random_batch"
-hyp_dict['ruleset'] = 'everything' # low_dim, all, test
-
-accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti', 
+accept_rules = ('fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti',
                 'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1', 'contextdelaydm2', 'multidelaydm', 'dmsnogo', 'dmcnogo')
 
 rules_dict = \
@@ -135,23 +139,15 @@ rules_dict_frequency = {
 
     
 
-# This can either be used to set parameters OR set parameters and train
-train = True # whether or not to train the network
-verbose = True
-hyp_dict['run_mode'] = 'minimal' # minimal, debug
-hyp_dict['chosen_network'] = "dmpn"
-
 mpn_depth = 1
-n_hidden = 300
+n_hidden = N_HIDDEN
 
-hyp_dict['addon_name'] = "L21e3"
-hyp_dict['addon_name'] += f"+hidden{n_hidden}"
-
-# for coding 
-if hyp_dict['chosen_network'] in ("gru", "vanilla"):
+# for coding
+if CHOSEN_NETWORK in ("gru", "vanilla"):
     mpn_depth = 1
 
-def current_basic_params():
+
+def current_basic_params(hyp_dict):
     task_params = {
         'task_type': hyp_dict['task_type'],
         'rules': rules_dict[hyp_dict['ruleset']],
@@ -191,7 +187,7 @@ def current_basic_params():
         'n_epochs_per_set': 1, 
         'weight_reg': 'L2',
         'activity_reg': 'L2', 
-        'reg_lambda': 1e-3,
+        'reg_lambda': 1e-4,
         
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'
@@ -212,7 +208,7 @@ def current_basic_params():
     net_params = {
         'net_type': hyp_dict['chosen_network'], # mpn1, dmpn, vanilla
         'n_neurons': [1] + [n_hidden] * mpn_depth + [1],
-        'linear_embed': 300, 
+        'linear_embed': n_hidden, 
         'output_bias': False, # Turn off biases for easier interpretation
         'loss_type': 'MSE', # XE, MSE
         'activation': 'tanh', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside
@@ -263,338 +259,334 @@ def current_basic_params():
 
     return task_params, train_params, net_params
 
-task_params, train_params, net_params = current_basic_params()
-# add batch information to the parameters
-print("Accuracy Measure: {net_params['acc_measure']}")
-hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}"
 
-# save the setting result
-config = {
-    "task_params": task_params, 
-    "train_params": train_params, 
-    "net_params": net_params,
-}
+def run_trial(seed):
+    """Train one multi-task network under the shared parameter setting and save
+    its checkpoint + result traces (flat layout under ./multiple_tasks/, parsed
+    by multiple_task_analysis.py via the aname identifier)."""
+    print(f"\n{'='*70}\nTrial seed = {seed}\n{'='*70}")
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
-out_path = Path(f"./multiple_tasks/param_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}_param.json")
-with out_path.open("w") as f: 
-    json.dump(config, f, indent=4, default=helper.as_jsonable)
+    hyp_dict = {
+        'task_type': 'multitask',          # int, NeuroGym, multitask
+        'mode_for_all': "random_batch",
+        'ruleset': RULESET,
+        'run_mode': 'minimal',             # minimal, debug
+        'chosen_network': CHOSEN_NETWORK,
+        'addon_name': ADDON_NAME + f"+hidden{N_HIDDEN}",
+    }
 
-shift_index = 1 if not task_params['fixate_off'] else 0
+    task_params, train_params, net_params = current_basic_params(hyp_dict)
+    # add batch information to the parameters
+    print(f"Accuracy Measure: {net_params['acc_measure']}")
+    hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}"
 
-if hyp_dict['task_type'] in ('multitask',):
-    task_params, train_params, net_params = mpn_tasks.convert_and_init_multitask_params(
-        (task_params, train_params, net_params)
-    )
+    # save the setting result
+    config = {
+        "task_params": task_params,
+        "train_params": train_params,
+        "net_params": net_params,
+    }
 
-    net_params['prefs'] = mpn_tasks.get_prefs(task_params['hp'])
+    out_path = Path(f"./multiple_tasks/param_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}_param.json")
+    with out_path.open("w") as f:
+        json.dump(config, f, indent=4, default=helper.as_jsonable)
 
-    print('Rules: {}'.format(task_params['rules']))
-    print('  Input size {}, Output size {}'.format(
-        task_params['n_input'], task_params['n_output'],
-    ))
-else:
-    raise NotImplementedError()
+    shift_index = 1 if not task_params['fixate_off'] else 0
 
-if net_params['cuda']:
-    print('Using CUDA...')
-    device = torch.device('cuda')
-else:
-    print('Using CPU...')
-    device = torch.device('cpu')
+    if hyp_dict['task_type'] in ('multitask',):
+        task_params, train_params, net_params = mpn_tasks.convert_and_init_multitask_params(
+            (task_params, train_params, net_params)
+        )
 
-# how many epoch each dataset will be trained on
-epoch_multiply = train_params["n_epochs_per_set"]
+        net_params['prefs'] = mpn_tasks.get_prefs(task_params['hp'])
 
-
-# In[5]:
-
-
-params = task_params, train_params, net_params
-
-if net_params['net_type'] == 'mpn1':
-    netFunction = mpn.MultiPlasticNet
-elif net_params['net_type'] == 'dmpn':
-    netFunction = mpn.DeepMultiPlasticNet
-elif net_params['net_type'] == 'vanilla':
-    netFunction = nets.VanillaRNN
-elif net_params['net_type'] == 'gru':
-    netFunction = nets.GRU
-
-
-# In[6]:
-
-
-test_n_batch = train_params["valid_n_batch"]
-color_by = "stim" # or "resp" 
-
-if task_params['task_type'] in ('multitask',): # Test batch consists of all the rules
-    task_params['hp']['batch_size_train'] = test_n_batch
-    # using homogeneous cutting off if multiple tasks are presented in the pool
-    # if single task, using inhomogeneous cutoff to show diversity & robustness
-    # test_mode_for_all = "random" if len(rules_dict[hyp_dict['ruleset']]) > 1 else "random_batch"
-    test_mode_for_all = "random"
-    # ZIHAN
-    # generate test data using "random"
-    test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params, 
-                                                                  test_n_batch, 
-                                                                  rules=task_params['rules'], 
-                                                                  mode_input=test_mode_for_all)
-    
-    _, test_trials, test_rule_idxs = test_trials_extra
-    task_params['dataset_name'] = 'multitask'
-
-    if task_params['in_out_mode'] in ('low_dim_pos',):
-        output_dim_labels = ('Fixate', 'Cos', '-Cos', 'Sin', '-Sin')
-    elif task_params['in_out_mode'] in ('low_dim',):
-        output_dim_labels = ('Fixate', 'Cos', 'Sin')
+        print('Rules: {}'.format(task_params['rules']))
+        print('  Input size {}, Output size {}'.format(
+            task_params['n_input'], task_params['n_output'],
+        ))
     else:
         raise NotImplementedError()
 
-    labels_resp, labels_stim, rules_epochs = helper.generate_response_stimulus(task_params, test_trials)
+    if net_params['cuda']:
+        print('Using CUDA...')
+        device = torch.device('cuda')
+    else:
+        print('Using CPU...')
+        device = torch.device('cpu')
 
+    # how many epoch each dataset will be trained on
+    epoch_multiply = train_params["n_epochs_per_set"]
 
-labels = labels_stim if color_by == "stim" else labels_resp
-    
-test_input, test_output, _ = test_data
-print(f"test_input.device: {test_input.device}")
+    params = task_params, train_params, net_params
 
-permutation = np.random.permutation(test_input.shape[0])
-test_input = test_input[permutation]
-test_output = test_output[permutation]
-# test_mask = test_mask[permutation]
-labels = labels[permutation]
+    if net_params['net_type'] == 'mpn1':
+        netFunction = mpn.MultiPlasticNet
+    elif net_params['net_type'] == 'dmpn':
+        netFunction = mpn.DeepMultiPlasticNet
+    elif net_params['net_type'] == 'vanilla':
+        netFunction = nets.VanillaRNN
+    elif net_params['net_type'] == 'gru':
+        netFunction = nets.GRU
 
-test_input_np = test_input.detach().cpu().numpy()
-test_output_np = test_output.detach().cpu().numpy()
+    test_n_batch = train_params["valid_n_batch"]
+    color_by = "stim"  # or "resp"
 
-del test_output
+    if task_params['task_type'] in ('multitask',):  # Test batch consists of all the rules
+        task_params['hp']['batch_size_train'] = test_n_batch
+        test_mode_for_all = "random"
+        # generate test data using "random"
+        test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(task_params,
+                                                                      test_n_batch,
+                                                                      rules=task_params['rules'],
+                                                                      mode_input=test_mode_for_all)
 
-# Total number of batches, might be different than test_n_batch
-# this should be the same regardless of variety of test_input
-n_batch_all = test_input_np.shape[0] 
+        _, test_trials, test_rule_idxs = test_trials_extra
+        task_params['dataset_name'] = 'multitask'
 
-test_task = helper.find_task(task_params, test_input_np, shift_index)
+        if task_params['in_out_mode'] in ('low_dim_pos',):
+            output_dim_labels = ('Fixate', 'Cos', '-Cos', 'Sin', '-Sin')
+        elif task_params['in_out_mode'] in ('low_dim',):
+            output_dim_labels = ('Fixate', 'Cos', 'Sin')
+        else:
+            raise NotImplementedError()
 
+        labels_resp, labels_stim, labels_stim2, rules_epochs = helper.generate_response_stimulus(task_params, test_trials)
 
-# In[7]:
+    labels = labels_stim if color_by == "stim" else labels_resp
 
-# actual fitting
-# we use net at different training stage on the same test_input
-net, _, (counter_lst, netout_lst, db_lst, Winput_lst, Winputbias_lst,\
-         Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst), _ = net_helpers.train_network(params, 
-                                                                                              device=device, 
-                                                                                              verbose=verbose, 
-                                                                                              train=train, 
-                                                                                              hyp_dict=hyp_dict,
-                                                                                              netFunction=netFunction,
-                                                                                              test_input=[test_input], 
-                                                                                              print_frequency=100)
+    test_input, test_output, _ = test_data
+    print(f"test_input.device: {test_input.device}")
 
-# In[ ]:
+    permutation = np.random.permutation(test_input.shape[0])
+    test_input = test_input[permutation]
+    test_output = test_output[permutation]
+    labels = labels[permutation]
 
+    test_input_np = test_input.detach().cpu().numpy()
+    test_output_np = test_output.detach().cpu().numpy()
 
-if hyp_dict['chosen_network'] == "dmpn":
-    if net_params["input_layer_add"]:
-        counter_lst = [x * epoch_multiply + 1 for x in counter_lst] # avoid log plot issue    
-        fignorm, axsnorm = plt.subplots(1,1,figsize=(4,4))
-        axsnorm.plot(counter_lst, [np.linalg.norm(Winput_matrix) for Winput_matrix in Winput_lst], "-o")
-        axsnorm.set_xscale("log")
-        axsnorm.set_ylabel("Frobenius Norm")
+    del test_output
 
+    # Total number of batches, might be different than test_n_batch
+    n_batch_all = test_input_np.shape[0]
 
-# In[ ]:
+    test_task = helper.find_task(task_params, test_input_np, shift_index)
 
+    # actual fitting: use net at different training stages on the same test_input
+    net, _, (counter_lst, netout_lst, db_lst, Winput_lst, Winputbias_lst,
+             Woutput_lst, Wall_lst, marker_lst, loss_lst, acc_lst), _ = net_helpers.train_network(
+        params, device=device, verbose=verbose, train=train, hyp_dict=hyp_dict,
+        netFunction=netFunction, test_input=[test_input], print_frequency=100)
 
-# sanity check, if W_freeze, then the recorded W matrix for the modulation layer should not be changed
-if net_params["ml_params"]["W_freeze"]: 
-    assert np.allclose(Wall_lst[-1][0], Wall_lst[0][0])
+    if hyp_dict['chosen_network'] == "dmpn":
+        if net_params["input_layer_add"]:
+            counter_lst = [x * epoch_multiply + 1 for x in counter_lst]  # avoid log plot issue
+            fignorm, axsnorm = plt.subplots(1, 1, figsize=(4, 4))
+            axsnorm.plot(counter_lst, [np.linalg.norm(Winput_matrix) for Winput_matrix in Winput_lst], "-o")
+            axsnorm.set_xscale("log")
+            axsnorm.set_ylabel("Frobenius Norm")
+            plt.close(fignorm)
 
-if net_params["input_layer_bias"]: 
-    assert net_params["input_layer_add"] is True 
+    # sanity check: if W_freeze, the recorded W for the modulation layer is unchanged
+    if net_params["ml_params"]["W_freeze"]:
+        assert np.allclose(Wall_lst[-1][0], Wall_lst[0][0])
 
+    if net_params["input_layer_bias"]:
+        assert net_params["input_layer_add"] is True
 
-# In[ ]:
+    if train:
+        fig, ax = plt.subplots(1, 1, figsize=(3, 3))
+        ax.plot(net.hist['iters_monitor'][1:], net.hist['train_acc'][1:],
+                color=c_vals[0], label='Full train accuracy')
+        ax.plot(net.hist['iters_monitor'][1:], net.hist['valid_acc'][1:],
+                color=c_vals[1], label='Full valid accuracy')
+        if net.weight_reg is not None:
+            ax.plot(net.hist['iters_monitor'], net.hist['train_loss_output_label'],
+                    color=c_vals_l[0], zorder=-1, label='Output label')
+            ax.plot(net.hist['iters_monitor'], net.hist['train_loss_reg_term'],
+                    color=c_vals_l[0], zorder=-1, label='Reg term', linestyle='dashed')
+            ax.plot(net.hist['iters_monitor'], net.hist['valid_loss_output_label'],
+                    color=c_vals_l[1], zorder=-1, label='Output valid label')
+            ax.plot(net.hist['iters_monitor'], net.hist['valid_loss_reg_term'],
+                    color=c_vals_l[1], zorder=-1, label='Reg valid term', linestyle='dashed')
+        ax.legend()
+        ax.set_ylim([0, 1])
+        ax.set_ylabel('Accuracy')
+        ax.set_xlabel('# Batches')
+        plt.savefig(f"./multiple_tasks/loss_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)
+        plt.close(fig)
 
+    print('Done!')
 
-if train:
-    fig, ax = plt.subplots(1,1,figsize=(3,3))
-    ax.plot(net.hist['iters_monitor'][1:], net.hist['train_acc'][1:], 
-            color=c_vals[0], label='Full train accuracy')
-    ax.plot(net.hist['iters_monitor'][1:], net.hist['valid_acc'][1:], 
-            color=c_vals[1], label='Full valid accuracy')
-    if net.weight_reg is not None:
-        ax.plot(net.hist['iters_monitor'], net.hist['train_loss_output_label'], 
-                color=c_vals_l[0], zorder=-1, label='Output label')
-        ax.plot(net.hist['iters_monitor'], net.hist['train_loss_reg_term'], 
-                color=c_vals_l[0], zorder=-1, label='Reg term', linestyle='dashed')
-        ax.plot(net.hist['iters_monitor'], net.hist['valid_loss_output_label'], 
-                color=c_vals_l[1], zorder=-1, label='Output valid label')
-        ax.plot(net.hist['iters_monitor'], net.hist['valid_loss_reg_term'], 
-                color=c_vals_l[1], zorder=-1, label='Reg valid term', linestyle='dashed')
-    
-    # ax.set_yscale('log')
-    ax.legend()
-    # ax.set_ylim([0.5, 1.05])
-    ax.set_ylim([0, 1])
-    # ax.set_ylabel('Loss ({})'.format(net.loss_type))
-    ax.set_ylabel('Accuracy')
-    ax.set_xlabel('# Batches')
-    plt.savefig(f"./multiple_tasks/loss_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png", dpi=100)
-    
-print('Done!')
+    if train:
+        net_helpers.net_eta_lambda_analysis(net, net_params, hyp_dict)
 
-
-# In[ ]:
-
-
-if train:
-    net_helpers.net_eta_lambda_analysis(net, net_params, hyp_dict)
-
-
-# In[ ]:
-
-
-use_finalstage = False
-if use_finalstage:
-    # plotting output in the validation set
-    net_out, _ , db = net.iterate_sequence_batch(test_input, run_mode='track_states')
-    W_output = net.W_output.detach().cpu().numpy()
-
-    W_all_ = []
-    for i in range(len(net.mp_layers)):
-        W_all_.append(net.mp_layers[i].W.detach().cpu().numpy())
-    W_ = W_all_[0]
-    
-else:
-    ind = len(marker_lst)-1 
-    # ind = 0
-    network_at_percent = (marker_lst[ind]+1)/train_params['n_datasets']*100
+    # final-stage outputs (use the last recorded training stage)
+    ind = len(marker_lst) - 1
+    network_at_percent = (marker_lst[ind] + 1) / train_params['n_datasets'] * 100
     print(f"Using network at {network_at_percent}%")
-    # by default using the first test_input 
     net_out = netout_lst[0][ind]
     db = db_lst[0][ind]
     W_output = Woutput_lst[ind]
     W_ = Wall_lst[ind][0]
 
+    def plot_input_output(test_input_np, net_out, test_output_np, test_task=None, tag="", batch_num=5, savefig=True):
+        test_input_np = helper.to_ndarray(test_input_np)
+        net_out = helper.to_ndarray(net_out)
+        test_output_np = helper.to_ndarray(test_output_np)
 
-# In[ ]:
+        fig_all, axs_all = plt.subplots(batch_num, 2, figsize=(4 * 2, batch_num * 2))
+
+        if test_output_np.shape[-1] == 1:
+            for batch_idx, ax in enumerate(axs_all):
+                ax.plot(net_out[batch_idx, :, 0], color=c_vals[batch_idx])
+                ax.plot(test_output_np[batch_idx, :, 0], color=c_vals_l[batch_idx])
+        else:
+            for batch_idx in range(batch_num):
+                for out_idx in range(test_output_np.shape[-1]):
+                    axs_all[batch_idx, 0].plot(net_out[batch_idx, :, out_idx], color=c_vals[out_idx], label=out_idx)
+                    axs_all[batch_idx, 0].plot(test_output_np[batch_idx, :, out_idx], color=c_vals_l[out_idx], linewidth=5, alpha=0.3)
+                    if test_task is not None:
+                        axs_all[batch_idx, 0].set_title(f"{task_params['rules'][test_task[batch_idx]]}")
+
+                input_batch = test_input_np[batch_idx, :, :]
+                if task_params["randomize_inputs"]:
+                    input_batch = input_batch @ np.linalg.pinv(task_params["randomize_matrix"])
+                for inp_idx in range(input_batch.shape[-1]):
+                    axs_all[batch_idx, 1].plot(input_batch[:, inp_idx], color=c_vals[inp_idx], label=inp_idx, alpha=1.0)
+                    if test_task is not None:
+                        axs_all[batch_idx, 1].set_title(f"{task_params['rules'][test_task[batch_idx]]}")
+
+        for ax in axs_all.flatten():
+            ax.set_ylim([-2, 2])
+        fig_all.tight_layout()
+
+        if savefig:
+            fig_all.savefig(f"./multiple_tasks/lowD_{hyp_dict['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}_{tag}.png", dpi=100)
+        return fig_all, axs_all
+
+    fig_all, axs_all = plot_input_output(test_input_np, net_out, test_output_np, test_task, tag="",
+                                         batch_num=20 if len(rules_dict[hyp_dict['ruleset']]) > 1 else 10)
+    plt.close(fig_all)
+
+    # db is selected based on learning-stage selection
+    layer_index = 0  # 1 layer MPN
+    if net_params["input_layer_add"]:
+        layer_index += 1
+
+    max_seq_len = test_input.shape[1]
+
+    def modulation_extraction(db, max_seq_len, layer_index):
+        n_batch_all_ = test_input.shape[0]
+        Ms = np.concatenate((db[f'M{layer_index}'].reshape(n_batch_all_, max_seq_len, -1),), axis=-1)
+        Ms_orig = np.concatenate((db[f'M{layer_index}'],), axis=-1)
+        bs = np.concatenate((db[f'b{layer_index}'],), axis=-1)
+        hs = np.concatenate((db[f'hidden{layer_index}'].reshape(n_batch_all_, max_seq_len, -1),), axis=-1)
+        xs = np.concatenate((db[f'input{layer_index}'].reshape(n_batch_all_, max_seq_len, -1),), axis=-1)
+        return Ms, Ms_orig, hs, bs, xs
+
+    print(f"rules_epochs: {rules_epochs}")
+    all_rules = np.array(task_params["rules"])
+    print(f"all_rules: {all_rules}")
+    test_task = np.array(test_task)
+    print(f"test_task: {test_task}")
+
+    Ms, Ms_orig, hs, bs, xs = modulation_extraction(db_lst[0][-1], max_seq_len, layer_index)
+    print(f"Ms.shape:{Ms.shape}")
+    print(f"Ms_orig.shape:{Ms_orig.shape}")
+    print(f"hs.shape:{hs.shape}")
+    print(f"bs.shape:{bs.shape}")
+    print(f"xs.shape:{xs.shape}")
+
+    # save result traces
+    pathname = f"./multiple_tasks/param_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}_result.npz"
+    np.savez_compressed(pathname,
+                        rules_epochs=rules_epochs,
+                        hyp_dict=hyp_dict,
+                        all_rules=all_rules,
+                        test_task=test_task,
+                        Ms_orig=Ms_orig,
+                        hs=hs,
+                        bs=bs,
+                        xs=xs)
+
+    # save the network information
+    netpathname = f"./multiple_tasks/savednet_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.pt"
+    save_dict = {
+        "state_dict": net.state_dict(),  # trained result
+        "net_params": net_params,        # network parameter
+    }
+    torch.save(save_dict, netpathname)
+    print("Network parameter saving is done")
+
+    aname = f"{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}"
+
+    # Free this trial's large objects before returning. The __main__ loop also
+    # runs a finally-block cleanup (figures + gc + CUDA cache) on every trial, so
+    # memory does not compound from trial to trial. Here we additionally drop the
+    # big per-trial tensors/arrays explicitly. Move net off-GPU first so its
+    # parameters' device memory is released promptly.
+    try:
+        net.to("cpu")
+    except Exception:
+        pass
+    del net, db, db_lst, netout_lst, Wall_lst, Woutput_lst, Winput_lst, Winputbias_lst
+    del net_out, W_output, W_, Ms, Ms_orig, hs, bs, xs
+    del test_input, test_input_np, test_output_np, test_data, test_trials_extra
+    plt.close("all")
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+
+    return aname
 
 
-def plot_input_output(test_input_np, net_out, test_output_np, test_task=None, tag="", batch_num=5, savefig=True):
-    """
-    """
-    test_input_np = helper.to_ndarray(test_input_np)
-    net_out = helper.to_ndarray(net_out)
-    test_output_np = helper.to_ndarray(test_output_np)
-    
-    fig_all, axs_all = plt.subplots(batch_num,2,figsize=(4*2,batch_num*2))
-    
-    if test_output_np.shape[-1] == 1:
-        for batch_idx, ax in enumerate(axs):
-            ax.plot(net_out[batch_idx, :, 0], color=c_vals[batch_idx])
-            ax.plot(test_output_np[batch_idx, :, 0], color=c_vals_l[batch_idx])
-    
+# ─── Run K independent trials (same params, different seeds) ──────────────────
+if __name__ == "__main__":
+    Path("multiple_tasks").mkdir(parents=True, exist_ok=True)
+
+    if SEED_LIST is not None:
+        seeds = list(SEED_LIST)
     else:
-        for batch_idx in range(batch_num):
-            for out_idx in range(test_output_np.shape[-1]):
-                axs_all[batch_idx,0].plot(net_out[batch_idx, :, out_idx], color=c_vals[out_idx], label=out_idx)
-                axs_all[batch_idx,0].plot(test_output_np[batch_idx, :, out_idx], color=c_vals_l[out_idx], linewidth=5, alpha=0.3)
-                if test_task is not None: 
-                    axs_all[batch_idx,0].set_title(f"{task_params['rules'][test_task[batch_idx]]}")
-    
-            input_batch = test_input_np[batch_idx,:,:]
-            if task_params["randomize_inputs"]: 
-                input_batch = input_batch @ np.linalg.pinv(task_params["randomize_matrix"])
-            for inp_idx in range(input_batch.shape[-1]):
-                axs_all[batch_idx,1].plot(input_batch[:,inp_idx], color=c_vals[inp_idx], label=inp_idx, alpha=1.0)
-                if test_task is not None: 
-                    axs_all[batch_idx,1].set_title(f"{task_params['rules'][test_task[batch_idx]]}")
+        rng = random.Random()  # fresh entropy each run -> different seed pool
+        seeds = rng.sample(range(1, 1000), N_TRIALS)
 
-    for ax in axs_all.flatten(): 
-        ax.set_ylim([-2, 2])
-    fig_all.tight_layout()
-    
-    if savefig:
-        fig_all.savefig(f"./multiple_tasks/lowD_{hyp_dict['ruleset']}_{hyp_dict['chosen_network']}_seed{seed}_{hyp_dict['addon_name']}_{tag}.png", dpi=100)
-        
-    return fig_all, axs_all
+    print(f"Running {len(seeds)} independent trials: seeds={seeds}")
+    anames = []
+    for seed in seeds:
+        try:
+            anames.append(run_trial(seed))
+        except Exception as exc:
+            print(f"Trial seed={seed} FAILED: {exc}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            # Reset per-trial memory so cost does NOT compound across trials and
+            # a long run won't OOM. Runs on BOTH success and failure:
+            #  - plt.close("all"): drop every matplotlib figure (incl. any made by
+            #    net_eta_lambda_analysis) from pyplot's global registry.
+            #  - gc.collect(): break ref cycles and release a failed trial's frame
+            #    locals (the traceback that held `net`/GPU tensors is cleared once
+            #    the except clause exits, before this finally runs).
+            #  - empty_cache / ipc_collect: return freed blocks to the CUDA driver.
+            plt.close("all")
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+    print(f"\nCompleted {len(anames)}/{len(seeds)} trials.")
+    for a in anames:
+        print(f"  {a}")
 
-fig_all, axs_all = plot_input_output(test_input_np, net_out, test_output_np, test_task, tag="", 
-                                     batch_num=20 if len(rules_dict[hyp_dict['ruleset']]) > 1 else 10)
-
-
-# In[ ]:
-
-
-# here db is selected based on learning stage selection 
-
-layer_index = 0 # 1 layer MPN 
-if net_params["input_layer_add"]:
-    layer_index += 1 
-
-max_seq_len = test_input.shape[1]
-    
-def modulation_extraction(db, max_seq_len, layer_index):
-    """
-    """
-    n_batch_all_ = test_input.shape[0]
-    
-    Ms = np.concatenate((
-        db[f'M{layer_index}'].reshape(n_batch_all_, max_seq_len, -1),
-    ), axis=-1)
-
-    Ms_orig = np.concatenate((
-        db[f'M{layer_index}'],
-    ), axis=-1)
-
-    bs = np.concatenate((
-        db[f'b{layer_index}'],
-    ), axis=-1) 
-
-    hs = np.concatenate((
-        db[f'hidden{layer_index}'].reshape(n_batch_all_, max_seq_len, -1),
-    ), axis=-1)
-
-    xs = np.concatenate((
-        db[f'input{layer_index}'].reshape(n_batch_all_, max_seq_len, -1),
-    ), axis=-1)
-
-    return Ms, Ms_orig, hs, bs, xs
-
-print(f"rules_epochs: {rules_epochs}")
-all_rules = np.array(task_params["rules"])
-print(f"all_rules: {all_rules}")
-test_task = np.array(test_task)
-print(f"test_task: {test_task}")
-
-Ms, Ms_orig, hs, bs, xs = modulation_extraction(db_lst[0][-1], max_seq_len, layer_index)
-print(f"Ms.shape:{Ms.shape}")
-print(f"Ms_orig.shape:{Ms_orig.shape}")
-print(f"hs.shape:{hs.shape}")
-print(f"bs.shape:{bs.shape}")
-print(f"xs.shape:{xs.shape}")
-
-# save
-pathname = f"./multiple_tasks/param_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}_result.npz"
-np.savez_compressed(pathname, \
-                    rules_epochs=rules_epochs, \
-                    hyp_dict=hyp_dict, \
-                    all_rules=all_rules, \
-                    test_task=test_task, \
-                    # Ms=Ms, 
-                    Ms_orig=Ms_orig, \
-                    hs=hs, \
-                    bs=bs, \
-                    xs=xs)
-
-# save the network information
-netpathname = f"./multiple_tasks/savednet_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.pt"
-save_dict = {
-    "state_dict": net.state_dict(), # trained result
-    "net_params": net_params # network parameter
-}
-torch.save(save_dict, netpathname)
-print("Network parameter saving is done")
+    # Manifest of the runs produced THIS invocation (mirrors two_task.py), so a
+    # pipeline can analyze exactly what was just trained.
+    manifest_path = Path("multiple_tasks") / "last_run_anames.txt"
+    with manifest_path.open("w") as mf:
+        mf.write("\n".join(anames) + ("\n" if anames else ""))
+    print(f"Wrote manifest: {manifest_path}")
 
 
 

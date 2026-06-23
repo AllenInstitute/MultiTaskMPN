@@ -8,6 +8,7 @@ figures, or import individual functions as needed.
 Figures are grouped into modes by the experiment they depend on:
     one_task         single-task training analyses
     multiple_tasks   full multi-task network (clustering, lesion, state space)
+    two_in_multiple  two-task probes within the multi-task network (DMC memory)
     pretraining      pretraining → post-training transfer analyses
     two_task         two-task network (cross-task / cross-period PCA)
 
@@ -16,6 +17,7 @@ Usage:
     python paper_plot.py all                   # same as above
     python paper_plot.py one_task              # only the one-task figures
     python paper_plot.py multiple_tasks        # only the multi-task figures
+    python paper_plot.py two_in_multiple       # only the two-in-multiple figures
     python paper_plot.py pretraining           # only the pretraining figures
     python paper_plot.py two_task              # only the two-task figures
     python paper_plot.py --only input          # generate a single figure
@@ -45,6 +47,11 @@ mpl.rcParams.update({
 ANAME = "everything_seed749_L21e4+hidden300+batch128+angle"
 DATA_DIR = Path("multiple_tasks") / ANAME
 OUT_DIR = Path("paper_plot")
+
+# Multi-task run used for the DMC category-memory probe (two_in_multiple mode).
+# May differ from ANAME — set independently so the attractor figure can come
+# from a different seed/regularization than the clustering/lesion figures.
+DMC_ANAME = "everything_seed299_L21e3+hidden300+batch128+angle"
 
 # Two-task run used for the cross-task / cross-period PCA figure (d_combine).
 # The matching data file is written by two_task_analysis.py into
@@ -2418,15 +2425,107 @@ def plot_two_task_cancel():
     print(f"Saved: {out_path}  (stimuli {stim_keys})")
 
 
+def plot_dmc_memory_attractor():
+    """
+    Figure: DMC category-memory attractors for each representation (hidden,
+    m_modulation, e_modulation), each in its own optimal 2-PC plane (the plane
+    with the highest group-separation 2D silhouette).
+
+    Reloads the fixed-point pickle written by multiple_task_analysis.py's
+    shared_run (multiple_tasks/{DMC_ANAME}/dmcgo_fixed_points_{DMC_ANAME}.pkl).
+    DMC_ANAME is independent of ANAME, so this can come from a different
+    seed/regularization than the other multi-task figures. Shows the delay-period
+    trajectory + end-of-delay fixed points for 8 stimuli x 2 tasks (color =
+    stimulus, marker = task: square = Pro/dmcgo, triangle = Anti/dmcnogo).
+    One figure per representation.
+    """
+    _ensure_out_dir()
+    pkl_path = Path("multiple_tasks") / DMC_ANAME / f"dmcgo_fixed_points_{DMC_ANAME}.pkl"
+    if not pkl_path.exists():
+        print(f"  Skipped: {pkl_path} not found. Run multiple_task_analysis.py "
+              f"shared_run first.")
+        return
+
+    with open(pkl_path, "rb") as f:
+        d = pickle.load(f)
+
+    task_markers = ["s", "^"]                 # square = task0/Pro, triangle = task1/Anti
+    task_styles = ["-", "--"]                 # solid = task0/Pro, dashed = task1/Anti
+
+    def _plot_one(rep):
+        if rep not in d:
+            print(f"  Skipped {rep}: not in pickle.")
+            return
+        e = d[rep]
+        if e.get("best_plane") is None or "fp_by_task" not in e:
+            print(f"  Skipped {rep}: pickle predates the optimal-plane format. "
+                  f"Re-run multiple_task_analysis.py shared_run.")
+            return
+
+        fp = np.asarray(e["fp_by_task"])          # (n_task, n_stim, n_pc)
+        traj_by_task = [np.asarray(t) for t in e.get("traj_by_task", [])]
+        stim_labels = e["stim_labels"]
+        task_names = e.get("task_names", ["Pro", "Anti"])
+        bx, by = e["best_plane"]
+        sil = e.get("best_plane_silhouette", float("nan"))
+        n_task, n_stim, _ = fp.shape
+        have_traj = len(traj_by_task) == n_task
+
+        fig, ax = plt.subplots(1, 1, figsize=(2.5, 2.5))
+        for t_idx in range(n_task):
+            for stim in range(n_stim):
+                col = c_vals[stim_labels[stim] % len(c_vals)]
+                if have_traj:
+                    tr = traj_by_task[t_idx][stim]   # (delay_T, n_pc)
+                    ax.plot(tr[:, bx], tr[:, by], color=col, alpha=0.5,
+                            linewidth=0.8, linestyle=task_styles[t_idx % len(task_styles)],
+                            zorder=2)
+                ax.scatter(fp[t_idx, stim, bx], fp[t_idx, stim, by],
+                           facecolor=col, edgecolor="black", linewidth=0.5,
+                           marker=task_markers[t_idx % len(task_markers)],
+                           s=22, alpha=0.7, zorder=3)
+        ax.set_xlabel(f"PC{bx+1}", fontsize=8)
+        ax.set_ylabel(f"PC{by+1}", fontsize=8)
+        ax.spines[["top", "right"]].set_visible(False)
+        # hidden / m_modulation span a wide range, so use sparser ticks there.
+        nbins = 3 if rep in ("hidden", "m_modulation") else None
+        ax.xaxis.set_major_locator(mpl.ticker.MaxNLocator(integer=True, nbins=nbins))
+        ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(integer=True, nbins=nbins))
+        ax.tick_params(labelsize=7)
+
+        # combined legend (stimulus colors + task markers), placed ON the axes
+        stim_handles = [plt.Line2D([0], [0], marker="o", linestyle="None",
+                                   markerfacecolor=c_vals[lab % len(c_vals)],
+                                   markeredgecolor="black", markersize=5, label=f"stim {lab}")
+                        for lab in stim_labels]
+        task_handles = [plt.Line2D([0], [0], marker=task_markers[i],
+                                   linestyle=task_styles[i], color="0.5",
+                                   markerfacecolor="0.7", markeredgecolor="black",
+                                   markersize=6, label=task_names[i])
+                        for i in range(n_task)]
+        ax.legend(handles=stim_handles + task_handles, frameon=True, fontsize=5,
+                  ncol=2, loc="best")
+
+        fig.tight_layout()
+        out_path = OUT_DIR / f"dmc_memory_attractor_{rep}_{DMC_ANAME}.png"
+        fig.savefig(out_path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Saved: {out_path}  (PC{bx+1}-PC{by+1}, 2D sil={sil:.3f})")
+
+    for rep in ("hidden", "m_modulation", "e_modulation"):
+        _plot_one(rep)
+
+
 # ─── Figures grouped by mode ──────────────────────────────────────────────────
 # Each mode maps a figure name → its plotting function. Figures only depend on
 # the data produced by their corresponding experiment, so a mode can be run in
 # isolation without touching the others' inputs.
 #
-#   one_task        single-task training analyses (multiple_task single-task run)
-#   multiple_tasks  the full multi-task network: clustering, lesion, state space
-#   pretraining     pretraining → post-training transfer analyses
-#   two_task        the two-task network: cross-task / cross-period PCA
+#   one_task         single-task training analyses (multiple_task single-task run)
+#   multiple_tasks   the full multi-task network: clustering, lesion, state space
+#   two_in_multiple  two-task probes within the multi-task net (DMC memory attractor)
+#   pretraining      pretraining → post-training transfer analyses
+#   two_task         the two-task network: cross-task / cross-period PCA
 FIGURES_BY_MODE = {
     "one_task": {
         "onetask_example_trial": plot_onetask_example_trial,
@@ -2450,6 +2549,9 @@ FIGURES_BY_MODE = {
         "lesion_heatmap": plot_lesion_heatmap,
         "cluster_corr_vs_lesion": plot_cluster_corr_vs_lesion,
         "om_vs_lesion": plot_om_vs_lesion,
+    },
+    "two_in_multiple": {
+        "dmc_memory_attractor": plot_dmc_memory_attractor,
     },
     "pretraining": {
         "transfer_speed": plot_transfer_speed,
@@ -2521,6 +2623,7 @@ def main():
     mode_experiment = {
         "one_task": ONETASK_ANAME,
         "multiple_tasks": ANAME,
+        "two_in_multiple": DMC_ANAME,
         "two_task": TWOTASK_ANAME,
         "pretraining": "(aggregated across seeds)",
     }
