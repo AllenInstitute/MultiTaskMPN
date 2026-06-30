@@ -25,6 +25,7 @@ Usage:
     python one_task_analysis.py --aname <name>  # a specific run
 """
 import os
+import copy
 import glob
 import json
 import argparse
@@ -42,6 +43,10 @@ import seaborn as sns
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import helper
+import torch
+import mpn
+import networks as nets
+import mpn_tasks
 
 # Match the plotting style used in multiple_task_analysis.py
 mpl.rcParams.update({
@@ -86,6 +91,195 @@ def _generate_random_orthonormal_matrix(N, num_columns=3):
     """N x num_columns matrix with orthonormal columns."""
     Q, _ = np.linalg.qr(np.random.randn(N, num_columns))
     return Q[:, :num_columns]
+
+
+def _rebuild_net(net_params, device):
+    """Instantiate the network class implied by net_params (no weights loaded)."""
+    if net_params['net_type'] == 'mpn1':
+        netFunction = mpn.MultiPlasticNet
+    elif net_params['net_type'] == 'dmpn':
+        netFunction = mpn.DeepMultiPlasticNet
+    elif net_params['net_type'] == 'vanilla':
+        netFunction = nets.VanillaRNN
+    elif net_params['net_type'] == 'gru':
+        netFunction = nets.GRU
+    else:
+        raise ValueError(f"Unknown net_type {net_params['net_type']}")
+    return netFunction(net_params, verbose=False)
+
+
+def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by):
+    """Take the trained single-task network, generate test data with each trial
+    period extended in turn (long fixation / stimulus / delay / response), fit a
+    top-2 PCA on the pooled DELAY-period states, and scatter each variant's
+    fixed point (last timestep) colored by stimulus. Mirrors the two-task
+    attractor analysis. Done for both the hidden state and the effective
+    modulation W ⊙ M. Requires the live checkpoint savednet_{aname}.pt."""
+    ckpt_path = ONETASK_DIR / f"savednet_{aname}.pt"
+    if not ckpt_path.exists():
+        print(f"  [long-fp] checkpoint not found ({ckpt_path}); skipping.")
+        return
+
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    net_params_ckpt = ckpt["net_params"]
+    net = _rebuild_net(net_params_ckpt, device)
+    net.load_state_dict(ckpt["state_dict"])
+    net.to(device)
+    net.eval()
+
+    # Rebuild task_params from the (un-converted) param json and re-run the
+    # multitask conversion to populate hp / prefs / n_input needed for trial gen.
+    task_params0 = copy.deepcopy(cfg["task_params"])
+    train_params0 = copy.deepcopy(cfg["train_params"])
+    net_params0 = copy.deepcopy(cfg["net_params"])
+
+    layer_index = 1 if net_params_ckpt.get("input_layer_add", False) else 0
+
+    # Each variant extends ONE period and is analyzed over THAT extended period
+    # (its own epoch window), mirroring the two-task desire_period logic.
+    variants = ["longfixation", "longstimulus", "longdelay", "longresponse"]
+    period_key = {  # task_params flag to set "long", and the epoch to analyze
+        "longfixation": ("long_fixation", "fix1"),
+        "longstimulus": ("long_stimulus", "stim1"),
+        "longdelay": ("long_delay", "delay1"),
+        "longresponse": ("long_response", "go1"),
+    }
+
+    def _gen_and_run(variant):
+        flag, epoch_name = period_key[variant]
+        tp = copy.deepcopy(task_params0)
+        tp["long_fixation"] = tp["long_stimulus"] = tp["long_delay"] = tp["long_response"] = "normal"
+        tp[flag] = "long"
+        tp, trp, npp = mpn_tasks.convert_and_init_multitask_params(
+            (tp, copy.deepcopy(train_params0), copy.deepcopy(net_params0)))
+        npp["prefs"] = mpn_tasks.get_prefs(tp["hp"])
+        test_n_batch = trp["valid_n_batch"]
+        tp["hp"]["batch_size_train"] = test_n_batch
+        data, extra = mpn_tasks.generate_trials_wrap(
+            tp, test_n_batch, rules=tp["rules"], mode_input="random", device=device)
+        _, trials, _ = extra
+        test_input = data[0]
+        # stimulus labels for this variant (one ring stimulus per trial)
+        stim = np.asarray(trials[0].meta["stim1"]).reshape(-1)
+        ep = trials[0].epochs[epoch_name]    # (start, end_exclusive); start may be None (fix1)
+        T = test_input.shape[1]
+        win = (0 if ep[0] is None else int(ep[0]), T if ep[1] is None else int(ep[1]))
+        _, _, db = net.iterate_sequence_batch(
+            test_input.to(device), run_mode="track_states", save_to_cpu=True, detach_saved=True)
+        return db, stim, win
+
+    # Run each variant once; cache hidden + W⊙M states and the EXTENDED period
+    # window to analyze for that variant.
+    W = net.mp_layer1.W.data.detach().cpu().numpy() if net_params_ckpt.get("input_layer_add", False) \
+        else net.mp_layer0.W.data.detach().cpu().numpy()
+    cache = {}
+    for v in variants:
+        try:
+            db, stim, win = _gen_and_run(v)
+        except Exception as exc:
+            print(f"  [long-fp] variant {v} failed: {exc}; skipping it.")
+            continue
+        h = np.asarray(db[f"hidden{layer_index}"])                  # (batch, T, hidden)
+        M = np.asarray(db[f"M{layer_index}"])                       # (batch, T, hidden, hidden)
+        mm = M.reshape(M.shape[0], M.shape[1], -1)                  # raw M flattened
+        em = (M * W[None, None, :, :]).reshape(M.shape[0], M.shape[1], -1)  # W⊙M flattened
+        cache[v] = {"hidden": h, "m_modulation": mm, "e_modulation": em,
+                    "stim": stim, "period": tuple(win)}
+        del db, M
+
+    if not cache:
+        print("  [long-fp] no variants succeeded; skipping figure.")
+        return
+
+    # One subplot per period (like the two-task per-period figures). Each period
+    # gets its OWN top-2 PCA, fit on that period's extended-window states, and
+    # shows: the per-trial trajectory over that window (line, colored by
+    # stimulus) + the fixed point = last frame of the window (black-edged marker).
+    present = [v for v in variants if v in cache]
+    period_title = {"longfixation": "Fixation", "longstimulus": "Stimulus",
+                    "longdelay": "Delay", "longresponse": "Response"}
+
+    # Accumulate the projected 2-D trajectories so paper_plot can re-render this
+    # without re-running the network: {rep: {period: {"proj": (batch,win_T,2),
+    # "stim": (batch,)}}}.
+    long_fp_save = {}
+
+    # Source of the shared PCA basis: the (extended) DELAY window of the
+    # longdelay variant. Every period panel in a row is projected into THIS same
+    # delay-period basis, so PC1/PC2 mean the same axes across all panels.
+    if "longdelay" not in cache:
+        print("  [long-fp] no 'longdelay' variant; cannot build a shared delay "
+              "PCA basis; skipping figure.")
+        return
+
+    for rep in ("hidden", "m_modulation", "e_modulation"):
+        n_var = len(present)
+        fig, axs = plt.subplots(1, n_var, figsize=(4 * n_var, 4), squeeze=False)
+        long_fp_save[rep] = {}
+
+        # Fit ONE PCA on the delay window of the longdelay variant for this rep.
+        cd = cache["longdelay"]
+        dps, dpe = cd["period"]
+        delay_seg = cd[rep][:, dps:dpe, :]
+        pca = PCA(n_components=2, random_state=0).fit(
+            delay_seg.reshape(-1, delay_seg.shape[-1]))
+
+        for ax, v in zip(axs[0], present):
+            c = cache[v]
+            ps, pe = c["period"]
+            stim = c["stim"]
+            seg = c[rep][:, ps:pe, :]                       # (batch, win_T, feat)
+            # project this period's window into the shared delay-period basis
+            proj = pca.transform(seg.reshape(-1, seg.shape[-1])).reshape(
+                seg.shape[0], seg.shape[1], 2)              # (batch, win_T, 2)
+            for i in range(seg.shape[0]):
+                col = c_vals[int(stim[i]) % len(c_vals)]
+                p = proj[i]                                 # (win_T, 2)
+                ax.plot(p[:, 0], p[:, 1], color=col, alpha=0.4, linewidth=0.8, zorder=2)
+                ax.scatter(p[-1, 0], p[-1, 1], color=col, marker="o", s=45,
+                           edgecolor="black", linewidth=0.5, alpha=0.85, zorder=3)
+            ax.set_xlabel("Delay PC1", fontsize=10)
+            ax.set_ylabel("Delay PC2", fontsize=10)
+            ax.set_title(period_title.get(v, v), fontsize=11)
+            ax.spines[["top", "right"]].set_visible(False)
+            long_fp_save[rep][v] = {"proj": np.asarray(proj, dtype=float),
+                                    "stim": np.asarray(stim)}
+
+        # stimulus-color legend on the first subplot
+        uniq_stim = sorted(set(int(s) for c in cache.values() for s in c["stim"]))
+        stim_handles = [plt.Line2D([0], [0], marker="o", linestyle="None",
+                                   markerfacecolor=c_vals[s % len(c_vals)],
+                                   markeredgecolor="black", markersize=6, label=f"stim {s}")
+                        for s in uniq_stim]
+        axs[0, 0].legend(handles=stim_handles, frameon=True, fontsize=6, ncol=2,
+                         title="stimulus", loc="best")
+        fig.suptitle(f"{aname}  |  {rep} per-period trajectory + fixed point "
+                     f"(shared delay-period PCA)", fontsize=10)
+        fig.tight_layout()
+        out = save_dir / f"long_fixed_points_{rep}_{aname}.png"
+        fig.savefig(out, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  Saved figure: {out}")
+
+    # Persist the projected trajectories for paper_plot reuse.
+    import pickle as _pickle
+    long_pkl = save_dir / f"long_fixed_points_{aname}.pkl"
+    with open(long_pkl, "wb") as _f:
+        _pickle.dump({"aname": aname, "present": present,
+                      "period_title": period_title, "data": long_fp_save}, _f)
+    print(f"  Saved long_fixed_points data: {long_pkl}")
+
+    # free GPU memory
+    try:
+        net.to("cpu")
+    except Exception:
+        pass
+    del net
+    import gc as _gc
+    _gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def main(aname):
@@ -777,6 +971,141 @@ def main(aname):
             "explained_variance_ratio": np.asarray(pca.explained_variance_ratio_, dtype=float),
         }, _f)
     print(f"  Saved m_pca data: {save_dir / f'm_pca_{aname}.pkl'}")
+
+    # ── Same low-D PCA trajectory, but for the HIDDEN ACTIVITY ───────────────
+    # Mirrors the modulation (m_pca) analysis above: take the final-stage hidden
+    # state, fit a PCA basis on the end-of-stimulus hidden state (pooled over
+    # trials), project the whole trial, and plot the stimulus-period trajectory
+    # in three PC planes, colored by stimulus direction.
+    fighs_h, axshs_h = plt.subplots(3, 1, figsize=(6, 3 * 3), squeeze=False)
+    hs_now = hs_stages[stage_iter]                          # (batch, T, hidden)
+
+    pca_h = PCA(n_components=PCA_downsample)
+    hs_end = hs_now[:, stimulus_end:stimulus_end + 1, :]
+    pca_h.fit(hs_end.reshape(-1, hs_end.shape[-1]))
+    lowd_h = pca_h.transform(
+        hs_now.reshape(-1, hs_now.shape[-1])
+    ).reshape(hs_now.shape[0], hs_now.shape[1], PCA_downsample)
+
+    for i in range(lowd_h.shape[0]):
+        data_batch = lowd_h[i, :, :]
+        color = c_vals[labels[i, 0] % len(c_vals)]
+        for row, xpc, ypc in pairs:
+            axshs_h[row, 0].plot(data_batch[stimulus_start:stimulus_end, xpc],
+                                 data_batch[stimulus_start:stimulus_end, ypc],
+                                 marker=markers_vals[0], markersize=3, c=color, alpha=0.5)
+    for row, xpc, ypc in pairs:
+        axshs_h[row, 0].set_xlabel(f"PC {xpc+1}", fontsize=13)
+        axshs_h[row, 0].set_ylabel(f"PC {ypc+1}", fontsize=13)
+    fighs_h.tight_layout()
+    fighs_h.savefig(save_dir / f"h_pca_{aname}.png", dpi=300)
+    plt.close(fighs_h)
+    print(f"  Saved figure: {save_dir / f'h_pca_{aname}.png'}")
+
+    with open(save_dir / f"h_pca_{aname}.pkl", "wb") as _f:
+        _pickle.dump({
+            "aname": aname,
+            "stage_iter": int(stage_iter),
+            "lowd": np.asarray(lowd_h, dtype=float),         # (batch, T, n_pc)
+            "labels": np.asarray(labels).reshape(-1),        # stimulus label per trial
+            "pairs": pairs,                                   # PC-plane index pairs
+            "stimulus_start": int(stimulus_start),
+            "stimulus_end": int(stimulus_end),
+            "explained_variance_ratio": np.asarray(pca_h.explained_variance_ratio_, dtype=float),
+        }, _f)
+    print(f"  Saved h_pca data: {save_dir / f'h_pca_{aname}.pkl'}")
+
+    # ── FULL-trial trajectory in a whole-trial PCA basis (two-task style) ────
+    # Matches the two-task m_pca_*_normal figure: fit the top-3 PCA on the
+    # FULL-trial states pooled over all trials AND all timesteps, then plot the
+    # entire trajectory across 3 PC planes (PC1-2 / PC1-3 / PC2-3), colored by
+    # stimulus. Each trial-period is marked with a distinct marker over its
+    # window, and each period boundary gets a large solid transition marker.
+    T_total = fixon_mod.shape[1]
+    # phase name -> (start, end_exclusive, marker index in markers_vals)
+    phases = [("Fixation", 0, stimulus_start, 1),
+              ("Stimulus", stimulus_start, stimulus_end, 2),
+              ("Delay", stimulus_end, response_start, 3),
+              ("Response", response_start, T_total, 0)]
+    transition_ts = [(stimulus_start, 2), (stimulus_end, 3), (response_start, 0)]
+    pcs_comb = [(0, 1), (0, 2), (1, 2)]
+    legend_handles = [plt.Line2D([0], [0], marker=markers_vals[mk], linestyle="None",
+                                 markersize=10, markerfacecolor="k", markeredgecolor="k",
+                                 label=name)
+                      for name, _, _, mk in phases]
+
+    def _full_traj_pca(data_bt_feat, tag, ylabel):
+        """data_bt_feat: (batch, T, feat). PCA basis fit on the whole trial
+        (every timestep of every trial, like two_task m_pca_*_normal), plotted in
+        two-task style: line + per-phase markers + transition markers."""
+        n_activity = data_bt_feat.shape[-1]
+        as_flat = data_bt_feat.reshape(-1, n_activity)        # (batch*T, feat)
+        pca_d = PCA(n_components=PCA_downsample, random_state=42)
+        pca_d.fit(as_flat)
+        proj = pca_d.transform(as_flat).reshape(
+            data_bt_feat.shape[0], data_bt_feat.shape[1], PCA_downsample)
+
+        figd, axsd = plt.subplots(1, 3, figsize=(5 * 3, 5), squeeze=False)
+        for i in range(proj.shape[0]):
+            db = proj[i, :, :]
+            color = c_vals[labels[i, 0] % len(c_vals)]
+            for col, (a, bb) in enumerate(pcs_comb):
+                ax = axsd[0, col]
+                # full-trial trajectory line
+                ax.plot(db[:, a], db[:, bb], c=color, alpha=0.25, zorder=2)
+                # per-phase markers over each phase window
+                for _name, t0, t1, mk in phases:
+                    sl = slice(t0, t1)
+                    ax.scatter(db[sl, a], db[sl, bb], c=color,
+                               marker=markers_vals[mk], alpha=0.5, zorder=3)
+                # large solid transition markers at period boundaries
+                for t, mk in transition_ts:
+                    tt = min(max(t - 1, 0), db.shape[0] - 1)
+                    ax.scatter([db[tt, a]], [db[tt, bb]], c=color,
+                               marker=markers_vals[mk], alpha=0.8, s=60,
+                               linewidths=0.6, zorder=10)
+        for col, (a, bb) in enumerate(pcs_comb):
+            ax = axsd[0, col]
+            ax.set_xlabel(f"PCA {a+1}", fontsize=12)
+            ax.set_ylabel(f"PCA {bb+1}", fontsize=12)
+            ax.set_title(f"{ylabel}", fontsize=15)
+            ax.tick_params(axis="both", labelsize=12)
+            ax.legend(handles=legend_handles, loc="upper right", frameon=True, fontsize=10)
+        figd.suptitle(f"{aname}  |  full trajectory in whole-trial PCA", fontsize=12)
+        figd.tight_layout()
+        out = save_dir / f"{tag}_pca_fulltrial_{aname}.png"
+        figd.savefig(out, dpi=300)
+        plt.close(figd)
+        print(f"  Saved figure: {out}")
+
+        with open(save_dir / f"{tag}_pca_fulltrial_{aname}.pkl", "wb") as _f:
+            _pickle.dump({
+                "aname": aname,
+                "stage_iter": int(stage_iter),
+                "lowd": np.asarray(proj, dtype=float),       # (batch, T, n_pc) FULL trial
+                "labels": np.asarray(labels).reshape(-1),
+                "pcs_comb": pcs_comb,
+                "phases": [(n, int(t0), int(t1), int(mk)) for n, t0, t1, mk in phases],
+                "stimulus_start": int(stimulus_start),
+                "stimulus_end": int(stimulus_end),
+                "response_start": int(response_start),
+                "explained_variance_ratio": np.asarray(pca_d.explained_variance_ratio_, dtype=float),
+            }, _f)
+        print(f"  Saved {tag}_pca_fulltrial data: {save_dir / f'{tag}_pca_fulltrial_{aname}.pkl'}")
+
+    _full_traj_pca(fixon_mod, "m", "fixon modulation")
+    _full_traj_pca(hs_now, "h", "hidden activity")
+
+    # ── Long-period fixed-point geometry (uses the LIVE trained network) ─────
+    # Generate test data with each trial period extended in turn, fit a top-2
+    # PCA on the pooled delay-period states, and scatter each variant's fixed
+    # point (last delay frame) colored by stimulus — for hidden and W⊙M.
+    try:
+        long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by)
+    except Exception as exc:
+        print(f"  [long-fp] failed: {exc}")
+        import traceback
+        traceback.print_exc()
 
     print(f"All figures saved to {save_dir}/")
 

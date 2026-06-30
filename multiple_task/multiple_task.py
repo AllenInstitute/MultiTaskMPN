@@ -75,7 +75,7 @@ linestyles = ["-", "--", "-."]
 # Number of independent trials (different random seeds) to train, under the SAME
 # parameter setting. Mirrors two_task.py so the multi-task net can be trained
 # many times for robustness across seeds.
-N_TRIALS = 3
+N_TRIALS = 5
 # Fixed list of seeds, or None to draw N_TRIALS random seeds (fresh entropy each
 # run, so reruns explore different seeds).
 SEED_LIST = None
@@ -83,7 +83,7 @@ SEED_LIST = None
 RULESET = 'everything'          # low_dim, all, test, everything, ...
 CHOSEN_NETWORK = "dmpn"         # mpn1, dmpn, vanilla, gru
 N_HIDDEN = 300
-ADDON_NAME = "L21e4"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appended below
+ADDON_NAME = "L21e2"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appended below
 train = True                    # whether or not to train the network
 verbose = True
 
@@ -187,7 +187,7 @@ def current_basic_params(hyp_dict):
         'n_epochs_per_set': 1, 
         'weight_reg': 'L2',
         'activity_reg': 'L2', 
-        'reg_lambda': 1e-4,
+        'reg_lambda': 1e-2,
         
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'

@@ -1799,9 +1799,15 @@ ONETASK_ANAME = "delaygo_seed395_hidden200+batch128+angle"
 
 def plot_onetask_example_trial():
     """
-    Figure: one representative single-task trial — input channels (top) and
-    network vs target output (bottom). Reloaded from the pickle saved by
-    one_task_analysis.py, re-rendered identically.
+    Figures: one representative single-task trial, saved as TWO files:
+      onetask_example_trial_input.png  — 4 vertically-stacked input subplots:
+        Fixation, Modality 1 (cos+sin), Modality 2 (cos+sin), Task cue.
+      onetask_example_trial_output.png — network vs target output.
+    Reloaded from the pickle saved by one_task_analysis.py. Y-ticks are just
+    [-1, 1] on every panel.
+
+    Input channel layout (low_dim, no fixate_off): 0=Fixation, 1-2=Modality 1
+    (cos,sin), 3-4=Modality 2 (cos,sin), 5=Task cue.
     """
     _ensure_out_dir()
     pkl_path = ONETASK_DIR / ONETASK_ANAME / f"example_trial_{ONETASK_ANAME}.pkl"
@@ -1815,15 +1821,14 @@ def plot_onetask_example_trial():
     inp = np.asarray(d["input"])              # (T, n_input)
     net_out = np.asarray(d["net_output"])     # (T, n_output)
     target = np.asarray(d["target_output"])   # (T, n_output)
-    input_specs = d["input_specs"]            # [(ch, label), ...]
     out_labels = d["output_labels"]
+    T = inp.shape[0]
 
     # Light palette for the faded target-output shadows (matches one_task_analysis).
     c_vals_l = ["#feb2b2", "#90cdf4", "#9ae6b4", "#d6bcfa", "#fbd38d",
                 "#81e6d9", "#e2e8f0", "#fbb6ce", "#faf089"] * 10
 
-    # Trial periods: fixation | stimulus | memory(delay) | response, shaded with
-    # the same scheme as onetask_show (fixation gets a neutral gray).
+    # Trial periods: fixation | stimulus | memory(delay) | response.
     stimulus_start = d.get("stimulus_start")
     stimulus_end = d.get("stimulus_end")
     response_start = d.get("response_start")
@@ -1836,35 +1841,71 @@ def plot_onetask_example_trial():
             (response_start, None, _PHASE_COLORS["go1"]),
         ]
 
-    T = inp.shape[0]
-    fig, axex = plt.subplots(2, 1, figsize=(5, 5), sharex=True)
-    for ax in axex:
+    def _shade(ax):
         for start, end, color in period_spans:
             ax.axvspan(start, end if end is not None else T - 1,
                        color=color, alpha=0.35, lw=0, zorder=0)
-    for k, (ch, lab) in enumerate(input_specs):
-        axex[0].plot(inp[:, ch], color=c_vals[k % len(c_vals)], label=lab, zorder=2)
-    axex[0].set_ylabel("Input", fontsize=12)
-    axex[0].set_title(f"Example trial (stimulus = {int(d['stimulus'])})", fontsize=11)
 
-    for out_idx in range(min(net_out.shape[-1], len(out_labels))):
-        # Target output as a faded shadow (no legend entry), network output on top.
-        axex[1].plot(target[:, out_idx], color=c_vals_l[out_idx % len(c_vals_l)],
-                     linewidth=4, alpha=0.6, zorder=2)
-        axex[1].plot(net_out[:, out_idx], color=c_vals[out_idx % len(c_vals)],
-                     label=out_labels[out_idx], zorder=3)
-    axex[1].set_ylabel("Output", fontsize=12)
-    axex[1].set_xlabel("Time step", fontsize=12)
-
-    for ax in axex:
+    def _style(ax, ylabel, last_row):
         ax.set_xlim(0, T - 1)
-        ax.legend(fontsize=7, frameon=True, loc="best", ncol=2)
+        ax.set_ylim(-1.2, 1.2)
+        ax.set_yticks([-1, 1])          # only -1 and 1, as requested
+        ax.set_ylabel(ylabel, fontsize=9)
         ax.spines[["top", "right"]].set_visible(False)
-    fig.tight_layout()
-    out_path = OUT_DIR / "onetask_example_trial.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+        # x tick labels only on the bottom subplot. NB: with sharex=True, calling
+        # set_xticklabels([]) on a non-last axis blanks the shared tick text for
+        # the bottom row too, so toggle visibility via tick_params instead.
+        ax.tick_params(axis="x", labelbottom=last_row)
+        if last_row:
+            ax.set_xlabel("Time step", fontsize=10)
+
+    # ── Input figure: 4 stacked subplots ────────────────────────────────────
+    # (channel indices, per-channel colors+labels, panel ylabel)
+    n_in = inp.shape[1]
+    input_groups = [
+        ([0], [c_vals[0]], ["Fixation"], "Fixation"),
+        ([1, 2], [c_vals[1], c_vals[2]], ["Mod1 cos", "Mod1 sin"], "Modality 1"),
+        ([3, 4], [c_vals[3], c_vals[4]], ["Mod2 cos", "Mod2 sin"], "Modality 2"),
+        ([5], [c_vals[5]], ["Task cue"], "Task cue"),
+    ]
+    # keep only groups whose channels exist in this input
+    input_groups = [(chs, cols, labs, ylab) for chs, cols, labs, ylab in input_groups
+                    if all(ch < n_in for ch in chs)]
+
+    figin, axin = plt.subplots(len(input_groups), 1, figsize=(4, 1.0 * len(input_groups)),
+                               sharex=True, squeeze=False)
+    for row, (chs, cols, labs, ylab) in enumerate(input_groups):
+        ax = axin[row, 0]
+        _shade(ax)
+        for ch, col, lab in zip(chs, cols, labs):
+            ax.plot(inp[:, ch], color=col, label=lab, zorder=2)
+        _style(ax, ylab, last_row=(row == len(input_groups) - 1))
+        ax.legend(fontsize=6, frameon=True, loc="upper right", ncol=len(chs))
+    figin.tight_layout()
+    out_in = OUT_DIR / "onetask_example_trial_input.png"
+    figin.savefig(out_in, dpi=300, bbox_inches="tight")
+    plt.close(figin)
+    print(f"Saved: {out_in}")
+
+    # ── Output figure: one stacked subplot per output channel ────────────────
+    figout, axout = plt.subplots(net_out.shape[-1], 1,
+                                 figsize=(4, 1.0 * net_out.shape[-1]),
+                                 sharex=True, squeeze=False)
+    for out_idx in range(net_out.shape[-1]):
+        ax = axout[out_idx, 0]
+        _shade(ax)
+        lab = out_labels[out_idx] if out_idx < len(out_labels) else f"out {out_idx}"
+        ax.plot(target[:, out_idx], color=c_vals_l[out_idx % len(c_vals_l)],
+                linewidth=4, alpha=0.6, zorder=2, label="target")
+        ax.plot(net_out[:, out_idx], color=c_vals[out_idx % len(c_vals)],
+                zorder=3, label=lab)
+        _style(ax, lab, last_row=(out_idx == net_out.shape[-1] - 1))
+        ax.legend(fontsize=6, frameon=True, loc="upper right", ncol=2)
+    figout.tight_layout()
+    out_out = OUT_DIR / "onetask_example_trial_output.png"
+    figout.savefig(out_out, dpi=300, bbox_inches="tight")
+    plt.close(figout)
+    print(f"Saved: {out_out}")
 
 
 def plot_onetask_show():
@@ -1967,10 +2008,11 @@ def plot_onetask_modulation_heatmap():
     both = np.concatenate([np.abs(stim_change).ravel(), np.abs(resp_change).ravel()])
     vmax = float(np.percentile(both, 99))
 
-    fig, axes = plt.subplots(2, 1, figsize=(4, 4),
-                             gridspec_kw={"hspace": 0.08})
+    fig, axes = plt.subplots(1, 2, figsize=(7, 2.4),
+                             gridspec_kw={"wspace": 0.08})
     n_stim, n_hidden = stim_change.shape
-    for ax, mat in [(axes[0], stim_change), (axes[1], resp_change)]:
+    titles = ["Stimulus period", "Response period"]
+    for col, (ax, mat) in enumerate([(axes[0], stim_change), (axes[1], resp_change)]):
         im = ax.imshow(mat, cmap="coolwarm", vmin=-vmax, vmax=vmax,
                        aspect="auto", interpolation="nearest")
         # Keep short tick marks (no numeric labels) so the axes read cleanly.
@@ -1983,14 +2025,10 @@ def plot_onetask_modulation_heatmap():
             s.set_visible(True)
             s.set_linewidth(0.6)
             s.set_edgecolor("0.4")
-
-    # Shared centered x / y labels placed close to the panels.
-    axes[1].set_xlabel("Hidden", fontsize=9)               # bottom panel only
-    fig.text(0.04, 0.5, "Stimuli", va="center", rotation="vertical", fontsize=9)
-
-    # Shared single colorbar across both panels.
-    cbar = fig.colorbar(im, ax=axes, shrink=0.5, pad=0.03)
-    cbar.ax.tick_params(labelsize=7)
+        ax.set_xlabel("Hidden", fontsize=9)
+        ax.set_title(titles[col], fontsize=9)
+    # y-label on the left panel only
+    axes[0].set_ylabel("Stimuli", fontsize=9)
 
     out_path = OUT_DIR / "onetask_modulation_heatmap.png"
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
@@ -1998,40 +2036,67 @@ def plot_onetask_modulation_heatmap():
     print(f"Saved: {out_path}")
 
 
-def plot_onetask_m_pca():
+def plot_onetask_long_fixed_points():
     """
-    Figure: low-D PCA trajectory of the fixon-input modulation during the
-    stimulus period, colored by stimulus direction (one trace per trial), for
-    the trained single-task network. Only the PC1-PC2 plane is shown.
-    Reloaded from the pickle saved by one_task_analysis.py — the PCA basis was
-    fit on the fixon modulation itself (see one_task_analysis for rationale).
+    Figure: per-period trajectory + fixed point (last frame) of the single-task
+    network, in each period's own top-2 PCA. One grid: top row = hidden, bottom
+    row = e_modulation; columns = periods (Fixation/Stimulus/Delay/Response).
+    Color = stimulus. Reloaded from the pickle saved by one_task_analysis.py's
+    long_period_fixed_points.
     """
     _ensure_out_dir()
-    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"m_pca_{ONETASK_ANAME}.pkl"
+    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"long_fixed_points_{ONETASK_ANAME}.pkl"
     if not pkl_path.exists():
         print(f"  Skipped: {pkl_path} not found. Run one_task_analysis.py first.")
         return
 
     with open(pkl_path, "rb") as f:
         d = pickle.load(f)
+    present = d["present"]
+    period_title = d["period_title"]
+    data = d["data"]
+    reps = [r for r in ("hidden", "e_modulation") if r in data]
+    if not reps or not present:
+        print("  Skipped: no rep/period data in pickle.")
+        return
 
-    lowd = np.asarray(d["lowd"])                 # (batch, T, n_pc)
-    labels = np.asarray(d["labels"]).reshape(-1)
-    s0, s1 = int(d["stimulus_start"]), int(d["stimulus_end"])
+    n_row, n_col = len(reps), len(present)
+    fig, axs = plt.subplots(n_row, n_col, figsize=(3.2 * n_col, 3.2 * n_row), squeeze=False)
+    for r, rep in enumerate(reps):
+        for cidx, v in enumerate(present):
+            ax = axs[r][cidx]
+            ent = data[rep].get(v)
+            if ent is None:
+                ax.axis("off")
+                continue
+            proj = np.asarray(ent["proj"])      # (batch, win_T, 2)
+            stim = np.asarray(ent["stim"])
+            for i in range(proj.shape[0]):
+                col = c_vals[int(stim[i]) % len(c_vals)]
+                p = proj[i]
+                ax.plot(p[:, 0], p[:, 1], color=col, alpha=0.4, linewidth=0.8, zorder=2)
+                ax.scatter(p[-1, 0], p[-1, 1], color=col, marker="o", s=45,
+                           edgecolor="black", linewidth=0.5, alpha=0.85, zorder=3)
+            ax.spines[["top", "right"]].set_visible(False)
+            if r == 0:
+                ax.set_title(period_title.get(v, v), fontsize=12)
 
-    # Only the PC1-PC2 plane.
-    xpc, ypc = 0, 1
-    fig, ax = plt.subplots(1, 1, figsize=(3, 3))
-    for i in range(lowd.shape[0]):
-        color = c_vals[int(labels[i]) % len(c_vals)]
-        ax.plot(lowd[i, s0:s1, xpc], lowd[i, s0:s1, ypc],
-                marker="o", markersize=3, c=color, alpha=0.5)
-    ax.set_xlabel(f"PC {xpc+1}", fontsize=10)
-    ax.set_ylabel(f"PC {ypc+1}", fontsize=10)
-    ax.spines[["top", "right"]].set_visible(False)
+    # Shared x/y labels for the whole grid (all panels share the same axes).
+    fig.supxlabel("Delay PC1", fontsize=12)
+    fig.supylabel("Delay PC2", fontsize=12)
+
+    # stimulus-color legend on the top-left panel
+    uniq_stim = sorted(set(int(s) for rep in reps for v in present
+                           for s in np.asarray(data[rep][v]["stim"])))
+    stim_handles = [plt.Line2D([0], [0], marker="o", linestyle="None",
+                               markerfacecolor=c_vals[s % len(c_vals)],
+                               markeredgecolor="black", markersize=6, label=f"stim {s}")
+                    for s in uniq_stim]
+    axs[0][0].legend(handles=stim_handles, frameon=True, fontsize=6, ncol=2,
+                     title="stimulus", loc="best")
 
     fig.tight_layout()
-    out_path = OUT_DIR / "onetask_m_pca.png"
+    out_path = OUT_DIR / "onetask_long_fixed_points.png"
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out_path}")
@@ -2531,7 +2596,7 @@ FIGURES_BY_MODE = {
         "onetask_example_trial": plot_onetask_example_trial,
         "onetask_show": plot_onetask_show,
         "onetask_modulation_heatmap": plot_onetask_modulation_heatmap,
-        "onetask_m_pca": plot_onetask_m_pca,
+        "onetask_long_fixed_points": plot_onetask_long_fixed_points,
         "onetask_corr_during_learning": plot_onetask_corr_during_learning,
     },
     "multiple_tasks": {
