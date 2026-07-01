@@ -55,14 +55,14 @@ if torch.cuda.is_available():
 
 # ─── Experiment-wide configuration ───────────────────────────────────────────
 # Number of independent trials (different random seeds) to train.
-N_TRIALS = 1
+N_TRIALS = 5
 # Fixed list of seeds, or None to draw N_TRIALS random seeds.
 SEED_LIST = None
 
 RULESET = 'delaygofamily'      # go/anti pair, e.g. [delaygo, delayanti]
 CHOSEN_NETWORK = "dmpn"
 N_HIDDEN = 200
-ADDON_NAME = "reg1e4"   # +hidden{N_HIDDEN} appended automatically below
+ADDON_NAME = "reg1e2"   # +hidden{N_HIDDEN} appended automatically below
 train = True
 verbose = True
 
@@ -142,7 +142,7 @@ def current_basic_params(hyp_dict):
         'n_epochs_per_set': 1,
         'weight_reg': 'L2',
         'activity_reg': 'L2',
-        'reg_lambda': 1e-4,
+        'reg_lambda': 1e-2,
 
         'scheduler': {
             'type': 'ReduceLROnPlateau',

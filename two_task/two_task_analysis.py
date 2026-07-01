@@ -943,6 +943,19 @@ def main(aname):
         "result_attractor_all_wmwin": result_attractor_all_wmwin,
     }
 
+    # Save the FIRST subplot ("Hidden" panel) of attractor_*.png so paper_plot can
+    # replot it: per break-name group, cosine-similarity mean/std vs iteration.
+    attractor_hidden_first = {
+        "break_names": list(break_names),
+        "counter_lst": [float(c) for c in counter_lst],
+        # per group: mean and std over training stages
+        "mean": [[float(rs[i][0]) for rs in result_attractor_all_h]
+                 for i in range(len(result_attractor_all_h[0]))],
+        "std": [[float(rs[i][1]) for rs in result_attractor_all_h]
+                for i in range(len(result_attractor_all_h[0]))],
+        "ylabel": "Cosine Similarity", "xlabel": "Iteration", "title": "Hidden",
+    }
+
     # ═════════════════════════════════════════════════════════════════════════
     # Cell 32: full time-stamp extraction across variants
     # ═════════════════════════════════════════════════════════════════════════
@@ -1404,6 +1417,7 @@ def main(aname):
     mean_all_save = None
     result_attractor_end_all = {}
     stages_counter = []
+    stage_hidden_first = None   # first subplot of the Post-Training stage figure
     for stage_idx, stage_name, save_name in stages:
         figae, axsae = plt.subplots(1, cl, figsize=(4 * cl, 4))
         for idx, (compare_value, moddim, compare_name) in enumerate(compare_values):
@@ -1439,11 +1453,34 @@ def main(aname):
             if stage_idx == -1 and idx == 3:
                 mean_all_save = mean_all
 
+            # capture the FIRST subplot (idx==0, hidden) of the Post-Training figure
+            if stage_idx == -1 and idx == 0:
+                keys_ordered = list(result_attractor_end_all.keys())
+                stage_hidden_first = {
+                    "break_names": list(break_names),
+                    "keys": keys_ordered,        # x tick labels (fixation_half ... trial_end)
+                    "mean": [[float(rs[i][0]) for rs in result_attractor_end_all.values()]
+                             for i in range(len(result_attractor_end_all["trial_end"]))],
+                    "std": [[float(rs[i][1]) for rs in result_attractor_end_all.values()]
+                            for i in range(len(result_attractor_end_all["trial_end"]))],
+                    "ylabel": f"Cosine Sim of {compare_name}", "title": "Post Training",
+                }
+
         figae.suptitle(stage_name, fontsize=15)
         figae.tight_layout()
         figae.savefig(fp(f"attractor_stage{save_name}_{compare_value}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
         print("  Saved figure: " + str(fp(f"attractor_stage{save_name}_{compare_value}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
         plt.close(figae)
+
+    # Save the first-subplot data of both attractor figures for paper_plot reuse:
+    #  - attractor_over_learning: "Hidden" panel (cosine sim vs iteration)
+    #  - attractor_stage_posttraining: "hidden" panel (cosine sim vs trial epoch)
+    attractor_first_path = save_dir / f"attractor_first_{aname}.pkl"
+    with open(attractor_first_path, "wb") as f:
+        pickle.dump({"over_learning_hidden": attractor_hidden_first,
+                     "stage_posttraining_hidden": stage_hidden_first}, f,
+                    protocol=pickle.HIGHEST_PROTOCOL)
+    print("  Saved data: " + str(attractor_first_path))
 
     # Cell 56 + 57: relative change of W⊙M since stimulus end
     stage_names = np.array(list(result_attractor_end_all.keys()))
@@ -2090,16 +2127,10 @@ def main(aname):
         projected_data_ring = [[], [], []]
 
         for nindex, name in enumerate(names):
-            fighs, axshs = plt.subplots(1, 3, figsize=(5 * 3, 5 * 1))
             fighsadd, axshsadd = plt.subplots(1, 3, figsize=(5 * 3, 5 * 1))
             fig3dfix = go.Figure()
             combination = [[0, 1], [0, 2], [1, 2]]
             interpolation_label = [i for i in range(len(stacked_interpolation_[0]))]
-
-            def numbered_markers(n):
-                return [f'${i}$' for i in range(n)]
-
-            marker_new = numbered_markers(len(stacked_interpolation_))
             projected_data_fix_all = []
             pca_delay = None
 
@@ -2140,16 +2171,6 @@ def main(aname):
                 projected_data_ring[names.index(name)].append(ring_length(projected_data_fix))
                 projected_data_fix_all.append(projected_data_fix)
 
-                for i in range(batch_num):
-                    data_batch = projected_data_fix[i, :]
-                    for index, comb in enumerate(combination):
-                        marker_value = marker_new[int_index] if int_index == 0 or int_index == len(stacked_interpolation_) - 1 else "o"
-                        alpha_value = 0.1 if marker_value == "o" else 1.0
-                        axshs[index].scatter(data_batch[comb[0]], data_batch[comb[1]], c=c_vals[interpolation_label[i]],
-                                             marker=marker_value, alpha=alpha_value)
-                        axshs[index].set_xlabel(f"PCA {comb[0]+1}; Anti {sname}", fontsize=15)
-                        axshs[index].set_ylabel(f"PCA {comb[1]+1}; Anti {sname}", fontsize=15)
-
             for index, comb in enumerate(combination):
                 select1 = [pa[:, comb[0]] for pa in projected_data_fix_all]
                 min_select1 = min(arr.min() for arr in select1)
@@ -2178,11 +2199,6 @@ def main(aname):
                             marker=dict(size=5, color=c_vals[interpolation_label[i]], symbol="circle"),
                             opacity=0.5, name=f"Stimulus {i}", showlegend=True))
 
-            fighs.suptitle(f"name: {name}; sname: {sname}", fontsize=20)
-            fighs.tight_layout()
-            fighs.savefig(fp(f"m_pca_attractor_{name}_seed{seed}_{hyp_dict['addon_name']}_{int_index}_{sname}.png"), dpi=300)
-            print("  Saved figure: " + str(fp(f"m_pca_attractor_{name}_seed{seed}_{hyp_dict['addon_name']}_{int_index}_{sname}.png")))
-            plt.close(fighs)
             fighsadd.suptitle(f"name: {name}; sname: {sname}", fontsize=20)
             fighsadd.tight_layout()
             fighsadd.savefig(fp(f"m_pca_attractor_cycle_{name}_seed{seed}_{hyp_dict['addon_name']}_{int_index}_{sname}.png"), dpi=300)
@@ -2432,55 +2448,6 @@ def main(aname):
     traj_diff_alpha("modulation")
     traj_diff_alpha("w_modulation")
 
-    # ═════════════════════════════════════════════════════════════════════════
-    # Cell 106: stimulus-period PCA trajectories (anti / middle / go)
-    # ═════════════════════════════════════════════════════════════════════════
-    names = ["hidden", "modulation"]
-    for siindex, stacked_interpolation in enumerate(stacked_interpolation_lst):
-        N = len(stacked_interpolation)
-        sname = stacked_interpolation_name_lst[siindex]
-        for name in names:
-            anti_go = [stacked_interpolation[0], stacked_interpolation[int((N + 1) / 2)], stacked_interpolation[-1]]
-            _, _, db_intp_anti = net.iterate_sequence_batch(anti_go[0], run_mode='track_states', save_to_cpu=True, detach_saved=True)
-            _, _, db_inp_middle = net.iterate_sequence_batch(anti_go[1], run_mode='track_states', save_to_cpu=True, detach_saved=True)
-            _, _, db_intp_go = net.iterate_sequence_batch(anti_go[2], run_mode='track_states', save_to_cpu=True, detach_saved=True)
-            Ms_anti, Ms_orig_anti, hs_anti, bs_anti = modulation_extraction(int_input_all[siindex], db_intp_anti, layer_index)
-            Ms_middle, Ms_orig_middle, hs_middle, bs_middle = modulation_extraction(int_input_all[siindex], db_inp_middle, layer_index)
-            Ms_go, Ms_orig_go, hs_go, bs_go = modulation_extraction(int_input_all[siindex], db_intp_go, layer_index)
-            batch_num = Ms_orig_go.shape[0]
-            if name == "hidden":
-                data_anti, data_middle, data_go = hs_anti, hs_middle, hs_go
-            elif name == "modulation":
-                data_anti, data_middle, data_go = Ms_anti, Ms_middle, Ms_go
-            n_activity = data_anti.shape[-1]
-            as_flat_stim = data_anti[:, time_stamps_lst[siindex]["stimulus_start"]:time_stamps_lst[siindex]["stimulus_end"], :].reshape((-1, n_activity))
-            as_flat_anti = data_anti.reshape((-1, n_activity))
-            as_flat_middle = data_middle.reshape((-1, n_activity))
-            as_flat_go = data_go.reshape((-1, n_activity))
-            pca_stim = PCA(n_components=PCA_downsample, random_state=42)
-            pca_stim.fit(as_flat_stim)
-            projected_data_anti = pca_stim.transform(as_flat_anti).reshape((data_anti.shape[0], data_anti.shape[1], -1))
-            projected_data_middle = pca_stim.transform(as_flat_middle).reshape((data_middle.shape[0], data_middle.shape[1], -1))
-            projected_data_go = pca_stim.transform(as_flat_go).reshape((data_go.shape[0], data_go.shape[1], -1))
-            ss = time_stamps_lst[siindex]["stimulus_start"]
-            se = time_stamps_lst[siindex]["stimulus_end"]
-            projected_data_stim_anti = projected_data_anti[:, ss:se, :]
-            projected_data_stim_middle = projected_data_middle[:, ss:se, :]
-            projected_data_stim_go = projected_data_go[:, ss:se, :]
-            fig106, axs106 = plt.subplots(1, 3, figsize=(4 * 3, 4))
-            combination = [[0, 1], [0, 2], [1, 2]]
-            for comb_index, comb in enumerate(combination):
-                for i in range(projected_data_stim_anti.shape[0]):
-                    axs106[comb_index].plot(projected_data_stim_anti[i, :, comb[0]], projected_data_stim_anti[i, :, comb[1]], color=c_vals[i], linestyle=linestyles[0])
-                    axs106[comb_index].plot(projected_data_stim_middle[i, :, comb[0]], projected_data_stim_middle[i, :, comb[1]], color=c_vals[i], linestyle=linestyles[1])
-                    axs106[comb_index].plot(projected_data_stim_go[i, :, comb[0]], projected_data_stim_go[i, :, comb[1]], color=c_vals[i], linestyle=linestyles[2])
-            for ax in axs106:
-                ax.set_title(f"name: {name}; sname: {sname}", fontsize=12)
-            fig106.tight_layout()
-            fig106.savefig(fp(f"m_pca_stimulus_{name}_{sname}_seed{seed}_{hyp_dict['addon_name']}_{int_index}.png"), dpi=300)
-            print("  Saved figure: " + str(fp(f"m_pca_stimulus_{name}_{sname}_seed{seed}_{hyp_dict['addon_name']}_{int_index}.png")))
-            plt.close(fig106)
-
     print(f"All figures saved to {save_dir}/")
 
 
@@ -2506,17 +2473,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--aname", type=str, default=None,
                         help="Experiment identifier. Omit to analyze ALL runs in ./twotasks/.")
-    parser.add_argument("--filter", type=str, default=None,
-                        help="Only analyze runs whose identifier contains this substring "
-                             "(e.g. 'reg1e4'). Ignored when --aname is given.")
     args = parser.parse_args()
 
-    if args.aname:
-        anames = [args.aname]
-    else:
-        anames = _discover_anames()
-        if args.filter:
-            anames = [a for a in anames if args.filter in a]
+    anames = [args.aname] if args.aname else _discover_anames()
     print(f"Analyzing {len(anames)} run(s).")
     for a in anames:
         print(f"\n── Analyzing: {a} ──")

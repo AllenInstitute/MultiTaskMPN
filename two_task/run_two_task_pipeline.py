@@ -17,7 +17,6 @@ Usage:
     python run_two_task_pipeline.py                  # train, then analyze just-trained runs
     python run_two_task_pipeline.py --all            # ... analyze ALL runs on disk
     python run_two_task_pipeline.py --aname <name>   # analyze only this run
-    python run_two_task_pipeline.py --filter reg1e4  # analyze runs matching substring
     python run_two_task_pipeline.py --skip-train     # analysis only (uses manifest)
     python run_two_task_pipeline.py --skip-analysis  # training only
 """
@@ -58,9 +57,6 @@ def main():
     parser.add_argument("--aname", type=str, default=None,
                         help="Analyze only this run identifier (overrides the "
                              "manifest).")
-    parser.add_argument("--filter", type=str, default=None,
-                        help="Analyze only runs whose identifier contains this "
-                             "substring (overrides the manifest).")
     parser.add_argument("--all", action="store_true",
                         help="Analyze every run on disk instead of only the "
                              "runs just trained (the manifest).")
@@ -84,9 +80,6 @@ def main():
         if args.aname:
             # A single explicit run.
             _run(ANALYSIS_SCRIPT, ["--aname", args.aname])
-        elif args.filter:
-            # Substring filter across all runs on disk.
-            _run(ANALYSIS_SCRIPT, ["--filter", args.filter])
         elif args.all:
             # Every run on disk (two_task_analysis.py default with no --aname).
             _run(ANALYSIS_SCRIPT, [])

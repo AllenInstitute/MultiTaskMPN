@@ -1034,7 +1034,7 @@ def main(aname):
                                  label=name)
                       for name, _, _, mk in phases]
 
-    def _full_traj_pca(data_bt_feat, tag, ylabel):
+    def _full_traj_pca(data_bt_feat, tag, ylabel, show_legend=True):
         """data_bt_feat: (batch, T, feat). PCA basis fit on the whole trial
         (every timestep of every trial, like two_task m_pca_*_normal), plotted in
         two-task style: line + per-phase markers + transition markers."""
@@ -1070,7 +1070,8 @@ def main(aname):
             ax.set_ylabel(f"PCA {bb+1}", fontsize=12)
             ax.set_title(f"{ylabel}", fontsize=15)
             ax.tick_params(axis="both", labelsize=12)
-            ax.legend(handles=legend_handles, loc="upper right", frameon=True, fontsize=10)
+            if show_legend:
+                ax.legend(handles=legend_handles, loc="upper right", frameon=True, fontsize=10)
         figd.suptitle(f"{aname}  |  full trajectory in whole-trial PCA", fontsize=12)
         figd.tight_layout()
         out = save_dir / f"{tag}_pca_fulltrial_{aname}.png"
@@ -1093,7 +1094,7 @@ def main(aname):
             }, _f)
         print(f"  Saved {tag}_pca_fulltrial data: {save_dir / f'{tag}_pca_fulltrial_{aname}.pkl'}")
 
-    _full_traj_pca(fixon_mod, "m", "fixon modulation")
+    _full_traj_pca(fixon_mod, "m", "fixon modulation", show_legend=False)
     _full_traj_pca(hs_now, "h", "hidden activity")
 
     # ── Long-period fixed-point geometry (uses the LIVE trained network) ─────

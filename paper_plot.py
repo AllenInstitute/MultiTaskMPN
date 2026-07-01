@@ -56,8 +56,12 @@ DMC_ANAME = "everything_seed299_L21e3+hidden300+batch128+angle"
 # Two-task run used for the cross-task / cross-period PCA figure (d_combine).
 # The matching data file is written by two_task_analysis.py into
 # twotasks/{TWOTASK_ANAME}/d_combine_{TWOTASK_ANAME}.pkl.
-TWOTASK_ANAME = "delaygofamily_seed102_reg1e4+hidden200"
+TWOTASK_ANAME = "delaygofamily_seed21_reg1e3+hidden200"
 TWOTASKS_DIR = Path("twotasks")
+
+# Two-task run used for the attractor first-subplot figure (independent of
+# TWOTASK_ANAME so it can come from a different seed/regularization).
+TWOTASK_ATTRACTOR_ANAME = "delaygofamily_seed21_reg1e3+hidden200"
 
 
 def _twotask_seed_tag():
@@ -2291,16 +2295,11 @@ def plot_two_task_m_pca():
                            show_legend=(name == "hidden"))
 
 
-def _draw_attractor_cycle_pc12(ax, entry, show_ylabel=True, scale="linear"):
+def _draw_attractor_cycle_pc12(ax, entry, show_ylabel=True):
     """Draw the PCA 1-2 fixed-point "cycle" for one (period, series) entry onto
     ax. Per stimulus, connects the fixed points across alpha steps; overlays
     dashed rings at the alpha indices in ring_indices. The x-label is shared at
-    the figure level (set by the caller), so it is not drawn here.
-
-    scale: "linear" or "symlog". The fixed-point coordinates contain negative
-    values, so a plain log scale is invalid; "symlog" is log-scaled away from
-    zero in both directions and linear within a small band [-linthresh, +linthresh]
-    around zero, preserving sign and zero-crossings without transforming data."""
+    the figure level (set by the caller), so it is not drawn here."""
     pdf_all = np.asarray(entry["projected_data_fix_all"])  # (n_alpha, batch, 3)
     interpolation_label = entry["interpolation_label"]
     ring_indices = entry["ring_indices"]
@@ -2329,15 +2328,6 @@ def _draw_attractor_cycle_pc12(ax, entry, show_ylabel=True, scale="linear"):
                         else np.array([1.0]))
         ax.scatter(fixed_points[:, comb[0]], fixed_points[:, comb[1]],
                    c=color, alpha=point_alphas, marker="o", zorder=2)
-
-    if scale == "symlog":
-        # Linear band ~ 1% of the data's max |coord| (in the PC1-2 plane), so the
-        # log regime kicks in beyond the noise floor. Guard against all-zero.
-        xy_all = pdf_all[:, :, [comb[0], comb[1]]]
-        maxabs = float(np.nanmax(np.abs(xy_all))) if xy_all.size else 0.0
-        linthresh = max(maxabs * 0.01, 1e-6)
-        ax.set_xscale("symlog", linthresh=linthresh)
-        ax.set_yscale("symlog", linthresh=linthresh)
 
     if show_ylabel:
         ax.set_ylabel("PCA 2", fontsize=20)
@@ -2376,19 +2366,48 @@ def plot_two_task_attractor_cycle():
     names = ["hidden", "modulation", "w_modulation"]
     periods = ["longfixation", "longstimulus", "longdelay", "longresponse"]
 
-    def _render(name, scale, suffix):
+    def _render(name):
         fig, axs = plt.subplots(1, len(periods), figsize=(5 * len(periods), 5))
         for col, (ax, sname) in enumerate(zip(axs, periods)):
             key = f"{sname}|{name}"
             if key not in ac:
                 ax.axis("off")
                 continue
-            _draw_attractor_cycle_pc12(ax, ac[key], show_ylabel=(col == 0), scale=scale)
+            _draw_attractor_cycle_pc12(ax, ac[key], show_ylabel=(col == 0))
             ax.set_title(_PERIOD_TITLE.get(sname, sname), fontsize=22)
         # Single shared x-label for the whole row.
         fig.supxlabel("PCA 1", fontsize=20)
         fig.tight_layout()
-        out_path = OUT_DIR / f"twotask_attractor_cycle_{name}{suffix}_{_twotask_seed_tag()}.png"
+        out_path = OUT_DIR / f"twotask_attractor_cycle_{name}_{_twotask_seed_tag()}.png"
+        fig.savefig(out_path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Saved: {out_path}")
+
+    def _render_combined(row_names):
+        """Stack the given series as rows in one figure (one period per column).
+        Period titles are drawn once on the top row (shared across rows); a
+        single "PCA 1" x-label spans the whole figure."""
+        present = [n for n in row_names
+                   if any(f"{sname}|{n}" in ac for sname in periods)]
+        if len(present) < 2:
+            return
+        nrows, ncols = len(present), len(periods)
+        fig, axs = plt.subplots(nrows, ncols, figsize=(5 * ncols, 5 * nrows))
+        for r, name in enumerate(present):
+            for col, sname in enumerate(periods):
+                ax = axs[r, col]
+                key = f"{sname}|{name}"
+                if key not in ac:
+                    ax.axis("off")
+                    continue
+                _draw_attractor_cycle_pc12(ax, ac[key], show_ylabel=False)
+                if r == 0:  # shared period titles on the top row only
+                    ax.set_title(_PERIOD_TITLE.get(sname, sname), fontsize=22)
+        fig.supxlabel("PCA 1", fontsize=20)
+        fig.supylabel("PCA 2", fontsize=20)
+        fig.tight_layout()
+        tag = "_".join(present)
+        out_path = OUT_DIR / f"twotask_attractor_cycle_{tag}_{_twotask_seed_tag()}.png"
         fig.savefig(out_path, dpi=300, bbox_inches="tight")
         plt.close(fig)
         print(f"Saved: {out_path}")
@@ -2397,11 +2416,14 @@ def plot_two_task_attractor_cycle():
     for name in names:
         if not any(f"{sname}|{name}" in ac for sname in periods):
             continue
-        _render(name, scale="linear", suffix="")          # linear (original)
-        _render(name, scale="symlog", suffix="_symlog")    # symlog (handles negatives)
+        _render(name)
         plotted += 1
     if plotted == 0:
         print(f"  Skipped: no expected entries found in {matches[0].name}.")
+        return
+
+    # Combined figure: hidden (top row) + w_modulation (bottom row).
+    _render_combined(["hidden", "w_modulation"])
 
 
 def plot_two_task_cancel():
@@ -2488,6 +2510,77 @@ def plot_two_task_cancel():
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out_path}  (stimuli {stim_keys})")
+
+
+def plot_two_task_attractor_first():
+    """
+    Figures: the first subplot ("Hidden" panel) of each of the two attractor
+    figures, saved separately (style matches twotask_m_pca_hidden):
+      twotask_attractor_first_overlearning_{seed} — cosine sim vs iteration
+      twotask_attractor_first_posttraining_{seed}  — cosine sim vs trial epoch
+    Reloaded from the attractor_first pickle written by two_task_analysis.py.
+    """
+    _ensure_out_dir()
+    aname = TWOTASK_ATTRACTOR_ANAME
+    pkl_path = TWOTASKS_DIR / aname / f"attractor_first_{aname}.pkl"
+    if not pkl_path.exists():
+        print(f"  Skipped: {pkl_path} not found. Run two_task_analysis.py first.")
+        return
+
+    with open(pkl_path, "rb") as f:
+        d = pickle.load(f)
+    ol = d.get("over_learning_hidden")
+    st = d.get("stage_posttraining_hidden")
+    if ol is None or st is None:
+        print("  Skipped: attractor_first pickle missing expected entries.")
+        return
+
+    import re as _re
+    m = _re.search(r"seed\d+", aname)
+    seed_tag = m.group(0) if m else aname
+
+    # ── Figure 1: over-learning (cosine similarity vs iteration) ──────────────
+    fig, ax = plt.subplots(1, 1, figsize=(5.5, 5 * 0.75))  # height reduced by 1/4
+    x = np.asarray(ol["counter_lst"])
+    for i, name in enumerate(ol["break_names"]):
+        mean = np.asarray(ol["mean"][i])
+        std = np.asarray(ol["std"][i])
+        ax.plot(x, mean, "-o", color=c_vals[i], label=name)
+        ax.fill_between(x, mean - std, mean + std, alpha=0.3, color=c_vals[i])
+    ax.set_xscale("log")
+    ax.set_xlabel(ol.get("xlabel", "Iteration"), fontsize=20)
+    ax.set_ylabel(ol.get("ylabel", "Cosine Similarity"), fontsize=20)
+    ax.set_ylim([0, 1.05])
+    ax.tick_params(axis="both", labelsize=15)
+    ax.legend(frameon=True, fontsize=13)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+    out_path = OUT_DIR / f"twotask_attractor_first_overlearning_{seed_tag}.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+    # ── Figure 2: post-training stage (cosine similarity vs trial epoch) ──────
+    fig, ax = plt.subplots(1, 1, figsize=(5.5, 5 * 0.75))  # height reduced by 1/4
+    keys = st["keys"]
+    xs = np.arange(len(keys))
+    for i, name in enumerate(st["break_names"]):
+        mean = np.asarray(st["mean"][i])
+        std = np.asarray(st["std"][i])
+        ax.plot(xs, mean, "-o", color=c_vals[i], label=name)
+        ax.fill_between(xs, mean - std, mean + std, alpha=0.3, color=c_vals[i])
+    ax.set_xticks(xs)
+    ax.set_xticklabels(keys, rotation=30, ha="right", fontsize=15)
+    ax.tick_params(axis="y", labelsize=15)
+    ax.set_ylabel(st.get("ylabel", "Cosine Similarity"), fontsize=20)
+    ax.set_ylim([-1.1, 1.1])
+    ax.set_yticks([-1.0, -0.5, 0.0, 0.5, 1.0])  # every 0.5
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+    out_path = OUT_DIR / f"twotask_attractor_first_posttraining_{seed_tag}.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
 
 
 def plot_dmc_memory_attractor():
@@ -2629,6 +2722,7 @@ FIGURES_BY_MODE = {
         "twotask_m_pca": plot_two_task_m_pca,
         "twotask_attractor_cycle": plot_two_task_attractor_cycle,
         "twotask_cancel": plot_two_task_cancel,
+        "twotask_attractor_first": plot_two_task_attractor_first,
     },
 }
 

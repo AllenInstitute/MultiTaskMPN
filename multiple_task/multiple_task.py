@@ -75,7 +75,7 @@ linestyles = ["-", "--", "-."]
 # Number of independent trials (different random seeds) to train, under the SAME
 # parameter setting. Mirrors two_task.py so the multi-task net can be trained
 # many times for robustness across seeds.
-N_TRIALS = 5
+N_TRIALS = 3
 # Fixed list of seeds, or None to draw N_TRIALS random seeds (fresh entropy each
 # run, so reruns explore different seeds).
 SEED_LIST = None
