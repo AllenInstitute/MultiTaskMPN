@@ -544,7 +544,11 @@ def plot_l2_vs_accuracy():
     ax.set_xscale("log")
     ax.set_xlabel("L2 regularization strength")
     ax.set_ylabel("Test accuracy (%)")
-    ax.set_ylim(0, 105)
+    # Adaptive y-range: pad the observed accuracy span by 5% of its extent
+    # (min 2 pts), clamped to the valid [0, 100] accuracy interval.
+    lo, hi = float(acc_vals.min()), float(acc_vals.max())
+    pad = max((hi - lo) * 0.05, 2.0)
+    ax.set_ylim(max(0.0, lo - pad), min(100.0, hi + pad))
     ax.spines[["top", "right"]].set_visible(False)
     ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
 
@@ -1195,7 +1199,11 @@ def plot_input_weight_correlation():
         cfg = _json.load(f)
     rules = cfg["task_params"]["rules"]
 
-    all_input = ["Fix On", "Fix Off", "Stim 1 Cos", "Stim 1 Sin", "Stim 2 Cos", "Stim 2 Sin"] + rules
+    # Transform raw rule names to their display/session names; stimulus-channel
+    # labels are already display-ready.
+    rule_labels = [_TASK_DISPLAY.get(r, r) for r in rules]
+    all_input = ["Fix On", "Fix Off", "Stim 1 Cos", "Stim 1 Sin",
+                 "Stim 2 Cos", "Stim 2 Sin"] + rule_labels
     input_corr = np.corrcoef(input_W.T)
     mask = np.triu(np.ones_like(input_corr, dtype=bool), k=0)
 
@@ -1356,7 +1364,7 @@ def plot_transfer_speed():
         "fdanti_delaygo": "Relevant motif",
     }
 
-    fig, ax = plt.subplots(1, 1, figsize=(3, 2.2))
+    fig, ax = plt.subplots(1, 1, figsize=(3, 2.2 * 2 / 3))  # height squeezed by 1/3
 
     for rs, rs_data in by_ruleset_mats.items():
         color = ruleset_colors.get(rs, "#718096")
@@ -1372,7 +1380,7 @@ def plot_transfer_speed():
                          color=color, alpha=0.15)
 
     ax.set_xlabel("Iterations to reach threshold")
-    ax.set_ylabel("Accuracy threshold (%)")
+    ax.set_ylabel("Accuracy\nthreshold (%)", ha="center")
     ax.set_xscale("log")
     ax.set_yticks([50, 75, 100])
     ax.legend(fontsize=6, frameon=True)
@@ -1380,6 +1388,98 @@ def plot_transfer_speed():
 
     fig.tight_layout()
     out_path = OUT_DIR / "transfer_speed.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def plot_learning_trajectory():
+    """
+    Figure: post-training learning trajectory — accuracy vs training iteration,
+    comparing fdgo_delaygo vs fdanti_delaygo rulesets (L21e3). Same rulesets /
+    colors as plot_transfer_speed, but plotting the full accuracy curve (mean ±
+    std across seeds) rather than iterations-to-threshold.
+
+    Reads per-seed result pickles (learning.acc_iter_post / learning.acc_post).
+    Seeds are resampled onto a shared iteration grid before averaging, so it is
+    robust to slightly different logging cadences across seeds.
+    """
+    import re as _re
+
+    _ensure_out_dir()
+    if not PRETRAINING_ANALYSIS_DIR.exists():
+        print("  Skipped: pretraining_analysis/ not found.")
+        return
+
+    addon_name = "+hidden200+L21e3+batch128+angle"
+    pkls = sorted(PRETRAINING_ANALYSIS_DIR.glob(f"*_dmpn_seed*_{addon_name}_result.pkl"))
+    if not pkls:
+        print("  Skipped: no pretraining result pickles found.")
+        return
+
+    # Collect each ruleset's per-seed (iterations, accuracy) trajectories.
+    by_ruleset_traj = {}  # rs -> list of (iters, acc)
+    for p in pkls:
+        m = _re.match(
+            r'(.+)_dmpn_seed\d+_\+hidden200\+L21e3\+batch128\+angle_result\.pkl', p.name
+        )
+        if not m:
+            continue
+        rs = m.group(1)
+        with open(p, "rb") as f:
+            data = pickle.load(f)
+        learn = data.get("learning", {})
+        if "acc_iter_post" not in learn or "acc_post" not in learn:
+            continue
+        iters = np.asarray(learn["acc_iter_post"], dtype=float)
+        acc = np.asarray(learn["acc_post"], dtype=float)
+        by_ruleset_traj.setdefault(rs, []).append((iters, acc))
+
+    if not by_ruleset_traj:
+        print("  Skipped: no learning trajectories found.")
+        return
+
+    ruleset_colors = {
+        "fdgo_delaygo": "#3182ce",
+        "fdanti_delaygo": "#e53e3e",
+    }
+    ruleset_labels = {
+        "fdgo_delaygo": "Irrelevant motif",
+        "fdanti_delaygo": "Relevant motif",
+    }
+
+    fig, ax = plt.subplots(1, 1, figsize=(3, 2.2 * 2 / 3))  # match transfer_speed
+
+    for rs in sorted(by_ruleset_traj.keys()):
+        trajs = by_ruleset_traj[rs]
+        color = ruleset_colors.get(rs, "#718096")
+        label = ruleset_labels.get(rs, rs)
+
+        # Shared iteration grid = intersection of every seed's [min, max] range,
+        # log-spaced so the (log-x) curve is evenly sampled; interpolate each
+        # seed onto it, then average.
+        lo = max(t[0].min() for t in trajs)
+        hi = min(t[0].max() for t in trajs)
+        grid = np.unique(np.round(np.geomspace(max(lo, 1.0), hi, 400)).astype(int))
+        grid = grid[grid >= 1].astype(float)
+        resampled = np.array([np.interp(grid, it, ac) for (it, ac) in trajs])
+
+        mean_vals = resampled.mean(axis=0) * 100
+        std_vals = resampled.std(axis=0) * 100
+        ax.plot(grid, mean_vals, "-", color=color, linewidth=2.0, label=label)
+        ax.fill_between(grid, mean_vals - std_vals, mean_vals + std_vals,
+                        color=color, alpha=0.15)
+
+    ax.set_xlabel("Iteration")
+    ax.set_ylabel("Accuracy (%)")
+    ax.set_xscale("log")
+    ax.set_yticks([0, 50, 100])
+    ax.set_ylim([0, 105])
+    ax.legend(fontsize=6, frameon=True)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    fig.tight_layout()
+    out_path = OUT_DIR / "learning_trajectory.png"
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out_path}")
@@ -1476,18 +1576,18 @@ def plot_rule_vectors():
         frozenset(("fdgo", "delaygo")),
     }
 
-    fig, ax = plt.subplots(1, 1, figsize=(3.6, 2.4))
+    fig, ax = plt.subplots(1, 1, figsize=(3.6, 2.4 * 2 / 3))  # height squeezed by 1/3
 
-    # Bars are packed within a ruleset group; `group_gap` separates groups.
+    # All bars are evenly spaced (no extra gap between column groups).
     bar_step = 1.0
     bar_width = 0.8
-    group_gap = 0.6
+    group_gap = 0.0
 
-    all_x, all_labels = [], []
-    next_x = 0.0  # running left edge for the next group
+    # Build the per-ruleset bar list first, then interleave columns across
+    # rulesets so the colors alternate (red1, blue1, red2, blue2, ...) instead
+    # of grouping all of one ruleset's bars together.
+    per_rs_bars = {}  # rs -> list of (label, mean, std, vals)
     for rs in rs_list:
-        color = ruleset_colors.get(rs, "#718096")
-        label = ruleset_labels.get(rs, rs)
         s1_tasks = by_ruleset[rs].get("stage1_tasks", [rs])
         final_task = by_ruleset[rs].get("final_task", "novel")
 
@@ -1506,28 +1606,37 @@ def plot_rule_vectors():
             (k, lbl, pair) for (k, lbl, pair) in bar_specs
             if frozenset(pair) not in excluded_pairs
         ]
-        if not bar_specs:
-            continue
+        per_rs_bars[rs] = [
+            (lbl, float(np.mean(by_ruleset[rs][k])),
+             float(np.std(by_ruleset[rs][k])), np.array(by_ruleset[rs][k]))
+            for (k, lbl, _) in bar_specs
+        ]
 
-        keys = [k for (k, _, _) in bar_specs]
-        cos_labels = [lbl for (_, lbl, _) in bar_specs]
+    # Interleave: for each column index, emit one bar per ruleset (red then
+    # blue), so bars alternate color; a group_gap separates successive columns.
+    all_x, all_labels = [], []
+    labeled = set()  # ensure each ruleset appears once in the legend
+    n_cols = max((len(bars) for bars in per_rs_bars.values()), default=0)
+    x = 0.0
+    for col in range(n_cols):
+        for rs in rs_list:
+            bars = per_rs_bars[rs]
+            if col >= len(bars):
+                continue
+            lbl, mean, std, vals = bars[col]
+            color = ruleset_colors.get(rs, "#718096")
+            legend_label = None if rs in labeled else ruleset_labels.get(rs, rs)
+            labeled.add(rs)
 
-        xs_group = next_x + bar_step * np.arange(len(keys))
-        next_x = xs_group[-1] + bar_step + group_gap
-        means = np.array([np.mean(by_ruleset[rs][k]) for k in keys])
-        stds = np.array([np.std(by_ruleset[rs][k]) for k in keys])
+            ax.bar(x, mean, bar_width, yerr=std, capsize=2,
+                   color=color, alpha=0.8, edgecolor="k", linewidth=0.5,
+                   label=legend_label)
+            ax.plot(np.full_like(vals, x), vals, "k.", markersize=3, alpha=0.6)
 
-        ax.bar(xs_group, means, bar_width, yerr=stds, capsize=2,
-               color=color, alpha=0.8, edgecolor="k", linewidth=0.5,
-               label=label)
-
-        for k_idx, k in enumerate(keys):
-            vals = np.array(by_ruleset[rs][k])
-            ax.plot(np.full_like(vals, xs_group[k_idx]), vals,
-                    "k.", markersize=3, alpha=0.6)
-
-        all_x.extend(xs_group.tolist())
-        all_labels.extend(cos_labels)
+            all_x.append(x)
+            all_labels.append(lbl)
+            x += bar_step
+        x += group_gap  # gap between successive interleaved column groups
 
     ax.set_xticks(all_x)
     ax.set_xticklabels(all_labels, rotation=0, ha="center", fontsize=6)
@@ -1712,7 +1821,7 @@ def plot_aggregate_cve():
     dtype_titles = {"hidden": "Hidden", "modulation_weighted": "Effective Modulation"}
     period_titles = {"stimulus": "Stimulus Period", "response": "Response Period"}
 
-    fig, axes = plt.subplots(2, 2, figsize=(6, 4.5))
+    fig, axes = plt.subplots(2, 2, figsize=(6, 4.5 * 2 / 3))  # height squeezed by 1/3
 
     for idx, (dtype, period) in enumerate(panel_layout):
         row, col = idx // 2, idx % 2
@@ -1769,22 +1878,22 @@ def plot_aggregate_cve_stimulus():
     # One row, two columns: hidden | effective modulation, both stimulus period.
     col_dtypes = ["hidden", "modulation_weighted"]
 
-    fig, axes = plt.subplots(1, 2, figsize=(6, 2.6))
+    fig, axes = plt.subplots(1, 2, figsize=(6, 2.6 * 2 / 3))  # height squeezed by 1/3
 
     for col, dtype in enumerate(col_dtypes):
         ax = axes[col]
         _plot_aggregate_cve_panel(
             ax, by_ruleset, dtype, "stimulus", ruleset_colors, ruleset_labels,
             x_lim=x_lim_map[dtype], x_ticks=x_tick_map[dtype],
-            show_legend=(col == 0))
+            show_legend=False)
         ax.set_title(f"{dtype_titles[dtype]} — Stimulus Period",
                      fontsize=8, pad=4)
         if col > 0:
             ax.set_yticklabels([])
 
     fig.text(0.5, 0.005, "# PCs", ha="center", fontsize=9)
-    fig.text(0.005, 0.5, "MemoryAnti Variance Explained", va="center",
-             rotation="vertical", fontsize=9)
+    fig.text(0.005, 0.5, "MemoryAnti\nVariance Explained", va="center",
+             ha="center", rotation="vertical", fontsize=9)
     fig.tight_layout(rect=[0.03, 0.04, 1, 1])
     out_path = OUT_DIR / "aggregate_cve_stimulus.png"
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
@@ -2713,6 +2822,7 @@ FIGURES_BY_MODE = {
     },
     "pretraining": {
         "transfer_speed": plot_transfer_speed,
+        "learning_trajectory": plot_learning_trajectory,
         "rule_vectors": plot_rule_vectors,
         "aggregate_cve": plot_aggregate_cve,
         "aggregate_cve_stimulus": plot_aggregate_cve_stimulus,

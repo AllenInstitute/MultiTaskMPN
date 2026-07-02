@@ -774,8 +774,7 @@ def main(seed, feature, clean=True):
         print(f"Saved fixed-point data: {fp_pkl_path}")
 
     # shared_run("delaydm1")
-    shared_run("dmcgo")
-    sys.exit()
+    # shared_run("dmcgo")
 
     # analyze the fitted weight matrices; we focus on the first layer of modulation and the output layer, since they are more interpretable than the hidden layer
     output_W = state_dict["W_output"].cpu().numpy()
