@@ -390,7 +390,13 @@ def main(seed, feature, clean=True):
         del norm_out, norm_out_dev, norm_output_dev, norm_input_dev, norm_mask_dev
 
         # ── Long-delay dataset: used for the downstream memory-geometry analysis ──
-        test_data, test_trials_extra = _gen("long", 30)
+        # dmcgo/dmcnogo share an identical stimulus per matched pair, so 30 long
+        # trials reliably cover all 8 stim1 angles for both tasks. delaydm1/
+        # delaydm2 are matched by stim1 ANGLE ONLY (their stimulus lives on
+        # different modality channels), so BOTH tasks must independently populate
+        # all 8 angle buckets — draw more trials so that is essentially certain.
+        long_n_batch = 30
+        test_data, test_trials_extra = _gen("long", long_n_batch)
         test_input, test_output, _ = test_data
 
         print(f"test_input.shape: {test_input.shape}")
@@ -449,29 +455,30 @@ def main(seed, feature, clean=True):
 
         idx_map = combo_indices_16(test_task, stim1_choices)
 
-        # ── Pick a STIM-MATCHED (task0, task1) trial pair per stim angle ──────
-        # The two sibling tasks differ only in the required RESPONSE (target),
-        # not in the stimulus input — so a meaningful α-interpolation (which
-        # should morph only the task, holding the stimulus fixed) requires the
-        # two endpoint trials to have IDENTICAL input through the delay period.
-        # Matching by stim1 angle alone is NOT enough: in mode='random', stim1
-        # modality is drawn per task, so two angle-matched trials can still
-        # differ in modality (and, pre-alignment, in timing). Here we verify the
-        # delay-period input actually matches and skip angles where it doesn't.
+        # ── Pick a (task0, task1) trial pair per stim1 angle ─────────────────
+        # We build one endpoint pair per stim1 angle bucket b∈{0..7}. HOW the
+        # two tasks are matched depends on the task family:
         #
-        # For dmcgo/dmcnogo the input through the delay should be bit-identical,
-        # so we use a tight tolerance. For delaydm1/delaydm2 the stimulus
-        # magnitude can legitimately differ across trials of the same angle, so
-        # we relax the tolerance (timing must still match) and report.
-        de = delay_period[1]                       # end of delay window (exclusive)
-        strict = (addtask == "dmcgo")
-        rtol, atol = (0.0, 1e-5) if strict else (1e-2, 1e-2)
+        #  • dmcgo/dmcnogo (STIM-MATCHED): the two siblings differ only in the
+        #    required RESPONSE, not in the stimulus. A meaningful comparison
+        #    (morphing the task while holding the stimulus fixed) requires the
+        #    two endpoint trials to have IDENTICAL input through the delay, so
+        #    we verify the stimulus/fixation channels match bit-for-bit.
+        #
+        #  • delaydm1/delaydm2 (ANGLE-MATCHED): these siblings present the SAME
+        #    stimulus geometry but on DIFFERENT modality input channels (mod 1 vs
+        #    mod 2), so their inputs can never be identical. We instead match on
+        #    the stim1 ANGLE bucket only (8 angles) and analyse the stim1→delay1
+        #    memory of that angle — ignoring stim2/delay2, which is exactly the
+        #    "focus on stim1 and delay1" the delaydm analysis calls for. One
+        #    representative trial per angle per task is taken.
+        de = delay_period[1]                       # end of delay1 window (exclusive)
+        stim_matched = (addtask == "dmcgo")
 
         # The input is [6 stimulus/fixation channels] + [one task-cue column per
         # rule] (see all_input label list). The two sibling tasks MUST differ in
-        # their task-cue columns — that is exactly what the interpolation morphs.
-        # So the stim-match check compares only the STIMULUS/FIXATION channels
-        # (the first 6); including the task cue would make every pair "mismatch".
+        # their task-cue columns; for the stim-matched check we therefore compare
+        # only the STIMULUS/FIXATION channels (the first 6).
         n_stim_ch = 6
 
         def _input_matches(k0, k1):
@@ -480,29 +487,36 @@ def main(seed, feature, clean=True):
             if a.shape != c.shape:
                 return False
             # timing/support must coincide: same nonzero pattern (which stimulus
-            # channels are active at which timesteps). Catches modality / onset
-            # mismatches even when the relaxed magnitude tolerance is used.
+            # channels are active at which timesteps).
             if not torch.equal((a.abs() > 1e-8), (c.abs() > 1e-8)):
                 return False
-            return torch.allclose(a, c, rtol=rtol, atol=atol)
+            return torch.allclose(a, c, rtol=0.0, atol=1e-5)
 
-        def _pick_matched_pair(b):
-            for k0 in idx_map[(0, b)]:
-                for k1 in idx_map[(1, b)]:
-                    if _input_matches(k0, k1):
-                        return k0, k1
-            return None
+        def _pick_pair(b):
+            """Return an (k0, k1) index pair for stim1 angle b, or None."""
+            if not idx_map[(0, b)] or not idx_map[(1, b)]:
+                return None
+            if stim_matched:
+                # dmcgo: require identical stimulus/fixation input through delay1.
+                for k0 in idx_map[(0, b)]:
+                    for k1 in idx_map[(1, b)]:
+                        if _input_matches(k0, k1):
+                            return k0, k1
+                return None
+            # delaydm: angle-matched only — take the first trial of each task
+            # that has this stim1 angle (inputs differ by modality by design).
+            return idx_map[(0, b)][0], idx_map[(1, b)][0]
 
         stacked_inputs = [[], []]
         stacked_inputs_labels = [[], []]
         skipped_angles = []
         for b in range(8):
-            if not idx_map[(0, b)] or not idx_map[(1, b)]:
-                skipped_angles.append((b, "empty bucket"))
-                continue
-            pair = _pick_matched_pair(b)
+            pair = _pick_pair(b)
             if pair is None:
-                skipped_angles.append((b, "no stim-matched pair"))
+                reason = ("empty bucket"
+                          if not idx_map[(0, b)] or not idx_map[(1, b)]
+                          else "no stim-matched pair")
+                skipped_angles.append((b, reason))
                 continue
             k0, k1 = pair
             stacked_inputs[0].append(test_input[k0])
@@ -510,17 +524,18 @@ def main(seed, feature, clean=True):
             stacked_inputs_labels[0].append(b)
             stacked_inputs_labels[1].append(b)
 
-        trial_num = 1  # one matched pair per retained stim angle
+        trial_num = 1  # one pair per retained stim1 angle
         n_kept = len(stacked_inputs_labels[0])
-        print(f"  [stim-match] {addtask}: kept {n_kept}/8 stim-matched angles: "
+        match_mode = "stim-matched" if stim_matched else "angle-matched"
+        print(f"  [{match_mode}] {addtask}: kept {n_kept}/8 stim1 angles: "
               f"{stacked_inputs_labels[0]}")
-        # Require ALL 8 stimulus angles to have a stim-matched (Pro, Anti) pair.
-        # A partial set would bias the memory-geometry comparison, so fail loudly
-        # rather than silently analyzing fewer stimuli.
+        # Require ALL 8 stimulus angles to have a pair. A partial set would bias
+        # the memory-geometry comparison, so fail loudly rather than silently
+        # analyzing fewer stimuli.
         assert n_kept == 8, (
-            f"[{addtask}] expected 8 stim-matched angles, got {n_kept}. "
-            f"Skipped: {skipped_angles} (strict={strict}, rtol={rtol}, atol={atol}). "
-            f"Increase test_n_batch or check stimulus/modality alignment."
+            f"[{addtask}] expected 8 stim1 angles, got {n_kept} ({match_mode}). "
+            f"Skipped: {skipped_angles}. "
+            f"Increase long_n_batch or check stimulus/modality alignment."
         )
 
         for i in range(2):
@@ -596,20 +611,38 @@ def main(seed, feature, clean=True):
             n_task = len(cond_inputs)
 
             # ── Abstract "memory group" labels for the fixed points ──────────
-            # The two sibling tasks are Pro (task0) and Anti (task1). We want the
-            # PCA projection in which the fixed points split into two groups that
-            # cut ACROSS task and stimulus identity:
-            #   Group A: Pro stim {0,1,2,3}  +  Anti stim {4,5,6,7}
-            #   Group B: Pro stim {4,5,6,7}  +  Anti stim {0,1,2,3}
-            # i.e. for a fixed point at (task t, stim angle a):
-            #   group A  iff  (t == 0)  ==  (a < 4)
+            # The PCA seed / plane is chosen to best separate two abstract memory
+            # groups. The grouping differs by task family:
+            #
+            #  • dmcgo/dmcnogo: the DMC *category* split, which cuts ACROSS task
+            #    and stimulus identity:
+            #       Group A: Pro stim {0,1,2,3} + Anti stim {4,5,6,7}
+            #       Group B: Pro stim {4,5,6,7} + Anti stim {0,1,2,3}
+            #    i.e. group A iff (t == 0) == (a < 4).
+            #
+            #  • delaydm1/delaydm2: there is no match-category; the quantity held
+            #    in delay1 is the remembered stim1 ANGLE. The two modality tasks
+            #    remember the SAME angle, so the grouping is by stim1 angle bucket
+            #    (8 groups, each holding both tasks' endpoint for that angle).
+            #    Maximizing the silhouette on this labeling picks the plane where
+            #    each stimulus's two-task endpoints sit CLOSE together (small
+            #    within-group spread) while distinct stimuli stay apart — i.e. the
+            #    memory encodes the remembered angle, invariant to which modality
+            #    (task) was attended.
             # Built in the same (task-major, then stim) order as fp.reshape(-1, .).
             stim_angles = np.asarray(stacked_inputs_labels[0])
-            group_labels = np.array([
-                0 if ((t_idx == 0) == (a < 4)) else 1
-                for t_idx in range(n_task)
-                for a in stim_angles
-            ])
+            if addtask == "dmcgo":
+                group_labels = np.array([
+                    0 if ((t_idx == 0) == (a < 4)) else 1
+                    for t_idx in range(n_task)
+                    for a in stim_angles
+                ])
+            else:  # delaydm1: group by remembered stim1 angle (both tasks together)
+                group_labels = np.array([
+                    a
+                    for t_idx in range(n_task)
+                    for a in stim_angles
+                ])
 
             def _project_with(pca):
                 """Project the (seed-independent) states with a fitted PCA and
@@ -624,11 +657,13 @@ def main(seed, feature, clean=True):
                 return np.stack(fp_by_task, axis=0), traj_by_task
 
             # ── PCA-seed sweep: keep the seed whose BEST 2-D PC plane best ──────
-            # separates the two memory groups. For each seed we compute the
-            # silhouette on every pairwise 2-PC plane of the end-of-delay fixed
-            # points and score the seed by its best plane (not by the full-n_pcs
-            # silhouette) — the cluster structure is read off a single 2-D plane,
-            # so the selection criterion matches what is actually displayed.
+            # separates the memory groups (2 category groups for dmcgo; 8 per-
+            # angle groups for delaydm1, where a high silhouette means each
+            # stimulus's two-task endpoints coincide). For each seed we compute
+            # the silhouette on every pairwise 2-PC plane of the end-of-delay
+            # fixed points and score the seed by its best plane (not by the
+            # full-n_pcs silhouette) — the cluster structure is read off a single
+            # 2-D plane, so the selection criterion matches what is displayed.
             n_groups = np.unique(group_labels).size
             best_seed, best_score = None, -np.inf
             best_fp, best_traj, best_plane_sil_dict = None, None, None
@@ -693,6 +728,12 @@ def main(seed, feature, clean=True):
             # Figure: n_grid x n_grid grid of pairwise PC planes. Per stimulus
             # (color) and task (marker: square=Pro, triangle=Anti), show the
             # end-of-delay fixed point; optionally overlay the delay trajectory.
+            # For delaydm1, the endpoints are a ring in stim1-angle space, so we
+            # connect each task's fixed points in stim order (0→1→…→7→0) to make
+            # the ring geometry visible. dmcgo has no such ring (the split is by
+            # category, not a stimulus cycle), so it keeps unconnected endpoints.
+            connect_endpoint_ring = (addtask != "dmcgo")
+
             def _draw_pair(ax, pc_x, pc_y, with_traj=True):
                 for t_idx in range(n_task):
                     for stim in range(n_stim):
@@ -706,6 +747,16 @@ def main(seed, feature, clean=True):
                                    facecolor=col, edgecolor="black", linewidth=0.8,
                                    marker=task_markers[t_idx % len(task_markers)],
                                    s=60, alpha=0.7, zorder=3)
+                    if connect_endpoint_ring and n_stim >= 2:
+                        # Close the loop: stim0→stim1→…→stimN→stim0. stimuli are
+                        # already in ascending label order (stacked_inputs_labels).
+                        ring = np.concatenate(
+                            [fp_by_task[t_idx, :, [pc_x, pc_y]].T,
+                             fp_by_task[t_idx, :1, [pc_x, pc_y]].T], axis=0)
+                        ax.plot(ring[:, 0], ring[:, 1], color="0.4",
+                                linewidth=1.0, alpha=0.6,
+                                linestyle=task_styles[t_idx % len(task_styles)],
+                                zorder=2)
                 ax.set_xlabel(f"Memory State PC{pc_x+1}", fontsize=10)
                 ax.set_ylabel(f"Memory State PC{pc_y+1}", fontsize=10)
 
@@ -765,6 +816,10 @@ def main(seed, feature, clean=True):
                 "best_plane": (int(bx), int(by)),          # most-separating 2-PC plane
                 "best_plane_silhouette": best_plane_sil,
                 "plane_silhouettes": {f"{px+1}-{py+1}": v for (px, py), v in plane_sil.items()},
+                # Whether the per-task endpoints form a stim-angle ring that
+                # should be connected in stim order (stim0→…→stimN→stim0). True
+                # for delaydm1 (angle ring), False for dmcgo (category split).
+                "connect_endpoint_ring": bool(connect_endpoint_ring),
             }
 
         # Save all fixed-point PCA data for this addtask
@@ -773,8 +828,9 @@ def main(seed, feature, clean=True):
             pickle.dump(fixed_points_save, _f)
         print(f"Saved fixed-point data: {fp_pkl_path}")
 
-    # shared_run("delaydm1")
+    shared_run("delaydm1")
     # shared_run("dmcgo")
+    sys.exit()
 
     # analyze the fitted weight matrices; we focus on the first layer of modulation and the output layer, since they are more interpretable than the hidden layer
     output_W = state_dict["W_output"].cpu().numpy()
@@ -4031,4 +4087,16 @@ if __name__ == "__main__":
     print(f"Running {len(param_lst)} models: {param_lst}")
 
     for seed, feature in param_lst:
-        main(seed, feature, clean=clean)
+        try:
+            main(seed, feature, clean=clean)
+        except SystemExit as e:
+            # main() may call sys.exit() to finish a trial early ON PURPOSE
+            # (e.g. after shared_run, before the full weight-matrix analysis).
+            # That raises SystemExit, which would otherwise tear down the whole
+            # process and skip every remaining trial. Treat a clean exit
+            # (code 0 or None) as "this trial is intentionally done" and move on
+            # to the next trial; re-raise any non-zero code as a genuine error.
+            if e.code not in (None, 0):
+                raise
+            print(f"[seed{seed}_{feature}] finished early via sys.exit(); "
+                  f"continuing to next trial.")

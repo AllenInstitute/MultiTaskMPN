@@ -1265,7 +1265,12 @@ def main(aname):
     # Cells 43-47: cross-task / cross-period PCA (figure2A_pca_fve)
     # ═════════════════════════════════════════════════════════════════════════
     H = db[f"hidden{layer_index}"]
-    M = db[f"M{layer_index}"].reshape(db[f"M{layer_index}"].shape[0], db[f"M{layer_index}"].shape[1], -1)
+    # Effective modulation W⊙M (the actual weight change applied to the recurrent
+    # connections), flattened over (hidden, embed). W matches M's last two axes.
+    M_raw = np.asarray(db[f"M{layer_index}"])            # (batch, T, hidden, embed)
+    W_eff = (net.mp_layer1.W.data.detach().cpu().numpy() if net_params["input_layer_add"]
+             else net.mp_layer0.W.data.detach().cpu().numpy())
+    WM = (M_raw * W_eff[None, None, :, :]).reshape(M_raw.shape[0], M_raw.shape[1], -1)
     task_id = test_task
     periods = time_stamp_extract(test_input, time_stamps_usual)
     periods_ = {
@@ -1281,9 +1286,9 @@ def main(aname):
 
     top_k = 4
     res_H = figure2A_pca_fve(H, task_id, periods_, k=top_k, max_pcs=10, center="None")
-    res_M = figure2A_pca_fve(M, task_id, periods_, k=top_k, max_pcs=10, center="None")
+    res_WM = figure2A_pca_fve(WM, task_id, periods_, k=top_k, max_pcs=10, center="None")
 
-    data_all = [["hidden", res_H], ["modulation", res_M]]
+    data_all = [["hidden", res_H], ["w_modulation", res_WM]]
     pcs = {}
     name = "hidden"
     for name, res in data_all:  # cell 45
@@ -1953,7 +1958,10 @@ def main(aname):
     m_pca_normal_data = {}  # self-contained data to replot the "normal" m_pca figures
     for time_stamp_long, test_input_long, sname, db_index, _, label_task_comb_long in time_stamp_input_map:
         print(f"sname: {sname}; db_index: {db_index}")
-        names = ["hidden", "modulation"]
+        names = ["hidden", "modulation", "w_modulation"]
+        # Recurrent weight for the effective modulation W⊙M (see analyze_similarity).
+        W_mp = (net.mp_layer1.W.data.detach().cpu().numpy() if net_params["input_layer_add"]
+                else net.mp_layer0.W.data.detach().cpu().numpy())
         for name in names:
             fighs, axshs = plt.subplots(1, 3, figsize=(5 * 3, 5 * 1))
             PCA_downsample = 3
@@ -1961,6 +1969,10 @@ def main(aname):
             batch_num = Ms_orig.shape[0]
             if name == "modulation":
                 data = Ms
+            elif name == "w_modulation":
+                # Effective modulation W⊙M, flattened like Ms (batch, T, hidden*embed).
+                eff = Ms_orig * W_mp[None, None, :, :]
+                data = eff.reshape(eff.shape[0], eff.shape[1], -1)
             elif name == "hidden":
                 data = hs
             n_activity = data.shape[-1]

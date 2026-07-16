@@ -229,14 +229,28 @@ def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by):
             c = cache[v]
             ps, pe = c["period"]
             stim = c["stim"]
-            seg = c[rep][:, ps:pe, :]                       # (batch, win_T, feat)
+            # Save the window with one extra leading point (the transition-in
+            # frame from the previous period) whenever one exists (ps>0). `lead`
+            # records how many leading frames were prepended (0 for fixation,
+            # which starts at t=0). The display rule below decides whether to
+            # show it. Both the saved `proj` and `lead` are consumed by
+            # paper_plot, so the display rule is applied there too.
+            ps_ext = max(ps - 1, 0)
+            lead = ps - ps_ext                              # 0 or 1
+            seg = c[rep][:, ps_ext:pe, :]                   # (batch, win_T, feat)
             # project this period's window into the shared delay-period basis
             proj = pca.transform(seg.reshape(-1, seg.shape[-1])).reshape(
                 seg.shape[0], seg.shape[1], 2)              # (batch, win_T, 2)
+            # Hidden starts strictly at the period boundary (drop the leading
+            # frame): it is an instantaneous readout of the current stimulus
+            # input, so a leading frame already sits at a stimulus-specific
+            # location. Modulation keeps the leading transition-in frame.
+            disp_start = lead if rep == "hidden" else 0
             for i in range(seg.shape[0]):
                 col = c_vals[int(stim[i]) % len(c_vals)]
                 p = proj[i]                                 # (win_T, 2)
-                ax.plot(p[:, 0], p[:, 1], color=col, alpha=0.4, linewidth=0.8, zorder=2)
+                ax.plot(p[disp_start:, 0], p[disp_start:, 1], color=col,
+                        alpha=0.4, linewidth=0.8, zorder=2)
                 ax.scatter(p[-1, 0], p[-1, 1], color=col, marker="o", s=45,
                            edgecolor="black", linewidth=0.5, alpha=0.85, zorder=3)
             ax.set_xlabel("Delay PC1", fontsize=10)
@@ -244,7 +258,7 @@ def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by):
             ax.set_title(period_title.get(v, v), fontsize=11)
             ax.spines[["top", "right"]].set_visible(False)
             long_fp_save[rep][v] = {"proj": np.asarray(proj, dtype=float),
-                                    "stim": np.asarray(stim)}
+                                    "stim": np.asarray(stim), "lead": int(lead)}
 
         # stimulus-color legend on the first subplot
         uniq_stim = sorted(set(int(s) for c in cache.values() for s in c["stim"]))
@@ -280,6 +294,120 @@ def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by):
     _gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def _cross_period_fve(H, periods, k=4, center="none", dtype=np.float64):
+    """
+    Cross-period PCA explained-variance for a SINGLE task (the one-task analog
+    of two_task_analysis.figure2A_pca_fve's per-task block).
+
+    H         : (batch, T, feat) states.
+    periods   : ordered dict {period_name: (t0, t1)}.
+    k         : number of PCs of the target period's subspace.
+
+    Returns (period_names, fve_k) where fve_k[i, j] is the fraction of period i's
+    variance captured by the top-k PCA subspace fit on period j. Diagonal ≈ how
+    self-contained a period is in k PCs; off-diagonal = how much one period's
+    geometry is shared with another's subspace.
+    """
+    H_np = (H.detach().cpu().numpy() if hasattr(H, "detach") else np.asarray(H))
+    H_np = H_np.astype(dtype, copy=False)
+    _, T, N = H_np.shape
+    names = list(periods.keys())
+    P = len(names)
+
+    def _mat(t0, t1):
+        return H_np[:, t0:t1, :].reshape(-1, N)
+
+    def _center(X):
+        if center == "none":
+            return X
+        return X - X.mean(axis=0)
+
+    def _topk_components(X, r):
+        _, _, Vt = np.linalg.svd(X, full_matrices=False)
+        r_eff = min(r, Vt.shape[0])
+        return Vt[:r_eff, :].T          # (N, r_eff)
+
+    def _fve_project(X, V):
+        tot = np.sum(X * X)
+        if tot <= 0:
+            return 0.0
+        Xhat = (X @ V) @ V.T
+        return float(np.sum(Xhat * Xhat) / tot)
+
+    Xc = {}
+    Vk = {}
+    for nm in names:
+        t0, t1 = periods[nm]
+        if not (0 <= t0 < t1 <= T):
+            raise ValueError(f"[{nm}] invalid period bounds {(t0, t1)} for T={T}")
+        Xc[nm] = _center(_mat(t0, t1))
+        Vk[nm] = _topk_components(Xc[nm], k)
+
+    fve_k = np.zeros((P, P), dtype=dtype)
+    for i, px in enumerate(names):
+        for j, py in enumerate(names):
+            fve_k[i, j] = _fve_project(Xc[px], Vk[py])
+    return names, fve_k
+
+
+def cross_period_dimensionality(aname, save_dir, hs_final, Ms_final, W_eff,
+                                stimulus_start, stimulus_end, response_start,
+                                top_k=4):
+    """
+    One-task cross-period PCA explained-variance heatmaps (the single-task analog
+    of two_task_analysis's d_combine figure). For hidden activity, modulation
+    (raw M) and effective modulation (W⊙M), fit a top-k PCA on each trial
+    period's states and measure how well it captures every other period's
+    variance — a 4x4 (Fixation/Stimulus/Memory/Response) matrix per series.
+
+    Saves d_combine_{aname}.png and .pkl (for paper_plot reuse).
+    """
+    T = hs_final.shape[1]
+    # Trial periods (match the two-task period layout: fixation/stim/delay/resp).
+    periods = {
+        "Fixation": (0, max(stimulus_start - 1, 1)),
+        "Stimulus": (stimulus_start, stimulus_end),
+        "Memory": (stimulus_end, max(response_start - 1, stimulus_end + 1)),
+        "Response": (response_start, T),
+    }
+
+    emod_full = (Ms_final * W_eff[None, None, :, :]).reshape(
+        Ms_final.shape[0], Ms_final.shape[1], -1)
+
+    series = [
+        ("hidden", hs_final),
+        ("w_modulation", emod_full),
+    ]
+
+    d_combine_data = {}
+    fig, axs = plt.subplots(1, len(series), figsize=(4 * len(series), 3.8))
+    if len(series) == 1:
+        axs = [axs]
+    for ax, (name, H) in zip(axs, series):
+        names, fve_k = _cross_period_fve(H, periods, k=top_k, center="none")
+        sns.heatmap(fve_k, ax=ax, xticklabels=names, yticklabels=names,
+                    annot=True, fmt=".2f", vmin=0.0, vmax=1.0, square=True,
+                    cbar=True, cbar_kws={"shrink": 0.7})
+        ax.set_title(f"{name} (k={top_k})", fontsize=11)
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
+        d_combine_data[name] = {
+            "fve_k_all": np.asarray(fve_k),
+            "labels": names,
+            "vmin": 0.0,
+            "vmax": 1.0,
+            "top_k": int(top_k),
+        }
+    fig.tight_layout()
+    fig.savefig(save_dir / f"d_combine_{aname}.png", dpi=300)
+    plt.close(fig)
+    print(f"  Saved figure: {save_dir / f'd_combine_{aname}.png'}")
+
+    import pickle as _pickle
+    with open(save_dir / f"d_combine_{aname}.pkl", "wb") as _f:
+        _pickle.dump(d_combine_data, _f)
+    print(f"  Saved d_combine data: {save_dir / f'd_combine_{aname}.pkl'}")
 
 
 def main(aname):
@@ -660,38 +788,44 @@ def main(aname):
 
         return task_labels_across_batch, saver2, saver2_random
 
-    all_trajectory, all_trajectory_random = [], []
+    all_trajectory = []
     label_index = np.unique(labels)
     for stage_iter in range(stages_num):
-        _, saver2, saver2_random = plot_trajectory_by_index(
+        _, saver2, _ = plot_trajectory_by_index(
             label_index, stage_iter, verbose=(stage_iter == stages_num - 1))
         all_trajectory.append(saver2)
-        all_trajectory_random.append(saver2_random)
 
-    def analyze_trajectory(save_trajectory, save_trajectory_random):
-        def process(trajectory, ind=False):
+    def analyze_trajectory(save_trajectory):
+        def process(trajectory):
             results = []
             for batch in trajectory:
                 if batch[0, 1] is None:
                     continue
+                # Average over the STIMULUS + DELAY period (stimulus_start:response_start).
                 stim1_fixon = batch[0, 1][stimulus_start:response_start]
                 stim1_task = batch[3, 1][stimulus_start:response_start]
-                bias = batch[4, 1][stimulus_start:response_start] if ind else np.zeros_like(stim1_fixon)
+                bias = batch[4, 1][stimulus_start:response_start]
                 results.append([np.mean(np.abs(stim1_fixon + stim1_task + bias)),
                                 np.mean(np.abs(stim1_fixon)), np.mean(np.abs(stim1_task))])
             return np.array(results)
-        result = process(save_trajectory, True)
-        result_random = process(save_trajectory_random)
-        return (np.mean(result[:, 0]), np.mean(result[:, 1]), np.mean(result[:, 2]),
-                np.mean(result_random[:, 0]), np.mean(result_random[:, 1]), np.mean(result_random[:, 2]))
+        result = process(save_trajectory)
+        # Per-quantity mean and standard error of the mean (std / sqrt(n)) across
+        # trials, so the error band is the SEM rather than the raw trial spread.
+        n = max(result.shape[0], 1)
+        return result.mean(axis=0), result.std(axis=0) / np.sqrt(n)
 
-    fixon_task_diff = np.array([analyze_trajectory(all_trajectory[i], all_trajectory_random[i])
-                                for i in range(stages_num)])
+    cancel_stats = [analyze_trajectory(all_trajectory[i]) for i in range(stages_num)]
+    cancel_mean = np.array([s[0] for s in cancel_stats])   # (stages, 3)
+    cancel_sem = np.array([s[1] for s in cancel_stats])    # (stages, 3) std/sqrt(n)
 
     figc, axc = plt.subplots(figsize=(6, 3))
-    axc.plot(counter_lst, fixon_task_diff[:, 0], "-o", c=c_vals[0], label=r"|Fix − Task|")
-    axc.plot(counter_lst, fixon_task_diff[:, 1], "-o", c=c_vals[1], label=r"|Fix|")
-    axc.plot(counter_lst, fixon_task_diff[:, 2], "-o", c=c_vals[2], label=r"|Task|")
+    cancel_labels = [r"|Fix − Task|", r"|Fix|", r"|Task|"]
+    for k in range(3):
+        axc.plot(counter_lst, cancel_mean[:, k], "-o", color=c_vals[k],
+                 label=cancel_labels[k])
+        axc.fill_between(counter_lst, cancel_mean[:, k] - cancel_sem[:, k],
+                         cancel_mean[:, k] + cancel_sem[:, k],
+                         color=c_vals_l[k], alpha=0.2)
     axc.legend(loc="best", fontsize=12, frameon=True)
     axc.set_ylabel("Magnitude Projection", fontsize=15)
     axc.set_xlabel("# Dataset", fontsize=15)
@@ -700,6 +834,19 @@ def main(aname):
     figc.savefig(save_dir / f"cancel_{aname}.png", dpi=300)
     plt.close(figc)
     print(f"  Saved figure: {save_dir / f'cancel_{aname}.png'}")
+
+    # Save the cancel-curve data (stimulus+delay mean ± SEM = std/sqrt(n) across
+    # trials, per training checkpoint) so paper_plot can re-render this figure.
+    import pickle as _pickle
+    with open(save_dir / f"cancel_{aname}.pkl", "wb") as _f:
+        _pickle.dump({
+            "aname": aname,
+            "counter_lst": np.asarray(counter_lst, dtype=float),  # (stages,) # datasets
+            "cancel_mean": np.asarray(cancel_mean, dtype=float),  # (stages, 3)
+            "cancel_sem": np.asarray(cancel_sem, dtype=float),    # (stages, 3) std/sqrt(n)
+            "labels": cancel_labels,                              # ["|Fix − Task|","|Fix|","|Task|"]
+        }, _f)
+    print(f"  Saved cancel data: {save_dir / f'cancel_{aname}.pkl'}")
 
     # ── Modulation-change / synaptic & hidden correlation across learning ────
     modulation_dict_diff_lst, modulation_dict_lst = [], []
@@ -800,6 +947,40 @@ def main(aname):
             print(f"  Saved modulation heatmap data: "
                   f"{save_dir / f'modulation_heatmap_{aname}.pkl'}")
 
+            # ── Full-M snapshots for the 2x2 (stimulus x period) figure ──────
+            # Save the raw plasticity matrix M (hidden x input) at the middle of
+            # the stimulus period and the middle of the response period, for two
+            # example stimuli (labels 1 and 5). Reused by paper_plot's
+            # plot_onetask_modulation_snapshot.
+            T_full = Ms_orig.shape[1]
+            t_mid_stim = (stimulus_start + stimulus_end) // 2
+            t_mid_resp = (response_start + T_full) // 2
+            # Map each stimulus label to its (first) batch row in this stage.
+            label_to_batch = {}
+            for batch_iter in range(batch_nums):
+                label_to_batch.setdefault(int(labels[batch_iter, 0]), batch_iter)
+            snapshot_stims = [1, 5]
+            snapshots = {}
+            for s in snapshot_stims:
+                if s not in label_to_batch:
+                    continue
+                b = label_to_batch[s]
+                snapshots[s] = {
+                    "stimulus": np.asarray(Ms_orig[b, t_mid_stim, :, :], dtype=float),
+                    "response": np.asarray(Ms_orig[b, t_mid_resp, :, :], dtype=float),
+                }
+            with open(save_dir / f"modulation_snapshot_{aname}.pkl", "wb") as _f:
+                _pickle.dump({
+                    "aname": aname,
+                    "stage_iter": int(i),
+                    "stims": [s for s in snapshot_stims if s in snapshots],
+                    "t_mid_stim": int(t_mid_stim),
+                    "t_mid_resp": int(t_mid_resp),
+                    "snapshots": snapshots,   # {stim: {"stimulus": (hidden,input), "response": (hidden,input)}}
+                }, _f)
+            print(f"  Saved modulation snapshot data: "
+                  f"{save_dir / f'modulation_snapshot_{aname}.pkl'}")
+
     modulation_change_stage = np.array(modulation_change_stage)
     m_corr_stage = np.array(m_corr_stage)
     h_corr_stage = np.array(h_corr_stage)
@@ -892,35 +1073,18 @@ def main(aname):
     plt.close(figw)
     print(f"  Saved figure: {save_dir / f'w_to_output_{aname}.png'}")
 
-    # ── Low-D PCA of fixon modulation during the stimulus period (final stage) ─
+    # ── Recover the fixon modulation and hidden state for the full-trial PCA ──
     #
-    # Goal: visualize how the fast plasticity acting on the FIXON input pathway
-    # is organized across hidden units, and whether that organization separates
-    # by stimulus direction during the stimulus epoch.
-    #
-    # Step 1 — recover the fixon modulation.
-    #   The recorded modulation tensor M has shape (batch, T, hidden, embed):
-    #   its last axis is the EMBEDDED input (output of the trained input layer
-    #   W_initial_linear), NOT the raw input channels. So M[..., 0] would be
-    #   embedded-dim 0, which is a meaningless mixed coordinate — not fixon.
-    #   The effective modulation of the raw fixon input on each hidden unit is
-    #   obtained by contracting M's embedded-input axis with the fixon column of
-    #   the embedding (w_fixon = W_input[:, fixon_col], shape (embed,)):
-    #       fixon_mod[b, t, hidden] = sum_e  M[b, t, hidden, e] * w_fixon[e]
-    #   giving a per-timestep hidden-unit vector (batch, T, hidden).
-    #   (Without an input layer, M's last axis IS the raw input, so slice it.)
-    #
-    # Step 2 — build the PCA basis from the FIXON modulation itself.
-    #   We deliberately fit PCA on fixon_mod (not the full M), using only the
-    #   end-of-stimulus state pooled across trials. This puts the maximal
-    #   variance of the quantity we plot (fixon modulation) into the top PCs, so
-    #   any stimulus structure in the fixon pathway is maximally visible. (An
-    #   alternative — fitting on the full M and slicing fixon afterward — would
-    #   instead show fixon within a shared, channel-agnostic modulation frame.)
-    #
-    # Step 3 — project the whole trial and plot the stimulus-period trajectory
-    #   in three PC planes (PC1-2, PC1-3, PC2-3), colored by stimulus direction.
-    fighs, axshs = plt.subplots(3, 1, figsize=(6, 3 * 3), squeeze=False)
+    # The recorded modulation tensor M has shape (batch, T, hidden, embed): its
+    # last axis is the EMBEDDED input (output of the trained input layer
+    # W_initial_linear), NOT the raw input channels. So M[..., 0] would be
+    # embedded-dim 0, a meaningless mixed coordinate — not fixon. The effective
+    # modulation of the raw fixon input on each hidden unit is obtained by
+    # contracting M's embedded-input axis with the fixon column of the embedding
+    # (w_fixon = W_input[:, fixon_col], shape (embed,)):
+    #     fixon_mod[b, t, hidden] = sum_e  M[b, t, hidden, e] * w_fixon[e]
+    # giving a per-timestep hidden-unit vector (batch, T, hidden). (Without an
+    # input layer, M's last axis IS the raw input, so slice it.)
     stage_iter = stages_num - 1
     PCA_downsample = 3
     Ms_orig = Ms_orig_stages[stage_iter]               # (batch, T, hidden, embed)
@@ -932,88 +1096,9 @@ def main(aname):
     else:
         fixon_mod = Ms_orig[:, :, :, fixon_col]             # raw input already
 
-    # PCA basis fit on end-of-stimulus fixon modulation, pooled over trials.
-    pca = PCA(n_components=PCA_downsample)
-    fixon_end = fixon_mod[:, stimulus_end:stimulus_end + 1, :]
-    pca.fit(fixon_end.reshape(-1, fixon_end.shape[-1]))
-    lowd = pca.transform(
-        fixon_mod.reshape(-1, fixon_mod.shape[-1])
-    ).reshape(fixon_mod.shape[0], fixon_mod.shape[1], PCA_downsample)
-
-    pairs = [(0, 0, 1), (1, 0, 2), (2, 1, 2)]
-    for i in range(lowd.shape[0]):
-        data_batch = lowd[i, :, :]
-        color = c_vals[labels[i, 0] % len(c_vals)]
-        # All three panels show the stimulus period only.
-        for row, xpc, ypc in pairs:
-            axshs[row, 0].plot(data_batch[stimulus_start:stimulus_end, xpc],
-                               data_batch[stimulus_start:stimulus_end, ypc],
-                               marker=markers_vals[0], markersize=3, c=color, alpha=0.5)
-        for row, xpc, ypc in pairs:
-            axshs[row, 0].set_xlabel(f"PC {xpc+1}", fontsize=13)
-            axshs[row, 0].set_ylabel(f"PC {ypc+1}", fontsize=13)
-    fighs.tight_layout()
-    fighs.savefig(save_dir / f"m_pca_{aname}.png", dpi=300)
-    plt.close(fighs)
-    print(f"  Saved figure: {save_dir / f'm_pca_{aname}.png'}")
-
-    # Save the projected trajectories so paper_plot can re-render this figure.
-    import pickle as _pickle
-    with open(save_dir / f"m_pca_{aname}.pkl", "wb") as _f:
-        _pickle.dump({
-            "aname": aname,
-            "stage_iter": int(stage_iter),
-            "lowd": np.asarray(lowd, dtype=float),          # (batch, T, n_pc)
-            "labels": np.asarray(labels).reshape(-1),       # stimulus label per trial
-            "pairs": pairs,                                  # PC-plane index pairs
-            "stimulus_start": int(stimulus_start),
-            "stimulus_end": int(stimulus_end),
-            "explained_variance_ratio": np.asarray(pca.explained_variance_ratio_, dtype=float),
-        }, _f)
-    print(f"  Saved m_pca data: {save_dir / f'm_pca_{aname}.pkl'}")
-
-    # ── Same low-D PCA trajectory, but for the HIDDEN ACTIVITY ───────────────
-    # Mirrors the modulation (m_pca) analysis above: take the final-stage hidden
-    # state, fit a PCA basis on the end-of-stimulus hidden state (pooled over
-    # trials), project the whole trial, and plot the stimulus-period trajectory
-    # in three PC planes, colored by stimulus direction.
-    fighs_h, axshs_h = plt.subplots(3, 1, figsize=(6, 3 * 3), squeeze=False)
     hs_now = hs_stages[stage_iter]                          # (batch, T, hidden)
 
-    pca_h = PCA(n_components=PCA_downsample)
-    hs_end = hs_now[:, stimulus_end:stimulus_end + 1, :]
-    pca_h.fit(hs_end.reshape(-1, hs_end.shape[-1]))
-    lowd_h = pca_h.transform(
-        hs_now.reshape(-1, hs_now.shape[-1])
-    ).reshape(hs_now.shape[0], hs_now.shape[1], PCA_downsample)
-
-    for i in range(lowd_h.shape[0]):
-        data_batch = lowd_h[i, :, :]
-        color = c_vals[labels[i, 0] % len(c_vals)]
-        for row, xpc, ypc in pairs:
-            axshs_h[row, 0].plot(data_batch[stimulus_start:stimulus_end, xpc],
-                                 data_batch[stimulus_start:stimulus_end, ypc],
-                                 marker=markers_vals[0], markersize=3, c=color, alpha=0.5)
-    for row, xpc, ypc in pairs:
-        axshs_h[row, 0].set_xlabel(f"PC {xpc+1}", fontsize=13)
-        axshs_h[row, 0].set_ylabel(f"PC {ypc+1}", fontsize=13)
-    fighs_h.tight_layout()
-    fighs_h.savefig(save_dir / f"h_pca_{aname}.png", dpi=300)
-    plt.close(fighs_h)
-    print(f"  Saved figure: {save_dir / f'h_pca_{aname}.png'}")
-
-    with open(save_dir / f"h_pca_{aname}.pkl", "wb") as _f:
-        _pickle.dump({
-            "aname": aname,
-            "stage_iter": int(stage_iter),
-            "lowd": np.asarray(lowd_h, dtype=float),         # (batch, T, n_pc)
-            "labels": np.asarray(labels).reshape(-1),        # stimulus label per trial
-            "pairs": pairs,                                   # PC-plane index pairs
-            "stimulus_start": int(stimulus_start),
-            "stimulus_end": int(stimulus_end),
-            "explained_variance_ratio": np.asarray(pca_h.explained_variance_ratio_, dtype=float),
-        }, _f)
-    print(f"  Saved h_pca data: {save_dir / f'h_pca_{aname}.pkl'}")
+    import pickle as _pickle
 
     # ── FULL-trial trajectory in a whole-trial PCA basis (two-task style) ────
     # Matches the two-task m_pca_*_normal figure: fit the top-3 PCA on the
@@ -1097,6 +1182,20 @@ def main(aname):
     _full_traj_pca(fixon_mod, "m", "fixon modulation", show_legend=False)
     _full_traj_pca(hs_now, "h", "hidden activity")
 
+    # Full modulation: flatten M's (hidden, embed) feature axes into a single
+    # vector per timestep and run the same whole-trial PCA over the ENTIRE
+    # modulation matrix (every input channel), not just the fixon projection.
+    all_mod = Ms_orig.reshape(Ms_orig.shape[0], Ms_orig.shape[1], -1)  # (batch, T, hidden*embed)
+    _full_traj_pca(all_mod, "m_all", "all modulation", show_legend=False)
+
+    # Effective modulation W⊙M: the actual weight change applied to the
+    # recurrent connections (see e_modulation in long_period_fixed_points).
+    # Wall is the (hidden, embed) MP-layer weight, matching M's last two axes.
+    W_eff = Wall_stages[stage_iter]                                    # (hidden, embed)
+    eff_mod = (Ms_orig * W_eff[None, None, :, :]).reshape(
+        Ms_orig.shape[0], Ms_orig.shape[1], -1)                       # (batch, T, hidden*embed)
+    _full_traj_pca(eff_mod, "e_mod", "effective modulation", show_legend=False)
+
     # ── Long-period fixed-point geometry (uses the LIVE trained network) ─────
     # Generate test data with each trial period extended in turn, fit a top-2
     # PCA on the pooled delay-period states, and scatter each variant's fixed
@@ -1105,6 +1204,18 @@ def main(aname):
         long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by)
     except Exception as exc:
         print(f"  [long-fp] failed: {exc}")
+        import traceback
+        traceback.print_exc()
+
+    # ── Cross-period PCA explained-variance (one-task analog of two-task's
+    # d_combine): how much each trial period's subspace captures the others,
+    # for hidden / modulation / effective modulation. Uses the final-stage
+    # hs_now, Ms_orig, and W_eff computed above.
+    try:
+        cross_period_dimensionality(aname, save_dir, hs_now, Ms_orig, W_eff,
+                                    stimulus_start, stimulus_end, response_start)
+    except Exception as exc:
+        print(f"  [d_combine] failed: {exc}")
         import traceback
         traceback.print_exc()
 

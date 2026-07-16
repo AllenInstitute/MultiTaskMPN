@@ -1,0 +1,1998 @@
+{
+  "feature": "L21e4",
+  "seed": null,
+  "experiments": [
+    "everything_seed408_L21e4+hidden300+batch128+angle",
+    "everything_seed664_L21e4+hidden300+batch128+angle",
+    "everything_seed692_L21e4+hidden300+batch128+angle",
+    "everything_seed738_L21e4+hidden300+batch128+angle",
+    "everything_seed749_L21e4+hidden300+batch128+angle",
+    "everything_seed842_L21e4+hidden300+batch128+angle",
+    "everything_seed921_L21e4+hidden300+batch128+angle"
+  ],
+  "results": {
+    "category_same_cluster": {
+      "description": "% of experiments where ReactCategoryPro (dmcgo) and ReactCategoryAnti (dmcnogo) rows fall in the same row cluster, per trial phase and representation.",
+      "rule_a": "dmcgo",
+      "rule_a_display": "ReactCategoryPro",
+      "rule_b": "dmcnogo",
+      "rule_b_display": "ReactCategoryAnti",
+      "phases": [
+        "stim1",
+        "delay1",
+        "go1"
+      ],
+      "per_phase": {
+        "stim1": {
+          "input": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 6,
+                "label_b": 6,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 5,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 5,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 9,
+                "label_b": 9,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 6,
+                "label_b": 6,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 7,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 6,
+                "label_b": 6,
+                "same": true
+              }
+            ]
+          },
+          "hidden": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              }
+            ]
+          },
+          "modulation": {
+            "pct_same_cluster": 0.0,
+            "n_same": 0,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 11,
+                "label_b": 10,
+                "same": false
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 10,
+                "label_b": 9,
+                "same": false
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 12,
+                "label_b": 9,
+                "same": false
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 15,
+                "label_b": 14,
+                "same": false
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 5,
+                "same": false
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 9,
+                "label_b": 12,
+                "same": false
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 13,
+                "same": false
+              }
+            ]
+          }
+        },
+        "delay1": {
+          "input": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              }
+            ]
+          },
+          "hidden": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 6,
+                "label_b": 6,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              }
+            ]
+          },
+          "modulation": {
+            "pct_same_cluster": 0.0,
+            "n_same": 0,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 11,
+                "label_b": 10,
+                "same": false
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 10,
+                "label_b": 9,
+                "same": false
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 12,
+                "label_b": 9,
+                "same": false
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 15,
+                "label_b": 14,
+                "same": false
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 5,
+                "same": false
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 9,
+                "label_b": 12,
+                "same": false
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 13,
+                "same": false
+              }
+            ]
+          }
+        },
+        "go1": {
+          "input": {
+            "pct_same_cluster": 42.857142857142854,
+            "n_same": 3,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 4,
+                "same": false
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 6,
+                "label_b": 7,
+                "same": false
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 4,
+                "same": false
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 4,
+                "same": false
+              }
+            ]
+          },
+          "hidden": {
+            "pct_same_cluster": 71.42857142857143,
+            "n_same": 5,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 6,
+                "label_b": 6,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 6,
+                "same": false
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 4,
+                "same": false
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 6,
+                "label_b": 6,
+                "same": true
+              }
+            ]
+          },
+          "modulation": {
+            "pct_same_cluster": 71.42857142857143,
+            "n_same": 5,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 8,
+                "same": false
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 3,
+                "same": false
+              }
+            ]
+          }
+        }
+      }
+    },
+    "context_modality_same_cluster": {
+      "description": "% of experiments where ContextIntModality1 (contextdelaydm1) and ContextIntModality2 (contextdelaydm2) rows fall in the same row cluster, per trial phase and representation.",
+      "rule_a": "contextdelaydm1",
+      "rule_a_display": "ContextIntModality1",
+      "rule_b": "contextdelaydm2",
+      "rule_b_display": "ContextIntModality2",
+      "phases": [
+        "stim1",
+        "stim2",
+        "delay1",
+        "delay2",
+        "go1"
+      ],
+      "per_phase": {
+        "stim1": {
+          "input": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 8,
+                "label_b": 8,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 7,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 7,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 10,
+                "label_b": 10,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 7,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 8,
+                "label_b": 8,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 8,
+                "label_b": 8,
+                "same": true
+              }
+            ]
+          },
+          "hidden": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 7,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 5,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 5,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              }
+            ]
+          },
+          "modulation": {
+            "pct_same_cluster": 71.42857142857143,
+            "n_same": 5,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 3,
+                "same": false
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 3,
+                "same": false
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 5,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 9,
+                "label_b": 9,
+                "same": true
+              }
+            ]
+          }
+        },
+        "stim2": {
+          "input": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              }
+            ]
+          },
+          "hidden": {
+            "pct_same_cluster": 85.71428571428571,
+            "n_same": 6,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 5,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 4,
+                "same": false
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 5,
+                "same": true
+              }
+            ]
+          },
+          "modulation": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              }
+            ]
+          }
+        },
+        "delay1": {
+          "input": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              }
+            ]
+          },
+          "hidden": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 6,
+                "label_b": 6,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              }
+            ]
+          },
+          "modulation": {
+            "pct_same_cluster": 71.42857142857143,
+            "n_same": 5,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 3,
+                "same": false
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 3,
+                "same": false
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 10,
+                "label_b": 10,
+                "same": true
+              }
+            ]
+          }
+        },
+        "delay2": {
+          "input": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              }
+            ]
+          },
+          "hidden": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 6,
+                "label_b": 6,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              }
+            ]
+          },
+          "modulation": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              }
+            ]
+          }
+        },
+        "go1": {
+          "input": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              }
+            ]
+          },
+          "hidden": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 6,
+                "label_b": 6,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              }
+            ]
+          },
+          "modulation": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              }
+            ]
+          }
+        }
+      }
+    },
+    "integration_modality_same_cluster": {
+      "description": "% of experiments where IntegrationModality1 (delaydm1) and IntegrationModality2 (delaydm2) rows fall in the same row cluster, per trial phase and representation.",
+      "rule_a": "delaydm1",
+      "rule_a_display": "IntegrationModality1",
+      "rule_b": "delaydm2",
+      "rule_b_display": "IntegrationModality2",
+      "phases": [
+        "stim1",
+        "stim2",
+        "delay1",
+        "delay2",
+        "go1"
+      ],
+      "per_phase": {
+        "stim1": {
+          "input": {
+            "pct_same_cluster": 0.0,
+            "n_same": 0,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 6,
+                "same": false
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 6,
+                "label_b": 5,
+                "same": false
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 6,
+                "label_b": 5,
+                "same": false
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 8,
+                "label_b": 9,
+                "same": false
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 6,
+                "same": false
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 6,
+                "label_b": 7,
+                "same": false
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 6,
+                "same": false
+              }
+            ]
+          },
+          "hidden": {
+            "pct_same_cluster": 0.0,
+            "n_same": 0,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 3,
+                "same": false
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 2,
+                "same": false
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 3,
+                "same": false
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 3,
+                "same": false
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 2,
+                "same": false
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 3,
+                "same": false
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 2,
+                "same": false
+              }
+            ]
+          },
+          "modulation": {
+            "pct_same_cluster": 0.0,
+            "n_same": 0,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 9,
+                "same": false
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 12,
+                "same": false
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 6,
+                "same": false
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 12,
+                "same": false
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 11,
+                "label_b": 8,
+                "same": false
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 11,
+                "same": false
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 8,
+                "label_b": 6,
+                "same": false
+              }
+            ]
+          }
+        },
+        "stim2": {
+          "input": {
+            "pct_same_cluster": 85.71428571428571,
+            "n_same": 6,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 5,
+                "same": false
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              }
+            ]
+          },
+          "hidden": {
+            "pct_same_cluster": 42.857142857142854,
+            "n_same": 3,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 2,
+                "same": false
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 6,
+                "same": false
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 4,
+                "same": false
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 3,
+                "same": false
+              }
+            ]
+          },
+          "modulation": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 7,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              }
+            ]
+          }
+        },
+        "delay1": {
+          "input": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              }
+            ]
+          },
+          "hidden": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 6,
+                "label_b": 6,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              }
+            ]
+          },
+          "modulation": {
+            "pct_same_cluster": 0.0,
+            "n_same": 0,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 9,
+                "same": false
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 12,
+                "same": false
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 5,
+                "label_b": 6,
+                "same": false
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 12,
+                "same": false
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 11,
+                "label_b": 8,
+                "same": false
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 11,
+                "same": false
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 8,
+                "label_b": 6,
+                "same": false
+              }
+            ]
+          }
+        },
+        "delay2": {
+          "input": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              }
+            ]
+          },
+          "hidden": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 6,
+                "label_b": 6,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              }
+            ]
+          },
+          "modulation": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 7,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              }
+            ]
+          }
+        },
+        "go1": {
+          "input": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              }
+            ]
+          },
+          "hidden": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 6,
+                "label_b": 6,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              }
+            ]
+          },
+          "modulation": {
+            "pct_same_cluster": 100.0,
+            "n_same": 7,
+            "n_total": 7,
+            "detail": [
+              {
+                "aname": "everything_seed408_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed664_L21e4+hidden300+batch128+angle",
+                "label_a": 4,
+                "label_b": 4,
+                "same": true
+              },
+              {
+                "aname": "everything_seed692_L21e4+hidden300+batch128+angle",
+                "label_a": 7,
+                "label_b": 7,
+                "same": true
+              },
+              {
+                "aname": "everything_seed738_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed749_L21e4+hidden300+batch128+angle",
+                "label_a": 3,
+                "label_b": 3,
+                "same": true
+              },
+              {
+                "aname": "everything_seed842_L21e4+hidden300+batch128+angle",
+                "label_a": 1,
+                "label_b": 1,
+                "same": true
+              },
+              {
+                "aname": "everything_seed921_L21e4+hidden300+batch128+angle",
+                "label_a": 2,
+                "label_b": 2,
+                "same": true
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

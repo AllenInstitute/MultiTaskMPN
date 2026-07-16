@@ -16,7 +16,8 @@ Outputs (under ./onetask/):
   loss_{aname}.png            — training accuracy / loss curve
 
 `aname` shared identifier:
-  {ruleset}_seed{seed}_{addon}hidden{hidden}+batch{batch}+{acc_measure}
+  {ruleset}_seed{seed}_{addon}{reg_tag}+hidden{hidden}+batch{batch}+{acc_measure}
+  where {reg_tag} encodes reg_lambda, e.g. 1e-4 -> "L21e4".
 """
 import gc
 import random
@@ -107,13 +108,13 @@ def current_basic_params(hyp_dict):
         'batch_size': 128,
         'gradient_clip': 10,
         'valid_n_batch': 50,
-        'n_datasets': 3000,
+        'n_datasets': 5000,
         'valid_check': None,
         'n_epochs_per_set': 1,
         'task_mask': None,
         'weight_reg': 'L2',
         'activity_reg': 'L2',
-        'reg_lambda': 1e-4,
+        'reg_lambda': 1e-2,
 
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'
@@ -190,7 +191,12 @@ def run_trial(seed):
 
     # Shared identifier (see module docstring).
     n_hidden = net_params['n_neurons'][1]
-    aname = (f"{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}"
+    # Regularization tag, matching the multi-task convention: reg_lambda=1e-4
+    # -> "L21e4" (L2 + mantissa + |exponent|, e.g. 1e-2 -> L21e2).
+    _rl = train_params['reg_lambda']
+    _mant, _exp = f"{_rl:.0e}".split("e")
+    reg_tag = f"L2{_mant}e{abs(int(_exp))}"
+    aname = (f"{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}{reg_tag}+"
              f"hidden{n_hidden}+batch{train_params['n_batches']}+{net_params['acc_measure']}")
     print(f"aname: {aname}")
 
@@ -446,7 +452,7 @@ if __name__ == "__main__":
     if SEED_LIST is not None:
         seeds = list(SEED_LIST)
     else:
-        rng = random.Random(0)  # reproducible draw of distinct seeds
+        rng = random.Random()  # unseeded: draw fresh distinct seeds each run
         seeds = rng.sample(range(1, 1000), N_TRIALS)
 
     print(f"Running {len(seeds)} independent trials: seeds={seeds}")
