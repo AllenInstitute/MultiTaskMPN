@@ -2083,6 +2083,42 @@ def plot_onetask_example_trial():
     print(f"Saved: {out_out}")
 
 
+# Number of ring stimulus directions (n_eachring in the task config).
+ONETASK_N_STIM = 8
+
+
+def plot_onetask_stimulus_colorwheel():
+    """
+    Illustration: the stimulus color convention used throughout the one-task
+    figures. Each of the N ring stimulus directions (angle = 2*pi*k/N) is drawn
+    as a dot on the unit circle in its c_vals[k] color — the same mapping used
+    to color trajectories/rings by stimulus. A pure legend/illustration; uses no
+    saved data.
+    """
+    _ensure_out_dir()
+    n = ONETASK_N_STIM
+    angles = np.arange(n) * (2 * np.pi / n)
+
+    fig, ax = plt.subplots(1, 1, figsize=(2.6, 2.6))
+    # Faint guide circle.
+    theta = np.linspace(0, 2 * np.pi, 200)
+    ax.plot(np.cos(theta), np.sin(theta), "-", color="0.8", lw=1.0, zorder=1)
+    for k, a in enumerate(angles):
+        x, y = np.cos(a), np.sin(a)
+        ax.scatter(x, y, color=c_vals[k % len(c_vals)], s=180,
+                   edgecolors="k", linewidths=0.5, zorder=3)
+    ax.set_xlim(-1.3, 1.3)
+    ax.set_ylim(-1.3, 1.3)
+    ax.set_aspect("equal")
+    ax.axis("off")
+
+    fig.tight_layout()
+    out_path = OUT_DIR / "onetask_stimulus_colorwheel.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
 def plot_onetask_show():
     """
     Figure: per-stimulus fixon / task / combine modulation-component traces
@@ -2946,14 +2982,16 @@ def _draw_attractor_single_alpha(ax, entry, alpha_idx, show_ylabel=True):
     for j in range(n):
         ax.plot([xy[j, 0], xy[(j + 1) % n, 0]],
                 [xy[j, 1], xy[(j + 1) % n, 1]],
-                "-", color="0.6", linewidth=1.0, alpha=0.5, zorder=1)
+                "-", color="0.6", linewidth=0.8, alpha=0.5, zorder=1)
     for i in range(n):
         ax.scatter(xy[i, 0], xy[i, 1], c=c_vals[interpolation_label[i]],
-                   marker="o", s=80, zorder=2)
+                   marker="o", s=32, zorder=2)
 
     if show_ylabel:
-        ax.set_ylabel("PCA 2", fontsize=20)
-    ax.tick_params(axis="both", labelsize=15)
+        ax.set_ylabel("PCA 2", fontsize=10)
+    # Hide tick labels/marks for a compact layout (PC axes are unitless here).
+    ax.set_xticks([])
+    ax.set_yticks([])
     ax.spines[["top", "right"]].set_visible(False)
 
 
@@ -2978,8 +3016,11 @@ def plot_two_task_attractor_alpha():
         ac = pickle.load(f)
 
     # rows = periods (Stimulus, Response); columns = alpha endpoints (0, 1).
+    # alpha=0 = pure anti-task input (delayanti = MemoryAnti); alpha=1 = pure
+    # pro-task input (delaygo = MemoryPro). See input_interpolation in
+    # two_task_analysis.py: stacked = alpha*pro + (1-alpha)*anti.
     row_periods = ["longstimulus", "longresponse"]
-    alpha_cols = [(0, "α = 0"), (-1, "α = 1")]  # first / last alpha step
+    alpha_cols = [(0, "MemoryAnti"), (-1, "MemoryPro")]  # first / last alpha step
     # w_modulation is the effective modulation (W⊙M).
     names = ["hidden", "modulation", "w_modulation"]
 
@@ -2988,7 +3029,7 @@ def plot_two_task_attractor_alpha():
             print(f"  Skipped '{name}': missing stimulus/response entries in "
                   f"{matches[0].name}.")
             return
-        fig, axs = plt.subplots(2, 2, figsize=(5 * 2, 5 * 2), squeeze=False)
+        fig, axs = plt.subplots(2, 2, figsize=(4.4, 4.4), squeeze=False)
         for r, period in enumerate(row_periods):
             entry = ac[f"{period}|{name}"]
             for c, (alpha_idx, alpha_title) in enumerate(alpha_cols):
@@ -2996,12 +3037,12 @@ def plot_two_task_attractor_alpha():
                 _draw_attractor_single_alpha(ax, entry, alpha_idx,
                                              show_ylabel=(c == 0))
                 if r == 0:
-                    ax.set_title(alpha_title, fontsize=22)
+                    ax.set_title(alpha_title, fontsize=12)
                 # Row label (period) on the left column only.
                 if c == 0:
                     ax.set_ylabel(f"{_PERIOD_TITLE.get(period, period)}\nPCA 2",
-                                  fontsize=18)
-        fig.supxlabel("PCA 1", fontsize=20)
+                                  fontsize=10)
+        fig.supxlabel("PCA 1", fontsize=11)
         fig.tight_layout()
         out_path = OUT_DIR / f"twotask_attractor_alpha_{name}_{_twotask_seed_tag()}.png"
         fig.savefig(out_path, dpi=300, bbox_inches="tight")
@@ -3325,6 +3366,7 @@ def plot_delaydm_memory_attractor():
 FIGURES_BY_MODE = {
     "one_task": {
         "onetask_example_trial": plot_onetask_example_trial,
+        "onetask_stimulus_colorwheel": plot_onetask_stimulus_colorwheel,
         "onetask_show": plot_onetask_show,
         "onetask_modulation_heatmap": plot_onetask_modulation_heatmap,
         "onetask_modulation_snapshot": plot_onetask_modulation_snapshot,
