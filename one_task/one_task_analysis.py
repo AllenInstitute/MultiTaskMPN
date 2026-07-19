@@ -47,6 +47,7 @@ import torch
 import mpn
 import networks as nets
 import mpn_tasks
+from fixed_point import find_modulation_fixed_points
 
 # Match the plotting style used in multiple_task_analysis.py
 mpl.rcParams.update({
@@ -167,7 +168,7 @@ def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by):
         win = (0 if ep[0] is None else int(ep[0]), T if ep[1] is None else int(ep[1]))
         _, _, db = net.iterate_sequence_batch(
             test_input.to(device), run_mode="track_states", save_to_cpu=True, detach_saved=True)
-        return db, stim, win
+        return db, stim, win, np.asarray(test_input.detach().cpu())
 
     # Run each variant once; cache hidden + W⊙M states and the EXTENDED period
     # window to analyze for that variant.
@@ -176,7 +177,7 @@ def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by):
     cache = {}
     for v in variants:
         try:
-            db, stim, win = _gen_and_run(v)
+            db, stim, win, var_input = _gen_and_run(v)
         except Exception as exc:
             print(f"  [long-fp] variant {v} failed: {exc}; skipping it.")
             continue
@@ -184,7 +185,10 @@ def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by):
         M = np.asarray(db[f"M{layer_index}"])                       # (batch, T, hidden, hidden)
         mm = M.reshape(M.shape[0], M.shape[1], -1)                  # raw M flattened
         em = (M * W[None, None, :, :]).reshape(M.shape[0], M.shape[1], -1)  # W⊙M flattened
+        # Keep the raw (unflattened) M and the input tensor for gradient-based
+        # fixed-point finding (fixed_point.find_modulation_fixed_points).
         cache[v] = {"hidden": h, "m_modulation": mm, "e_modulation": em,
+                    "M": M, "input": var_input,
                     "stim": stim, "period": tuple(win)}
         del db, M
 
@@ -284,6 +288,21 @@ def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by):
                       "period_title": period_title, "data": long_fp_save}, _f)
     print(f"  Saved long_fixed_points data: {long_pkl}")
 
+    # ── Gradient-based TRUE fixed points of the modulation matrix ────────────
+    # In addition to the settling-endpoint proxy above, solve for genuine fixed
+    # points M* = F(M*; x) of the modulation dynamics under each period's
+    # constant input, via fixed_point.find_modulation_fixed_points. Seed the
+    # optimizer at the recorded end-of-period M and hold the mid-period input
+    # fixed during the relaxation.
+    try:
+        _solve_period_modulation_fixed_points(
+            aname, save_dir, net, cache, present, period_title, device,
+            layer_index=layer_index, W=W)
+    except Exception as exc:
+        print(f"  [grad-fp] failed: {exc}")
+        import traceback
+        traceback.print_exc()
+
     # free GPU memory
     try:
         net.to("cpu")
@@ -294,6 +313,91 @@ def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by):
     _gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def _solve_period_modulation_fixed_points(aname, save_dir, net, cache, present,
+                                          period_title, device,
+                                          layer_index=1, W=None,
+                                          steps=2000, learningRate=1e-3):
+    """
+    For each analyzed period, solve for TRUE fixed points of the modulation
+    matrix M under that period's constant input, using
+    fixed_point.find_modulation_fixed_points (gradient descent on the update
+    speed q(M) = 1/2||F(M;x) - M||^2).
+
+    For each period the candidate M's are seeded at the recorded END-OF-PERIOD M
+    (one per trial/stimulus) and relaxed while holding the period-midpoint input
+    fixed. In addition to the raw fixed-point M, two derived views are saved
+    (transforms of the SAME fixed point, not re-solved):
+      fixed_WM     effective modulation W⊙M* at the fixed point
+      fixed_hidden hidden state produced by M* under the constant input
+    Results are pickled to fixed_points_grad_{aname}.pkl for later analysis.
+    """
+    import pickle as _pickle
+
+    def _hidden_from_M(M_np, x_np):
+        """Hidden state (post-activation of the MP layer) produced by setting the
+        layer's modulation to M_np and running one forward pass under input x_np.
+        M is restored afterward. Returns (batch, hidden)."""
+        mp = net.mp_layers[0]
+        saved_M, saved_M_pre = mp.M, getattr(mp, "M_pre", None)
+        with torch.no_grad():
+            mp.M = torch.as_tensor(M_np, dtype=torch.float, device=device)
+            xin = torch.as_tensor(x_np, dtype=torch.float, device=device)
+            _, mpl_activities, _ = net.forward(xin, run_mode="minimal")
+            hid = np.asarray(mpl_activities[-1].detach().cpu())   # last = MP-layer post-act
+        mp.M = saved_M
+        if saved_M_pre is not None:
+            mp.M_pre = saved_M_pre
+        return hid
+
+    results = {}
+    for v in present:
+        c = cache[v]
+        ps, pe = c["period"]
+        M_all = np.asarray(c["M"])          # (batch, T, hidden, embed)
+        inp = np.asarray(c["input"])        # (batch, T, n_input)
+        stim = np.asarray(c["stim"])
+
+        # Seed at the last in-period frame; hold the mid-period input constant.
+        t_seed = min(pe - 1, M_all.shape[1] - 1)
+        t_mid = min((ps + pe) // 2, inp.shape[1] - 1)
+        init_M = M_all[:, t_seed, :, :]                 # (batch, hidden, embed)
+        const_input = inp[:, t_mid, :]                  # (batch, n_input)
+
+        print(f"  [grad-fp] {v}: solving {init_M.shape[0]} fixed points "
+              f"(seed t={t_seed}, input t={t_mid})")
+        fixed_M, loss_hist, final_speeds = find_modulation_fixed_points(
+            net, init_M, const_input, steps=steps, learningRate=learningRate,
+            printPeriod=max(steps // 5, 1), device=device)
+
+        # Derived views of the SAME fixed point (not re-solved).
+        fixed_WM = (fixed_M * np.asarray(W)[None, :, :]) if W is not None else None
+        fixed_hidden = _hidden_from_M(fixed_M, const_input)
+
+        results[v] = {
+            "period_title": period_title.get(v, v),
+            "period": (int(ps), int(pe)),
+            "t_seed": int(t_seed),
+            "t_input": int(t_mid),
+            "init_M": np.asarray(init_M, dtype=np.float32),
+            "fixed_M": np.asarray(fixed_M, dtype=np.float32),
+            "fixed_WM": (np.asarray(fixed_WM, dtype=np.float32)
+                         if fixed_WM is not None else None),
+            "fixed_hidden": np.asarray(fixed_hidden, dtype=np.float32),
+            "final_speeds": np.asarray(final_speeds, dtype=float),
+            "loss_hist": np.asarray(loss_hist, dtype=float),
+            "stim": np.asarray(stim),
+        }
+
+    if not results:
+        print("  [grad-fp] no periods solved; skipping save.")
+        return
+
+    out_pkl = save_dir / f"fixed_points_grad_{aname}.pkl"
+    with open(out_pkl, "wb") as _f:
+        _pickle.dump({"aname": aname, "results": results}, _f)
+    print(f"  Saved gradient fixed-point data: {out_pkl}")
 
 
 def _cross_period_fve(H, periods, k=4, center="none", dtype=np.float64):
@@ -959,8 +1063,13 @@ def main(aname):
             label_to_batch = {}
             for batch_iter in range(batch_nums):
                 label_to_batch.setdefault(int(labels[batch_iter, 0]), batch_iter)
+            # Effective modulation W⊙M uses the recurrent MP-layer weight of
+            # this stage (hidden x embed, matching Ms_orig's last two axes).
+            W_eff_snap = Wall_stages[i]
             snapshot_stims = [1, 5]
-            snapshots = {}
+            snapshots = {}          # raw M
+            snapshots_eff = {}      # effective modulation W⊙M
+            hidden_snapshots = {}   # hidden state at the same timepoints
             for s in snapshot_stims:
                 if s not in label_to_batch:
                     continue
@@ -969,6 +1078,16 @@ def main(aname):
                     "stimulus": np.asarray(Ms_orig[b, t_mid_stim, :, :], dtype=float),
                     "response": np.asarray(Ms_orig[b, t_mid_resp, :, :], dtype=float),
                 }
+                snapshots_eff[s] = {
+                    "stimulus": np.asarray(Ms_orig[b, t_mid_stim, :, :] * W_eff_snap, dtype=float),
+                    "response": np.asarray(Ms_orig[b, t_mid_resp, :, :] * W_eff_snap, dtype=float),
+                }
+                # Hidden-state vector at the same two timepoints (for the hidden
+                # illustration alongside the M / W⊙M snapshot figures).
+                hidden_snapshots[s] = {
+                    "stimulus": np.asarray(hs[b, t_mid_stim, :], dtype=float),
+                    "response": np.asarray(hs[b, t_mid_resp, :], dtype=float),
+                }
             with open(save_dir / f"modulation_snapshot_{aname}.pkl", "wb") as _f:
                 _pickle.dump({
                     "aname": aname,
@@ -976,7 +1095,9 @@ def main(aname):
                     "stims": [s for s in snapshot_stims if s in snapshots],
                     "t_mid_stim": int(t_mid_stim),
                     "t_mid_resp": int(t_mid_resp),
-                    "snapshots": snapshots,   # {stim: {"stimulus": (hidden,input), "response": (hidden,input)}}
+                    "snapshots": snapshots,       # {stim: {"stimulus", "response"}} raw M
+                    "snapshots_eff": snapshots_eff,  # {stim: {"stimulus", "response"}} W⊙M
+                    "hidden_snapshots": hidden_snapshots,  # {stim: {"stimulus", "response"}} hidden vec
                 }, _f)
             print(f"  Saved modulation snapshot data: "
                   f"{save_dir / f'modulation_snapshot_{aname}.pkl'}")

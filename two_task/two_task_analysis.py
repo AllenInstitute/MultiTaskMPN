@@ -1184,9 +1184,17 @@ def main(aname):
                 "fixate_off": bool(task_params["fixate_off"]),
             }
 
-        T_delayend = time_stamps_usual["delay_end"] - 1
-        h1 = (W + W * mod1_stim1[T_delayend]) @ (W_in @ x_fix_on_all[T_delayend])
-        h2 = (W + W * mod2_stim1[T_delayend]) @ (W_in @ x_fix_on_all[T_delayend])
+        # Average the fixon-probed memory state over the SECOND HALF of the
+        # delay period (delay midpoint .. delay end), rather than a single
+        # end-of-delay frame, so the projection estimate is more stable.
+        delay_start = time_stamps_usual["delay_start"]
+        delay_end = time_stamps_usual["delay_end"]
+        half_start = (delay_start + delay_end) // 2
+        delay_window = range(half_start, delay_end)
+        h1 = np.mean([(W + W * mod1_stim1[Tt]) @ (W_in @ x_fix_on_all[Tt])
+                      for Tt in delay_window], axis=0)
+        h2 = np.mean([(W + W * mod2_stim1[Tt]) @ (W_in @ x_fix_on_all[Tt])
+                      for Tt in delay_window], axis=0)
 
         y = Y_resp_cos.reshape(-1)
         y = y / (np.linalg.norm(y) + 1e-12)
@@ -1260,6 +1268,22 @@ def main(aname):
     fig41.savefig(fp(f"outputsubspace_cancel_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
     print("  Saved figure: " + str(fp(f"outputsubspace_cancel_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
     plt.close(fig41)
+
+    # Save the output-subspace cancellation scatter data so paper_plot can
+    # replot it. projs_all[cat][stim] = [combined, |task1|, |task2|] where
+    # combined = |task1 + task2| (left panel) and |task1| is the individual
+    # magnitude (right panel). Categories: cosine-output / orthogonal / random.
+    outputsubspace_data = {
+        "projs_all": np.asarray(projs_all, dtype=float),   # (3 cat, 8 stim, 3 vals)
+        "category_labels": ["Projection to Cosine Output",
+                            "Orthogonal Complement", "Random Vector"],
+        "combined_ylabel": "Cancelation between Same Stimulus",
+        "magnitude_ylabel": "Magnitude of Projection",
+    }
+    outputsubspace_path = save_dir / f"outputsubspace_cancel_seed{seed}_{hyp_dict['addon_name']}.pkl"
+    with open(outputsubspace_path, "wb") as f:
+        pickle.dump(outputsubspace_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+    print("  Saved data: " + str(outputsubspace_path))
 
     # ═════════════════════════════════════════════════════════════════════════
     # Cells 43-47: cross-task / cross-period PCA (figure2A_pca_fve)
@@ -1381,6 +1405,9 @@ def main(aname):
         input_label = ["Fix On", "Stim 1 Cos", "Stim 1 Sin", "Stim 2 Cos", "Stim 2 Sin", "Task 1", "Task 2"]
 
     Wcombs = [W_in, W, W @ W_in]
+    wcomb_names = ["W_in", "W", "WW_in"]
+    wcomb_titles = [r"$W_{\mathrm{in}}$", r"$W$", r"$WW_{\mathrm{in}}$"]
+    corr_upper_all = {}
     fig49, axs49 = plt.subplots(1, 3, figsize=(4 * 3, 4))
     for idx, Wcomb in enumerate(Wcombs):
         C = np.corrcoef(Wcomb, rowvar=False)
@@ -1390,13 +1417,30 @@ def main(aname):
                     xticklabels=input_label if idx != 1 else False,
                     yticklabels=input_label if idx != 1 else False,
                     annot=True if idx != 1 else False, fmt=".2f", vmin=-1.0, vmax=1.0)
-    axs49[0].set_title(r"$W_{\mathrm{in}}$", fontsize=12)
-    axs49[1].set_title(r"$W$", fontsize=12)
-    axs49[2].set_title(r"$WW_{\mathrm{in}}$", fontsize=12)
+        corr_upper_all[wcomb_names[idx]] = np.asarray(C_upper, dtype=float)
+    axs49[0].set_title(wcomb_titles[0], fontsize=12)
+    axs49[1].set_title(wcomb_titles[1], fontsize=12)
+    axs49[2].set_title(wcomb_titles[2], fontsize=12)
     fig49.tight_layout()
     fig49.savefig(fp(f"w_stim_corr_{hyp_dict['ruleset']}_seed{seed}_{name}_{hyp_dict['addon_name']}.png"), dpi=300)
     print("  Saved figure: " + str(fp(f"w_stim_corr_{hyp_dict['ruleset']}_seed{seed}_{name}_{hyp_dict['addon_name']}.png")))
     plt.close(fig49)
+
+    # Save the input-correlation matrices so paper_plot can replot them. Each is
+    # the upper-triangular Pearson correlation between columns of the weight
+    # matrix (W_in / W / W@W_in). The labeled panels (W_in, WW_in) are over the
+    # input channels; W is over hidden units so it carries no channel labels.
+    w_stim_corr_data = {
+        "corr_upper": corr_upper_all,          # {"W_in","W","WW_in"} -> upper-tri corr
+        "input_label": input_label,
+        "titles": {"W_in": "W_in", "W": "W", "WW_in": "WW_in"},
+        "vmin": -1.0,
+        "vmax": 1.0,
+    }
+    w_stim_corr_path = save_dir / f"w_stim_corr_{name}_seed{seed}_{hyp_dict['addon_name']}.pkl"
+    with open(w_stim_corr_path, "wb") as f:
+        pickle.dump(w_stim_corr_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+    print("  Saved data: " + str(w_stim_corr_path))
 
     # ═════════════════════════════════════════════════════════════════════════
     # Cell 54 + 55: half-period time stamps + attractor at before/after training
@@ -1523,6 +1567,21 @@ def main(aname):
     fig58.savefig(fp(f"w_gram_matrix_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
     print("  Saved figure: " + str(fp(f"w_gram_matrix_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
     plt.close(fig58)
+
+    # Save the input-embedding Gram matrices so paper_plot can replot the FINAL
+    # stage. gram_final = Winput_final.T @ Winput_final (raw inner products); the
+    # cosine form is gram / sqrt(outer(diag, diag)). Also keep all stages for
+    # reference. keys = the 7 input-channel names.
+    grams_all = np.asarray([Winput.T @ Winput for Winput in Winput_lst], dtype=float)
+    w_gram_data = {
+        "keys": keys,
+        "gram_final": grams_all[-1],          # (7, 7) raw Gram, final stage
+        "grams_all": grams_all,               # (n_stage, 7, 7)
+    }
+    w_gram_path = save_dir / f"w_gram_matrix_seed{seed}_{hyp_dict['addon_name']}.pkl"
+    with open(w_gram_path, "wb") as f:
+        pickle.dump(w_gram_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+    print("  Saved data: " + str(w_gram_path))
 
     # ═════════════════════════════════════════════════════════════════════════
     # Cells 60-63: subspace orthogonality + readout heatmap
@@ -1749,6 +1808,19 @@ def main(aname):
     fig76.savefig(fp(f"w_hurt_{compare_value}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
     print("  Saved figure: " + str(fp(f"w_hurt_{compare_value}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
     plt.close(fig76)
+
+    # Save the magnitude-pruning accuracy curve so paper_plot can replot it:
+    # accuracy (fraction) vs. sparsity level (% of recurrent W entries zeroed by
+    # smallest magnitude). Zero sparsity is the intact-network accuracy.
+    w_hurt_data = {
+        "compare_value": compare_value,
+        "sparsity_pct": np.asarray(K_lst, dtype=float),      # (n_K,) % of W zeroed
+        "accuracy": np.asarray(acc_K_lst, dtype=float),      # (n_K,) fraction correct
+    }
+    w_hurt_path = save_dir / f"w_hurt_{compare_value}_seed{seed}_{hyp_dict['addon_name']}.pkl"
+    with open(w_hurt_path, "wb") as f:
+        pickle.dump(w_hurt_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+    print("  Saved data: " + str(w_hurt_path))
 
     # ═════════════════════════════════════════════════════════════════════════
     # Cell 77: component cosine-similarity diagnostics (same stim / same resp)

@@ -43,32 +43,64 @@ mpl.rcParams.update({
     "ps.fonttype": 42,
 })
 
-# ─── Paths ───────────────────────────────────────────────────────────────────
-ANAME = "everything_seed749_L21e4+hidden300+batch128+angle"
-DATA_DIR = Path("multiple_tasks") / ANAME
+# ─── Global figure options ────────────────────────────────────────────────────
+# Master toggle for legends across every figure. Set False to suppress all
+# legends (useful for panels where the legend is documented in the caption).
+# All figures route their legend calls through _legend(), so this one flag
+# controls them uniformly.
+SHOW_LEGEND = True
+
+
+def _legend(ax, *args, **kwargs):
+    """Draw a legend on `ax` only if the global SHOW_LEGEND flag is set.
+
+    Drop-in replacement for ax.legend(...); returns the Legend or None. Any
+    per-figure gating (e.g. a local show_legend) should be checked by the caller
+    before calling this, so both conditions must hold for a legend to appear.
+    """
+    if not SHOW_LEGEND:
+        return None
+    return ax.legend(*args, **kwargs)
+
+
+# ─── Paths & run identifiers ──────────────────────────────────────────────────
+# All figure output goes here; the run identifiers ("aname") below select which
+# trained run each mode's figures are drawn from. They are grouped by experiment
+# family so a run can be swapped in one place.
 OUT_DIR = Path("paper_plot")
 
-# Multi-task run used for the DMC category-memory probe (two_in_multiple mode).
-# May differ from ANAME — set independently so the attractor figure can come
-# from a different seed/regularization than the clustering/lesion figures.
+# ── Multi-task (one full multi-task network) ──
+ANAME = "everything_seed749_L21e4+hidden300+batch128+angle"
+DATA_DIR = Path("multiple_tasks") / ANAME
+# DMC category-memory probe (two_in_multiple mode). May differ from ANAME — set
+# independently so the attractor figure can come from a different
+# seed/regularization than the clustering/lesion figures.
 DMC_ANAME = "everything_seed299_L21e3+hidden300+batch128+angle"
-
-# Multi-task run used for the delayDM integration-memory probe (two_in_multiple
-# mode). Independent of ANAME/DMC_ANAME so it can come from a different
-# seed/regularization; the matching data file is written by
-# multiple_task_analysis.py's shared_run("delaydm1") into
+# delayDM integration-memory probe (two_in_multiple mode). Independent of
+# ANAME/DMC_ANAME; matching data written by multiple_task_analysis.py's
+# shared_run("delaydm1") into
 # multiple_tasks/{DELAYDM_ANAME}/delaydm1_fixed_points_{DELAYDM_ANAME}.pkl.
 DELAYDM_ANAME = "everything_seed408_L21e4+hidden300+batch128+angle"
 
-# Two-task run used for the cross-task / cross-period PCA figure (d_combine).
-# The matching data file is written by two_task_analysis.py into
-# twotasks/{TWOTASK_ANAME}/d_combine_{TWOTASK_ANAME}.pkl.
-TWOTASK_ANAME = "delaygofamily_seed21_reg1e3+hidden200"
+# ── Two-task network ──
 TWOTASKS_DIR = Path("twotasks")
-
-# Two-task run used for the attractor first-subplot figure (independent of
-# TWOTASK_ANAME so it can come from a different seed/regularization).
+# Cross-task / cross-period PCA figure (d_combine); data written by
+# two_task_analysis.py into twotasks/{TWOTASK_ANAME}/d_combine_{TWOTASK_ANAME}.pkl.
+TWOTASK_ANAME = "delaygofamily_seed21_reg1e3+hidden200"
+# Attractor first-subplot figure (independent of TWOTASK_ANAME so it can come
+# from a different seed/regularization).
 TWOTASK_ATTRACTOR_ANAME = "delaygofamily_seed21_reg1e3+hidden200"
+
+# ── Single-task network ──
+ONETASK_DIR = Path("onetask")
+# Default single-task run for the one-task figures (aname under onetask/{aname}/).
+# Used by onetask_show, onetask_modulation_heatmap, onetask_long_fixed_points, etc.
+ONETASK_ANAME = "delaygo_seed395_hidden200+batch128+angle"
+# Runs used for the example-trial illustration only. Independent of ONETASK_ANAME
+# so the input and output panels can each come from a different seed (they read
+# separate example_trial pickles).
+ONETASK_INPUT_ANAME = "delaygo_seed865_hidden200+batch128+angle"
+ONETASK_OUTPUT_ANAME = "delaygo_seed865_hidden200+batch128+angle"
 
 
 def _twotask_seed_tag():
@@ -78,12 +110,37 @@ def _twotask_seed_tag():
     m = _re.search(r"seed\d+", TWOTASK_ANAME)
     return m.group(0) if m else TWOTASK_ANAME
 
-# Categorical color cycle (matches multiple_task_analysis.py)
+# Categorical color cycle (matches multiple_task_analysis.py). Used for
+# NON-stimulus categorical coloring (components, series, periods, tasks).
 c_vals = [
     "#e53e3e", "#3182ce", "#38a169", "#d69e2e", "#d53f8c",
     "#4c51bf", "#dd6b20", "#0ea5e9", "#22c55e", "#a855f7",
     "#f43f5e", "#0f766e", "#b83280", "#ca8a04", "#2b6cb0",
 ] * 10
+
+# Number of ring stimulus directions (n_eachring in the task config); the
+# default stimulus count for the color ramp and the colorwheel illustration.
+ONETASK_N_STIM = 8
+
+# ─── Stimulus color scheme ────────────────────────────────────────────────────
+# A continuous rainbow ramp from red to purple, used ONLY to color by stimulus
+# direction (ring index). Stimulus k of N maps to a hue sweeping from red
+# (hue 0) through the spectrum to purple, so adjacent stimuli are adjacent
+# colors and the ring reads as a smooth gradient. Use stim_color(k, n).
+
+
+def stim_color(k, n=ONETASK_N_STIM):
+    """Color for stimulus index k of n, on a red→purple rainbow ramp."""
+    n = max(int(n), 1)
+    # Sweep hue from 0 (red) to ~0.83 (purple/violet) across the n stimuli.
+    frac = (k % n) / max(n - 1, 1)
+    hue = 0.83 * frac
+    return mpl.colors.hsv_to_rgb((hue, 0.85, 0.9))
+
+
+def stim_colors(n=ONETASK_N_STIM):
+    """List of n stimulus colors on the red→purple rainbow ramp."""
+    return [stim_color(k, n) for k in range(n)]
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -153,11 +210,30 @@ _PHASE_COLORS = {
     "go1": "#d1d5db",     # light gray
 }
 
-# Period colorbar palette for the single-task period strip, ordered
-# Fixation → Stimulus → Memory → Response. A neutral grayscale ramp, chosen to
-# be visually distinct from the vivid categorical cue colors (c_vals) so the
-# period bar reads as a separate annotation axis rather than another data trace.
-_ONETASK_PERIOD_COLORS = ["#e8e8e8", "#b5b5b5", "#828282", "#505050"]
+# Period colorbar palette for the one-task / two-task period strip, ordered
+# Fixation → Stimulus → Memory → Response. Stimulus/Memory/Response reuse the
+# multi-task heatmap phase colors (_PHASE_COLORS stim1/delay1/go1) so the period
+# bar is color-consistent with those figures; Fixation has no heatmap
+# counterpart, so it gets a new pastel yellow in the same soft-pastel family.
+_ONETASK_PERIOD_COLORS = [
+    "#fef08a",                  # Fixation — new (pale yellow)
+    _PHASE_COLORS["stim1"],     # Stimulus — matches heatmap Stimulus 1 (purple)
+    _PHASE_COLORS["delay1"],    # Memory   — matches heatmap Memory 1 (light green)
+    _PHASE_COLORS["go1"],       # Response — matches heatmap Response (light gray)
+]
+
+# ─── Input / output channel colors ────────────────────────────────────────────
+# Colors for the example-trial input and output traces. A muted qualitative set,
+# deliberately distinct from the vivid stimulus rainbow (stim_color) and the pale
+# period-bar pastels (_ONETASK_PERIOD_COLORS). Within a modality the cos/sin
+# channels share a hue as a (dark, light) pair. Channels that MEAN THE SAME thing
+# across the input and output figures share a color: Fixation↔Fixation, and the
+# response Cos/Sin reuse the active stimulus modality's (Modality 2) cos/sin
+# colors (the response is that modality's angle read back out).
+_IO_FIXATION = "#555555"              # dark gray
+_IO_MOD1 = ("#a6761d", "#dcb877")     # brown  (cos dark, sin light)
+_IO_MOD2 = ("#1b9e77", "#8fded0")     # teal   (cos dark, sin light) = active stimulus
+_IO_TASK = "#d95f02"                  # orange (single channel)
 
 
 def _relabel_tb_name(name):
@@ -634,7 +710,7 @@ def _plot_state_space_pca(X_2d, ctx_rule_labels, all_rules, rule_motif_mapping,
     ax.set_ylabel("PC2")
     ax.set_title(title, fontsize=10, pad=6)
     if show_legend:
-        ax.legend(frameon=True, loc="best", fontsize=5, markerscale=1.0)
+        _legend(ax, frameon=True, loc="best", fontsize=5, markerscale=1.0)
     ax.spines[["top", "right"]].set_visible(False)
 
     fig.tight_layout()
@@ -696,7 +772,7 @@ def plot_state_space_combined():
         ax.xaxis.set_major_locator(mpl.ticker.MaxNLocator(integer=True))
         ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(integer=True))
         if show_legend:
-            ax.legend(frameon=True, loc="best", fontsize=5, markerscale=1.0)
+            _legend(ax, frameon=True, loc="best", fontsize=5, markerscale=1.0)
 
     axes[1].set_xlabel("PC1", fontsize=8)
     axes[0].tick_params(labelbottom=False)
@@ -1108,7 +1184,7 @@ def plot_om_vs_lesion():
     x_line = np.linspace(om_vals.min(), om_vals.max(), 100)
     ax1.plot(x_line, slope * x_line + intercept, color="tomato", linewidth=1.2, zorder=4)
     p_str = f"p = {p:.2e}" if p < 0.001 else f"p = {p:.3f}"
-    ax1.legend([f"r = {r:.2f}, {p_str}"], loc="upper right", fontsize=7, frameon=True)
+    _legend(ax1, [f"r = {r:.2f}, {p_str}"], loc="upper right", fontsize=7, frameon=True)
     ax1.set_xlabel("Over-membership", fontsize=8)
     ax1.set_ylabel("|Lesion effect diff|", fontsize=8)
     ax1.spines[["top", "right"]].set_visible(False)
@@ -1128,7 +1204,7 @@ def plot_om_vs_lesion():
     x_fit = np.linspace(pred_x.min(), pred_x.max(), 100)
     ax2.plot(x_fit, slope_p * x_fit + intercept_p, color="tomato", linewidth=1.2, zorder=4)
     p_str_p = f"p = {p_p:.2e}" if p_p < 0.001 else f"p = {p_p:.3f}"
-    ax2.legend([f"r = {r_p:.2f}, {p_str_p}"], loc="upper left", fontsize=7, frameon=True)
+    _legend(ax2, [f"r = {r_p:.2f}, {p_str_p}"], loc="upper left", fontsize=7, frameon=True)
     ax2.set_xlabel("OM-predicted effect (%)", fontsize=8)
     ax2.set_ylabel("Actual mod lesion effect (%)", fontsize=8)
     ax2.spines[["top", "right"]].set_visible(False)
@@ -1179,7 +1255,7 @@ def plot_fixed_points(addtask="delaydm1", plot_name="e_modulation"):
         ax = axes[pc_idx]
         for stim in range(n_stim):
             traj_fp = fixed_points_all_arr[:, stim, :]
-            color = c_vals[stim_labels[stim]]
+            color = stim_color(stim_labels[stim], n_stim)
             ax.plot(traj_fp[:, pc_x], traj_fp[:, pc_y], "-o",
                     color=color, linewidth=1.2, markersize=3, alpha=0.5,
                     label=f"stim {(stim // trial_num + 1)}" if stim % trial_num == 0 else None)
@@ -1192,7 +1268,7 @@ def plot_fixed_points(addtask="delaydm1", plot_name="e_modulation"):
         ax.set_ylabel(f"Memory State PC{pc_y+1}", fontsize=9)
         ax.spines[["top", "right"]].set_visible(False)
         if pc_idx == 0:
-            ax.legend(frameon=True, fontsize=6)
+            _legend(ax, frameon=True, fontsize=6)
 
     fig.tight_layout()
     out_path = OUT_DIR / f"fixed_points_{addtask}_{plot_name}.png"
@@ -1308,7 +1384,7 @@ def plot_cluster_corr_vs_lesion():
                 ax.plot(x_line, slope * x_line + intercept, color="tomato",
                         linewidth=1.2, zorder=4)
                 p_str = f"p = {p:.2e}" if p < 0.001 else f"p = {p:.3f}"
-                ax.legend([f"r = {r:.2f}, {p_str}"], loc="upper right",
+                _legend(ax, [f"r = {r:.2f}, {p_str}"], loc="upper right",
                           fontsize=7, frameon=True)
 
             ax.set_xlabel("Tuning cosine similarity", fontsize=8)
@@ -1419,7 +1495,7 @@ def plot_transfer_speed():
     ax.set_ylabel("Accuracy\nthreshold (%)", ha="center")
     ax.set_xscale("log")
     ax.set_yticks([50, 75, 100])
-    ax.legend(fontsize=6, frameon=True)
+    _legend(ax, fontsize=6, frameon=True)
     ax.spines[["top", "right"]].set_visible(False)
 
     fig.tight_layout()
@@ -1511,7 +1587,7 @@ def plot_learning_trajectory():
     ax.set_xscale("log")
     ax.set_yticks([0, 50, 100])
     ax.set_ylim([0, 105])
-    ax.legend(fontsize=6, frameon=True)
+    _legend(ax, fontsize=6, frameon=True)
     ax.spines[["top", "right"]].set_visible(False)
 
     fig.tight_layout()
@@ -1678,7 +1754,7 @@ def plot_rule_vectors():
     ax.set_xticklabels(all_labels, rotation=0, ha="center", fontsize=6)
     ax.axhline(0.0, color="gray", linewidth=0.8, linestyle="--")
     ax.set_ylabel("Cosine similarity")
-    ax.legend(fontsize=7, frameon=True)
+    _legend(ax, fontsize=7, frameon=True)
     ax.spines[["top", "right"]].set_visible(False)
 
     fig.tight_layout()
@@ -1813,7 +1889,7 @@ def _plot_aggregate_cve_panel(ax, by_ruleset, dtype, period, ruleset_colors,
     ax.set_ylim(0, 1.05)
     ax.spines[["top", "right"]].set_visible(False)
     if show_legend:
-        ax.legend(fontsize=7, frameon=True)
+        _legend(ax, fontsize=7, frameon=True)
 
 
 def plot_aggregate_cve():
@@ -1937,20 +2013,9 @@ def plot_aggregate_cve_stimulus():
     print(f"Saved: {out_path}")
 
 
-# ─── Main ────────────────────────────────────────────────────────────────────
-
-# ─── Figure: single-task fixon/task cancellation ("show") ───────────────────
-
-ONETASK_DIR = Path("onetask")
-# Default single-task run for the one-task figures (set to the desired aname
-# under onetask/{aname}/). Used by onetask_show, onetask_modulation_heatmap,
-# and onetask_long_fixed_points.
-ONETASK_ANAME = "delaygo_seed395_hidden200+batch128+angle"
-# Runs used for the example-trial illustration only. Independent of
-# ONETASK_ANAME so the input and output panels can each come from a different
-# seed (they read separate example_trial pickles).
-ONETASK_INPUT_ANAME = "delaygo_seed865_hidden200+batch128+angle"
-ONETASK_OUTPUT_ANAME = "delaygo_seed865_hidden200+batch128+angle"
+# ─── One-task figures ─────────────────────────────────────────────────────────
+# (Run identifiers ONETASK_ANAME / ONETASK_INPUT_ANAME / ONETASK_OUTPUT_ANAME and
+# ONETASK_DIR are defined in the Paths & run identifiers block at the top.)
 
 
 def plot_onetask_example_trial():
@@ -2008,10 +2073,6 @@ def plot_onetask_example_trial():
         if last_row:
             ax.set_xlabel("Time step", fontsize=10)
 
-    # Light palette for the faded target-output shadows (matches one_task_analysis).
-    c_vals_l = ["#feb2b2", "#90cdf4", "#9ae6b4", "#d6bcfa", "#fbd38d",
-                "#81e6d9", "#e2e8f0", "#fbb6ce", "#faf089"] * 10
-
     # ── Input figure: 4 stacked subplots ────────────────────────────────────
     d = _load_example(ONETASK_INPUT_ANAME)
     if d is None:
@@ -2020,13 +2081,15 @@ def plot_onetask_example_trial():
     T = inp.shape[0]
     period_spans = _period_spans(d)
 
-    # (channel indices, per-channel colors+labels, panel ylabel)
+    # (channel indices, per-channel colors+labels, panel ylabel). Colors: cos/sin
+    # of a modality share a hue (dark/light); Fixation and Modality 2 (the active
+    # stimulus) colors are reused in the output figure for the matching channels.
     n_in = inp.shape[1]
     input_groups = [
-        ([0], [c_vals[0]], ["Fixation"], "Fixation"),
-        ([1, 2], [c_vals[1], c_vals[2]], ["Mod1 cos", "Mod1 sin"], "Modality 1"),
-        ([3, 4], [c_vals[3], c_vals[4]], ["Mod2 cos", "Mod2 sin"], "Modality 2"),
-        ([5], [c_vals[5]], ["Task cue"], "Task cue"),
+        ([0], [_IO_FIXATION], ["Fixation"], "Fixation"),
+        ([1, 2], [_IO_MOD1[0], _IO_MOD1[1]], ["Mod1 cos", "Mod1 sin"], "Modality 1"),
+        ([3, 4], [_IO_MOD2[0], _IO_MOD2[1]], ["Mod2 cos", "Mod2 sin"], "Modality 2"),
+        ([5], [_IO_TASK], ["Task cue"], "Task cue"),
     ]
     # keep only groups whose channels exist in this input
     input_groups = [(chs, cols, labs, ylab) for chs, cols, labs, ylab in input_groups
@@ -2039,7 +2102,7 @@ def plot_onetask_example_trial():
         for ch, col, lab in zip(chs, cols, labs):
             ax.plot(inp[:, ch], color=col, label=lab, zorder=2)
         _style(ax, ylab, last_row=(row == len(input_groups) - 1), T=T)
-        ax.legend(fontsize=6, frameon=True, loc="upper right", ncol=len(chs))
+        _legend(ax, fontsize=6, frameon=True, loc="upper right", ncol=len(chs))
     # Period colorbar above the top subplot (colors only, no shading behind traces).
     if period_spans:
         _add_period_strip(axin[0, 0], period_spans, xmax=T - 1)
@@ -2061,18 +2124,31 @@ def plot_onetask_example_trial():
     T_out = net_out.shape[0]
     period_spans_out = _period_spans(d_out)
 
+    # Output channels are [Fixation, Output Cos, Output Sin]. Color them to MATCH
+    # the input figure by meaning: Fixation → same fixation color; the response
+    # Cos/Sin → the active stimulus modality's (Modality 2) cos/sin colors, since
+    # the response is that modality's angle read back out. Extra channels (if any)
+    # fall back to the modality-1 hue.
+    out_colors = [_IO_FIXATION, _IO_MOD2[0], _IO_MOD2[1], _IO_MOD1[0], _IO_MOD1[1]]
+
+    def _lighten(color, frac=0.55):
+        """Blend a color toward white by `frac` (for the faded target shadow)."""
+        r, g, b = mpl.colors.to_rgb(color)
+        return (r + (1 - r) * frac, g + (1 - g) * frac, b + (1 - b) * frac)
+
     figout, axout = plt.subplots(net_out.shape[-1], 1,
                                  figsize=(3.4, 1.0 * net_out.shape[-1]),
                                  sharex=True, squeeze=False)
     for out_idx in range(net_out.shape[-1]):
         ax = axout[out_idx, 0]
         lab = out_labels[out_idx] if out_idx < len(out_labels) else f"out {out_idx}"
-        ax.plot(target[:, out_idx], color=c_vals_l[out_idx % len(c_vals_l)],
-                linewidth=4, alpha=0.6, zorder=2, label="target")
-        ax.plot(net_out[:, out_idx], color=c_vals[out_idx % len(c_vals)],
+        col = out_colors[out_idx % len(out_colors)]
+        ax.plot(target[:, out_idx], color=_lighten(col),
+                linewidth=4, alpha=0.7, zorder=2, label="target")
+        ax.plot(net_out[:, out_idx], color=col,
                 zorder=3, label=lab)
         _style(ax, lab, last_row=(out_idx == net_out.shape[-1] - 1), T=T_out)
-        ax.legend(fontsize=6, frameon=True, loc="upper right", ncol=2)
+        _legend(ax, fontsize=6, frameon=True, loc="upper right", ncol=2)
     # Period colorbar above the top subplot (colors only, no shading behind traces).
     if period_spans_out:
         _add_period_strip(axout[0, 0], period_spans_out, xmax=T_out - 1)
@@ -2081,10 +2157,6 @@ def plot_onetask_example_trial():
     figout.savefig(out_out, dpi=300, bbox_inches="tight")
     plt.close(figout)
     print(f"Saved: {out_out}")
-
-
-# Number of ring stimulus directions (n_eachring in the task config).
-ONETASK_N_STIM = 8
 
 
 def plot_onetask_stimulus_colorwheel():
@@ -2105,7 +2177,7 @@ def plot_onetask_stimulus_colorwheel():
     ax.plot(np.cos(theta), np.sin(theta), "-", color="0.8", lw=1.0, zorder=1)
     for k, a in enumerate(angles):
         x, y = np.cos(a), np.sin(a)
-        ax.scatter(x, y, color=c_vals[k % len(c_vals)], s=180,
+        ax.scatter(x, y, color=stim_color(k, n), s=180,
                    edgecolors="k", linewidths=0.5, zorder=3)
     ax.set_xlim(-1.3, 1.3)
     ax.set_ylim(-1.3, 1.3)
@@ -2174,7 +2246,7 @@ def plot_onetask_show():
         ax.set_ylim([-2.0, 2.0])
         ax.spines[["top", "right"]].set_visible(False)
         if i == 0:
-            ax.legend(frameon=True, fontsize=6, loc="best")
+            _legend(ax, frameon=True, fontsize=6, loc="best")
             # Period colorbar above the top panel only.
             if period_spans:
                 _add_period_strip(ax, period_spans, xmax=T - 1)
@@ -2317,12 +2389,89 @@ def plot_onetask_modulation_snapshot():
 ONETASK_SNAPSHOT_SINGLE_STIM = 1
 
 
+def _onetask_hcbar(vmax, out_name):
+    """Save a standalone short/wide horizontal bwr colorbar (ticks only, no
+    label) spanning [-vmax, vmax], to OUT_DIR/out_name."""
+    figc = plt.figure(figsize=(2.6, 0.5))
+    axc = figc.add_axes([0.05, 0.5, 0.9, 0.35])   # [left, bottom, width, height]
+    norm = mpl.colors.Normalize(vmin=-vmax, vmax=vmax)
+    sm = mpl.cm.ScalarMappable(cmap="bwr", norm=norm)
+    sm.set_array([])
+    cbar = figc.colorbar(sm, cax=axc, orientation="horizontal")
+    cbar.set_ticks([-vmax, 0, vmax])
+    cbar.set_ticklabels([f"{-vmax:.2g}", "0", f"{vmax:.2g}"])
+    cbar.ax.tick_params(labelsize=8)
+    cbar_path = OUT_DIR / out_name
+    figc.savefig(cbar_path, dpi=300, bbox_inches="tight")
+    plt.close(figc)
+    print(f"Saved: {cbar_path}")
+
+
+def _plot_onetask_snapshot_single(mat, stim, title, out_name, cbar_out_name,
+                                  cbar_label):
+    """Render a single-stimulus mid-response snapshot matrix as a square bwr
+    heatmap (no colorbar), plus a SEPARATE small figure holding just a
+    horizontal colorbar. `mat` is (hidden, input); color scale is symmetric,
+    clipped to the 99th percentile of |mat|."""
+    vmax = float(np.percentile(np.abs(mat).ravel(), 99))
+
+    fig, ax = plt.subplots(1, 1, figsize=(3.4, 3.4))
+    ax.imshow(mat, cmap="bwr", vmin=-vmax, vmax=vmax,
+              aspect="equal", interpolation="nearest")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for sp in ax.spines.values():
+        sp.set_visible(True)
+        sp.set_linewidth(0.6)
+        sp.set_edgecolor("0.4")
+    ax.set_title(title, fontsize=10)
+    ax.set_xlabel("Input", fontsize=9)
+    ax.set_ylabel("Hidden", fontsize=9)
+    fig.tight_layout()
+    out_path = OUT_DIR / out_name
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+    _onetask_hcbar(vmax, cbar_out_name)
+
+
+def _plot_onetask_hidden_single(hidden_vec, stim, title, out_name, cbar_out_name):
+    """Render the hidden-state vector at a single step as a thin vertical bwr
+    strip (its own figure), plus a SEPARATE horizontal colorbar. Symmetric color
+    scale clipped to the 99th percentile of |hidden|."""
+    hv = np.asarray(hidden_vec, dtype=float).reshape(-1, 1)   # (hidden, 1)
+    vmax = float(np.percentile(np.abs(hv).ravel(), 99)) or 1.0
+
+    fig, ax = plt.subplots(1, 1, figsize=(0.8, 3.4))
+    ax.imshow(hv, cmap="bwr", vmin=-vmax, vmax=vmax,
+              aspect="auto", interpolation="nearest")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for sp in ax.spines.values():
+        sp.set_visible(True)
+        sp.set_linewidth(0.6)
+        sp.set_edgecolor("0.4")
+    ax.set_title(title, fontsize=10)
+    ax.set_ylabel("Hidden", fontsize=9)
+    fig.tight_layout()
+    out_path = OUT_DIR / out_name
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+    _onetask_hcbar(vmax, cbar_out_name)
+
+
 def plot_onetask_modulation_snapshot_single():
     """
-    Figure: full plasticity matrix M (hidden x input) for a SINGLE stimulus
-    (ONETASK_SNAPSHOT_SINGLE_STIM) at the middle of the response period.
-    A single-panel companion to plot_onetask_modulation_snapshot, reusing the
-    same pickle saved by one_task_analysis.py.
+    Figures (each for a SINGLE stimulus, ONETASK_SNAPSHOT_SINGLE_STIM, at the
+    middle of the response period), all as bwr heatmaps with a separate
+    horizontal colorbar each:
+      onetask_modulation_snapshot_single   — raw plasticity matrix M (hidden×input)
+      onetask_emodulation_snapshot_single  — effective modulation W⊙M
+      onetask_hidden_snapshot_single       — hidden-state vector (its own colorbar)
+    Reuses the snapshot pickle saved by one_task_analysis.py.
     """
     _ensure_out_dir()
     pkl_path = ONETASK_DIR / ONETASK_ANAME / f"modulation_snapshot_{ONETASK_ANAME}.pkl"
@@ -2334,38 +2483,47 @@ def plot_onetask_modulation_snapshot_single():
         d = pickle.load(f)
 
     stim = ONETASK_SNAPSHOT_SINGLE_STIM
-    if stim not in d["snapshots"]:
-        print(f"  Skipped: stimulus {stim} not in snapshot pickle "
-              f"(available: {d['stims']}).")
-        return
 
-    mat = np.asarray(d["snapshots"][stim]["response"], dtype=float)   # (hidden, input)
-    vmax = float(np.percentile(np.abs(mat).ravel(), 99))
+    # Raw modulation M.
+    if stim in d.get("snapshots", {}):
+        _plot_onetask_snapshot_single(
+            np.asarray(d["snapshots"][stim]["response"], dtype=float),
+            stim,
+            title=f"Stimulus {stim} — Mid response",
+            out_name="onetask_modulation_snapshot_single.png",
+            cbar_out_name="onetask_modulation_snapshot_single_cbar.png",
+            cbar_label="Modulation (M)",
+        )
+    else:
+        print(f"  Skipped raw M: stimulus {stim} not in snapshot pickle "
+              f"(available: {d.get('stims')}).")
 
-    fig, ax = plt.subplots(1, 1, figsize=(3.4, 3.4))
-    # M's hidden and input dimensions match, so render it as a true square
-    # (equal cell aspect) rather than stretching to fill the axes.
-    im = ax.imshow(mat, cmap="coolwarm", vmin=-vmax, vmax=vmax,
-                   aspect="equal", interpolation="nearest")
-    ax.set_xticks([])
-    ax.set_yticks([])
-    for sp in ax.spines.values():
-        sp.set_visible(True)
-        sp.set_linewidth(0.6)
-        sp.set_edgecolor("0.4")
-    ax.set_title(f"Stimulus {stim} — Mid response", fontsize=10)
-    ax.set_xlabel("Input", fontsize=9)
-    ax.set_ylabel("Hidden", fontsize=9)
+    # Effective modulation W⊙M (only if the analysis saved it).
+    if stim in d.get("snapshots_eff", {}):
+        _plot_onetask_snapshot_single(
+            np.asarray(d["snapshots_eff"][stim]["response"], dtype=float),
+            stim,
+            title=f"Stimulus {stim} — Mid response",
+            out_name="onetask_emodulation_snapshot_single.png",
+            cbar_out_name="onetask_emodulation_snapshot_single_cbar.png",
+            cbar_label="Effective modulation (W⊙M)",
+        )
+    else:
+        print("  Skipped W⊙M: 'snapshots_eff' not in pickle "
+              "(re-run one_task_analysis.py to add it).")
 
-    cbar = fig.colorbar(im, ax=ax, shrink=0.7, pad=0.04)
-    cbar.set_label("Modulation (M)", fontsize=9)
-    cbar.ax.tick_params(labelsize=8)
-
-    fig.tight_layout()
-    out_path = OUT_DIR / "onetask_modulation_snapshot_single.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    # Hidden state at the same (mid-response) step — its own figure + colorbar.
+    if stim in d.get("hidden_snapshots", {}):
+        _plot_onetask_hidden_single(
+            np.asarray(d["hidden_snapshots"][stim]["response"], dtype=float),
+            stim,
+            title=f"Stimulus {stim} — Mid response",
+            out_name="onetask_hidden_snapshot_single.png",
+            cbar_out_name="onetask_hidden_snapshot_single_cbar.png",
+        )
+    else:
+        print("  Skipped hidden: 'hidden_snapshots' not in pickle "
+              "(re-run one_task_analysis.py to add it).")
 
 
 # Marker cycle for the full-trial PCA phases (matches one_task_analysis.py's
@@ -2399,18 +2557,19 @@ def _plot_onetask_fulltrial_panel(d, ylabel, show_legend):
         for name, _t0, _t1, mk in phases
     ]
 
+    n_stim = int(np.max(labels)) + 1 if len(labels) else ONETASK_N_STIM
     figd, ax = plt.subplots(1, 1, figsize=(5, 5))
     for i in range(proj.shape[0]):
         db = proj[i, :, :]
-        color = c_vals[labels[i] % len(c_vals)]
+        color = stim_color(labels[i], n_stim)
         ax.plot(db[:, a], db[:, bb], c=color, alpha=0.25, zorder=2)
         for _name, t0, t1, mk in phases:
             sl = slice(t0, t1)
-            ax.scatter(db[sl, a], db[sl, bb], c=color,
+            ax.scatter(db[sl, a], db[sl, bb], color=color,
                        marker=_ONETASK_MARKERS[mk], alpha=0.5, zorder=3)
         for t, mk in transition_ts:
             tt = min(max(t - 1, 0), db.shape[0] - 1)
-            ax.scatter([db[tt, a]], [db[tt, bb]], c=color,
+            ax.scatter([db[tt, a]], [db[tt, bb]], color=color,
                        marker=_ONETASK_MARKERS[mk], alpha=0.8, s=60,
                        linewidths=0.6, zorder=10)
     ax.set_xlabel(f"PCA {a+1}", fontsize=12)
@@ -2419,7 +2578,7 @@ def _plot_onetask_fulltrial_panel(d, ylabel, show_legend):
     ax.tick_params(axis="both", labelsize=12)
     ax.spines[["top", "right"]].set_visible(False)
     if show_legend:
-        ax.legend(handles=legend_handles, loc="upper right",
+        _legend(ax, handles=legend_handles, loc="upper right",
                   frameon=True, fontsize=10)
     figd.tight_layout()
     return figd
@@ -2494,7 +2653,7 @@ def plot_onetask_cancel():
     ax.set_ylabel("Readout projection magnitude", fontsize=9)
     # Fewer y-ticks for a cleaner axis.
     ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=4))
-    ax.legend(loc="best", fontsize=6, frameon=True)
+    _legend(ax, loc="best", fontsize=6, frameon=True)
     ax.spines[["top", "right"]].set_visible(False)
 
     fig.tight_layout()
@@ -2580,6 +2739,11 @@ def plot_onetask_long_fixed_points():
         print("  Skipped: no rep/period data in pickle.")
         return
 
+    # Stimulus count, for the red→purple stimulus color ramp (shared by the
+    # trajectories and the legend below).
+    n_stim = 1 + max(int(s) for rep in reps for v in present
+                     for s in np.asarray(data[rep][v]["stim"]))
+
     n_row, n_col = len(reps), len(present)
     fig, axs = plt.subplots(n_row, n_col, figsize=(3.2 * n_col, 3.2 * n_row), squeeze=False)
     for r, rep in enumerate(reps):
@@ -2610,7 +2774,7 @@ def plot_onetask_long_fixed_points():
                         fix_end = fix_proj[:, -1, :]         # (batch, 2)
 
             for i in range(proj.shape[0]):
-                col = c_vals[int(stim[i]) % len(c_vals)]
+                col = stim_color(int(stim[i]), n_stim)
                 p = proj[i, disp_start:, :]
                 if fix_end is not None:
                     p = np.vstack([fix_end[i][None, :], p])  # prepend fixation end
@@ -2630,10 +2794,10 @@ def plot_onetask_long_fixed_points():
     uniq_stim = sorted(set(int(s) for rep in reps for v in present
                            for s in np.asarray(data[rep][v]["stim"])))
     stim_handles = [plt.Line2D([0], [0], marker="o", linestyle="None",
-                               markerfacecolor=c_vals[s % len(c_vals)],
+                               markerfacecolor=stim_color(s, n_stim),
                                markeredgecolor="black", markersize=6, label=f"stim {s}")
                     for s in uniq_stim]
-    axs[0][0].legend(handles=stim_handles, frameon=True, fontsize=6, ncol=2,
+    _legend(axs[0][0], handles=stim_handles, frameon=True, fontsize=6, ncol=2,
                      title="stimulus", loc="best")
 
     fig.tight_layout()
@@ -2641,6 +2805,100 @@ def plot_onetask_long_fixed_points():
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out_path}")
+
+
+def _plot_onetask_grad_fixed_points(rep_key, out_name):
+    """Render the gradient-solved fixed points for one representation, laid out
+    like onetask_long_fixed_points. `rep_key` selects which saved view to plot:
+      "fixed_M"      raw modulation matrix M*        (the actual solved state)
+      "fixed_WM"     effective modulation W⊙M*       (transform of M*)
+      "fixed_hidden" hidden state produced by M*     (transform of M*)
+    Each period's points (one per stimulus) are flattened and projected into a
+    SHARED delay-period PCA (fit on that rep's delay fixed points); points are
+    colored by stimulus; titles note the median solver speed q(M*)."""
+    _ensure_out_dir()
+    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"fixed_points_grad_{ONETASK_ANAME}.pkl"
+    if not pkl_path.exists():
+        print(f"  Skipped: {pkl_path} not found. Run one_task_analysis.py first.")
+        return
+
+    with open(pkl_path, "rb") as f:
+        d = pickle.load(f)
+    results = d["results"]
+    periods = list(results.keys())
+    if not periods:
+        print("  Skipped: no periods in grad fixed-point pickle.")
+        return
+    if any(results[v].get(rep_key) is None for v in periods):
+        print(f"  Skipped '{rep_key}': not in pickle "
+              f"(re-run one_task_analysis.py to add it).")
+        return
+
+    from sklearn.decomposition import PCA as _PCA
+
+    def _flat(arr):
+        arr = np.asarray(arr, dtype=float)
+        return arr.reshape(arr.shape[0], -1)
+
+    # Shared basis fit on the DELAY-period fixed points (mirrors
+    # onetask_long_fixed_points' shared delay PCA); fall back to the first
+    # available period if no delay variant is present.
+    basis_key = "longdelay" if "longdelay" in results else periods[0]
+    pca = _PCA(n_components=2, random_state=0).fit(_flat(results[basis_key][rep_key]))
+
+    n_stim = 1 + max(int(s) for v in periods for s in np.asarray(results[v]["stim"]))
+
+    n_col = len(periods)
+    fig, axs = plt.subplots(1, n_col, figsize=(3.2 * n_col, 3.4), squeeze=False)
+    for ax, v in zip(axs[0], periods):
+        e = results[v]
+        fixed = pca.transform(_flat(e[rep_key]))    # (batch, 2)
+        stim = np.asarray(e["stim"])
+        for i in range(fixed.shape[0]):
+            col = stim_color(int(stim[i]), n_stim)
+            ax.scatter(fixed[i, 0], fixed[i, 1], color=col, marker="o", s=45,
+                       edgecolor="black", linewidth=0.5, alpha=0.85, zorder=3)
+        med_speed = float(np.median(np.asarray(e["final_speeds"])))
+        ax.set_title(f"{e.get('period_title', v)}\n(med speed {med_speed:.1e})",
+                     fontsize=11)
+        ax.spines[["top", "right"]].set_visible(False)
+
+    # Shared x/y labels for the whole grid (all panels share the delay basis).
+    fig.supxlabel("Delay PC1", fontsize=12)
+    fig.supylabel("Delay PC2", fontsize=12)
+
+    # stimulus-color legend on the top-left panel (matches long_fixed_points).
+    uniq_stim = sorted(set(int(s) for v in periods
+                           for s in np.asarray(results[v]["stim"])))
+    stim_handles = [plt.Line2D([0], [0], marker="o", linestyle="None",
+                               markerfacecolor=stim_color(s, n_stim),
+                               markeredgecolor="black", markersize=6, label=f"stim {s}")
+                    for s in uniq_stim]
+    _legend(axs[0][0], handles=stim_handles, frameon=True, fontsize=6, ncol=2,
+            title="stimulus", loc="best")
+
+    fig.tight_layout()
+    out_path = OUT_DIR / out_name
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def plot_onetask_grad_fixed_points():
+    """
+    Figures: gradient-solved fixed points for the single-task network, one figure
+    per representation (each laid out like onetask_long_fixed_points, shared
+    delay-period PCA, one panel per period, colored by stimulus). The filename
+    suffix names the representation:
+      onetask_grad_fixed_points_modulation.png   — raw modulation M* (solved state)
+      onetask_grad_fixed_points_emodulation.png  — effective modulation W⊙M*
+      onetask_grad_fixed_points_hidden.png       — hidden state produced by M*
+    The W⊙M and hidden views are transforms of the same fixed points (not
+    re-solved). Reads fixed_points_grad_{aname}.pkl.
+    """
+    _plot_onetask_grad_fixed_points("fixed_M", "onetask_grad_fixed_points_modulation.png")
+    _plot_onetask_grad_fixed_points("fixed_WM", "onetask_grad_fixed_points_emodulation.png")
+    _plot_onetask_grad_fixed_points("fixed_hidden", "onetask_grad_fixed_points_hidden.png")
 
 
 ONETASK_DATA_DIR = Path("onetask_data")
@@ -2770,6 +3028,7 @@ def _plot_m_pca_panels(data, title_prefix, out_name, legend_frameon=False,
     batch_num = projected.shape[0]
     stim0, trial_end = ts["stimulus_start"], ts["trial_end"]
     a, bb = 0, 1  # PCA 1-2 only
+    n_stim = int(np.max(ltc[:, 0])) + 1 if len(ltc) else ONETASK_N_STIM
 
     fig, ax = plt.subplots(1, 1, figsize=(5.5, 5))
     legend_handles = [
@@ -2782,25 +3041,25 @@ def _plot_m_pca_panels(data, title_prefix, out_name, legend_frameon=False,
         task = ltc[i, 1]
         if task not in (0, 1):
             continue
-        color = c_vals[ltc[i, 0]]
+        color = stim_color(ltc[i, 0], n_stim)
         ls = linestyles[task]
         data_i = projected[i]
         seg = slice(stim0, trial_end)
         ax.plot(data_i[seg, a], data_i[seg, bb], c=color, linestyle=ls, alpha=0.5)
         for _, t0_key, t1_key, mk_idx in phases:
             sl = slice(ts[t0_key], ts[t1_key])
-            ax.scatter(data_i[sl, a], data_i[sl, bb], c=color,
+            ax.scatter(data_i[sl, a], data_i[sl, bb], color=color,
                        marker=markers_vals[mk_idx], alpha=0.8)
         for t_key, mk_idx in transitions:
             t = ts[t_key] - 1
-            ax.scatter([data_i[t, a]], [data_i[t, bb]], c=color,
+            ax.scatter([data_i[t, a]], [data_i[t, bb]], color=color,
                        marker=markers_vals[mk_idx], alpha=1.0, s=60,
                        linewidths=0.6, zorder=10)
     ax.set_xlabel("PCA 1", fontsize=20)
     ax.set_ylabel("PCA 2", fontsize=20)
     ax.tick_params(axis="both", labelsize=15)
     if show_legend:
-        ax.legend(handles=legend_handles, loc="upper right",
+        _legend(ax, handles=legend_handles, loc="upper right",
                   frameon=legend_frameon, fontsize=13)
     ax.spines[["top", "right"]].set_visible(False)
 
@@ -2857,9 +3116,10 @@ def _draw_attractor_cycle_pc12(ax, entry, show_ylabel=True):
             ax.plot([xy[j % num_xy, 0], xy[(j + 1) % num_xy, 0]],
                     [xy[j % num_xy, 1], xy[(j + 1) % num_xy, 1]],
                     linestyle="--", linewidth=3, color=c_vals_l[it_idx])
+    n_stim = len(interpolation_label)
     for i in range(len(interpolation_label)):
         fixed_points = pdf_all[:, i, :]
-        color = c_vals[interpolation_label[i]]
+        color = stim_color(interpolation_label[i], n_stim)
         # Connecting line stays faint; the per-stimulus endpoint markers ramp
         # their opacity from 0 -> 1 across the alpha interpolation steps, so the
         # anti end is nearly transparent and the pro end is solid.
@@ -2984,7 +3244,7 @@ def _draw_attractor_single_alpha(ax, entry, alpha_idx, show_ylabel=True):
                 [xy[j, 1], xy[(j + 1) % n, 1]],
                 "-", color="0.6", linewidth=0.8, alpha=0.5, zorder=1)
     for i in range(n):
-        ax.scatter(xy[i, 0], xy[i, 1], c=c_vals[interpolation_label[i]],
+        ax.scatter(xy[i, 0], xy[i, 1], c=[stim_color(interpolation_label[i], n)],
                    marker="o", s=32, zorder=2)
 
     if show_ylabel:
@@ -3123,7 +3383,7 @@ def plot_two_task_cancel():
                          pad=14 if r == 0 else None)
             ax.spines[["top", "right"]].set_visible(False)
             if r == 0 and c == 0:
-                ax.legend(frameon=True, fontsize=6, loc="best")
+                _legend(ax, frameon=True, fontsize=6, loc="best")
             if r == n_rows - 1:
                 ax.set_xlabel("Timestep", fontsize=9)
             else:
@@ -3142,6 +3402,131 @@ def plot_two_task_cancel():
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out_path}  (stimuli {stim_keys})")
+
+
+def plot_two_task_outputsubspace_cancel():
+    """
+    Figure: output-subspace cancellation scatter for the two-task network.
+    Two panels, each scattering per-stimulus values across three x-categories
+    (Projection to Cosine Output / Orthogonal Complement / Random Vector):
+      left  — "Cancelation between Same Stimulus" = |task1 + task2| projection
+              (small for the cosine-output category means the pro & anti memory
+               states cancel along the readout axis).
+      right — "Magnitude of Projection" = the individual |task1| magnitude.
+    Log y-axis. Reads the self-contained pickle written by two_task_analysis.py.
+    """
+    _ensure_out_dir()
+    run_dir = TWOTASKS_DIR / TWOTASK_ANAME
+    matches = sorted(run_dir.glob("outputsubspace_cancel_*.pkl"))
+    if not matches:
+        print(f"  Skipped: no outputsubspace_cancel_*.pkl in {run_dir}. "
+              f"Run two_task_analysis.py first.")
+        return
+
+    with open(matches[0], "rb") as f:
+        d = pickle.load(f)
+
+    projs_all = np.asarray(d["projs_all"], dtype=float)   # (n_cat, n_stim, 3)
+    cat_labels = d["category_labels"]
+    n_cat, n_stim, _ = projs_all.shape
+
+    fig, axs = plt.subplots(1, 2, figsize=(4 * 2, 4))
+    for i in range(n_cat):
+        for k in range(n_stim):
+            axs[0].scatter(i, projs_all[i, k, 0], color=c_vals[i])
+            axs[1].scatter(i, projs_all[i, k, 1], color=c_vals[i])
+    for ax in axs:
+        ax.set_xticks(list(range(n_cat)))
+        ax.set_xticklabels(cat_labels, rotation=10, fontsize=8)
+        ax.tick_params(axis="both", which="both", labelsize=10)
+        ax.set_yscale("log")
+        ax.spines[["top", "right"]].set_visible(False)
+    axs[0].set_ylabel(d.get("combined_ylabel", "Cancelation between Same Stimulus"),
+                      fontsize=10)
+    axs[1].set_ylabel(d.get("magnitude_ylabel", "Magnitude of Projection"), fontsize=10)
+
+    fig.tight_layout()
+    out_path = OUT_DIR / f"twotask_outputsubspace_cancel_{_twotask_seed_tag()}.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def plot_two_task_w_gram_matrix():
+    """
+    Figure: input-embedding Gram matrix (W_initial_linear^T @ W_initial_linear)
+    for the two-task network, FINAL training stage only. The 7x7 matrix shows,
+    per pair of input channels (Fixon, Stim1 Cos/Sin, Stim2 Cos/Sin, Task1,
+    Task2), the inner product of their learned embedding vectors: diagonal =
+    per-channel gain (norm^2), off-diagonal = overlap between channel embeddings
+    in hidden space. Reads the self-contained pickle written by
+    two_task_analysis.py. Matches the analysis heatmap style (coolwarm, center 0).
+    """
+    _ensure_out_dir()
+    run_dir = TWOTASKS_DIR / TWOTASK_ANAME
+    matches = sorted(run_dir.glob("w_gram_matrix_*.pkl"))
+    if not matches:
+        print(f"  Skipped: no w_gram_matrix_*.pkl in {run_dir}. "
+              f"Run two_task_analysis.py first.")
+        return
+
+    with open(matches[0], "rb") as f:
+        d = pickle.load(f)
+
+    keys = d["keys"]
+    gram = np.asarray(d["gram_final"], dtype=float)   # (7, 7) final stage
+
+    fig, ax = plt.subplots(1, 1, figsize=(4.2, 3.9))
+    sns.heatmap(gram, ax=ax, center=0, cmap="coolwarm", square=True,
+                xticklabels=keys, yticklabels=keys, annot=True, fmt=".2f",
+                annot_kws={"fontsize": 7}, cbar_kws={"shrink": 0.8})
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right", fontsize=8)
+    ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=8)
+
+    fig.tight_layout()
+    out_path = OUT_DIR / f"twotask_w_gram_matrix_{_twotask_seed_tag()}.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def plot_two_task_w_hurt():
+    """
+    Figure: magnitude-pruning accuracy curve for the two-task network — test
+    accuracy vs. the fraction of recurrent MP weights (W) zeroed out by smallest
+    magnitude. A slow accuracy drop until high sparsity indicates the task
+    computation is carried by a small subset of large-magnitude weights (W is
+    prunable). Reads the self-contained pickle written by two_task_analysis.py.
+    """
+    _ensure_out_dir()
+    run_dir = TWOTASKS_DIR / TWOTASK_ANAME
+    matches = sorted(run_dir.glob("w_hurt_*.pkl"))
+    if not matches:
+        print(f"  Skipped: no w_hurt_*.pkl in {run_dir}. "
+              f"Run two_task_analysis.py first.")
+        return
+
+    with open(matches[0], "rb") as f:
+        d = pickle.load(f)
+
+    sparsity = np.asarray(d["sparsity_pct"], dtype=float)
+    acc = np.asarray(d["accuracy"], dtype=float) * 100.0
+    x = np.arange(len(sparsity))
+
+    fig, ax = plt.subplots(1, 1, figsize=(3.4, 2.4))
+    ax.plot(x, acc, "-o", color=c_vals[0], markersize=4)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"{s:g}" for s in sparsity], rotation=45, ha="right",
+                       fontsize=7)
+    ax.set_xlabel("Sparsity of W (%)", fontsize=9)
+    ax.set_ylabel("Accuracy (%)", fontsize=9)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    fig.tight_layout()
+    out_path = OUT_DIR / f"twotask_w_hurt_{_twotask_seed_tag()}.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
 
 
 def plot_two_task_attractor_first():
@@ -3184,7 +3569,7 @@ def plot_two_task_attractor_first():
     ax.set_ylabel(ol.get("ylabel", "Cosine Similarity"), fontsize=20)
     ax.set_ylim([0, 1.05])
     ax.tick_params(axis="both", labelsize=15)
-    ax.legend(frameon=True, fontsize=13)
+    _legend(ax, frameon=True, fontsize=13)
     ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
     out_path = OUT_DIR / f"twotask_attractor_first_overlearning_{seed_tag}.png"
@@ -3266,7 +3651,7 @@ def _plot_memory_attractor(pkl_path, out_prefix, aname):
         fig, ax = plt.subplots(1, 1, figsize=(2.5, 2.5))
         for t_idx in range(n_task):
             for stim in range(n_stim):
-                col = c_vals[stim_labels[stim] % len(c_vals)]
+                col = stim_color(stim_labels[stim], n_stim)
                 if have_traj:
                     tr = traj_by_task[t_idx][stim]   # (delay_T, n_pc)
                     ax.plot(tr[:, bx], tr[:, by], color=col, alpha=0.5,
@@ -3294,7 +3679,7 @@ def _plot_memory_attractor(pkl_path, out_prefix, aname):
 
         # combined legend (stimulus colors + task markers), placed ON the axes
         stim_handles = [plt.Line2D([0], [0], marker="o", linestyle="None",
-                                   markerfacecolor=c_vals[lab % len(c_vals)],
+                                   markerfacecolor=stim_color(lab, n_stim),
                                    markeredgecolor="black", markersize=5, label=f"stim {lab}")
                         for lab in stim_labels]
         task_handles = [plt.Line2D([0], [0], marker=task_markers[i],
@@ -3302,7 +3687,7 @@ def _plot_memory_attractor(pkl_path, out_prefix, aname):
                                    markerfacecolor="0.7", markeredgecolor="black",
                                    markersize=6, label=task_names[i])
                         for i in range(n_task)]
-        ax.legend(handles=stim_handles + task_handles, frameon=True, fontsize=5,
+        _legend(ax, handles=stim_handles + task_handles, frameon=True, fontsize=5,
                   ncol=2, loc="best")
 
         fig.tight_layout()
@@ -3375,6 +3760,7 @@ FIGURES_BY_MODE = {
         "onetask_cancel": plot_onetask_cancel,
         "onetask_d_combine": plot_onetask_d_combine,
         "onetask_long_fixed_points": plot_onetask_long_fixed_points,
+        "onetask_grad_fixed_points": plot_onetask_grad_fixed_points,
         "onetask_corr_during_learning": plot_onetask_corr_during_learning,
     },
     "multiple_tasks": {
@@ -3410,6 +3796,9 @@ FIGURES_BY_MODE = {
         "twotask_attractor_cycle": plot_two_task_attractor_cycle,
         "twotask_attractor_alpha": plot_two_task_attractor_alpha,
         "twotask_cancel": plot_two_task_cancel,
+        "twotask_outputsubspace_cancel": plot_two_task_outputsubspace_cancel,
+        "twotask_w_gram_matrix": plot_two_task_w_gram_matrix,
+        "twotask_w_hurt": plot_two_task_w_hurt,
         "twotask_attractor_first": plot_two_task_attractor_first,
     },
 }
