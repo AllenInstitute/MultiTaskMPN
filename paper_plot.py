@@ -63,7 +63,20 @@ def _legend(ax, *args, **kwargs):
     return ax.legend(*args, **kwargs)
 
 
-# ─── Shared IO helpers ────────────────────────────────────────────────────────
+# ─── Shared label / IO helpers ────────────────────────────────────────────────
+
+def _wrap(text, width=16):
+    """Insert line breaks into `text` so no line exceeds ~`width` characters.
+
+    Wraps on word boundaries (never mid-word), so long axis labels / tick labels
+    stack onto multiple lines instead of running off the panel or overlapping a
+    neighbor. Accepts a single string or an iterable of strings (returns a list
+    for the latter). Non-string items pass through unchanged."""
+    import textwrap
+    if isinstance(text, str):
+        return "\n".join(textwrap.wrap(text, width=width)) or text
+    return [_wrap(t, width) if isinstance(t, str) else t for t in text]
+
 
 def _save_fig(fig, out_path, extra=""):
     """Save `fig` at the standard dpi / tight bbox, close it, and print a line.
@@ -3632,20 +3645,23 @@ def plot_two_task_outputsubspace_cancel():
     cat_labels = d["category_labels"]
     n_cat, n_stim, _ = projs_all.shape
 
-    fig, axs = plt.subplots(1, 2, figsize=(4 * 2, 4))
+    fig, axs = plt.subplots(1, 2, figsize=(2.6 * 2, 2.6))
     for i in range(n_cat):
         for k in range(n_stim):
             axs[0].scatter(i, projs_all[i, k, 0], color=c_vals[i])
             axs[1].scatter(i, projs_all[i, k, 1], color=c_vals[i])
     for ax in axs:
         ax.set_xticks(list(range(n_cat)))
-        ax.set_xticklabels(cat_labels, rotation=10, fontsize=8)
-        ax.tick_params(axis="both", which="both", labelsize=10)
+        # Wrap long category names onto multiple lines so they fit under the
+        # small panel without overlapping their neighbors.
+        ax.set_xticklabels(_wrap(cat_labels, width=12), fontsize=6)
+        ax.tick_params(axis="both", which="both", labelsize=7)
         ax.set_yscale("log")
         ax.spines[["top", "right"]].set_visible(False)
-    axs[0].set_ylabel(d.get("combined_ylabel", "Cancelation between Same Stimulus"),
-                      fontsize=10)
-    axs[1].set_ylabel(d.get("magnitude_ylabel", "Magnitude of Projection"), fontsize=10)
+    axs[0].set_ylabel(_wrap(d.get("combined_ylabel", "Cancelation between Same Stimulus"),
+                            width=18), fontsize=7)
+    axs[1].set_ylabel(_wrap(d.get("magnitude_ylabel", "Magnitude of Projection"),
+                            width=18), fontsize=7)
 
     fig.tight_layout()
     out_path = OUT_DIR / f"twotask_outputsubspace_cancel_{_twotask_seed_tag()}.png"
@@ -3699,7 +3715,7 @@ def plot_two_task_w_hurt():
     acc = np.asarray(d["accuracy"], dtype=float) * 100.0
     x = np.arange(len(sparsity))
 
-    fig, ax = plt.subplots(1, 1, figsize=(3.4, 2.4))
+    fig, ax = plt.subplots(1, 1, figsize=(2.4, 1.7))
     ax.plot(x, acc, "-o", color=c_vals[0], markersize=4)
     ax.set_xticks(x)
     ax.set_xticklabels([f"{s:g}" for s in sparsity], rotation=45, ha="right",

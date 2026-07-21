@@ -73,6 +73,7 @@ import net_helpers
 import mpn_tasks
 import helper
 import mpn
+from grad_fixed_points import solve_period_modulation_fixed_points
 
 # ─── Plotting palette (notebook cell 2) ──────────────────────────────────────
 # 0 Red, 1 blue, 2 green, 3 purple, 4 orange, 5 teal, 6 gray, 7 pink, 8 yellow
@@ -2531,6 +2532,29 @@ def main(aname):
     traj_diff_alpha("hidden")
     traj_diff_alpha("modulation")
     traj_diff_alpha("w_modulation")
+
+    # ── Gradient-based TRUE fixed points of the modulation matrix (per rule) ──
+    # Mirror the one-task analysis: for each of the two rules, solve genuine fixed
+    # points M* = F(M*; x) per trial period, seeded from a DENSE grid of stimulus
+    # angles (continuous-attractor probe). One pickle per rule
+    # (fixed_points_grad_{aname}_{rule}.pkl). Shared solver lives in
+    # core/grad_fixed_points.py, used by both one_task and two_task.
+    if net_params["input_layer_add"]:
+        W_fp = net.mp_layer1.W.data.detach().cpu().numpy()
+    else:
+        W_fp = net.mp_layer0.W.data.detach().cpu().numpy()
+    cfg_fp = {"task_params": task_params, "train_params": train_params,
+              "net_params": net_params}
+    for _rule in task_params["rules"]:
+        try:
+            solve_period_modulation_fixed_points(
+                aname, save_dir, net, cfg_fp, device,
+                rule=_rule, out_suffix=f"_{_rule}",
+                layer_index=layer_index, W=W_fp)
+        except Exception as exc:
+            print(f"  [grad-fp/{_rule}] failed: {exc}")
+            import traceback
+            traceback.print_exc()
 
     print(f"All figures saved to {save_dir}/")
 

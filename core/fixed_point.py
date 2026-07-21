@@ -229,6 +229,97 @@ class ModulationFixedPointNetwork(nn.Module):
         return self.states.detach(), loss_hist, final_speeds
 
 
+def characterize_fixed_point_stability(network, fixed_M, inputs, k=16,
+                                       marginal_tol=5e-2, device=None):
+    """
+    Linear-stability analysis of modulation fixed points, following the RNN
+    fixed-point tradition (Sussillo & Barak 2013): linearize the update map
+    F(M; x) about each M* and read stability from the Jacobian eigenvalues.
+
+    The state here is the modulation matrix M (post*pre ≈ tens of thousands of
+    dims), so the Jacobian J = ∂F/∂M is far too large to form densely. Instead we
+    apply an iterative eigensolver to a matrix-free operator: J^T acts on a vector
+    v by a single reverse-mode VJP of one `network_step` at M*, and since J and
+    J^T share eigenvalues, the leading-|λ| spectrum is obtained with only ~O(k)
+    backward passes per fixed point.
+
+    Discrete-map reading of the eigenvalues λ:
+      |λ| < 1  contracting direction;  |λ| > 1  expanding (unstable) direction.
+      spectral_radius = max|λ|:  < 1 ⇒ attracting fixed point.
+      marginal directions (|λ − 1| < marginal_tol) are near-neutral flow: a lone
+      marginal eigenvalue with all others < 1 is the signature of a point on a
+      CONTINUOUS (ring) attractor — the free direction along the manifold.
+
+    network      : trained (Deep)MultiPlasticNet.
+    fixed_M      : (B, post, pre) solved fixed points (numpy or tensor).
+    inputs       : (B, n_input) constant input each M* was solved under.
+    k            : number of leading (largest-magnitude) eigenvalues per point.
+    marginal_tol : |λ − 1| threshold counting a direction as marginal/neutral.
+
+    Returns a dict of per-point arrays (all length B):
+      eigenvalues     : (B, k) complex, largest |λ| first.
+      spectral_radius : (B,) max|λ|.
+      n_unstable      : (B,) count of |λ| > 1 + marginal_tol.
+      n_marginal      : (B,) count of |λ − 1| < marginal_tol.
+      is_stable       : (B,) bool, spectral_radius <= 1 + marginal_tol.
+    """
+    from scipy.sparse.linalg import LinearOperator, eigs
+
+    fpn = ModulationFixedPointNetwork(network, fixed_M)
+    if device is not None:
+        fpn.to(device)
+        fpn.states.data = fpn.states.data.to(device)
+    dev = fpn.states.device
+    inp = torch.as_tensor(np.asarray(inputs), dtype=torch.float, device=dev)
+
+    B, post, pre = fpn.states.shape
+    n = post * pre                       # per-point state dimension
+
+    eig_all = np.zeros((B, k), dtype=complex)
+    radius = np.zeros(B)
+    n_unstable = np.zeros(B, dtype=int)
+    n_marginal = np.zeros(B, dtype=int)
+
+    kk = min(k, n - 2)                   # eigs needs k < n-1
+    for b in range(B):
+        M_b = fpn.states[b:b + 1].detach().clone().requires_grad_(True)  # (1,post,pre)
+        x_b = inp[b:b + 1]                                               # (1,n_input)
+        # F(M_b) for this single point; graph retained for repeated VJPs.
+        F_b = fpn._step_M(x_b, M_b)                                      # (1,post,pre)
+
+        def _matvec(v):
+            # J^T v : reverse-mode VJP of F at M_b with cotangent v.
+            vt = torch.as_tensor(v.real, dtype=torch.float, device=dev).reshape(1, post, pre)
+            (g,) = torch.autograd.grad(F_b, M_b, grad_outputs=vt, retain_graph=True)
+            return g.detach().cpu().numpy().reshape(-1)
+
+        JT = LinearOperator((n, n), matvec=_matvec, dtype=float)
+        try:
+            vals = eigs(JT, k=kk, which="LM", return_eigenvectors=False,
+                        maxiter=n * 10)
+        except Exception as exc:
+            print(f"    [stability] point {b}: eigs failed ({exc}); NaN spectrum.")
+            eig_all[b, :] = np.nan
+            radius[b] = np.nan
+            continue
+        vals = vals[np.argsort(-np.abs(vals))]      # largest |λ| first
+        eig_all[b, :vals.size] = vals
+        mag = np.abs(vals)
+        radius[b] = float(mag.max()) if mag.size else np.nan
+        n_unstable[b] = int(np.sum(mag > 1.0 + marginal_tol))
+        n_marginal[b] = int(np.sum(np.abs(vals - 1.0) < marginal_tol))
+
+    is_stable = radius <= (1.0 + marginal_tol)
+    return {
+        "eigenvalues": eig_all,
+        "spectral_radius": radius,
+        "n_unstable": n_unstable,
+        "n_marginal": n_marginal,
+        "is_stable": is_stable,
+        "marginal_tol": float(marginal_tol),
+    }
+
+
 def find_modulation_fixed_points(network, init_M, inputs, steps=2000,
                                  learningRate=1e-3, printPeriod=200,
                                  lbfgs_steps=500, loss_tol=1e-8, device=None):
