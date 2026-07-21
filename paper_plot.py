@@ -63,6 +63,48 @@ def _legend(ax, *args, **kwargs):
     return ax.legend(*args, **kwargs)
 
 
+# ─── Shared IO helpers ────────────────────────────────────────────────────────
+
+def _save_fig(fig, out_path, extra=""):
+    """Save `fig` at the standard dpi / tight bbox, close it, and print a line.
+    `extra` appends to the "Saved: {out_path}" message (e.g. counts/params).
+
+    When legends are enabled (SHOW_LEGEND), an `_n` suffix is appended to the
+    filename stem so the legended figure does not overwrite the no-legend one
+    (e.g. `foo.png` → `foo_n.png`)."""
+    out_path = Path(out_path)
+    if SHOW_LEGEND:
+        out_path = out_path.with_name(f"{out_path.stem}_n{out_path.suffix}")
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out_path}{extra}")
+
+
+def _load_pkl_or_skip(pkl_path, hint="", use_name=False):
+    """Return the unpickled object at `pkl_path`, or None (with a "Skipped"
+    message) if it does not exist. `hint` is appended to the message (e.g.
+    "Run one_task_analysis.py first."); `use_name` prints only the filename."""
+    if not pkl_path.exists():
+        shown = pkl_path.name if use_name else pkl_path
+        print(f"  Skipped: {shown} not found.{(' ' + hint) if hint else ''}")
+        return None
+    with open(pkl_path, "rb") as f:
+        return pickle.load(f)
+
+
+def _load_twotask_glob_or_skip(pattern):
+    """Load the first pickle matching `pattern` under the configured two-task run
+    dir, or return None (with a "Skipped" message) if none match."""
+    run_dir = TWOTASKS_DIR / TWOTASK_ANAME
+    matches = sorted(run_dir.glob(pattern))
+    if not matches:
+        print(f"  Skipped: no {pattern} in {run_dir}. "
+              f"Run two_task_analysis.py first.")
+        return None
+    with open(matches[0], "rb") as f:
+        return pickle.load(f)
+
+
 # ─── Paths & run identifiers ──────────────────────────────────────────────────
 # All figure output goes here; the run identifiers ("aname") below select which
 # trained run each mode's figures are drawn from. They are grouped by experiment
@@ -94,13 +136,14 @@ TWOTASK_ATTRACTOR_ANAME = "delaygofamily_seed21_reg1e3+hidden200"
 # ── Single-task network ──
 ONETASK_DIR = Path("onetask")
 # Default single-task run for the one-task figures (aname under onetask/{aname}/).
-# Used by onetask_show, onetask_modulation_heatmap, onetask_long_fixed_points, etc.
+# Used by onetask_show, onetask_modulation_snapshot, onetask_long_fixed_points, etc.
 ONETASK_ANAME = "delaygo_seed395_hidden200+batch128+angle"
-# Runs used for the example-trial illustration only. Independent of ONETASK_ANAME
-# so the input and output panels can each come from a different seed (they read
-# separate example_trial pickles).
-ONETASK_INPUT_ANAME = "delaygo_seed865_hidden200+batch128+angle"
-ONETASK_OUTPUT_ANAME = "delaygo_seed865_hidden200+batch128+angle"
+# Runs used for the example-trial illustration. Set to ONETASK_ANAME so the
+# input/output illustration comes from the SAME network as onetask_show; can be
+# pointed at a different seed here if desired (they read separate example_trial
+# pickles).
+ONETASK_INPUT_ANAME = ONETASK_ANAME
+ONETASK_OUTPUT_ANAME = ONETASK_ANAME
 
 
 def _twotask_seed_tag():
@@ -141,6 +184,18 @@ def stim_color(k, n=ONETASK_N_STIM):
 def stim_colors(n=ONETASK_N_STIM):
     """List of n stimulus colors on the red→purple rainbow ramp."""
     return [stim_color(k, n) for k in range(n)]
+
+
+def _fixed_point_mask(entry, n):
+    """Boolean (n,) mask of which gradient fixed points converged.
+
+    Reads the `is_fixed` array saved by one_task_analysis.py (relative-step <=
+    rel_tol). Older pickles lack it — treat every point as converged so figures
+    from those still render unchanged."""
+    mask = entry.get("is_fixed")
+    if mask is None:
+        return np.ones(int(n), dtype=bool)
+    return np.asarray(mask, dtype=bool)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -527,9 +582,7 @@ def plot_clustered_input():
     )
 
     out_path = OUT_DIR / "clustered_input_normalized.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 def plot_clustered_hidden(col_k_override=20):
@@ -549,9 +602,7 @@ def plot_clustered_hidden(col_k_override=20):
     )
 
     out_path = OUT_DIR / "clustered_hidden_normalized.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 # ─── Figure: Clustered modulation variance matrix ────────────────────────────
@@ -625,9 +676,7 @@ def plot_clustered_modulation(G_index=1):
     fig.tight_layout()
 
     out_path = OUT_DIR / "clustered_modulation_normalized.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 # ─── Figure: L2 vs Accuracy ──────────────────────────────────────────────────
@@ -666,9 +715,7 @@ def plot_l2_vs_accuracy():
 
     fig.tight_layout()
     out_path = OUT_DIR / "l2_vs_accuracy.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 # ─── Figure: State space PCA ─────────────────────────────────────────────────
@@ -779,9 +826,7 @@ def plot_state_space_combined():
 
     fig.tight_layout()
     out_path = OUT_DIR / "state_space_combined.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 RVAL_RESULT_PATH = STATE_SPACE_DIR / "initial_condition_distance_vs_angle_results.pkl"
@@ -790,12 +835,9 @@ RVAL_RESULT_PATH = STATE_SPACE_DIR / "initial_condition_distance_vs_angle_result
 def plot_state_space_r_values():
     """Figure: Mean R-values (initial-condition distance vs trajectory angle) for hidden & eff_mod."""
     _ensure_out_dir()
-    if not RVAL_RESULT_PATH.exists():
-        print(f"  Skipped: {RVAL_RESULT_PATH} not found. Run state_space_shift.py first.")
+    result_dict = _load_pkl_or_skip(RVAL_RESULT_PATH, "Run state_space_shift.py first.")
+    if result_dict is None:
         return
-
-    with open(RVAL_RESULT_PATH, "rb") as f:
-        result_dict = pickle.load(f)
 
     data_types = ["hidden", "mod", "eff_mod"]
     labels = ["Hidden", "Mod.", "Eff. Mod."]
@@ -830,9 +872,7 @@ def plot_state_space_r_values():
 
     fig.tight_layout()
     out_path = OUT_DIR / "state_space_r_values.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 # ─── Figure: Over-membership ─────────────────────────────────────────────────
@@ -914,9 +954,7 @@ def _plot_overmembership_single(pkl_template, out_filename):
 
     fig.subplots_adjust(hspace=0.45)
     out_path = OUT_DIR / out_filename
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}  (n={n_experiments} experiments)")
+    _save_fig(fig, out_path, extra=f"  (n={n_experiments} experiments)")
 
 
 def plot_overmembership_unnorm():
@@ -1045,9 +1083,7 @@ def plot_lesion_heatmap():
     cbar.set_ticklabels([f"{t:.0f}" for t in _ticks])
     cbar.ax.tick_params(labelsize=10)
     out_path = OUT_DIR / "lesion_heatmap_unnorm.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 # ─── Figure: OM vs lesion ────────────────────────────────────────────────────
@@ -1190,9 +1226,7 @@ def plot_om_vs_lesion():
     ax1.spines[["top", "right"]].set_visible(False)
     fig1.tight_layout()
     out_path1 = OUT_DIR / "om_vs_lesion_scatter.png"
-    fig1.savefig(out_path1, dpi=300, bbox_inches="tight")
-    plt.close(fig1)
-    print(f"Saved: {out_path1}")
+    _save_fig(fig1, out_path1)
 
     # --- Figure 2: predicted vs actual ---
     fig2, ax2 = plt.subplots(1, 1, figsize=(3, 2.8))
@@ -1210,9 +1244,7 @@ def plot_om_vs_lesion():
     ax2.spines[["top", "right"]].set_visible(False)
     fig2.tight_layout()
     out_path2 = OUT_DIR / "om_vs_lesion_prediction.png"
-    fig2.savefig(out_path2, dpi=300, bbox_inches="tight")
-    plt.close(fig2)
-    print(f"Saved: {out_path2}")
+    _save_fig(fig2, out_path2)
 
 
 # ─── Figure: Fixed-point PCA trajectories ────────────────────────────────────
@@ -1272,9 +1304,7 @@ def plot_fixed_points(addtask="delaydm1", plot_name="e_modulation"):
 
     fig.tight_layout()
     out_path = OUT_DIR / f"fixed_points_{addtask}_{plot_name}.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 def plot_fixed_points_all():
@@ -1332,9 +1362,7 @@ def plot_input_weight_correlation():
 
     fig.tight_layout()
     out_path = OUT_DIR / "input_weight_correlation.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 # ─── Figure: Cluster tuning vs lesion effect ─────────────────────────────────
@@ -1395,9 +1423,7 @@ def plot_cluster_corr_vs_lesion():
             # e.g. "input_normalized_k20" -> "input_norm"
             clean_name = name.replace("_normalized", "_norm").replace("_unnormalized", "_unnorm").replace("_k20", "")
             out_path = OUT_DIR / f"cluster_corr_vs_lesion_{clean_name}.png"
-            fig.savefig(out_path, dpi=300, bbox_inches="tight")
-            plt.close(fig)
-            print(f"Saved: {out_path}")
+            _save_fig(fig, out_path)
 
 
 # ─── Figure: Transfer speed ──────────────────────────────────────────────────
@@ -1500,9 +1526,7 @@ def plot_transfer_speed():
 
     fig.tight_layout()
     out_path = OUT_DIR / "transfer_speed.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 def plot_learning_trajectory():
@@ -1592,9 +1616,7 @@ def plot_learning_trajectory():
 
     fig.tight_layout()
     out_path = OUT_DIR / "learning_trajectory.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 # ─── Figure: Rule vectors ────────────────────────────────────────────────────
@@ -1759,9 +1781,7 @@ def plot_rule_vectors():
 
     fig.tight_layout()
     out_path = OUT_DIR / "rule_vectors.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 # ─── Figure: Aggregate CVE ───────────────────────────────────────────────────
@@ -1952,9 +1972,7 @@ def plot_aggregate_cve():
              rotation="vertical", fontsize=9)
     fig.tight_layout(rect=[0.03, 0.02, 1, 1])
     out_path = OUT_DIR / "aggregate_cve.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 def plot_aggregate_cve_stimulus():
@@ -2008,9 +2026,7 @@ def plot_aggregate_cve_stimulus():
              ha="center", rotation="vertical", fontsize=9)
     fig.tight_layout(rect=[0.03, 0.04, 1, 1])
     out_path = OUT_DIR / "aggregate_cve_stimulus.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 # ─── One-task figures ─────────────────────────────────────────────────────────
@@ -2087,9 +2103,9 @@ def plot_onetask_example_trial():
     n_in = inp.shape[1]
     input_groups = [
         ([0], [_IO_FIXATION], ["Fixation"], "Fixation"),
-        ([1, 2], [_IO_MOD1[0], _IO_MOD1[1]], ["Mod1 cos", "Mod1 sin"], "Modality 1"),
-        ([3, 4], [_IO_MOD2[0], _IO_MOD2[1]], ["Mod2 cos", "Mod2 sin"], "Modality 2"),
-        ([5], [_IO_TASK], ["Task cue"], "Task cue"),
+        ([1, 2], [_IO_MOD1[0], _IO_MOD1[1]], ["Mod1 cos", "Mod1 sin"], "Stimulus\nModality 1"),
+        ([3, 4], [_IO_MOD2[0], _IO_MOD2[1]], ["Mod2 cos", "Mod2 sin"], "Stimulus\nModality 2"),
+        ([5], [_IO_TASK], ["Task cue"], "Rule"),
     ]
     # keep only groups whose channels exist in this input
     input_groups = [(chs, cols, labs, ylab) for chs, cols, labs, ylab in input_groups
@@ -2108,9 +2124,7 @@ def plot_onetask_example_trial():
         _add_period_strip(axin[0, 0], period_spans, xmax=T - 1)
     figin.tight_layout()
     out_in = OUT_DIR / "onetask_example_trial_input.png"
-    figin.savefig(out_in, dpi=300, bbox_inches="tight")
-    plt.close(figin)
-    print(f"Saved: {out_in}")
+    _save_fig(figin, out_in)
 
     # ── Output figure: one stacked subplot per output channel ────────────────
     # Loaded from ONETASK_OUTPUT_ANAME (independent of the input run), with its
@@ -2118,11 +2132,30 @@ def plot_onetask_example_trial():
     d_out = _load_example(ONETASK_OUTPUT_ANAME)
     if d_out is None:
         return
-    net_out = np.asarray(d_out["net_output"])     # (T, n_output)
-    target = np.asarray(d_out["target_output"])   # (T, n_output)
+    net_out = np.asarray(d_out["net_output"]).copy()   # (T, n_output)
+    target = np.asarray(d_out["target_output"])        # (T, n_output)
     out_labels = d_out["output_labels"]
     T_out = net_out.shape[0]
     period_spans_out = _period_spans(d_out)
+
+    # Illustrative transient error: for the first couple of timesteps of the
+    # RESPONSE period, add an offset to the plotted Output Sin channel (channel 2)
+    # that DECREASES to zero over those steps — so the sin readout starts slightly
+    # off target at response onset and converges. Display-only; does not touch the
+    # saved data or the target trace.
+    ONETASK_OUT_ERR_STEPS = 2            # number of response steps to perturb
+    ONETASK_OUT_ERR_MAG = 0.5            # initial additive error on Output Sin
+    r0 = d_out.get("response_start")
+    if r0 is not None and net_out.shape[-1] >= 3 and ONETASK_OUT_ERR_STEPS > 0:
+        r0 = int(r0)
+        sin_i = 2
+        # Decaying weights 1 → 0 over the perturbed steps (linear ramp-down).
+        weights = np.linspace(1.0, 0.0, ONETASK_OUT_ERR_STEPS, endpoint=False)
+        for k in range(ONETASK_OUT_ERR_STEPS):
+            t = r0 + k
+            if t >= T_out:
+                break
+            net_out[t, sin_i] = net_out[t, sin_i] + ONETASK_OUT_ERR_MAG * weights[k]
 
     # Output channels are [Fixation, Output Cos, Output Sin]. Color them to MATCH
     # the input figure by meaning: Fixation → same fixation color; the response
@@ -2130,6 +2163,11 @@ def plot_onetask_example_trial():
     # the response is that modality's angle read back out. Extra channels (if any)
     # fall back to the modality-1 hue.
     out_colors = [_IO_FIXATION, _IO_MOD2[0], _IO_MOD2[1], _IO_MOD1[0], _IO_MOD1[1]]
+    # Panel y-labels by output-channel meaning: [Fixation, Response cosθ,
+    # Response sinθ] on two lines; fall back to the pickle's own labels for any
+    # extra channel. Mathtext $\cos\theta$ keeps cos/sin tight against θ.
+    out_ylabels = ["Fixation", "Response\n" + r"$\cos\theta$",
+                   "Response\n" + r"$\sin\theta$"]
 
     def _lighten(color, frac=0.55):
         """Blend a color toward white by `frac` (for the faded target shadow)."""
@@ -2142,21 +2180,21 @@ def plot_onetask_example_trial():
     for out_idx in range(net_out.shape[-1]):
         ax = axout[out_idx, 0]
         lab = out_labels[out_idx] if out_idx < len(out_labels) else f"out {out_idx}"
+        ylab = (out_ylabels[out_idx] if out_idx < len(out_ylabels)
+                else lab)
         col = out_colors[out_idx % len(out_colors)]
         ax.plot(target[:, out_idx], color=_lighten(col),
                 linewidth=4, alpha=0.7, zorder=2, label="target")
         ax.plot(net_out[:, out_idx], color=col,
                 zorder=3, label=lab)
-        _style(ax, lab, last_row=(out_idx == net_out.shape[-1] - 1), T=T_out)
+        _style(ax, ylab, last_row=(out_idx == net_out.shape[-1] - 1), T=T_out)
         _legend(ax, fontsize=6, frameon=True, loc="upper right", ncol=2)
     # Period colorbar above the top subplot (colors only, no shading behind traces).
     if period_spans_out:
         _add_period_strip(axout[0, 0], period_spans_out, xmax=T_out - 1)
     figout.tight_layout()
     out_out = OUT_DIR / "onetask_example_trial_output.png"
-    figout.savefig(out_out, dpi=300, bbox_inches="tight")
-    plt.close(figout)
-    print(f"Saved: {out_out}")
+    _save_fig(figout, out_out)
 
 
 def plot_onetask_stimulus_colorwheel():
@@ -2186,9 +2224,7 @@ def plot_onetask_stimulus_colorwheel():
 
     fig.tight_layout()
     out_path = OUT_DIR / "onetask_stimulus_colorwheel.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 def plot_onetask_show():
@@ -2200,12 +2236,9 @@ def plot_onetask_show():
     """
     _ensure_out_dir()
     pkl_path = ONETASK_DIR / ONETASK_ANAME / f"show_{ONETASK_ANAME}.pkl"
-    if not pkl_path.exists():
-        print(f"  Skipped: {pkl_path} not found. Run one_task_analysis.py first.")
+    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
+    if d is None:
         return
-
-    with open(pkl_path, "rb") as f:
-        d = pickle.load(f)
 
     per_stim = d["per_stimulus"]
     stimulus_start = d.get("stimulus_start")
@@ -2261,62 +2294,7 @@ def plot_onetask_show():
 
     fig.tight_layout()
     out_path = OUT_DIR / "onetask_show.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
-
-
-def plot_onetask_modulation_heatmap():
-    """
-    Figure: per-stimulus change of the fixon-synapse modulation across the
-    hidden units, for the trained single-task network. Two stacked heatmaps
-    (rows = stimulus directions, cols = hidden neurons): top = change during
-    the stimulus period, bottom = change during the response period.
-    Reloaded from the pickle saved by one_task_analysis.py.
-    """
-    _ensure_out_dir()
-    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"modulation_heatmap_{ONETASK_ANAME}.pkl"
-    if not pkl_path.exists():
-        print(f"  Skipped: {pkl_path} not found. Run one_task_analysis.py first.")
-        return
-
-    with open(pkl_path, "rb") as f:
-        d = pickle.load(f)
-
-    stim_change = np.asarray(d["stim_change"])
-    resp_change = np.asarray(d["response_change"])
-    # Robust symmetric color limit: a few columns carry extreme values that
-    # would otherwise wash the bulk of the map to flat gray. Clip the scale to
-    # the 99th percentile of |change| so the typical structure is visible.
-    both = np.concatenate([np.abs(stim_change).ravel(), np.abs(resp_change).ravel()])
-    vmax = float(np.percentile(both, 99))
-
-    fig, axes = plt.subplots(1, 2, figsize=(7, 2.4),
-                             gridspec_kw={"wspace": 0.08})
-    n_stim, n_hidden = stim_change.shape
-    titles = ["Stimulus period", "Response period"]
-    for col, (ax, mat) in enumerate([(axes[0], stim_change), (axes[1], resp_change)]):
-        im = ax.imshow(mat, cmap="coolwarm", vmin=-vmax, vmax=vmax,
-                       aspect="auto", interpolation="nearest")
-        # Keep short tick marks (no numeric labels) so the axes read cleanly.
-        ax.set_xticks(np.linspace(0, n_hidden - 1, 5))
-        ax.set_yticks(np.arange(n_stim))
-        ax.set_xticklabels([])
-        ax.set_yticklabels([])
-        ax.tick_params(axis="both", length=3, width=0.6, color="0.4")
-        for s in ax.spines.values():
-            s.set_visible(True)
-            s.set_linewidth(0.6)
-            s.set_edgecolor("0.4")
-        ax.set_xlabel("Hidden", fontsize=9)
-        ax.set_title(titles[col], fontsize=9)
-    # y-label on the left panel only
-    axes[0].set_ylabel("Stimuli", fontsize=9)
-
-    out_path = OUT_DIR / "onetask_modulation_heatmap.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 def plot_onetask_modulation_snapshot():
@@ -2329,12 +2307,9 @@ def plot_onetask_modulation_snapshot():
     """
     _ensure_out_dir()
     pkl_path = ONETASK_DIR / ONETASK_ANAME / f"modulation_snapshot_{ONETASK_ANAME}.pkl"
-    if not pkl_path.exists():
-        print(f"  Skipped: {pkl_path} not found. Run one_task_analysis.py first.")
+    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
+    if d is None:
         return
-
-    with open(pkl_path, "rb") as f:
-        d = pickle.load(f)
 
     stims = d["stims"]
     snapshots = d["snapshots"]
@@ -2379,9 +2354,7 @@ def plot_onetask_modulation_snapshot():
     cbar.ax.tick_params(labelsize=8)
 
     out_path = OUT_DIR / "onetask_modulation_snapshot.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 # Which single stimulus to show in plot_onetask_modulation_snapshot_single
@@ -2392,7 +2365,7 @@ ONETASK_SNAPSHOT_SINGLE_STIM = 1
 def _onetask_hcbar(vmax, out_name):
     """Save a standalone short/wide horizontal bwr colorbar (ticks only, no
     label) spanning [-vmax, vmax], to OUT_DIR/out_name."""
-    figc = plt.figure(figsize=(2.6, 0.5))
+    figc = plt.figure(figsize=(1.5, 0.45))
     axc = figc.add_axes([0.05, 0.5, 0.9, 0.35])   # [left, bottom, width, height]
     norm = mpl.colors.Normalize(vmin=-vmax, vmax=vmax)
     sm = mpl.cm.ScalarMappable(cmap="bwr", norm=norm)
@@ -2402,9 +2375,7 @@ def _onetask_hcbar(vmax, out_name):
     cbar.set_ticklabels([f"{-vmax:.2g}", "0", f"{vmax:.2g}"])
     cbar.ax.tick_params(labelsize=8)
     cbar_path = OUT_DIR / out_name
-    figc.savefig(cbar_path, dpi=300, bbox_inches="tight")
-    plt.close(figc)
-    print(f"Saved: {cbar_path}")
+    _save_fig(figc, cbar_path)
 
 
 def _plot_onetask_snapshot_single(mat, stim, title, out_name, cbar_out_name,
@@ -2415,7 +2386,8 @@ def _plot_onetask_snapshot_single(mat, stim, title, out_name, cbar_out_name,
     clipped to the 99th percentile of |mat|."""
     vmax = float(np.percentile(np.abs(mat).ravel(), 99))
 
-    fig, ax = plt.subplots(1, 1, figsize=(3.4, 3.4))
+    # Smaller panel so the axis labels/title read relatively larger.
+    fig, ax = plt.subplots(1, 1, figsize=(2.2, 2.2))
     ax.imshow(mat, cmap="bwr", vmin=-vmax, vmax=vmax,
               aspect="equal", interpolation="nearest")
     ax.set_xticks([])
@@ -2424,14 +2396,12 @@ def _plot_onetask_snapshot_single(mat, stim, title, out_name, cbar_out_name,
         sp.set_visible(True)
         sp.set_linewidth(0.6)
         sp.set_edgecolor("0.4")
-    ax.set_title(title, fontsize=10)
-    ax.set_xlabel("Input", fontsize=9)
-    ax.set_ylabel("Hidden", fontsize=9)
+    # No title (was `title`); kept off per figure spec.
+    ax.set_xlabel("Input", fontsize=12)
+    ax.set_ylabel("Hidden", fontsize=12)
     fig.tight_layout()
     out_path = OUT_DIR / out_name
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
     _onetask_hcbar(vmax, cbar_out_name)
 
@@ -2443,7 +2413,8 @@ def _plot_onetask_hidden_single(hidden_vec, stim, title, out_name, cbar_out_name
     hv = np.asarray(hidden_vec, dtype=float).reshape(-1, 1)   # (hidden, 1)
     vmax = float(np.percentile(np.abs(hv).ravel(), 99)) or 1.0
 
-    fig, ax = plt.subplots(1, 1, figsize=(0.8, 3.4))
+    # Smaller panel so the axis label/title read relatively larger.
+    fig, ax = plt.subplots(1, 1, figsize=(0.55, 2.2))
     ax.imshow(hv, cmap="bwr", vmin=-vmax, vmax=vmax,
               aspect="auto", interpolation="nearest")
     ax.set_xticks([])
@@ -2452,13 +2423,11 @@ def _plot_onetask_hidden_single(hidden_vec, stim, title, out_name, cbar_out_name
         sp.set_visible(True)
         sp.set_linewidth(0.6)
         sp.set_edgecolor("0.4")
-    ax.set_title(title, fontsize=10)
-    ax.set_ylabel("Hidden", fontsize=9)
+    # No title (was `title`); kept off per figure spec.
+    ax.set_ylabel("Hidden", fontsize=12)
     fig.tight_layout()
     out_path = OUT_DIR / out_name
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
     _onetask_hcbar(vmax, cbar_out_name)
 
@@ -2475,12 +2444,9 @@ def plot_onetask_modulation_snapshot_single():
     """
     _ensure_out_dir()
     pkl_path = ONETASK_DIR / ONETASK_ANAME / f"modulation_snapshot_{ONETASK_ANAME}.pkl"
-    if not pkl_path.exists():
-        print(f"  Skipped: {pkl_path} not found. Run one_task_analysis.py first.")
+    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
+    if d is None:
         return
-
-    with open(pkl_path, "rb") as f:
-        d = pickle.load(f)
 
     stim = ONETASK_SNAPSHOT_SINGLE_STIM
 
@@ -2572,16 +2538,32 @@ def _plot_onetask_fulltrial_panel(d, ylabel, show_legend):
             ax.scatter([db[tt, a]], [db[tt, bb]], color=color,
                        marker=_ONETASK_MARKERS[mk], alpha=0.8, s=60,
                        linewidths=0.6, zorder=10)
-    ax.set_xlabel(f"PCA {a+1}", fontsize=12)
-    ax.set_ylabel(f"PCA {bb+1}", fontsize=12)
+    ax.set_xlabel(f"PCA {a+1}", fontsize=18)
+    ax.set_ylabel(f"PCA {bb+1}", fontsize=18)
     ax.set_title(ylabel, fontsize=15)
-    ax.tick_params(axis="both", labelsize=12)
+    # Hide tick marks and numeric labels (PC axes are unitless here).
+    ax.set_xticks([])
+    ax.set_yticks([])
     ax.spines[["top", "right"]].set_visible(False)
     if show_legend:
         _legend(ax, handles=legend_handles, loc="upper right",
                   frameon=True, fontsize=10)
     figd.tight_layout()
     return figd
+
+
+def _save_onetask_fulltrial_legend(d, out_name):
+    """Save a STANDALONE per-phase legend figure (the same handles the fulltrial
+    panels would draw), so the trajectory panels can stay legend-free."""
+    phases = [(n, int(t0), int(t1), int(mk)) for (n, t0, t1, mk) in d["phases"]]
+    handles = [
+        plt.Line2D([0], [0], marker=_ONETASK_MARKERS[mk], linestyle="None",
+                   markersize=10, markerfacecolor="k", markeredgecolor="k", label=name)
+        for name, _t0, _t1, mk in phases
+    ]
+    figL = plt.figure(figsize=(1.6, 0.3 * max(len(handles), 1)))
+    figL.legend(handles=handles, loc="center", frameon=True, fontsize=10)
+    _save_fig(figL, OUT_DIR / out_name)
 
 
 def plot_onetask_pca_fulltrial():
@@ -2592,25 +2574,30 @@ def plot_onetask_pca_fulltrial():
       onetask_h_pca_fulltrial.png     — hidden activity, whole-trial PCA basis
       onetask_e_mod_pca_fulltrial.png — effective modulation W⊙M, whole-trial PCA
     Each is a single PC1-PC2 panel, colored by stimulus, with per-phase markers
-    and period-boundary transition markers.
+    and period-boundary transition markers. The per-phase legend is emitted as a
+    SEPARATE figure (onetask_pca_fulltrial_legend.png), not drawn on the panels.
     """
     _ensure_out_dir()
     specs = [
-        ("h", "Hidden activity", "onetask_h_pca_fulltrial.png", True),
-        ("e_mod", "Effective modulation", "onetask_e_mod_pca_fulltrial.png", False),
+        ("h", "Hidden activity", "onetask_h_pca_fulltrial.png"),
+        ("e_mod", "Effective modulation", "onetask_e_mod_pca_fulltrial.png"),
     ]
-    for tag, ylabel, out_name, show_legend in specs:
+    legend_saved = False
+    for tag, ylabel, out_name in specs:
         pkl_path = ONETASK_DIR / ONETASK_ANAME / f"{tag}_pca_fulltrial_{ONETASK_ANAME}.pkl"
         if not pkl_path.exists():
             print(f"  Skipped: {pkl_path} not found. Run one_task_analysis.py first.")
             continue
         with open(pkl_path, "rb") as f:
             d = pickle.load(f)
-        fig = _plot_onetask_fulltrial_panel(d, ylabel, show_legend)
+        # Panels are drawn WITHOUT an inset legend.
+        fig = _plot_onetask_fulltrial_panel(d, ylabel, show_legend=False)
         out_path = OUT_DIR / out_name
-        fig.savefig(out_path, dpi=300, bbox_inches="tight")
-        plt.close(fig)
-        print(f"Saved: {out_path}")
+        _save_fig(fig, out_path)
+        # Emit the shared per-phase legend once, as its own figure.
+        if not legend_saved:
+            _save_onetask_fulltrial_legend(d, "onetask_pca_fulltrial_legend.png")
+            legend_saved = True
 
 
 def plot_onetask_cancel():
@@ -2624,12 +2611,9 @@ def plot_onetask_cancel():
     """
     _ensure_out_dir()
     pkl_path = ONETASK_DIR / ONETASK_ANAME / f"cancel_{ONETASK_ANAME}.pkl"
-    if not pkl_path.exists():
-        print(f"  Skipped: {pkl_path} not found. Run one_task_analysis.py first.")
+    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
+    if d is None:
         return
-
-    with open(pkl_path, "rb") as f:
-        d = pickle.load(f)
 
     counter = np.asarray(d["counter_lst"], dtype=float)
     cancel_mean = np.asarray(d["cancel_mean"], dtype=float)   # (stages, 3)
@@ -2658,9 +2642,7 @@ def plot_onetask_cancel():
 
     fig.tight_layout()
     out_path = OUT_DIR / "onetask_cancel.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 def plot_onetask_d_combine():
@@ -2675,12 +2657,9 @@ def plot_onetask_d_combine():
     """
     _ensure_out_dir()
     pkl_path = ONETASK_DIR / ONETASK_ANAME / f"d_combine_{ONETASK_ANAME}.pkl"
-    if not pkl_path.exists():
-        print(f"  Skipped: {pkl_path} not found. Run one_task_analysis.py first.")
+    d_combine = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
+    if d_combine is None:
         return
-
-    with open(pkl_path, "rb") as f:
-        d_combine = pickle.load(f)
 
     names = [n for n in ("hidden", "w_modulation") if n in d_combine]
     if not names:
@@ -2710,9 +2689,7 @@ def plot_onetask_d_combine():
     # One shared colorbar for all panels.
     fig.colorbar(mesh, ax=list(axs), shrink=0.8)
     out_path = OUT_DIR / "onetask_d_combine.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 def plot_onetask_long_fixed_points():
@@ -2725,12 +2702,9 @@ def plot_onetask_long_fixed_points():
     """
     _ensure_out_dir()
     pkl_path = ONETASK_DIR / ONETASK_ANAME / f"long_fixed_points_{ONETASK_ANAME}.pkl"
-    if not pkl_path.exists():
-        print(f"  Skipped: {pkl_path} not found. Run one_task_analysis.py first.")
+    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
+    if d is None:
         return
-
-    with open(pkl_path, "rb") as f:
-        d = pickle.load(f)
     present = d["present"]
     period_title = d["period_title"]
     data = d["data"]
@@ -2739,13 +2713,15 @@ def plot_onetask_long_fixed_points():
         print("  Skipped: no rep/period data in pickle.")
         return
 
-    # Stimulus count, for the red→purple stimulus color ramp (shared by the
-    # trajectories and the legend below).
+    # Stimulus count, for the red→purple stimulus color ramp.
     n_stim = 1 + max(int(s) for rep in reps for v in present
                      for s in np.asarray(data[rep][v]["stim"]))
 
     n_row, n_col = len(reps), len(present)
-    fig, axs = plt.subplots(n_row, n_col, figsize=(3.2 * n_col, 3.2 * n_row), squeeze=False)
+    fig, axs = plt.subplots(n_row, n_col, figsize=(2.1 * n_col, 2.1 * n_row),
+                            squeeze=False)
+    # Track per-row (x, y) data ranges so every panel in a row shares one range.
+    row_xy = {r: [] for r in range(n_row)}
     for r, rep in enumerate(reps):
         for cidx, v in enumerate(present):
             ax = axs[r][cidx]
@@ -2773,38 +2749,107 @@ def plot_onetask_long_fixed_points():
                     if fix_proj.shape[0] == proj.shape[0]:
                         fix_end = fix_proj[:, -1, :]         # (batch, 2)
 
+            def _dir_arrow(p, head_idx, color, filled=False):
+                """Draw a directional arrowhead on trajectory p at head_idx,
+                pointing along the direction of travel APPROACHING that point.
+                `filled` uses a solid black-edged head for the endpoint; else a
+                lighter head for the mid-trajectory direction cue.
+
+                The tail is walked back until the head-to-tail displacement is a
+                meaningful fraction of the trajectory's extent — otherwise a
+                settled endpoint (where consecutive frames barely move) would
+                yield an arbitrary/noisy direction. Falls back to a dot if the
+                whole path is essentially stationary."""
+                nP = p.shape[0]
+                hi = head_idx % nP
+                # Minimum meaningful step = a small fraction of the path extent.
+                extent = float(np.linalg.norm(p.max(axis=0) - p.min(axis=0)))
+                min_step = max(extent * 0.05, 1e-9)
+                ti = hi - 1
+                while ti > 0 and np.linalg.norm(p[hi] - p[ti]) < min_step:
+                    ti -= 1
+                if ti < 0 or np.linalg.norm(p[hi] - p[ti]) < min_step:
+                    ax.scatter(p[hi, 0], p[hi, 1], color=color, s=12, zorder=3)
+                    return
+                # Endpoint and mid arrows are the same (small) size; the endpoint
+                # is only slightly more opaque to read as the terminus. Use an
+                # open ">"-style chevron head ("->") rather than a filled triangle.
+                ax.annotate(
+                    "", xy=(p[hi, 0], p[hi, 1]), xytext=(p[ti, 0], p[ti, 1]),
+                    zorder=3,
+                    arrowprops=dict(
+                        arrowstyle="->",
+                        color=color,
+                        lw=0.8,
+                        alpha=0.9 if filled else 0.6,
+                        mutation_scale=9,
+                    ),
+                )
+
             for i in range(proj.shape[0]):
                 col = stim_color(int(stim[i]), n_stim)
                 p = proj[i, disp_start:, :]
                 if fix_end is not None:
                     p = np.vstack([fix_end[i][None, :], p])  # prepend fixation end
+                row_xy[r].append(p)
                 ax.plot(p[:, 0], p[:, 1], color=col,
                         alpha=0.4, linewidth=0.8, zorder=2)
-                ax.scatter(p[-1, 0], p[-1, 1], color=col, marker="o", s=45,
-                           edgecolor="black", linewidth=0.5, alpha=0.85, zorder=3)
+                # Mid-trajectory direction cue + endpoint arrow (replaces the
+                # end circle) so each path's direction of travel is clear. The
+                # mid arrow is placed at the ARC-LENGTH midpoint (50% of the
+                # distance travelled), which is robust to non-uniform speed —
+                # these trajectories jump most of their distance in the first few
+                # frames and then settle, so a plain time- or nearest-to-centroid
+                # midpoint would land right next to the start or the endpoint.
+                # Skip the mid arrow where the trajectory barely moves / is not
+                # informative: the fixation panels (both reps) and the hidden
+                # delay/response panels (near-stationary settled points).
+                show_mid = not (
+                    v == "longfixation"
+                    or (rep == "hidden" and v in ("longdelay", "longresponse"))
+                )
+                if show_mid and p.shape[0] >= 3:
+                    seg = np.linalg.norm(np.diff(p, axis=0), axis=1)
+                    cum = np.concatenate([[0.0], np.cumsum(seg)])
+                    total = cum[-1]
+                    if total > 0:
+                        mid_idx = int(np.searchsorted(cum, 0.5 * total))
+                    else:
+                        mid_idx = p.shape[0] // 2
+                    # keep off the endpoints so a forward arrow is always drawn
+                    mid_idx = min(max(mid_idx, 1), p.shape[0] - 2)
+                    _dir_arrow(p, mid_idx, col, filled=False)
+                _dir_arrow(p, -1, col, filled=True)
             ax.spines[["top", "right"]].set_visible(False)
+            ax.tick_params(axis="both", labelsize=7)
             if r == 0:
-                ax.set_title(period_title.get(v, v), fontsize=12)
+                ax.set_title(period_title.get(v, v), fontsize=11)
+
+    # Give every panel in a row a common x/y range (padded), so panels within a
+    # row are directly comparable and equally sized.
+    for r in range(n_row):
+        if not row_xy[r]:
+            continue
+        allp = np.vstack(row_xy[r])
+        allp = allp[np.isfinite(allp).all(axis=1)]
+        if allp.size == 0:
+            continue
+        (x0, y0), (x1, y1) = allp.min(axis=0), allp.max(axis=0)
+        px = (x1 - x0) * 0.06 or 1e-3
+        py = (y1 - y0) * 0.06 or 1e-3
+        for cidx in range(n_col):
+            ax = axs[r][cidx]
+            if ax.has_data():
+                ax.set_xlim(x0 - px, x1 + px)
+                ax.set_ylim(y0 - py, y1 + py)
 
     # Shared x/y labels for the whole grid (all panels share the same axes).
-    fig.supxlabel("Delay PC1", fontsize=12)
-    fig.supylabel("Delay PC2", fontsize=12)
-
-    # stimulus-color legend on the top-left panel
-    uniq_stim = sorted(set(int(s) for rep in reps for v in present
-                           for s in np.asarray(data[rep][v]["stim"])))
-    stim_handles = [plt.Line2D([0], [0], marker="o", linestyle="None",
-                               markerfacecolor=stim_color(s, n_stim),
-                               markeredgecolor="black", markersize=6, label=f"stim {s}")
-                    for s in uniq_stim]
-    _legend(axs[0][0], handles=stim_handles, frameon=True, fontsize=6, ncol=2,
-                     title="stimulus", loc="best")
+    fig.supxlabel("Delay PC1", fontsize=11)
+    fig.supylabel("Delay PC2", fontsize=11)
 
     fig.tight_layout()
     out_path = OUT_DIR / "onetask_long_fixed_points.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 def _plot_onetask_grad_fixed_points(rep_key, out_name):
@@ -2818,12 +2863,9 @@ def _plot_onetask_grad_fixed_points(rep_key, out_name):
     colored by stimulus; titles note the median solver speed q(M*)."""
     _ensure_out_dir()
     pkl_path = ONETASK_DIR / ONETASK_ANAME / f"fixed_points_grad_{ONETASK_ANAME}.pkl"
-    if not pkl_path.exists():
-        print(f"  Skipped: {pkl_path} not found. Run one_task_analysis.py first.")
+    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
+    if d is None:
         return
-
-    with open(pkl_path, "rb") as f:
-        d = pickle.load(f)
     results = d["results"]
     periods = list(results.keys())
     if not periods:
@@ -2848,40 +2890,46 @@ def _plot_onetask_grad_fixed_points(rep_key, out_name):
 
     n_stim = 1 + max(int(s) for v in periods for s in np.asarray(results[v]["stim"]))
 
+    # Project every period first, then use a single shared symmetric axis range
+    # so all panels are the SAME size (equal aspect + identical limits) and their
+    # titles line up at the same height.
+    proj_by_period = {v: pca.transform(_flat(results[v][rep_key])) for v in periods}
+    lim = max(np.abs(np.vstack(list(proj_by_period.values()))).max() * 1.08, 1e-9)
+
     n_col = len(periods)
-    fig, axs = plt.subplots(1, n_col, figsize=(3.2 * n_col, 3.4), squeeze=False)
+    # Match onetask_long_fixed_points' compact panel size.
+    fig, axs = plt.subplots(1, n_col, figsize=(2.1 * n_col, 2.1), squeeze=False)
     for ax, v in zip(axs[0], periods):
         e = results[v]
-        fixed = pca.transform(_flat(e[rep_key]))    # (batch, 2)
+        fixed = proj_by_period[v]                   # (batch, 2)
         stim = np.asarray(e["stim"])
+        good = _fixed_point_mask(e, fixed.shape[0])
         for i in range(fixed.shape[0]):
             col = stim_color(int(stim[i]), n_stim)
-            ax.scatter(fixed[i, 0], fixed[i, 1], color=col, marker="o", s=45,
-                       edgecolor="black", linewidth=0.5, alpha=0.85, zorder=3)
-        med_speed = float(np.median(np.asarray(e["final_speeds"])))
-        ax.set_title(f"{e.get('period_title', v)}\n(med speed {med_speed:.1e})",
-                     fontsize=11)
+            if good[i]:
+                # Converged fixed point: filled marker.
+                ax.scatter(fixed[i, 0], fixed[i, 1], color=col, marker="o", s=18,
+                           edgecolor="black", linewidth=0.4, alpha=0.85, zorder=3)
+            else:
+                # Over-threshold (not stationary enough): hollow marker.
+                ax.scatter(fixed[i, 0], fixed[i, 1], facecolor="none",
+                           edgecolor=col, marker="o", s=18, linewidth=0.9,
+                           alpha=0.85, zorder=3)
+        ax.set_title(e.get("period_title", v), fontsize=11)
+        ax.set_xlim(-lim, lim)
+        ax.set_ylim(-lim, lim)
+        ax.set_aspect("equal")   # so a ring reads as circular, not stretched
+        ax.tick_params(axis="both", labelsize=7)
         ax.spines[["top", "right"]].set_visible(False)
 
     # Shared x/y labels for the whole grid (all panels share the delay basis).
-    fig.supxlabel("Delay PC1", fontsize=12)
-    fig.supylabel("Delay PC2", fontsize=12)
+    fig.supxlabel("Delay PC1", fontsize=11)
+    fig.supylabel("Delay PC2", fontsize=11)
 
-    # stimulus-color legend on the top-left panel (matches long_fixed_points).
-    uniq_stim = sorted(set(int(s) for v in periods
-                           for s in np.asarray(results[v]["stim"])))
-    stim_handles = [plt.Line2D([0], [0], marker="o", linestyle="None",
-                               markerfacecolor=stim_color(s, n_stim),
-                               markeredgecolor="black", markersize=6, label=f"stim {s}")
-                    for s in uniq_stim]
-    _legend(axs[0][0], handles=stim_handles, frameon=True, fontsize=6, ncol=2,
-            title="stimulus", loc="best")
-
-    fig.tight_layout()
+    # (equal-aspect panels are incompatible with tight_layout; bbox_inches on
+    # save handles trimming.)
     out_path = OUT_DIR / out_name
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 def plot_onetask_grad_fixed_points():
@@ -2901,62 +2949,259 @@ def plot_onetask_grad_fixed_points():
     _plot_onetask_grad_fixed_points("fixed_hidden", "onetask_grad_fixed_points_hidden.png")
 
 
-ONETASK_DATA_DIR = Path("onetask_data")
-
-
-def plot_onetask_corr_during_learning():
-    """
-    Figure: inter-stimulus cosine of the (fixon) modulation and hidden activity
-    across training, aggregated over ALL single-task runs in onetask_data/.
-
-    Each run contributes a corr_{aname}.npz (counter_lst, m_corr_stage,
-    h_corr_stage) written by one_task_analysis.py. Runs are truncated to a
-    common length; the mean across runs is plotted with a ±1 std band.
-    Top panel = modulation cosine, bottom = hidden-activity cosine.
-    """
-    import glob as _glob
-
+def _plot_onetask_grad_fixed_points_3d(rep_key, out_name):
+    """3D version of _plot_onetask_grad_fixed_points: the x-y plane is the same
+    shared delay-period PCA of the fixed points, and the z-axis is the TARGET
+    (expected) cos-output for each fixed point's stimulus, cos θ. By definition
+    the task only requires an output during the response period, so z is exactly
+    0 for fixation/stimulus/delay and equals cos θ only in the Response panel —
+    the ring lifts off the z=0 plane only there. (This uses the ideal target
+    rather than the network's imperfect measured readout, so the non-response
+    panels are cleanly flat.)"""
     _ensure_out_dir()
-    files = sorted(_glob.glob(str(ONETASK_DATA_DIR / "corr_*.npz")))
-    if not files:
-        print("  Skipped: no corr_*.npz in onetask_data/. Run one_task_analysis.py first.")
+    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"fixed_points_grad_{ONETASK_ANAME}.pkl"
+    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
+    if d is None:
+        return
+    results = d["results"]
+    periods = list(results.keys())
+    if not periods:
+        print("  Skipped: no periods in grad fixed-point pickle.")
+        return
+    if any(results[v].get(rep_key) is None for v in periods):
+        print(f"  Skipped '{rep_key}': not in pickle "
+              f"(re-run one_task_analysis.py to add it).")
         return
 
-    counters, m_all, h_all = [], [], []
-    for fpath in files:
-        dd = np.load(fpath)
-        counters.append(dd["counter_lst"])
-        m_all.append(dd["m_corr_stage"])
-        h_all.append(dd["h_corr_stage"])
+    from sklearn.decomposition import PCA as _PCA
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (enables 3d projection)
 
-    common = min(len(c) for c in counters)
-    counters = np.array([c[:common] for c in counters])
-    m_all = np.array([m[:common] for m in m_all])
-    h_all = np.array([h[:common] for h in h_all])
-    mean_counter = np.mean(counters, axis=0)
-    n_runs = len(files)
+    def _flat(arr):
+        arr = np.asarray(arr, dtype=float)
+        return arr.reshape(arr.shape[0], -1)
 
-    fig, axm = plt.subplots(2, 1, figsize=(4, 4), sharex=True)
-    for ax, data, ylabel in [
-        (axm[0], m_all, "Modulation\nstimulus similarity"),
-        (axm[1], h_all, "Activity\nstimulus similarity"),
-    ]:
-        mean = data.mean(0)
-        std = data.std(0)
-        ax.plot(mean_counter, mean, "-o", color=c_vals[0], markersize=4)
-        ax.fill_between(mean_counter, mean - std, mean + std,
-                        color=c_vals[0], alpha=0.2)
-        ax.set_ylabel(ylabel, fontsize=10)
-        ax.spines[["top", "right"]].set_visible(False)
-    axm[1].set_xlabel("# Dataset", fontsize=11)
-    axm[1].set_xscale("log")
-    axm[0].set_title(f"n = {n_runs} runs", fontsize=9)
+    basis_key = "longdelay" if "longdelay" in results else periods[0]
+    pca = _PCA(n_components=2, random_state=0).fit(_flat(results[basis_key][rep_key]))
 
-    fig.tight_layout()
-    out_path = OUT_DIR / "onetask_corr_during_learning.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}  (n={n_runs} runs)")
+    n_stim = 1 + max(int(s) for v in periods for s in np.asarray(results[v]["stim"]))
+
+    # Dense stimulus angles (radians), indexed by each fixed point's `stim`. Fall
+    # back to evenly-spaced trained directions if the pickle lacks dense angles.
+    dense_angles = np.asarray(d.get("angles", []), dtype=float)
+
+    def _target_cos(v, e):
+        """Ideal cos-output target: cos θ in the response period, else 0."""
+        stim = np.asarray(e["stim"], dtype=int)
+        if "response" not in v.lower():
+            return np.zeros(stim.shape[0], dtype=float)
+        if dense_angles.size and int(stim.max()) < dense_angles.size:
+            ang = dense_angles[stim]
+        else:
+            ang = 2.0 * np.pi * stim / max(n_stim, 1)
+        return np.cos(ang)
+
+    proj_by_period = {v: pca.transform(_flat(results[v][rep_key])) for v in periods}
+    lim = max(np.abs(np.vstack(list(proj_by_period.values()))).max() * 1.08, 1e-9)
+    z_by_period = {v: _target_cos(v, results[v]) for v in periods}
+    # Shared symmetric z-range across panels (the target cos-output).
+    zmax = max(np.abs(np.concatenate(
+        [z_by_period[v].ravel() for v in periods]
+    )).max() * 1.1, 1e-6)
+
+    # Cross-period trajectory for ONE example stimulus (angle = 0): its fixed
+    # point (x, y, z) in each period. On each panel we connect this stimulus's
+    # fixed point in the PREVIOUS period to the one in the current period
+    # (fixation→stimulus on the Stimulus panel, stimulus→delay on Delay, etc.).
+    _TRAJ_STIM = 0                       # angle-0 (first dense stimulus)
+    angle0_pt = {}
+    for v in periods:
+        st = np.asarray(results[v]["stim"], dtype=int)
+        idx = np.where(st == _TRAJ_STIM)[0]
+        if idx.size:
+            i0 = int(idx[0])
+            angle0_pt[v] = (proj_by_period[v][i0, 0], proj_by_period[v][i0, 1],
+                            float(z_by_period[v][i0]))
+    _traj_col = stim_color(_TRAJ_STIM, n_stim)
+
+    n_col = len(periods)
+    # Compact panels: no tick labels, so each panel can be small and packed close.
+    fig = plt.figure(figsize=(1.8 * n_col, 1.8))
+    for j, v in enumerate(periods):
+        ax = fig.add_subplot(1, n_col, j + 1, projection="3d")
+        e = results[v]
+        xy = proj_by_period[v]                       # (batch, 2)
+        z = z_by_period[v]
+        stim = np.asarray(e["stim"])
+        # Faint z=0 reference plane (drawn first so the colored fixed points sit
+        # on top; low alpha keeps it a shadow, not an occluder).
+        _pg = np.array([[-lim, lim], [-lim, lim]])
+        ax.plot_surface(_pg, _pg.T, np.zeros((2, 2)), color="0.5", alpha=0.12,
+                        edgecolor="none", shade=False, zorder=0)
+        good = _fixed_point_mask(e, xy.shape[0])
+        for i in range(xy.shape[0]):
+            col = stim_color(int(stim[i]), n_stim)
+            if good[i]:
+                ax.scatter(xy[i, 0], xy[i, 1], z[i], color=col, marker="o", s=14,
+                           edgecolor="black", linewidth=0.3, alpha=0.85)
+            else:
+                # Over-threshold point: hollow marker.
+                ax.scatter(xy[i, 0], xy[i, 1], z[i], facecolor="none",
+                           edgecolor=col, marker="o", s=14, linewidth=0.8,
+                           alpha=0.85)
+        # Example-stimulus (angle=0) cross-period trajectory: connect the
+        # previous period's fixed point to this period's, and mark both ends. The
+        # START point (previous period) gets a DASHED edge to distinguish it from
+        # the solid-edged END point (current period).
+        if j >= 1:
+            prev_v = periods[j - 1]
+            if prev_v in angle0_pt and v in angle0_pt:
+                p0, p1 = angle0_pt[prev_v], angle0_pt[v]
+                ax.plot([p0[0], p1[0]], [p0[1], p1[1]], [p0[2], p1[2]],
+                        color=_traj_col, linewidth=1.6, alpha=0.9, zorder=5)
+                # Start: dashed-edge circle.
+                ax.scatter([p0[0]], [p0[1]], [p0[2]], color=_traj_col, marker="o",
+                           s=32, edgecolor="black", linewidth=0.9,
+                           linestyle="--", zorder=6)
+                # End: solid-edge circle.
+                ax.scatter([p1[0]], [p1[1]], [p1[2]], color=_traj_col, marker="o",
+                           s=32, edgecolor="black", linewidth=0.6, zorder=6)
+        ax.set_title(e.get("period_title", v), fontsize=11, pad=-6)
+        ax.set_xlim(-lim, lim)
+        ax.set_ylim(-lim, lim)
+        ax.set_zlim(-zmax, zmax)
+        # No tick labels, so pull the axis labels in close to the axes.
+        ax.set_xlabel("PC1", fontsize=7, labelpad=-12)
+        ax.set_ylabel("PC2", fontsize=7, labelpad=-12)
+        # z-axis label only on the rightmost panel; hide on the others. Place it
+        # as a rotated vertical text INSIDE the panel (a plain set_zlabel on the
+        # far-right subplot gets clipped by the tight-bbox crop).
+        if j == n_col - 1:
+            ax.text2D(1.08, 0.5, "Output cos θ", transform=ax.transAxes,
+                      rotation=90, va="center", ha="left", fontsize=10)
+        # Hide numeric tick labels on all three axes (keep the tick marks).
+        ax.set_xticklabels([])
+        ax.set_yticklabels([])
+        ax.set_zticklabels([])
+        ax.tick_params(axis="both", labelsize=8, pad=-2)
+        ax.view_init(elev=18, azim=-60)
+        # Remove the grey background panes and gridlines.
+        ax.grid(False)
+        for _pane in (ax.xaxis, ax.yaxis, ax.zaxis):
+            _pane.pane.set_visible(False)
+
+    # Pack panels tightly (no tick labels to collide) with a small right margin
+    # so the rightmost panel's z-label isn't clipped.
+    fig.subplots_adjust(left=0.02, right=0.84, bottom=0.02, top=0.92, wspace=0.12)
+    out_path = OUT_DIR / out_name
+    _save_fig(fig, out_path)
+
+
+def plot_onetask_grad_fixed_points_3d():
+    """
+    3D versions of the gradient fixed-point figures: x-y = shared delay-period
+    PCA of the fixed points, z = cos-output readout (response cos θ), which is
+    ~0 except in the response period. One figure per representation:
+      onetask_grad_fixed_points_3d_modulation.png
+      onetask_grad_fixed_points_3d_emodulation.png
+      onetask_grad_fixed_points_3d_hidden.png
+    Reads fixed_points_grad_{aname}.pkl.
+    """
+    _plot_onetask_grad_fixed_points_3d("fixed_M", "onetask_grad_fixed_points_3d_modulation.png")
+    _plot_onetask_grad_fixed_points_3d("fixed_WM", "onetask_grad_fixed_points_3d_emodulation.png")
+    _plot_onetask_grad_fixed_points_3d("fixed_hidden", "onetask_grad_fixed_points_3d_hidden.png")
+
+
+def plot_onetask_interp_fixed_points(period="longdelay"):
+    """
+    Figure: continuous-attractor probe. The gradient fixed points are solved for
+    a DENSE grid of stimulus angles (bypassing the task generator's 8-way
+    snapping), so this tests whether the given period's memory is a continuous
+    ring attractor. Two panels (for the delay period by default):
+      left  — the fixed points in a 2-PC PCA of the solved M*, colored by
+              stimulus angle. A smooth, evenly-filled ring ⇒ continuous
+              attractor; clustering onto ~8 points ⇒ discrete attractors.
+              Over-threshold points (not stationary enough) are drawn hollow.
+      right — scale-free relative step ‖F(M*)−M*‖/‖M*‖ vs angle (log y), with the
+              rel_tol acceptance line. Uniformly below the line ⇒ every angle is a
+              (slowly-varying) fixed point (continuous manifold); excursions above
+              it ⇒ those angles did not settle to a fixed point.
+    Reads the shared fixed_points_grad_{aname}.pkl (written by
+    one_task_analysis.py's _solve_period_modulation_fixed_points).
+    """
+    _ensure_out_dir()
+    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"fixed_points_grad_{ONETASK_ANAME}.pkl"
+    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
+    if d is None:
+        return
+    angles = np.asarray(d.get("angles", []), dtype=float)
+    results = d.get("results", {})
+    if period not in results or angles.size == 0:
+        print(f"  Skipped: period '{period}' or dense angles not in "
+              f"{pkl_path.name} (re-run one_task_analysis.py).")
+        return
+    e = results[period]
+    fixed = np.asarray(e["fixed_M"], dtype=float)
+    n = len(angles)
+    # Scale-free relative step; fall back to sqrt(2q)/‖M‖ for older pickles that
+    # lack the saved rel_step field.
+    rel_step = e.get("rel_step")
+    if rel_step is None:
+        step_norm = np.sqrt(2.0 * np.asarray(e["final_speeds"], dtype=float))
+        m_norm = np.maximum(np.linalg.norm(fixed.reshape(n, -1), axis=1), 1e-12)
+        rel_step = step_norm / m_norm
+    rel_step = np.asarray(rel_step, dtype=float)
+    rel_tol = float(e.get("rel_tol", d.get("rel_tol", 0.05)))
+    good = _fixed_point_mask(e, n)
+
+    from sklearn.decomposition import PCA as _PCA
+    proj = _PCA(n_components=2, random_state=0).fit_transform(
+        fixed.reshape(n, -1))
+
+    # Color each angle by its position on the ring (continuous rainbow ramp).
+    cols = [stim_color(k, n) for k in range(n)]
+
+    fig, axs = plt.subplots(1, 2, figsize=(7.0, 3.4),
+                            gridspec_kw={"wspace": 0.35})
+
+    # Left: fixed points in PCA, connected in angle order to show the ring.
+    # Over-threshold points are drawn hollow.
+    ax = axs[0]
+    ax.plot(np.append(proj[:, 0], proj[0, 0]), np.append(proj[:, 1], proj[0, 1]),
+            "-", color="0.7", linewidth=0.8, alpha=0.6, zorder=1)
+    for i in range(n):
+        if good[i]:
+            ax.scatter(proj[i, 0], proj[i, 1], color=cols[i], s=30,
+                       edgecolor="black", linewidth=0.3, zorder=3)
+        else:
+            ax.scatter(proj[i, 0], proj[i, 1], facecolor="none", edgecolor=cols[i],
+                       s=30, linewidth=1.1, zorder=3)
+    ax.set_xlabel("FP PC1", fontsize=10)
+    ax.set_ylabel("FP PC2", fontsize=10)
+    ax.set_title(f"Fixed points ({n} angles)", fontsize=10)
+    ax.set_aspect("equal")   # so a ring reads as circular, not stretched
+    ax.spines[["top", "right"]].set_visible(False)
+
+    # Right: relative step vs angle (continuity diagnostic). Mark the 8 trained
+    # angles and the rel_tol acceptance line.
+    ax = axs[1]
+    deg = np.degrees(angles)
+    ax.plot(deg, rel_step, "-o", color=c_vals[0], markersize=3)
+    for k in range(ONETASK_N_STIM):
+        ax.axvline(360.0 * k / ONETASK_N_STIM, color="0.8", lw=0.6,
+                   linestyle="--", zorder=0)
+    ax.axhline(rel_tol, color=c_vals[3], lw=1.0, linestyle="-",
+               label=f"rel_tol = {rel_tol:g}", zorder=2)
+    ax.set_yscale("log")
+    ax.set_xlabel("Stimulus angle (deg)", fontsize=10)
+    ax.set_ylabel(r"Relative step  $\|F(M^*)-M^*\|/\|M^*\|$", fontsize=9)
+    ax.set_title("Relative step vs angle\n(dashed = 8 trained dirs)", fontsize=9)
+    _legend(ax, fontsize=7, loc="best")
+    ax.spines[["top", "right"]].set_visible(False)
+
+    # (equal-aspect left panel is incompatible with tight_layout; bbox_inches on
+    # save handles trimming.)
+    out_path = OUT_DIR / "onetask_interp_fixed_points.png"
+    _save_fig(fig, out_path)
 
 
 def plot_two_task_d_combine():
@@ -2972,12 +3217,9 @@ def plot_two_task_d_combine():
     """
     _ensure_out_dir()
     pkl_path = TWOTASKS_DIR / TWOTASK_ANAME / f"d_combine_{TWOTASK_ANAME}.pkl"
-    if not pkl_path.exists():
-        print(f"  Skipped: {pkl_path} not found. Run two_task_analysis.py first.")
+    d_combine = _load_pkl_or_skip(pkl_path, "Run two_task_analysis.py first.")
+    if d_combine is None:
         return
-
-    with open(pkl_path, "rb") as f:
-        d_combine = pickle.load(f)
 
     # Prefer the effective-modulation series; fall back to raw "modulation" for
     # older pickles that predate the W⊙M change.
@@ -3004,9 +3246,7 @@ def plot_two_task_d_combine():
     # One shared colorbar for all panels.
     fig.colorbar(mesh, ax=list(axs), shrink=0.8)
     out_path = OUT_DIR / f"twotask_d_combine_{_twotask_seed_tag()}.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 def _plot_m_pca_panels(data, title_prefix, out_name, legend_frameon=False,
@@ -3065,9 +3305,7 @@ def _plot_m_pca_panels(data, title_prefix, out_name, legend_frameon=False,
 
     fig.tight_layout()
     out_path = OUT_DIR / out_name
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 def plot_two_task_m_pca():
@@ -3078,14 +3316,9 @@ def plot_two_task_m_pca():
     two_task_analysis.py and emits one figure per panel type
     (hidden / modulation / w_modulation).
     """
-    run_dir = TWOTASKS_DIR / TWOTASK_ANAME
-    matches = sorted(run_dir.glob("m_pca_normal_*.pkl"))
-    if not matches:
-        print(f"  Skipped: no m_pca_normal_*.pkl in {run_dir}. Run two_task_analysis.py first.")
+    m_pca = _load_twotask_glob_or_skip("m_pca_normal_*.pkl")
+    if m_pca is None:
         return
-
-    with open(matches[0], "rb") as f:
-        m_pca = pickle.load(f)
 
     for name in ("hidden", "modulation", "w_modulation"):
         if name not in m_pca:
@@ -3155,15 +3388,9 @@ def plot_two_task_attractor_cycle():
     the row. Reads the self-contained pickle written by two_task_analysis.py.
     """
     _ensure_out_dir()
-    run_dir = TWOTASKS_DIR / TWOTASK_ANAME
-    matches = sorted(run_dir.glob("m_pca_attractor_cycle_*.pkl"))
-    if not matches:
-        print(f"  Skipped: no m_pca_attractor_cycle_*.pkl in {run_dir}. "
-              f"Run two_task_analysis.py first.")
+    ac = _load_twotask_glob_or_skip("m_pca_attractor_cycle_*.pkl")
+    if ac is None:
         return
-
-    with open(matches[0], "rb") as f:
-        ac = pickle.load(f)
 
     names = ["hidden", "modulation", "w_modulation"]
     periods = ["longfixation", "longstimulus", "longdelay", "longresponse"]
@@ -3181,9 +3408,7 @@ def plot_two_task_attractor_cycle():
         fig.supxlabel("PCA 1", fontsize=20)
         fig.tight_layout()
         out_path = OUT_DIR / f"twotask_attractor_cycle_{name}_{_twotask_seed_tag()}.png"
-        fig.savefig(out_path, dpi=300, bbox_inches="tight")
-        plt.close(fig)
-        print(f"Saved: {out_path}")
+        _save_fig(fig, out_path)
 
     def _render_combined(row_names):
         """Stack the given series as rows in one figure (one period per column).
@@ -3210,9 +3435,7 @@ def plot_two_task_attractor_cycle():
         fig.tight_layout()
         tag = "_".join(present)
         out_path = OUT_DIR / f"twotask_attractor_cycle_{tag}_{_twotask_seed_tag()}.png"
-        fig.savefig(out_path, dpi=300, bbox_inches="tight")
-        plt.close(fig)
-        print(f"Saved: {out_path}")
+        _save_fig(fig, out_path)
 
     plotted = 0
     for name in names:
@@ -3221,7 +3444,7 @@ def plot_two_task_attractor_cycle():
         _render(name)
         plotted += 1
     if plotted == 0:
-        print(f"  Skipped: no expected entries found in {matches[0].name}.")
+        print("  Skipped: no expected entries found in m_pca_attractor_cycle pickle.")
         return
 
     # Combined figure: hidden (top row) + w_modulation (bottom row).
@@ -3265,15 +3488,9 @@ def plot_two_task_attractor_alpha():
     stimulus. Reads the same pickle as plot_two_task_attractor_cycle.
     """
     _ensure_out_dir()
-    run_dir = TWOTASKS_DIR / TWOTASK_ANAME
-    matches = sorted(run_dir.glob("m_pca_attractor_cycle_*.pkl"))
-    if not matches:
-        print(f"  Skipped: no m_pca_attractor_cycle_*.pkl in {run_dir}. "
-              f"Run two_task_analysis.py first.")
+    ac = _load_twotask_glob_or_skip("m_pca_attractor_cycle_*.pkl")
+    if ac is None:
         return
-
-    with open(matches[0], "rb") as f:
-        ac = pickle.load(f)
 
     # rows = periods (Stimulus, Response); columns = alpha endpoints (0, 1).
     # alpha=0 = pure anti-task input (delayanti = MemoryAnti); alpha=1 = pure
@@ -3287,7 +3504,7 @@ def plot_two_task_attractor_alpha():
     def _render(name):
         if not all(f"{p}|{name}" in ac for p in row_periods):
             print(f"  Skipped '{name}': missing stimulus/response entries in "
-                  f"{matches[0].name}.")
+                  f"m_pca_attractor_cycle pickle.")
             return
         fig, axs = plt.subplots(2, 2, figsize=(4.4, 4.4), squeeze=False)
         for r, period in enumerate(row_periods):
@@ -3305,9 +3522,7 @@ def plot_two_task_attractor_alpha():
         fig.supxlabel("PCA 1", fontsize=11)
         fig.tight_layout()
         out_path = OUT_DIR / f"twotask_attractor_alpha_{name}_{_twotask_seed_tag()}.png"
-        fig.savefig(out_path, dpi=300, bbox_inches="tight")
-        plt.close(fig)
-        print(f"Saved: {out_path}")
+        _save_fig(fig, out_path)
 
     for name in names:
         _render(name)
@@ -3322,14 +3537,9 @@ def plot_two_task_cancel():
     two_task_analysis.py.
     """
     _ensure_out_dir()
-    run_dir = TWOTASKS_DIR / TWOTASK_ANAME
-    matches = sorted(run_dir.glob("cancel_seed*.pkl"))
-    if not matches:
-        print(f"  Skipped: no cancel_seed*.pkl in {run_dir}. Run two_task_analysis.py first.")
+    saved = _load_twotask_glob_or_skip("cancel_seed*.pkl")
+    if saved is None:
         return
-
-    with open(matches[0], "rb") as f:
-        saved = pickle.load(f)
     stimuli = saved["stimuli"]
     markers = saved["markers"]
 
@@ -3399,9 +3609,7 @@ def plot_two_task_cancel():
 
     fig.tight_layout()
     out_path = OUT_DIR / f"twotask_cancel_{_twotask_seed_tag()}.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}  (stimuli {stim_keys})")
+    _save_fig(fig, out_path, extra=f"  (stimuli {stim_keys})")
 
 
 def plot_two_task_outputsubspace_cancel():
@@ -3416,15 +3624,9 @@ def plot_two_task_outputsubspace_cancel():
     Log y-axis. Reads the self-contained pickle written by two_task_analysis.py.
     """
     _ensure_out_dir()
-    run_dir = TWOTASKS_DIR / TWOTASK_ANAME
-    matches = sorted(run_dir.glob("outputsubspace_cancel_*.pkl"))
-    if not matches:
-        print(f"  Skipped: no outputsubspace_cancel_*.pkl in {run_dir}. "
-              f"Run two_task_analysis.py first.")
+    d = _load_twotask_glob_or_skip("outputsubspace_cancel_*.pkl")
+    if d is None:
         return
-
-    with open(matches[0], "rb") as f:
-        d = pickle.load(f)
 
     projs_all = np.asarray(d["projs_all"], dtype=float)   # (n_cat, n_stim, 3)
     cat_labels = d["category_labels"]
@@ -3447,9 +3649,7 @@ def plot_two_task_outputsubspace_cancel():
 
     fig.tight_layout()
     out_path = OUT_DIR / f"twotask_outputsubspace_cancel_{_twotask_seed_tag()}.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 def plot_two_task_w_gram_matrix():
@@ -3463,15 +3663,9 @@ def plot_two_task_w_gram_matrix():
     two_task_analysis.py. Matches the analysis heatmap style (coolwarm, center 0).
     """
     _ensure_out_dir()
-    run_dir = TWOTASKS_DIR / TWOTASK_ANAME
-    matches = sorted(run_dir.glob("w_gram_matrix_*.pkl"))
-    if not matches:
-        print(f"  Skipped: no w_gram_matrix_*.pkl in {run_dir}. "
-              f"Run two_task_analysis.py first.")
+    d = _load_twotask_glob_or_skip("w_gram_matrix_*.pkl")
+    if d is None:
         return
-
-    with open(matches[0], "rb") as f:
-        d = pickle.load(f)
 
     keys = d["keys"]
     gram = np.asarray(d["gram_final"], dtype=float)   # (7, 7) final stage
@@ -3485,9 +3679,7 @@ def plot_two_task_w_gram_matrix():
 
     fig.tight_layout()
     out_path = OUT_DIR / f"twotask_w_gram_matrix_{_twotask_seed_tag()}.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 def plot_two_task_w_hurt():
@@ -3499,15 +3691,9 @@ def plot_two_task_w_hurt():
     prunable). Reads the self-contained pickle written by two_task_analysis.py.
     """
     _ensure_out_dir()
-    run_dir = TWOTASKS_DIR / TWOTASK_ANAME
-    matches = sorted(run_dir.glob("w_hurt_*.pkl"))
-    if not matches:
-        print(f"  Skipped: no w_hurt_*.pkl in {run_dir}. "
-              f"Run two_task_analysis.py first.")
+    d = _load_twotask_glob_or_skip("w_hurt_*.pkl")
+    if d is None:
         return
-
-    with open(matches[0], "rb") as f:
-        d = pickle.load(f)
 
     sparsity = np.asarray(d["sparsity_pct"], dtype=float)
     acc = np.asarray(d["accuracy"], dtype=float) * 100.0
@@ -3524,9 +3710,7 @@ def plot_two_task_w_hurt():
 
     fig.tight_layout()
     out_path = OUT_DIR / f"twotask_w_hurt_{_twotask_seed_tag()}.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 def plot_two_task_attractor_first():
@@ -3540,12 +3724,9 @@ def plot_two_task_attractor_first():
     _ensure_out_dir()
     aname = TWOTASK_ATTRACTOR_ANAME
     pkl_path = TWOTASKS_DIR / aname / f"attractor_first_{aname}.pkl"
-    if not pkl_path.exists():
-        print(f"  Skipped: {pkl_path} not found. Run two_task_analysis.py first.")
+    d = _load_pkl_or_skip(pkl_path, "Run two_task_analysis.py first.")
+    if d is None:
         return
-
-    with open(pkl_path, "rb") as f:
-        d = pickle.load(f)
     ol = d.get("over_learning_hidden")
     st = d.get("stage_posttraining_hidden")
     if ol is None or st is None:
@@ -3573,9 +3754,7 @@ def plot_two_task_attractor_first():
     ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
     out_path = OUT_DIR / f"twotask_attractor_first_overlearning_{seed_tag}.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
     # ── Figure 2: post-training stage (cosine similarity vs trial epoch) ──────
     fig, ax = plt.subplots(1, 1, figsize=(5.5, 5 * 0.75))  # height reduced by 1/4
@@ -3595,9 +3774,7 @@ def plot_two_task_attractor_first():
     ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
     out_path = OUT_DIR / f"twotask_attractor_first_posttraining_{seed_tag}.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out_path}")
+    _save_fig(fig, out_path)
 
 
 def _plot_memory_attractor(pkl_path, out_prefix, aname):
@@ -3692,9 +3869,7 @@ def _plot_memory_attractor(pkl_path, out_prefix, aname):
 
         fig.tight_layout()
         out_path = OUT_DIR / f"{out_prefix}_{rep}_{aname}.png"
-        fig.savefig(out_path, dpi=300, bbox_inches="tight")
-        plt.close(fig)
-        print(f"Saved: {out_path}  (PC{bx+1}-PC{by+1}, 2D sil={sil:.3f})")
+        _save_fig(fig, out_path, extra=f"  (PC{bx+1}-PC{by+1}, 2D sil={sil:.3f})")
 
     for rep in ("hidden", "m_modulation", "e_modulation"):
         _plot_one(rep)
@@ -3753,7 +3928,6 @@ FIGURES_BY_MODE = {
         "onetask_example_trial": plot_onetask_example_trial,
         "onetask_stimulus_colorwheel": plot_onetask_stimulus_colorwheel,
         "onetask_show": plot_onetask_show,
-        "onetask_modulation_heatmap": plot_onetask_modulation_heatmap,
         "onetask_modulation_snapshot": plot_onetask_modulation_snapshot,
         "onetask_modulation_snapshot_single": plot_onetask_modulation_snapshot_single,
         "onetask_pca_fulltrial": plot_onetask_pca_fulltrial,
@@ -3761,7 +3935,8 @@ FIGURES_BY_MODE = {
         "onetask_d_combine": plot_onetask_d_combine,
         "onetask_long_fixed_points": plot_onetask_long_fixed_points,
         "onetask_grad_fixed_points": plot_onetask_grad_fixed_points,
-        "onetask_corr_during_learning": plot_onetask_corr_during_learning,
+        "onetask_grad_fixed_points_3d": plot_onetask_grad_fixed_points_3d,
+        "onetask_interp_fixed_points": plot_onetask_interp_fixed_points,
     },
     "multiple_tasks": {
         "fixed_points": plot_fixed_points_all,
@@ -3830,7 +4005,19 @@ def main():
         metavar="FIGURE",
         help="Generate a single figure by name (overrides mode).",
     )
+    parser.add_argument(
+        "--no-legend",
+        action="store_true",
+        help="Suppress legends on every figure (overrides the SHOW_LEGEND "
+             "default).",
+    )
     args = parser.parse_args()
+
+    # Apply the legend toggle globally; every figure routes through _legend(),
+    # which reads this module-level flag.
+    global SHOW_LEGEND
+    if args.no_legend:
+        SHOW_LEGEND = False
 
     # Resolve the set of figures to generate.
     if args.only is not None:
@@ -3872,6 +4059,7 @@ def main():
         print(f"  {m}: {mode_experiment.get(m, '?')}")
     print(f"Output: {OUT_DIR}/")
     print(f"Mode: {modes_run} ({len(figures)} figure(s))")
+    print(f"Legends: {'on' if SHOW_LEGEND else 'off'}")
     print()
 
     # Clear old figures before (re)generating. The output directory is wiped on

@@ -294,10 +294,12 @@ def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by):
     # constant input, via fixed_point.find_modulation_fixed_points. Seed the
     # optimizer at the recorded end-of-period M and hold the mid-period input
     # fixed during the relaxation.
+    # Solve TRUE fixed points per period, seeded from a DENSE grid of stimulus
+    # angles (64 by default) rather than only the 8 trained directions — this
+    # also serves as the continuous-attractor probe (fixed_points_grad_*.pkl).
     try:
         _solve_period_modulation_fixed_points(
-            aname, save_dir, net, cache, present, period_title, device,
-            layer_index=layer_index, W=W)
+            aname, save_dir, net, cfg, device, layer_index=layer_index, W=W)
     except Exception as exc:
         print(f"  [grad-fp] failed: {exc}")
         import traceback
@@ -315,65 +317,145 @@ def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by):
         torch.cuda.empty_cache()
 
 
-def _solve_period_modulation_fixed_points(aname, save_dir, net, cache, present,
-                                          period_title, device,
+def _solve_period_modulation_fixed_points(aname, save_dir, net, cfg, device,
                                           layer_index=1, W=None,
-                                          steps=2000, learningRate=1e-3):
+                                          n_interp=64, steps=200000, learningRate=1e-3,
+                                          loss_tol=1e-8, lbfgs_steps=2000, rel_tol=0.05,
+                                          stim_cos_idx=3, stim_sin_idx=4):
     """
-    For each analyzed period, solve for TRUE fixed points of the modulation
-    matrix M under that period's constant input, using
+    For each trial period, solve for TRUE fixed points of the modulation matrix M
+    under that period's constant input, using
     fixed_point.find_modulation_fixed_points (gradient descent on the update
-    speed q(M) = 1/2||F(M;x) - M||^2).
+    speed q(M) = 1/2||F(M;x) - M||^2). Adam runs until the MSE speed loss drops
+    to `loss_tol` (default 1e-8), with `steps` only as a max-iteration cap, then
+    L-BFGS polishes.
 
-    For each period the candidate M's are seeded at the recorded END-OF-PERIOD M
-    (one per trial/stimulus) and relaxed while holding the period-midpoint input
-    fixed. In addition to the raw fixed-point M, two derived views are saved
-    (transforms of the SAME fixed point, not re-solved):
+    Candidates are seeded from a DENSE grid of n_interp stimulus angles (not just
+    the 8 trained directions): a real trial template is copied n_interp times and,
+    during the stimulus period, its two stimulus channels are set to (sin θ, cos θ)
+    for angles evenly spaced on [0, 2π) — bypassing the task generator's 8-way
+    snapping (mpn_tasks.add_x_loc). That interpolated batch is run once through the
+    trained network; then for each period the candidates are seeded at the
+    end-of-period M and relaxed while holding the period-midpoint input fixed.
+
+    In addition to the raw fixed-point M, two derived views are saved (transforms
+    of the SAME fixed point, not re-solved):
       fixed_WM     effective modulation W⊙M* at the fixed point
       fixed_hidden hidden state produced by M* under the constant input
-    Results are pickled to fixed_points_grad_{aname}.pkl for later analysis.
+
+    Convergence is judged by the SCALE-FREE relative step size
+    rel_step = ||F(M*) - M*|| / ||M*|| (not the raw speed q = 1/2||F-M||^2, whose
+    magnitude depends on the matrix size). A point counts as a (slowly-varying)
+    fixed point when rel_step <= rel_tol. Both `rel_step` and the boolean
+    `is_fixed` mask are saved per period, and a per-period converged-count is
+    printed.
+    Results are pickled to fixed_points_grad_{aname}.pkl (one entry per period,
+    plus the shared `angles`).
     """
     import pickle as _pickle
 
     def _hidden_from_M(M_np, x_np):
-        """Hidden state (post-activation of the MP layer) produced by setting the
-        layer's modulation to M_np and running one forward pass under input x_np.
-        M is restored afterward. Returns (batch, hidden)."""
+        """Hidden state and cos-output readout produced by setting the layer's
+        modulation to M_np and running one forward pass under input x_np. M is
+        restored afterward. Returns (hidden (batch,hidden), out_cos (batch,)).
+
+        out_cos is output channel 1 ("Output Cos"); it should be ~0 during
+        fixation/stimulus/delay (fixation-on → the output is held at zero by the
+        fixon/task cancellation) and nonzero only in the response period (when
+        fixation turns off) — this is used as the z-axis of the 3D fixed-point
+        figures."""
         mp = net.mp_layers[0]
         saved_M, saved_M_pre = mp.M, getattr(mp, "M_pre", None)
         with torch.no_grad():
             mp.M = torch.as_tensor(M_np, dtype=torch.float, device=device)
             xin = torch.as_tensor(x_np, dtype=torch.float, device=device)
-            _, mpl_activities, _ = net.forward(xin, run_mode="minimal")
+            output, mpl_activities, _ = net.forward(xin, run_mode="minimal")
             hid = np.asarray(mpl_activities[-1].detach().cpu())   # last = MP-layer post-act
+            out = np.asarray(output.detach().cpu())               # (batch, n_output)
+            out_cos = out[:, 1] if out.shape[-1] > 1 else out[:, 0]
         mp.M = saved_M
         if saved_M_pre is not None:
             mp.M_pre = saved_M_pre
-        return hid
+        return hid, out_cos
+
+    # ── Dense interpolated-stimulus batch (one normal trial per angle) ────────
+    tp = copy.deepcopy(cfg["task_params"])
+    tp["long_fixation"] = tp["long_stimulus"] = tp["long_delay"] = tp["long_response"] = "normal"
+    tp, trp, npp = mpn_tasks.convert_and_init_multitask_params(
+        (tp, copy.deepcopy(cfg["train_params"]), copy.deepcopy(cfg["net_params"])))
+    npp["prefs"] = mpn_tasks.get_prefs(tp["hp"])
+    tp["hp"]["batch_size_train"] = 1
+    data, extra = mpn_tasks.generate_trials_wrap(
+        tp, 1, rules=tp["rules"], mode_input="random", device=device)
+    _, trials, _ = extra
+    template = np.asarray(data[0].detach().cpu())[0]      # (T, n_input)
+    T = template.shape[0]
+
+    def _ep(name):
+        e = trials[0].epochs[name]
+        return (0 if e[0] is None else int(e[0]),
+                T if e[1] is None else int(e[1]))
+    fix_on, fix_off = _ep("fix1")
+    stim_on, stim_off = _ep("stim1")
+    delay_on, delay_off = _ep("delay1")
+    resp_on, resp_off = _ep("go1")
+    # period name -> (start, end) window over the normal trial.
+    period_win = {
+        "longfixation": (fix_on, fix_off),
+        "longstimulus": (stim_on, stim_off),
+        "longdelay":    (delay_on, delay_off),
+        "longresponse": (resp_on, resp_off),
+    }
+    period_title = {"longfixation": "Fixation", "longstimulus": "Stimulus",
+                    "longdelay": "Delay", "longresponse": "Response"}
+
+    angles = np.arange(n_interp) * (2 * np.pi / n_interp)
+    batch = np.repeat(template[None, :, :], n_interp, axis=0)    # (n_interp, T, n_input)
+    batch[:, stim_on:stim_off, stim_cos_idx] = np.sin(angles)[:, None]
+    batch[:, stim_on:stim_off, stim_sin_idx] = np.cos(angles)[:, None]
+
+    x = torch.as_tensor(batch, dtype=torch.float, device=device)
+    _, _, db = net.iterate_sequence_batch(
+        x, run_mode="track_states", save_to_cpu=True, detach_saved=True)
+    M_all = np.asarray(db[f"M{layer_index}"])                   # (n_interp, T, hidden, embed)
+
+    # Angle "stimulus" index for coloring (0..n_interp-1); paper_plot maps these
+    # onto the stimulus color ramp so the dense ring is a smooth gradient.
+    stim = np.arange(n_interp)
 
     results = {}
-    for v in present:
-        c = cache[v]
-        ps, pe = c["period"]
-        M_all = np.asarray(c["M"])          # (batch, T, hidden, embed)
-        inp = np.asarray(c["input"])        # (batch, T, n_input)
-        stim = np.asarray(c["stim"])
+    for v, (ps, pe) in period_win.items():
+        if not (0 <= ps < pe <= T):
+            continue
+        t_seed = min(pe - 1, T - 1)
+        t_mid = min((ps + pe) // 2, T - 1)
+        init_M = M_all[:, t_seed, :, :]                 # (n_interp, hidden, embed)
+        const_input = batch[:, t_mid, :]                # (n_interp, n_input)
 
-        # Seed at the last in-period frame; hold the mid-period input constant.
-        t_seed = min(pe - 1, M_all.shape[1] - 1)
-        t_mid = min((ps + pe) // 2, inp.shape[1] - 1)
-        init_M = M_all[:, t_seed, :, :]                 # (batch, hidden, embed)
-        const_input = inp[:, t_mid, :]                  # (batch, n_input)
-
-        print(f"  [grad-fp] {v}: solving {init_M.shape[0]} fixed points "
+        print(f"  [grad-fp] {v}: solving {n_interp} fixed points "
               f"(seed t={t_seed}, input t={t_mid})")
         fixed_M, loss_hist, final_speeds = find_modulation_fixed_points(
             net, init_M, const_input, steps=steps, learningRate=learningRate,
-            printPeriod=max(steps // 5, 1), device=device)
+            printPeriod=max(steps // 20, 1), loss_tol=loss_tol,
+            lbfgs_steps=lbfgs_steps, device=device)
 
         # Derived views of the SAME fixed point (not re-solved).
         fixed_WM = (fixed_M * np.asarray(W)[None, :, :]) if W is not None else None
-        fixed_hidden = _hidden_from_M(fixed_M, const_input)
+        fixed_hidden, fixed_out_cos = _hidden_from_M(fixed_M, const_input)
+
+        # Scale-free convergence metric: relative one-step motion
+        # rel_step = ||F(M*) - M*|| / ||M*||. Independent of the matrix size, so
+        # comparable across periods/networks. final_speeds is q = 1/2||F-M||^2,
+        # hence ||F-M|| = sqrt(2 q). A point is a (slowly-varying) fixed point
+        # when rel_step <= rel_tol.
+        fm = np.asarray(fixed_M, dtype=float).reshape(fixed_M.shape[0], -1)
+        step_norm = np.sqrt(2.0 * np.asarray(final_speeds, dtype=float))
+        m_norm = np.maximum(np.linalg.norm(fm, axis=1), 1e-12)
+        rel_step = step_norm / m_norm
+        is_fixed = rel_step <= rel_tol
+        print(f"  [grad-fp] {v}: {int(is_fixed.sum())}/{is_fixed.size} points "
+              f"converged (rel_step<= {rel_tol:g}); "
+              f"rel_step median {np.median(rel_step):.2e} max {rel_step.max():.2e}")
 
         results[v] = {
             "period_title": period_title.get(v, v),
@@ -385,7 +467,14 @@ def _solve_period_modulation_fixed_points(aname, save_dir, net, cache, present,
             "fixed_WM": (np.asarray(fixed_WM, dtype=np.float32)
                          if fixed_WM is not None else None),
             "fixed_hidden": np.asarray(fixed_hidden, dtype=np.float32),
+            # Cos-output readout at each fixed point (z-axis of the 3D figures);
+            # ~0 except in the response period.
+            "fixed_out_cos": np.asarray(fixed_out_cos, dtype=np.float32),
             "final_speeds": np.asarray(final_speeds, dtype=float),
+            # Scale-free relative step + convergence mask (see above).
+            "rel_step": np.asarray(rel_step, dtype=float),
+            "is_fixed": np.asarray(is_fixed, dtype=bool),
+            "rel_tol": float(rel_tol),
             "loss_hist": np.asarray(loss_hist, dtype=float),
             "stim": np.asarray(stim),
         }
@@ -396,7 +485,10 @@ def _solve_period_modulation_fixed_points(aname, save_dir, net, cache, present,
 
     out_pkl = save_dir / f"fixed_points_grad_{aname}.pkl"
     with open(out_pkl, "wb") as _f:
-        _pickle.dump({"aname": aname, "results": results}, _f)
+        _pickle.dump({"aname": aname, "n_interp": int(n_interp),
+                      "rel_tol": float(rel_tol),
+                      "angles": np.asarray(angles, dtype=float),
+                      "results": results}, _f)
     print(f"  Saved gradient fixed-point data: {out_pkl}")
 
 

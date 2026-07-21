@@ -141,14 +141,30 @@ class ModulationFixedPointNetwork(nn.Module):
             return (0.5 * torch.norm(next_state - ref, dim=(1, 2)) ** 2).cpu().numpy()
 
     # ── Optimize the batch toward fixed points ───────────────────────────────
-    def find_fixed_points(self, inputs, steps, learningRate=1e-3, printPeriod=10):
+    def _speed_loss(self, inputs):
+        """MSE(F(M), M): minimizing it drives the total speed q(M) to zero."""
+        next_state = self(inputs)                        # F(M), (B, post, pre)
+        return F.mse_loss(next_state, self.states, reduction="mean")
+
+    def find_fixed_points(self, inputs, steps, learningRate=1e-3, printPeriod=10,
+                          lbfgs_steps=500, loss_tol=1e-8):
         """
-        Gradient-descend the candidate states toward fixed points of M under the
-        constant input `inputs` (B, n_input).
+        Descend the candidate states toward fixed points of M under the constant
+        input `inputs` (B, n_input), in two stages:
+
+          1. Adam — a robust first pass from the recorded seed toward the
+             fixed-point basin. Runs until the MSE speed loss drops to `loss_tol`
+             (early stop) or `steps` is reached, whichever comes first. `steps`
+             therefore acts as a MAX-iteration cap, not a fixed count. Set
+             `loss_tol=0` (or None) to always run the full `steps`.
+          2. L-BFGS for up to `lbfgs_steps` iterations (strong-Wolfe line search)
+             — second-order polishing that drives the speed q(M) orders of
+             magnitude lower than Adam alone can (the standard Sussillo & Barak
+             refinement). Set `lbfgs_steps=0` to skip.
 
         Returns (states, loss_hist, final_speeds):
           states       : detached (B, post, pre) tensor of found fixed points
-          loss_hist    : list of per-step MSE losses
+          loss_hist    : list of per-step MSE losses (Adam stage)
           final_speeds : per-point speed q(M*) (numpy, (B,)); small ⇒ good FP.
         """
         inputs = torch.as_tensor(np.asarray(inputs), dtype=torch.float,
@@ -158,19 +174,53 @@ class ModulationFixedPointNetwork(nn.Module):
         print("Init speeds - Max: {:.2e} / Min: {:.2e}".format(
             float(np.max(init_speeds)), float(np.min(init_speeds))))
 
+        # ── Stage 1: Adam (run until loss <= loss_tol, capped at `steps`) ─────
         self.optimizer = torch.optim.Adam([self.states], lr=learningRate)
-
         loss_hist = []
+        last_step, last_loss = 0, float("inf")
         for step in range(steps):
             self.optimizer.zero_grad()
-            next_state = self(inputs)                    # F(M), (B, post, pre)
-            # Labels are the current states: drive F(M) -> M.
-            loss = F.mse_loss(next_state, self.states, reduction="mean")
-            loss_hist.append(loss.item())
+            loss = self._speed_loss(inputs)              # drive F(M) -> M
+            loss_val = loss.item()
+            loss_hist.append(loss_val)
+            last_step, last_loss = step, loss_val
             loss.backward()
             self.optimizer.step()
             if step % printPeriod == 0:
-                print("  Step {} - Loss: {:.3e}".format(step, loss.item()))
+                print("  [adam] Step {} - Loss: {:.3e}".format(step, loss_val))
+            # Early stop once the speed loss has converged to the tolerance.
+            if loss_tol and loss_val <= loss_tol:
+                print("  [adam] converged: Step {} - Loss: {:.3e} "
+                      "(<= tol {:.1e})".format(step, loss_val, loss_tol))
+                break
+        else:
+            if loss_tol:
+                print("  [adam] hit max steps ({}) without reaching tol {:.1e}; "
+                      "last loss {:.3e}".format(steps, loss_tol, last_loss))
+
+        adam_speeds = self.get_speeds(inputs)
+        print("Post-Adam speeds - Max: {:.2e} / Min: {:.2e}".format(
+            float(np.max(adam_speeds)), float(np.min(adam_speeds))))
+
+        # ── Stage 2: L-BFGS polishing ────────────────────────────────────────
+        # Second-order refinement on the same speed objective. The closure is
+        # re-evaluated by the line search, so each call rebuilds the graph.
+        if lbfgs_steps and lbfgs_steps > 0:
+            lbfgs = torch.optim.LBFGS(
+                [self.states], max_iter=int(lbfgs_steps), lr=1.0,
+                tolerance_grad=1e-16, tolerance_change=1e-18,
+                history_size=50, line_search_fn="strong_wolfe")
+
+            def _closure():
+                lbfgs.zero_grad()
+                loss = self._speed_loss(inputs)
+                loss.backward()
+                return loss
+
+            lbfgs.step(_closure)
+            polish_speeds = self.get_speeds(inputs)
+            print("Post-LBFGS speeds - Max: {:.2e} / Min: {:.2e}".format(
+                float(np.max(polish_speeds)), float(np.min(polish_speeds))))
 
         final_speeds = self.get_speeds(inputs)
         print("Final speeds - Max: {:.2e} / Min: {:.2e}".format(
@@ -180,16 +230,22 @@ class ModulationFixedPointNetwork(nn.Module):
 
 
 def find_modulation_fixed_points(network, init_M, inputs, steps=2000,
-                                 learningRate=1e-3, printPeriod=200, device=None):
+                                 learningRate=1e-3, printPeriod=200,
+                                 lbfgs_steps=500, loss_tol=1e-8, device=None):
     """
     Convenience wrapper: build a ModulationFixedPointNetwork seeded at `init_M`
     and optimize it under constant `inputs`.
 
-    network : trained (Deep)MultiPlasticNet.
-    init_M  : (B, post, pre) initial modulation matrices (e.g. recorded M at a
-              period midpoint), one per candidate / stimulus.
-    inputs  : (B, n_input) constant per-candidate input held fixed during the
-              relaxation (e.g. the fixation-only input for a delay fixed point).
+    network     : trained (Deep)MultiPlasticNet.
+    init_M      : (B, post, pre) initial modulation matrices (e.g. recorded M at
+                  a period midpoint), one per candidate / stimulus.
+    inputs      : (B, n_input) constant per-candidate input held fixed during the
+                  relaxation (e.g. the fixation-only input for a delay fixed pt).
+    steps       : MAX Adam iterations (first pass); Adam stops early once the
+                  speed loss reaches `loss_tol`.
+    loss_tol    : Adam early-stop threshold on the MSE speed loss (default 1e-8).
+    lbfgs_steps : L-BFGS polishing iterations after Adam (0 disables); drives the
+                  speed q(M*) far lower than Adam alone.
     Returns (fixed_M, loss_hist, final_speeds) with fixed_M as a numpy array.
     """
     fpn = ModulationFixedPointNetwork(network, init_M)
@@ -197,5 +253,6 @@ def find_modulation_fixed_points(network, init_M, inputs, steps=2000,
         fpn.to(device)
         fpn.states.data = fpn.states.data.to(device)
     fixed_M, loss_hist, final_speeds = fpn.find_fixed_points(
-        inputs, steps, learningRate=learningRate, printPeriod=printPeriod)
+        inputs, steps, learningRate=learningRate, printPeriod=printPeriod,
+        lbfgs_steps=lbfgs_steps, loss_tol=loss_tol)
     return fixed_M.cpu().numpy(), loss_hist, final_speeds
