@@ -63,11 +63,13 @@ output figures share a color.
 | `_IO_MOD1` | `("#a6761d", "#dcb877")` (brown dark/light) | Modality 1 cos / sin |
 | `_IO_MOD2` | `("#1b9e77", "#8fded0")` (teal dark/light) | Modality 2 cos / sin = active stimulus |
 | `_IO_TASK` | `#d95f02` (orange) | Task cue |
+| `_IO_RESPONSE` | `("#7e3ff2", "#c4a3f5")` (purple dark/light) | Output (response) cos / sin |
 
 Input↔output matching by meaning:
 - **Fixation** (input) ↔ **Fixation** (output) → `_IO_FIXATION`.
-- **Output Cos / Sin** reuse **Modality 2**'s teal cos/sin, since the response is
-  that modality's angle read back out.
+- **Output Cos / Sin** get their **own purple hue** (`_IO_RESPONSE`), deliberately
+  distinct from the stimulus modalities so the readout is not confused with an
+  input modality.
 - The faded target "shadow" in the output figure is each channel's own color
   lightened toward white (`_lighten`).
 

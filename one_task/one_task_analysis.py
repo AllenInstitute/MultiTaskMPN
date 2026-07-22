@@ -301,7 +301,7 @@ def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by,
     try:
         solve_period_modulation_fixed_points(
             aname, save_dir, net, cfg, device, layer_index=layer_index, W=W,
-            n_seeds=fp_n_seeds)
+            n_interp=64, n_seeds=fp_n_seeds)
     except Exception as exc:
         print(f"  [grad-fp] failed: {exc}")
         import traceback
@@ -375,6 +375,41 @@ def _cross_period_fve(H, periods, k=4, center="none", dtype=np.float64):
     return names, fve_k
 
 
+def _period_cumvar(H, periods, max_pc=11, center="none", dtype=np.float64):
+    """
+    Per-period cumulative variance explained by a period's OWN top PCs.
+
+    For each trial period, fit PCA on that period's states and return the
+    cumulative fraction of variance captured by the top 1, 2, ..., max_pc PCs.
+    This is the "top-11 PCs per period" scree/cumulative curve (the right panel
+    of the cross-period dimensionality figure).
+
+    Returns (period_names, cumvar) where cumvar[i] is a length-`max_pc` array of
+    cumulative variance ratios for period i (monotone increasing toward 1).
+    """
+    H_np = (H.detach().cpu().numpy() if hasattr(H, "detach") else np.asarray(H))
+    H_np = H_np.astype(dtype, copy=False)
+    _, T, N = H_np.shape
+    names = list(periods.keys())
+
+    cumvar = np.zeros((len(names), max_pc), dtype=dtype)
+    for i, nm in enumerate(names):
+        t0, t1 = periods[nm]
+        X = H_np[:, t0:t1, :].reshape(-1, N)
+        if center != "none":
+            X = X - X.mean(axis=0)
+        # Singular values → variance per component (∝ s^2).
+        s = np.linalg.svd(X, full_matrices=False, compute_uv=False)
+        var = s ** 2
+        tot = float(var.sum())
+        r = min(max_pc, var.size)
+        frac = (np.cumsum(var[:r]) / tot) if tot > 0 else np.zeros(r)
+        cumvar[i, :r] = frac
+        if r < max_pc:                       # fewer PCs than max_pc: hold at 1.0
+            cumvar[i, r:] = frac[-1] if r > 0 else 0.0
+    return names, cumvar
+
+
 def cross_period_dimensionality(aname, save_dir, hs_final, Ms_final, W_eff,
                                 stimulus_start, stimulus_end, response_start,
                                 top_k=4):
@@ -408,8 +443,11 @@ def cross_period_dimensionality(aname, save_dir, hs_final, Ms_final, W_eff,
     fig, axs = plt.subplots(1, len(series), figsize=(4 * len(series), 3.8))
     if len(series) == 1:
         axs = [axs]
+    max_pc = 11
     for ax, (name, H) in zip(axs, series):
         names, fve_k = _cross_period_fve(H, periods, k=top_k, center="none")
+        # Per-period own-PCA cumulative variance curve (top max_pc PCs).
+        _, cumvar = _period_cumvar(H, periods, max_pc=max_pc, center="none")
         sns.heatmap(fve_k, ax=ax, xticklabels=names, yticklabels=names,
                     annot=True, fmt=".2f", vmin=0.0, vmax=1.0, square=True,
                     cbar=True, cbar_kws={"shrink": 0.7})
@@ -421,6 +459,9 @@ def cross_period_dimensionality(aname, save_dir, hs_final, Ms_final, W_eff,
             "vmin": 0.0,
             "vmax": 1.0,
             "top_k": int(top_k),
+            # Right-panel data: cumulative variance vs #PCs, per period.
+            "cumvar": np.asarray(cumvar),        # (n_period, max_pc)
+            "max_pc": int(max_pc),
         }
     fig.tight_layout()
     fig.savefig(save_dir / f"d_combine_{aname}.png", dpi=300)
@@ -1254,7 +1295,8 @@ def main(aname, fp_n_seeds=5):
     # hs_now, Ms_orig, and W_eff computed above.
     try:
         cross_period_dimensionality(aname, save_dir, hs_now, Ms_orig, W_eff,
-                                    stimulus_start, stimulus_end, response_start)
+                                    stimulus_start, stimulus_end, response_start,
+                                    top_k=2)
     except Exception as exc:
         print(f"  [d_combine] failed: {exc}")
         import traceback

@@ -174,9 +174,25 @@ c_vals = [
     "#f43f5e", "#0f766e", "#b83280", "#ca8a04", "#2b6cb0",
 ] * 10
 
-# Number of ring stimulus directions (n_eachring in the task config); the
-# default stimulus count for the color ramp and the colorwheel illustration.
-ONETASK_N_STIM = 8
+# Number of TRAINED ring stimulus directions (n_eachring in the task config) for
+# the configured one-task run. Read from that run's saved param json so figures
+# adapt to each experiment (e.g. the default 8 vs a `morestimulus` run's 1024),
+# falling back to 8 if the json is unavailable. NB: this is the *trained*
+# direction count — the dense fixed-point interpolation grid (n_interp) is
+# separate and read per-figure from the pickle's own `stim`/`angles`.
+def _read_onetask_n_stim(default=8):
+    try:
+        import json as _json
+        p = ONETASK_DIR / f"param_{ONETASK_ANAME}_param.json"
+        if p.exists():
+            cfg = _json.load(open(p))
+            return int(cfg.get("task_params", {}).get("n_eachring", default))
+    except Exception:
+        pass
+    return default
+
+
+ONETASK_N_STIM = _read_onetask_n_stim()
 
 # ─── Stimulus color scheme ────────────────────────────────────────────────────
 # A continuous rainbow ramp from red to purple, used ONLY to color by stimulus
@@ -294,14 +310,15 @@ _ONETASK_PERIOD_COLORS = [
 # Colors for the example-trial input and output traces. A muted qualitative set,
 # deliberately distinct from the vivid stimulus rainbow (stim_color) and the pale
 # period-bar pastels (_ONETASK_PERIOD_COLORS). Within a modality the cos/sin
-# channels share a hue as a (dark, light) pair. Channels that MEAN THE SAME thing
-# across the input and output figures share a color: Fixation↔Fixation, and the
-# response Cos/Sin reuse the active stimulus modality's (Modality 2) cos/sin
-# colors (the response is that modality's angle read back out).
+# channels share a hue as a (dark, light) pair. Fixation↔Fixation shares a color
+# across the input and output figures. The response Cos/Sin get their OWN hue
+# (purple), deliberately distinct from the stimulus modalities so the readout is
+# not confused with an input modality.
 _IO_FIXATION = "#555555"              # dark gray
 _IO_MOD1 = ("#a6761d", "#dcb877")     # brown  (cos dark, sin light)
 _IO_MOD2 = ("#1b9e77", "#8fded0")     # teal   (cos dark, sin light) = active stimulus
 _IO_TASK = "#d95f02"                  # orange (single channel)
+_IO_RESPONSE = ("#7e3ff2", "#c4a3f5")  # purple (cos dark, sin light) = readout
 
 
 def _relabel_tb_name(name):
@@ -2100,7 +2117,7 @@ def plot_onetask_example_trial():
         # the bottom row too, so toggle visibility via tick_params instead.
         ax.tick_params(axis="x", labelbottom=last_row)
         if last_row:
-            ax.set_xlabel("Time step", fontsize=10)
+            ax.set_xlabel("Time (ms)", fontsize=10)
 
     # ── Input figure: 4 stacked subplots ────────────────────────────────────
     d = _load_example(ONETASK_INPUT_ANAME)
@@ -2170,12 +2187,12 @@ def plot_onetask_example_trial():
                 break
             net_out[t, sin_i] = net_out[t, sin_i] + ONETASK_OUT_ERR_MAG * weights[k]
 
-    # Output channels are [Fixation, Output Cos, Output Sin]. Color them to MATCH
-    # the input figure by meaning: Fixation → same fixation color; the response
-    # Cos/Sin → the active stimulus modality's (Modality 2) cos/sin colors, since
-    # the response is that modality's angle read back out. Extra channels (if any)
-    # fall back to the modality-1 hue.
-    out_colors = [_IO_FIXATION, _IO_MOD2[0], _IO_MOD2[1], _IO_MOD1[0], _IO_MOD1[1]]
+    # Output channels are [Fixation, Output Cos, Output Sin]. Fixation shares the
+    # input figure's fixation color; the response Cos/Sin get their OWN purple hue
+    # (_IO_RESPONSE), distinct from the stimulus modalities so the readout isn't
+    # confused with an input modality. Extra channels (if any) fall back to brown.
+    out_colors = [_IO_FIXATION, _IO_RESPONSE[0], _IO_RESPONSE[1],
+                  _IO_MOD1[0], _IO_MOD1[1]]
     # Panel y-labels by output-channel meaning: [Fixation, Response cosθ,
     # Response sinθ] on two lines; fall back to the pickle's own labels for any
     # extra channel. Mathtext $\cos\theta$ keeps cos/sin tight against θ.
@@ -2220,15 +2237,20 @@ def plot_onetask_stimulus_colorwheel():
     """
     _ensure_out_dir()
     n = ONETASK_N_STIM
-    angles = np.arange(n) * (2 * np.pi / n)
 
     fig, ax = plt.subplots(1, 1, figsize=(2.6, 2.6))
     # Faint guide circle.
     theta = np.linspace(0, 2 * np.pi, 200)
     ax.plot(np.cos(theta), np.sin(theta), "-", color="0.8", lw=1.0, zorder=1)
-    for k, a in enumerate(angles):
-        x, y = np.cos(a), np.sin(a)
-        ax.scatter(x, y, color=stim_color(k, n), s=180,
+    # Draw one dot per trained direction, but cap the number of drawn dots for
+    # dense (`morestimulus`) runs so the wheel stays legible; colors still span
+    # the full ring (0..n-1) so the ramp matches the trajectories.
+    n_draw = n if n <= 24 else 24
+    draw_k = np.linspace(0, n, n_draw, endpoint=False).astype(int)
+    dot_size = 180 if n <= 24 else 60
+    for k in draw_k:
+        a = 2 * np.pi * k / n
+        ax.scatter(np.cos(a), np.sin(a), color=stim_color(int(k), n), s=dot_size,
                    edgecolors="k", linewidths=0.5, zorder=3)
     ax.set_xlim(-1.3, 1.3)
     ax.set_ylim(-1.3, 1.3)
@@ -2282,10 +2304,11 @@ def plot_onetask_show():
         ax = axes[i, 0]
         tr = per_stim[lab]
         T = len(tr["combine"])
-        # Colors matched to onetask_example_trial: Fixon = Fixation (c_vals[0]),
-        # Task = Task Cue (c_vals[3]). Combine uses a new color not used there.
-        ax.plot(tr["fixon"], color=c_vals[0], label="Fixon", zorder=2)
-        ax.plot(tr["task"], color=c_vals[3], label="Task", zorder=2)
+        # Colors + names matched to onetask_example_trial's input channels:
+        # Fixation → _IO_FIXATION (dark gray), Rule → _IO_TASK (orange).
+        # Combine uses a distinct color not used for either input channel.
+        ax.plot(tr["fixon"], color=_IO_FIXATION, label="Fixation", zorder=2)
+        ax.plot(tr["task"], color=_IO_TASK, label="Rule", zorder=2)
         ax.plot(tr["combine"], color=c_vals[4], linewidth=2.5, label="Combine", zorder=3)
         ax.axhline(0, color="0.6", lw=0.8, zorder=1)
         ax.set_xlim(0, T - 1)
@@ -2297,7 +2320,7 @@ def plot_onetask_show():
             if period_spans:
                 _add_period_strip(ax, period_spans, xmax=T - 1)
         if i == len(sel_labels) - 1:
-            ax.set_xlabel("Timestep", fontsize=9)
+            ax.set_xlabel("Time (ms)", fontsize=9)
         else:
             ax.set_xticklabels([])
 
@@ -2551,8 +2574,8 @@ def _plot_onetask_fulltrial_panel(d, ylabel, show_legend):
             ax.scatter([db[tt, a]], [db[tt, bb]], color=color,
                        marker=_ONETASK_MARKERS[mk], alpha=0.8, s=60,
                        linewidths=0.6, zorder=10)
-    ax.set_xlabel(f"PCA {a+1}", fontsize=18)
-    ax.set_ylabel(f"PCA {bb+1}", fontsize=18)
+    ax.set_xlabel(f"PC{a+1}", fontsize=18)
+    ax.set_ylabel(f"PC{bb+1}", fontsize=18)
     ax.set_title(ylabel, fontsize=15)
     # Hide tick marks and numeric labels (PC axes are unitless here).
     ax.set_xticks([])
@@ -2664,8 +2687,8 @@ def plot_onetask_d_combine():
     network — one panel each for hidden activity and effective modulation (W⊙M).
     Each 4x4 matrix (Fixation/Stimulus/Memory/Response) shows how well each
     period's top-k PCA subspace captures every other period's variance.
-    Single-task analog of plot_two_task_d_combine; same color scheme (seaborn
-    default heatmap cmap, shared 0-1 range, one shared colorbar). Reads
+    Single-task analog of plot_two_task_d_combine; same color scheme (perceptually
+    uniform `mako` cmap, shared 0-1 range, one shared colorbar). Reads
     d_combine_{aname}.pkl written by one_task_analysis.py.
     """
     _ensure_out_dir()
@@ -2682,26 +2705,94 @@ def plot_onetask_d_combine():
     vmin = min(d_combine[n].get("vmin", 0.0) for n in names)
     vmax = max(d_combine[n].get("vmax", 1.0) for n in names)
 
-    fig, axs = plt.subplots(1, len(names), figsize=(4.2 * len(names), 3.9),
-                            gridspec_kw={"wspace": 0.45})
+    # Compact size, comparable to onetask_pc_cumvar.
+    fig, axs = plt.subplots(1, len(names), figsize=(2.3 * len(names), 2.2),
+                            gridspec_kw={"wspace": 0.15})
     if len(names) == 1:
         axs = [axs]
     title_map = {"hidden": "Hidden", "modulation": "Modulation",
                  "w_modulation": "Eff. modulation"}
     mesh = None
-    for ax, name in zip(axs, names):
+    for col, (ax, name) in enumerate(zip(axs, names)):
         e = d_combine[name]
+        # y-tick labels only on the leftmost panel (all panels share the same
+        # period rows); saves horizontal space so panels don't collide.
+        ylabels = e["labels"] if col == 0 else False
         sns.heatmap(np.asarray(e["fve_k_all"]), ax=ax,
-                    xticklabels=e["labels"], yticklabels=e["labels"],
-                    annot=True, fmt=".2f", vmin=vmin, vmax=vmax, square=True,
-                    cbar=False)
+                    xticklabels=e["labels"], yticklabels=ylabels,
+                    annot=True, fmt=".2f", annot_kws={"fontsize": 6},
+                    vmin=vmin, vmax=vmax, square=True,
+                    cmap="mako", cbar=False)
         mesh = ax.collections[0]
-        ax.set_title(title_map.get(name, name), fontsize=11)
-        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
+        ax.set_title(title_map.get(name, name), fontsize=10)
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right", fontsize=7)
+        if col == 0:
+            ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=7)
 
     # One shared colorbar for all panels.
-    fig.colorbar(mesh, ax=list(axs), shrink=0.8)
+    cb = fig.colorbar(mesh, ax=list(axs), shrink=0.8)
+    cb.ax.tick_params(labelsize=7)
     out_path = OUT_DIR / "onetask_d_combine.png"
+    _save_fig(fig, out_path)
+
+
+def plot_onetask_pc_cumvar():
+    """
+    Figure: cumulative variance explained vs number of PCs, per trial period
+    (the right panel of the cross-period dimensionality analysis). For each
+    representation (hidden, effective modulation) a single panel plots, for each
+    period, the fraction of that period's variance captured by its own top 1..N
+    PCs — one curve per period (Fixation / Stimulus / Memory / Response), colored
+    with the period-bar palette.
+
+    Reads the `cumvar` array saved in d_combine_{aname}.pkl by
+    one_task_analysis.py's cross_period_dimensionality. Skips gracefully if the
+    pickle predates that field.
+    """
+    _ensure_out_dir()
+    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"d_combine_{ONETASK_ANAME}.pkl"
+    d_combine = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
+    if d_combine is None:
+        return
+
+    names = [n for n in ("hidden", "w_modulation") if n in d_combine
+             and d_combine[n].get("cumvar") is not None]
+    if not names:
+        print("  Skipped: 'cumvar' not in d_combine pickle "
+              "(re-run one_task_analysis.py to add it).")
+        return
+
+    title_map = {"hidden": "Hidden", "w_modulation": "Eff. modulation"}
+    # Period name -> period-bar color (Fixation/Stimulus/Memory/Response order).
+    period_color = dict(zip(["Fixation", "Stimulus", "Memory", "Response"],
+                            _ONETASK_PERIOD_COLORS))
+
+    fig, axs = plt.subplots(1, len(names), figsize=(2.0 * len(names), 1.9),
+                            squeeze=False)
+    for ax, name in zip(axs[0], names):
+        e = d_combine[name]
+        cumvar = np.asarray(e["cumvar"], dtype=float)      # (n_period, max_pc)
+        labels = e.get("labels", ["Fixation", "Stimulus", "Memory", "Response"])
+        n_pc = cumvar.shape[1]
+        xs = np.arange(1, n_pc + 1)
+        for i, lab in enumerate(labels):
+            col = period_color.get(lab, c_vals[i % len(c_vals)])
+            ax.plot(xs, cumvar[i], "-o", color=col, markersize=3, label=lab)
+        ax.set_xlabel("No. of PCs", fontsize=9)
+        ax.set_ylabel("Var expl.", fontsize=9)
+        ax.set_title(title_map.get(name, name), fontsize=10)
+        # Pad the limits a touch so the first x/y ticks sit off the origin corner.
+        x_pad = 0.04 * (n_pc - 1)
+        ax.set_xlim(1 - x_pad, n_pc + x_pad)
+        ax.set_ylim(-0.04, 1.04)
+        ax.set_xticks([1, n_pc])          # only endpoints (1 and 11)
+        ax.set_yticks([0, 1])             # only 0 and 1
+        ax.tick_params(labelsize=8)
+        ax.spines[["top", "right"]].set_visible(False)
+        _legend(ax, fontsize=6, loc="lower right", frameon=True)
+
+    fig.tight_layout()
+    out_path = OUT_DIR / "onetask_pc_cumvar.png"
     _save_fig(fig, out_path)
 
 
@@ -2909,10 +3000,30 @@ def _plot_onetask_grad_fixed_points(rep_key, out_name):
     proj_by_period = {v: pca.transform(_flat(results[v][rep_key])) for v in periods}
     lim = max(np.abs(np.vstack(list(proj_by_period.values()))).max() * 1.08, 1e-9)
 
+    # Exemplar stimulus (angle 0): its within-period RECORDED trajectory and its
+    # fixed point per period. The drawn path is ANCHORED to the fixed points — it
+    # starts at the PREVIOUS period's fixed point, follows the recorded path, and
+    # ends at THIS period's fixed point — so its endpoints coincide with the
+    # solved fixed points. Maps rep -> saved trajectory field.
+    _TRAJ_STIM = 0
+    _traj_field = {"fixed_M": "traj_M", "fixed_WM": "traj_WM",
+                   "fixed_hidden": "traj_hidden"}.get(rep_key)
+    traj_by_period = {}
+    angle0_pt = {}
+    for v in periods:
+        tr = results[v].get(_traj_field) if _traj_field else None
+        if tr is not None and int(results[v].get("traj_stim", _TRAJ_STIM)) == _TRAJ_STIM:
+            traj_by_period[v] = pca.transform(_flat(tr))   # (win_T, 2)
+        st = np.asarray(results[v]["stim"], dtype=int)
+        idx = np.where(st == _TRAJ_STIM)[0]
+        if idx.size:
+            angle0_pt[v] = proj_by_period[v][int(idx[0])]  # (2,) current FP
+    _traj_col = stim_color(_TRAJ_STIM, n_stim)
+
     n_col = len(periods)
     # Match onetask_long_fixed_points' compact panel size.
     fig, axs = plt.subplots(1, n_col, figsize=(2.1 * n_col, 2.1), squeeze=False)
-    for ax, v in zip(axs[0], periods):
+    for j, (ax, v) in enumerate(zip(axs[0], periods)):
         e = results[v]
         fixed = proj_by_period[v]                   # (batch, 2)
         stim = np.asarray(e["stim"])
@@ -2928,6 +3039,23 @@ def _plot_onetask_grad_fixed_points(rep_key, out_name):
                 ax.scatter(fixed[i, 0], fixed[i, 1], facecolor="none",
                            edgecolor=col, marker="o", s=18, linewidth=0.9,
                            alpha=0.85, zorder=3)
+        # Trajectory anchored to the fixed points: previous period's FP (dashed
+        # marker) → recorded within-period path → this period's FP (solid marker).
+        tp = traj_by_period.get(v)
+        if tp is not None and tp.shape[0] >= 1 and j >= 1:
+            prev_v = periods[j - 1]
+            if prev_v in angle0_pt and v in angle0_pt:
+                p0, p1 = angle0_pt[prev_v], angle0_pt[v]
+                xs = np.concatenate([[p0[0]], tp[:, 0], [p1[0]]])
+                ys = np.concatenate([[p0[1]], tp[:, 1], [p1[1]]])
+                ax.plot(xs, ys, color=_traj_col, linewidth=1.1, alpha=0.8, zorder=4)
+                # Start: previous period's fixed point (dashed edge).
+                ax.scatter([p0[0]], [p0[1]], color=_traj_col, marker="o", s=22,
+                           edgecolor="black", linewidth=0.9, linestyle="--",
+                           zorder=5)
+                # End: current period's fixed point (solid edge).
+                ax.scatter([p1[0]], [p1[1]], color=_traj_col, marker="o", s=22,
+                           edgecolor="black", linewidth=0.5, zorder=5)
         ax.set_title(e.get("period_title", v), fontsize=11)
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)
@@ -3036,6 +3164,19 @@ def _plot_onetask_grad_fixed_points_3d(rep_key, out_name):
                             float(z_by_period[v][i0]))
     _traj_col = stim_color(_TRAJ_STIM, n_stim)
 
+    # Within-period RECORDED trajectory of the exemplar stimulus (how the state
+    # moves and converges during each period), projected into the same basis.
+    # Maps the fixed-point rep to its saved trajectory field.
+    _traj_field = {"fixed_M": "traj_M", "fixed_WM": "traj_WM",
+                   "fixed_hidden": "traj_hidden"}.get(rep_key)
+    traj_by_period = {}
+    for v in periods:
+        tr = results[v].get(_traj_field) if _traj_field else None
+        # Only the exemplar stimulus's trajectory is saved (traj_stim); ensure it
+        # matches _TRAJ_STIM so it lines up with the connector endpoints.
+        if tr is not None and int(results[v].get("traj_stim", _TRAJ_STIM)) == _TRAJ_STIM:
+            traj_by_period[v] = pca.transform(_flat(tr))   # (win_T, 2)
+
     n_col = len(periods)
     # Compact panels: no tick labels, so each panel can be small and packed close.
     fig = plt.figure(figsize=(1.8 * n_col, 1.8))
@@ -3061,23 +3202,31 @@ def _plot_onetask_grad_fixed_points_3d(rep_key, out_name):
                 ax.scatter(xy[i, 0], xy[i, 1], z[i], facecolor="none",
                            edgecolor=col, marker="o", s=14, linewidth=0.8,
                            alpha=0.85)
-        # Example-stimulus (angle=0) cross-period trajectory: connect the
-        # previous period's fixed point to this period's, and mark both ends. The
-        # START point (previous period) gets a DASHED edge to distinguish it from
-        # the solid-edged END point (current period).
-        if j >= 1:
+        # Exemplar-stimulus trajectory ANCHORED to the fixed points: it starts at
+        # the PREVIOUS period's fixed point, follows the recorded within-period
+        # path, and ends at THIS period's fixed point — so its endpoints coincide
+        # with the solved fixed points (unlike the raw recorded window, whose ends
+        # are recorded boundary states, not the relaxed fixed points). z sits at
+        # this period's level along the path; the leading segment shows the jump
+        # from the previous period's z. Start = dashed-edge, end = solid-edge.
+        tp = traj_by_period.get(v)
+        if tp is not None and tp.shape[0] >= 1 and j >= 1:
             prev_v = periods[j - 1]
             if prev_v in angle0_pt and v in angle0_pt:
-                p0, p1 = angle0_pt[prev_v], angle0_pt[v]
-                ax.plot([p0[0], p1[0]], [p0[1], p1[1]], [p0[2], p1[2]],
-                        color=_traj_col, linewidth=1.6, alpha=0.9, zorder=5)
-                # Start: dashed-edge circle.
+                p0, p1 = angle0_pt[prev_v], angle0_pt[v]     # prev FP, current FP
+                z_lvl = p1[2]                                # current period z
+                xs = np.concatenate([[p0[0]], tp[:, 0], [p1[0]]])
+                ys = np.concatenate([[p0[1]], tp[:, 1], [p1[1]]])
+                zs = np.concatenate([[p0[2]], np.full(tp.shape[0], z_lvl), [p1[2]]])
+                ax.plot(xs, ys, zs, color=_traj_col, linewidth=1.3, alpha=0.85,
+                        zorder=5)
+                # Start: previous period's fixed point (dashed edge).
                 ax.scatter([p0[0]], [p0[1]], [p0[2]], color=_traj_col, marker="o",
-                           s=32, edgecolor="black", linewidth=0.9,
+                           s=30, edgecolor="black", linewidth=0.9,
                            linestyle="--", zorder=6)
-                # End: solid-edge circle.
+                # End: current period's fixed point (solid edge).
                 ax.scatter([p1[0]], [p1[1]], [p1[2]], color=_traj_col, marker="o",
-                           s=32, edgecolor="black", linewidth=0.6, zorder=6)
+                           s=30, edgecolor="black", linewidth=0.6, zorder=6)
         ax.set_title(e.get("period_title", v), fontsize=11, pad=-6)
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)
@@ -3199,21 +3348,114 @@ def plot_onetask_interp_fixed_points(period="longdelay"):
     ax = axs[1]
     deg = np.degrees(angles)
     ax.plot(deg, rel_step, "-o", color=c_vals[0], markersize=3)
-    for k in range(ONETASK_N_STIM):
-        ax.axvline(360.0 * k / ONETASK_N_STIM, color="0.8", lw=0.6,
-                   linestyle="--", zorder=0)
+    # Dashed lines at the trained ring directions — only when few enough to be
+    # legible (a dense/`morestimulus` run has too many to mark).
+    if ONETASK_N_STIM <= 16:
+        for k in range(ONETASK_N_STIM):
+            ax.axvline(360.0 * k / ONETASK_N_STIM, color="0.8", lw=0.6,
+                       linestyle="--", zorder=0)
     ax.axhline(rel_tol, color=c_vals[3], lw=1.0, linestyle="-",
                label=f"rel_tol = {rel_tol:g}", zorder=2)
     ax.set_yscale("log")
     ax.set_xlabel("Stimulus angle (deg)", fontsize=10)
     ax.set_ylabel(r"Relative step  $\|F(M^*)-M^*\|/\|M^*\|$", fontsize=9)
-    ax.set_title("Relative step vs angle\n(dashed = 8 trained dirs)", fontsize=9)
+    _dash_note = (f"\n(dashed = {ONETASK_N_STIM} trained dirs)"
+                  if ONETASK_N_STIM <= 16 else "")
+    ax.set_title(f"Relative step vs angle{_dash_note}", fontsize=9)
     _legend(ax, fontsize=7, loc="best")
     ax.spines[["top", "right"]].set_visible(False)
 
     # (equal-aspect left panel is incompatible with tight_layout; bbox_inches on
     # save handles trimming.)
     out_path = OUT_DIR / "onetask_interp_fixed_points.png"
+    _save_fig(fig, out_path)
+
+
+def plot_onetask_fixed_point_stability():
+    """
+    Figure: linear-stability spectrum of the gradient fixed points, per period.
+    Reads the Jacobian eigenvalues saved in fixed_points_grad_{aname}.pkl (written
+    by the stability pass in core/grad_fixed_points.py). Two rows:
+
+      top  — leading Jacobian eigenvalues of F(M*) in the COMPLEX PLANE, one panel
+             per period, colored by stimulus angle, with the unit circle. As a
+             discrete map: points inside the circle are contracting, outside are
+             expanding; an eigenvalue sitting AT (1, 0) is a marginal/neutral
+             direction — the ring-attractor signature.
+      bottom — spectral radius ρ = max|λ| vs stimulus angle, per period, with the
+             ρ = 1 stability line. ρ < 1 ⇒ attracting fixed point.
+
+    Skips gracefully if the pickle predates the stability pass.
+    """
+    _ensure_out_dir()
+    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"fixed_points_grad_{ONETASK_ANAME}.pkl"
+    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
+    if d is None:
+        return
+    results = d.get("results", {})
+    periods = list(results.keys())
+    if not periods or any(results[v].get("eigenvalues") is None for v in periods):
+        print("  Skipped: 'eigenvalues' not in pickle "
+              "(re-run one_task_analysis.py to add the stability pass).")
+        return
+
+    angles = np.asarray(d.get("angles", []), dtype=float)
+    deg = np.degrees(angles) if angles.size else None
+    marg_tol = float(results[periods[0]].get("marginal_tol", 0.05))
+    n_col = len(periods)
+
+    # Stimulus color count (dense ring); eigenvalues share the stimulus of their
+    # fixed point.
+    n_stim = 1 + max(int(s) for v in periods for s in np.asarray(results[v]["stim"]))
+
+    theta = np.linspace(0, 2 * np.pi, 200)
+    fig, axs = plt.subplots(2, n_col, figsize=(2.6 * n_col, 5.0), squeeze=False)
+
+    for j, v in enumerate(periods):
+        e = results[v]
+        eig = np.asarray(e["eigenvalues"])              # (batch, k) complex
+        stim = np.asarray(e["stim"])
+        rad = np.asarray(e["spectral_radius"], dtype=float)
+
+        # ── Top row: eigenvalues in the complex plane ────────────────────────
+        ax = axs[0][j]
+        ax.plot(np.cos(theta), np.sin(theta), "-", color="0.7", lw=0.8, zorder=1)
+        ax.axhline(0, color="0.85", lw=0.5, zorder=0)
+        ax.axvline(0, color="0.85", lw=0.5, zorder=0)
+        for i in range(eig.shape[0]):
+            col = stim_color(int(stim[i]), n_stim)
+            ax.scatter(eig[i].real, eig[i].imag, color=col, s=6, alpha=0.6,
+                       edgecolor="none", zorder=3)
+        ax.set_title(e.get("period_title", v), fontsize=11)
+        ax.set_aspect("equal")
+        ax.set_xlabel("Re(λ)", fontsize=9)
+        if j == 0:
+            ax.set_ylabel("Im(λ)", fontsize=9)
+        ax.tick_params(labelsize=7)
+        ax.spines[["top", "right"]].set_visible(False)
+
+        # ── Bottom row: spectral radius vs stimulus angle ────────────────────
+        ax = axs[1][j]
+        x = deg if deg is not None and deg.size == rad.size else np.arange(rad.size)
+        ax.plot(x, rad, "-o", color=c_vals[0], markersize=3, zorder=3)
+        ax.axhline(1.0, color=c_vals[3], lw=1.0, zorder=2,
+                   label="ρ = 1")
+        # Shade the marginal band [1-tol, 1+tol].
+        ax.axhspan(1.0 - marg_tol, 1.0 + marg_tol, color="0.85", alpha=0.5, zorder=0)
+        if deg is not None and ONETASK_N_STIM <= 16:
+            for kk in range(ONETASK_N_STIM):
+                ax.axvline(360.0 * kk / ONETASK_N_STIM, color="0.9", lw=0.5,
+                           linestyle="--", zorder=0)
+        ax.set_xlabel("Stimulus angle (deg)" if deg is not None else "Stimulus index",
+                      fontsize=9)
+        if j == 0:
+            ax.set_ylabel(r"Spectral radius  $\rho=\max|\lambda|$", fontsize=9)
+            _legend(ax, fontsize=7, loc="best")
+        ax.tick_params(labelsize=7)
+        ax.spines[["top", "right"]].set_visible(False)
+
+    fig.tight_layout()
+    out_path = OUT_DIR / "onetask_fixed_point_stability.png"
     _save_fig(fig, out_path)
 
 
@@ -3252,13 +3494,83 @@ def plot_two_task_d_combine():
         sns.heatmap(np.asarray(e["fve_k_all"]), ax=ax,
                     xticklabels=e["labels"], yticklabels=e["labels"],
                     annot=True, fmt=".2f", vmin=vmin, vmax=vmax, square=True,
-                    cbar=False)
+                    cmap="mako", cbar=False)
         mesh = ax.collections[0]
         ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
 
     # One shared colorbar for all panels.
     fig.colorbar(mesh, ax=list(axs), shrink=0.8)
     out_path = OUT_DIR / f"twotask_d_combine_{_twotask_seed_tag()}.png"
+    _save_fig(fig, out_path)
+
+
+def plot_two_task_pc_cumvar():
+    """
+    Figure: cumulative variance explained vs number of PCs, per task and period,
+    for the two-task network — the two-task analog of onetask_pc_cumvar. A 2x2
+    grid: rows = representation (hidden / effective modulation), columns = task
+    (Go / Anti). Each panel plots one curve per trial period (colored with the
+    period-bar palette), showing how many PCs each period's trajectory needs.
+
+    Reads the self-contained pc_cumvar pickle written by two_task_analysis.py
+    (twotasks/{TWOTASK_ANAME}/pc_cumvar_{TWOTASK_ANAME}.pkl). Skips gracefully if
+    the pickle predates that field.
+    """
+    _ensure_out_dir()
+    d = _load_twotask_glob_or_skip("pc_cumvar_*.pkl")
+    if d is None:
+        return
+
+    mod_key = "w_modulation" if "w_modulation" in d else "modulation"
+    names = [n for n in ("hidden", mod_key) if n in d]
+    if not names:
+        print("  Skipped: no series in pc_cumvar pickle.")
+        return
+
+    rep_title = {"hidden": "Hidden", "w_modulation": "Eff. modulation",
+                 "modulation": "Modulation"}
+    # Period-bar palette keyed by the period names stored in the pickle. The
+    # two-task period names are the trial epochs (context/stim/memory/response);
+    # fall back to the categorical cycle if a name isn't in the map.
+    period_color_lookup = dict(zip(
+        ["Fixation", "Stimulus", "Memory", "Response"], _ONETASK_PERIOD_COLORS))
+
+    n_task = len(d[names[0]]["task_names"])
+    fig, axs = plt.subplots(len(names), n_task,
+                            figsize=(2.0 * n_task, 1.9 * len(names)),
+                            squeeze=False)
+    for r, name in enumerate(names):
+        e = d[name]
+        cumvar = np.asarray(e["cumvar"], dtype=float)     # (n_task, n_period, max_pc)
+        pnames = e["period_names"]
+        tnames = e["task_names"]
+        n_pc = cumvar.shape[2]
+        xs = np.arange(1, n_pc + 1)
+        for ti in range(n_task):
+            ax = axs[r][ti]
+            for pi, pname in enumerate(pnames):
+                col = period_color_lookup.get(pname, c_vals[pi % len(c_vals)])
+                ax.plot(xs, cumvar[ti, pi], "-o", color=col, markersize=3,
+                        label=pname)
+            # Pad limits so the first ticks sit off the origin corner.
+            x_pad = 0.04 * (n_pc - 1)
+            ax.set_xlim(1 - x_pad, n_pc + x_pad)
+            ax.set_ylim(-0.04, 1.04)
+            ax.set_xticks([1, n_pc])
+            ax.set_yticks([0, 1])
+            ax.tick_params(labelsize=8)
+            ax.spines[["top", "right"]].set_visible(False)
+            if r == 0:
+                ax.set_title(tnames[ti], fontsize=10)
+            if r == len(names) - 1:
+                ax.set_xlabel("No. of PCs", fontsize=9)
+            if ti == 0:
+                ax.set_ylabel(f"{rep_title.get(name, name)}\nVar expl.", fontsize=9)
+            if r == 0 and ti == n_task - 1:
+                _legend(ax, fontsize=6, loc="lower right", frameon=True)
+
+    fig.tight_layout()
+    out_path = OUT_DIR / f"twotask_pc_cumvar_{_twotask_seed_tag()}.png"
     _save_fig(fig, out_path)
 
 
@@ -3949,10 +4261,12 @@ FIGURES_BY_MODE = {
         "onetask_pca_fulltrial": plot_onetask_pca_fulltrial,
         "onetask_cancel": plot_onetask_cancel,
         "onetask_d_combine": plot_onetask_d_combine,
+        "onetask_pc_cumvar": plot_onetask_pc_cumvar,
         "onetask_long_fixed_points": plot_onetask_long_fixed_points,
         "onetask_grad_fixed_points": plot_onetask_grad_fixed_points,
         "onetask_grad_fixed_points_3d": plot_onetask_grad_fixed_points_3d,
         "onetask_interp_fixed_points": plot_onetask_interp_fixed_points,
+        "onetask_fixed_point_stability": plot_onetask_fixed_point_stability,
     },
     "multiple_tasks": {
         "fixed_points": plot_fixed_points_all,
@@ -3983,6 +4297,7 @@ FIGURES_BY_MODE = {
     },
     "two_task": {
         "twotask_d_combine": plot_two_task_d_combine,
+        "twotask_pc_cumvar": plot_two_task_pc_cumvar,
         "twotask_m_pca": plot_two_task_m_pca,
         "twotask_attractor_cycle": plot_two_task_attractor_cycle,
         "twotask_attractor_alpha": plot_two_task_attractor_alpha,

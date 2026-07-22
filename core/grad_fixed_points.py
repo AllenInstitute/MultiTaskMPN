@@ -208,7 +208,11 @@ def solve_period_modulation_fixed_points(
         _, _, db = net.iterate_sequence_batch(
             x, run_mode="track_states", save_to_cpu=True, detach_saved=True)
         M_all = np.asarray(db[f"M{layer_index}"])                  # (n_interp,T,hid,emb)
+        hid_all = np.asarray(db[f"hidden{layer_index}"])           # (n_interp,T,hidden)
         stim = np.arange(n_interp)
+        # Exemplar stimulus whose within-period trajectory we record for the
+        # figure (angle 0 = first dense stimulus; matches paper_plot's connector).
+        traj_stim = 0
 
         results = {}
         for v, (ps, pe) in period_win.items():
@@ -228,6 +232,16 @@ def solve_period_modulation_fixed_points(
 
             fixed_WM = (fixed_M * np.asarray(W)[None, :, :]) if W is not None else None
             fixed_hidden, fixed_out_cos = _hidden_from_M(fixed_M, const_input)
+
+            # Recorded within-period trajectory of the EXEMPLAR stimulus (angle 0):
+            # how the state actually moves over this period, en route to the fixed
+            # point. M(t) under the true (time-varying) period input, so it settles
+            # NEAR — not exactly onto — M* (solved under sustained input).
+            traj_M = M_all[traj_stim, ps:pe, :, :]                 # (win_T, hid, emb)
+            traj_M_flat = traj_M.reshape(traj_M.shape[0], -1)      # (win_T, hid*emb)
+            traj_WM = (traj_M * np.asarray(W)[None, :, :]).reshape(
+                traj_M.shape[0], -1) if W is not None else None    # (win_T, hid*emb)
+            traj_hidden = hid_all[traj_stim, ps:pe, :]             # (win_T, hidden)
 
             # Scale-free convergence metric rel_step = ||F(M*)-M*|| / ||M*||;
             # final_speeds is q = 1/2||F-M||^2, so ||F-M|| = sqrt(2 q).
@@ -260,6 +274,13 @@ def solve_period_modulation_fixed_points(
                 # Constant input this period's M* was solved under; kept so the
                 # (deferred) stability analysis can linearize F at the same point.
                 "const_input": np.asarray(const_input, dtype=np.float32),
+                # Exemplar-stimulus within-period trajectory (angle 0) for the
+                # figures: raw M, effective W⊙M, and hidden, one row per timestep.
+                "traj_stim": int(traj_stim),
+                "traj_M": np.asarray(traj_M_flat, dtype=np.float32),
+                "traj_WM": (np.asarray(traj_WM, dtype=np.float32)
+                            if traj_WM is not None else None),
+                "traj_hidden": np.asarray(traj_hidden, dtype=np.float32),
             }
         return results, angles
 

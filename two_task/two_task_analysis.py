@@ -1385,6 +1385,32 @@ def main(aname):
         pickle.dump(d_combine_data, f, protocol=pickle.HIGHEST_PROTOCOL)
     print("  Saved data: " + str(d_combine_path))
 
+    # Per-task cumulative-variance-vs-#PCs curves (the "dimension" figure data),
+    # saved self-contained so paper_plot can replot them. Structure:
+    #   pc_cumvar_data[rep]["task_names"]      -> ["Go", "Anti"]
+    #   pc_cumvar_data[rep]["period_names"]    -> per-task list of period labels
+    #   pc_cumvar_data[rep]["cumvar"]          -> (n_task, n_period, max_pc) array
+    task_disp = ["Go", "Anti"]
+    pc_cumvar_data = {}
+    for name, res in data_all:
+        n_task = 2
+        pnames0 = res[0]["period_names"]
+        max_pc = res[0]["evr_curves"].shape[1]
+        cumvar = np.zeros((n_task, len(pnames0), max_pc), dtype=float)
+        for ti in range(n_task):
+            for pi in range(len(res[ti]["period_names"])):
+                cumvar[ti, pi, :] = np.cumsum(res[ti]["evr_curves"][pi], axis=0)
+        pc_cumvar_data[name] = {
+            "task_names": task_disp,
+            "period_names": pnames0,
+            "cumvar": cumvar,
+            "max_pc": int(max_pc),
+        }
+    pc_cumvar_path = save_dir / f"pc_cumvar_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.pkl"
+    with open(pc_cumvar_path, "wb") as f:
+        pickle.dump(pc_cumvar_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+    print("  Saved data: " + str(pc_cumvar_path))
+
     # Cell 48: cross-run pickle summary
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     save_all = {"learning_hm_similarity": learning_hm_similarity, "pcs": pcs, "fve_k_alls": fve_k_alls}
@@ -2550,7 +2576,7 @@ def main(aname):
             solve_period_modulation_fixed_points(
                 aname, save_dir, net, cfg_fp, device,
                 rule=_rule, out_suffix=f"_{_rule}",
-                layer_index=layer_index, W=W_fp)
+                layer_index=layer_index, W=W_fp, n_interp=360)
         except Exception as exc:
             print(f"  [grad-fp/{_rule}] failed: {exc}")
             import traceback
