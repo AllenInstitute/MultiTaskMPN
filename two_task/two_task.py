@@ -111,7 +111,11 @@ def current_basic_params(hyp_dict):
         'rules': rules_dict[hyp_dict['ruleset']],
         'dt': 40,
         'ruleset': hyp_dict['ruleset'],
-        'n_eachring': 8,
+        # Number of trained ring directions. With in_out_mode='low_dim' this ONLY
+        # sets how many evenly-spaced stimulus angles the network is exposed to
+        # (get_prefs) — input/output dim stays 2, so this doesn't change the
+        # architecture. `more_stimulus` bumps it to 64 for a denser ring.
+        'n_eachring': 64 if hyp_dict.get('more_stimulus') else 8,
         'in_out_mode': 'low_dim',
         'sigma_x': 0.00,
         'mask_type': 'cost',
@@ -154,6 +158,13 @@ def current_basic_params(hyp_dict):
             'gamma': 0.1,
         },
     }
+
+    # A denser ring (64 directions) needs more training data to cover it, so bump
+    # n_datasets to at least 10000 for `more_stimulus` runs (keep the configured
+    # value if it is already larger).
+    if hyp_dict.get('more_stimulus'):
+        train_params['n_datasets'] = max(train_params['n_datasets'], 10000)
+        print(f"more_stimulus: n_datasets set to {train_params['n_datasets']}")
 
     if not train:
         assert train_params['n_epochs_per_set'] == 0
@@ -235,9 +246,12 @@ OUT_DIR = Path("twotasks")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def run_trial(seed):
+def run_trial(seed, more_stimulus=False):
     """Train one independent two-task network and save its full training bundle
-    plus a checkpoint that two_task_analysis.py can rebuild and run."""
+    plus a checkpoint that two_task_analysis.py can rebuild and run.
+
+    more_stimulus: if True, train on 64 ring directions (a denser ring) instead
+    of the default 8, and tag the run's aname with 'morestimulus'."""
     print(f"\n{'='*70}\nTrial seed = {seed}\n{'='*70}")
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -250,11 +264,14 @@ def run_trial(seed):
         'chosen_network': CHOSEN_NETWORK,
         'addon_name': ADDON_NAME + f"+hidden{N_HIDDEN}",
         'mess_with_training': False,
+        'more_stimulus': more_stimulus,
     }
 
     task_params, train_params, net_params = current_basic_params(hyp_dict)
 
-    aname = f"{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}"
+    # Tag denser-ring (64-direction) runs so they don't collide with default ones.
+    stim_tag = "+morestimulus" if hyp_dict.get('more_stimulus') else ""
+    aname = f"{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}{stim_tag}"
     print(f"aname: {aname}")
 
     # All outputs for this trial (param, loss curve, checkpoint, bundle) go in a
@@ -509,17 +526,26 @@ def run_trial(seed):
 
 # ─── Run K independent trials ────────────────────────────────────────────────
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--more-stimulus", action="store_true",
+                        help="Train on 64 ring directions (a denser ring) "
+                             "instead of the default 8; tags the aname with "
+                             "'morestimulus'.")
+    args = parser.parse_args()
+
     if SEED_LIST is not None:
         seeds = list(SEED_LIST)
     else:
         rng = random.Random()  # fresh entropy each run -> different seed pool
         seeds = rng.sample(range(1, 1000), N_TRIALS)
 
-    print(f"Running {len(seeds)} independent trials: seeds={seeds}")
+    print(f"Running {len(seeds)} independent trials: seeds={seeds}"
+          f"{' (more_stimulus: 64 ring dirs)' if args.more_stimulus else ''}")
     anames = []
     for seed in seeds:
         try:
-            anames.append(run_trial(seed))
+            anames.append(run_trial(seed, more_stimulus=args.more_stimulus))
         except Exception as exc:
             print(f"Trial seed={seed} FAILED: {exc}")
             import traceback

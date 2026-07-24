@@ -41,7 +41,6 @@ import torch
 
 from sklearn.decomposition import PCA
 from scipy.spatial.distance import cosine
-from scipy.spatial import ConvexHull
 
 import matplotlib
 matplotlib.use("Agg")
@@ -126,7 +125,7 @@ def assert_sums_close(arr_list, rtol=1e-5, atol=1e-8):
         )
 
 
-def modulation_extraction(test_input, db, layer_index, cuda=False):
+def modulation_extraction(test_input, db, layer_index):
     """Extract (Ms, Ms_orig, hs, bs) from a recorded activation dict. (Cell 26.)"""
     def _to_numpy(x):
         try:
@@ -525,68 +524,6 @@ def ring_length(pts):
     return np.linalg.norm(diffs, axis=1).sum()
 
 
-def ring_volume_nd(pts):
-    T, D = pts.shape
-    if T <= D:
-        raise ValueError(f"Need at least D+1={D+1} non-coplanar points, got {T}.")
-    hull = ConvexHull(pts)
-    return hull.volume
-
-
-def ring_volume_3d(pts):
-    if pts.shape[1] != 3:
-        raise ValueError("ring_volume_3d expects a 3-D point set.")
-    hull = ConvexHull(pts)
-    return hull.volume
-
-
-def add_convex_hull_mesh(fig, x, y, z, row=None, col=None, name="Endpoint hull",
-                         mesh_opacity=0.15, mesh_color="black", showlegend=True):
-    """Add a 3D convex-hull mesh to a Plotly figure. (Cell 95.)"""
-    pts = np.column_stack([np.asarray(x), np.asarray(y), np.asarray(z)])
-    if pts.shape[0] < 4:
-        return
-    try:
-        hull = ConvexHull(pts)
-    except Exception as e:
-        print(f"ConvexHull failed: {e}")
-        return
-    tri = hull.simplices
-    mesh = go.Mesh3d(x=pts[:, 0], y=pts[:, 1], z=pts[:, 2],
-                     i=tri[:, 0], j=tri[:, 1], k=tri[:, 2],
-                     opacity=mesh_opacity, color=mesh_color, name=name, showlegend=showlegend)
-    if row is not None and col is not None:
-        fig.add_trace(mesh, row=row, col=col)
-    else:
-        fig.add_trace(mesh)
-
-
-def best_fit_plane_normal(pts, center=True, eps=1e-12):
-    """Unit normal of the best-fit plane to pts (N,3), via SVD. (Cell 96.)"""
-    pts = np.asarray(pts, float)
-    if pts.shape[0] < 3:
-        return None
-    X = pts - pts.mean(axis=0) if center else pts.copy()
-    if np.linalg.norm(X) < eps:
-        return None
-    _, s, Vt = np.linalg.svd(X, full_matrices=False)
-    if s.size < 3 and np.all(s < eps):
-        return None
-    n = Vt[-1]
-    n_norm = np.linalg.norm(n)
-    if n_norm < eps:
-        return None
-    return n / n_norm
-
-
-def angle_between_unit_vectors(u, v, degrees=True, eps=1e-12):
-    if u is None or v is None:
-        return np.nan
-    c = float(np.clip(np.abs(np.dot(u, v)), -1.0, 1.0))
-    ang = np.arccos(c)
-    return np.degrees(ang) if degrees else ang
-
-
 def normalize_lst(lst, value=None):
     """Normalize a list by its first (or a given) value. (Cell 92.)"""
     if value is None:
@@ -597,7 +534,7 @@ def normalize_lst(lst, value=None):
 # ═══════════════════════════════════════════════════════════════════════════
 # Network reload
 # ═══════════════════════════════════════════════════════════════════════════
-def _rebuild_net(net_params, device):
+def _rebuild_net(net_params):
     if net_params['net_type'] == 'mpn1':
         netFunction = mpn.MultiPlasticNet
     elif net_params['net_type'] == 'dmpn':
@@ -612,7 +549,7 @@ def _rebuild_net(net_params, device):
     return net
 
 
-def main(aname):
+def main(aname, fp_n_seeds=5):
     # two_task.py saves each trial in a self-contained subfolder twotasks/{aname}/.
     # Fall back to the flat layout (files directly under twotasks/) for older runs.
     run_dir = OUT_DIR / aname
@@ -636,7 +573,7 @@ def main(aname):
     train_params = ckpt["train_params"]
     hyp_dict = ckpt["hyp_dict"]
 
-    net = _rebuild_net(net_params, device)
+    net = _rebuild_net(net_params)
     net.load_state_dict(ckpt["state_dict"])
     net.to(device)
     net.eval()
@@ -695,13 +632,20 @@ def main(aname):
 
     n_batch_all = test_input_np.shape[0]
 
-    # Figures are written into the same per-run subfolder that holds the
-    # checkpoint / bundle / param. Clear only previously-generated figure outputs
-    # (.png / .html) so re-running is clean without deleting the saved inputs.
+    # Figures and analysis outputs live in the same per-run subfolder as the
+    # training INPUTS (checkpoint / bundle / param). Clear previously-generated
+    # analysis outputs — figures (.png / .html) AND analysis pickles (.pkl,
+    # e.g. d_combine_*, m_pca_*, cancel_*, pc_cumvar_*, fixed_points_grad_*) — so
+    # re-running is clean. Preserve the training inputs (the .pt checkpoint, the
+    # param json, and the bundle_{aname}.pkl produced by two_task.py) by name.
     save_dir = OUT_DIR / aname
     save_dir.mkdir(parents=True, exist_ok=True)
+    _preserve = {f"savednet_{aname}.pt", f"bundle_{aname}.pkl",
+                 f"param_{aname}_param.json"}
     for _old in save_dir.iterdir():
-        if _old.is_file() and _old.suffix in (".png", ".html"):
+        if not _old.is_file() or _old.name in _preserve:
+            continue
+        if _old.suffix in (".png", ".html", ".pkl"):
             _old.unlink()
 
     def fp(stem):
@@ -712,27 +656,6 @@ def main(aname):
     ind = -1
     net_out = netout_lst[0][ind]
     db = db_lst[0][ind]
-
-    # ═════════════════════════════════════════════════════════════════════════
-    # Cell 7: input-embedding Frobenius norm across training (input_layer_add)
-    # ═════════════════════════════════════════════════════════════════════════
-    if hyp_dict['chosen_network'] == "dmpn" and net_params["input_layer_add"]:
-        fignorm, axsnorm = plt.subplots(1, 1, figsize=(4, 4))
-        axsnorm.plot(counter_lst, [np.linalg.norm(Wm) for Wm in Winput_lst], "-o")
-        axsnorm.set_xscale("log")
-        axsnorm.set_ylabel("Frobenius Norm")
-        fignorm.savefig(fp(f"winput_norm_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
-        print("  Saved figure: " + str(fp(f"winput_norm_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
-        plt.close(fignorm)
-
-    # Cell 8: final input-embedding heatmap
-    if net_params["input_layer_add"]:
-        Win_end = Winput_lst[-1]
-        fig8, ax8 = plt.subplots(1, 1, figsize=(4, 4))
-        sns.heatmap(Win_end, ax=ax8, center=0, cmap="coolwarm")
-        fig8.savefig(fp(f"winput_end_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
-        print("  Saved figure: " + str(fp(f"winput_end_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
-        plt.close(fig8)
 
     # ═════════════════════════════════════════════════════════════════════════
     # Cell 13: plot_input_output  +  cells 14-18 (normal + 4 long variants)
@@ -988,96 +911,170 @@ def main(aname):
 
     # ═════════════════════════════════════════════════════════════════════════
     # Cell 36 + 37 + 38 + 39: dPCA (optional dependency)
+    # Run for BOTH the hidden activity and the effective modulation (W⊙M), so the
+    # stimulus/task/time demixing can be compared across representations. Files:
+    #   dpca_hidden_*        / dpca_hidden_var_*        / dpca_hidden_Pangle_*
+    #   dpca_w_modulation_*  / dpca_w_modulation_var_*  / dpca_w_modulation_Pangle_*
     # ═════════════════════════════════════════════════════════════════════════
-    dpca_name = "hidden"
     try:
         from dPCA import dPCA
 
-        activity_list = []
+        # Trial index (mod1_j, mod2_j) per stimulus — matched via the saved
+        # modulation snapshots. Representation-independent, so compute once.
+        M_all = db_lst[0][-1][f"M{layer_index}"]
+        all_hidden = db_lst[0][-1][f"hidden{layer_index}"]
+        if net_params["input_layer_add"]:
+            W_dpca = net.mp_layer1.W.data.detach().cpu().numpy()
+        else:
+            W_dpca = net.mp_layer0.W.data.detach().cpu().numpy()
+
+        stim_trial_idx = []
         for i in range(8):
             mod1_stim1 = m_save[0][i]
             mod2_stim1 = m_save[1][i]
-            M_all = db_lst[0][-1][f"M{layer_index}"]
             mod1_j = mod2_j = None
             for j in range(M_all.shape[0]):
                 if np.sum(np.abs(M_all[j, :, :, :] - mod1_stim1)) <= 1e-3:
                     mod1_j = j
                 if np.sum(np.abs(M_all[j, :, :, :] - mod2_stim1)) <= 1e-3:
                     mod2_j = j
-            all_hidden = db_lst[0][-1][f"hidden{layer_index}"]
-            hidden1 = all_hidden[mod1_j].T
-            hidden2 = all_hidden[mod2_j].T
-            activity_list.append([hidden1, hidden2])
+            stim_trial_idx.append((mod1_j, mod2_j))
 
-        N, k = activity_list[0][0].shape
-        S = 8
-        T = 2
-        data_mean = np.zeros((N, S, T, k))
-        for s in range(S):
-            for t in range(T):
-                data_mean[:, s, t, :] = activity_list[s][t]
-        data_trials = data_mean[None, ...]
+        def _dpca_activity(dpca_name, j):
+            """(N, k) activity for trial index j under representation `dpca_name`:
+            hidden units, or the flattened effective modulation W⊙M per timestep."""
+            if dpca_name == "hidden":
+                return all_hidden[j].T                       # (N_neurons, k)
+            # w_modulation: effective modulation W⊙M, (post,pre) flattened per step.
+            wm = M_all[j] * W_dpca[None, :, :]               # (k, post, pre)
+            return wm.reshape(wm.shape[0], -1).T             # (post*pre, k)
 
-        dpca = dPCA.dPCA(labels='srt', n_components=100)
-        dpca.protect = ['t']
-        Z = dpca.fit_transform(data_mean, data_trials)
+        # dPCA forms an N x N covariance internally, so the raw effective
+        # modulation (N = post*pre, e.g. 40000) is infeasible. When the feature
+        # dimension exceeds this cap, pre-reduce the activity with PCA and run
+        # dPCA in that subspace (standard dPCA-on-large-populations practice).
+        DPCA_MAX_FEATURES = 200
 
-        figd, axsd = plt.subplots(len(Z.keys()), 1, figsize=(8, 4 * len(Z.keys())))
-        if len(Z.keys()) == 1:
-            axsd = [axsd]
-        for idx, key in enumerate(Z.keys()):
-            ax = axsd[idx]
-            time = [ii for ii in range(time_stamps_usual['trial_end'] + 1)]
+        # Self-contained data for paper_plot to replot the dPCA figures without
+        # re-running dPCA, keyed by representation ("hidden" / "w_modulation").
+        dpca_data = {}
+
+        def _run_dpca(dpca_name):
+            activity_list = [[_dpca_activity(dpca_name, j1), _dpca_activity(dpca_name, j2)]
+                             for (j1, j2) in stim_trial_idx]
+
+            N, k = activity_list[0][0].shape
+            S = 8
+            T = 2
+            data_mean = np.zeros((N, S, T, k))
             for s in range(S):
-                ax.plot(time, Z[key][0, s, 0, :], color=c_vals[s], linestyle='-', alpha=0.8, label=f"Stimulus {s}")
-                ax.plot(time, Z[key][0, s, 1, :], color=c_vals[s], linestyle='--', alpha=0.8)
-            ax.set_title(f"Top Stimulus Component ({key})")
-            ax.grid(alpha=0.3)
-            ax.legend()
-            ax.axvline(time_stamps_usual["fixation_end"], linestyle="--", color="gray")
-            ax.axvline(time_stamps_usual["stimulus_end"], linestyle="--", color="gray")
-            ax.axvline(time_stamps_usual["delay_end"], linestyle="--", color="gray")
-        figd.tight_layout()
-        figd.savefig(fp(f"dpca_{dpca_name}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
-        print("  Saved figure: " + str(fp(f"dpca_{dpca_name}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
-        plt.close(figd)
+                for t in range(T):
+                    data_mean[:, s, t, :] = activity_list[s][t]
 
-        # Cell 38: variance per marginalization
-        exp_var = dpca.explained_variance_ratio_
-        keys_v = list(exp_var.keys())
-        vals = [np.sum(exp_var[kk]) * 100 for kk in keys_v]
-        order = np.argsort(vals)[::-1]
-        keys_sorted = [keys_v[ii] for ii in order]
-        vals_sorted = [vals[ii] for ii in order]
-        figv, axv = plt.subplots(1, 1, figsize=(7, 4.5))
-        bars = axv.bar(keys_sorted, vals_sorted)
-        axv.set_ylabel("Explained variance (%)", fontsize=12)
-        axv.set_xlabel("Marginalization", fontsize=12)
-        axv.set_title("dPCA Variance Explained by Marginalization")
-        for bb, v in zip(bars, vals_sorted):
-            axv.text(bb.get_x() + bb.get_width() / 2, bb.get_height() + 0.5, f"{v:.2f}%", ha="center", va="bottom", fontsize=12)
-        axv.set_ylim(0, max(vals_sorted) * 1.15 if len(vals_sorted) else 1)
-        figv.tight_layout()
-        figv.savefig(fp(f"dpca_{dpca_name}_var_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
-        print("  Saved figure: " + str(fp(f"dpca_{dpca_name}_var_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
-        plt.close(figv)
+            # Pre-PCA for high-dimensional representations (w_modulation): fit on
+            # all (S*T*k) samples in feature space, then project so the dPCA input
+            # has at most DPCA_MAX_FEATURES "pseudo-neurons".
+            if N > DPCA_MAX_FEATURES:
+                flat = data_mean.reshape(N, -1).T           # (S*T*k, N)
+                n_comp = min(DPCA_MAX_FEATURES, flat.shape[0])
+                pca_pre = PCA(n_components=n_comp, random_state=42)
+                reduced = pca_pre.fit_transform(flat).T     # (n_comp, S*T*k)
+                data_mean = reduced.reshape(n_comp, S, T, k)
+                print(f"  [dPCA/{dpca_name}] pre-PCA reduced {N} -> {n_comp} "
+                      f"features ({pca_pre.explained_variance_ratio_.sum():.1%} var).")
+                N = n_comp
+            data_trials = data_mean[None, ...]
 
-        # Cell 39: P-angle heatmap between marginalization axes
-        P_angle = np.full((len(keys_v), len(keys_v)), np.nan)
-        for i in range(len(keys_v)):
-            for j in range(i + 1, len(keys_v)):
-                u = dpca.P[keys_v[i]][:, 0]
-                v = dpca.P[keys_v[j]][:, 0]
-                P_angle[i, j] = vec_angle_deg(u, v, sign_invariant=True)
-        figpa, axpa = plt.subplots(1, 1, figsize=(4, 4))
-        sns.heatmap(P_angle, ax=axpa, cmap="coolwarm", square=True, linewidths=0.5, linecolor="white",
-                    cbar_kws={"shrink": 0.85, "label": "P_angle"}, xticklabels=keys_v, yticklabels=keys_v)
-        axpa.set_xticklabels(keys_v, rotation=45, ha="right", rotation_mode="anchor", fontsize=10)
-        axpa.set_yticklabels(keys_v, rotation=0, fontsize=10)
-        figpa.tight_layout()
-        figpa.savefig(fp(f"dpca_{dpca_name}_Pangle_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
-        print("  Saved figure: " + str(fp(f"dpca_{dpca_name}_Pangle_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
-        plt.close(figpa)
+            dpca = dPCA.dPCA(labels='srt', n_components=min(100, N))
+            dpca.protect = ['t']
+            Z = dpca.fit_transform(data_mean, data_trials)
+
+            figd, axsd = plt.subplots(len(Z.keys()), 1, figsize=(8, 4 * len(Z.keys())))
+            if len(Z.keys()) == 1:
+                axsd = [axsd]
+            for idx, key in enumerate(Z.keys()):
+                ax = axsd[idx]
+                time = [ii for ii in range(time_stamps_usual['trial_end'] + 1)]
+                for s in range(S):
+                    ax.plot(time, Z[key][0, s, 0, :], color=c_vals[s], linestyle='-', alpha=0.8, label=f"Stimulus {s}")
+                    ax.plot(time, Z[key][0, s, 1, :], color=c_vals[s], linestyle='--', alpha=0.8)
+                ax.set_title(f"Top Stimulus Component ({key})")
+                ax.grid(alpha=0.3)
+                ax.legend()
+                ax.axvline(time_stamps_usual["fixation_end"], linestyle="--", color="gray")
+                ax.axvline(time_stamps_usual["stimulus_end"], linestyle="--", color="gray")
+                ax.axvline(time_stamps_usual["delay_end"], linestyle="--", color="gray")
+            figd.tight_layout()
+            figd.savefig(fp(f"dpca_{dpca_name}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
+            print("  Saved figure: " + str(fp(f"dpca_{dpca_name}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
+            plt.close(figd)
+
+            # Cell 38: variance per marginalization
+            exp_var = dpca.explained_variance_ratio_
+            keys_v = list(exp_var.keys())
+            vals = [np.sum(exp_var[kk]) * 100 for kk in keys_v]
+            order = np.argsort(vals)[::-1]
+            keys_sorted = [keys_v[ii] for ii in order]
+            vals_sorted = [vals[ii] for ii in order]
+            figv, axv = plt.subplots(1, 1, figsize=(7, 4.5))
+            bars = axv.bar(keys_sorted, vals_sorted)
+            axv.set_ylabel("Explained variance (%)", fontsize=12)
+            axv.set_xlabel("Marginalization", fontsize=12)
+            axv.set_title("dPCA Variance Explained by Marginalization")
+            for bb, v in zip(bars, vals_sorted):
+                axv.text(bb.get_x() + bb.get_width() / 2, bb.get_height() + 0.5, f"{v:.2f}%", ha="center", va="bottom", fontsize=12)
+            axv.set_ylim(0, max(vals_sorted) * 1.15 if len(vals_sorted) else 1)
+            figv.tight_layout()
+            figv.savefig(fp(f"dpca_{dpca_name}_var_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
+            print("  Saved figure: " + str(fp(f"dpca_{dpca_name}_var_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
+            plt.close(figv)
+
+            # Cell 39: P-angle heatmap between marginalization axes
+            P_angle = np.full((len(keys_v), len(keys_v)), np.nan)
+            for i in range(len(keys_v)):
+                for j in range(i + 1, len(keys_v)):
+                    u = dpca.P[keys_v[i]][:, 0]
+                    v = dpca.P[keys_v[j]][:, 0]
+                    P_angle[i, j] = vec_angle_deg(u, v, sign_invariant=True)
+            figpa, axpa = plt.subplots(1, 1, figsize=(4, 4))
+            sns.heatmap(P_angle, ax=axpa, cmap="coolwarm", square=True, linewidths=0.5, linecolor="white",
+                        cbar_kws={"shrink": 0.85, "label": "P_angle"}, xticklabels=keys_v, yticklabels=keys_v)
+            axpa.set_xticklabels(keys_v, rotation=45, ha="right", rotation_mode="anchor", fontsize=10)
+            axpa.set_yticklabels(keys_v, rotation=0, fontsize=10)
+            figpa.tight_layout()
+            figpa.savefig(fp(f"dpca_{dpca_name}_Pangle_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
+            print("  Saved figure: " + str(fp(f"dpca_{dpca_name}_Pangle_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
+            plt.close(figpa)
+
+            # Stash everything paper_plot needs to replot all three dPCA figures.
+            # Z_components[key] is the demixed top component per marginalization,
+            # shape (S, T, k) — the (0, s, t, :) traces the component figure draws.
+            dpca_data[dpca_name] = {
+                "n_stim": int(S), "n_task": int(T),
+                "time": np.arange(time_stamps_usual["trial_end"] + 1),
+                "period_bounds": {kk: int(time_stamps_usual[kk]) for kk in
+                                  ("fixation_end", "stimulus_end", "delay_end")},
+                # component traces per marginalization key.
+                "Z_components": {key: np.asarray(Z[key][0], dtype=np.float32)
+                                 for key in Z.keys()},
+                # explained variance (%) per marginalization (component figure order).
+                "exp_var_keys": list(keys_v),
+                "exp_var_pct": {kk: float(np.sum(exp_var[kk]) * 100) for kk in keys_v},
+                # P-angle heatmap (deg) between the top encoder axes + its labels.
+                "P_angle": np.asarray(P_angle, dtype=float),
+                "P_angle_keys": list(keys_v),
+                # feature dim actually fed to dPCA (post-pre-PCA for w_modulation).
+                "n_features": int(N),
+            }
+
+        for _dpca_name in ("hidden", "w_modulation"):
+            _run_dpca(_dpca_name)
+
+        if dpca_data:
+            dpca_path = save_dir / f"dpca_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.pkl"
+            with open(dpca_path, "wb") as f:
+                pickle.dump(dpca_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+            print("  Saved data: " + str(dpca_path))
     except ImportError:
         print("  [warn] dPCA not installed; skipping dPCA figures (cells 36-39).")
     except Exception as e:
@@ -1640,70 +1637,6 @@ def main(aname):
     plt.close(fig63)
 
     # ═════════════════════════════════════════════════════════════════════════
-    # Cell 64: delta_M / delta_MW magnitude over time
-    # ═════════════════════════════════════════════════════════════════════════
-    m_save = modulation_save_time[-1]
-    delta_M_tnorm_all, delta_MW_tnorm_all = [], []
-    for i in range(8):
-        mod1_stim1 = m_save[0][i]
-        mod2_stim1 = m_save[1][i]
-        delta_M = mod1_stim1 - mod2_stim1
-        delta_MW = (mod1_stim1 * W[None, :, :] - mod2_stim1 * W[None, :, :])
-        delta_M_tnorm_all.append([np.linalg.norm(delta_M[t]) for t in range(delta_M.shape[0])])
-        delta_MW_tnorm_all.append([np.linalg.norm(delta_MW[t]) for t in range(delta_MW.shape[0])])
-    delta_M_tnorm_all = np.array(delta_M_tnorm_all)
-    delta_MW_tnorm_all = np.array(delta_MW_tnorm_all)
-
-    fig64, ax64 = plt.subplots(1, 1, figsize=(6, 2))
-    m1 = np.mean(delta_M_tnorm_all, axis=0)
-    s1 = np.std(delta_M_tnorm_all, axis=0)
-    m2 = np.mean(delta_MW_tnorm_all, axis=0)
-    s2 = np.std(delta_MW_tnorm_all, axis=0)
-    x = np.arange(m1.shape[0])
-    ax64.plot(x, m1, color=c_vals[0], label="delta_M")
-    ax64.fill_between(x, m1 - s1, m1 + s1, color=c_vals_l[0], alpha=0.2)
-    ax64.plot(x, m2, color=c_vals[1], label="delta_MW")
-    ax64.fill_between(x, m2 - s2, m2 + s2, color=c_vals_l[1], alpha=0.2)
-    ax64.set_yscale("log")
-    for kkey in ["fixation_end", "stimulus_end", "delay_end", "trial_end"]:
-        ax64.axvline(time_stamps_usual[kkey], linestyle="--", color=c_vals[2])
-    ax64.set_xlabel("Timestep", fontsize=12)
-    ax64.set_ylabel("Magnitude", fontsize=12)
-    fig64.tight_layout()
-    fig64.savefig(fp(f"m_magnitude_{compare_value}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
-    print("  Saved figure: " + str(fp(f"m_magnitude_{compare_value}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
-    plt.close(fig64)
-
-    # ═════════════════════════════════════════════════════════════════════════
-    # Cell 66: modulation magnitude vs W magnitude
-    # ═════════════════════════════════════════════════════════════════════════
-    time_cut = ["fixation_end", "stimulus_end", "delay_end", "trial_end"]
-    fig66, axs66 = plt.subplots(2, 4, figsize=(4 * 4, 4 * 2))
-    if net_params["input_layer_add"]:
-        W = net.mp_layer1.W.data.detach().cpu().numpy()
-    else:
-        W = net.mp_layer0.W.data.detach().cpu().numpy()
-    for t, time in enumerate(time_cut):
-        for i in range(1):
-            mod1_stim1 = m_save[0][i]
-            mod2_stim1 = m_save[1][i]
-            Mmod1 = mod1_stim1[time_stamps_usual[time]]
-            Mmod2 = mod2_stim1[time_stamps_usual[time]]
-            axs66[0, t].scatter(W.flatten(), np.abs(Mmod1).flatten(), alpha=0.1, c=c_vals[0])
-            x1, y1 = bin_by_sorted_x(W.flatten(), np.abs(Mmod1).flatten())
-            axs66[0, t].plot(x1, y1, "-o", c=c_vals[1])
-            axs66[1, t].scatter(W.flatten(), np.abs(Mmod2).flatten(), alpha=0.1, c=c_vals[0])
-            x2, y2 = bin_by_sorted_x(W.flatten(), np.abs(Mmod2).flatten())
-            axs66[1, t].plot(x2, y2, "-o", c=c_vals[1])
-    for ax in axs66.flatten():
-        ax.set_xlabel("W Entry", fontsize=15)
-        ax.set_ylabel(f"Abs(M) Entry at {time}", fontsize=15)
-    fig66.tight_layout()
-    fig66.savefig(fp(f"m_w_{compare_value}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
-    print("  Saved figure: " + str(fp(f"m_w_{compare_value}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
-    plt.close(fig66)
-
-    # ═════════════════════════════════════════════════════════════════════════
     # Cell 67: W, W_in, W@W_in heatmaps
     # ═════════════════════════════════════════════════════════════════════════
     if net_params["input_layer_add"]:
@@ -1859,12 +1792,8 @@ def main(aname):
     _, M_all, h_end, _ = modulation_extraction(test_input, db_lst[0][-1], layer_index)
 
     fig77, axs77 = plt.subplots(12, 1, figsize=(6, 13 * 2))
-    fignorm2, axsnorm2 = plt.subplots(1, 1, figsize=(10, 3))
-    figMdiff, axsMdiff = plt.subplots(1, 1, figsize=(10, 3))
     maps = [lambda i: i, lambda i: (i + 4) % 8]
     map_names = ["Same Stim", "Same Resp"]
-    figcc, axscc = plt.subplots(8, 2, figsize=(10 * 2, 4 * 8))
-    cc_all = [[], []]
 
     for idx, map_ in enumerate(maps):
         for k in range(8):
@@ -1873,9 +1802,6 @@ def main(aname):
             input1_, input2_ = input1[ind1], input1[ind2]
             hidden1_, hidden2_ = hidden1[ind1], hidden1[ind2]
             cosines = [[], [], [], [], [], [], [], [], [], [], [], []]
-            norm_ratios = [[], []]
-            M_diff = []
-            component_compare_all = []
             for t in range(1, input1_.shape[0]):
                 h1, i1 = hidden1_[t].reshape(-1, 1), input1_[t].reshape(-1, 1)
                 h2, i2 = hidden2_[t].reshape(-1, 1), input2_[t].reshape(-1, 1)
@@ -1891,32 +1817,6 @@ def main(aname):
                 proj1MWx, proj2MWx = (((M_tp1 * W) @ i1)).flatten(), (((M_tp2 * W) @ i2)).flatten()
                 proj1MWx_fake, proj2MWx_fake = (((M_tp1 * W) @ i2)).flatten(), (((M_tp2 * W) @ i1)).flatten()
 
-                A = M_tp1 * W
-                B = M_tp2 * W
-
-                def _fro_norm(X, eps=1e-12):
-                    return np.linalg.norm(X, ord="fro") + eps
-
-                fro_inner = float(np.sum(A * B))
-                fro_cos = fro_inner / (_fro_norm(A) * _fro_norm(B))
-
-                i1 = np.asarray(i1).reshape(-1, 1)
-                i2 = np.asarray(i2).reshape(-1, 1)
-                dirc_inner = float((i1.T @ A.T @ B @ i2)[0, 0])
-                den1 = float((i1.T @ A.T @ A @ i1)[0, 0])
-                den2 = float((i2.T @ B.T @ B @ i2)[0, 0])
-                dirc_cos = dirc_inner / (np.sqrt(den1 + 1e-12) * np.sqrt(den2 + 1e-12))
-
-                x1, _, _, _ = np.linalg.lstsq(W_in, i1, rcond=None)
-                x2, _, _, _ = np.linalg.lstsq(W_in, i2, rcond=None)
-
-                component_compare = []
-                for nidx in range(W.shape[1]):
-                    proj1MWxd = ((M_tp1[:, nidx] * W[:, nidx]) * i1[nidx])
-                    component_compare.append(cosine_sim(proj1MWxd.flatten(), proj2MWx.flatten()))
-                component_compare_all.append(component_compare)
-
-                proj1WMWx, proj2WMWx = (((W + M_tp1 * W) @ i1)).flatten(), (((W + M_tp2 * W) @ i2)).flatten()
                 proj1M, proj2M = (M_tp1.flatten(), M_tp2.flatten())
 
                 cosines[0].append(cosine_sim(proj1, proj2))
@@ -1931,23 +1831,10 @@ def main(aname):
                 cosines[9].append(cosine_sim(h1.flatten(), h2.flatten()))
                 cosines[10].append(cosine_sim(proj1MWx_fake, proj1MWx))
                 cosines[11].append(cosine_sim(proj2MWx_fake, proj1MWx))
-                norm_ratios[0].append(np.linalg.norm(proj1MWx) / np.linalg.norm(proj1WMWx))
-                norm_ratios[1].append(np.linalg.norm(proj2MWx) / np.linalg.norm(proj2WMWx))
-                M_diff.append(np.linalg.norm(proj1M - proj2M))
 
             for u in range(len(cosines)):
                 label = map_names[idx] if k == 0 else None
                 axs77[u].plot(cosines[u], color=c_vals[idx], linestyle="-", label=label)
-            axsMdiff.plot(M_diff, color=c_vals[idx], linestyle="-")
-            if idx == 0:
-                for u in range(len(norm_ratios)):
-                    axsnorm2.plot(norm_ratios[u], color=c_vals[idx], linestyle=linestyles[u])
-
-            component_compare_all = np.array(component_compare_all)
-            cc_all[idx].append(component_compare_all)
-            sns.heatmap(component_compare_all, ax=axscc[k, idx], cmap="coolwarm")
-            axscc[k, idx].axhline(y=time_stamps_usual["stimulus_end"], linewidth=2)
-            axscc[k, idx].axhline(y=time_stamps_usual["delay_end"], linewidth=2)
 
     for idx, ax in enumerate(axs77):
         ax.set_xlabel("Time Steps", fontsize=15)
@@ -1958,11 +1845,6 @@ def main(aname):
         ax.tick_params(axis="both", which="minor", labelsize=14, length=3, width=1.0)
         ax.axhline(0.0, color=c_vals[3], linestyle="--")
         ax.legend(fontsize=12, frameon=True, loc="upper left")
-    axsnorm2.set_xlabel("Time Steps", fontsize=15)
-    axsnorm2.axvline(time_stamps_usual["delay_end"], color=c_vals[2])
-    axsnorm2.set_ylim([-1.1, 1.1])
-    axsMdiff.set_xlabel("Time Steps", fontsize=15)
-    axsMdiff.axvline(time_stamps_usual["delay_end"], color=c_vals[2])
     ylabels = [r"$(h_t x_t^{\top})$", r"$(h_t x_t^{\top}) \odot W$", r"$Wx_t$", r"$x_t$",
                r"$M_{t-1}$", r"$(M_{t-1} \odot W)x_t$", r"$M_{t-1} \odot W$",
                r"$(h_t x_t^{\top}) \odot M$", r"$(h_t x_t^{\top}) \odot W \odot M$",
@@ -1975,44 +1857,6 @@ def main(aname):
     fig77.savefig(fp(f"hxw_{compare_value}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
     print("  Saved figure: " + str(fp(f"hxw_{compare_value}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
     plt.close(fig77)
-    axsnorm2.set_ylabel(r"$||z^{\text{mod}}||/||z||$", fontsize=15)
-    fignorm2.tight_layout()
-    fignorm2.savefig(fp(f"zmodz_{compare_value}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
-    print("  Saved figure: " + str(fp(f"zmodz_{compare_value}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
-    plt.close(fignorm2)
-    axsMdiff.set_ylabel(r"$||M_{t-1}^A-M_{t-1}^B||$", fontsize=15)
-    figMdiff.tight_layout()
-    figMdiff.savefig(fp(f"mdiff_{compare_value}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
-    print("  Saved figure: " + str(fp(f"mdiff_{compare_value}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
-    plt.close(figMdiff)
-    figcc.tight_layout()
-    figcc.savefig(fp(f"MWxcomponent_{compare_value}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
-    print("  Saved figure: " + str(fp(f"MWxcomponent_{compare_value}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
-    plt.close(figcc)
-
-    # Cell 78: response-aligned component summaries
-    timemarkers = [["delay_end", "trial_end"]]
-    for ts, te in timemarkers:
-        allcomps = [[], []]
-        for i in range(8):
-            samestim, sameresp = cc_all[0][i], cc_all[1][i]
-            samestim = samestim[time_stamps_usual[ts]:time_stamps_usual[te], :]
-            sameresp = sameresp[time_stamps_usual[ts]:time_stamps_usual[te], :]
-            allcomps[0].append(np.mean(samestim, axis=0))
-            allcomps[1].append(np.mean(sameresp, axis=0))
-        fig78, axs78 = plt.subplots(2, 1, figsize=(6, 2 * 2))
-        sns.heatmap(np.array(allcomps[0]), ax=axs78[0], cmap="coolwarm")
-        sns.heatmap(np.array(allcomps[1]), ax=axs78[1], cmap="coolwarm")
-        for ax in axs78:
-            ax.set_xlabel("MPN Input Neuron Index", fontsize=15)
-            ax.set_ylabel("Stimulus Type", fontsize=15)
-        fig78.tight_layout()
-        fig78.savefig(fp(f"mpninput_resp_{compare_value}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png"), dpi=300)
-        print("  Saved figure: " + str(fp(f"mpninput_resp_{compare_value}_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.png")))
-        plt.close(fig78)
-        samestimavg = np.mean(np.array(allcomps[0]), axis=0)
-        samerespavg = np.mean(np.array(allcomps[1]), axis=0)
-        print("cos(samestimavg, samerespavg):", cosine_sim(samestimavg, samerespavg))
 
     # Cell 79: response-input cosine diagnostics (printed)
     if task_params["fixate_off"]:
@@ -2048,14 +1892,16 @@ def main(aname):
     ]
 
     # ═════════════════════════════════════════════════════════════════════════
-    # Cell 86: PCA trajectories of hidden / modulation per variant
+    # Cell 86: PCA trajectories of hidden / modulation for the NORMAL variant
     # ═════════════════════════════════════════════════════════════════════════
-    projected_data_all = []
     zeros_pca = None
     wout_proj = None
     batch_num = None
     m_pca_normal_data = {}  # self-contained data to replot the "normal" m_pca figures
+    # Only the "normal" variant is plotted (the long-period variants were dropped).
     for time_stamp_long, test_input_long, sname, db_index, _, label_task_comb_long in time_stamp_input_map:
+        if sname != "normal":
+            continue
         print(f"sname: {sname}; db_index: {db_index}")
         names = ["hidden", "modulation", "w_modulation"]
         # Recurrent weight for the effective modulation W⊙M (see analyze_similarity).
@@ -2084,8 +1930,6 @@ def main(aname):
                 wout_proj = pca.transform(wout)
             as_pca = pca.transform(as_flat)
             projected_data = as_pca.reshape((data.shape[0], data.shape[1], -1))
-            if db_index == 0:
-                projected_data_all.append(projected_data)
             zeros_pca = pca.transform(activity_zero)
 
             combination = [(0, 1), (0, 2), (1, 2)]
@@ -2164,52 +2008,6 @@ def main(aname):
         print("  Saved data: " + str(m_pca_path))
 
     # ═════════════════════════════════════════════════════════════════════════
-    # Cell 88: 3D PCA trajectories + readout plane (Plotly -> HTML) + projection
-    # ═════════════════════════════════════════════════════════════════════════
-    for indd, projected_data in enumerate(projected_data_all):
-        fig = go.Figure()
-        for i in range(batch_num):
-            data_batch = projected_data[i, :, :]
-            fig.add_trace(go.Scatter3d(x=data_batch[:, 0], y=data_batch[:, 1], z=data_batch[:, 2],
-                                       mode="lines", line=dict(width=2, color=c_vals[label_task_comb[i, 0]]),
-                                       opacity=0.5, showlegend=False))
-        fig.add_trace(go.Scatter3d(x=[zeros_pca[0, 0]], y=[zeros_pca[0, 1]], z=[zeros_pca[0, 2]],
-                                   mode="markers", marker=dict(size=4, color="black"), showlegend=False))
-        zero_pt = zeros_pca[0]
-        v1 = wout_proj[0, :]
-        v2 = wout_proj[1, :]
-        traj_pts = projected_data[:, :, :].reshape(-1, 3)
-        plane_half = 0.5 * np.linalg.norm(traj_pts - zero_pt, axis=1).max()
-        u_hat = v1 / np.linalg.norm(v1)
-        v2_proj = v2 - v2.dot(u_hat) * u_hat
-        v_hat = v2_proj / np.linalg.norm(v2_proj)
-        corners = np.array([-plane_half * u_hat - plane_half * v_hat,
-                            plane_half * u_hat - plane_half * v_hat,
-                            plane_half * u_hat + plane_half * v_hat,
-                            -plane_half * u_hat + plane_half * v_hat])
-        fig.add_trace(go.Mesh3d(x=corners[:, 0], y=corners[:, 1], z=corners[:, 2],
-                                i=[0, 0], j=[1, 2], k=[2, 3], opacity=0.25, color="lightblue",
-                                name="spanning plane", showscale=False))
-        fig.update_layout(scene=dict(xaxis_title="PCA 1", yaxis_title="PCA 2", zaxis_title="PCA 3"),
-                          width=600, height=600, margin=dict(l=0, r=0, t=40, b=0), showlegend=False)
-
-        response_half = int((time_stamps_usual["trial_end"] - time_stamps_usual["delay_end"]) / 2) + time_stamps_usual["delay_end"]
-        endpoints = projected_data[:, response_half + 1, :]
-        figproj, axproj = plt.subplots(1, 1, figsize=(4, 4))
-        for ei in range(endpoints.shape[0]):
-            endpoint = endpoints[ei, :] - zero_pt
-            u_coord = endpoint.dot(u_hat)
-            v_coord = endpoint.dot(v_hat)
-            color_index = label_task_comb[ei, 0]
-            task = label_task_comb[ei, 1]
-            marker = "o" if task == 0 else "x"
-            axproj.scatter(u_coord, v_coord, c=c_vals[color_index], marker=marker, alpha=0.5)
-        figproj.tight_layout()
-        figproj.savefig(fp(f"m_pca_readoutplane_seed{seed}_{hyp_dict['addon_name']}_{indd}.png"), dpi=300)
-        print("  Saved figure: " + str(fp(f"m_pca_readoutplane_seed{seed}_{hyp_dict['addon_name']}_{indd}.png")))
-        plt.close(figproj)
-
-    # ═════════════════════════════════════════════════════════════════════════
     # Cell 91: interpolation fixed-point ring analysis (uses the LIVE network)
     # ═════════════════════════════════════════════════════════════════════════
     stacked_interpolation_lst = [stacked_interpolation_ld, stacked_interpolation_lr, stacked_interpolation_ls, stacked_interpolation_lf]
@@ -2251,7 +2049,7 @@ def main(aname):
 
                 stack_output, _, db_intp = net.iterate_sequence_batch(
                     int_input, run_mode='track_states', save_to_cpu=True, detach_saved=True)
-                Ms, Ms_orig, hs, bs = modulation_extraction(int_input, db_intp, layer_index, cuda=True)
+                Ms, Ms_orig, hs, bs = modulation_extraction(int_input, db_intp, layer_index)
                 batch_num = Ms_orig.shape[0]
 
                 if name == "hidden":
@@ -2385,179 +2183,12 @@ def main(aname):
     plt.close(fig93)
 
     # ═════════════════════════════════════════════════════════════════════════
-    # Cells 98-101: stimulus-PCA + readout response trajectories (Plotly -> HTML)
+    # (Removed) Cells 98-105: stimulus-PCA + readout response trajectories and
+    # endpoint-plane hulls (Plotly). These built in-memory go.Figure() objects
+    # but never saved them (no write_html/write_image), so they produced no
+    # output files — only console prints, including degenerate-fixation Qhull
+    # warnings. Deleted as dead analysis.
     # ═════════════════════════════════════════════════════════════════════════
-    def traj(name):
-        for siindex, stacked_interpolation in enumerate(stacked_interpolation_lst):
-            sname = stacked_interpolation_name_lst[siindex]
-            print(sname)
-            fig3dresponse = go.Figure()
-            N = len(stacked_interpolation)
-            wout = net.W_output.detach().cpu().numpy()
-            anti_go = [stacked_interpolation[0], stacked_interpolation[int((N + 1) / 2)], stacked_interpolation[-1]]
-            _, _, db_intp_anti = net.iterate_sequence_batch(anti_go[0], run_mode="track_states", save_to_cpu=True, detach_saved=True)
-            _, _, db_intp_go = net.iterate_sequence_batch(anti_go[2], run_mode="track_states", save_to_cpu=True, detach_saved=True)
-            Ms_anti, Ms_orig_anti, hs_anti, bs_anti = modulation_extraction(int_input_all[siindex], db_intp_anti, layer_index)
-            Ms_go, Ms_orig_go, hs_go, bs_go = modulation_extraction(int_input_all[siindex], db_intp_go, layer_index)
-            if name == "hidden":
-                data_anti, data_go = hs_anti, hs_go
-            elif name == "modulation":
-                data_anti, data_go = Ms_anti, Ms_go
-            elif name == "w_modulation":
-                Wlocal = net.mp_layer1.W.data.detach().cpu().numpy()
-                data_anti = (Ms_orig_anti * Wlocal[None, None, :, :]).reshape(Ms_anti.shape[0], Ms_anti.shape[1], -1)
-                data_go = (Ms_orig_go * Wlocal[None, None, :, :]).reshape(Ms_go.shape[0], Ms_go.shape[1], -1)
-            n_activity = data_anti.shape[-1]
-            as_flat_stim = data_anti[:, time_stamps_lst[siindex]["stimulus_start"]:time_stamps_lst[siindex]["stimulus_end"], :].reshape((-1, n_activity))
-            data_anti_ = data_anti[:, desire_period[siindex][0]:desire_period[siindex][1], :]
-            data_go_ = data_go[:, desire_period[siindex][0]:desire_period[siindex][1], :]
-            as_flat_anti = data_anti_.reshape((-1, n_activity))
-            as_flat_go = data_go_.reshape((-1, n_activity))
-            pca_stim = PCA(n_components=PCA_downsample, random_state=42)
-            pca_stim.fit(as_flat_stim)
-            projected_data_anti = pca_stim.transform(as_flat_anti).reshape(data_anti_.shape[0], data_anti_.shape[1], -1)
-            projected_data_go = pca_stim.transform(as_flat_go).reshape(data_go_.shape[0], data_go_.shape[1], -1)
-            projected_data_stim_anti = projected_data_anti[:, :-1, :]
-            projected_data_stim_go = projected_data_go[:, :-1, :]
-            response_anti = -1 * hs_anti[:, desire_period[siindex][0]:desire_period[siindex][1], :] @ wout.T
-            response_go = hs_go[:, desire_period[siindex][0]:desire_period[siindex][1], :] @ wout.T
-            resp = 0
-            for i in range(projected_data_stim_anti.shape[0]):
-                fig3dresponse.add_trace(go.Scatter3d(x=projected_data_stim_anti[i, :, 0], y=projected_data_stim_anti[i, :, 1],
-                                                     z=response_anti[i, :, resp + 1], mode="lines",
-                                                     line=dict(width=8, color=c_vals[i]), name=f"Anti S{i}", showlegend=True))
-                fig3dresponse.add_trace(go.Scatter3d(x=[projected_data_stim_anti[i, 0, 0]], y=[projected_data_stim_anti[i, 0, 1]],
-                                                     z=[response_anti[i, 0, resp + 1]], mode="markers",
-                                                     marker=dict(size=6, color=c_vals[i], symbol="circle-open"), showlegend=False))
-                fig3dresponse.add_trace(go.Scatter3d(x=[projected_data_stim_anti[i, -1, 0]], y=[projected_data_stim_anti[i, -1, 1]],
-                                                     z=[response_anti[i, -1, resp + 1]], mode="markers",
-                                                     marker=dict(size=6, color=c_vals[i], symbol="circle"), showlegend=False))
-                fig3dresponse.add_trace(go.Scatter3d(x=projected_data_stim_go[i, :, 0], y=projected_data_stim_go[i, :, 1],
-                                                     z=response_go[i, :, resp + 1], mode="lines",
-                                                     line=dict(width=8, color=c_vals[i], dash="dash"), name=f"Go S{i}", showlegend=True))
-                fig3dresponse.add_trace(go.Scatter3d(x=[projected_data_stim_go[i, 0, 0]], y=[projected_data_stim_go[i, 0, 1]],
-                                                     z=[response_go[i, 0, resp + 1]], mode="markers",
-                                                     marker=dict(size=6, color=c_vals[i], symbol="diamond-open"), showlegend=False))
-                fig3dresponse.add_trace(go.Scatter3d(x=[projected_data_stim_go[i, -1, 0]], y=[projected_data_stim_go[i, -1, 1]],
-                                                     z=[response_go[i, -1, resp + 1]], mode="markers",
-                                                     marker=dict(size=6, color=c_vals[i], symbol="diamond"), showlegend=False))
-            x_anti = projected_data_stim_anti[:, -1, 0]
-            y_anti = projected_data_stim_anti[:, -1, 1]
-            z_anti = response_anti[:, -1, resp + 1]
-            add_convex_hull_mesh(fig3dresponse, x_anti, y_anti, z_anti, name="Anti endpoint hull (cos)",
-                                 mesh_opacity=0.18, mesh_color="black", showlegend=True)
-            x_go = projected_data_stim_go[:, -1, 0]
-            y_go = projected_data_stim_go[:, -1, 1]
-            z_go = response_go[:, -1, resp + 1]
-            add_convex_hull_mesh(fig3dresponse, x_go, y_go, z_go, name="Go endpoint hull (cos)",
-                                 mesh_opacity=0.18, mesh_color="red", showlegend=True)
-            ang_deg = angle_between_unit_vectors(
-                best_fit_plane_normal(np.column_stack([x_anti, y_anti, z_anti])),
-                best_fit_plane_normal(np.column_stack([x_go, y_go, z_go])), degrees=True)
-            print(f"[{sname}] cosine: plane-normal angle = {ang_deg:.2f} deg")
-            fig3dresponse.update_layout(template="plotly_white", width=1000, height=800,
-                                        scene=dict(xaxis_title="Memoryanti Stimulus PCA 1",
-                                                   yaxis_title="Memoryanti Stimulus PCA 2",
-                                                   zaxis_title="cos θ", zaxis=dict(range=[-1.1, 1.1]), aspectmode="cube"))
-
-    traj("hidden")
-    traj("modulation")
-    traj("w_modulation")
-
-    # ═════════════════════════════════════════════════════════════════════════
-    # Cells 102-105: endpoint planes across anti/median/go (Plotly -> HTML)
-    # ═════════════════════════════════════════════════════════════════════════
-    def traj_diff_alpha(name):
-        for siindex, stacked_interpolation in enumerate(stacked_interpolation_lst):
-            sname = stacked_interpolation_name_lst[siindex]
-            print(sname)
-            fig3dresponse_c = go.Figure()
-            N = len(stacked_interpolation)
-            wout = net.W_output.detach().cpu().numpy()
-            anti_go = [stacked_interpolation[0], stacked_interpolation[int((N + 1) / 2)], stacked_interpolation[-1]]
-            _, _, db_intp_anti = net.iterate_sequence_batch(anti_go[0], run_mode="track_states", save_to_cpu=True, detach_saved=True)
-            _, _, db_intp_median = net.iterate_sequence_batch(anti_go[1], run_mode="track_states", save_to_cpu=True, detach_saved=True)
-            _, _, db_intp_go = net.iterate_sequence_batch(anti_go[2], run_mode="track_states", save_to_cpu=True, detach_saved=True)
-            Ms_anti, Ms_orig_anti, hs_anti, bs_anti = modulation_extraction(int_input_all[siindex], db_intp_anti, layer_index)
-            Ms_median, Ms_orig_median, hs_median, bs_median = modulation_extraction(int_input_all[siindex], db_intp_median, layer_index)
-            Ms_go, Ms_orig_go, hs_go, bs_go = modulation_extraction(int_input_all[siindex], db_intp_go, layer_index)
-            if name == "hidden":
-                data_anti, data_go, data_median = hs_anti, hs_go, hs_median
-            elif name == "modulation":
-                data_anti, data_go, data_median = Ms_anti, Ms_go, Ms_median
-            elif name == "w_modulation":
-                Wlocal = net.mp_layer1.W.data.detach().cpu().numpy()
-                data_anti = (Ms_orig_anti * Wlocal[None, None, :, :]).reshape(Ms_anti.shape[0], Ms_anti.shape[1], -1)
-                data_go = (Ms_orig_go * Wlocal[None, None, :, :]).reshape(Ms_go.shape[0], Ms_go.shape[1], -1)
-                data_median = (Ms_orig_median * Wlocal[None, None, :, :]).reshape(Ms_median.shape[0], Ms_median.shape[1], -1)
-            n_activity = data_anti.shape[-1]
-            as_flat_stim = data_anti[:, time_stamps_lst[siindex]["stimulus_start"]:time_stamps_lst[siindex]["stimulus_end"], :].reshape((-1, n_activity))
-            data_anti_ = data_anti[:, desire_period[siindex][0]:desire_period[siindex][1], :]
-            data_go_ = data_go[:, desire_period[siindex][0]:desire_period[siindex][1], :]
-            data_median_ = data_median[:, desire_period[siindex][0]:desire_period[siindex][1], :]
-            as_flat_anti = data_anti_.reshape((-1, n_activity))
-            as_flat_go = data_go_.reshape((-1, n_activity))
-            as_flat_median = data_median_.reshape((-1, n_activity))
-            pca_stim = PCA(n_components=PCA_downsample, random_state=42)
-            pca_stim.fit(as_flat_stim)
-            projected_data_anti = pca_stim.transform(as_flat_anti).reshape(data_anti_.shape[0], data_anti_.shape[1], -1)
-            projected_data_go = pca_stim.transform(as_flat_go).reshape(data_go_.shape[0], data_go_.shape[1], -1)
-            projected_data_median = pca_stim.transform(as_flat_median).reshape(data_median_.shape[0], data_median_.shape[1], -1)
-            projected_data_stim_anti = projected_data_anti[:, :-1, :]
-            projected_data_stim_go = projected_data_go[:, :-1, :]
-            projected_data_stim_median = projected_data_median[:, :-1, :]
-            response_anti = hs_anti[:, :desire_period[siindex][1], :] @ wout.T
-            response_go = hs_go[:, :desire_period[siindex][1], :] @ wout.T
-            response_median = hs_median[:, :desire_period[siindex][1], :] @ wout.T
-            resp = 0
-            for i in range(projected_data_stim_anti.shape[0]):
-                fig3dresponse_c.add_trace(go.Scatter3d(x=[projected_data_stim_anti[i, -1, 0]], y=[projected_data_stim_anti[i, -1, 1]],
-                                                       z=[response_anti[i, -1, resp + 1]], mode="markers",
-                                                       marker=dict(size=6, color=c_vals[i], symbol="circle"),
-                                                       legendgroup=f"S{i}", showlegend=False))
-                fig3dresponse_c.add_trace(go.Scatter3d(x=[projected_data_stim_go[i, -1, 0]], y=[projected_data_stim_go[i, -1, 1]],
-                                                       z=[response_go[i, -1, resp + 1]], mode="markers",
-                                                       marker=dict(size=6, color=c_vals[i], symbol="diamond"),
-                                                       legendgroup=f"S{i}", showlegend=False))
-                fig3dresponse_c.add_trace(go.Scatter3d(x=[projected_data_stim_median[i, -1, 0]], y=[projected_data_stim_median[i, -1, 1]],
-                                                       z=[response_median[i, -1, resp + 1]], mode="markers",
-                                                       marker=dict(size=6, color=c_vals[i], symbol="square"),
-                                                       legendgroup=f"S{i}", showlegend=False))
-            x_end = projected_data_stim_anti[:, -1, 0]
-            y_end = projected_data_stim_anti[:, -1, 1]
-            z_end = response_anti[:, -1, resp + 1]
-            add_convex_hull_mesh(fig3dresponse_c, x_end, y_end, z_end, name="Anti endpoint hull (cos)",
-                                 mesh_opacity=0.18, mesh_color=c_vals[0], showlegend=True)
-            x_go = projected_data_stim_go[:, -1, 0]
-            y_go = projected_data_stim_go[:, -1, 1]
-            z_go = response_go[:, -1, resp + 1]
-            add_convex_hull_mesh(fig3dresponse_c, x_go, y_go, z_go, name="Go endpoint hull (cos)",
-                                 mesh_opacity=0.18, mesh_color=c_vals[1], showlegend=True)
-            x_median = projected_data_stim_median[:, -1, 0]
-            y_median = projected_data_stim_median[:, -1, 1]
-            z_median = response_median[:, -1, resp + 1]
-            add_convex_hull_mesh(fig3dresponse_c, x_median, y_median, z_median, name="Median endpoint hull (cos)",
-                                 mesh_opacity=0.18, mesh_color=c_vals[2], showlegend=True)
-            pts_anti = np.column_stack([x_end, y_end, z_end])
-            pts_go = np.column_stack([x_go, y_go, z_go])
-            pts_median = np.column_stack([x_median, y_median, z_median])
-            n_anti = best_fit_plane_normal(pts_anti)
-            n_go = best_fit_plane_normal(pts_go)
-            n_median = best_fit_plane_normal(pts_median)
-            checknames = ["anti", "go", "median"]
-            ns = [n_anti, n_go, n_median]
-            for i in range(len(checknames)):
-                for j in range(i + 1, len(checknames)):
-                    ang_deg = angle_between_unit_vectors(ns[i], ns[j], degrees=True)
-                    print(f"[{sname}] cosine: angle between {checknames[i]} - {checknames[j]} = {ang_deg:.2f} deg")
-            fig3dresponse_c.update_layout(template="plotly_white", width=1000, height=800,
-                                          scene=dict(xaxis_title="Memoryanti Stimulus PCA 1",
-                                                     yaxis_title="Memoryanti Stimulus PCA 2",
-                                                     zaxis_title="cos θ", zaxis=dict(range=[-1.1, 1.1]), aspectmode="cube"))
-
-    traj_diff_alpha("hidden")
-    traj_diff_alpha("modulation")
-    traj_diff_alpha("w_modulation")
 
     # ── Gradient-based TRUE fixed points of the modulation matrix (per rule) ──
     # Mirror the one-task analysis: for each of the two rules, solve genuine fixed
@@ -2576,7 +2207,8 @@ def main(aname):
             solve_period_modulation_fixed_points(
                 aname, save_dir, net, cfg_fp, device,
                 rule=_rule, out_suffix=f"_{_rule}",
-                layer_index=layer_index, W=W_fp, n_interp=360)
+                layer_index=layer_index, W=W_fp, n_interp=64,
+                n_seeds=fp_n_seeds)
         except Exception as exc:
             print(f"  [grad-fp/{_rule}] failed: {exc}")
             import traceback
@@ -2607,6 +2239,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--aname", type=str, default=None,
                         help="Experiment identifier. Omit to analyze ALL runs in ./twotasks/.")
+    parser.add_argument("--fp-n-seeds", type=int, default=5,
+                        help="Number of random trial templates to try when solving "
+                             "gradient fixed points (per rule); the best-converging "
+                             "one is kept (default 5).")
     args = parser.parse_args()
 
     anames = [args.aname] if args.aname else _discover_anames()
@@ -2614,7 +2250,7 @@ if __name__ == "__main__":
     for a in anames:
         print(f"\n── Analyzing: {a} ──")
         try:
-            main(a)
+            main(a, fp_n_seeds=args.fp_n_seeds)
         except Exception as exc:
             print(f"  FAILED {a}: {exc}")
             import traceback

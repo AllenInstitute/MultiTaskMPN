@@ -166,6 +166,37 @@ def _twotask_seed_tag():
     m = _re.search(r"seed\d+", TWOTASK_ANAME)
     return m.group(0) if m else TWOTASK_ANAME
 
+
+def _read_twotask_n_stim(default=8):
+    """Trained ring-direction count (n_eachring) for the configured two-task run,
+    read from its saved param json; used only for the dashed trained-direction
+    guide lines in the interp / stability figures. Falls back to `default`."""
+    try:
+        import json as _json
+        p = TWOTASKS_DIR / TWOTASK_ANAME / f"param_{TWOTASK_ANAME}_param.json"
+        if p.exists():
+            cfg = _json.load(open(p))
+            return int(cfg.get("task_params", {}).get("n_eachring", default))
+    except Exception:
+        pass
+    return default
+
+
+def _twotask_grad_fp_paths():
+    """(rule, path) for every gradient fixed-point pickle of the configured
+    two-task run — one per task rule, written by two_task_analysis.py as
+    twotasks/{aname}/fixed_points_grad_{aname}_{rule}.pkl. Sorted by rule name."""
+    run_dir = TWOTASKS_DIR / TWOTASK_ANAME
+    prefix = f"fixed_points_grad_{TWOTASK_ANAME}_"
+    out = []
+    for p in sorted(run_dir.glob(f"{prefix}*.pkl")):
+        rule = p.name[len(prefix):-len(".pkl")]
+        out.append((rule, p))
+    return out
+
+
+TWOTASK_N_STIM = _read_twotask_n_stim()
+
 # Categorical color cycle (matches multiple_task_analysis.py). Used for
 # NON-stimulus categorical coloring (components, series, periods, tasks).
 c_vals = [
@@ -2767,19 +2798,23 @@ def plot_onetask_pc_cumvar():
     period_color = dict(zip(["Fixation", "Stimulus", "Memory", "Response"],
                             _ONETASK_PERIOD_COLORS))
 
-    fig, axs = plt.subplots(1, len(names), figsize=(2.0 * len(names), 1.9),
+    fig, axs = plt.subplots(1, len(names), figsize=(1.4 * len(names), 1.33),
                             squeeze=False)
+    # Remember the period label/color order so the standalone legend below
+    # matches the drawn curves exactly.
+    legend_labels, legend_colors = None, None
     for ax, name in zip(axs[0], names):
         e = d_combine[name]
         cumvar = np.asarray(e["cumvar"], dtype=float)      # (n_period, max_pc)
         labels = e.get("labels", ["Fixation", "Stimulus", "Memory", "Response"])
         n_pc = cumvar.shape[1]
         xs = np.arange(1, n_pc + 1)
+        cols = [period_color.get(lab, c_vals[i % len(c_vals)])
+                for i, lab in enumerate(labels)]
         for i, lab in enumerate(labels):
-            col = period_color.get(lab, c_vals[i % len(c_vals)])
-            ax.plot(xs, cumvar[i], "-o", color=col, markersize=3, label=lab)
-        ax.set_xlabel("No. of PCs", fontsize=9)
-        ax.set_ylabel("Var expl.", fontsize=9)
+            ax.plot(xs, cumvar[i], "-o", color=cols[i], markersize=3, label=lab)
+        if legend_labels is None:
+            legend_labels, legend_colors = labels, cols
         ax.set_title(title_map.get(name, name), fontsize=10)
         # Pad the limits a touch so the first x/y ticks sit off the origin corner.
         x_pad = 0.04 * (n_pc - 1)
@@ -2789,11 +2824,32 @@ def plot_onetask_pc_cumvar():
         ax.set_yticks([0, 1])             # only 0 and 1
         ax.tick_params(labelsize=8)
         ax.spines[["top", "right"]].set_visible(False)
-        _legend(ax, fontsize=6, loc="lower right", frameon=True)
+        # No on-panel legend — the short figure has no room for it; the legend is
+        # emitted as a separate figure below (when legends are enabled).
 
+    # Shared x/y labels for both panels (y aligned to the leftmost panel), instead
+    # of duplicating them on each subplot.
+    fig.supxlabel("No. of PCs", fontsize=9)
+    fig.supylabel("Var expl.", fontsize=9)
     fig.tight_layout()
     out_path = OUT_DIR / "onetask_pc_cumvar.png"
     _save_fig(fig, out_path)
+
+    # Standalone legend figure (only when legends are enabled, i.e. not
+    # --no-legend), so the compact panels above stay uncluttered.
+    if SHOW_LEGEND and legend_labels:
+        handles = [plt.Line2D([0], [0], marker="o", linestyle="-", color=c,
+                              markersize=4, label=lab)
+                   for lab, c in zip(legend_labels, legend_colors)]
+        leg_fig = plt.figure(figsize=(1.4, 1.2))
+        leg_fig.legend(handles=handles, loc="center", frameon=True, fontsize=8,
+                       title="Period", title_fontsize=9)
+        # This figure IS the legend; save it directly (bypass _save_fig's _n
+        # suffix so its name is clean and it isn't gated on the flag again).
+        leg_path = OUT_DIR / "onetask_pc_cumvar_legend.png"
+        leg_fig.savefig(leg_path, dpi=300, bbox_inches="tight")
+        plt.close(leg_fig)
+        print(f"Saved: {leg_path}")
 
 
 def plot_onetask_long_fixed_points():
@@ -2956,55 +3012,29 @@ def plot_onetask_long_fixed_points():
     _save_fig(fig, out_path)
 
 
-def _plot_onetask_grad_fixed_points(rep_key, out_name):
-    """Render the gradient-solved fixed points for one representation, laid out
-    like onetask_long_fixed_points. `rep_key` selects which saved view to plot:
-      "fixed_M"      raw modulation matrix M*        (the actual solved state)
-      "fixed_WM"     effective modulation W⊙M*       (transform of M*)
-      "fixed_hidden" hidden state produced by M*     (transform of M*)
-    Each period's points (one per stimulus) are flattened and projected into a
-    SHARED delay-period PCA (fit on that rep's delay fixed points); points are
-    colored by stimulus; titles note the median solver speed q(M*)."""
-    _ensure_out_dir()
-    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"fixed_points_grad_{ONETASK_ANAME}.pkl"
-    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
-    if d is None:
-        return
+def _grad_fp_2d_project(d, rep_key, pca):
+    """Project a loaded grad-fp pickle's fixed points into the 2-PC `pca` for the
+    2D figure of representation `rep_key`. Returns
+    (periods, proj_by_period, traj_by_period, angle0_pt, n_stim):
+      proj_by_period[v] : (batch, 2) PCA coords of that period's fixed points
+      traj_by_period[v] : (win_T, 2) exemplar (angle-0) within-period trajectory,
+                          present only where the pickle saved it
+      angle0_pt[v]      : (2,) the exemplar-stimulus fixed point, for connectors
+      n_stim            : stimulus-color count (dense ring size)
+    Pure data prep — drawing lives in _draw_grad_fp_2d_row so several rules can
+    share one figure."""
     results = d["results"]
     periods = list(results.keys())
-    if not periods:
-        print("  Skipped: no periods in grad fixed-point pickle.")
-        return
-    if any(results[v].get(rep_key) is None for v in periods):
-        print(f"  Skipped '{rep_key}': not in pickle "
-              f"(re-run one_task_analysis.py to add it).")
-        return
-
-    from sklearn.decomposition import PCA as _PCA
 
     def _flat(arr):
         arr = np.asarray(arr, dtype=float)
         return arr.reshape(arr.shape[0], -1)
 
-    # Shared basis fit on the DELAY-period fixed points (mirrors
-    # onetask_long_fixed_points' shared delay PCA); fall back to the first
-    # available period if no delay variant is present.
-    basis_key = "longdelay" if "longdelay" in results else periods[0]
-    pca = _PCA(n_components=2, random_state=0).fit(_flat(results[basis_key][rep_key]))
-
     n_stim = 1 + max(int(s) for v in periods for s in np.asarray(results[v]["stim"]))
-
-    # Project every period first, then use a single shared symmetric axis range
-    # so all panels are the SAME size (equal aspect + identical limits) and their
-    # titles line up at the same height.
     proj_by_period = {v: pca.transform(_flat(results[v][rep_key])) for v in periods}
-    lim = max(np.abs(np.vstack(list(proj_by_period.values()))).max() * 1.08, 1e-9)
 
     # Exemplar stimulus (angle 0): its within-period RECORDED trajectory and its
-    # fixed point per period. The drawn path is ANCHORED to the fixed points — it
-    # starts at the PREVIOUS period's fixed point, follows the recorded path, and
-    # ends at THIS period's fixed point — so its endpoints coincide with the
-    # solved fixed points. Maps rep -> saved trajectory field.
+    # fixed point per period, for the anchored connector.
     _TRAJ_STIM = 0
     _traj_field = {"fixed_M": "traj_M", "fixed_WM": "traj_WM",
                    "fixed_hidden": "traj_hidden"}.get(rep_key)
@@ -3018,12 +3048,22 @@ def _plot_onetask_grad_fixed_points(rep_key, out_name):
         idx = np.where(st == _TRAJ_STIM)[0]
         if idx.size:
             angle0_pt[v] = proj_by_period[v][int(idx[0])]  # (2,) current FP
-    _traj_col = stim_color(_TRAJ_STIM, n_stim)
 
-    n_col = len(periods)
-    # Match onetask_long_fixed_points' compact panel size.
-    fig, axs = plt.subplots(1, n_col, figsize=(2.1 * n_col, 2.1), squeeze=False)
-    for j, (ax, v) in enumerate(zip(axs[0], periods)):
+    return periods, proj_by_period, traj_by_period, angle0_pt, n_stim
+
+
+def _draw_grad_fp_2d_row(axs_row, results, periods, proj_by_period, traj_by_period,
+                         angle0_pt, n_stim, lim, show_period_titles=True,
+                         row_label=None):
+    """Draw one rule's four per-period 2D panels into the pre-created axes
+    `axs_row` (length = n_col), using precomputed projections. Shared symmetric
+    limit `lim` is passed in so multiple rows use IDENTICAL axes.
+    `show_period_titles` prints the Fixation/Stimulus/… titles (typically only
+    the top row); `row_label` writes a rotated label (e.g. the task rule) to the
+    left of the row's first panel."""
+    _TRAJ_STIM = 0
+    _traj_col = stim_color(_TRAJ_STIM, n_stim)
+    for j, (ax, v) in enumerate(zip(axs_row, periods)):
         e = results[v]
         fixed = proj_by_period[v]                   # (batch, 2)
         stim = np.asarray(e["stim"])
@@ -3056,12 +3096,58 @@ def _plot_onetask_grad_fixed_points(rep_key, out_name):
                 # End: current period's fixed point (solid edge).
                 ax.scatter([p1[0]], [p1[1]], color=_traj_col, marker="o", s=22,
                            edgecolor="black", linewidth=0.5, zorder=5)
-        ax.set_title(e.get("period_title", v), fontsize=11)
+        if show_period_titles:
+            ax.set_title(e.get("period_title", v), fontsize=11)
+        if j == 0 and row_label is not None:
+            ax.set_ylabel(row_label, fontsize=11)
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)
         ax.set_aspect("equal")   # so a ring reads as circular, not stretched
         ax.tick_params(axis="both", labelsize=7)
         ax.spines[["top", "right"]].set_visible(False)
+
+
+def _render_grad_fixed_points(d, rep_key, out_path, basis=None):
+    """Single-rule 2D grad fixed-point figure (one row of period panels) from an
+    already-loaded pickle dict `d`, laid out like onetask_long_fixed_points.
+    Shared by the one-task and two-task grad fixed-point figures. `rep_key`
+    selects which saved view to plot:
+      "fixed_M"      raw modulation matrix M*        (the actual solved state)
+      "fixed_WM"     effective modulation W⊙M*       (transform of M*)
+      "fixed_hidden" hidden state produced by M*     (transform of M*)
+    Each period's points (one per stimulus) are flattened and projected into a
+    SHARED delay-period PCA; points are colored by stimulus.
+
+    `basis`: an OPTIONAL pre-fitted 2-component PCA to project into. When None
+    (the default, and the one-task behavior) the basis is fit on THIS pickle's
+    own delay-period fixed points. When supplied (e.g. by the two-task driver,
+    which passes the delayanti delay-period basis), every panel is projected into
+    that EXTERNAL basis instead — so figures from different pickles/rules share
+    one x-y plane and become directly comparable point-for-point."""
+    _ensure_out_dir()
+    results = d["results"]
+    periods = list(results.keys())
+    if not periods:
+        print("  Skipped: no periods in grad fixed-point pickle.")
+        return
+    if any(results[v].get(rep_key) is None for v in periods):
+        print(f"  Skipped '{rep_key}': not in pickle "
+              f"(re-run one_task_analysis.py to add it).")
+        return
+
+    # Use the caller-supplied shared basis if given; otherwise fit on this
+    # pickle's own delay-period fixed points (one-task / standalone behavior).
+    if basis is None:
+        basis = _fit_period_grad_fp_basis(d, rep_key)
+
+    periods, proj, traj, angle0_pt, n_stim = _grad_fp_2d_project(d, rep_key, basis)
+    lim = max(np.abs(np.vstack(list(proj.values()))).max() * 1.08, 1e-9)
+
+    n_col = len(periods)
+    # Match onetask_long_fixed_points' compact panel size.
+    fig, axs = plt.subplots(1, n_col, figsize=(2.1 * n_col, 2.1), squeeze=False)
+    _draw_grad_fp_2d_row(axs[0], results, periods, proj, traj, angle0_pt, n_stim,
+                         lim, show_period_titles=True, row_label=None)
 
     # Shared x/y labels for the whole grid (all panels share the delay basis).
     fig.supxlabel("Delay PC1", fontsize=11)
@@ -3069,8 +3155,16 @@ def _plot_onetask_grad_fixed_points(rep_key, out_name):
 
     # (equal-aspect panels are incompatible with tight_layout; bbox_inches on
     # save handles trimming.)
-    out_path = OUT_DIR / out_name
     _save_fig(fig, out_path)
+
+
+def _plot_onetask_grad_fixed_points(rep_key, out_name):
+    """One-task wrapper: load the single-task grad-fp pickle and render `rep_key`."""
+    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"fixed_points_grad_{ONETASK_ANAME}.pkl"
+    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
+    if d is None:
+        return
+    _render_grad_fixed_points(d, rep_key, OUT_DIR / out_name)
 
 
 def plot_onetask_grad_fixed_points():
@@ -3090,48 +3184,57 @@ def plot_onetask_grad_fixed_points():
     _plot_onetask_grad_fixed_points("fixed_hidden", "onetask_grad_fixed_points_hidden.png")
 
 
-def _plot_onetask_grad_fixed_points_3d(rep_key, out_name):
-    """3D version of _plot_onetask_grad_fixed_points: the x-y plane is the same
-    shared delay-period PCA of the fixed points, and the z-axis is the TARGET
-    (expected) cos-output for each fixed point's stimulus, cos θ. By definition
-    the task only requires an output during the response period, so z is exactly
-    0 for fixation/stimulus/delay and equals cos θ only in the Response panel —
-    the ring lifts off the z=0 plane only there. (This uses the ideal target
-    rather than the network's imperfect measured readout, so the non-response
-    panels are cleanly flat.)"""
-    _ensure_out_dir()
-    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"fixed_points_grad_{ONETASK_ANAME}.pkl"
-    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
-    if d is None:
-        return
+def _fit_period_grad_fp_basis(d, rep_key, period="longdelay"):
+    """Fit a 2-component PCA on ONE period's gradient fixed points of an
+    already-loaded pickle dict `d`, for representation `rep_key`. `period` selects
+    which trial epoch's fixed points define the basis (e.g. "longdelay" for the
+    memory ring, "longstimulus" for the stimulus ring). Returns the fitted PCA
+    (usable as the `basis` arg of the grad-fp renderers) or None if the pickle
+    lacks that representation. Falls back to the first available period when the
+    requested one is absent."""
+    from sklearn.decomposition import PCA as _PCA
+    results = d.get("results", {})
+    periods = list(results.keys())
+    if not periods or any(results[v].get(rep_key) is None for v in periods):
+        return None
+    basis_key = period if period in results else periods[0]
+    arr = np.asarray(results[basis_key][rep_key], dtype=float)
+    return _PCA(n_components=2, random_state=0).fit(arr.reshape(arr.shape[0], -1))
+
+
+def _grad_fp_3d_project(d, rep_key, pca):
+    """Project a loaded grad-fp pickle's fixed points into the 2-PC `pca` for the
+    3D figure of representation `rep_key`. Returns
+    (periods, proj_by_period, z_by_period, traj_by_period, n_stim):
+      proj_by_period[v] : (batch, 2) x-y PCA coords of that period's fixed points
+      z_by_period[v]    : (batch,) ideal cos-output target (cos θ in response,
+                          else 0 — the task only demands an output in Response)
+      traj_by_period[v] : (win_T, 2) exemplar (angle-0) within-period trajectory,
+                          present only where the pickle saved it
+      n_stim            : stimulus-color count (dense ring size)
+    Pure data prep — the actual drawing lives in _draw_grad_fp_3d_row so several
+    rules can share one figure."""
     results = d["results"]
     periods = list(results.keys())
-    if not periods:
-        print("  Skipped: no periods in grad fixed-point pickle.")
-        return
-    if any(results[v].get(rep_key) is None for v in periods):
-        print(f"  Skipped '{rep_key}': not in pickle "
-              f"(re-run one_task_analysis.py to add it).")
-        return
-
-    from sklearn.decomposition import PCA as _PCA
-    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (enables 3d projection)
 
     def _flat(arr):
         arr = np.asarray(arr, dtype=float)
         return arr.reshape(arr.shape[0], -1)
 
-    basis_key = "longdelay" if "longdelay" in results else periods[0]
-    pca = _PCA(n_components=2, random_state=0).fit(_flat(results[basis_key][rep_key]))
-
     n_stim = 1 + max(int(s) for v in periods for s in np.asarray(results[v]["stim"]))
-
     # Dense stimulus angles (radians), indexed by each fixed point's `stim`. Fall
     # back to evenly-spaced trained directions if the pickle lacks dense angles.
     dense_angles = np.asarray(d.get("angles", []), dtype=float)
+    # Response offset: the required saccade angle is the stimulus angle for a PRO
+    # rule but the OPPOSITE (stim + π) for an ANTI rule — see delaygo_ in
+    # mpn_tasks.py (response_locs = stim_locs+π when anti_response). So the ideal
+    # cos-output target is cos θ for pro and cos(θ+π) = −cos θ for anti. Keying off
+    # the pickle's own rule keeps the delaygo and delayanti panels each correct.
+    resp_offset = np.pi if "anti" in str(d.get("rule", "")).lower() else 0.0
 
     def _target_cos(v, e):
-        """Ideal cos-output target: cos θ in the response period, else 0."""
+        """Ideal cos-output target: cos(response angle) in the response period,
+        else 0 (the task only demands an output during Response)."""
         stim = np.asarray(e["stim"], dtype=int)
         if "response" not in v.lower():
             return np.zeros(stim.shape[0], dtype=float)
@@ -3139,34 +3242,14 @@ def _plot_onetask_grad_fixed_points_3d(rep_key, out_name):
             ang = dense_angles[stim]
         else:
             ang = 2.0 * np.pi * stim / max(n_stim, 1)
-        return np.cos(ang)
+        return np.cos(ang + resp_offset)
 
     proj_by_period = {v: pca.transform(_flat(results[v][rep_key])) for v in periods}
-    lim = max(np.abs(np.vstack(list(proj_by_period.values()))).max() * 1.08, 1e-9)
     z_by_period = {v: _target_cos(v, results[v]) for v in periods}
-    # Shared symmetric z-range across panels (the target cos-output).
-    zmax = max(np.abs(np.concatenate(
-        [z_by_period[v].ravel() for v in periods]
-    )).max() * 1.1, 1e-6)
-
-    # Cross-period trajectory for ONE example stimulus (angle = 0): its fixed
-    # point (x, y, z) in each period. On each panel we connect this stimulus's
-    # fixed point in the PREVIOUS period to the one in the current period
-    # (fixation→stimulus on the Stimulus panel, stimulus→delay on Delay, etc.).
-    _TRAJ_STIM = 0                       # angle-0 (first dense stimulus)
-    angle0_pt = {}
-    for v in periods:
-        st = np.asarray(results[v]["stim"], dtype=int)
-        idx = np.where(st == _TRAJ_STIM)[0]
-        if idx.size:
-            i0 = int(idx[0])
-            angle0_pt[v] = (proj_by_period[v][i0, 0], proj_by_period[v][i0, 1],
-                            float(z_by_period[v][i0]))
-    _traj_col = stim_color(_TRAJ_STIM, n_stim)
 
     # Within-period RECORDED trajectory of the exemplar stimulus (how the state
     # moves and converges during each period), projected into the same basis.
-    # Maps the fixed-point rep to its saved trajectory field.
+    _TRAJ_STIM = 0
     _traj_field = {"fixed_M": "traj_M", "fixed_WM": "traj_WM",
                    "fixed_hidden": "traj_hidden"}.get(rep_key)
     traj_by_period = {}
@@ -3177,11 +3260,36 @@ def _plot_onetask_grad_fixed_points_3d(rep_key, out_name):
         if tr is not None and int(results[v].get("traj_stim", _TRAJ_STIM)) == _TRAJ_STIM:
             traj_by_period[v] = pca.transform(_flat(tr))   # (win_T, 2)
 
-    n_col = len(periods)
-    # Compact panels: no tick labels, so each panel can be small and packed close.
-    fig = plt.figure(figsize=(1.8 * n_col, 1.8))
+    return periods, proj_by_period, z_by_period, traj_by_period, n_stim
+
+
+def _draw_grad_fp_3d_row(fig, results, periods, proj_by_period, z_by_period,
+                         traj_by_period, n_stim, lim, zmax, n_rows, row_idx,
+                         n_col, show_period_titles=True, row_label=None):
+    """Draw one rule's four per-period 3D panels into row `row_idx` of an
+    (n_rows x n_col) subplot grid on `fig`, using precomputed projections. Shared
+    x-y limit `lim` and symmetric z-limit `zmax` are passed in so that multiple
+    rows/figures can use IDENTICAL axes (the two-task combined figure stacks
+    delaygo over delayanti and shares both). `show_period_titles` prints the
+    Fixation/Stimulus/… titles (typically only the top row); `row_label` writes a
+    rotated label (e.g. the task rule) to the left of the row's first panel."""
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (enables 3d projection)
+
+    # Angle-0 exemplar fixed point (x,y,z) per period, for the anchored connector.
+    _TRAJ_STIM = 0
+    angle0_pt = {}
+    for v in periods:
+        st = np.asarray(results[v]["stim"], dtype=int)
+        idx = np.where(st == _TRAJ_STIM)[0]
+        if idx.size:
+            i0 = int(idx[0])
+            angle0_pt[v] = (proj_by_period[v][i0, 0], proj_by_period[v][i0, 1],
+                            float(z_by_period[v][i0]))
+    _traj_col = stim_color(_TRAJ_STIM, n_stim)
+
     for j, v in enumerate(periods):
-        ax = fig.add_subplot(1, n_col, j + 1, projection="3d")
+        ax = fig.add_subplot(n_rows, n_col, row_idx * n_col + j + 1,
+                             projection="3d")
         e = results[v]
         xy = proj_by_period[v]                       # (batch, 2)
         z = z_by_period[v]
@@ -3227,7 +3335,8 @@ def _plot_onetask_grad_fixed_points_3d(rep_key, out_name):
                 # End: current period's fixed point (solid edge).
                 ax.scatter([p1[0]], [p1[1]], [p1[2]], color=_traj_col, marker="o",
                            s=30, edgecolor="black", linewidth=0.6, zorder=6)
-        ax.set_title(e.get("period_title", v), fontsize=11, pad=-6)
+        if show_period_titles:
+            ax.set_title(e.get("period_title", v), fontsize=11, pad=-6)
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)
         ax.set_zlim(-zmax, zmax)
@@ -3240,6 +3349,11 @@ def _plot_onetask_grad_fixed_points_3d(rep_key, out_name):
         if j == n_col - 1:
             ax.text2D(1.08, 0.5, "Output cos θ", transform=ax.transAxes,
                       rotation=90, va="center", ha="left", fontsize=10)
+        # Row label (e.g. the task rule) just to the left of the leftmost panel
+        # (small negative x keeps it close to the 3D box rather than far out).
+        if j == 0 and row_label is not None:
+            ax.text2D(-0.10, 0.5, row_label, transform=ax.transAxes,
+                      rotation=90, va="center", ha="right", fontsize=11)
         # Hide numeric tick labels on all three axes (keep the tick marks).
         ax.set_xticklabels([])
         ax.set_yticklabels([])
@@ -3251,11 +3365,62 @@ def _plot_onetask_grad_fixed_points_3d(rep_key, out_name):
         for _pane in (ax.xaxis, ax.yaxis, ax.zaxis):
             _pane.pane.set_visible(False)
 
+
+def _render_grad_fixed_points_3d(d, rep_key, out_path, basis=None):
+    """Single-rule 3D grad fixed-point figure (one row of period panels) from an
+    already-loaded pickle dict `d`: the x-y plane is a delay-period PCA of the
+    fixed points, and the z-axis is the TARGET (expected) cos-output for each
+    fixed point's stimulus, cos θ. z is ~0 for fixation/stimulus/delay and equals
+    cos θ only in the Response panel — the ring lifts off the z=0 plane only
+    there.
+
+    `basis`: an OPTIONAL pre-fitted 2-component PCA to project into. When None
+    (the default, and the one-task behavior) the basis is fit on THIS pickle's
+    own delay-period fixed points. When supplied (e.g. by the two-task driver,
+    which passes the delayanti delay-period basis), every panel is projected into
+    that EXTERNAL basis instead — so figures from different pickles/rules share
+    one x-y plane and become directly comparable point-for-point."""
+    _ensure_out_dir()
+    results = d["results"]
+    periods = list(results.keys())
+    if not periods:
+        print("  Skipped: no periods in grad fixed-point pickle.")
+        return
+    if any(results[v].get(rep_key) is None for v in periods):
+        print(f"  Skipped '{rep_key}': not in pickle "
+              f"(re-run one_task_analysis.py to add it).")
+        return
+
+    # Use the caller-supplied shared basis if given; otherwise fit on this
+    # pickle's own delay-period fixed points (one-task / standalone behavior).
+    if basis is None:
+        basis = _fit_period_grad_fp_basis(d, rep_key)
+
+    periods, proj, zc, traj, n_stim = _grad_fp_3d_project(d, rep_key, basis)
+    lim = max(np.abs(np.vstack(list(proj.values()))).max() * 1.08, 1e-9)
+    zmax = max(np.abs(np.concatenate([zc[v].ravel() for v in periods])).max() * 1.1,
+               1e-6)
+
+    n_col = len(periods)
+    # Compact panels: no tick labels, so each panel can be small and packed close.
+    fig = plt.figure(figsize=(1.8 * n_col, 1.8))
+    _draw_grad_fp_3d_row(fig, results, periods, proj, zc, traj, n_stim, lim, zmax,
+                         n_rows=1, row_idx=0, n_col=n_col,
+                         show_period_titles=True, row_label=None)
     # Pack panels tightly (no tick labels to collide) with a small right margin
     # so the rightmost panel's z-label isn't clipped.
     fig.subplots_adjust(left=0.02, right=0.84, bottom=0.02, top=0.92, wspace=0.12)
-    out_path = OUT_DIR / out_name
     _save_fig(fig, out_path)
+
+
+def _plot_onetask_grad_fixed_points_3d(rep_key, out_name):
+    """One-task wrapper: load the single-task grad-fp pickle and render `rep_key`
+    in 3D."""
+    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"fixed_points_grad_{ONETASK_ANAME}.pkl"
+    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
+    if d is None:
+        return
+    _render_grad_fixed_points_3d(d, rep_key, OUT_DIR / out_name)
 
 
 def plot_onetask_grad_fixed_points_3d():
@@ -3273,12 +3438,12 @@ def plot_onetask_grad_fixed_points_3d():
     _plot_onetask_grad_fixed_points_3d("fixed_hidden", "onetask_grad_fixed_points_3d_hidden.png")
 
 
-def plot_onetask_interp_fixed_points(period="longdelay"):
-    """
-    Figure: continuous-attractor probe. The gradient fixed points are solved for
-    a DENSE grid of stimulus angles (bypassing the task generator's 8-way
-    snapping), so this tests whether the given period's memory is a continuous
-    ring attractor. Two panels (for the delay period by default):
+def _render_interp_fixed_points(d, out_path, n_trained=ONETASK_N_STIM,
+                                period="longdelay", src_name=""):
+    """Continuous-attractor probe from an already-loaded pickle dict `d`. Shared
+    by the one-task and two-task interp figures.
+
+    Two panels (for the delay period by default):
       left  — the fixed points in a 2-PC PCA of the solved M*, colored by
               stimulus angle. A smooth, evenly-filled ring ⇒ continuous
               attractor; clustering onto ~8 points ⇒ discrete attractors.
@@ -3287,19 +3452,14 @@ def plot_onetask_interp_fixed_points(period="longdelay"):
               rel_tol acceptance line. Uniformly below the line ⇒ every angle is a
               (slowly-varying) fixed point (continuous manifold); excursions above
               it ⇒ those angles did not settle to a fixed point.
-    Reads the shared fixed_points_grad_{aname}.pkl (written by
-    one_task_analysis.py's _solve_period_modulation_fixed_points).
-    """
+    `n_trained` sets how many dashed trained-direction guide lines to draw;
+    `src_name` names the pickle in the skip message."""
     _ensure_out_dir()
-    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"fixed_points_grad_{ONETASK_ANAME}.pkl"
-    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
-    if d is None:
-        return
     angles = np.asarray(d.get("angles", []), dtype=float)
     results = d.get("results", {})
     if period not in results or angles.size == 0:
         print(f"  Skipped: period '{period}' or dense angles not in "
-              f"{pkl_path.name} (re-run one_task_analysis.py).")
+              f"{src_name} (re-run the analysis).")
         return
     e = results[period]
     fixed = np.asarray(e["fixed_M"], dtype=float)
@@ -3350,32 +3510,44 @@ def plot_onetask_interp_fixed_points(period="longdelay"):
     ax.plot(deg, rel_step, "-o", color=c_vals[0], markersize=3)
     # Dashed lines at the trained ring directions — only when few enough to be
     # legible (a dense/`morestimulus` run has too many to mark).
-    if ONETASK_N_STIM <= 16:
-        for k in range(ONETASK_N_STIM):
-            ax.axvline(360.0 * k / ONETASK_N_STIM, color="0.8", lw=0.6,
+    if n_trained <= 16:
+        for k in range(n_trained):
+            ax.axvline(360.0 * k / n_trained, color="0.8", lw=0.6,
                        linestyle="--", zorder=0)
     ax.axhline(rel_tol, color=c_vals[3], lw=1.0, linestyle="-",
                label=f"rel_tol = {rel_tol:g}", zorder=2)
     ax.set_yscale("log")
     ax.set_xlabel("Stimulus angle (deg)", fontsize=10)
     ax.set_ylabel(r"Relative step  $\|F(M^*)-M^*\|/\|M^*\|$", fontsize=9)
-    _dash_note = (f"\n(dashed = {ONETASK_N_STIM} trained dirs)"
-                  if ONETASK_N_STIM <= 16 else "")
+    _dash_note = (f"\n(dashed = {n_trained} trained dirs)"
+                  if n_trained <= 16 else "")
     ax.set_title(f"Relative step vs angle{_dash_note}", fontsize=9)
     _legend(ax, fontsize=7, loc="best")
     ax.spines[["top", "right"]].set_visible(False)
 
     # (equal-aspect left panel is incompatible with tight_layout; bbox_inches on
     # save handles trimming.)
-    out_path = OUT_DIR / "onetask_interp_fixed_points.png"
     _save_fig(fig, out_path)
 
 
-def plot_onetask_fixed_point_stability():
-    """
-    Figure: linear-stability spectrum of the gradient fixed points, per period.
-    Reads the Jacobian eigenvalues saved in fixed_points_grad_{aname}.pkl (written
-    by the stability pass in core/grad_fixed_points.py). Two rows:
+def plot_onetask_interp_fixed_points(period="longdelay"):
+    """One-task continuous-attractor probe. Reads the shared
+    fixed_points_grad_{aname}.pkl (written by one_task_analysis.py's
+    _solve_period_modulation_fixed_points) and renders it."""
+    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"fixed_points_grad_{ONETASK_ANAME}.pkl"
+    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
+    if d is None:
+        return
+    _render_interp_fixed_points(d, OUT_DIR / "onetask_interp_fixed_points.png",
+                                n_trained=ONETASK_N_STIM, period=period,
+                                src_name=pkl_path.name)
+
+
+def _render_fixed_point_stability(d, out_path, n_trained=ONETASK_N_STIM):
+    """Linear-stability spectrum of the gradient fixed points, per period, from an
+    already-loaded pickle dict `d`. Shared by the one-task and two-task figures.
+    Reads the Jacobian eigenvalues saved in the grad-fp pickle (written by the
+    stability pass in core/grad_fixed_points.py). Two rows:
 
       top  — leading Jacobian eigenvalues of F(M*) in the COMPLEX PLANE, one panel
              per period, colored by stimulus angle, with the unit circle. As a
@@ -3385,18 +3557,15 @@ def plot_onetask_fixed_point_stability():
       bottom — spectral radius ρ = max|λ| vs stimulus angle, per period, with the
              ρ = 1 stability line. ρ < 1 ⇒ attracting fixed point.
 
+    `n_trained` sets how many dashed trained-direction guide lines to draw.
     Skips gracefully if the pickle predates the stability pass.
     """
     _ensure_out_dir()
-    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"fixed_points_grad_{ONETASK_ANAME}.pkl"
-    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
-    if d is None:
-        return
     results = d.get("results", {})
     periods = list(results.keys())
     if not periods or any(results[v].get("eigenvalues") is None for v in periods):
         print("  Skipped: 'eigenvalues' not in pickle "
-              "(re-run one_task_analysis.py to add the stability pass).")
+              "(re-run the analysis to add the stability pass).")
         return
 
     angles = np.asarray(d.get("angles", []), dtype=float)
@@ -3442,9 +3611,9 @@ def plot_onetask_fixed_point_stability():
                    label="ρ = 1")
         # Shade the marginal band [1-tol, 1+tol].
         ax.axhspan(1.0 - marg_tol, 1.0 + marg_tol, color="0.85", alpha=0.5, zorder=0)
-        if deg is not None and ONETASK_N_STIM <= 16:
-            for kk in range(ONETASK_N_STIM):
-                ax.axvline(360.0 * kk / ONETASK_N_STIM, color="0.9", lw=0.5,
+        if deg is not None and n_trained <= 16:
+            for kk in range(n_trained):
+                ax.axvline(360.0 * kk / n_trained, color="0.9", lw=0.5,
                            linestyle="--", zorder=0)
         ax.set_xlabel("Stimulus angle (deg)" if deg is not None else "Stimulus index",
                       fontsize=9)
@@ -3455,8 +3624,312 @@ def plot_onetask_fixed_point_stability():
         ax.spines[["top", "right"]].set_visible(False)
 
     fig.tight_layout()
-    out_path = OUT_DIR / "onetask_fixed_point_stability.png"
     _save_fig(fig, out_path)
+
+
+def plot_onetask_fixed_point_stability():
+    """One-task linear-stability spectrum. Reads the Jacobian eigenvalues saved
+    in fixed_points_grad_{aname}.pkl and renders them."""
+    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"fixed_points_grad_{ONETASK_ANAME}.pkl"
+    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
+    if d is None:
+        return
+    _render_fixed_point_stability(
+        d, OUT_DIR / "onetask_fixed_point_stability.png", n_trained=ONETASK_N_STIM)
+
+
+# Reference rule whose delay-period PCA defines the SHARED x-y basis for BOTH
+# the 2D and 3D two-task fixed-point figures. Every rule's figure is projected
+# into this rule's delay basis so their rings are directly comparable
+# point-for-point (rather than each rule using its own, incomparable, delay PCA).
+_TWOTASK_FP_BASIS_RULE = "delayanti"
+
+# Row order (top → bottom) for the combined two-task fixed-point figures (2D and
+# 3D): each rule is one row, delaygo above delayanti.
+_TWOTASK_FP_ROW_ORDER = ["delaygo", "delayanti"]
+
+
+def _twotask_shared_fp_bases(paths, label, period="longdelay"):
+    """Fit ONE shared 2-PC PCA per representation from the `_TWOTASK_FP_BASIS_RULE`
+    reference rule's pickle, for the two-task grad fixed-point figures. `period`
+    selects which trial epoch's fixed points define the basis ("longdelay" or
+    "longstimulus"). `paths` is the (rule, path) list from
+    _twotask_grad_fp_paths(); `label` tags the log line.
+
+    Returns a dict rep_key -> fitted PCA (usable as the renderers' `basis` arg).
+    An EMPTY dict means the reference pickle was missing or unreadable, in which
+    case each rule falls back to its own basis (the per-pickle default)."""
+    ref_paths = [p for (r, p) in paths if r == _TWOTASK_FP_BASIS_RULE]
+    shared = {}
+    if ref_paths:
+        d_ref = _load_pkl_or_skip(ref_paths[0], "Run two_task_analysis.py first.")
+        if d_ref is not None:
+            for rep_key in ("fixed_M", "fixed_WM", "fixed_hidden"):
+                b = _fit_period_grad_fp_basis(d_ref, rep_key, period=period)
+                if b is not None:
+                    shared[rep_key] = b
+        print(f"  [{label}] shared x-y basis = '{_TWOTASK_FP_BASIS_RULE}' {period} "
+              f"({len(shared)}/3 representations).")
+    else:
+        print(f"  [{label}] reference rule '{_TWOTASK_FP_BASIS_RULE}' pickle not "
+              f"found; each rule uses its own {period} basis.")
+    return shared
+
+
+def _load_two_task_grad_fp_rules(paths):
+    """Load each two-task rule's grad-fp pickle once, ordered top→bottom per
+    `_TWOTASK_FP_ROW_ORDER` (rules not in that list are appended after, in
+    discovery order). Returns an ordered list of (rule, loaded-pickle-dict),
+    skipping rules whose pickle is missing/unreadable. Shared by the combined 2D
+    and 3D two-task drivers so both stack rows in the same order."""
+    by_rule = dict(paths)
+    ordered_rules = ([r for r in _TWOTASK_FP_ROW_ORDER if r in by_rule]
+                     + [r for r in by_rule if r not in _TWOTASK_FP_ROW_ORDER])
+    rule_data = []
+    for rule in ordered_rules:
+        d = _load_pkl_or_skip(by_rule[rule], "Run two_task_analysis.py first.")
+        if d is not None:
+            rule_data.append((rule, d))
+    return rule_data
+
+
+def _render_two_task_grad_fp_2d_combined(rule_data, rep_key, out_path, basis,
+                                         pc_label="Delay"):
+    """Draw ALL two-task rules as stacked rows of a SINGLE 2D figure for one
+    representation. `rule_data` is an ordered list of (rule, loaded-pickle-dict)
+    (row order = top→bottom); every rule is projected into the shared `basis` and
+    the rows share one symmetric x-y limit so panels are directly comparable
+    across rows. Period titles print only on the top row; each row is labeled on
+    the left (y-axis) by its task rule. `pc_label` names the shared PCA basis on
+    the figure's x/y labels (e.g. "Delay" or "Stimulus")."""
+    # Project every rule first, so a shared axis limit can span all rows.
+    per_rule = []   # (rule, results, periods, proj, traj, angle0_pt, n_stim)
+    for rule, d in rule_data:
+        results = d["results"]
+        periods = list(results.keys())
+        if not periods or any(results[v].get(rep_key) is None for v in periods):
+            print(f"  Skipped '{rep_key}' for rule '{rule}': not in pickle.")
+            continue
+        periods, proj, traj, a0, n_stim = _grad_fp_2d_project(d, rep_key, basis)
+        per_rule.append((rule, results, periods, proj, traj, a0, n_stim))
+    if not per_rule:
+        print(f"  Skipped '{rep_key}': no rule had it.")
+        return
+
+    # Shared symmetric x-y limit across ALL rows (so rows are comparable).
+    lim = max(np.abs(np.vstack([p for (_, _, _, proj, _, _, _) in per_rule
+                                for p in proj.values()])).max() * 1.08, 1e-9)
+    n_col = max(len(periods) for (_, _, periods, _, _, _, _) in per_rule)
+    n_rows = len(per_rule)
+
+    fig, axs = plt.subplots(n_rows, n_col, figsize=(2.1 * n_col, 2.1 * n_rows),
+                            squeeze=False)
+    for row_idx, (rule, results, periods, proj, traj, a0, n_stim) in enumerate(per_rule):
+        _draw_grad_fp_2d_row(
+            axs[row_idx], results, periods, proj, traj, a0, n_stim, lim,
+            show_period_titles=(row_idx == 0),
+            row_label=_TASK_DISPLAY.get(rule, rule))
+
+    # Shared x/y labels for the whole grid (all panels share the same basis).
+    fig.supxlabel(f"{pc_label} PC1", fontsize=11)
+    fig.supylabel(f"{pc_label} PC2", fontsize=11)
+    # (equal-aspect panels are incompatible with tight_layout; bbox_inches on
+    # save handles trimming.)
+    _save_fig(fig, out_path)
+
+
+# The two-task grad fixed-point figures are produced in TWO variants that differ
+# only by which trial period of the `_TWOTASK_FP_BASIS_RULE` defines the shared
+# x-y PCA basis. Each entry: (period key, filename infix, axis-label prefix).
+# The infix keeps the two variants' output files distinguishable.
+_TWOTASK_FP_BASIS_VARIANTS = [
+    ("longdelay",    "delaypc", "Delay"),
+    ("longstimulus", "stimpc",  "Stimulus"),
+]
+
+
+def _plot_two_task_grad_fp_combined(stem_prefix, log_label, render_fn,
+                                    with_pc_label):
+    """Shared driver for the combined two-task grad fixed-point figures (2D and
+    3D). Loads each rule's pickle once, then for every basis variant
+    (`_TWOTASK_FP_BASIS_VARIANTS`) and every representation (raw M*, W⊙M*,
+    hidden) fits/reuses the shared delayanti basis and calls `render_fn` to draw
+    all rules as stacked rows into ONE figure. Output:
+      {stem_prefix}_{seed}_{infix}_{suffix}.png
+
+    stem_prefix   : filename stem before the seed tag ("twotask_grad_fixed_points"
+                    for 2D, that + "_3d" for 3D).
+    log_label     : short tag for the shared-basis log line ("twotask-2d"/"-3d").
+    render_fn     : the combined renderer (_render_two_task_grad_fp_2d_combined or
+                    _..._3d_combined); called as
+                    render_fn(rule_data, rep_key, out_path, basis[, pc_label=...]).
+    with_pc_label : pass the variant's axis-label prefix as pc_label= (2D only;
+                    the 3D renderer uses generic PC1/PC2 axis labels)."""
+    paths = _twotask_grad_fp_paths()
+    if not paths:
+        print("  Skipped: no fixed_points_grad_*_{rule}.pkl in "
+              f"{TWOTASKS_DIR / TWOTASK_ANAME}. Run two_task_analysis.py first.")
+        return
+    tag = _twotask_seed_tag()
+    rule_data = _load_two_task_grad_fp_rules(paths)
+    if not rule_data:
+        return
+
+    for period, infix, pc_label in _TWOTASK_FP_BASIS_VARIANTS:
+        shared_bases = _twotask_shared_fp_bases(paths, f"{log_label}/{infix}",
+                                                period=period)
+        for rep_key, suffix in (("fixed_M", "modulation"),
+                                ("fixed_WM", "emodulation"),
+                                ("fixed_hidden", "hidden")):
+            # Shared basis for this representation; fall back to the first rule's
+            # own basis for this period if the reference-rule pickle was absent.
+            basis = shared_bases.get(rep_key) or _fit_period_grad_fp_basis(
+                rule_data[0][1], rep_key, period=period)
+            if basis is None:
+                print(f"  Skipped '{rep_key}' ({period}): no basis could be fit.")
+                continue
+            out_path = OUT_DIR / f"{stem_prefix}_{tag}_{infix}_{suffix}.png"
+            extra = {"pc_label": pc_label} if with_pc_label else {}
+            render_fn(rule_data, rep_key, out_path, basis, **extra)
+
+
+def plot_two_task_grad_fixed_points():
+    """
+    2D two-task gradient fixed-point figures — BOTH rules stacked as rows of a
+    SINGLE figure per representation (top → bottom = _TWOTASK_FP_ROW_ORDER, i.e.
+    delaygo over delayanti), colored by stimulus; period titles on the top row,
+    task-rule labels down the left.
+
+    TWO BASIS VARIANTS (`_TWOTASK_FP_BASIS_VARIANTS`): the same fixed points are
+    plotted twice, differing only in which period of the `_TWOTASK_FP_BASIS_RULE`
+    (delayanti) defines the shared x-y PCA basis — the DELAY ring vs the STIMULUS
+    ring. The filename infix distinguishes them:
+      twotask_grad_fixed_points_{seed}_delaypc_modulation.png  (+ emodulation, hidden)
+      twotask_grad_fixed_points_{seed}_stimpc_modulation.png   (+ emodulation, hidden)
+
+    SHARED BASIS: within each variant, all rows are projected into a SINGLE common
+    x-y plane (fit once per representation) and share one symmetric x-y limit, so
+    the delaygo and delayanti rings are directly comparable point-for-point. If
+    the reference rule's pickle is missing, the basis falls back to the first
+    available rule's own corresponding period.
+    Reads twotasks/{aname}/fixed_points_grad_{aname}_{rule}.pkl.
+    """
+    _plot_two_task_grad_fp_combined(
+        "twotask_grad_fixed_points", "twotask-2d",
+        _render_two_task_grad_fp_2d_combined, with_pc_label=True)
+
+
+def _render_two_task_grad_fp_3d_combined(rule_data, rep_key, out_path, basis):
+    """Draw ALL two-task rules as stacked rows of a SINGLE 3D figure for one
+    representation. `rule_data` is an ordered list of (rule, loaded-pickle-dict)
+    (row order = top→bottom); every rule is projected into the shared `basis` and
+    the rows share one x-y limit and one z-limit so the panels are directly
+    comparable across rows. Period titles print only on the top row; each row is
+    labeled on the left by its task rule."""
+    # Project every rule first, so shared axis limits can span all rows.
+    per_rule = []   # (rule, results, periods, proj, zc, traj, n_stim)
+    for rule, d in rule_data:
+        results = d["results"]
+        periods = list(results.keys())
+        if not periods or any(results[v].get(rep_key) is None for v in periods):
+            print(f"  Skipped '{rep_key}' for rule '{rule}': not in pickle.")
+            continue
+        periods, proj, zc, traj, n_stim = _grad_fp_3d_project(d, rep_key, basis)
+        per_rule.append((rule, results, periods, proj, zc, traj, n_stim))
+    if not per_rule:
+        print(f"  Skipped '{rep_key}': no rule had it.")
+        return
+
+    # Shared symmetric x-y and z limits across ALL rows (so rows are comparable).
+    lim = max(np.abs(np.vstack([p for (_, _, _, proj, _, _, _) in per_rule
+                                for p in proj.values()])).max() * 1.08, 1e-9)
+    zmax = max(np.abs(np.concatenate([zc[v].ravel()
+                                      for (_, _, periods, _, zc, _, _) in per_rule
+                                      for v in periods])).max() * 1.1, 1e-6)
+    n_col = max(len(periods) for (_, _, periods, _, _, _, _) in per_rule)
+    n_rows = len(per_rule)
+
+    fig = plt.figure(figsize=(1.8 * n_col, 1.8 * n_rows))
+    for row_idx, (rule, results, periods, proj, zc, traj, n_stim) in enumerate(per_rule):
+        _draw_grad_fp_3d_row(
+            fig, results, periods, proj, zc, traj, n_stim, lim, zmax,
+            n_rows=n_rows, row_idx=row_idx, n_col=n_col,
+            show_period_titles=(row_idx == 0),
+            row_label=_TASK_DISPLAY.get(rule, rule))
+    # Strongly negative hspace pulls the two rows close together (3D axes carry
+    # large internal margins, so even this still reads as separated panels).
+    fig.subplots_adjust(left=0.06, right=0.84, bottom=0.02, top=0.94,
+                        wspace=0.12, hspace=-0.4)
+    _save_fig(fig, out_path)
+
+
+def plot_two_task_grad_fixed_points_3d():
+    """
+    3D two-task gradient fixed-point figures — BOTH rules stacked as rows of a
+    SINGLE figure per representation (top → bottom = _TWOTASK_FP_ROW_ORDER, i.e.
+    delaygo over delayanti). x-y = shared PCA basis, z = ideal cos-output target.
+
+    TWO BASIS VARIANTS (`_TWOTASK_FP_BASIS_VARIANTS`), like the 2D figures: the
+    same fixed points are plotted twice, differing only in which period of the
+    `_TWOTASK_FP_BASIS_RULE` (delayanti) defines the shared x-y PCA basis — the
+    DELAY ring vs the STIMULUS ring. The filename infix distinguishes them:
+      twotask_grad_fixed_points_3d_{seed}_delaypc_modulation.png  (+ emodulation, hidden)
+      twotask_grad_fixed_points_3d_{seed}_stimpc_modulation.png   (+ emodulation, hidden)
+
+    SHARED BASIS: within each variant, all rows are projected into a SINGLE common
+    x-y plane (fit once per representation) and share one x-y/z limit, so the
+    delaygo and delayanti rings are directly comparable point-for-point. If the
+    reference rule's pickle is missing, the basis falls back to the first
+    available rule's own corresponding period.
+    Reads twotasks/{aname}/fixed_points_grad_{aname}_{rule}.pkl.
+    """
+    _plot_two_task_grad_fp_combined(
+        "twotask_grad_fixed_points_3d", "twotask-3d",
+        _render_two_task_grad_fp_3d_combined, with_pc_label=False)
+
+
+def plot_two_task_interp_fixed_points(period="longdelay"):
+    """
+    Figure: continuous-attractor probe for the two-task network, one per task
+    rule (twotask_interp_fixed_points_{seed}_{rule}.png). Same two-panel layout
+    as the one-task version (FP ring in PCA + relative-step-vs-angle continuity
+    diagnostic). Reads twotasks/{aname}/fixed_points_grad_{aname}_{rule}.pkl.
+    """
+    paths = _twotask_grad_fp_paths()
+    if not paths:
+        print("  Skipped: no fixed_points_grad_*_{rule}.pkl in "
+              f"{TWOTASKS_DIR / TWOTASK_ANAME}. Run two_task_analysis.py first.")
+        return
+    tag = _twotask_seed_tag()
+    for rule, pkl_path in paths:
+        d = _load_pkl_or_skip(pkl_path, "Run two_task_analysis.py first.")
+        if d is None:
+            continue
+        _render_interp_fixed_points(
+            d, OUT_DIR / f"twotask_interp_fixed_points_{tag}_{rule}.png",
+            n_trained=TWOTASK_N_STIM, period=period, src_name=pkl_path.name)
+
+
+def plot_two_task_fixed_point_stability():
+    """
+    Figure: linear-stability spectrum of the two-task gradient fixed points, one
+    per task rule (twotask_fixed_point_stability_{seed}_{rule}.png). Same two-row
+    layout as the one-task version (eigenvalues in the complex plane + spectral
+    radius vs angle). Reads twotasks/{aname}/fixed_points_grad_{aname}_{rule}.pkl.
+    """
+    paths = _twotask_grad_fp_paths()
+    if not paths:
+        print("  Skipped: no fixed_points_grad_*_{rule}.pkl in "
+              f"{TWOTASKS_DIR / TWOTASK_ANAME}. Run two_task_analysis.py first.")
+        return
+    tag = _twotask_seed_tag()
+    for rule, pkl_path in paths:
+        d = _load_pkl_or_skip(pkl_path, "Run two_task_analysis.py first.")
+        if d is None:
+            continue
+        _render_fixed_point_stability(
+            d, OUT_DIR / f"twotask_fixed_point_stability_{tag}_{rule}.png",
+            n_trained=TWOTASK_N_STIM)
 
 
 def plot_two_task_d_combine():
@@ -3484,22 +3957,32 @@ def plot_two_task_d_combine():
     vmin = min(d_combine[n].get("vmin", 0.0) for n in names)
     vmax = max(d_combine[n].get("vmax", 1.0) for n in names)
 
-    fig, axs = plt.subplots(1, len(names), figsize=(4.2 * len(names), 3.9),
-                            gridspec_kw={"wspace": 0.45})
+    fig, axs = plt.subplots(1, len(names), figsize=(2.8 * len(names), 2.6),
+                            gridspec_kw={"wspace": 0.15})
     if len(names) == 1:
         axs = [axs]
+    title_map = {"hidden": "Hidden", "modulation": "Modulation",
+                 "w_modulation": "Eff. modulation"}
     mesh = None
-    for i, (ax, name) in enumerate(zip(axs, names)):
+    for col, (ax, name) in enumerate(zip(axs, names)):
         e = d_combine[name]
+        # y-tick labels only on the leftmost panel (all panels share the same
+        # row labels); saves horizontal space so panels don't collide.
+        ylabels = e["labels"] if col == 0 else False
         sns.heatmap(np.asarray(e["fve_k_all"]), ax=ax,
-                    xticklabels=e["labels"], yticklabels=e["labels"],
-                    annot=True, fmt=".2f", vmin=vmin, vmax=vmax, square=True,
+                    xticklabels=e["labels"], yticklabels=ylabels,
+                    annot=True, fmt=".2f", annot_kws={"fontsize": 6},
+                    vmin=vmin, vmax=vmax, square=True,
                     cmap="mako", cbar=False)
         mesh = ax.collections[0]
-        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
+        ax.set_title(title_map.get(name, name), fontsize=10)
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right", fontsize=7)
+        if col == 0:
+            ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=7)
 
     # One shared colorbar for all panels.
-    fig.colorbar(mesh, ax=list(axs), shrink=0.8)
+    cb = fig.colorbar(mesh, ax=list(axs), shrink=0.8)
+    cb.ax.tick_params(labelsize=7)
     out_path = OUT_DIR / f"twotask_d_combine_{_twotask_seed_tag()}.png"
     _save_fig(fig, out_path)
 
@@ -3529,15 +4012,20 @@ def plot_two_task_pc_cumvar():
 
     rep_title = {"hidden": "Hidden", "w_modulation": "Eff. modulation",
                  "modulation": "Modulation"}
-    # Period-bar palette keyed by the period names stored in the pickle. The
-    # two-task period names are the trial epochs (context/stim/memory/response);
-    # fall back to the categorical cycle if a name isn't in the map.
-    period_color_lookup = dict(zip(
-        ["Fixation", "Stimulus", "Memory", "Response"], _ONETASK_PERIOD_COLORS))
+    # Period-bar palette, matching onetask_pc_cumvar. The two-task pickle stores
+    # the periods under abbreviated names (context/stim/delay/resp) rather than
+    # the one-task labels, but both list the same four trial epochs in the same
+    # Fixation→Stimulus→Memory→Response order, so color BY POSITION into
+    # _ONETASK_PERIOD_COLORS (falling back to the categorical cycle for any
+    # extra periods) instead of keying on the mismatched names.
+    def _period_col(pi):
+        return (_ONETASK_PERIOD_COLORS[pi] if pi < len(_ONETASK_PERIOD_COLORS)
+                else c_vals[pi % len(c_vals)])
 
     n_task = len(d[names[0]]["task_names"])
+    # Per-panel size matches onetask_pc_cumvar (1.4 wide x 1.33 tall).
     fig, axs = plt.subplots(len(names), n_task,
-                            figsize=(2.0 * n_task, 1.9 * len(names)),
+                            figsize=(1.4 * n_task, 1.33 * len(names)),
                             squeeze=False)
     for r, name in enumerate(names):
         e = d[name]
@@ -3549,9 +4037,8 @@ def plot_two_task_pc_cumvar():
         for ti in range(n_task):
             ax = axs[r][ti]
             for pi, pname in enumerate(pnames):
-                col = period_color_lookup.get(pname, c_vals[pi % len(c_vals)])
-                ax.plot(xs, cumvar[ti, pi], "-o", color=col, markersize=3,
-                        label=pname)
+                ax.plot(xs, cumvar[ti, pi], "-o", color=_period_col(pi),
+                        markersize=3, label=pname)
             # Pad limits so the first ticks sit off the origin corner.
             x_pad = 0.04 * (n_pc - 1)
             ax.set_xlim(1 - x_pad, n_pc + x_pad)
@@ -3566,8 +4053,9 @@ def plot_two_task_pc_cumvar():
                 ax.set_xlabel("No. of PCs", fontsize=9)
             if ti == 0:
                 ax.set_ylabel(f"{rep_title.get(name, name)}\nVar expl.", fontsize=9)
-            if r == 0 and ti == n_task - 1:
-                _legend(ax, fontsize=6, loc="lower right", frameon=True)
+            # No legend here — the period colors match onetask_pc_cumvar's shared
+            # palette (colored BY POSITION into _ONETASK_PERIOD_COLORS), so the
+            # standalone onetask_pc_cumvar_legend applies to this figure too.
 
     fig.tight_layout()
     out_path = OUT_DIR / f"twotask_pc_cumvar_{_twotask_seed_tag()}.png"
@@ -3776,83 +4264,6 @@ def plot_two_task_attractor_cycle():
     _render_combined(["hidden", "w_modulation"])
 
 
-def _draw_attractor_single_alpha(ax, entry, alpha_idx, show_ylabel=True):
-    """Draw the PCA 1-2 fixed-point ring for a SINGLE alpha step of one
-    (period, series) entry: the 8 per-stimulus fixed points at that alpha,
-    colored by stimulus and connected in a closed cycle."""
-    pdf_all = np.asarray(entry["projected_data_fix_all"])   # (n_alpha, batch, 3)
-    interpolation_label = entry["interpolation_label"]
-    comb = [0, 1]  # PCA 1-2 only
-
-    xy = pdf_all[alpha_idx][:, comb]                        # (batch, 2)
-    n = xy.shape[0]
-    # Closed ring connecting the fixed points in stimulus order.
-    for j in range(n):
-        ax.plot([xy[j, 0], xy[(j + 1) % n, 0]],
-                [xy[j, 1], xy[(j + 1) % n, 1]],
-                "-", color="0.6", linewidth=0.8, alpha=0.5, zorder=1)
-    for i in range(n):
-        ax.scatter(xy[i, 0], xy[i, 1], c=[stim_color(interpolation_label[i], n)],
-                   marker="o", s=32, zorder=2)
-
-    if show_ylabel:
-        ax.set_ylabel("PCA 2", fontsize=10)
-    # Hide tick labels/marks for a compact layout (PC axes are unitless here).
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.spines[["top", "right"]].set_visible(False)
-
-
-def plot_two_task_attractor_alpha():
-    """
-    Figures: fixed-point rings for the two-task network, one per series
-    (hidden / modulation / w_modulation = effective modulation), shown for the
-    Stimulus (top row) and Response (bottom row) periods, with alpha=0 (left
-    column) and alpha=1 (right column) plotted separately. Each panel is a
-    single-alpha PCA 1-2 ring of the 8 per-stimulus fixed points, colored by
-    stimulus. Reads the same pickle as plot_two_task_attractor_cycle.
-    """
-    _ensure_out_dir()
-    ac = _load_twotask_glob_or_skip("m_pca_attractor_cycle_*.pkl")
-    if ac is None:
-        return
-
-    # rows = periods (Stimulus, Response); columns = alpha endpoints (0, 1).
-    # alpha=0 = pure anti-task input (delayanti = MemoryAnti); alpha=1 = pure
-    # pro-task input (delaygo = MemoryPro). See input_interpolation in
-    # two_task_analysis.py: stacked = alpha*pro + (1-alpha)*anti.
-    row_periods = ["longstimulus", "longresponse"]
-    alpha_cols = [(0, "MemoryAnti"), (-1, "MemoryPro")]  # first / last alpha step
-    # w_modulation is the effective modulation (W⊙M).
-    names = ["hidden", "modulation", "w_modulation"]
-
-    def _render(name):
-        if not all(f"{p}|{name}" in ac for p in row_periods):
-            print(f"  Skipped '{name}': missing stimulus/response entries in "
-                  f"m_pca_attractor_cycle pickle.")
-            return
-        fig, axs = plt.subplots(2, 2, figsize=(4.4, 4.4), squeeze=False)
-        for r, period in enumerate(row_periods):
-            entry = ac[f"{period}|{name}"]
-            for c, (alpha_idx, alpha_title) in enumerate(alpha_cols):
-                ax = axs[r][c]
-                _draw_attractor_single_alpha(ax, entry, alpha_idx,
-                                             show_ylabel=(c == 0))
-                if r == 0:
-                    ax.set_title(alpha_title, fontsize=12)
-                # Row label (period) on the left column only.
-                if c == 0:
-                    ax.set_ylabel(f"{_PERIOD_TITLE.get(period, period)}\nPCA 2",
-                                  fontsize=10)
-        fig.supxlabel("PCA 1", fontsize=11)
-        fig.tight_layout()
-        out_path = OUT_DIR / f"twotask_attractor_alpha_{name}_{_twotask_seed_tag()}.png"
-        _save_fig(fig, out_path)
-
-    for name in names:
-        _render(name)
-
-
 def plot_two_task_cancel():
     """
     Figure: fixon/task cancellation projection traces for the two-task network,
@@ -3958,10 +4369,31 @@ def plot_two_task_outputsubspace_cancel():
     n_cat, n_stim, _ = projs_all.shape
 
     fig, axs = plt.subplots(1, 2, figsize=(2.6 * 2, 2.6))
+    # Spread the per-stimulus points around each integer x so they don't fully
+    # overlap, and draw them semi-transparent so density is visible.
+    jitter = np.linspace(-0.13, 0.13, n_stim) if n_stim > 1 else np.zeros(1)
     for i in range(n_cat):
         for k in range(n_stim):
-            axs[0].scatter(i, projs_all[i, k, 0], color=c_vals[i])
-            axs[1].scatter(i, projs_all[i, k, 1], color=c_vals[i])
+            axs[0].scatter(i + jitter[k], projs_all[i, k, 0], color=c_vals[i],
+                           alpha=0.45, s=16, edgecolors="none", zorder=2)
+            axs[1].scatter(i + jitter[k], projs_all[i, k, 1], color=c_vals[i],
+                           alpha=0.45, s=16, edgecolors="none", zorder=2)
+    # Overlay geometric mean +/- 1 std computed in log space (matching the log
+    # y-axis), so the error bars summarize the scatter of the 8 stimuli.
+    for ax, val_idx in ((axs[0], 0), (axs[1], 1)):
+        for i in range(n_cat):
+            vals = projs_all[i, :, val_idx]
+            vals = vals[vals > 0]
+            if vals.size == 0:
+                continue
+            log_v = np.log10(vals)
+            m, s = log_v.mean(), log_v.std()
+            center = 10.0 ** m
+            lo = center - 10.0 ** (m - s)
+            hi = 10.0 ** (m + s) - center
+            ax.errorbar(i, center, yerr=[[lo], [hi]], fmt="_",
+                        color=c_vals[i], ecolor=c_vals[i], elinewidth=1.2,
+                        capsize=3, markersize=11, markeredgewidth=1.6, zorder=5)
     for ax in axs:
         ax.set_xticks(list(range(n_cat)))
         # Wrap long category names onto multiple lines so they fit under the
@@ -4300,9 +4732,12 @@ FIGURES_BY_MODE = {
         "twotask_pc_cumvar": plot_two_task_pc_cumvar,
         "twotask_m_pca": plot_two_task_m_pca,
         "twotask_attractor_cycle": plot_two_task_attractor_cycle,
-        "twotask_attractor_alpha": plot_two_task_attractor_alpha,
         "twotask_cancel": plot_two_task_cancel,
         "twotask_outputsubspace_cancel": plot_two_task_outputsubspace_cancel,
+        "twotask_grad_fixed_points": plot_two_task_grad_fixed_points,
+        "twotask_grad_fixed_points_3d": plot_two_task_grad_fixed_points_3d,
+        "twotask_interp_fixed_points": plot_two_task_interp_fixed_points,
+        "twotask_fixed_point_stability": plot_two_task_fixed_point_stability,
         "twotask_w_gram_matrix": plot_two_task_w_gram_matrix,
         "twotask_w_hurt": plot_two_task_w_hurt,
         "twotask_attractor_first": plot_two_task_attractor_first,
