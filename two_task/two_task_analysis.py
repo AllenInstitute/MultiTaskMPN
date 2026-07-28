@@ -72,7 +72,9 @@ import net_helpers
 import mpn_tasks
 import helper
 import mpn
-from grad_fixed_points import solve_period_modulation_fixed_points
+from grad_fixed_points import (solve_period_modulation_fixed_points,
+                                derive_fixed_point_views, _PERIOD_TITLE)
+from fixed_point import find_modulation_fixed_points
 
 # ─── Plotting palette (notebook cell 2) ──────────────────────────────────────
 # 0 Red, 1 blue, 2 green, 3 purple, 4 orange, 5 teal, 6 gray, 7 pink, 8 yellow
@@ -471,8 +473,14 @@ def bin_by_sorted_x(x, y, nbins=100, drop_nonfinite=True, return_counts=False):
     return x_mean, y_mean
 
 
-def input_interpolation(test_input_long, test_output_long, label_task_comb_long, expand_stimulus=True):
-    """Build alpha-interpolations between pro and anti task inputs. (Cell 81.)"""
+def input_interpolation(test_input_long, test_output_long, label_task_comb_long,
+                        expand_stimulus=True, n_alpha=20):
+    """Build alpha-interpolations between pro and anti task inputs. (Cell 81.)
+
+    For each stimulus k, the pro (task 0) and anti (task 1) input trials are
+    linearly mixed as alpha*pro + (1-alpha)*anti over `n_alpha`+1 evenly-spaced
+    alphas in [0, 1]. `n_alpha` controls the grid resolution (default 20 -> 21
+    steps; pass 10 for the coarse 0.0, 0.1, ... 1.0 grid)."""
     assert test_input_long.shape[0] == label_task_comb_long.shape[0]
     pro_task, anti_task = {}, {}
     pro_task_answer, anti_task_answer = {}, {}
@@ -502,7 +510,7 @@ def input_interpolation(test_input_long, test_output_long, label_task_comb_long,
         pro_task_answer = {k: pro_task_answer[k] for k in interleaved_keys}
         anti_task_answer = {k: anti_task_answer[k] for k in interleaved_keys}
 
-    n = 20
+    n = n_alpha
     alpha_lst = [i / n for i in range(n + 1)]
 
     stacked_pro = torch.stack([pro_task[k] for k in sorted(pro_task)])
@@ -549,7 +557,7 @@ def _rebuild_net(net_params):
     return net
 
 
-def main(aname, fp_n_seeds=5):
+def main(aname, fp_n_seeds=5, interp_n_alpha=10, interp_save_full=False):
     # two_task.py saves each trial in a self-contained subfolder twotasks/{aname}/.
     # Fall back to the flat layout (files directly under twotasks/) for older runs.
     run_dir = OUT_DIR / aname
@@ -2035,6 +2043,26 @@ def main(aname, fp_n_seeds=5):
         raw_data_ring_magnitude = [[], [], []]
         projected_data_ring = [[], [], []]
 
+        # The forward pass per alpha step is INDEPENDENT of the representation
+        # ("hidden"/"modulation"/"w_modulation") — all three are derived from the
+        # same tracked db. Run it ONCE per alpha here (rather than 3x inside the
+        # name loop below) and cache the per-representation activity, so this cell
+        # does n_alpha forward passes instead of 3*n_alpha.
+        Wlocal = net.mp_layer1.W.data.detach().cpu().numpy()
+        alpha_activity = []   # per alpha: {name -> (batch, T, n_activity)}
+        for int_index, int_input in enumerate(stacked_interpolation_):
+            if int_index == 0:
+                int_input_all.append(int_input)   # alpha=0 input per period (Cell 91 downstream)
+            _, _, db_intp = net.iterate_sequence_batch(
+                int_input, run_mode='track_states', save_to_cpu=True, detach_saved=True)
+            Ms, Ms_orig, hs, _ = modulation_extraction(int_input, db_intp, layer_index)
+            alpha_activity.append({
+                "hidden": hs,
+                "modulation": Ms,
+                "w_modulation": (Ms_orig * Wlocal[None, None, :, :]).reshape(
+                    Ms.shape[0], Ms.shape[1], -1),
+            })
+
         for nindex, name in enumerate(names):
             fighsadd, axshsadd = plt.subplots(1, 3, figsize=(5 * 3, 5 * 1))
             fig3dfix = go.Figure()
@@ -2043,23 +2071,8 @@ def main(aname, fp_n_seeds=5):
             projected_data_fix_all = []
             pca_delay = None
 
-            for (int_index, int_input) in enumerate(stacked_interpolation_):
-                if int_index == 0 and nindex == 0:
-                    int_input_all.append(int_input)
-
-                stack_output, _, db_intp = net.iterate_sequence_batch(
-                    int_input, run_mode='track_states', save_to_cpu=True, detach_saved=True)
-                Ms, Ms_orig, hs, bs = modulation_extraction(int_input, db_intp, layer_index)
-                batch_num = Ms_orig.shape[0]
-
-                if name == "hidden":
-                    data = hs
-                elif name == "modulation":
-                    data = Ms
-                elif name == "w_modulation":
-                    Wlocal = net.mp_layer1.W.data.detach().cpu().numpy()
-                    data = (Ms_orig * Wlocal[None, None, :, :]).reshape(Ms.shape[0], Ms.shape[1], -1)
-
+            for int_index in range(len(stacked_interpolation_)):
+                data = alpha_activity[int_index][name]   # cached; no forward pass
                 n_activity = data.shape[-1]
                 as_flat_wantperiod_ = data[:, desire_period[siindex][0]:desire_period[siindex][1], :]
                 as_flat_wantperiod = as_flat_wantperiod_.reshape((-1, n_activity))
@@ -2214,6 +2227,111 @@ def main(aname, fp_n_seeds=5):
             import traceback
             traceback.print_exc()
 
+    # ═════════════════════════════════════════════════════════════════════════
+    # Task-interpolation fixed points: for each stimulus, linearly mix the pro
+    # (task 0) and anti (task 1) INPUT while holding the stimulus IDENTICAL, at
+    # alpha = 0.0, 0.1, ... 1.0, and solve the TRUE gradient fixed point
+    # M* = F(M*; x) per trial period at each alpha. Unlike the dense-angle
+    # per-rule sweep above (which varies the stimulus within one rule), this
+    # sweeps the CONTINUOUS pro<->anti axis at fixed stimuli, so it probes how the
+    # attractor for each period morphs as the task cue is interpolated. Cost is
+    # linear in the alpha count (--interp-n-alpha; one solve per alpha per period;
+    # the 8 stimuli are batched). Deterministic: reuses the fixed test tensors, no
+    # template RNG (unlike the per-rule solver's n_seeds sweep).
+    # Saves interp_fixed_points_{aname}.pkl (self-contained for paper_plot); the
+    # heavy raw M*/W⊙M* matrices are included only with --interp-save-full.
+    # ═════════════════════════════════════════════════════════════════════════
+    try:
+        _interp_alphas, _interp_ld, _ = input_interpolation(
+            test_input_longdelay, test_output_longdelay,
+            label_task_comb_longdelay, expand_stimulus=False, n_alpha=interp_n_alpha)
+        _, _interp_lr, _ = input_interpolation(
+            test_input_longresponse, test_output_longresponse,
+            label_task_comb_longresponse, expand_stimulus=False, n_alpha=interp_n_alpha)
+        _, _interp_ls, _ = input_interpolation(
+            test_input_longstimulus, test_output_longstimulus,
+            label_task_comb_longstimulus, expand_stimulus=False, n_alpha=interp_n_alpha)
+        _, _interp_lf, _ = input_interpolation(
+            test_input_longfixation, test_output_longfixation,
+            label_task_comb_longfixation, expand_stimulus=False, n_alpha=interp_n_alpha)
+
+        # (period name, per-alpha stacked inputs, (start, end) window in that
+        # variant's timebase). Windows reuse the Cell-91 desire_period bounds.
+        _interp_variants = [
+            ("longdelay",     _interp_ld, desire_period[0]),
+            ("longresponse",  _interp_lr, desire_period[1]),
+            ("longstimulus",  _interp_ls, desire_period[2]),
+            ("longfixation",  _interp_lf, desire_period[3]),
+        ]
+        _REL_TOL = 0.05
+        interp_fp_data = {
+            "alphas": np.asarray(_interp_alphas, dtype=float),
+            "n_stim": int(_interp_ld[0].shape[0]),
+            "rel_tol": _REL_TOL,
+            "results": {},   # period -> per-alpha arrays
+        }
+        interp_fp_data["save_full"] = bool(interp_save_full)
+        for sname, stacked, (ps, pe) in _interp_variants:
+            n_stim = stacked[0].shape[0]
+            # Solve one fixed point per (alpha, stimulus) for this period.
+            # The raw M*/W⊙M* matrices are large ((n_alpha,n_stim,hid,emb)); only
+            # accumulate them when interp_save_full is set (else keep just the
+            # compact hidden/cos-out/rel_step views to bound memory + file size).
+            fixed_M_a, fixed_WM_a, fixed_hidden_a, fixed_out_cos_a = [], [], [], []
+            rel_step_a, is_fixed_a = [], []
+            for ai, x_stack in enumerate(stacked):
+                # x_stack is already a device tensor (n_stim, T, n_input).
+                _, _, db_i = net.iterate_sequence_batch(
+                    x_stack, run_mode="track_states", save_to_cpu=True, detach_saved=True)
+                M_all = np.asarray(db_i[f"M{layer_index}"])        # (n_stim,T,hid,emb)
+                T = M_all.shape[1]
+                t_seed = min(pe, T - 1)                              # end-of-period M
+                t_mid = min((ps + pe) // 2, T - 1)                  # sustained input
+                init_M = M_all[:, t_seed, :, :]
+                const_input = np.asarray(x_stack.detach().cpu())[:, t_mid, :]
+
+                fixed_M, _, final_speeds = find_modulation_fixed_points(
+                    net, init_M, const_input, steps=20000, learningRate=1e-3,
+                    printPeriod=100000, loss_tol=1e-8, lbfgs_steps=2000,
+                    device=device)
+                # Shared derivation of W⊙M*, hidden(M*), cos-out, and rel_step.
+                views = derive_fixed_point_views(net, fixed_M, const_input,
+                                                 final_speeds, W_fp, device,
+                                                 rel_tol=_REL_TOL)
+
+                if interp_save_full:
+                    fixed_M_a.append(fixed_M.astype(np.float32))
+                    fixed_WM_a.append(views["fixed_WM"].astype(np.float32))
+                fixed_hidden_a.append(views["fixed_hidden"].astype(np.float32))
+                fixed_out_cos_a.append(views["fixed_out_cos"].astype(np.float32))
+                rel_step_a.append(views["rel_step"])
+                is_fixed_a.append(views["is_fixed"])
+                print(f"  [interp-fp/{sname}] alpha={_interp_alphas[ai]:.1f}: "
+                      f"{int(views['is_fixed'].sum())}/{n_stim} converged "
+                      f"(median rel_step {np.median(views['rel_step']):.2e})")
+
+            res = {
+                "period_title": _PERIOD_TITLE.get(sname, sname),
+                "period": (int(ps), int(pe)),
+                "fixed_hidden": np.stack(fixed_hidden_a),  # (n_alpha, n_stim, hidden)
+                "fixed_out_cos": np.stack(fixed_out_cos_a),  # (n_alpha, n_stim)
+                "rel_step": np.stack(rel_step_a),          # (n_alpha, n_stim)
+                "is_fixed": np.stack(is_fixed_a),
+            }
+            if interp_save_full:
+                res["fixed_M"] = np.stack(fixed_M_a)       # (n_alpha, n_stim, hid, emb)
+                res["fixed_WM"] = np.stack(fixed_WM_a)
+            interp_fp_data["results"][sname] = res
+
+        interp_fp_path = save_dir / f"interp_fixed_points_{aname}.pkl"
+        with open(interp_fp_path, "wb") as f:
+            pickle.dump(interp_fp_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print("  Saved data: " + str(interp_fp_path))
+    except Exception as exc:
+        print(f"  [interp-fp] failed: {exc}")
+        import traceback
+        traceback.print_exc()
+
     print(f"All figures saved to {save_dir}/")
 
 
@@ -2243,6 +2361,16 @@ if __name__ == "__main__":
                         help="Number of random trial templates to try when solving "
                              "gradient fixed points (per rule); the best-converging "
                              "one is kept (default 5).")
+    parser.add_argument("--interp-n-alpha", type=int, default=10,
+                        help="Number of pro<->anti interpolation intervals for the "
+                             "task-interpolation fixed points; yields n+1 alpha steps "
+                             "in [0,1]. Cost scales linearly with this (one FP solve "
+                             "per alpha per period). Default 10 (0.0, 0.1, ... 1.0).")
+    parser.add_argument("--interp-save-full", action="store_true",
+                        help="Also save the raw M* and W⊙M* matrices "
+                             "(n_alpha+1, n_stim, hid, emb) in the interp-fixed-point "
+                             "pickle. Large (~hundreds of MB); off by default, in "
+                             "which case only hidden/cos-out/rel_step are saved.")
     args = parser.parse_args()
 
     anames = [args.aname] if args.aname else _discover_anames()
@@ -2250,7 +2378,9 @@ if __name__ == "__main__":
     for a in anames:
         print(f"\n── Analyzing: {a} ──")
         try:
-            main(a, fp_n_seeds=args.fp_n_seeds)
+            main(a, fp_n_seeds=args.fp_n_seeds,
+                 interp_n_alpha=args.interp_n_alpha,
+                 interp_save_full=args.interp_save_full)
         except Exception as exc:
             print(f"  FAILED {a}: {exc}")
             import traceback

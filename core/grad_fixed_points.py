@@ -43,6 +43,52 @@ _PERIOD_TITLE = {
 }
 
 
+def derive_fixed_point_views(net, fixed_M, const_input, final_speeds, W, device,
+                             rel_tol=0.05):
+    """Derive the standard views/metrics of solved modulation fixed points M*.
+
+    Given the solver output `fixed_M` (B, post, pre), the constant input it was
+    solved under (B, n_input), and the per-point speeds q(M*), returns a dict:
+      fixed_WM      : effective modulation W⊙M* (or None if W is None)
+      fixed_hidden  : hidden state produced by M* under const_input (B, hidden)
+      fixed_out_cos : cos-output readout at M* (B,) — channel 1 (~0 except response)
+      rel_step      : scale-free ||F(M*)-M*|| / ||M*|| (B,); speeds q = ½||F-M||²
+      is_fixed      : rel_step <= rel_tol (B,)
+    Shared by the per-period dense-angle solver and the task-interpolation sweep
+    so both compute these identically. `net`'s stored modulation is restored
+    after the forward pass, so this is side-effect free."""
+    fixed_M = np.asarray(fixed_M)
+    fixed_WM = (fixed_M * np.asarray(W)[None, :, :]) if W is not None else None
+
+    mp = net.mp_layers[0]
+    saved_M, saved_M_pre = mp.M, getattr(mp, "M_pre", None)
+    with torch.no_grad():
+        mp.M = torch.as_tensor(fixed_M, dtype=torch.float, device=device)
+        output, mpl_activities, _ = net.forward(
+            torch.as_tensor(np.asarray(const_input), dtype=torch.float, device=device),
+            run_mode="minimal")
+        fixed_hidden = np.asarray(mpl_activities[-1].detach().cpu())
+        out = np.asarray(output.detach().cpu())
+        fixed_out_cos = out[:, 1] if out.shape[-1] > 1 else out[:, 0]
+    mp.M = saved_M
+    if saved_M_pre is not None:
+        mp.M_pre = saved_M_pre
+
+    # rel_step = ||F(M*)-M*|| / ||M*||; final_speeds is q = ½||F-M||², so
+    # ||F-M|| = sqrt(2 q).
+    fm = fixed_M.reshape(fixed_M.shape[0], -1).astype(float)
+    step_norm = np.sqrt(2.0 * np.asarray(final_speeds, dtype=float))
+    m_norm = np.maximum(np.linalg.norm(fm, axis=1), 1e-12)
+    rel_step = step_norm / m_norm
+    return {
+        "fixed_WM": fixed_WM,
+        "fixed_hidden": fixed_hidden,
+        "fixed_out_cos": fixed_out_cos,
+        "rel_step": rel_step,
+        "is_fixed": rel_step <= rel_tol,
+    }
+
+
 def solve_period_modulation_fixed_points(
         aname, save_dir, net, cfg, device,
         rule=None, out_suffix="",

@@ -246,6 +246,17 @@ def stim_colors(n=ONETASK_N_STIM):
     return [stim_color(k, n) for k in range(n)]
 
 
+def _shade(color, frac):
+    """Shade `color` by `frac` in [-1, 1]: frac<0 darkens toward BLACK (frac=-1
+    → black), frac=0 is the original, frac>0 lightens toward WHITE (frac=+1 →
+    white). Used to shade a trajectory dark→bright along a sweep."""
+    r, g, b = mpl.colors.to_rgb(color)
+    if frac >= 0:
+        return (r + (1 - r) * frac, g + (1 - g) * frac, b + (1 - b) * frac)
+    f = 1.0 + frac                       # frac in [-1,0] -> multiplier in [0,1]
+    return (r * f, g * f, b * f)
+
+
 def _fixed_point_mask(entry, n):
     """Boolean (n,) mask of which gradient fixed points converged.
 
@@ -3340,15 +3351,12 @@ def _draw_grad_fp_3d_row(fig, results, periods, proj_by_period, z_by_period,
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)
         ax.set_zlim(-zmax, zmax)
-        # No tick labels, so pull the axis labels in close to the axes.
-        ax.set_xlabel("PC1", fontsize=7, labelpad=-12)
-        ax.set_ylabel("PC2", fontsize=7, labelpad=-12)
-        # z-axis label only on the rightmost panel; hide on the others. Place it
-        # as a rotated vertical text INSIDE the panel (a plain set_zlabel on the
-        # far-right subplot gets clipped by the tight-bbox crop).
-        if j == n_col - 1:
-            ax.text2D(1.08, 0.5, "Output cos θ", transform=ax.transAxes,
-                      rotation=90, va="center", ha="left", fontsize=10)
+        # No tick labels, so pull the axis labels in tight against each axis.
+        ax.set_xlabel("PC1", fontsize=7, labelpad=-15)
+        ax.set_ylabel("PC2", fontsize=7, labelpad=-15)
+        # z-axis label on EVERY panel, same small size/tight pad as x & y (was a
+        # single larger shared label on the rightmost panel only).
+        ax.set_zlabel("Output cos θ", fontsize=7, labelpad=-15)
         # Row label (e.g. the task rule) just to the left of the leftmost panel
         # (small negative x keeps it close to the 3D box rather than far out).
         if j == 0 and row_label is not None:
@@ -3407,9 +3415,8 @@ def _render_grad_fixed_points_3d(d, rep_key, out_path, basis=None):
     _draw_grad_fp_3d_row(fig, results, periods, proj, zc, traj, n_stim, lim, zmax,
                          n_rows=1, row_idx=0, n_col=n_col,
                          show_period_titles=True, row_label=None)
-    # Pack panels tightly (no tick labels to collide) with a small right margin
-    # so the rightmost panel's z-label isn't clipped.
-    fig.subplots_adjust(left=0.02, right=0.84, bottom=0.02, top=0.92, wspace=0.12)
+    # Per-panel z-labels now (no shared right-margin label), so use full width.
+    fig.subplots_adjust(left=0.02, right=0.98, bottom=0.02, top=0.92, wspace=0.12)
     _save_fig(fig, out_path)
 
 
@@ -3858,7 +3865,8 @@ def _render_two_task_grad_fp_3d_combined(rule_data, rep_key, out_path, basis):
             row_label=_TASK_DISPLAY.get(rule, rule))
     # Strongly negative hspace pulls the two rows close together (3D axes carry
     # large internal margins, so even this still reads as separated panels).
-    fig.subplots_adjust(left=0.06, right=0.84, bottom=0.02, top=0.94,
+    # Per-panel z-labels now (no shared right-margin label), so use full width.
+    fig.subplots_adjust(left=0.06, right=0.98, bottom=0.02, top=0.94,
                         wspace=0.12, hspace=-0.4)
     _save_fig(fig, out_path)
 
@@ -3908,6 +3916,132 @@ def plot_two_task_interp_fixed_points(period="longdelay"):
         _render_interp_fixed_points(
             d, OUT_DIR / f"twotask_interp_fixed_points_{tag}_{rule}.png",
             n_trained=TWOTASK_N_STIM, period=period, src_name=pkl_path.name)
+
+
+def _render_interp_alpha_fp_3d(d, rep_key, out_path, basis):
+    """3D figure of the TASK-INTERPOLATION fixed points: one panel per trial
+    period, x = interpolation level alpha (pro<->anti), y/z = the two PCs of the
+    shared `basis` (delayanti delay-period). Each stimulus is one line traced
+    across alpha, colored by stimulus. Reads the interp_fixed_points_{aname}.pkl
+    written by two_task_analysis.py, where results[period][rep_key] has shape
+    (n_alpha, n_stim, feat)."""
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (enables 3d projection)
+    _ensure_out_dir()
+    results = d.get("results", {})
+    # Order panels canonically Fixation -> Stimulus -> Delay -> Response
+    # (the pickle stores them delay/response/stimulus/fixation); any period not in
+    # the canonical list is appended after, in pickle order.
+    _CANON = ["longfixation", "longstimulus", "longdelay", "longresponse"]
+    periods = ([v for v in _CANON if v in results]
+               + [v for v in results if v not in _CANON])
+    if not periods or any(results[v].get(rep_key) is None for v in periods):
+        print(f"  Skipped '{rep_key}': not in interp pickle "
+              f"(re-run two_task_analysis.py with --interp-save-full for M*/W⊙M*).")
+        return
+    alphas = np.asarray(d["alphas"], dtype=float)
+
+    def _proj(arr):
+        # arr: (n_alpha, n_stim, feat) -> (n_alpha, n_stim, 2) in the shared basis.
+        a = np.asarray(arr, dtype=float)
+        na, ns = a.shape[0], a.shape[1]
+        return basis.transform(a.reshape(na * ns, -1)).reshape(na, ns, 2)
+
+    proj_by_period = {v: _proj(results[v][rep_key]) for v in periods}
+    n_stim = proj_by_period[periods[0]].shape[1]
+    # Shared symmetric PC limits across periods so panels are comparable.
+    lim = max(np.abs(np.concatenate([p.reshape(-1, 2) for p in proj_by_period.values()])).max()
+              * 1.08, 1e-9)
+
+    n_col = len(periods)
+    fig = plt.figure(figsize=(1.9 * n_col, 1.9))
+    for j, v in enumerate(periods):
+        ax = fig.add_subplot(1, n_col, j + 1, projection="3d")
+        xy = proj_by_period[v]                       # (n_alpha, n_stim, 2)
+        good = np.asarray(results[v].get("is_fixed",
+                          np.ones(xy.shape[:2], bool)), dtype=bool)
+        # Fixation has no stimulus tuning (all 8 lines coincide), so coloring by
+        # stimulus is misleading — draw it black instead of the stimulus rainbow.
+        is_fixation = "fixation" in v.lower()
+        # Along each stimulus trajectory, shade markers DARK->BRIGHT across the
+        # sweep: alpha=0 is a DARKENED version of the base color (toward black,
+        # e.g. dark red), alpha=1 is a LIGHTENED tint (toward white), so the
+        # pro<->anti direction is readable per line. Maps alpha in [0,1] to
+        # _shade's frac in [-0.55, +0.6].
+        na = xy.shape[0]
+        t = (alphas - alphas.min()) / max(alphas.max() - alphas.min(), 1e-9)
+        shade_frac = -0.55 + t * (0.6 - (-0.55))
+        for s in range(n_stim):
+            base = "black" if is_fixation else stim_color(s, n_stim)
+            # Line across alpha for this stimulus (PC1=y, PC2=z vs alpha=x).
+            ax.plot(alphas, xy[:, s, 0], xy[:, s, 1], "-", color=base,
+                    linewidth=1.1, alpha=0.5, zorder=2)
+            # Per-alpha shaded points: converged filled, over-threshold hollow.
+            for ai in range(na):
+                col = _shade(base, shade_frac[ai])
+                if good[ai, s]:
+                    ax.scatter(alphas[ai], xy[ai, s, 0], xy[ai, s, 1], color=col,
+                               marker="o", s=12, edgecolor="black", linewidth=0.3,
+                               alpha=0.9, zorder=3)
+                else:
+                    ax.scatter(alphas[ai], xy[ai, s, 0], xy[ai, s, 1],
+                               facecolor="none", edgecolor=col, marker="o", s=12,
+                               linewidth=0.7, alpha=0.9, zorder=3)
+        ax.set_title(results[v].get("period_title", v), fontsize=11, pad=-6)
+        ax.set_xlim(alphas.min(), alphas.max())
+        ax.set_ylim(-lim, lim)
+        ax.set_zlim(-lim, lim)
+        # More-negative labelpad pulls each axis label in closer to its axis.
+        ax.set_xlabel("alpha", fontsize=7, labelpad=-15)
+        ax.set_ylabel("Delay PC1", fontsize=7, labelpad=-17)
+        # z-axis label on EVERY panel, same small size as the other axis labels.
+        ax.set_zlabel("Delay PC2", fontsize=7, labelpad=-17)
+        ax.set_xticks([alphas.min(), alphas.max()])
+        ax.set_yticklabels([])
+        ax.set_zticklabels([])
+        ax.tick_params(axis="both", labelsize=7, pad=-2)
+        ax.view_init(elev=18, azim=-60)
+        ax.grid(False)
+        for _pane in (ax.xaxis, ax.yaxis, ax.zaxis):
+            _pane.pane.set_visible(False)
+
+    # Per-panel z-labels (no shared right-margin label), so use the full width.
+    fig.subplots_adjust(left=0.02, right=0.98, bottom=0.04, top=0.92, wspace=0.12)
+    _save_fig(fig, out_path)
+
+
+def plot_two_task_interp_alpha_fixed_points_3d():
+    """
+    3D figure of the task-interpolation fixed points: per trial period, x = the
+    pro<->anti interpolation level alpha, y/z = the two PCs of the delayanti
+    delay-period basis (the SAME shared basis as the grad-fixed-point 3D figures).
+    Each of the 8 stimuli is one line traced across alpha, colored by stimulus, so
+    the figure shows how each period's fixed points move as the task cue morphs
+    from anti (alpha=0) to pro (alpha=1). One figure per representation:
+      twotask_interp_alpha_fixed_points_3d_{seed}_modulation.png  (+ emodulation, hidden)
+    Reads interp_fixed_points_{aname}.pkl (needs --interp-save-full for the
+    modulation / emodulation variants; hidden is always available).
+    """
+    d = _load_twotask_glob_or_skip("interp_fixed_points_*.pkl")
+    if d is None:
+        return
+    tag = _twotask_seed_tag()
+    # Shared x-y (here y-z) basis: delayanti delay-period grad fixed points, one
+    # per representation — identical to the grad-fixed-point 3D figures.
+    paths = _twotask_grad_fp_paths()
+    shared_bases = _twotask_shared_fp_bases(paths, "twotask-interp-alpha",
+                                            period="longdelay") if paths else {}
+    for rep_key, suffix in (("fixed_M", "modulation"),
+                            ("fixed_WM", "emodulation"),
+                            ("fixed_hidden", "hidden")):
+        basis = shared_bases.get(rep_key)
+        if basis is None:
+            print(f"  Skipped '{rep_key}': no delayanti delay basis "
+                  f"(need fixed_points_grad_*_delayanti.pkl).")
+            continue
+        _render_interp_alpha_fp_3d(
+            d, rep_key,
+            OUT_DIR / f"twotask_interp_alpha_fixed_points_3d_{tag}_{suffix}.png",
+            basis)
 
 
 def plot_two_task_fixed_point_stability():
@@ -4737,6 +4871,7 @@ FIGURES_BY_MODE = {
         "twotask_grad_fixed_points": plot_two_task_grad_fixed_points,
         "twotask_grad_fixed_points_3d": plot_two_task_grad_fixed_points_3d,
         "twotask_interp_fixed_points": plot_two_task_interp_fixed_points,
+        "twotask_interp_alpha_fixed_points_3d": plot_two_task_interp_alpha_fixed_points_3d,
         "twotask_fixed_point_stability": plot_two_task_fixed_point_stability,
         "twotask_w_gram_matrix": plot_two_task_w_gram_matrix,
         "twotask_w_hurt": plot_two_task_w_hurt,
