@@ -3863,11 +3863,11 @@ def _render_two_task_grad_fp_3d_combined(rule_data, rep_key, out_path, basis):
             n_rows=n_rows, row_idx=row_idx, n_col=n_col,
             show_period_titles=(row_idx == 0),
             row_label=_TASK_DISPLAY.get(rule, rule))
-    # Strongly negative hspace pulls the two rows close together (3D axes carry
-    # large internal margins, so even this still reads as separated panels).
+    # hspace sets the vertical gap between the two task rows (3D axes carry large
+    # internal margins, so this is negative but less so than the tightest pack).
     # Per-panel z-labels now (no shared right-margin label), so use full width.
     fig.subplots_adjust(left=0.06, right=0.98, bottom=0.02, top=0.94,
-                        wspace=0.12, hspace=-0.4)
+                        wspace=0.12, hspace=-0.05)
     _save_fig(fig, out_path)
 
 
@@ -3991,7 +3991,7 @@ def _render_interp_alpha_fp_3d(d, rep_key, out_path, basis):
         ax.set_ylim(-lim, lim)
         ax.set_zlim(-lim, lim)
         # More-negative labelpad pulls each axis label in closer to its axis.
-        ax.set_xlabel("alpha", fontsize=7, labelpad=-15)
+        ax.set_xlabel(r"$\alpha$", fontsize=7, labelpad=-15)
         ax.set_ylabel("Delay PC1", fontsize=7, labelpad=-17)
         # z-axis label on EVERY panel, same small size as the other axis labels.
         ax.set_zlabel("Delay PC2", fontsize=7, labelpad=-17)
@@ -4042,6 +4042,76 @@ def plot_two_task_interp_alpha_fixed_points_3d():
             d, rep_key,
             OUT_DIR / f"twotask_interp_alpha_fixed_points_3d_{tag}_{suffix}.png",
             basis)
+
+
+def plot_two_task_interp_alpha_bifurcation(period="longstimulus", rep_key="fixed_WM",
+                                           pc=0):
+    """
+    2D bifurcation diagram of the task-interpolation fixed points for a single
+    period/representation: x = the pro<->anti interpolation level alpha, y = one
+    PC of the delayanti delay-period basis (PC1 by default). Each of the 8 stimuli
+    is one line traced across alpha (dark at alpha=0 -> bright at alpha=1), so a
+    fan that collapses/splits as alpha varies reads as a bifurcation of the
+    fixed-point structure. Defaults to the STIMULUS period, effective modulation
+    (W⊙M). Reads interp_fixed_points_{aname}.pkl (needs --interp-save-full for
+    the modulation / emodulation reps). Writes
+      twotask_interp_alpha_bifurcation_{seed}_{period}_{rep}_pc{pc+1}.png
+    """
+    d = _load_twotask_glob_or_skip("interp_fixed_points_*.pkl")
+    if d is None:
+        return
+    results = d.get("results", {})
+    if period not in results or results[period].get(rep_key) is None:
+        print(f"  Skipped: period '{period}' / '{rep_key}' not in interp pickle "
+              f"(re-run two_task_analysis.py with --interp-save-full).")
+        return
+    paths = _twotask_grad_fp_paths()
+    shared = _twotask_shared_fp_bases(paths, "twotask-bifurcation",
+                                      period="longdelay") if paths else {}
+    basis = shared.get(rep_key)
+    if basis is None:
+        print(f"  Skipped '{rep_key}': no delayanti delay basis "
+              f"(need fixed_points_grad_*_delayanti.pkl).")
+        return
+
+    alphas = np.asarray(d["alphas"], dtype=float)
+    arr = np.asarray(results[period][rep_key], dtype=float)   # (n_alpha, n_stim, feat)
+    na, n_stim = arr.shape[0], arr.shape[1]
+    proj = basis.transform(arr.reshape(na * n_stim, -1)).reshape(na, n_stim, 2)
+    good = np.asarray(results[period].get("is_fixed",
+                      np.ones((na, n_stim), bool)), dtype=bool)
+
+    # Dark->bright shading along alpha (matches the 3D figure convention).
+    t = (alphas - alphas.min()) / max(alphas.max() - alphas.min(), 1e-9)
+    shade_frac = -0.55 + t * (0.6 - (-0.55))
+
+    _ensure_out_dir()
+    fig, ax = plt.subplots(1, 1, figsize=(2.6, 2.2))
+    for s in range(n_stim):
+        base = stim_color(s, n_stim)
+        ax.plot(alphas, proj[:, s, pc], "-", color=base, linewidth=1.0,
+                alpha=0.5, zorder=2)
+        for ai in range(na):
+            col = _shade(base, shade_frac[ai])
+            if good[ai, s]:
+                ax.scatter(alphas[ai], proj[ai, s, pc], color=col, marker="o",
+                           s=16, edgecolor="black", linewidth=0.3, alpha=0.9, zorder=3)
+            else:
+                ax.scatter(alphas[ai], proj[ai, s, pc], facecolor="none",
+                           edgecolor=col, marker="o", s=16, linewidth=0.7,
+                           alpha=0.9, zorder=3)
+    title = results[period].get("period_title", period)
+    ax.set_xlabel(r"$\alpha$", fontsize=9)
+    ax.set_ylabel(f"Delay PC{pc + 1}", fontsize=9)
+    ax.set_title(f"{title} bifurcation", fontsize=10)
+    ax.tick_params(labelsize=8)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+    _rep_tag = {"fixed_M": "modulation", "fixed_WM": "emodulation",
+                "fixed_hidden": "hidden"}.get(rep_key, rep_key)
+    out_path = OUT_DIR / (f"twotask_interp_alpha_bifurcation_{_twotask_seed_tag()}"
+                          f"_{period}_{_rep_tag}_pc{pc + 1}.png")
+    _save_fig(fig, out_path)
 
 
 def plot_two_task_fixed_point_stability():
@@ -4872,6 +4942,7 @@ FIGURES_BY_MODE = {
         "twotask_grad_fixed_points_3d": plot_two_task_grad_fixed_points_3d,
         "twotask_interp_fixed_points": plot_two_task_interp_fixed_points,
         "twotask_interp_alpha_fixed_points_3d": plot_two_task_interp_alpha_fixed_points_3d,
+        "twotask_interp_alpha_bifurcation": plot_two_task_interp_alpha_bifurcation,
         "twotask_fixed_point_stability": plot_two_task_fixed_point_stability,
         "twotask_w_gram_matrix": plot_two_task_w_gram_matrix,
         "twotask_w_hurt": plot_two_task_w_hurt,
