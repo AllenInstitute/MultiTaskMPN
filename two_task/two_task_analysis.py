@@ -633,6 +633,113 @@ def normalize_lst(lst, value=None):
     return [val_ / value for val_ in lst]
 
 
+def classify_fixed_point_stability(aname, save_dir, rules):
+    """Post-analysis: classify each gradient fixed point as stable / marginal /
+    unstable from the linear-stability spectrum already saved by
+    solve_period_modulation_fixed_points, one pickle per task rule
+    (fixed_points_grad_{aname}_{rule}.pkl). Two-task analog of the one-task
+    classifier — no recomputation, just re-packaging the per-point spectral radius
+    ρ = max|λ| and the marginal tolerance into an explicit 3-way class per period:
+      unstable  ρ > 1 + tol      (an expanding direction)
+      marginal  |ρ − 1| ≤ tol    (neutral direction — the ring-attractor signature)
+      stable    ρ < 1 − tol      (all directions contracting)
+    Only converged fixed points (is_fixed) are classified.
+
+    Writes ONE combined fixed_point_classification_{aname}.pkl (keyed by rule) and
+    a human-readable .csv (one row per rule × period × fixed point). Skips a rule
+    whose grad-fp pickle is missing or predates the stability pass.
+    """
+    import csv as _csv
+    CLASS_NAMES = ["stable", "marginal", "unstable"]
+
+    def _classify(rad, tol):
+        code = np.full(rad.shape, -1, dtype=int)   # -1 = unconverged / NaN
+        finite = np.isfinite(rad)
+        code[finite & (rad > 1.0 + tol)] = 2
+        code[finite & (np.abs(rad - 1.0) <= tol)] = 1
+        code[finite & (rad < 1.0 - tol)] = 0
+        return code
+
+    by_rule = {}
+    csv_rows = []
+    for rule in rules:
+        fp_pkl = save_dir / f"fixed_points_grad_{aname}_{rule}.pkl"
+        if not fp_pkl.exists():
+            print(f"  [fp-classify/{rule}] {fp_pkl.name} not found; skipping.")
+            continue
+        with open(fp_pkl, "rb") as f:
+            d = pickle.load(f)
+        results = d.get("results", {})
+        angles = np.asarray(d.get("angles", []), dtype=float)
+        periods = list(results.keys())
+        if not periods or any(results[v].get("spectral_radius") is None for v in periods):
+            print(f"  [fp-classify/{rule}] stability spectrum not in pickle "
+                  f"(re-run the stability pass); skipping.")
+            continue
+
+        per_period = {}
+        for v in periods:
+            e = results[v]
+            rad = np.asarray(e["spectral_radius"], dtype=float)
+            stim = np.asarray(e["stim"], dtype=int)
+            tol = float(e.get("marginal_tol", 0.05))
+            is_fixed = np.asarray(e.get("is_fixed", np.ones(rad.shape, bool)), dtype=bool)
+            code = _classify(rad, tol)
+            code[~is_fixed] = -1
+            counts = {name: int(np.sum(code == i)) for i, name in enumerate(CLASS_NAMES)}
+            counts["unconverged"] = int(np.sum(~is_fixed))
+            n_conv = int(is_fixed.sum())
+            per_period[v] = {
+                "period_title": e.get("period_title", v),
+                "stim": stim,
+                "spectral_radius": rad,
+                "class_code": code,
+                "is_fixed": is_fixed,
+                "marginal_tol": tol,
+                "counts": counts,
+                "n_converged": n_conv,
+                "frac_stable": (counts["stable"] / n_conv) if n_conv else float("nan"),
+            }
+            print(f"  [fp-classify/{rule}] {v}: {counts['stable']} stable / "
+                  f"{counts['marginal']} marginal / {counts['unstable']} unstable "
+                  f"(+{counts['unconverged']} unconverged) of {rad.size}")
+            for i in range(rad.size):
+                ang = float(angles[stim[i]]) if angles.size and stim[i] < angles.size else float("nan")
+                cc = code[i]
+                cname = CLASS_NAMES[cc] if cc >= 0 else "unconverged"
+                csv_rows.append({
+                    "rule": rule,
+                    "period": v,
+                    "period_title": e.get("period_title", v),
+                    "stim_index": int(stim[i]),
+                    "stim_angle_rad": ang,
+                    "spectral_radius": float(rad[i]) if np.isfinite(rad[i]) else "",
+                    "n_unstable": int(np.asarray(e["n_unstable"])[i])
+                                  if e.get("n_unstable") is not None else "",
+                    "class": cname,
+                })
+        by_rule[rule] = {"angles": angles, "per_period": per_period}
+
+    if not by_rule:
+        print("  [fp-classify] no rule produced a classification; nothing saved.")
+        return
+
+    out_pkl = save_dir / f"fixed_point_classification_{aname}.pkl"
+    with open(out_pkl, "wb") as f:
+        pickle.dump({"aname": aname, "class_names": CLASS_NAMES,
+                     "rules": list(by_rule.keys()), "by_rule": by_rule}, f)
+    print(f"  Saved fixed-point classification: {out_pkl}")
+
+    out_csv = save_dir / f"fixed_point_classification_{aname}.csv"
+    with open(out_csv, "w", newline="") as f:
+        writer = _csv.DictWriter(f, fieldnames=[
+            "rule", "period", "period_title", "stim_index", "stim_angle_rad",
+            "spectral_radius", "n_unstable", "class"])
+        writer.writeheader()
+        writer.writerows(csv_rows)
+    print(f"  Saved fixed-point classification table: {out_csv}")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Network reload
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2354,6 +2461,18 @@ def main(aname, fp_n_seeds=5, interp_n_alpha=10, run_fixed_points=True):
                 traceback.print_exc()
     else:
         print("  [grad-fp] skipped (--no-fixed-points).")
+
+    # ── Fixed-point stability classification (post-analysis) ─────────────────
+    # Re-package the linear-stability spectrum saved in the per-rule
+    # fixed_points_grad_*.pkl into an explicit stable / marginal / unstable class
+    # per fixed point (no recomputation). Runs whenever those pickles exist (they
+    # are produced above unless --no-fixed-points).
+    try:
+        classify_fixed_point_stability(aname, save_dir, task_params["rules"])
+    except Exception as exc:
+        print(f"  [fp-classify] failed: {exc}")
+        import traceback
+        traceback.print_exc()
 
     # ═════════════════════════════════════════════════════════════════════════
     # Task-interpolation fixed points: for each stimulus, linearly mix the pro

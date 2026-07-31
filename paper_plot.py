@@ -3934,6 +3934,70 @@ def plot_onetask_fixed_point_stability():
         d, OUT_DIR / "onetask_fixed_point_stability.png", n_trained=ONETASK_N_STIM)
 
 
+# Stable / marginal / unstable class colors for the fixed-point classification
+# figures: green = stable (attracting), gray = marginal (ring/neutral), red =
+# unstable (expanding). Kept distinct from the stimulus rainbow and period pastels.
+_FP_CLASS_COLORS = {"stable": "#2ca02c", "marginal": "#9ca3af", "unstable": "#d62728"}
+
+
+def _draw_classification_bars(ax, per_period, class_names, add_legend=True):
+    """Draw a per-period stacked bar of stable / marginal / unstable fixed-point
+    counts onto `ax` (segments colored by _FP_CLASS_COLORS). `per_period` maps a
+    period key -> {"period_title", "counts": {class: n}}. Shared by the one-task
+    (single-axes) and two-task (one axes per rule) classification figures."""
+    periods = list(per_period.keys())
+    titles = [per_period[v].get("period_title", v) for v in periods]
+    x = np.arange(len(periods))
+    bottom = np.zeros(len(periods))
+    for cname in class_names:
+        counts = np.array([per_period[v]["counts"].get(cname, 0) for v in periods],
+                          dtype=float)
+        ax.bar(x, counts, bottom=bottom, width=0.7,
+               color=_FP_CLASS_COLORS.get(cname, "0.5"), label=cname,
+               edgecolor="white", linewidth=0.4)
+        bottom += counts
+    ax.set_xticks(x)
+    ax.set_xticklabels(titles, rotation=20, ha="right", fontsize=8)
+    ax.tick_params(labelsize=7)
+    ax.spines[["top", "right"]].set_visible(False)
+    if add_legend:
+        _legend(ax, fontsize=7, frameon=True, loc="upper right",
+                ncol=len(class_names))
+
+
+def _render_fixed_point_classification(d, out_path):
+    """Per-period stacked-bar count of stable / marginal / unstable fixed points,
+    from the classification pickle written by
+    one_task_analysis.classify_fixed_point_stability. One bar per trial period; the
+    bar segments are the class counts over the dense stimulus grid (converged
+    points only). A compact 'result' view of the stability verdict, complementary
+    to the eigenvalue/spectral-radius spectrum figure."""
+    _ensure_out_dir()
+    per_period = d.get("per_period", {})
+    class_names = d.get("class_names", ["stable", "marginal", "unstable"])
+    if not per_period:
+        print("  Skipped: no periods in classification pickle.")
+        return
+
+    fig, ax = plt.subplots(figsize=(1.1 * len(per_period) + 1.2, 2.6))
+    _draw_classification_bars(ax, per_period, class_names)
+    ax.set_ylabel("Fixed-point count", fontsize=9)
+    fig.tight_layout()
+    _save_fig(fig, out_path)
+
+
+def plot_onetask_fixed_point_classification():
+    """One-task fixed-point stability classification: per-period stable / marginal
+    / unstable counts. Reads fixed_point_classification_{aname}.pkl written by
+    one_task_analysis.classify_fixed_point_stability."""
+    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"fixed_point_classification_{ONETASK_ANAME}.pkl"
+    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
+    if d is None:
+        return
+    _render_fixed_point_classification(
+        d, OUT_DIR / "onetask_fixed_point_classification.png")
+
+
 # Reference rule whose delay-period PCA defines the SHARED x-y basis for BOTH
 # the 2D and 3D two-task fixed-point figures. Every rule's figure is projected
 # into this rule's delay basis so their rings are directly comparable
@@ -4444,6 +4508,39 @@ def plot_two_task_fixed_point_stability():
         _render_fixed_point_stability(
             d, OUT_DIR / f"twotask_fixed_point_stability_{tag}_{rule}.png",
             n_trained=TWOTASK_N_STIM)
+
+
+def plot_two_task_fixed_point_classification():
+    """Two-task fixed-point stability classification: per-period stable / marginal
+    / unstable counts, one panel per task rule (columns). Reads the combined
+    fixed_point_classification_{aname}.pkl written by
+    two_task_analysis.classify_fixed_point_stability."""
+    _ensure_out_dir()
+    pkl_path = (TWOTASKS_DIR / TWOTASK_ANAME
+                / f"fixed_point_classification_{TWOTASK_ANAME}.pkl")
+    d = _load_pkl_or_skip(pkl_path, "Run two_task_analysis.py first.")
+    if d is None:
+        return
+    by_rule = d.get("by_rule", {})
+    class_names = d.get("class_names", ["stable", "marginal", "unstable"])
+    rules = [r for r in d.get("rules", list(by_rule.keys())) if r in by_rule]
+    if not rules:
+        print("  Skipped: no rules in classification pickle.")
+        return
+
+    fig, axs = plt.subplots(1, len(rules), figsize=(2.6 * len(rules) + 0.6, 2.6),
+                            sharey=True, squeeze=False)
+    for c, rule in enumerate(rules):
+        ax = axs[0][c]
+        # Legend on the first panel only (all panels share the same classes).
+        _draw_classification_bars(ax, by_rule[rule]["per_period"], class_names,
+                                  add_legend=(c == 0))
+        ax.set_title(_TASK_DISPLAY.get(rule, rule), fontsize=10)
+        if c == 0:
+            ax.set_ylabel("Fixed-point count", fontsize=9)
+    fig.tight_layout()
+    _save_fig(fig, OUT_DIR
+              / f"twotask_fixed_point_classification_{_twotask_seed_tag()}.png")
 
 
 def plot_two_task_d_combine():
@@ -5295,6 +5392,7 @@ FIGURES_BY_MODE = {
         "onetask_grad_fixed_points_3d": plot_onetask_grad_fixed_points_3d,
         "onetask_interp_fixed_points": plot_onetask_interp_fixed_points,
         "onetask_fixed_point_stability": plot_onetask_fixed_point_stability,
+        "onetask_fixed_point_classification": plot_onetask_fixed_point_classification,
     },
     "multiple_tasks": {
         "fixed_points": plot_fixed_points_all,
@@ -5338,6 +5436,7 @@ FIGURES_BY_MODE = {
         "twotask_interp_alpha_bifurcation": plot_two_task_interp_alpha_bifurcation,
         "twotask_interp_alpha_bifurcation_hidden": plot_two_task_interp_alpha_bifurcation_hidden,
         "twotask_fixed_point_stability": plot_two_task_fixed_point_stability,
+        "twotask_fixed_point_classification": plot_two_task_fixed_point_classification,
         "twotask_w_gram_matrix": plot_two_task_w_gram_matrix,
         "twotask_w_hurt": plot_two_task_w_hurt,
         "twotask_attractor_first": plot_two_task_attractor_first,

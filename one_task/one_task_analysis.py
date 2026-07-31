@@ -578,6 +578,116 @@ def modulation_magnitude_by_component(aname, save_dir, Ms_orig, W_input,
           f"{save_dir / f'modulation_magnitude_{aname}.pkl'}")
 
 
+def classify_fixed_point_stability(aname, save_dir):
+    """Post-analysis: classify each gradient fixed point as stable / marginal /
+    unstable from the linear-stability spectrum already saved by
+    solve_period_modulation_fixed_points (in fixed_points_grad_{aname}.pkl).
+
+    No recomputation — this re-packages the per-point spectral radius ρ = max|λ|
+    and the marginal tolerance into an explicit 3-way class, per trial period:
+      unstable  ρ > 1 + tol      (an expanding direction)
+      marginal  |ρ − 1| ≤ tol    (neutral direction — the ring-attractor signature)
+      stable    ρ < 1 − tol      (all directions contracting)
+    Only converged fixed points (is_fixed) are classified; non-converged points
+    are reported separately so they don't masquerade as stable.
+
+    Writes fixed_point_classification_{aname}.pkl (arrays for paper_plot) and a
+    human-readable .csv (one row per period × fixed point). Skips gracefully if
+    the grad-fp pickle is missing or predates the stability pass.
+    """
+    import csv as _csv
+    import pickle as _pickle
+    fp_pkl = save_dir / f"fixed_points_grad_{aname}.pkl"
+    if not fp_pkl.exists():
+        print(f"  [fp-classify] {fp_pkl} not found; run the grad fixed-point "
+              f"solver first (no --no-fixed-points). Skipping.")
+        return
+    with open(fp_pkl, "rb") as f:
+        d = _pickle.load(f)
+    results = d.get("results", {})
+    angles = np.asarray(d.get("angles", []), dtype=float)
+    periods = list(results.keys())
+    if not periods or any(results[v].get("spectral_radius") is None for v in periods):
+        print("  [fp-classify] stability spectrum ('spectral_radius') not in "
+              "pickle; re-run the analysis with the stability pass. Skipping.")
+        return
+
+    CLASS_NAMES = ["stable", "marginal", "unstable"]
+
+    def _classify(rad, tol):
+        """3-way class code per point: 0 stable, 1 marginal, 2 unstable; -1 if ρ
+        is NaN (eigensolve failed for that point)."""
+        code = np.full(rad.shape, -1, dtype=int)
+        finite = np.isfinite(rad)
+        code[finite & (rad > 1.0 + tol)] = 2
+        code[finite & (np.abs(rad - 1.0) <= tol)] = 1
+        code[finite & (rad < 1.0 - tol)] = 0
+        return code
+
+    per_period = {}
+    csv_rows = []
+    for v in periods:
+        e = results[v]
+        rad = np.asarray(e["spectral_radius"], dtype=float)
+        stim = np.asarray(e["stim"], dtype=int)
+        tol = float(e.get("marginal_tol", 0.05))
+        # Only classify converged fixed points; the rest are "unconverged".
+        is_fixed = np.asarray(e.get("is_fixed", np.ones(rad.shape, bool)), dtype=bool)
+        code = _classify(rad, tol)
+        code[~is_fixed] = -1                     # unconverged -> excluded class
+        counts = {name: int(np.sum(code == i)) for i, name in enumerate(CLASS_NAMES)}
+        counts["unconverged"] = int(np.sum(~is_fixed))
+        n_conv = int(is_fixed.sum())
+        frac_stable = (counts["stable"] / n_conv) if n_conv else float("nan")
+        per_period[v] = {
+            "period_title": e.get("period_title", v),
+            "stim": stim,
+            "spectral_radius": rad,
+            "class_code": code,                  # -1 unconverged, 0/1/2 as CLASS_NAMES
+            "is_fixed": is_fixed,
+            "marginal_tol": tol,
+            "counts": counts,
+            "n_converged": n_conv,
+            "frac_stable": frac_stable,
+        }
+        print(f"  [fp-classify] {v}: {counts['stable']} stable / "
+              f"{counts['marginal']} marginal / {counts['unstable']} unstable "
+              f"(+{counts['unconverged']} unconverged) of {rad.size}")
+        for i in range(rad.size):
+            ang = float(angles[stim[i]]) if angles.size and stim[i] < angles.size else float("nan")
+            cc = code[i]
+            cname = CLASS_NAMES[cc] if cc >= 0 else "unconverged"
+            csv_rows.append({
+                "period": v,
+                "period_title": e.get("period_title", v),
+                "stim_index": int(stim[i]),
+                "stim_angle_rad": ang,
+                "spectral_radius": float(rad[i]) if np.isfinite(rad[i]) else "",
+                "n_unstable": int(np.asarray(e["n_unstable"])[i])
+                              if e.get("n_unstable") is not None else "",
+                "class": cname,
+            })
+
+    out_pkl = save_dir / f"fixed_point_classification_{aname}.pkl"
+    with open(out_pkl, "wb") as f:
+        _pickle.dump({
+            "aname": aname,
+            "class_names": CLASS_NAMES,
+            "angles": angles,
+            "per_period": per_period,
+        }, f)
+    print(f"  Saved fixed-point classification: {out_pkl}")
+
+    out_csv = save_dir / f"fixed_point_classification_{aname}.csv"
+    with open(out_csv, "w", newline="") as f:
+        writer = _csv.DictWriter(f, fieldnames=[
+            "period", "period_title", "stim_index", "stim_angle_rad",
+            "spectral_radius", "n_unstable", "class"])
+        writer.writeheader()
+        writer.writerows(csv_rows)
+    print(f"  Saved fixed-point classification table: {out_csv}")
+
+
 def main(aname, fp_n_seeds=5, run_fixed_points=True):
     result_path = ONETASK_DIR / f"param_{aname}_result.npz"
     param_path = ONETASK_DIR / f"param_{aname}_param.json"
@@ -1450,6 +1560,18 @@ def main(aname, fp_n_seeds=5, run_fixed_points=True):
             stimulus_start, stimulus_end, response_start)
     except Exception as exc:
         print(f"  [mod-magnitude] failed: {exc}")
+        import traceback
+        traceback.print_exc()
+
+    # ── Fixed-point stability classification (post-analysis) ─────────────────
+    # Re-package the linear-stability spectrum saved in fixed_points_grad_*.pkl
+    # into an explicit stable / marginal / unstable class per fixed point, and
+    # write a classification pickle + csv (no recomputation). Runs whenever the
+    # grad-fp pickle exists (it is produced above unless --no-fixed-points).
+    try:
+        classify_fixed_point_stability(aname, save_dir)
+    except Exception as exc:
+        print(f"  [fp-classify] failed: {exc}")
         import traceback
         traceback.print_exc()
 
