@@ -26,6 +26,7 @@ import pickle
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import seaborn as sns
 from pathlib import Path
 from scipy.cluster.hierarchy import fcluster
@@ -182,6 +183,21 @@ def _read_twotask_n_stim(default=8):
     return default
 
 
+def _read_twotask_dt(default=40):
+    """Simulation time step (ms) for the configured two-task run, read from its
+    saved param json (see SCHEME.md); used to relabel step-index x-axes in ms.
+    Falls back to `default`."""
+    try:
+        import json as _json
+        p = TWOTASKS_DIR / TWOTASK_ANAME / f"param_{TWOTASK_ANAME}_param.json"
+        if p.exists():
+            cfg = _json.load(open(p))
+            return int(cfg.get("task_params", {}).get("dt", default))
+    except Exception:
+        pass
+    return default
+
+
 def _twotask_grad_fp_paths():
     """(rule, path) for every gradient fixed-point pickle of the configured
     two-task run — one per task rule, written by two_task_analysis.py as
@@ -224,6 +240,21 @@ def _read_onetask_n_stim(default=8):
 
 
 ONETASK_N_STIM = _read_onetask_n_stim()
+
+
+def _read_onetask_dt(default=40):
+    """Simulation time step (ms) for the configured one-task run, read from its
+    saved param json (see SCHEME.md). Used to relabel step-index x-axes in ms for
+    figures whose pickle predates the saved `dt` (e.g. the onetask_show traces)."""
+    try:
+        import json as _json
+        p = ONETASK_DIR / f"param_{ONETASK_ANAME}_param.json"
+        if p.exists():
+            cfg = _json.load(open(p))
+            return int(cfg.get("task_params", {}).get("dt", default))
+    except Exception:
+        pass
+    return default
 
 # ─── Stimulus color scheme ────────────────────────────────────────────────────
 # A continuous rainbow ramp from red to purple, used ONLY to color by stimulus
@@ -357,9 +388,14 @@ _ONETASK_PERIOD_COLORS = [
 # (purple), deliberately distinct from the stimulus modalities so the readout is
 # not confused with an input modality.
 _IO_FIXATION = "#555555"              # dark gray
-_IO_MOD1 = ("#a6761d", "#dcb877")     # brown  (cos dark, sin light)
-_IO_MOD2 = ("#1b9e77", "#8fded0")     # teal   (cos dark, sin light) = active stimulus
+# Mod1 and Mod2 share the SAME green cos/sin pair, so cos↔cos and sin↔sin match
+# across the two stimulus modalities (they are the same physical channel, just a
+# different modality). Within the pair the cos/sin keeps the (dark, light)
+# convention.
+_IO_MOD2 = ("#1b9e77", "#6fceae")     # green  (cos dark, sin light) = stimulus cos/sin
+_IO_MOD1 = _IO_MOD2                   # Modality 1 shares Modality 2's cos/sin colors
 _IO_TASK = "#d95f02"                  # orange (single channel)
+_IO_TASK2 = "#fdae6b"                 # light orange = second (inactive) task cue
 _IO_RESPONSE = ("#7e3ff2", "#c4a3f5")  # purple (cos dark, sin light) = readout
 
 
@@ -2146,7 +2182,16 @@ def plot_onetask_example_trial():
             (response_start, None, resp_c),
         ]
 
-    def _style(ax, ylabel, last_row, T):
+    def _add_period_lines(ax, spans):
+        """Draw a thin dashed vertical line at each period boundary (the start
+        of every period after the first), so the epoch changes are marked on
+        the trace panel itself as well as in the top color strip."""
+        for span in spans:
+            start = span[0]
+            if start and start > 0:
+                ax.axvline(start, color="0.5", lw=0.8, linestyle="--", zorder=1.5)
+
+    def _style(ax, ylabel, last_row, T, dt=1):
         ax.set_xlim(0, T - 1)
         ax.set_ylim(-1.2, 1.2)
         ax.set_yticks([-1, 1])          # only -1 and 1, as requested
@@ -2154,6 +2199,16 @@ def plot_onetask_example_trial():
         ax.spines[["top", "right"]].set_visible(False)
         # Thin dashed zero baseline behind the traces.
         ax.axhline(0, color="0.6", lw=0.6, linestyle="--", zorder=1)
+        # Traces are plotted against step index; relabel x ticks in ms (index *
+        # dt), so the axis reads real time (see SCHEME.md). Halve the tick
+        # frequency by doubling the auto-chosen spacing (fewer, less crowded
+        # ticks), then format each tick's index as ms.
+        auto_ticks = mticker.AutoLocator().tick_values(0, T - 1)
+        if len(auto_ticks) >= 2:
+            ax.xaxis.set_major_locator(
+                mticker.MultipleLocator((auto_ticks[1] - auto_ticks[0]) * 2))
+        ax.xaxis.set_major_formatter(
+            mticker.FuncFormatter(lambda x, _pos: f"{x * dt:.0f}"))
         # x tick labels only on the bottom subplot. NB: with sharex=True, calling
         # set_xticklabels([]) on a non-last axis blanks the shared tick text for
         # the bottom row too, so toggle visibility via tick_params instead.
@@ -2167,6 +2222,9 @@ def plot_onetask_example_trial():
         return
     inp = np.asarray(d["input"])              # (T, n_input)
     T = inp.shape[0]
+    # Simulation step in ms (see SCHEME.md); older pickles predate it, fall back
+    # to the project default so the time axis stays in ms.
+    dt_in = d.get("dt", 40)
     period_spans = _period_spans(d)
 
     # (channel indices, per-channel colors+labels, panel ylabel). Colors: cos/sin
@@ -2189,8 +2247,15 @@ def plot_onetask_example_trial():
         ax = axin[row, 0]
         for ch, col, lab in zip(chs, cols, labs):
             ax.plot(inp[:, ch], color=col, label=lab, zorder=2)
-        _style(ax, ylab, last_row=(row == len(input_groups) - 1), T=T)
-        _legend(ax, fontsize=6, frameon=True, loc="upper right", ncol=len(chs))
+        # On the Rule panel, add a flat placeholder line at y=0 for a second
+        # (inactive) task cue, in a lighter orange than the active cue.
+        n_leg = len(chs)
+        if ylab == "Rule":
+            ax.plot(np.zeros(T), color=_IO_TASK2, label="Task cue 2", zorder=2)
+            n_leg += 1
+        _add_period_lines(ax, period_spans)
+        _style(ax, ylab, last_row=(row == len(input_groups) - 1), T=T, dt=dt_in)
+        _legend(ax, fontsize=6, frameon=True, loc="upper right", ncol=n_leg)
     # Period colorbar above the top subplot (colors only, no shading behind traces).
     if period_spans:
         _add_period_strip(axin[0, 0], period_spans, xmax=T - 1)
@@ -2208,6 +2273,7 @@ def plot_onetask_example_trial():
     target = np.asarray(d_out["target_output"])        # (T, n_output)
     out_labels = d_out["output_labels"]
     T_out = net_out.shape[0]
+    dt_out = d_out.get("dt", 40)          # sim step in ms (see SCHEME.md)
     period_spans_out = _period_spans(d_out)
 
     # Illustrative transient error: for the first couple of timesteps of the
@@ -2235,31 +2301,58 @@ def plot_onetask_example_trial():
     # confused with an input modality. Extra channels (if any) fall back to brown.
     out_colors = [_IO_FIXATION, _IO_RESPONSE[0], _IO_RESPONSE[1],
                   _IO_MOD1[0], _IO_MOD1[1]]
-    # Panel y-labels by output-channel meaning: [Fixation, Response cosθ,
-    # Response sinθ] on two lines; fall back to the pickle's own labels for any
-    # extra channel. Mathtext $\cos\theta$ keeps cos/sin tight against θ.
+    # Panel y-labels by output-channel meaning. The response cosθ and sinθ
+    # channels are drawn TOGETHER on one panel (labeled "Response"); Fixation
+    # keeps its own panel. Mathtext $\cos\theta$ keeps cos/sin tight against θ.
     out_ylabels = ["Fixation", "Response\n" + r"$\cos\theta$",
                    "Response\n" + r"$\sin\theta$"]
+    # Legend labels: the full "Response cosθ" wording when a channel stands
+    # alone, and short cos/sin inside the shared Response panel (where the panel
+    # y-label already says "Response").
+    out_leglabels = ["Fixation", "Response " + r"$\cos\theta$",
+                     "Response " + r"$\sin\theta$"]
+    out_shortlabels = ["Fixation", r"$\cos\theta$", r"$\sin\theta$"]
 
     def _lighten(color, frac=0.55):
         """Blend a color toward white by `frac` (for the faded target shadow)."""
         r, g, b = mpl.colors.to_rgb(color)
         return (r + (1 - r) * frac, g + (1 - g) * frac, b + (1 - b) * frac)
 
-    figout, axout = plt.subplots(net_out.shape[-1], 1,
-                                 figsize=(3.4, 1.0 * net_out.shape[-1]),
+    # Group output channels into panels: Fixation (channel 0) on its own, and
+    # the response cos/sin channels (1, 2) together on a single panel so the
+    # readout's two components share a figure. Extra channels fall back to their
+    # own panel each.
+    n_out = net_out.shape[-1]
+    if n_out >= 3:
+        panels = [[0], [1, 2]] + [[c] for c in range(3, n_out)]
+    else:
+        panels = [[c] for c in range(n_out)]
+
+    figout, axout = plt.subplots(len(panels), 1,
+                                 figsize=(3.4, 1.5 * len(panels)),
                                  sharex=True, squeeze=False)
-    for out_idx in range(net_out.shape[-1]):
-        ax = axout[out_idx, 0]
-        lab = out_labels[out_idx] if out_idx < len(out_labels) else f"out {out_idx}"
-        ylab = (out_ylabels[out_idx] if out_idx < len(out_ylabels)
-                else lab)
-        col = out_colors[out_idx % len(out_colors)]
-        ax.plot(target[:, out_idx], color=_lighten(col),
-                linewidth=4, alpha=0.7, zorder=2, label="target")
-        ax.plot(net_out[:, out_idx], color=col,
-                zorder=3, label=lab)
-        _style(ax, ylab, last_row=(out_idx == net_out.shape[-1] - 1), T=T_out)
+    for row, chans in enumerate(panels):
+        ax = axout[row, 0]
+        combined = len(chans) > 1
+        for j, ch in enumerate(chans):
+            col = out_colors[ch % len(out_colors)]
+            # Faded target "shadow" behind the network trace; not in the legend.
+            ax.plot(target[:, ch], color=_lighten(col), linewidth=4,
+                    alpha=0.7, zorder=2, label="_nolegend_")
+            leglabels = out_shortlabels if combined else out_leglabels
+            lab = (leglabels[ch] if ch < len(leglabels)
+                   else (out_labels[ch] if ch < len(out_labels) else f"out {ch}"))
+            ax.plot(net_out[:, ch], color=col, zorder=3, label=lab)
+        _add_period_lines(ax, period_spans_out)
+        # Panel y-label: per-channel meaning when alone, "Response" when the
+        # cos/sin components are combined on one panel.
+        if combined:
+            ylab = "Response"
+        else:
+            ch0 = chans[0]
+            ylab = (out_ylabels[ch0] if ch0 < len(out_ylabels)
+                    else (out_labels[ch0] if ch0 < len(out_labels) else f"out {ch0}"))
+        _style(ax, ylab, last_row=(row == len(panels) - 1), T=T_out, dt=dt_out)
         _legend(ax, fontsize=6, frameon=True, loc="upper right", ncol=2)
     # Period colorbar above the top subplot (colors only, no shading behind traces).
     if period_spans_out:
@@ -2267,6 +2360,123 @@ def plot_onetask_example_trial():
     figout.tight_layout()
     out_out = OUT_DIR / "onetask_example_trial_output.png"
     _save_fig(figout, out_out)
+
+
+def _draw_modulation_magnitude(series, period_spans, dt, out_path):
+    """Shared renderer for the one-/two-task modulation-magnitude figures.
+
+    `series`       : list of (label, mean(T,), std(T,), color); each drawn as a
+                     line with a ±std band.
+    `period_spans` : list of (start, end_or_None, color) in STEP-INDEX units; used
+                     for both the dashed period-boundary lines and the top color
+                     strip. Boundaries are scaled to ms (× dt) to match the axis.
+    `dt`           : simulation step in ms (see SCHEME.md); the time axis is ms.
+
+    Styling matches the example-trial illustration: dashed period lines, a period
+    color strip above the panel, and x ticks at the illustration's frequency (the
+    auto spacing doubled). Saves to `out_path`.
+    """
+    T = len(series[0][1]) if series else 0
+    t_ms = np.arange(T) * dt
+    fig, ax = plt.subplots(figsize=(3.6, 2.4))
+    for lab, mean, std, col in series:
+        ax.plot(t_ms, mean, "-", color=col, label=lab, zorder=2)
+        ax.fill_between(t_ms, mean - std, mean + std,
+                        color=col, alpha=0.2, lw=0, zorder=1)
+    # Dashed vertical lines at each period boundary (in ms).
+    for span in period_spans:
+        start = span[0]
+        if start and start > 0:
+            ax.axvline(start * dt, color="0.5", lw=0.8, linestyle="--", zorder=1.5)
+    ax.set_xlim(0, (T - 1) * dt)
+    ax.set_ylim(bottom=0)
+    ax.set_xlabel("Time (ms)", fontsize=10)
+    ax.set_ylabel("Modulation magnitude", fontsize=9)
+    ax.spines[["top", "right"]].set_visible(False)
+    # X ticks at the same frequency as the input/output illustration: take the
+    # auto-chosen ms spacing and double it (fewer, less crowded ticks); the axis
+    # is already in ms so no per-tick rescale is needed (see SCHEME.md).
+    auto_ticks = mticker.AutoLocator().tick_values(0, (T - 1) * dt)
+    if len(auto_ticks) >= 2:
+        ax.xaxis.set_major_locator(
+            mticker.MultipleLocator((auto_ticks[1] - auto_ticks[0]) * 2))
+    _legend(ax, fontsize=6, frameon=True, loc="upper right", ncol=2)
+    # Period colorbar above the panel (colors only). The x-axis is in ms, so scale
+    # the step-index span boundaries by dt to match (None runs to the axis end).
+    if period_spans:
+        spans_ms = [(s * dt, (None if e is None else e * dt), c)
+                    for s, e, c in period_spans]
+        _add_period_strip(ax, spans_ms, xmax=(T - 1) * dt)
+    fig.tight_layout()
+    _save_fig(fig, out_path)
+
+
+def plot_onetask_modulation_magnitude():
+    """
+    Figure: modulation-computation magnitude across trial time, one curve per
+    input MEANING. For each input channel c, the plastic matrix M's modulation of
+    that channel is the hidden-unit vector M · W_input[:, c]; its L2 magnitude over
+    hidden units (mean ± std across trials) shows how strongly each input drives
+    the plastic weights over the trial. The two stimulus modalities' cos/sin
+    channels are combined into a SINGLE "Stimulus" trajectory (per-trial mean over
+    that block), so the figure shows three curves — Fixation, Stimulus, Task cue —
+    colored to match the example-trial input figure. Each curve carries a ±std
+    band. Reloaded from modulation_magnitude_{aname}.pkl written by
+    one_task_analysis.py.
+    """
+    _ensure_out_dir()
+    pkl_path = ONETASK_DIR / ONETASK_ANAME / f"modulation_magnitude_{ONETASK_ANAME}.pkl"
+    d = _load_pkl_or_skip(pkl_path, "Run one_task_analysis.py first.")
+    if d is None:
+        return
+
+    channels = list(d["channels"])                 # raw input indices, in order
+    labels = list(d["labels"])
+    mag_mean = np.asarray(d["mag_mean"])            # (T, n_raw)
+    dt = int(d.get("dt", 40))                       # sim step in ms (see SCHEME.md)
+    T = mag_mean.shape[0]
+    # Across-trial std band. Older pickles stored SEM (std/√n) under mag_sem; fall
+    # back to it (approximate) so a stale pickle still renders.
+    if "mag_std" in d:
+        mag_std = np.asarray(d["mag_std"])          # (T, n_raw)
+    else:
+        mag_std = np.asarray(d.get("mag_sem", np.zeros_like(mag_mean)))
+
+    fix_ch = 0
+    task_ch = max(channels)
+    # Combined stimulus trajectory: prefer the per-trial mean series (and its std)
+    # saved by one_task_analysis.py. Older pickles predate it — fall back to the
+    # (approximate) mean of the per-channel MEANS over the stimulus channels
+    # (every component that is neither Fixation nor the Task cue), std unavailable.
+    stim_cols = [i for i, (ch, lab) in enumerate(zip(channels, labels))
+                 if lab not in ("Fixation", "Task cue")]
+    if "stim_mag_mean" in d:
+        stim_mean = np.asarray(d["stim_mag_mean"])
+        stim_std = np.asarray(d.get("stim_mag_std", d.get("stim_mag_sem", np.zeros(T))))
+    else:
+        stim_mean = mag_mean[:, stim_cols].mean(axis=1) if stim_cols else np.zeros(T)
+        stim_std = np.zeros(T)
+
+    # Colors matched to the example-trial input figure: Fixation gray, the
+    # combined Stimulus in the shared stimulus green, Task cue orange.
+    series = [
+        ("Fixation", mag_mean[:, fix_ch], mag_std[:, fix_ch], _IO_FIXATION),
+        ("Stimulus", stim_mean, stim_std, _IO_MOD2[0]),
+        ("Task cue", mag_mean[:, task_ch], mag_std[:, task_ch], _IO_TASK),
+    ]
+
+    # Period boundaries (stimulus / memory / response onsets), in step-index units.
+    ss = d.get("stimulus_start")
+    se = d.get("stimulus_end")
+    rs = d.get("response_start")
+    fix_c, stim_c, mem_c, resp_c = _ONETASK_PERIOD_COLORS
+    period_spans = []
+    if ss is not None and se is not None and rs is not None:
+        period_spans = [(0, ss, fix_c), (ss, se, stim_c),
+                        (se, rs, mem_c), (rs, None, resp_c)]
+
+    _draw_modulation_magnitude(series, period_spans, dt,
+                               OUT_DIR / "onetask_modulation_magnitude.png")
 
 
 def plot_onetask_stimulus_colorwheel():
@@ -2322,11 +2532,18 @@ def plot_onetask_show():
     stimulus_end = d.get("stimulus_end")
     response_start = d.get("response_start")
     stim_labels = sorted(per_stim.keys())
-    # Show only the 2nd and 3rd stimulus panels.
-    sel_labels = stim_labels[1:3]
-    if len(sel_labels) < 2:
-        print(f"  Skipped: need >=3 stimuli, only {len(stim_labels)} available.")
+    # Show stimulus 5 and 2 (in that order), by label value.
+    ONETASK_SHOW_STIM = [5, 2]
+    sel_labels = [s for s in ONETASK_SHOW_STIM if s in per_stim]
+    if len(sel_labels) < len(ONETASK_SHOW_STIM):
+        missing = [s for s in ONETASK_SHOW_STIM if s not in per_stim]
+        print(f"  Skipped: requested stimuli {ONETASK_SHOW_STIM} but "
+              f"{missing} not saved (available: {stim_labels}).")
         return
+
+    # Simulation step in ms (see SCHEME.md); the show pickle predates a saved dt,
+    # so read it from the run's param json to relabel the x-axis in ms.
+    dt = _read_onetask_dt()
 
     # Trial periods: fixation | stimulus | memory(delay) | response, bounded by
     # the saved break times, drawn as a top colorbar (colors only, no shading).
@@ -2340,10 +2557,14 @@ def plot_onetask_show():
             (response_start, None, resp_c, "Response"),
         ]
 
-    fig, axes = plt.subplots(len(sel_labels), 1, figsize=(3.4, 1.8 * len(sel_labels)),
-                             squeeze=False)
+    # Panels laid out HORIZONTALLY (one column per stimulus), styled like the
+    # example-trial illustration: each panel gets the period color strip and
+    # dashed period-boundary lines; the x-axis is relabeled in ms.
+    fig, axes = plt.subplots(1, len(sel_labels),
+                             figsize=(3.0 * len(sel_labels), 2.0),
+                             sharey=True, squeeze=False)
     for i, lab in enumerate(sel_labels):
-        ax = axes[i, 0]
+        ax = axes[0, i]
         tr = per_stim[lab]
         T = len(tr["combine"])
         # Colors + names matched to onetask_example_trial's input channels:
@@ -2353,22 +2574,32 @@ def plot_onetask_show():
         ax.plot(tr["task"], color=_IO_TASK, label="Rule", zorder=2)
         ax.plot(tr["combine"], color=c_vals[4], linewidth=2.5, label="Combine", zorder=3)
         ax.axhline(0, color="0.6", lw=0.8, zorder=1)
+        # Dashed vertical lines at each period boundary (stimulus/memory/response
+        # onsets), matching the example-trial illustration.
+        for span in period_spans:
+            start = span[0]
+            if start and start > 0:
+                ax.axvline(start, color="0.5", lw=0.8, linestyle="--", zorder=1.5)
         ax.set_xlim(0, T - 1)
-        ax.set_ylim([-2.0, 2.0])
+        ax.set_ylim([-1.5, 1.5])
+        ax.set_yticks([-1, 0, 1])       # only -1, 0, 1 ticklabels
+        ax.set_xlabel("Time (ms)", fontsize=9)
         ax.spines[["top", "right"]].set_visible(False)
+        # X ticks at the same frequency as the input/output illustration: take
+        # the auto-chosen spacing and double it (fewer, less crowded ticks), then
+        # relabel each tick's step index in ms (index * dt); see SCHEME.md.
+        auto_ticks = mticker.AutoLocator().tick_values(0, T - 1)
+        if len(auto_ticks) >= 2:
+            ax.xaxis.set_major_locator(
+                mticker.MultipleLocator((auto_ticks[1] - auto_ticks[0]) * 2))
+        ax.xaxis.set_major_formatter(
+            mticker.FuncFormatter(lambda x, _pos: f"{x * dt:.0f}"))
+        # Period colorbar above every panel.
+        if period_spans:
+            _add_period_strip(ax, period_spans, xmax=T - 1)
         if i == 0:
             _legend(ax, frameon=True, fontsize=6, loc="best")
-            # Period colorbar above the top panel only.
-            if period_spans:
-                _add_period_strip(ax, period_spans, xmax=T - 1)
-        if i == len(sel_labels) - 1:
-            ax.set_xlabel("Time (ms)", fontsize=9)
-        else:
-            ax.set_xticklabels([])
-
-    # Shared y-label centered across the panels, nudged rightward (larger x) so
-    # it sits close to the axes rather than at the far figure edge.
-    fig.supylabel("Readout projection", fontsize=9, x=0.06)
+            ax.set_ylabel("Readout projection", fontsize=9)
 
     fig.tight_layout()
     out_path = OUT_DIR / "onetask_show.png"
@@ -3274,19 +3505,47 @@ def _grad_fp_3d_project(d, rep_key, pca):
     return periods, proj_by_period, z_by_period, traj_by_period, n_stim
 
 
+def _rotate_hidden_3d_content(rep_key, proj, traj):
+    """For the hidden-state representation only, rotate the horizontal (PC1-PC2)
+    content 90° about the z-axis. We rotate the DATA (both fixed-point `proj` and
+    trajectory `traj`, each {period: (N, 2)}) rather than the camera azimuth, so
+    the xyz axis box and labels stay in their original position and only the
+    plotted content turns. Rotation preserves norms, so downstream shared limits
+    are unaffected. Non-hidden representations are returned unchanged."""
+    if rep_key != "fixed_hidden":
+        return proj, traj
+    rot = np.deg2rad(90.0)
+    R = np.array([[np.cos(rot), -np.sin(rot)],
+                  [np.sin(rot), np.cos(rot)]])
+    proj = {v: xy @ R.T for v, xy in proj.items()}
+    traj = {v: xy @ R.T for v, xy in traj.items()}
+    return proj, traj
+
+
 def _draw_grad_fp_3d_row(fig, results, periods, proj_by_period, z_by_period,
                          traj_by_period, n_stim, lim, zmax, n_rows, row_idx,
-                         n_col, show_period_titles=True, row_label=None):
-    """Draw one rule's four per-period 3D panels into row `row_idx` of an
+                         n_col, show_period_titles=True, row_label=None,
+                         draw_periods=None):
+    """Draw one rule's per-period 3D panels into row `row_idx` of an
     (n_rows x n_col) subplot grid on `fig`, using precomputed projections. Shared
     x-y limit `lim` and symmetric z-limit `zmax` are passed in so that multiple
     rows/figures can use IDENTICAL axes (the two-task combined figure stacks
     delaygo over delayanti and shares both). `show_period_titles` prints the
     Fixation/Stimulus/… titles (typically only the top row); `row_label` writes a
-    rotated label (e.g. the task rule) to the left of the row's first panel."""
+    rotated label (e.g. the task rule) to the left of the row's first panel.
+
+    `draw_periods` selects which periods get their OWN panel (defaults to all of
+    `periods`). A period omitted from `draw_periods` is still used as the previous-
+    period anchor for the next drawn panel's trajectory connector — so e.g. the
+    Stimulus panel can keep its fixation→stimulus trajectory even when the
+    Fixation panel itself is not drawn."""
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (enables 3d projection)
+    if draw_periods is None:
+        draw_periods = periods
 
     # Angle-0 exemplar fixed point (x,y,z) per period, for the anchored connector.
+    # Built over ALL `periods` (incl. undrawn ones) so an undrawn previous period
+    # can still anchor the next drawn panel's trajectory.
     _TRAJ_STIM = 0
     angle0_pt = {}
     for v in periods:
@@ -3298,7 +3557,7 @@ def _draw_grad_fp_3d_row(fig, results, periods, proj_by_period, z_by_period,
                             float(z_by_period[v][i0]))
     _traj_col = stim_color(_TRAJ_STIM, n_stim)
 
-    for j, v in enumerate(periods):
+    for j, v in enumerate(draw_periods):
         ax = fig.add_subplot(n_rows, n_col, row_idx * n_col + j + 1,
                              projection="3d")
         e = results[v]
@@ -3321,6 +3580,24 @@ def _draw_grad_fp_3d_row(fig, results, periods, proj_by_period, z_by_period,
                 ax.scatter(xy[i, 0], xy[i, 1], z[i], facecolor="none",
                            edgecolor=col, marker="o", s=14, linewidth=0.8,
                            alpha=0.85)
+        # Connect the converged fixed points into their stimulus-ordered ring
+        # with a thin dashed black line, tracing the ring-attractor manifold the
+        # fixed points lie on. One representative point per stimulus (mean of its
+        # converged points), ordered by stimulus index and closed into a loop.
+        stim_int = stim.astype(int)
+        z_arr = np.asarray(z, dtype=float)
+        ring_pts = []
+        for s in sorted(set(stim_int.tolist())):
+            sel = (stim_int == s) & good
+            if np.any(sel):
+                ring_pts.append((xy[sel, 0].mean(), xy[sel, 1].mean(),
+                                 z_arr[sel].mean()))
+        if len(ring_pts) >= 2:
+            rx = [p[0] for p in ring_pts] + [ring_pts[0][0]]
+            ry = [p[1] for p in ring_pts] + [ring_pts[0][1]]
+            rz = [p[2] for p in ring_pts] + [ring_pts[0][2]]
+            ax.plot(rx, ry, rz, color="black", linewidth=0.5, linestyle="--",
+                    alpha=0.7, zorder=2)
         # Exemplar-stimulus trajectory ANCHORED to the fixed points: it starts at
         # the PREVIOUS period's fixed point, follows the recorded within-period
         # path, and ends at THIS period's fixed point — so its endpoints coincide
@@ -3329,8 +3606,12 @@ def _draw_grad_fp_3d_row(fig, results, periods, proj_by_period, z_by_period,
         # this period's level along the path; the leading segment shows the jump
         # from the previous period's z. Start = dashed-edge, end = solid-edge.
         tp = traj_by_period.get(v)
-        if tp is not None and tp.shape[0] >= 1 and j >= 1:
-            prev_v = periods[j - 1]
+        # Previous period = the one before `v` in the FULL period order (which may
+        # be an undrawn fixation panel), so the first DRAWN panel still gets its
+        # incoming trajectory anchored to the prior period's fixed point.
+        _vi = periods.index(v)
+        prev_v = periods[_vi - 1] if _vi >= 1 else None
+        if tp is not None and tp.shape[0] >= 1 and prev_v is not None:
             if prev_v in angle0_pt and v in angle0_pt:
                 p0, p1 = angle0_pt[prev_v], angle0_pt[v]     # prev FP, current FP
                 z_lvl = p1[2]                                # current period z
@@ -3351,6 +3632,10 @@ def _draw_grad_fp_3d_row(fig, results, periods, proj_by_period, z_by_period,
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)
         ax.set_zlim(-zmax, zmax)
+        # Force the drawn box to a cube so all three axes have equal on-screen
+        # length (overrides matplotlib's default 4:4:3 box aspect); the data
+        # ranges still differ per axis, this only equalizes the visual box.
+        ax.set_box_aspect((1, 1, 1))
         # No tick labels, so pull the axis labels in tight against each axis.
         ax.set_xlabel("PC1", fontsize=7, labelpad=-15)
         ax.set_ylabel("PC2", fontsize=7, labelpad=-15)
@@ -3405,6 +3690,10 @@ def _render_grad_fixed_points_3d(d, rep_key, out_path, basis=None):
         basis = _fit_period_grad_fp_basis(d, rep_key)
 
     periods, proj, zc, traj, n_stim = _grad_fp_3d_project(d, rep_key, basis)
+    # Rotate the hidden-state content 90° (see _rotate_hidden_3d_content); a no-op
+    # for the modulation / eff-modulation representations.
+    proj, traj = _rotate_hidden_3d_content(rep_key, proj, traj)
+
     lim = max(np.abs(np.vstack(list(proj.values()))).max() * 1.08, 1e-9)
     zmax = max(np.abs(np.concatenate([zc[v].ravel() for v in periods])).max() * 1.1,
                1e-6)
@@ -3834,7 +4123,7 @@ def _render_two_task_grad_fp_3d_combined(rule_data, rep_key, out_path, basis):
     comparable across rows. Period titles print only on the top row; each row is
     labeled on the left by its task rule."""
     # Project every rule first, so shared axis limits can span all rows.
-    per_rule = []   # (rule, results, periods, proj, zc, traj, n_stim)
+    per_rule = []   # (rule, results, periods, draw_periods, proj, zc, traj, n_stim)
     for rule, d in rule_data:
         results = d["results"]
         periods = list(results.keys())
@@ -3842,27 +4131,36 @@ def _render_two_task_grad_fp_3d_combined(rule_data, rep_key, out_path, basis):
             print(f"  Skipped '{rep_key}' for rule '{rule}': not in pickle.")
             continue
         periods, proj, zc, traj, n_stim = _grad_fp_3d_project(d, rep_key, basis)
-        per_rule.append((rule, results, periods, proj, zc, traj, n_stim))
+        # Drop the fixation PANEL (its fixed points carry no stimulus structure),
+        # but KEEP fixation in `periods` so it still anchors the Stimulus panel's
+        # incoming trajectory. `draw_periods` = the panels actually drawn.
+        draw_periods = [v for v in periods if "fixation" not in v.lower()]
+        # NB: unlike the one-task figure, the two-task hidden panels are NOT
+        # rotated — they use the same viewing angle as modulation / e_modulation.
+        per_rule.append((rule, results, periods, draw_periods, proj, zc, traj, n_stim))
     if not per_rule:
         print(f"  Skipped '{rep_key}': no rule had it.")
         return
 
-    # Shared symmetric x-y and z limits across ALL rows (so rows are comparable).
-    lim = max(np.abs(np.vstack([p for (_, _, _, proj, _, _, _) in per_rule
-                                for p in proj.values()])).max() * 1.08, 1e-9)
+    # Shared symmetric x-y and z limits across ALL rows (so rows are comparable);
+    # computed over the DRAWN periods only (the fixation panel is not drawn).
+    lim = max(np.abs(np.vstack([proj[v]
+                                for (_, _, _, draw_periods, proj, _, _, _) in per_rule
+                                for v in draw_periods])).max() * 1.08, 1e-9)
     zmax = max(np.abs(np.concatenate([zc[v].ravel()
-                                      for (_, _, periods, _, zc, _, _) in per_rule
-                                      for v in periods])).max() * 1.1, 1e-6)
-    n_col = max(len(periods) for (_, _, periods, _, _, _, _) in per_rule)
+                                      for (_, _, _, draw_periods, _, zc, _, _) in per_rule
+                                      for v in draw_periods])).max() * 1.1, 1e-6)
+    n_col = max(len(draw_periods) for (_, _, _, draw_periods, _, _, _, _) in per_rule)
     n_rows = len(per_rule)
 
     fig = plt.figure(figsize=(1.8 * n_col, 1.8 * n_rows))
-    for row_idx, (rule, results, periods, proj, zc, traj, n_stim) in enumerate(per_rule):
+    for row_idx, (rule, results, periods, draw_periods, proj, zc, traj, n_stim) in enumerate(per_rule):
         _draw_grad_fp_3d_row(
             fig, results, periods, proj, zc, traj, n_stim, lim, zmax,
             n_rows=n_rows, row_idx=row_idx, n_col=n_col,
             show_period_titles=(row_idx == 0),
-            row_label=_TASK_DISPLAY.get(rule, rule))
+            row_label=_TASK_DISPLAY.get(rule, rule),
+            draw_periods=draw_periods)
     # hspace sets the vertical gap between the two task rows (3D axes carry large
     # internal margins, so this is negative but less so than the tightest pack).
     # Per-panel z-labels now (no shared right-margin label), so use full width.
@@ -3936,7 +4234,7 @@ def _render_interp_alpha_fp_3d(d, rep_key, out_path, basis):
                + [v for v in results if v not in _CANON])
     if not periods or any(results[v].get(rep_key) is None for v in periods):
         print(f"  Skipped '{rep_key}': not in interp pickle "
-              f"(re-run two_task_analysis.py with --interp-save-full for M*/W⊙M*).")
+              f"(re-run two_task_analysis.py).")
         return
     alphas = np.asarray(d["alphas"], dtype=float)
 
@@ -4018,8 +4316,7 @@ def plot_two_task_interp_alpha_fixed_points_3d():
     the figure shows how each period's fixed points move as the task cue morphs
     from anti (alpha=0) to pro (alpha=1). One figure per representation:
       twotask_interp_alpha_fixed_points_3d_{seed}_modulation.png  (+ emodulation, hidden)
-    Reads interp_fixed_points_{aname}.pkl (needs --interp-save-full for the
-    modulation / emodulation variants; hidden is always available).
+    Reads interp_fixed_points_{aname}.pkl (which stores all three representations).
     """
     d = _load_twotask_glob_or_skip("interp_fixed_points_*.pkl")
     if d is None:
@@ -4053,8 +4350,8 @@ def plot_two_task_interp_alpha_bifurcation(period="longstimulus", rep_key="fixed
     is one line traced across alpha (dark at alpha=0 -> bright at alpha=1), so a
     fan that collapses/splits as alpha varies reads as a bifurcation of the
     fixed-point structure. Defaults to the STIMULUS period, effective modulation
-    (W⊙M). Reads interp_fixed_points_{aname}.pkl (needs --interp-save-full for
-    the modulation / emodulation reps). Writes
+    (W⊙M). Reads interp_fixed_points_{aname}.pkl (which stores all three
+    representations). Writes
       twotask_interp_alpha_bifurcation_{seed}_{period}_{rep}_pc{pc+1}.png
     """
     d = _load_twotask_glob_or_skip("interp_fixed_points_*.pkl")
@@ -4063,7 +4360,7 @@ def plot_two_task_interp_alpha_bifurcation(period="longstimulus", rep_key="fixed
     results = d.get("results", {})
     if period not in results or results[period].get(rep_key) is None:
         print(f"  Skipped: period '{period}' / '{rep_key}' not in interp pickle "
-              f"(re-run two_task_analysis.py with --interp-save-full).")
+              f"(re-run two_task_analysis.py).")
         return
     paths = _twotask_grad_fp_paths()
     shared = _twotask_shared_fp_bases(paths, "twotask-bifurcation",
@@ -4109,9 +4406,22 @@ def plot_two_task_interp_alpha_bifurcation(period="longstimulus", rep_key="fixed
     fig.tight_layout()
     _rep_tag = {"fixed_M": "modulation", "fixed_WM": "emodulation",
                 "fixed_hidden": "hidden"}.get(rep_key, rep_key)
+    # Clean period infix for the filename: drop the internal "long" prefix
+    # ("longstimulus" -> "stimulus") so the name reads as the trial epoch.
+    _period_tag = period[len("long"):] if period.startswith("long") else period
     out_path = OUT_DIR / (f"twotask_interp_alpha_bifurcation_{_twotask_seed_tag()}"
-                          f"_{period}_{_rep_tag}_pc{pc + 1}.png")
+                          f"_{_period_tag}_{_rep_tag}_pc{pc + 1}.png")
     _save_fig(fig, out_path)
+
+
+def plot_two_task_interp_alpha_bifurcation_hidden():
+    """Hidden-state analog of plot_two_task_interp_alpha_bifurcation: the same
+    stimulus-period alpha bifurcation diagram (PC1 of the delayanti delay basis),
+    but for the HIDDEN representation. Writes
+      twotask_interp_alpha_bifurcation_{seed}_stimulus_hidden_pc1.png
+    """
+    plot_two_task_interp_alpha_bifurcation(
+        period="longstimulus", rep_key="fixed_hidden", pc=0)
 
 
 def plot_two_task_fixed_point_stability():
@@ -4173,14 +4483,15 @@ def plot_two_task_d_combine():
         # y-tick labels only on the leftmost panel (all panels share the same
         # row labels); saves horizontal space so panels don't collide.
         ylabels = e["labels"] if col == 0 else False
+        # No per-cell value annotations (annot=False) — the color encodes the FVE.
         sns.heatmap(np.asarray(e["fve_k_all"]), ax=ax,
                     xticklabels=e["labels"], yticklabels=ylabels,
-                    annot=True, fmt=".2f", annot_kws={"fontsize": 6},
+                    annot=False,
                     vmin=vmin, vmax=vmax, square=True,
                     cmap="mako", cbar=False)
         mesh = ax.collections[0]
         ax.set_title(title_map.get(name, name), fontsize=10)
-        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right", fontsize=7)
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=30, ha="right", fontsize=7)
         if col == 0:
             ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=7)
 
@@ -4483,8 +4794,16 @@ def plot_two_task_cancel():
     stimuli = saved["stimuli"]
     markers = saved["markers"]
 
-    stim_keys = sorted(stimuli.keys())
-    n_rows = len(stim_keys)
+    # Show the same stimuli, in the same order, as the one-task onetask_show
+    # figure (ONETASK_SHOW_STIM = [5, 2]); keep any others the pickle saved after
+    # those, and drop the preferred ones that aren't present.
+    _PREF_STIM = [5, 2]
+    stim_keys = ([s for s in _PREF_STIM if s in stimuli]
+                 + [s for s in sorted(stimuli.keys()) if s not in _PREF_STIM])
+
+    # Simulation step in ms (see SCHEME.md); the cancel pickle predates a saved
+    # dt, so read it from the run's param json to relabel the x-axis in ms.
+    dt = _read_twotask_dt()
 
     # Trial periods: fixation | stimulus | memory(delay) | response, bounded by
     # the saved marker times. Drawn as a top color bar (colors only, no shading),
@@ -4500,13 +4819,18 @@ def plot_two_task_cancel():
         (delay_end, None, resp_c, "Response"),
     ]
 
-    fig, axs = plt.subplots(n_rows, 2, figsize=(3.4 * 2, 1.8 * n_rows),
-                            squeeze=False)
-    # column 0 = task1 (pro), column 1 = task2 (anti)
+    n_rows = len(stim_keys)
+    # Original grid layout: one ROW per stimulus, two COLUMNS for the task cues
+    # (col 0 = task1/pro, col 1 = task2/anti). Illustration-style additions per
+    # panel: dashed period lines, ms x-axis, y-ticks [-1,0,1]; period strip on the
+    # top row only, x labels on the bottom row only.
     cols = [
-        ("fixon_proj1", "x_task1_proj", "fixoff_proj1", "Task 1 (pro)"),
-        ("fixon_proj2", "x_task2_proj", "fixoff_proj2", "Task 2 (anti)"),
+        ("fixon_proj1", "x_task1_proj", "fixoff_proj1", "MemoryPro"),
+        ("fixon_proj2", "x_task2_proj", "fixoff_proj2", "MemoryAnti"),
     ]
+
+    fig, axs = plt.subplots(n_rows, 2, figsize=(2.72 * 2, 1.8 * n_rows),
+                            squeeze=False)
     T = None
     for r, si in enumerate(stim_keys):
         e = stimuli[si]
@@ -4526,18 +4850,35 @@ def plot_two_task_cancel():
                         label="Fixoff", zorder=2)
             ax.plot(fixon + task + bias, color=c_vals[4], linewidth=2.5,
                     label="Combine", zorder=3)
+            # Dashed vertical lines at each period boundary, matching the
+            # example-trial illustration.
+            for span in period_spans:
+                start = span[0]
+                if start and start > 0:
+                    ax.axvline(start, color="0.5", lw=0.8, linestyle="--",
+                               zorder=1.5)
             ax.set_xlim(0, T - 1)
             ax.set_ylim([-1.5, 1.5])
+            ax.set_yticks([-1, 0, 1])       # only -1, 0, 1 ticklabels
             # Extra title pad on the top row so it clears the period bar above it.
             ax.set_title(f"Stimulus {si}; {col_name}", fontsize=9,
                          pad=14 if r == 0 else None)
             ax.spines[["top", "right"]].set_visible(False)
+            # X ticks at the same frequency as the input/output illustration: take
+            # the auto-chosen spacing and double it (fewer, less crowded ticks),
+            # then relabel each tick's step index in ms (index * dt); see SCHEME.md.
+            auto_ticks = mticker.AutoLocator().tick_values(0, T - 1)
+            if len(auto_ticks) >= 2:
+                ax.xaxis.set_major_locator(
+                    mticker.MultipleLocator((auto_ticks[1] - auto_ticks[0]) * 2))
+            ax.xaxis.set_major_formatter(
+                mticker.FuncFormatter(lambda x, _pos: f"{x * dt:.0f}"))
+            if r == n_rows - 1:
+                ax.set_xlabel("Time (ms)", fontsize=9)
+            else:
+                ax.tick_params(axis="x", labelbottom=False)
             if r == 0 and c == 0:
                 _legend(ax, frameon=True, fontsize=6, loc="best")
-            if r == n_rows - 1:
-                ax.set_xlabel("Timestep", fontsize=9)
-            else:
-                ax.set_xticklabels([])
 
     # Period color bar above each top-row panel (colors only, no shading).
     if T is not None:
@@ -4550,6 +4891,56 @@ def plot_two_task_cancel():
     fig.tight_layout()
     out_path = OUT_DIR / f"twotask_cancel_{_twotask_seed_tag()}.png"
     _save_fig(fig, out_path, extra=f"  (stimuli {stim_keys})")
+
+
+def plot_two_task_modulation_magnitude():
+    """
+    Figure: modulation-computation magnitude across trial time for the two-task
+    network, one curve per input MEANING. For each input channel c, the plastic
+    matrix M's modulation of that channel is the hidden-unit vector M · W_input[:, c];
+    its L2 magnitude over hidden units (mean ± std across trials) shows how strongly
+    each input drives the plastic weights over the trial. The stimulus channels are
+    combined into a SINGLE "Stimulus" trajectory (per-trial mean), so the figure
+    shows four curves — Fixation, Stimulus, Task cue 1, Task cue 2 — colored to
+    match the example-trial input figure. Reloaded from
+    modulation_magnitude_{aname}.pkl written by two_task_analysis.py.
+    """
+    _ensure_out_dir()
+    pkl_path = TWOTASKS_DIR / TWOTASK_ANAME / f"modulation_magnitude_{TWOTASK_ANAME}.pkl"
+    d = _load_pkl_or_skip(pkl_path, "Run two_task_analysis.py first.")
+    if d is None:
+        return
+
+    labels = list(d["labels"])
+    mean = np.asarray(d["mean"])                    # (n_curve, T)
+    std = np.asarray(d["std"])                      # (n_curve, T)
+    dt = int(d.get("dt", 40))                       # sim step in ms (see SCHEME.md)
+
+    # Colors matched to the example-trial input figure: Fixation gray, combined
+    # Stimulus in the shared stimulus green, the two task cues in orange /
+    # light-orange (active vs second cue).
+    label_color = {
+        "Fixation": _IO_FIXATION,
+        "Stimulus": _IO_MOD2[0],
+        "Task cue 1": _IO_TASK,
+        "Task cue 2": _IO_TASK2,
+    }
+    series = [(lab, mean[k], std[k], label_color.get(lab, c_vals[k % len(c_vals)]))
+              for k, lab in enumerate(labels)]
+
+    # Period boundaries (fixation / stimulus / delay ends), in step-index units.
+    fe = d.get("fixation_end")
+    se = d.get("stimulus_end")
+    de = d.get("delay_end")
+    fix_c, stim_c, mem_c, resp_c = _ONETASK_PERIOD_COLORS
+    period_spans = []
+    if fe is not None and se is not None and de is not None:
+        period_spans = [(0, fe, fix_c), (fe, se, stim_c),
+                        (se, de, mem_c), (de, None, resp_c)]
+
+    _draw_modulation_magnitude(
+        series, period_spans, dt,
+        OUT_DIR / f"twotask_modulation_magnitude_{_twotask_seed_tag()}.png")
 
 
 def plot_two_task_outputsubspace_cancel():
@@ -4572,7 +4963,7 @@ def plot_two_task_outputsubspace_cancel():
     cat_labels = d["category_labels"]
     n_cat, n_stim, _ = projs_all.shape
 
-    fig, axs = plt.subplots(1, 2, figsize=(2.6 * 2, 2.6))
+    fig, axs = plt.subplots(1, 2, figsize=(2.6 * 2, 1.9))
     # Spread the per-stimulus points around each integer x so they don't fully
     # overlap, and draw them semi-transparent so density is visible.
     jitter = np.linspace(-0.13, 0.13, n_stim) if n_stim > 1 else np.zeros(1)
@@ -4890,6 +5281,7 @@ def plot_delaydm_memory_attractor():
 FIGURES_BY_MODE = {
     "one_task": {
         "onetask_example_trial": plot_onetask_example_trial,
+        "onetask_modulation_magnitude": plot_onetask_modulation_magnitude,
         "onetask_stimulus_colorwheel": plot_onetask_stimulus_colorwheel,
         "onetask_show": plot_onetask_show,
         "onetask_modulation_snapshot": plot_onetask_modulation_snapshot,
@@ -4937,12 +5329,14 @@ FIGURES_BY_MODE = {
         "twotask_m_pca": plot_two_task_m_pca,
         "twotask_attractor_cycle": plot_two_task_attractor_cycle,
         "twotask_cancel": plot_two_task_cancel,
+        "twotask_modulation_magnitude": plot_two_task_modulation_magnitude,
         "twotask_outputsubspace_cancel": plot_two_task_outputsubspace_cancel,
         "twotask_grad_fixed_points": plot_two_task_grad_fixed_points,
         "twotask_grad_fixed_points_3d": plot_two_task_grad_fixed_points_3d,
         "twotask_interp_fixed_points": plot_two_task_interp_fixed_points,
         "twotask_interp_alpha_fixed_points_3d": plot_two_task_interp_alpha_fixed_points_3d,
         "twotask_interp_alpha_bifurcation": plot_two_task_interp_alpha_bifurcation,
+        "twotask_interp_alpha_bifurcation_hidden": plot_two_task_interp_alpha_bifurcation_hidden,
         "twotask_fixed_point_stability": plot_two_task_fixed_point_stability,
         "twotask_w_gram_matrix": plot_two_task_w_gram_matrix,
         "twotask_w_hurt": plot_two_task_w_hurt,

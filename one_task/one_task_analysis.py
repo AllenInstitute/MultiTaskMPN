@@ -110,7 +110,7 @@ def _rebuild_net(net_params, device):
 
 
 def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by,
-                             fp_n_seeds=5):
+                             fp_n_seeds=5, run_fixed_points=True):
     """Take the trained single-task network, generate test data with each trial
     period extended in turn (long fixation / stimulus / delay / response), fit a
     top-2 PCA on the pooled DELAY-period states, and scatter each variant's
@@ -298,14 +298,18 @@ def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by,
     # Solve TRUE fixed points per period, seeded from a DENSE grid of stimulus
     # angles (64 by default) rather than only the 8 trained directions — this
     # also serves as the continuous-attractor probe (fixed_points_grad_*.pkl).
-    try:
-        solve_period_modulation_fixed_points(
-            aname, save_dir, net, cfg, device, layer_index=layer_index, W=W,
-            n_interp=64, n_seeds=fp_n_seeds)
-    except Exception as exc:
-        print(f"  [grad-fp] failed: {exc}")
-        import traceback
-        traceback.print_exc()
+    # This gradient solve is the slow part; skip it when run_fixed_points=False.
+    if run_fixed_points:
+        try:
+            solve_period_modulation_fixed_points(
+                aname, save_dir, net, cfg, device, layer_index=layer_index, W=W,
+                n_interp=64, n_seeds=fp_n_seeds)
+        except Exception as exc:
+            print(f"  [grad-fp] failed: {exc}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print("  [grad-fp] skipped (--no-fixed-points).")
 
     # free GPU memory
     try:
@@ -474,7 +478,107 @@ def cross_period_dimensionality(aname, save_dir, hs_final, Ms_final, W_eff,
     print(f"  Saved d_combine data: {save_dir / f'd_combine_{aname}.pkl'}")
 
 
-def main(aname, fp_n_seeds=5):
+def modulation_magnitude_by_component(aname, save_dir, Ms_orig, W_input,
+                                      input_specs, dt, stimulus_start,
+                                      stimulus_end, response_start):
+    """Modulation-computation magnitude across time, per raw input component.
+
+    For each raw input channel c, the modulation applied to that channel is the
+    hidden-unit vector obtained by contracting the plasticity matrix M's
+    embedded-input axis with that channel's input-embedding column:
+        p_c[b, t, :] = M[b, t, :, :] @ W_input[:, c]        (raw M — Hebbian trace)
+    Its per-timestep magnitude is the L2 norm over hidden units, ‖p_c[b, t, :]‖₂,
+    averaged over trials with a ±std band. The two stimulus modalities' cos/sin
+    channels are combined into a SINGLE "Stimulus" trajectory: the per-trial MEAN
+    of their per-channel magnitudes, computed per trial and then averaged (so its
+    std is not recoverable from the per-channel means alone). The figure therefore
+    shows Fixation, the combined Stimulus, and the Task cue.
+
+    `Ms_orig` : (batch, T, hidden, embed) final-stage modulation.
+    `W_input` : (embed, n_raw) input embedding column-mapped to raw channels
+                (identity when there is no input layer).
+    `input_specs` : ordered [(raw_channel_index, label), ...] for the individual
+                    per-channel magnitudes (kept in the pickle for reference).
+    Saves modulation_magnitude_{aname}.png and .pkl (for paper_plot reuse).
+    """
+    import pickle as _pickle
+    T = Ms_orig.shape[1]
+    # Project M onto every raw input column at once: (batch, T, hidden, n_raw).
+    # M @ W_input contracts the embed axis, mapping each hidden unit's modulation
+    # to the raw input channels.
+    proj = np.einsum("bthe,er->bthr", Ms_orig, W_input)
+    # L2 norm over hidden units → per-trial magnitude per channel (batch, T, n_raw).
+    mag = np.linalg.norm(proj, axis=2)
+    mag_mean = mag.mean(axis=0)                       # (T, n_raw)
+    mag_std = mag.std(axis=0)                         # (T, n_raw) across-trial std
+
+    channels = [int(ch) for ch, _ in input_specs]
+    labels = [lab for _, lab in input_specs]
+
+    # Combine the stimulus channels (every component that is neither Fixation nor
+    # the Task cue) into one trajectory: the per-trial MEAN of their per-channel
+    # magnitudes, then mean ± std across trials.
+    stim_channels = [ch for ch, lab in zip(channels, labels)
+                     if lab not in ("Fixation", "Task cue")]
+    if stim_channels:
+        stim_mag = mag[:, :, stim_channels].mean(axis=2)  # (batch, T)
+        stim_mag_mean = stim_mag.mean(axis=0)             # (T,)
+        stim_mag_std = stim_mag.std(axis=0)
+    else:
+        stim_mag_mean = np.zeros(T)
+        stim_mag_std = np.zeros(T)
+
+    # Three summary curves: Fixation, combined Stimulus, Task cue (mean ± std).
+    fix_ch = 0
+    task_ch = max(channels)
+    t_ms = np.arange(T) * dt
+    fig, ax = plt.subplots(figsize=(6, 3))
+    ax.plot(t_ms, mag_mean[:, fix_ch], "-", color=c_vals[0], label="Fixation")
+    ax.fill_between(t_ms, mag_mean[:, fix_ch] - mag_std[:, fix_ch],
+                    mag_mean[:, fix_ch] + mag_std[:, fix_ch],
+                    color=c_vals_l[0], alpha=0.3)
+    ax.plot(t_ms, stim_mag_mean, "-", color=c_vals[2], label="Stimulus")
+    ax.fill_between(t_ms, stim_mag_mean - stim_mag_std,
+                    stim_mag_mean + stim_mag_std, color=c_vals_l[2], alpha=0.3)
+    ax.plot(t_ms, mag_mean[:, task_ch], "-", color=c_vals[1], label="Task cue")
+    ax.fill_between(t_ms, mag_mean[:, task_ch] - mag_std[:, task_ch],
+                    mag_mean[:, task_ch] + mag_std[:, task_ch],
+                    color=c_vals_l[1], alpha=0.3)
+    # Dashed period boundaries (stimulus / memory / response onsets), in ms.
+    for bt in (stimulus_start, stimulus_end, response_start):
+        ax.axvline(bt * dt, color="0.5", lw=0.8, linestyle="--", zorder=1)
+    ax.set_xlabel("Time (ms)", fontsize=13)
+    ax.set_ylabel("Modulation magnitude\n(‖M·x_c‖₂)", fontsize=12)
+    ax.legend(loc="best", frameon=True, fontsize=9, ncol=2)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+    fig.savefig(save_dir / f"modulation_magnitude_{aname}.png", dpi=300)
+    plt.close(fig)
+    print(f"  Saved figure: {save_dir / f'modulation_magnitude_{aname}.png'}")
+
+    with open(save_dir / f"modulation_magnitude_{aname}.pkl", "wb") as _f:
+        _pickle.dump({
+            "aname": aname,
+            "dt": int(dt),
+            "channels": channels,                            # raw input indices
+            "labels": labels,                                # matching labels
+            "mag_mean": np.asarray(mag_mean, dtype=float),   # (T, n_raw)
+            "mag_std": np.asarray(mag_std, dtype=float),     # (T, n_raw) across-trial std
+            # Combined stimulus trajectory (per-trial MEAN over the stimulus
+            # channels, then mean ± std across trials); its std is not recoverable
+            # from the per-channel means, so saved explicitly.
+            "stim_channels": [int(c) for c in stim_channels],
+            "stim_mag_mean": np.asarray(stim_mag_mean, dtype=float),  # (T,)
+            "stim_mag_std": np.asarray(stim_mag_std, dtype=float),    # (T,)
+            "stimulus_start": int(stimulus_start),
+            "stimulus_end": int(stimulus_end),
+            "response_start": int(response_start),
+        }, _f)
+    print(f"  Saved modulation magnitude data: "
+          f"{save_dir / f'modulation_magnitude_{aname}.pkl'}")
+
+
+def main(aname, fp_n_seeds=5, run_fixed_points=True):
     result_path = ONETASK_DIR / f"param_{aname}_result.npz"
     param_path = ONETASK_DIR / f"param_{aname}_param.json"
     if not result_path.exists():
@@ -485,6 +589,9 @@ def main(aname, fp_n_seeds=5):
     task_params = cfg["task_params"]
     net_params = cfg["net_params"]
     fixate_off = task_params["fixate_off"]
+    # Simulation time step in ms (see SCHEME.md): one recorded step = dt ms. Time
+    # axes are labeled in ms (step index * dt), not raw step index.
+    dt = task_params.get("dt", 40)
 
     data = np.load(result_path, allow_pickle=True)
     hyp_dict = data["hyp_dict"].item()
@@ -544,9 +651,14 @@ def main(aname, fp_n_seeds=5):
 
     save_dir = ONETASK_DIR / aname
     save_dir.mkdir(parents=True, exist_ok=True)
-    for _old in save_dir.iterdir():
-        if _old.is_file():
-            _old.unlink()
+    # Wipe stale outputs before regenerating — but ONLY on a full run. When
+    # --no-fixed-points is set the slow fixed-point pickles are not regenerated,
+    # so leave the folder intact to preserve any fixed_points_* files from an
+    # earlier full run (paper_plot still reads them).
+    if run_fixed_points:
+        for _old in save_dir.iterdir():
+            if _old.is_file():
+                _old.unlink()
 
     # ── Figure: loss / accuracy across training ──────────────────────────────
     fig, ax1 = plt.subplots(figsize=(6, 3))
@@ -608,7 +720,10 @@ def main(aname, fp_n_seeds=5):
         axex[1].plot(net_out_final[b0, :, out_idx], color=c_vals[out_idx % len(c_vals)],
                      label=out_labels[out_idx])
     axex[1].set_ylabel("Output", fontsize=12)
-    axex[1].set_xlabel("Time step", fontsize=12)
+    axex[1].set_xlabel("Time (ms)", fontsize=12)
+    # Traces are plotted against step index; relabel ticks in ms (index * dt).
+    axex[1].xaxis.set_major_formatter(
+        ticker.FuncFormatter(lambda x, _pos: f"{x * dt:.0f}"))
 
     for ax in axex:
         ax.legend(fontsize=7, frameon=True, loc="best", ncol=2)
@@ -624,6 +739,9 @@ def main(aname, fp_n_seeds=5):
     import pickle as _pickle
     example_trial_pkl = {
         "aname": aname,
+        # Simulation time step in ms (see SCHEME.md); lets paper_plot label the
+        # example-trial time axis in ms (step index * dt) instead of step index.
+        "dt": int(dt),
         "stimulus": int(labels[b0, 0]),
         "input_specs": [(int(ch), lab) for ch, lab in in_specs],
         "input": np.asarray(test_input_np[b0]),          # (T, n_input)
@@ -788,7 +906,10 @@ def main(aname, fp_n_seeds=5):
                     axspaper[k].plot(f_fixon + f_task + f_bias, color=c_vals[2], linestyle=l_vals[3],
                                      linewidth=3, label="Combine")
                     axspaper[k].axhline(0, color=c_vals[3])
-                    axspaper[k].set_xlabel("Timestep", fontsize=15)
+                    axspaper[k].set_xlabel("Time (ms)", fontsize=15)
+                    # Traces are per step index; relabel ticks in ms (index * dt).
+                    axspaper[k].xaxis.set_major_formatter(
+                        ticker.FuncFormatter(lambda x, _pos: f"{x * dt:.0f}"))
                     axspaper[k].set_ylabel("Modulation Component", fontsize=15)
                     show_save[int(labels_for_batch)] = {
                         "fixon": np.asarray(f_fixon, dtype=float),
@@ -1283,7 +1404,8 @@ def main(aname, fp_n_seeds=5):
     # point (last delay frame) colored by stimulus — for hidden and W⊙M.
     try:
         long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by,
-                                 fp_n_seeds=fp_n_seeds)
+                                 fp_n_seeds=fp_n_seeds,
+                                 run_fixed_points=run_fixed_points)
     except Exception as exc:
         print(f"  [long-fp] failed: {exc}")
         import traceback
@@ -1299,6 +1421,35 @@ def main(aname, fp_n_seeds=5):
                                     top_k=2)
     except Exception as exc:
         print(f"  [d_combine] failed: {exc}")
+        import traceback
+        traceback.print_exc()
+
+    # ── Modulation-computation magnitude across time, per input component ─────
+    # For every raw input channel, the L2 magnitude (over hidden units) of the
+    # modulation the plastic weights apply to that channel, M @ W_input[:, c],
+    # averaged over trials. Uses the final-stage Ms_orig from the PCA section.
+    try:
+        n_raw = test_input_np.shape[-1]
+        # Input-embedding columns mapped to raw channels (identity if no layer;
+        # then M's last axis already IS the raw input).
+        if input_layer_add and Winput_stages.size > 0:
+            W_input_final = Winput_stages[stage_iter]          # (embed, n_raw)
+        else:
+            W_input_final = np.eye(Ms_orig.shape[-1])
+        # Full component layout, named like the example-trial figure: fixation,
+        # the two stimulus modalities' cos/sin, and the task cue (last channel).
+        task_ch = n_raw - 1
+        mag_specs = [(0, "Fixation")]
+        for (cos_ch, sin_ch), mod_name in (((1, 2), "Mod1"), ((3, 4), "Mod2")):
+            if sin_ch < task_ch:
+                mag_specs += [(cos_ch, f"{mod_name} cos"),
+                              (sin_ch, f"{mod_name} sin")]
+        mag_specs.append((task_ch, "Task cue"))
+        modulation_magnitude_by_component(
+            aname, save_dir, Ms_orig, W_input_final, mag_specs, dt,
+            stimulus_start, stimulus_end, response_start)
+    except Exception as exc:
+        print(f"  [mod-magnitude] failed: {exc}")
         import traceback
         traceback.print_exc()
 
@@ -1362,6 +1513,11 @@ if __name__ == "__main__":
                         help="Number of random trial templates to try when solving "
                              "gradient fixed points; the best-converging one is kept "
                              "(default 5).")
+    parser.add_argument("--no-fixed-points", dest="run_fixed_points",
+                        action="store_false",
+                        help="Skip the time-consuming gradient fixed-point solver "
+                             "(fixed_points_grad_*). On by default.")
+    parser.set_defaults(run_fixed_points=True)
     args = parser.parse_args()
 
     anames = [args.aname] if args.aname else _discover_anames()
@@ -1369,7 +1525,8 @@ if __name__ == "__main__":
     for a in anames:
         print(f"\n── Analyzing: {a} ──")
         try:
-            main(a, fp_n_seeds=args.fp_n_seeds)
+            main(a, fp_n_seeds=args.fp_n_seeds,
+                 run_fixed_points=args.run_fixed_points)
         except Exception as exc:
             print(f"  FAILED {a}: {exc}")
             import traceback

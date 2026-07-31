@@ -64,7 +64,13 @@ def main():
                         help="Skip training; run analysis only.")
     parser.add_argument("--skip-analysis", action="store_true",
                         help="Skip analysis; run training only.")
+    parser.add_argument("--no-fixed-points", action="store_true",
+                        help="Pass --no-fixed-points to the analysis step, skipping "
+                             "the time-consuming gradient fixed-point solver.")
     args = parser.parse_args()
+
+    # Extra args forwarded to every analysis invocation.
+    analysis_args = ["--no-fixed-points"] if args.no_fixed_points else []
 
     print(f"{'='*60}\n  Single-task pipeline\n{'='*60}")
     t0 = time.time()
@@ -79,21 +85,21 @@ def main():
         print("\n--- Step 2/2: one_task_analysis ---")
         if args.aname:
             # A single explicit run.
-            _run(ANALYSIS_SCRIPT, ["--aname", args.aname])
+            _run(ANALYSIS_SCRIPT, ["--aname", args.aname, *analysis_args])
         elif args.all:
             # Every run on disk (one_task_analysis.py default with no --aname).
-            _run(ANALYSIS_SCRIPT, [])
+            _run(ANALYSIS_SCRIPT, [*analysis_args])
         else:
             # Only the runs just trained, one analysis call each.
             anames = _read_manifest()
             if not anames:
                 print("  No manifest found; falling back to analyzing ALL runs. "
                       "(Run training first, or pass --all explicitly.)")
-                _run(ANALYSIS_SCRIPT, [])
+                _run(ANALYSIS_SCRIPT, [*analysis_args])
             else:
                 print(f"  Analyzing {len(anames)} just-trained run(s): {anames}")
                 for a in anames:
-                    _run(ANALYSIS_SCRIPT, ["--aname", a])
+                    _run(ANALYSIS_SCRIPT, ["--aname", a, *analysis_args])
     else:
         print("\n--- Step 2/2: one_task_analysis — SKIPPED ---")
 

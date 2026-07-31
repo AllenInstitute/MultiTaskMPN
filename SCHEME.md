@@ -1,4 +1,23 @@
-# Figure color scheme
+# Project scheme
+
+Shared conventions for the whole project: the simulation timing (below) and the
+figure color families ([Figure color scheme](#figure-color-scheme)).
+
+## Timing — Δt = 40 ms
+
+The simulation time step is **Δt = 40 ms** (`task_params['dt'] = 40`, in
+milliseconds). One network/recorded time step therefore corresponds to 40 ms of
+simulated time. Task period lengths in [`core/mpn_tasks.py`](core/mpn_tasks.py)
+are written in ms and divided by `dt` to get integer step counts (e.g.
+`int(700/dt)`), and the leak `alpha = 0.2` implies a time constant τ = Δt/alpha
+= 200 ms.
+
+**Rule:** whenever a figure or readout refers to trial time, express it in the
+actual unit (ms), not in raw time-step index — multiply the step index by `dt`.
+Read `dt` from the run's saved params (`cfg["task_params"]["dt"]`) rather than
+hard-coding it, so the conversion follows the run.
+
+## Figure color scheme
 
 Color conventions used by [`paper_plot.py`](paper_plot.py) (and mirrored in the
 per-experiment analysis scripts). The goal is that each *meaning* has one color
@@ -55,14 +74,18 @@ Colors for the `onetask_example_trial` input and output traces. A muted
 qualitative set, distinct from the stimulus rainbow and the pale period pastels.
 **Rules:** within a modality the cos/sin channels share a hue as a
 `(dark, light)` pair; channels that mean the same thing across the input and
-output figures share a color.
+output figures share a color. The two stimulus modalities share **one green
+cos/sin pair** (`_IO_MOD1` is an alias of `_IO_MOD2`), so cos↔cos and sin↔sin
+match across the modalities — they are the same physical channel, differing only
+in modality.
 
 | Constant | Hex | Meaning |
 |---|---|---|
 | `_IO_FIXATION` | `#555555` (dark gray) | Fixation (input **and** output) |
-| `_IO_MOD1` | `("#a6761d", "#dcb877")` (brown dark/light) | Modality 1 cos / sin |
-| `_IO_MOD2` | `("#1b9e77", "#8fded0")` (teal dark/light) | Modality 2 cos / sin = active stimulus |
-| `_IO_TASK` | `#d95f02` (orange) | Task cue |
+| `_IO_MOD2` | `("#1b9e77", "#6fceae")` (green dark/light) | Stimulus cos / sin |
+| `_IO_MOD1` | = `_IO_MOD2` (alias) | Modality 1 cos / sin — shares Modality 2's colors |
+| `_IO_TASK` | `#d95f02` (orange) | Task cue (active) |
+| `_IO_TASK2` | `#fdae6b` (light orange) | Second (inactive) task cue placeholder |
 | `_IO_RESPONSE` | `("#7e3ff2", "#c4a3f5")` (purple dark/light) | Output (response) cos / sin |
 
 Input↔output matching by meaning:
