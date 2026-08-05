@@ -277,15 +277,34 @@ def stim_colors(n=ONETASK_N_STIM):
     return [stim_color(k, n) for k in range(n)]
 
 
-def _shade(color, frac):
-    """Shade `color` by `frac` in [-1, 1]: frac<0 darkens toward BLACK (frac=-1
-    → black), frac=0 is the original, frac>0 lightens toward WHITE (frac=+1 →
-    white). Used to shade a trajectory dark→bright along a sweep."""
-    r, g, b = mpl.colors.to_rgb(color)
-    if frac >= 0:
-        return (r + (1 - r) * frac, g + (1 - g) * frac, b + (1 - b) * frac)
-    f = 1.0 + frac                       # frac in [-1,0] -> multiplier in [0,1]
-    return (r * f, g * f, b * f)
+# ─── Sequential (dark → light) color scheme: interpolation level alpha ────────
+# One sequential ramp, shared by every figure that traces fixed points across the
+# pro<->anti interpolation level alpha (the task-interpolation figures). It
+# deliberately replaces the stimulus rainbow there: in those figures the stimulus
+# identity of an interpolated fixed point is not the claim — the DIRECTION of the
+# sweep is — so a single universal dark(alpha=0) → light(alpha=1) scale carries the
+# sweep and every stimulus line looks alike.
+#
+# A perceptually-uniform MULTI-HUE map (plasma: dark indigo → magenta → orange)
+# rather than one hue's dark→light: it still lightens monotonically, so the sweep
+# direction is unambiguous, but neighboring alphas are far easier to tell apart than
+# in a monochrome ramp. The top end is TRUNCATED short of plasma's near-white yellow
+# because the HOLLOW (non-converged) markers are drawn in the ramp color as an
+# outline only, with nothing but that stroke to see against the page.
+_ALPHA_CMAP = "plasma"
+_ALPHA_CMAP_RANGE = (0.03, 0.82)         # dark indigo (alpha=0) → orange (alpha=1)
+
+
+def _alpha_ramp_color(t):
+    """Color at position `t` in [0, 1] along the alpha ramp (0 = dark, 1 = light)."""
+    lo, hi = _ALPHA_CMAP_RANGE
+    return mpl.colormaps[_ALPHA_CMAP](lo + (hi - lo) * float(np.clip(t, 0.0, 1.0)))
+
+
+def _alpha_ramp_norm(alphas):
+    """Map an alpha sweep to [0, 1] ramp positions (flat sweep → all 0)."""
+    a = np.asarray(alphas, dtype=float)
+    return (a - a.min()) / max(a.max() - a.min(), 1e-9)
 
 
 def _fixed_point_mask(entry, n):
@@ -388,6 +407,7 @@ _ONETASK_PERIOD_COLORS = [
 # (purple), deliberately distinct from the stimulus modalities so the readout is
 # not confused with an input modality.
 _IO_FIXATION = "#555555"              # dark gray
+_IO_FIXATION2 = "#aaaaaa"             # light gray = fixation-off (pairs with above)
 # Mod1 and Mod2 share the SAME green cos/sin pair, so cos↔cos and sin↔sin match
 # across the two stimulus modalities (they are the same physical channel, just a
 # different modality). Within the pair the cos/sin keeps the (dark, light)
@@ -397,6 +417,11 @@ _IO_MOD1 = _IO_MOD2                   # Modality 1 shares Modality 2's cos/sin c
 _IO_TASK = "#d95f02"                  # orange (single channel)
 _IO_TASK2 = "#fdae6b"                 # light orange = second (inactive) task cue
 _IO_RESPONSE = ("#7e3ff2", "#c4a3f5")  # purple (cos dark, sin light) = readout
+# Sum of the component traces in the cancellation figures (onetask_show,
+# twotask_cancel). A deep blue: the classic high-contrast partner of the orange
+# task cue, and far from the grays (fixation), the green (stimulus) and the
+# purple (readout), so the emphasized "Combine" line never reads as a component.
+_IO_COMBINE = "#2166ac"               # deep blue = Fix + Task (+ bias) sum
 
 
 def _relabel_tb_name(name):
@@ -439,6 +464,45 @@ def _color_phase_ticklabels(ax, ordered_names, axis="y"):
         if phase is not None:
             lab.set_bbox(dict(facecolor=_PHASE_COLORS[phase], edgecolor="none",
                               boxstyle="round,pad=0.15", alpha=0.8))
+
+
+# Trial-period name -> period-bar color, keyed by the period word that ends a
+# "{task} {period}" tick label. Covers both the one-task period names
+# (Fixation/Stimulus/Memory/Response) and the abbreviated two-task ones
+# (Context/Stim/Delay/Resp), so a tick labeled e.g. "Anti Stim" gets the same
+# color as the Stimulus block of the input/output illustration's period strip.
+_PERIOD_LABEL_COLORS = {
+    "fixation": _ONETASK_PERIOD_COLORS[0],
+    "context": _ONETASK_PERIOD_COLORS[0],
+    "stimulus": _ONETASK_PERIOD_COLORS[1],
+    "stim": _ONETASK_PERIOD_COLORS[1],
+    "memory": _ONETASK_PERIOD_COLORS[2],
+    "delay": _ONETASK_PERIOD_COLORS[2],
+    "response": _ONETASK_PERIOD_COLORS[3],
+    "resp": _ONETASK_PERIOD_COLORS[3],
+    "go": _ONETASK_PERIOD_COLORS[3],
+}
+
+
+def _period_label_color(label):
+    """Period-bar color for a '{task} {period}' tick label (None if unknown)."""
+    word = str(label).replace("\n", " ").strip().split(" ")[-1].lower()
+    return _PERIOD_LABEL_COLORS.get(word)
+
+
+def _color_period_ticklabels(ax, labels, axis="y"):
+    """Highlight each tick label with its trial period's color.
+
+    Same background-bbox treatment as `_color_phase_ticklabels`, but keyed on
+    the period word of a '{task} {period}' label (e.g. "Pro Stim") and using the
+    period-bar palette shared with the input/output illustration figure.
+    """
+    texts = ax.get_yticklabels() if axis == "y" else ax.get_xticklabels()
+    for text, label in zip(texts, labels):
+        color = _period_label_color(label)
+        if color is not None:
+            text.set_bbox(dict(facecolor=color, edgecolor="none",
+                               boxstyle="round,pad=0.15", alpha=0.8))
 
 
 def _color_motif_ticklabels(ax, task_names, axis="y"):
@@ -2569,10 +2633,10 @@ def plot_onetask_show():
         T = len(tr["combine"])
         # Colors + names matched to onetask_example_trial's input channels:
         # Fixation → _IO_FIXATION (dark gray), Rule → _IO_TASK (orange).
-        # Combine uses a distinct color not used for either input channel.
+        # Combine uses _IO_COMBINE (deep blue), a hue used by no input channel.
         ax.plot(tr["fixon"], color=_IO_FIXATION, label="Fixation", zorder=2)
         ax.plot(tr["task"], color=_IO_TASK, label="Rule", zorder=2)
-        ax.plot(tr["combine"], color=c_vals[4], linewidth=2.5, label="Combine", zorder=3)
+        ax.plot(tr["combine"], color=_IO_COMBINE, linewidth=2.5, label="Combine", zorder=3)
         ax.axhline(0, color="0.6", lw=0.8, zorder=1)
         # Dashed vertical lines at each period boundary (stimulus/memory/response
         # onsets), matching the example-trial illustration.
@@ -3257,23 +3321,29 @@ def plot_onetask_long_fixed_points():
 def _grad_fp_2d_project(d, rep_key, pca):
     """Project a loaded grad-fp pickle's fixed points into the 2-PC `pca` for the
     2D figure of representation `rep_key`. Returns
-    (periods, proj_by_period, traj_by_period, angle0_pt, n_stim):
-      proj_by_period[v] : (batch, 2) PCA coords of that period's fixed points
+    (periods, overlay, proj_by_period, traj_by_period, angle0_pt, n_stim):
+      periods           : the trial periods that get a panel (see
+                          _grad_fp_period_panels)
+      overlay[period]   : other probes solved under that period's input, drawn in
+                          the SAME panel
+      proj_by_period[v] : (batch, 2) PCA coords of that probe's fixed points —
+                          keyed by probe, so it covers the overlaid ones too
       traj_by_period[v] : (win_T, 2) exemplar (angle-0) within-period trajectory,
-                          present only where the pickle saved it
+                          present only where the pickle saved it (period probes)
       angle0_pt[v]      : (2,) the exemplar-stimulus fixed point, for connectors
       n_stim            : stimulus-color count (dense ring size)
     Pure data prep — drawing lives in _draw_grad_fp_2d_row so several rules can
     share one figure."""
     results = d["results"]
-    periods = list(results.keys())
+    periods, overlay = _grad_fp_period_panels(results)
+    drawn = periods + [n for p in periods for n in overlay.get(p, [])]
 
     def _flat(arr):
         arr = np.asarray(arr, dtype=float)
         return arr.reshape(arr.shape[0], -1)
 
-    n_stim = 1 + max(int(s) for v in periods for s in np.asarray(results[v]["stim"]))
-    proj_by_period = {v: pca.transform(_flat(results[v][rep_key])) for v in periods}
+    n_stim = 1 + max(int(s) for v in drawn for s in np.asarray(results[v]["stim"]))
+    proj_by_period = {v: pca.transform(_flat(results[v][rep_key])) for v in drawn}
 
     # Exemplar stimulus (angle 0): its within-period RECORDED trajectory and its
     # fixed point per period, for the anchored connector.
@@ -3291,36 +3361,43 @@ def _grad_fp_2d_project(d, rep_key, pca):
         if idx.size:
             angle0_pt[v] = proj_by_period[v][int(idx[0])]  # (2,) current FP
 
-    return periods, proj_by_period, traj_by_period, angle0_pt, n_stim
+    return periods, overlay, proj_by_period, traj_by_period, angle0_pt, n_stim
 
 
 def _draw_grad_fp_2d_row(axs_row, results, periods, proj_by_period, traj_by_period,
                          angle0_pt, n_stim, lim, show_period_titles=True,
-                         row_label=None):
+                         row_label=None, overlay=None):
     """Draw one rule's four per-period 2D panels into the pre-created axes
     `axs_row` (length = n_col), using precomputed projections. Shared symmetric
     limit `lim` is passed in so multiple rows use IDENTICAL axes.
     `show_period_titles` prints the Fixation/Stimulus/… titles (typically only
     the top row); `row_label` writes a rotated label (e.g. the task rule) to the
-    left of the row's first panel."""
+    left of the row's first panel.
+
+    `pc_label` prefixes the x/y axis labels (e.g. "Delay" -> "Delay PC1"), naming
+    the period whose PCA defines the shared basis; None keeps the bare "PC1"/"PC2".
+
+    `overlay[period]` (from _grad_fp_period_panels) lists further probes solved
+    under that period's input — they are drawn into the SAME panel, marker-coded,
+    so every fixed point belonging to a period appears in that period's panel."""
     _TRAJ_STIM = 0
     _traj_col = stim_color(_TRAJ_STIM, n_stim)
+    overlay = overlay or {}
     for j, (ax, v) in enumerate(zip(axs_row, periods)):
         e = results[v]
-        fixed = proj_by_period[v]                   # (batch, 2)
-        stim = np.asarray(e["stim"])
-        good = _fixed_point_mask(e, fixed.shape[0])
-        for i in range(fixed.shape[0]):
-            col = stim_color(int(stim[i]), n_stim)
-            if good[i]:
-                # Converged fixed point: filled marker.
-                ax.scatter(fixed[i, 0], fixed[i, 1], color=col, marker="o", s=18,
-                           edgecolor="black", linewidth=0.4, alpha=0.85, zorder=3)
-            else:
-                # Over-threshold (not stationary enough): hollow marker.
-                ax.scatter(fixed[i, 0], fixed[i, 1], facecolor="none",
-                           edgecolor=col, marker="o", s=18, linewidth=0.9,
-                           alpha=0.85, zorder=3)
+        # This period's own probe first, then any probe solved under the same
+        # input from a different starting state (memory-seeded, naive seeds).
+        panel_probes = [v] + list(overlay.get(v, []))
+        for name in panel_probes:
+            pe = results[name]
+            xy = proj_by_period[name]               # (batch, 2)
+            # Naive-seeded probes have no stimulus label, so they are colored by
+            # the reference angle they landed on (gray if they landed nowhere near
+            # it) rather than by a `stim` that is only a seed index.
+            cols, _ = _grad_fp_point_colors(pe, np.asarray(pe["stim"]), n_stim)
+            _scatter_grad_fp(ax, xy, _grad_fp_probe_style(pe, name, base_s=18),
+                             cols, _fixed_point_mask(pe, xy.shape[0]))
+        _grad_fp_overlay_legend(ax, results, panel_probes)
         # Trajectory anchored to the fixed points: previous period's FP (dashed
         # marker) → recorded within-period path → this period's FP (solid marker).
         tp = traj_by_period.get(v)
@@ -3382,14 +3459,16 @@ def _render_grad_fixed_points(d, rep_key, out_path, basis=None):
     if basis is None:
         basis = _fit_period_grad_fp_basis(d, rep_key)
 
-    periods, proj, traj, angle0_pt, n_stim = _grad_fp_2d_project(d, rep_key, basis)
+    periods, overlay, proj, traj, angle0_pt, n_stim = _grad_fp_2d_project(
+        d, rep_key, basis)
     lim = max(np.abs(np.vstack(list(proj.values()))).max() * 1.08, 1e-9)
 
     n_col = len(periods)
     # Match onetask_long_fixed_points' compact panel size.
     fig, axs = plt.subplots(1, n_col, figsize=(2.1 * n_col, 2.1), squeeze=False)
     _draw_grad_fp_2d_row(axs[0], results, periods, proj, traj, angle0_pt, n_stim,
-                         lim, show_period_titles=True, row_label=None)
+                         lim, show_period_titles=True, row_label=None,
+                         overlay=overlay)
 
     # Shared x/y labels for the whole grid (all panels share the delay basis).
     fig.supxlabel("Delay PC1", fontsize=11)
@@ -3426,6 +3505,271 @@ def plot_onetask_grad_fixed_points():
     _plot_onetask_grad_fixed_points("fixed_hidden", "onetask_grad_fixed_points_hidden.png")
 
 
+# ─── Grouping several probes into ONE period panel ────────────────────────────
+# The solver's battery has more entries than there are trial periods: besides each
+# period's own ("diagonal") probe it holds probes solved under the SAME period
+# input from a different starting state. Those belong in that period's subplot, so
+# every fixed point of a period is drawn together and the panel layout stays one
+# panel per period.
+#
+# Hue is reserved for stimulus direction (see SCHEME.md), so within a panel the
+# probe is distinguished by MARKER, and fill keeps its usual meaning (filled =
+# converged, hollow = over the rel_step threshold). Markers drawn as strokes have
+# no face, so they take a plain `color=` and ignore the fill/edge distinction.
+_GRAD_FP_STROKE_MARKERS = ("x", "+", "1", "2", "3", "4", "|", "_")
+# A naive-seeded point farther than this relative distance from its reference
+# fixed points did not land on them, so the ring angle it is labelled with is
+# meaningless and it is drawn gray instead (matches the solver's 10% log line).
+_GRAD_FP_RING_TOL = 0.1
+
+
+def _grad_fp_probe_style(entry, name="", base_s=18):
+    """Marker spec for one probe drawn inside its period's panel.
+
+    The period's OWN probe keeps the original look — a small filled circle — so
+    panels are pixel-identical wherever no extra probe exists. An overlaid probe
+    gets a distinct shape: a large OPEN circle when it was seeded from another
+    period's state (its points should be seen landing ON the structure they came
+    from), an × for stimulus-free naive seeds. `base_s` scales to each figure's
+    own point size (the 3D panels draw smaller)."""
+    if entry.get("is_diagonal", True):
+        return dict(marker="o", s=base_s, fill=True, z=3)
+    if entry.get("seed_source") == "naive_rank1" or name.endswith("_naiveseed"):
+        return dict(marker="x", s=base_s * 1.4, fill=True, z=2)
+    return dict(marker="o", s=base_s * 4.0, fill=False, z=2)
+
+
+def _grad_fp_seed_label(entry):
+    """Short legend label naming where a probe's optimizer STARTED, which is the
+    only thing that differs between the probes sharing a panel."""
+    if entry.get("is_diagonal", True):
+        return "own state"
+    src = str(entry.get("seed_source", "") or "other")
+    if src == "naive_rank1":
+        return "naive seeds"
+    stem = src[4:] if src.startswith("long") else src
+    return f"{stem.capitalize()} seed"
+
+
+def _grad_fp_same_input(results, a, b, tol=0.0):
+    """Whether probes `a` and `b` were solved under the same constant input,
+    measured from the saved `const_input` (False when a pickle predates it). Two
+    probes at distance 0 pose the same fixed-point problem, so a result about one
+    is a result about the other."""
+    ca, cb = results[a].get("const_input"), results[b].get("const_input")
+    if ca is None or cb is None:
+        return False
+    ca, cb = np.asarray(ca, dtype=float), np.asarray(cb, dtype=float)
+    if ca.shape != cb.shape:
+        return False
+    return float(np.abs(ca - cb).max()) <= tol
+
+
+def _grad_fp_period_panels(results):
+    """Split a grad-fp pickle's probes into (panels, overlay).
+
+    `panels` is the list of trial periods that each get their own subplot — the
+    original figure layout. `overlay[panel]` lists the OTHER probes drawn in that
+    panel (e.g. the memory-seeded and naive-seeded fixation probes both belong to
+    the Fixation panel), so a period's fixed points are drawn together rather than
+    spread over extra panels.
+
+    A naive-seeded probe characterizes its INPUT's whole fixed-point set, and
+    periods can share an input — fixation and delay do in the delaygo family, which
+    is why the solver only solves that probe once. It is therefore mirrored into
+    every panel with an identical input: the naive fixed points of the fixation
+    input ARE the naive fixed points of the delay input. State-seeded probes are not
+    mirrored, because their points already appear in the panel they were seeded
+    from, as that panel's own probe.
+
+    Probes name their period in `input_period`; a pickle predating the probe
+    battery has exactly one entry per period and yields an empty overlay, leaving
+    every figure unchanged. A probe whose period has no panel of its own (its
+    diagonal probe was disabled) becomes its own panel rather than being dropped."""
+    panels, overlay = [], {}
+    for name, entry in results.items():
+        panel = entry.get("input_period", name)
+        if panel == name:
+            panels.append(name)
+        else:
+            overlay.setdefault(panel, []).append(name)
+    for panel in list(overlay):
+        if panel not in panels:
+            panels.extend(overlay.pop(panel))
+
+    naive = [n for names in overlay.values() for n in names
+             if results[n].get("seed_source") == "naive_rank1"
+             or n.endswith("_naiveseed")]
+    for name in naive:
+        home = results[name].get("input_period", name)
+        for panel in panels:
+            if panel == home or name in overlay.get(panel, []):
+                continue
+            if _grad_fp_same_input(results, name, panel):
+                overlay.setdefault(panel, []).append(name)
+    return panels, overlay
+
+
+def _scatter_grad_fp(ax, xy, style, cols, good, z_vals=None):
+    """Scatter one probe's fixed points: 2D, or 3D when `z_vals` is given.
+
+    Converged points are filled with a black edge and over-threshold ones hollow —
+    the long-standing convention, preserved here so factoring this out of the
+    per-panel drawing changed nothing visually."""
+    stroke = style["marker"] in _GRAD_FP_STROKE_MARKERS
+    # zorder is meaningless for 3D axes, and the 3D panels never set it.
+    zkw = {} if z_vals is not None else {"zorder": style["z"]}
+    for i in range(xy.shape[0]):
+        pos = ((xy[i, 0], xy[i, 1]) if z_vals is None
+               else (xy[i, 0], xy[i, 1], z_vals[i]))
+        if stroke:
+            ax.scatter(*pos, marker=style["marker"], s=style["s"], color=cols[i],
+                       linewidth=0.9, alpha=0.85, **zkw)
+        elif style["fill"] and good[i]:
+            ax.scatter(*pos, marker=style["marker"], s=style["s"], color=cols[i],
+                       edgecolor="black", linewidth=0.4, alpha=0.85, **zkw)
+        else:
+            ax.scatter(*pos, marker=style["marker"], s=style["s"],
+                       facecolor="none", edgecolor=cols[i], linewidth=0.9,
+                       alpha=0.85, **zkw)
+
+
+def _grad_fp_overlay_legend(ax, results, names, base_s=18, fontsize=6):
+    """Marker legend for a panel holding more than one probe. Handles are gray so
+    the legend reads the MARKER; hue belongs to the stimulus scale."""
+    if len(names) < 2:
+        return
+    handles = []
+    for name in names:
+        entry = results[name]
+        style = _grad_fp_probe_style(entry, name, base_s=base_s)
+        stroke = style["marker"] in _GRAD_FP_STROKE_MARKERS
+        label = _grad_fp_seed_label(entry)
+        n_on_ring = entry.get("ring_dist")
+        if n_on_ring is not None:
+            rd = np.asarray(n_on_ring, dtype=float)
+            label += (f" [{int((rd <= _GRAD_FP_RING_TOL).sum())}/{rd.size} on "
+                      f"{entry.get('ring_ref', 'ref')}]")
+        handles.append(plt.Line2D(
+            [0], [0], marker=style["marker"], linestyle="None",
+            markerfacecolor=("0.35" if (style["fill"] and not stroke) else "none"),
+            markeredgecolor="0.35", markersize=np.sqrt(style["s"]) * 0.9,
+            label=label))
+    _legend(ax, handles=handles, frameon=True, fontsize=fontsize, loc="best")
+
+
+# Added probes keep the SAME circle marker and size as every other fixed point in
+# the 3D figures and are told apart by color alone (gray), because a 3D panel
+# already spends its budget on a z axis and a viewing angle; extra marker shapes
+# and point clouds there only obscure it. The 2D figures keep the full battery,
+# marker-coded.
+#
+# Which added probes each 3D panel draws, named explicitly rather than derived, so
+# the content of every panel is decided in exactly one place:
+#   Fixation — the ring-alike memory-seeded ring (the point-and-ring coexistence),
+#              plus the naive shell.
+#   Delay    — the same naive shell. Delay shares fixation's input (the solver
+#              measures the distance as 0), so that single solve is this panel's
+#              naive result too — see _grad_fp_period_panels. This sharing is
+#              licensed by that measurement, which is why it does not extend to the
+#              response panel: its input differs by construction (fixation off), so
+#              the fixation-input solutions are NOT fixed points of its map, and
+#              drawing them there would put an untested claim under the same gray
+#              circles the other panels use for genuine ones.
+#   Response — its OWN naive-seeded solve, actually solved under the response input.
+#   Stimulus — none; its own added ring is a second lower-amplitude branch that the
+#              2D figures carry.
+_GRAD_FP_3D_OVERLAY_PROBES = {
+    "longfixation": ("longfixation_memseed", "longfixation_naiveseed"),
+    "longdelay": ("longfixation_naiveseed",),
+    "longresponse": ("longresponse_naiveseed",),
+}
+_GRAD_FP_3D_OVERLAY_COLOR = "0.55"
+
+# Which stimulus is the exemplar whose within-period trajectory the 3D panels draw.
+# Module-level so the renderers' axis-limit computation and _draw_grad_fp_3d_row
+# pick the SAME anchor point (they must, or a panel can draw a point outside its
+# own axes box).
+_GRAD_FP_TRAJ_STIM = 0
+
+
+def _grad_fp_3d_anchor_xyz(results, periods, draw_periods, proj_by_period,
+                           z_by_period):
+    """The trajectory anchor each drawn panel inherits from the period before it.
+
+    `_draw_grad_fp_3d_row` starts every panel's exemplar trajectory at the previous
+    period's `_GRAD_FP_TRAJ_STIM` fixed point and draws that point inside the panel.
+    When the previous period has no panel of its own (fixation, delay), its points
+    are otherwise absent from the figure's shared limits — so a caller that trims
+    panels must fold these back in, or the anchor is drawn outside the axes box.
+
+    Returns (xy, z) as ((k, 2), (k,)) arrays over the drawn panels that have one."""
+    xy, z = [], []
+    for v in draw_periods:
+        i = periods.index(v)
+        if i < 1:
+            continue                      # first period inherits no anchor
+        prev = periods[i - 1]
+        if prev not in proj_by_period or prev not in z_by_period:
+            continue
+        st = np.asarray(results[prev]["stim"], dtype=int)
+        idx = np.where(st == _GRAD_FP_TRAJ_STIM)[0]
+        if not idx.size:
+            continue
+        i0 = int(idx[0])
+        xy.append(proj_by_period[prev][i0, :2])
+        z.append(float(np.asarray(z_by_period[prev], dtype=float)[i0]))
+    if not xy:
+        return np.zeros((0, 2)), np.zeros(0)
+    return np.vstack(xy), np.asarray(z, dtype=float)
+
+
+def _grad_fp_3d_overlay(period, overlay, results):
+    """Which added probes get drawn in `period`'s 3D panel, per
+    _GRAD_FP_3D_OVERLAY_PROBES (a period absent from it shows none). Names missing
+    from this pickle are skipped, so an older or reduced battery still renders.
+
+    `overlay` is accepted for signature parity with the 2D path and as the fallback
+    when the table names nothing for this period."""
+    wanted = _GRAD_FP_3D_OVERLAY_PROBES.get(period)
+    if wanted is None:
+        return []
+    return [n for n in wanted if n in results]
+
+
+def _grad_fp_3d_colors(period, entry, stim, n_stim):
+    """Point colors for one probe in a 3D panel. Gray when the probe is an ADDED
+    one (its points are not fixed points the trial itself reaches) or when the
+    panel is FIXATION — that input carries no stimulus at all, so no hue in that
+    panel would be earned. Contrast the Delay panel: the SAME input, but its points
+    are seeded from a state that remembers the angle, so there the rainbow is
+    earned. Every other panel colors its own probe by stimulus as always."""
+    if "fixation" in period.lower() or not entry.get("is_diagonal", True):
+        return [_GRAD_FP_3D_OVERLAY_COLOR] * len(stim)
+    return _grad_fp_point_colors(entry, stim, n_stim)[0]
+
+
+def _grad_fp_point_colors(entry, stim, n_stim):
+    """(colors, n_on_ring) for one probe entry's points.
+
+    Period-seeded probes are colored by stimulus direction. A naive-seeded probe
+    has no stimulus — its `stim` is only a seed index — so its points take the
+    color of the reference angle they LANDED on (`ring_angle_idx`), and gray when
+    they landed nowhere near the reference (`ring_dist` > tol) or when the pickle
+    predates that annotation. `n_on_ring` is None for period-seeded probes."""
+    if entry.get("stim_is_stimulus", True):
+        return [stim_color(int(s), n_stim) for s in stim], None
+    ring_idx, ring_dist = entry.get("ring_angle_idx"), entry.get("ring_dist")
+    if ring_idx is None:
+        return ["0.55"] * len(stim), None
+    ring_idx = np.asarray(ring_idx, dtype=int)
+    ring_dist = (np.asarray(ring_dist, dtype=float) if ring_dist is not None
+                 else np.zeros(ring_idx.size))
+    cols = [stim_color(int(a), n_stim) if dd <= _GRAD_FP_RING_TOL else "0.55"
+            for a, dd in zip(ring_idx, ring_dist)]
+    return cols, int((ring_dist <= _GRAD_FP_RING_TOL).sum())
+
+
 def _fit_period_grad_fp_basis(d, rep_key, period="longdelay"):
     """Fit a 2-component PCA on ONE period's gradient fixed points of an
     already-loaded pickle dict `d`, for representation `rep_key`. `period` selects
@@ -3455,15 +3799,19 @@ def _grad_fp_3d_project(d, rep_key, pca):
                           present only where the pickle saved it
       n_stim            : stimulus-color count (dense ring size)
     Pure data prep — the actual drawing lives in _draw_grad_fp_3d_row so several
-    rules can share one figure."""
+    rules can share one figure. Like the 2D version it returns
+    (periods, overlay, ...): `periods` are the periods that get a panel and
+    `overlay[period]` the further probes drawn inside that same panel, while the
+    projection/z dicts are keyed by probe so they cover both."""
     results = d["results"]
-    periods = list(results.keys())
+    periods, overlay = _grad_fp_period_panels(results)
+    drawn = periods + [n for p in periods for n in overlay.get(p, [])]
 
     def _flat(arr):
         arr = np.asarray(arr, dtype=float)
         return arr.reshape(arr.shape[0], -1)
 
-    n_stim = 1 + max(int(s) for v in periods for s in np.asarray(results[v]["stim"]))
+    n_stim = 1 + max(int(s) for v in drawn for s in np.asarray(results[v]["stim"]))
     # Dense stimulus angles (radians), indexed by each fixed point's `stim`. Fall
     # back to evenly-spaced trained directions if the pickle lacks dense angles.
     dense_angles = np.asarray(d.get("angles", []), dtype=float)
@@ -3476,18 +3824,36 @@ def _grad_fp_3d_project(d, rep_key, pca):
 
     def _target_cos(v, e):
         """Ideal cos-output target: cos(response angle) in the response period,
-        else 0 (the task only demands an output during Response)."""
-        stim = np.asarray(e["stim"], dtype=int)
-        if "response" not in v.lower():
-            return np.zeros(stim.shape[0], dtype=float)
-        if dense_angles.size and int(stim.max()) < dense_angles.size:
-            ang = dense_angles[stim]
-        else:
-            ang = 2.0 * np.pi * stim / max(n_stim, 1)
-        return np.cos(ang + resp_offset)
+        else 0 (the task only demands an output during Response).
 
-    proj_by_period = {v: pca.transform(_flat(results[v][rep_key])) for v in periods}
-    z_by_period = {v: _target_cos(v, results[v]) for v in periods}
+        The period comes from the entry's `input_period`, not from the probe name:
+        an overlaid probe such as "longresponse_naiveseed" is solved under the
+        response input but its `stim` is only a seed index, so its angle is taken
+        from the reference point it LANDED on (ring_angle_idx) — the same source
+        as its color — and a point that landed nowhere near the reference gets 0
+        rather than a fabricated height."""
+        stim = np.asarray(e["stim"], dtype=int)
+        period = str(e.get("input_period", v))
+        if "response" not in period.lower():
+            return np.zeros(stim.shape[0], dtype=float)
+        if e.get("stim_is_stimulus", True):
+            idx, valid = stim, np.ones(stim.shape[0], dtype=bool)
+        else:
+            ring_idx, ring_dist = e.get("ring_angle_idx"), e.get("ring_dist")
+            if ring_idx is None:
+                return np.zeros(stim.shape[0], dtype=float)
+            idx = np.asarray(ring_idx, dtype=int)
+            valid = (np.asarray(ring_dist, dtype=float) <= _GRAD_FP_RING_TOL
+                     if ring_dist is not None
+                     else np.ones(idx.shape[0], dtype=bool))
+        if dense_angles.size and int(idx.max()) < dense_angles.size:
+            ang = dense_angles[idx]
+        else:
+            ang = 2.0 * np.pi * idx / max(n_stim, 1)
+        return np.where(valid, np.cos(ang + resp_offset), 0.0)
+
+    proj_by_period = {v: pca.transform(_flat(results[v][rep_key])) for v in drawn}
+    z_by_period = {v: _target_cos(v, results[v]) for v in drawn}
 
     # Within-period RECORDED trajectory of the exemplar stimulus (how the state
     # moves and converges during each period), projected into the same basis.
@@ -3502,7 +3868,7 @@ def _grad_fp_3d_project(d, rep_key, pca):
         if tr is not None and int(results[v].get("traj_stim", _TRAJ_STIM)) == _TRAJ_STIM:
             traj_by_period[v] = pca.transform(_flat(tr))   # (win_T, 2)
 
-    return periods, proj_by_period, z_by_period, traj_by_period, n_stim
+    return periods, overlay, proj_by_period, z_by_period, traj_by_period, n_stim
 
 
 def _rotate_hidden_3d_content(rep_key, proj, traj):
@@ -3525,7 +3891,8 @@ def _rotate_hidden_3d_content(rep_key, proj, traj):
 def _draw_grad_fp_3d_row(fig, results, periods, proj_by_period, z_by_period,
                          traj_by_period, n_stim, lim, zmax, n_rows, row_idx,
                          n_col, show_period_titles=True, row_label=None,
-                         draw_periods=None):
+                         draw_periods=None, overlay=None, transpose=False,
+                         pc_label=None):
     """Draw one rule's per-period 3D panels into row `row_idx` of an
     (n_rows x n_col) subplot grid on `fig`, using precomputed projections. Shared
     x-y limit `lim` and symmetric z-limit `zmax` are passed in so that multiple
@@ -3534,19 +3901,37 @@ def _draw_grad_fp_3d_row(fig, results, periods, proj_by_period, z_by_period,
     Fixation/Stimulus/… titles (typically only the top row); `row_label` writes a
     rotated label (e.g. the task rule) to the left of the row's first panel.
 
+    `transpose` swaps what the grid's two directions mean. Default (False): this
+    call fills ROW `row_idx` with the rule's periods, so periods run along x and
+    each rule is a row — periods get the panel titles and the rule gets the side
+    label. With True it fills COLUMN `row_idx` instead, so RULES run along x and
+    periods run down y; the labels swap with the axes they name — the rule titles
+    its column (top row only) and each period labels its row (first column only).
+    `show_period_titles` is then unused: which labels appear follows from the
+    panel's own position in the grid.
+
     `draw_periods` selects which periods get their OWN panel (defaults to all of
     `periods`). A period omitted from `draw_periods` is still used as the previous-
     period anchor for the next drawn panel's trajectory connector — so e.g. the
     Stimulus panel can keep its fixation→stimulus trajectory even when the
-    Fixation panel itself is not drawn."""
+    Fixation panel itself is not drawn.
+
+    `overlay[period]` (from _grad_fp_period_panels) lists further probes solved
+    under that period's input. Unlike the 2D figures, which draw the whole battery
+    marker-coded, the 3D panels draw one added probe per period at most
+    (_grad_fp_3d_overlay) in the SAME circle marker and size as everything else,
+    in gray — see the note above _GRAD_FP_3D_OVERLAY_KIND. The dashed ring line and
+    the trajectory connector stay tied to the period's OWN probe, which is the only
+    one the trial actually traversed."""
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (enables 3d projection)
     if draw_periods is None:
         draw_periods = periods
 
     # Angle-0 exemplar fixed point (x,y,z) per period, for the anchored connector.
     # Built over ALL `periods` (incl. undrawn ones) so an undrawn previous period
-    # can still anchor the next drawn panel's trajectory.
-    _TRAJ_STIM = 0
+    # can still anchor the next drawn panel's trajectory. Callers that trim panels
+    # must include these in their axis limits — see _grad_fp_3d_anchor_xyz.
+    _TRAJ_STIM = _GRAD_FP_TRAJ_STIM
     angle0_pt = {}
     for v in periods:
         st = np.asarray(results[v]["stim"], dtype=int)
@@ -3558,8 +3943,10 @@ def _draw_grad_fp_3d_row(fig, results, periods, proj_by_period, z_by_period,
     _traj_col = stim_color(_TRAJ_STIM, n_stim)
 
     for j, v in enumerate(draw_periods):
-        ax = fig.add_subplot(n_rows, n_col, row_idx * n_col + j + 1,
-                             projection="3d")
+        # `row_idx` indexes the row normally, the COLUMN when transposed; `j` (the
+        # period) indexes the other direction.
+        cell = (j * n_col + row_idx if transpose else row_idx * n_col + j) + 1
+        ax = fig.add_subplot(n_rows, n_col, cell, projection="3d")
         e = results[v]
         xy = proj_by_period[v]                       # (batch, 2)
         z = z_by_period[v]
@@ -3570,16 +3957,26 @@ def _draw_grad_fp_3d_row(fig, results, periods, proj_by_period, z_by_period,
         ax.plot_surface(_pg, _pg.T, np.zeros((2, 2)), color="0.5", alpha=0.12,
                         edgecolor="none", shade=False, zorder=0)
         good = _fixed_point_mask(e, xy.shape[0])
-        for i in range(xy.shape[0]):
-            col = stim_color(int(stim[i]), n_stim)
-            if good[i]:
-                ax.scatter(xy[i, 0], xy[i, 1], z[i], color=col, marker="o", s=14,
-                           edgecolor="black", linewidth=0.3, alpha=0.85)
-            else:
-                # Over-threshold point: hollow marker.
-                ax.scatter(xy[i, 0], xy[i, 1], z[i], facecolor="none",
-                           edgecolor=col, marker="o", s=14, linewidth=0.8,
-                           alpha=0.85)
+        # One circle style for every fixed point in these panels; only the color
+        # differs (gray throughout the fixation panel — see _grad_fp_3d_colors).
+        _fp_style = dict(marker="o", s=14, fill=True, z=3)
+        # This period's own probe.
+        _scatter_grad_fp(ax, xy, _fp_style,
+                         _grad_fp_3d_colors(v, e, stim, n_stim), good,
+                         z_vals=np.asarray(z, dtype=float))
+        # Plus this period's added fixed points, in gray (Fixation: the ring-alike
+        # memory-seeded ring; Response: the naive-seeded solve — see
+        # _GRAD_FP_3D_OVERLAY_KIND).
+        for name in _grad_fp_3d_overlay(v, overlay, results):
+            if name not in proj_by_period:      # not projected for this figure
+                continue
+            pe = results[name]
+            pxy = proj_by_period[name]
+            _scatter_grad_fp(ax, pxy, _fp_style,
+                             _grad_fp_3d_colors(v, pe, np.asarray(pe["stim"]),
+                                                n_stim),
+                             _fixed_point_mask(pe, pxy.shape[0]),
+                             z_vals=np.asarray(z_by_period[name], dtype=float))
         # Connect the converged fixed points into their stimulus-ordered ring
         # with a thin dashed black line, tracing the ring-attractor manifold the
         # fixed points lie on. One representative point per stimulus (mean of its
@@ -3627,7 +4024,12 @@ def _draw_grad_fp_3d_row(fig, results, periods, proj_by_period, z_by_period,
                 # End: current period's fixed point (solid edge).
                 ax.scatter([p1[0]], [p1[1]], [p1[2]], color=_traj_col, marker="o",
                            s=30, edgecolor="black", linewidth=0.6, zorder=6)
-        if show_period_titles:
+        # Titles name whichever quantity runs along x: the period normally, the
+        # task rule when transposed (and then only above the grid's first row).
+        if transpose:
+            if j == 0 and row_label is not None:
+                ax.set_title(row_label, fontsize=11, pad=-6)
+        elif show_period_titles:
             ax.set_title(e.get("period_title", v), fontsize=11, pad=-6)
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)
@@ -3637,15 +4039,22 @@ def _draw_grad_fp_3d_row(fig, results, periods, proj_by_period, z_by_period,
         # ranges still differ per axis, this only equalizes the visual box.
         ax.set_box_aspect((1, 1, 1))
         # No tick labels, so pull the axis labels in tight against each axis.
-        ax.set_xlabel("PC1", fontsize=7, labelpad=-15)
-        ax.set_ylabel("PC2", fontsize=7, labelpad=-15)
+        # `pc_label` names which period's PCA the shared x-y basis came from (e.g.
+        # "Delay PC1"): the same basis is used by every panel, so without it the
+        # reader cannot tell the delay-basis figure from the stimulus-basis one.
+        _pc = f"{pc_label} " if pc_label else ""
+        ax.set_xlabel(f"{_pc}PC1", fontsize=7, labelpad=-15)
+        ax.set_ylabel(f"{_pc}PC2", fontsize=7, labelpad=-15)
         # z-axis label on EVERY panel, same small size/tight pad as x & y (was a
         # single larger shared label on the rightmost panel only).
         ax.set_zlabel("Output cos θ", fontsize=7, labelpad=-15)
-        # Row label (e.g. the task rule) just to the left of the leftmost panel
-        # (small negative x keeps it close to the 3D box rather than far out).
-        if j == 0 and row_label is not None:
-            ax.text2D(-0.10, 0.5, row_label, transform=ax.transAxes,
+        # Side label, just to the left of the leftmost panel (a small negative x
+        # keeps it close to the 3D box rather than far out): it names whichever
+        # quantity runs down y — the task rule normally, the PERIOD when transposed,
+        # and then only on the grid's first column.
+        _side = (e.get("period_title", v) if transpose else row_label)
+        if (row_idx == 0 if transpose else j == 0) and _side is not None:
+            ax.text2D(-0.10, 0.5, _side, transform=ax.transAxes,
                       rotation=90, va="center", ha="right", fontsize=11)
         # Hide numeric tick labels on all three axes (keep the tick marks).
         ax.set_xticklabels([])
@@ -3689,13 +4098,19 @@ def _render_grad_fixed_points_3d(d, rep_key, out_path, basis=None):
     if basis is None:
         basis = _fit_period_grad_fp_basis(d, rep_key)
 
-    periods, proj, zc, traj, n_stim = _grad_fp_3d_project(d, rep_key, basis)
+    periods, overlay, proj, zc, traj, n_stim = _grad_fp_3d_project(d, rep_key, basis)
     # Rotate the hidden-state content 90° (see _rotate_hidden_3d_content); a no-op
     # for the modulation / eff-modulation representations.
     proj, traj = _rotate_hidden_3d_content(rep_key, proj, traj)
 
-    lim = max(np.abs(np.vstack(list(proj.values()))).max() * 1.08, 1e-9)
-    zmax = max(np.abs(np.concatenate([zc[v].ravel() for v in periods])).max() * 1.1,
+    # Limits span exactly what the panels draw: the period probes plus the few
+    # overlaid ones the 3D figures keep (the naive probes are not drawn here, so
+    # they must not stretch the axes either).
+    drawn_3d = [v for p in periods
+                for v in [p] + _grad_fp_3d_overlay(p, overlay, results)
+                if v in proj]
+    lim = max(np.abs(np.vstack([proj[v] for v in drawn_3d])).max() * 1.08, 1e-9)
+    zmax = max(np.abs(np.concatenate([zc[v].ravel() for v in drawn_3d])).max() * 1.1,
                1e-6)
 
     n_col = len(periods)
@@ -3703,7 +4118,8 @@ def _render_grad_fixed_points_3d(d, rep_key, out_path, basis=None):
     fig = plt.figure(figsize=(1.8 * n_col, 1.8))
     _draw_grad_fp_3d_row(fig, results, periods, proj, zc, traj, n_stim, lim, zmax,
                          n_rows=1, row_idx=0, n_col=n_col,
-                         show_period_titles=True, row_label=None)
+                         show_period_titles=True, row_label=None,
+                         overlay=overlay)
     # Per-panel z-labels now (no shared right-margin label), so use full width.
     fig.subplots_adjust(left=0.02, right=0.98, bottom=0.02, top=0.92, wspace=0.12)
     _save_fig(fig, out_path)
@@ -4070,25 +4486,26 @@ def _render_two_task_grad_fp_2d_combined(rule_data, rep_key, out_path, basis,
         if not periods or any(results[v].get(rep_key) is None for v in periods):
             print(f"  Skipped '{rep_key}' for rule '{rule}': not in pickle.")
             continue
-        periods, proj, traj, a0, n_stim = _grad_fp_2d_project(d, rep_key, basis)
-        per_rule.append((rule, results, periods, proj, traj, a0, n_stim))
+        periods, ovl, proj, traj, a0, n_stim = _grad_fp_2d_project(d, rep_key, basis)
+        per_rule.append((rule, results, periods, ovl, proj, traj, a0, n_stim))
     if not per_rule:
         print(f"  Skipped '{rep_key}': no rule had it.")
         return
 
     # Shared symmetric x-y limit across ALL rows (so rows are comparable).
-    lim = max(np.abs(np.vstack([p for (_, _, _, proj, _, _, _) in per_rule
+    lim = max(np.abs(np.vstack([p for (_, _, _, _, proj, _, _, _) in per_rule
                                 for p in proj.values()])).max() * 1.08, 1e-9)
-    n_col = max(len(periods) for (_, _, periods, _, _, _, _) in per_rule)
+    n_col = max(len(periods) for (_, _, periods, _, _, _, _, _) in per_rule)
     n_rows = len(per_rule)
 
     fig, axs = plt.subplots(n_rows, n_col, figsize=(2.1 * n_col, 2.1 * n_rows),
                             squeeze=False)
-    for row_idx, (rule, results, periods, proj, traj, a0, n_stim) in enumerate(per_rule):
+    for row_idx, (rule, results, periods, ovl, proj, traj, a0,
+                  n_stim) in enumerate(per_rule):
         _draw_grad_fp_2d_row(
             axs[row_idx], results, periods, proj, traj, a0, n_stim, lim,
             show_period_titles=(row_idx == 0),
-            row_label=_TASK_DISPLAY.get(rule, rule))
+            row_label=_TASK_DISPLAY.get(rule, rule), overlay=ovl)
 
     # Shared x/y labels for the whole grid (all panels share the same basis).
     fig.supxlabel(f"{pc_label} PC1", fontsize=11)
@@ -4107,6 +4524,21 @@ _TWOTASK_FP_BASIS_VARIANTS = [
     ("longstimulus", "stimpc",  "Stimulus"),
 ]
 
+# Periods the two-task 3D figure does NOT give a panel to, matched as substrings of
+# the period key. Both are still kept in `periods`, so each remains the anchor for
+# the next drawn panel's incoming trajectory (fixation → Stimulus, delay →
+# Response) — they are dropped as panels, not as data.
+#   Fixation — its fixed points carry no stimulus structure at all.
+#   Delay    — the memory ring is what the x-y basis is already fit on, and the 2D
+#              figures show it in full; the 3D figure keeps only the two periods
+#              where the z axis says something, i.e. where the ring forms
+#              (Stimulus) and where it lifts off the z=0 plane (Response).
+# Shared with the task-INTERPOLATION 3D figure (_render_interp_alpha_fp_3d), so both
+# two-task 3D figures show the same two epochs and read as a pair; there the skipped
+# periods are dropped outright, nothing being anchored across periods. The 2D and
+# one-task 3D figures still draw every period.
+_TWOTASK_FP_3D_SKIP_PANELS = ("fixation", "delay")
+
 
 def _plot_two_task_grad_fp_combined(stem_prefix, log_label, render_fn,
                                     with_pc_label):
@@ -4123,8 +4555,9 @@ def _plot_two_task_grad_fp_combined(stem_prefix, log_label, render_fn,
     render_fn     : the combined renderer (_render_two_task_grad_fp_2d_combined or
                     _..._3d_combined); called as
                     render_fn(rule_data, rep_key, out_path, basis[, pc_label=...]).
-    with_pc_label : pass the variant's axis-label prefix as pc_label= (2D only;
-                    the 3D renderer uses generic PC1/PC2 axis labels)."""
+    with_pc_label : pass the variant's axis-label prefix as pc_label=, so the panels
+                    say which period's PCA the shared basis is ("Delay PC1" vs
+                    "Stimulus PC1"). Both the 2D and 3D renderers take it."""
     paths = _twotask_grad_fp_paths()
     if not paths:
         print("  Skipped: no fixed_points_grad_*_{rule}.pkl in "
@@ -4179,7 +4612,8 @@ def plot_two_task_grad_fixed_points():
         _render_two_task_grad_fp_2d_combined, with_pc_label=True)
 
 
-def _render_two_task_grad_fp_3d_combined(rule_data, rep_key, out_path, basis):
+def _render_two_task_grad_fp_3d_combined(rule_data, rep_key, out_path, basis,
+                                         pc_label=None):
     """Draw ALL two-task rules as stacked rows of a SINGLE 3D figure for one
     representation. `rule_data` is an ordered list of (rule, loaded-pickle-dict)
     (row order = top→bottom); every rule is projected into the shared `basis` and
@@ -4187,45 +4621,81 @@ def _render_two_task_grad_fp_3d_combined(rule_data, rep_key, out_path, basis):
     comparable across rows. Period titles print only on the top row; each row is
     labeled on the left by its task rule."""
     # Project every rule first, so shared axis limits can span all rows.
-    per_rule = []   # (rule, results, periods, draw_periods, proj, zc, traj, n_stim)
+    per_rule = []   # (rule, results, periods, draw_periods, ovl, proj, zc, traj, n_stim)
     for rule, d in rule_data:
         results = d["results"]
         periods = list(results.keys())
         if not periods or any(results[v].get(rep_key) is None for v in periods):
             print(f"  Skipped '{rep_key}' for rule '{rule}': not in pickle.")
             continue
-        periods, proj, zc, traj, n_stim = _grad_fp_3d_project(d, rep_key, basis)
-        # Drop the fixation PANEL (its fixed points carry no stimulus structure),
-        # but KEEP fixation in `periods` so it still anchors the Stimulus panel's
-        # incoming trajectory. `draw_periods` = the panels actually drawn.
-        draw_periods = [v for v in periods if "fixation" not in v.lower()]
+        periods, ovl, proj, zc, traj, n_stim = _grad_fp_3d_project(d, rep_key, basis)
+        # Draw only the Stimulus and Response panels; the fixation and delay panels
+        # are skipped (_TWOTASK_FP_3D_SKIP_PANELS) but KEPT in `periods`, so each
+        # still anchors the next drawn panel's incoming trajectory.
+        # `draw_periods` = the panels actually drawn.
+        draw_periods = [v for v in periods
+                        if not any(skip in v.lower()
+                                   for skip in _TWOTASK_FP_3D_SKIP_PANELS)]
         # NB: unlike the one-task figure, the two-task hidden panels are NOT
         # rotated — they use the same viewing angle as modulation / e_modulation.
-        per_rule.append((rule, results, periods, draw_periods, proj, zc, traj, n_stim))
+        per_rule.append((rule, results, periods, draw_periods, ovl, proj, zc, traj,
+                         n_stim))
     if not per_rule:
         print(f"  Skipped '{rep_key}': no rule had it.")
         return
 
     # Shared symmetric x-y and z limits across ALL rows (so rows are comparable);
-    # computed over the DRAWN periods only (the fixation panel is not drawn).
-    lim = max(np.abs(np.vstack([proj[v]
-                                for (_, _, _, draw_periods, proj, _, _, _) in per_rule
-                                for v in draw_periods])).max() * 1.08, 1e-9)
-    zmax = max(np.abs(np.concatenate([zc[v].ravel()
-                                      for (_, _, _, draw_periods, _, zc, _, _) in per_rule
-                                      for v in draw_periods])).max() * 1.1, 1e-6)
-    n_col = max(len(draw_periods) for (_, _, _, draw_periods, _, _, _, _) in per_rule)
-    n_rows = len(per_rule)
+    # computed over the DRAWN periods only (the fixation and delay panels are not
+    # drawn). Spans the drawn panels' own probes AND the probes actually overlaid
+    # into them (the 3D figures keep only the ring-alike fixation one), so an
+    # overlaid point is never silently outside the axes and an undrawn one never
+    # stretches them.
+    def _panel_probes(draw_periods, ovl, results, proj):
+        return [v for p in draw_periods
+                for v in [p] + _grad_fp_3d_overlay(p, ovl, results)
+                if v in proj]
+
+    # ... plus the single anchor point each panel inherits from the period BEFORE
+    # it, which the panel draws as its trajectory's start. That period may itself be
+    # undrawn (fixation, delay), and its anchor can sit outside the drawn probes'
+    # own extent, so it has to be in the limits even though the rest of its ring is
+    # deliberately not.
+    def _anchor_xyz(rows):
+        pts = [_grad_fp_3d_anchor_xyz(res, periods, draw_periods, proj, zc)
+               for (_, res, periods, draw_periods, _, proj, zc, _, _) in rows]
+        pts = [p for p in pts if p[0].size]
+        if not pts:
+            return np.zeros((0, 2)), np.zeros(0)
+        return (np.vstack([xy for xy, _ in pts]),
+                np.concatenate([z for _, z in pts]))
+
+    anchor_xy, anchor_z = _anchor_xyz(per_rule)
+    lim = max(np.abs(np.vstack(
+        [proj[v] for (_, res, _, draw_periods, ovl, proj, _, _, _) in per_rule
+         for v in _panel_probes(draw_periods, ovl, res, proj)]
+        + [anchor_xy])).max() * 1.08, 1e-9)
+    zmax = max(np.abs(np.concatenate(
+        [zc[v].ravel() for (_, res, _, draw_periods, ovl, _, zc, _, _) in per_rule
+         for v in _panel_probes(draw_periods, ovl, res, zc)]
+        + [anchor_z])).max() * 1.1, 1e-6)
+    # TASK RULE runs along x (one column per rule, named by the column title) and
+    # TRIAL PERIOD down y (one row per period, named by the row's side label) — the
+    # transpose of the original layout, so the two rules sit side by side for
+    # comparison and the trial unfolds downward.
+    n_col = len(per_rule)
+    n_rows = max(len(draw_periods)
+                 for (_, _, _, draw_periods, _, _, _, _, _) in per_rule)
 
     fig = plt.figure(figsize=(1.8 * n_col, 1.8 * n_rows))
-    for row_idx, (rule, results, periods, draw_periods, proj, zc, traj, n_stim) in enumerate(per_rule):
+    for col_idx, (rule, results, periods, draw_periods, ovl, proj, zc, traj,
+                  n_stim) in enumerate(per_rule):
         _draw_grad_fp_3d_row(
             fig, results, periods, proj, zc, traj, n_stim, lim, zmax,
-            n_rows=n_rows, row_idx=row_idx, n_col=n_col,
-            show_period_titles=(row_idx == 0),
+            n_rows=n_rows, row_idx=col_idx, n_col=n_col,
             row_label=_TASK_DISPLAY.get(rule, rule),
-            draw_periods=draw_periods)
-    # hspace sets the vertical gap between the two task rows (3D axes carry large
+            draw_periods=draw_periods, overlay=ovl, transpose=True,
+            pc_label=pc_label)
+    # hspace sets the vertical gap between the period rows (3D axes carry large
     # internal margins, so this is negative but less so than the tightest pack).
     # Per-panel z-labels now (no shared right-margin label), so use full width.
     fig.subplots_adjust(left=0.06, right=0.98, bottom=0.02, top=0.94,
@@ -4255,7 +4725,7 @@ def plot_two_task_grad_fixed_points_3d():
     """
     _plot_two_task_grad_fp_combined(
         "twotask_grad_fixed_points_3d", "twotask-3d",
-        _render_two_task_grad_fp_3d_combined, with_pc_label=False)
+        _render_two_task_grad_fp_3d_combined, with_pc_label=True)
 
 
 def plot_two_task_interp_fixed_points(period="longdelay"):
@@ -4284,9 +4754,17 @@ def _render_interp_alpha_fp_3d(d, rep_key, out_path, basis):
     """3D figure of the TASK-INTERPOLATION fixed points: one panel per trial
     period, x = interpolation level alpha (pro<->anti), y/z = the two PCs of the
     shared `basis` (delayanti delay-period). Each stimulus is one line traced
-    across alpha, colored by stimulus. Reads the interp_fixed_points_{aname}.pkl
+    across alpha, colored NOT by stimulus but by the universal dark→light alpha
+    ramp (`_ALPHA_CMAP`). Reads the interp_fixed_points_{aname}.pkl
     written by two_task_analysis.py, where results[period][rep_key] has shape
-    (n_alpha, n_stim, feat)."""
+    (n_alpha, n_stim, feat).
+
+    Panels: Stimulus and Response only — the same two the two-task grad
+    fixed-point 3D figure keeps (`_TWOTASK_FP_3D_SKIP_PANELS`), so the two figures
+    show the same epochs at the same width and can be read as a pair. Unlike that
+    figure nothing here is anchored across periods (each panel is its own alpha
+    sweep), so the skipped periods are dropped outright, including from the shared
+    PC limits."""
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (enables 3d projection)
     _ensure_out_dir()
     results = d.get("results", {})
@@ -4296,6 +4774,8 @@ def _render_interp_alpha_fp_3d(d, rep_key, out_path, basis):
     _CANON = ["longfixation", "longstimulus", "longdelay", "longresponse"]
     periods = ([v for v in _CANON if v in results]
                + [v for v in results if v not in _CANON])
+    periods = [v for v in periods
+               if not any(skip in v.lower() for skip in _TWOTASK_FP_3D_SKIP_PANELS)]
     if not periods or any(results[v].get(rep_key) is None for v in periods):
         print(f"  Skipped '{rep_key}': not in interp pickle "
               f"(re-run two_task_analysis.py).")
@@ -4314,32 +4794,40 @@ def _render_interp_alpha_fp_3d(d, rep_key, out_path, basis):
     lim = max(np.abs(np.concatenate([p.reshape(-1, 2) for p in proj_by_period.values()])).max()
               * 1.08, 1e-9)
 
-    n_col = len(periods)
-    fig = plt.figure(figsize=(1.9 * n_col, 1.9))
+    # TRIAL PERIOD runs down y — one panel per row, named by a rotated label to the
+    # left of the panel, exactly as in the transposed grad fixed-point 3D figure, so
+    # the two figures read as a pair.
+    #
+    # Panel geometry is matched to that figure PANEL FOR PANEL: same 1.8 in grid
+    # cell, same margins and row spacing, so each subplot rect comes out the same
+    # (~1.57 x 1.70 in) and mplot3d therefore draws the cube at the same size in
+    # both. The one departure is `left`, widened from that figure's 0.06 to keep the
+    # rotated period labels inside the canvas of a figure a third as wide — which
+    # happens to land the axes width on the same number, since there is no `wspace`
+    # here to take out of it.
+    n_rows = len(periods)
+    fig = plt.figure(figsize=(1.8, 1.8 * n_rows))
     for j, v in enumerate(periods):
-        ax = fig.add_subplot(1, n_col, j + 1, projection="3d")
+        ax = fig.add_subplot(n_rows, 1, j + 1, projection="3d")
         xy = proj_by_period[v]                       # (n_alpha, n_stim, 2)
         good = np.asarray(results[v].get("is_fixed",
                           np.ones(xy.shape[:2], bool)), dtype=bool)
-        # Fixation has no stimulus tuning (all 8 lines coincide), so coloring by
-        # stimulus is misleading — draw it black instead of the stimulus rainbow.
-        is_fixation = "fixation" in v.lower()
-        # Along each stimulus trajectory, shade markers DARK->BRIGHT across the
-        # sweep: alpha=0 is a DARKENED version of the base color (toward black,
-        # e.g. dark red), alpha=1 is a LIGHTENED tint (toward white), so the
-        # pro<->anti direction is readable per line. Maps alpha in [0,1] to
-        # _shade's frac in [-0.55, +0.6].
+        # NOT colored by stimulus: every line takes the SAME universal sequential
+        # ramp, dark at alpha=0 → light at alpha=1 (_ALPHA_CMAP), so color encodes
+        # only the sweep direction. This also retires the old fixation special case
+        # (that panel was drawn black because its lines coincide and a rainbow there
+        # would be misleading) — with one ramp everywhere, every panel matches.
         na = xy.shape[0]
-        t = (alphas - alphas.min()) / max(alphas.max() - alphas.min(), 1e-9)
-        shade_frac = -0.55 + t * (0.6 - (-0.55))
+        t = _alpha_ramp_norm(alphas)
+        # Connector in the ramp's mid tone, so the markers carry the gradient.
+        line_col = _alpha_ramp_color(0.5)
         for s in range(n_stim):
-            base = "black" if is_fixation else stim_color(s, n_stim)
             # Line across alpha for this stimulus (PC1=y, PC2=z vs alpha=x).
-            ax.plot(alphas, xy[:, s, 0], xy[:, s, 1], "-", color=base,
+            ax.plot(alphas, xy[:, s, 0], xy[:, s, 1], "-", color=line_col,
                     linewidth=1.1, alpha=0.5, zorder=2)
-            # Per-alpha shaded points: converged filled, over-threshold hollow.
+            # Per-alpha ramp points: converged filled, over-threshold hollow.
             for ai in range(na):
-                col = _shade(base, shade_frac[ai])
+                col = _alpha_ramp_color(t[ai])
                 if good[ai, s]:
                     ax.scatter(alphas[ai], xy[ai, s, 0], xy[ai, s, 1], color=col,
                                marker="o", s=12, edgecolor="black", linewidth=0.3,
@@ -4348,10 +4836,19 @@ def _render_interp_alpha_fp_3d(d, rep_key, out_path, basis):
                     ax.scatter(alphas[ai], xy[ai, s, 0], xy[ai, s, 1],
                                facecolor="none", edgecolor=col, marker="o", s=12,
                                linewidth=0.7, alpha=0.9, zorder=3)
-        ax.set_title(results[v].get("period_title", v), fontsize=11, pad=-6)
+        # Period name labels its ROW, to the left of the panel (same placement and
+        # size as the grad fixed-point 3D figure's period labels).
+        ax.text2D(-0.02, 0.5, results[v].get("period_title", v),
+                  transform=ax.transAxes, rotation=90, va="center", ha="right",
+                  fontsize=11)
         ax.set_xlim(alphas.min(), alphas.max())
         ax.set_ylim(-lim, lim)
         ax.set_zlim(-lim, lim)
+        # Cube box, same as the grad 3D panels. Stretching it along x (alpha) was
+        # tried to spend the column's spare width: mplot3d caps the drawn box by the
+        # panel HEIGHT, so a 2:1 stretch bought ~6% width and brought the alpha
+        # axis's far tick label into the "Delay PC1" label. Not worth it.
+        ax.set_box_aspect((1, 1, 1))
         # More-negative labelpad pulls each axis label in closer to its axis.
         ax.set_xlabel(r"$\alpha$", fontsize=7, labelpad=-15)
         ax.set_ylabel("Delay PC1", fontsize=7, labelpad=-17)
@@ -4365,9 +4862,16 @@ def _render_interp_alpha_fp_3d(d, rep_key, out_path, basis):
         ax.grid(False)
         for _pane in (ax.xaxis, ax.yaxis, ax.zaxis):
             _pane.pane.set_visible(False)
+        # Transparent axes background. The rows are packed with a NEGATIVE hspace, so
+        # each panel's rect overlaps its neighbor's; an opaque patch on the lower
+        # panel would paint over the upper panel's alpha axis labels, which sit low
+        # in its rect (this happened — the top panel lost its "0", "α" and "1").
+        ax.patch.set_alpha(0.0)
 
-    # Per-panel z-labels (no shared right-margin label), so use the full width.
-    fig.subplots_adjust(left=0.02, right=0.98, bottom=0.04, top=0.92, wspace=0.12)
+    # Margins/row spacing copied from the grad fixed-point 3D figure (only `left`
+    # differs, see above) so the subplot rects match. hspace is negative because 3D
+    # axes carry large internal margins.
+    fig.subplots_adjust(left=0.11, right=0.98, bottom=0.02, top=0.94, hspace=-0.05)
     _save_fig(fig, out_path)
 
 
@@ -4376,9 +4880,11 @@ def plot_two_task_interp_alpha_fixed_points_3d():
     3D figure of the task-interpolation fixed points: per trial period, x = the
     pro<->anti interpolation level alpha, y/z = the two PCs of the delayanti
     delay-period basis (the SAME shared basis as the grad-fixed-point 3D figures).
-    Each of the 8 stimuli is one line traced across alpha, colored by stimulus, so
-    the figure shows how each period's fixed points move as the task cue morphs
-    from anti (alpha=0) to pro (alpha=1). One figure per representation:
+    Each of the 8 stimuli is one line traced across alpha, so the figure shows how
+    each period's fixed points move as the task cue morphs from anti (alpha=0) to
+    pro (alpha=1). Color is NOT stimulus: every line uses one sequential ramp, dark
+    at alpha=0 → light at alpha=1 (`_ALPHA_CMAP`), so hue carries the sweep
+    direction only. One figure per representation:
       twotask_interp_alpha_fixed_points_3d_{seed}_modulation.png  (+ emodulation, hidden)
     Reads interp_fixed_points_{aname}.pkl (which stores all three representations).
     """
@@ -4405,15 +4911,119 @@ def plot_two_task_interp_alpha_fixed_points_3d():
             basis)
 
 
+def _interp_alphas_or_default(n_default=11):
+    """The rule-input alpha sweep the interpolation figures use.
+
+    Read from the interp pickle so an illustration of the color scheme matches the
+    run's actual sampling; falls back to `n_default` evenly spaced values in [0, 1]
+    (announced, not silent) when that pickle is missing or unreadable, so a pure
+    legend figure still renders on a machine that cannot load it."""
+    try:
+        run_dir = TWOTASKS_DIR / TWOTASK_ANAME
+        matches = sorted(run_dir.glob("interp_fixed_points_*.pkl"))
+        if matches:
+            with open(matches[0], "rb") as f:
+                return np.asarray(pickle.load(f)["alphas"], dtype=float)
+        print("  interp pickle not found; illustrating alpha with "
+              f"{n_default} evenly spaced values.")
+    except Exception as exc:                     # unreadable pickle, missing key
+        print(f"  interp pickle unreadable ({type(exc).__name__}); illustrating "
+              f"alpha with {n_default} evenly spaced values.")
+    return np.linspace(0.0, 1.0, n_default)
+
+
+def plot_two_task_alpha_colorscheme():
+    """
+    Illustration: the rule-input alpha color convention used by every two-task
+    task-interpolation figure (`twotask_interp_alpha_fixed_points_3d`,
+    `twotask_interp_alpha_bifurcation{,_hidden}`).
+
+    ONE object carries the whole convention — a continuous ramp from the anti rule
+    to the pro rule, with the sampled alphas strung along it as the very markers
+    those figures draw, overhanging the ramp so each bead's own color reads against
+    the page. The ramp is the alpha axis, so it needs no separate axis; the rule
+    names sit at the ends in their end's color, so they need no arrows; and the
+    markers sit on the color they encode, so they need no second row. That is what
+    makes it small: every element does two jobs.
+
+    A legend, not a measurement: colors come from `_alpha_ramp_color` (family 5 in
+    SCHEME.md), so this figure and the figures it documents cannot drift apart. The
+    only thing read from the run is which alphas were swept.
+    """
+    _ensure_out_dir()
+    alphas = _interp_alphas_or_default()
+    t = _alpha_ramp_norm(alphas)
+    # alpha = 0 is the ANTI rule, alpha = 1 the PRO rule (the interpolation runs
+    # anti → pro); names come from _TASK_DISPLAY so they match the other figures.
+    end_labels = (_TASK_DISPLAY.get("delayanti", "delayanti"),
+                  _TASK_DISPLAY.get("delaygo", "delaygo"))
+
+    # Geometry in INCHES, then converted: the band has to be thinner than the marker
+    # so the markers overhang it (below), and that relationship must survive anyone
+    # changing the figure height.
+    fig_h, margin_lo, margin_hi = 0.62, 0.02, 0.98
+    marker_s = 44                                     # pt^2, as in the α figures
+    band_in, marker_in = 0.045, marker_s ** 0.5 / 72.0
+    fig, ax = plt.subplots(figsize=(2.4, fig_h))
+    half = 0.5 * band_in / (fig_h * (margin_hi - margin_lo))
+
+    # The ramp itself, as a thin continuous band: sampled densely and interpolated,
+    # so it reads as the continuum alpha actually is, not as the sweep's steps.
+    band_lo, band_hi = 0.5 - half, 0.5 + half
+    grad = np.array([[_alpha_ramp_color(x) for x in np.linspace(0, 1, 256)]])
+    ax.imshow(grad, extent=[0, 1, band_lo, band_hi], origin="lower", aspect="auto",
+              interpolation="bilinear", zorder=2)
+
+    # The sweep's alphas, drawn as the fixed-point markers themselves (same circle,
+    # same black hairline edge). They OVERHANG the band by design — a marker whose
+    # fill matches the band exactly would otherwise vanish into it, and it is the
+    # overhang that lets each bead's own color read against the page.
+    assert marker_in > band_in, "markers must overhang the band to be visible"
+    ax.scatter(t, np.full(t.size, 0.5), c=[_alpha_ramp_color(x) for x in t],
+               marker="o", s=marker_s, edgecolor="black", linewidth=0.3, zorder=3)
+
+    # Rule names at the ends, each in its own end's color — that is the arrow's job
+    # done by hue instead. The light end is darkened for text legibility on white.
+    for x, lab, ha, ramp_t in ((0.0, end_labels[0], "left", 0.0),
+                               (1.0, end_labels[1], "right", 1.0)):
+        col = _alpha_ramp_color(ramp_t)
+        col = tuple(0.78 * c for c in col[:3]) if ramp_t else col[:3]
+        ax.text(x, 0.5 + 2.1 * half, lab, color=col, ha=ha, va="bottom",
+                fontsize=8.5)
+
+    # Endpoint values tucked under the band's ends, and the quantity itself centered
+    # below — the only text that is not doing a second job.
+    # Sits further from the band than the rule names above it: these three read as a
+    # conventional axis annotation, and crowding them against the ramp made the band
+    # look like it was underlining them.
+    below = 0.5 - 3.6 * half
+    ax.text(0.0, below, f"{alphas.min():g}", ha="center", va="top", fontsize=7.5,
+            color="0.25")
+    ax.text(1.0, below, f"{alphas.max():g}", ha="center", va="top", fontsize=7.5,
+            color="0.25")
+    ax.text(0.5, below, r"Rule input $\alpha$", ha="center", va="top", fontsize=8.5)
+
+    ax.set_xlim(-0.06, 1.06)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_axis_off()
+    # Hide the axes background too: with the frame off it draws nothing, but its
+    # bbox still counts toward the save's tight bbox and would pad the strip with
+    # blank rows above and below the content.
+    ax.patch.set_visible(False)
+    fig.subplots_adjust(left=0.03, right=0.97, top=margin_hi, bottom=margin_lo)
+    _save_fig(fig, OUT_DIR / "twotask_alpha_colorscheme.png")
+
+
 def plot_two_task_interp_alpha_bifurcation(period="longstimulus", rep_key="fixed_WM",
                                            pc=0):
     """
     2D bifurcation diagram of the task-interpolation fixed points for a single
     period/representation: x = the pro<->anti interpolation level alpha, y = one
     PC of the delayanti delay-period basis (PC1 by default). Each of the 8 stimuli
-    is one line traced across alpha (dark at alpha=0 -> bright at alpha=1), so a
-    fan that collapses/splits as alpha varies reads as a bifurcation of the
-    fixed-point structure. Defaults to the STIMULUS period, effective modulation
+    is one line traced across alpha, all in the SAME universal dark→light ramp
+    (`_ALPHA_CMAP`: dark at alpha=0 → light at alpha=1) rather than colored by
+    stimulus, so a fan that collapses/splits as alpha varies reads as a bifurcation
+    of the fixed-point structure. Defaults to the STIMULUS period, effective modulation
     (W⊙M). Reads interp_fixed_points_{aname}.pkl (which stores all three
     representations). Writes
       twotask_interp_alpha_bifurcation_{seed}_{period}_{rep}_pc{pc+1}.png
@@ -4442,18 +5052,19 @@ def plot_two_task_interp_alpha_bifurcation(period="longstimulus", rep_key="fixed
     good = np.asarray(results[period].get("is_fixed",
                       np.ones((na, n_stim), bool)), dtype=bool)
 
-    # Dark->bright shading along alpha (matches the 3D figure convention).
-    t = (alphas - alphas.min()) / max(alphas.max() - alphas.min(), 1e-9)
-    shade_frac = -0.55 + t * (0.6 - (-0.55))
+    # NOT colored by stimulus: one universal dark→light ramp along alpha, the same
+    # scale the 3D interpolation figure uses (_ALPHA_CMAP), so color encodes only
+    # the sweep direction and the fan's splitting/merging is what stands out.
+    t = _alpha_ramp_norm(alphas)
+    line_col = _alpha_ramp_color(0.5)     # mid tone; the markers carry the gradient
 
     _ensure_out_dir()
     fig, ax = plt.subplots(1, 1, figsize=(2.6, 2.2))
     for s in range(n_stim):
-        base = stim_color(s, n_stim)
-        ax.plot(alphas, proj[:, s, pc], "-", color=base, linewidth=1.0,
+        ax.plot(alphas, proj[:, s, pc], "-", color=line_col, linewidth=1.0,
                 alpha=0.5, zorder=2)
         for ai in range(na):
-            col = _shade(base, shade_frac[ai])
+            col = _alpha_ramp_color(t[ai])
             if good[ai, s]:
                 ax.scatter(alphas[ai], proj[ai, s, pc], color=col, marker="o",
                            s=16, edgecolor="black", linewidth=0.3, alpha=0.9, zorder=3)
@@ -4553,6 +5164,10 @@ def plot_two_task_d_combine():
     (twotasks/{TWOTASK_ANAME}/d_combine_{TWOTASK_ANAME}.pkl), which stores the
     already-permuted 8x8 FVE matrix, its tick labels, and the color range for
     each of "hidden" and "w_modulation".
+
+    The x/y tick labels ("{task} {period}") are highlighted with their trial
+    period's color from the period-bar palette (_ONETASK_PERIOD_COLORS), the same
+    colors as the input/output illustration figure's period strip.
     """
     _ensure_out_dir()
     pkl_path = TWOTASKS_DIR / TWOTASK_ANAME / f"d_combine_{TWOTASK_ANAME}.pkl"
@@ -4591,6 +5206,13 @@ def plot_two_task_d_combine():
         ax.set_xticklabels(ax.get_xticklabels(), rotation=30, ha="right", fontsize=7)
         if col == 0:
             ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=7)
+        # Highlight each "{task} {period}" tick label with its trial-period color
+        # from the period-bar palette, so the epoch a row/column belongs to reads
+        # off the same colors as the input/output illustration's period strip.
+        # Applied AFTER set_x/yticklabels, which replaces the label artists.
+        _color_period_ticklabels(ax, e["labels"], axis="x")
+        if col == 0:
+            _color_period_ticklabels(ax, e["labels"], axis="y")
 
     # One shared colorbar for all panels.
     cb = fig.colorbar(mesh, ax=list(axs), shrink=0.8)
@@ -4891,12 +5513,19 @@ def plot_two_task_cancel():
     stimuli = saved["stimuli"]
     markers = saved["markers"]
 
-    # Show the same stimuli, in the same order, as the one-task onetask_show
-    # figure (ONETASK_SHOW_STIM = [5, 2]); keep any others the pickle saved after
-    # those, and drop the preferred ones that aren't present.
-    _PREF_STIM = [5, 2]
-    stim_keys = ([s for s in _PREF_STIM if s in stimuli]
-                 + [s for s in sorted(stimuli.keys()) if s not in _PREF_STIM])
+    # Which stimuli get a row, in this order. Current pickles store every
+    # stimulus, so this is the only place the selection lives.
+    _PREF_STIM = [6, 2]
+    stim_keys = [s for s in _PREF_STIM if s in stimuli]
+    missing = [s for s in _PREF_STIM if s not in stimuli]
+    if missing:
+        # Older pickles saved only a subset of the stimuli. Top the selection up
+        # from whatever they do have so the panel grid stays full, and name the
+        # substitutes so the figure is never silently off-spec.
+        fill = [s for s in sorted(stimuli) if s not in stim_keys][:len(missing)]
+        print(f"  Note: stimuli {missing} not in the cancel pickle; showing "
+              f"{fill} instead (re-run two_task_analysis.py to save all 8).")
+        stim_keys += fill
 
     # Simulation step in ms (see SCHEME.md); the cancel pickle predates a saved
     # dt, so read it from the run's param json to relabel the x-axis in ms.
@@ -4938,14 +5567,17 @@ def plot_two_task_cancel():
             task = np.asarray(e[task_k])
             T = len(fixon)
             ax.axhline(0, color="0.6", lw=0.8, zorder=1)
-            # Colors matched to onetask_show / onetask_example_trial:
-            # Fixon = c_vals[0], Task = c_vals[3], Combine = c_vals[4].
-            ax.plot(fixon, color=c_vals[0], label="Fixon", zorder=2)
-            ax.plot(task + bias, color=c_vals[3], label="Task", zorder=2)
+            # Colors matched to onetask_show, the one-task cancellation figure,
+            # and hence to onetask_example_trial's input channels: Fixon →
+            # _IO_FIXATION (dark gray), Task → _IO_TASK (orange), Combine →
+            # _IO_COMBINE (deep blue, a hue used by neither input channel).
+            # Fixoff takes the light-gray partner of the fixation color.
+            ax.plot(fixon, color=_IO_FIXATION, label="Fixon", zorder=2)
+            ax.plot(task + bias, color=_IO_TASK, label="Task", zorder=2)
             if e.get("fixate_off"):
-                ax.plot(np.asarray(e[fixoff_k]), color=c_vals[5],
+                ax.plot(np.asarray(e[fixoff_k]), color=_IO_FIXATION2,
                         label="Fixoff", zorder=2)
-            ax.plot(fixon + task + bias, color=c_vals[4], linewidth=2.5,
+            ax.plot(fixon + task + bias, color=_IO_COMBINE, linewidth=2.5,
                     label="Combine", zorder=3)
             # Dashed vertical lines at each period boundary, matching the
             # example-trial illustration.
@@ -5432,6 +6064,7 @@ FIGURES_BY_MODE = {
         "twotask_grad_fixed_points": plot_two_task_grad_fixed_points,
         "twotask_grad_fixed_points_3d": plot_two_task_grad_fixed_points_3d,
         "twotask_interp_fixed_points": plot_two_task_interp_fixed_points,
+        "twotask_alpha_colorscheme": plot_two_task_alpha_colorscheme,
         "twotask_interp_alpha_fixed_points_3d": plot_two_task_interp_alpha_fixed_points_3d,
         "twotask_interp_alpha_bifurcation": plot_two_task_interp_alpha_bifurcation,
         "twotask_interp_alpha_bifurcation_hidden": plot_two_task_interp_alpha_bifurcation_hidden,

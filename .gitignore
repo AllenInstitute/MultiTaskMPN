@@ -49,6 +49,7 @@ data/
 
 # Claude
 CLAUDE.md
+SCHEME.md
 
 # Codex
 .codex/
@@ -58,3 +59,6 @@ multiple_tasks_norm/
 
 # Paper figures
 paper_plot/
+
+# Cartoon figures (incl. the mouse.png reference the silhouette is traced from)
+cartoon_plot/

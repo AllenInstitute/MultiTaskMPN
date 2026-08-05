@@ -303,7 +303,17 @@ def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by,
         try:
             solve_period_modulation_fixed_points(
                 aname, save_dir, net, cfg, device, layer_index=layer_index, W=W,
-                n_interp=64, n_seeds=fp_n_seeds)
+                n_interp=64, n_seeds=fp_n_seeds,
+                # Multistability probes. cross_seed_probes: the FIXATION input
+                # solved from a memory-carrying state (end of delay) — the
+                # fixation and delay inputs are the same vector, so this shows
+                # whether the delay ring coexists with the single fixation point
+                # under one input. naive_seed_probes: stimulus-free random seeds
+                # under every DISTINCT period input, which sample each input's
+                # fixed-point set instead of re-finding the solution the trial
+                # visited. Set False to skip; each is one extra 64-point solve,
+                # on the selected template seed only.
+                cross_seed_probes=True, naive_seed_probes=True)
         except Exception as exc:
             print(f"  [grad-fp] failed: {exc}")
             import traceback

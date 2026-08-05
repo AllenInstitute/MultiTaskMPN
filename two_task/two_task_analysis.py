@@ -1306,11 +1306,11 @@ def main(aname, fp_n_seeds=5, interp_n_alpha=10, run_fixed_points=True):
     m_save = modulation_save_time[-1]
     projs_all = [[], [], []]
 
-    # self-contained data to replot selected stimuli of the cancel figure.
-    # Match the one-task onetask_show selection (ONETASK_SHOW_STIM = [5, 2]) so
-    # the single- and two-task cancellation figures show the same stimuli.
+    # Self-contained data to replot the cancel figure. Every stimulus is stashed
+    # (the traces are tiny) so which ones the paper figure shows stays a pure
+    # plotting choice in paper_plot.py, with no analysis re-run needed to change it.
     cancel_data = {}
-    cancel_save_stimuli = [5, 2]
+    cancel_save_stimuli = list(range(8))
 
     fig40, axs40 = plt.subplots(8, 2, figsize=(4 * 2, 8 * 2))
     for i in range(8):
@@ -2454,7 +2454,13 @@ def main(aname, fp_n_seeds=5, interp_n_alpha=10, run_fixed_points=True):
                     aname, save_dir, net, cfg_fp, device,
                     rule=_rule, out_suffix=f"_{_rule}",
                     layer_index=layer_index, W=W_fp, n_interp=64,
-                    n_seeds=fp_n_seeds)
+                    n_seeds=fp_n_seeds,
+                    # Multistability probes: the FIXATION input solved from a
+                    # memory-carrying state (end of delay), plus stimulus-free
+                    # random seeds under every distinct period input — see
+                    # grad_fixed_points._extra_probes. One extra 64-point solve
+                    # each per rule, on the selected seed only.
+                    cross_seed_probes=True, naive_seed_probes=True)
             except Exception as exc:
                 print(f"  [grad-fp/{_rule}] failed: {exc}")
                 import traceback

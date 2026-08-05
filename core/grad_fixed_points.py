@@ -19,6 +19,28 @@ For each trial period (fixation / stimulus / delay / response) it:
      scale-free convergence metric rel_step = ||F(M*)-M*|| / ||M*||, and an
      `is_fixed` mask (rel_step <= rel_tol).
 
+The battery above is the DIAGONAL of a more general design: the constant input a
+fixed point is solved under and the state the optimizer starts from are two
+independent choices (see the probe list below). That separation is what makes
+multistability testable. In the delaygo family the fixation and delay inputs are
+literally the same vector — the fixation bit and the rule cue are on in both and
+the stimulus channels are zero in both — so the two periods pose the SAME
+fixed-point problem, and the only reason the delay solve returns a ring while the
+fixation solve returns a single point is the seed (all `n_interp` fixation seeds
+are the same matrix, because nothing stimulus-specific has entered M yet).
+
+Two things follow, and the solver reports both rather than assuming them:
+  * the four periods can probe fewer than four maps, so the solver measures the
+    pairwise period-input distances and groups periods that share an input
+    (three groups for delaygo: fixation=delay, stimulus, response);
+  * each probe's `across_angle_spread` says whether it found ONE fixed point
+    (≈0, which the fixation probe must return by construction) or a manifold.
+
+The off-diagonal probes then vary only the seed: a memory-carrying state, and
+random rank-one states that carry no stimulus information at all — the latter for
+every distinct input, since a diagonal probe only ever re-finds the one solution
+its own trajectory reached, while random seeds sample the whole solution set.
+
 Results are pickled to `fixed_points_grad_{aname}{out_suffix}.pkl`. The
 `out_suffix` lets a multi-rule caller (two-task) write one file per rule.
 """
@@ -41,6 +63,221 @@ _PERIOD_TITLE = {
     "longdelay": "Delay",
     "longresponse": "Response",
 }
+
+# ─── Probes: (input period) × (seed source) ──────────────────────────────────
+# A probe is the 4-tuple (name, input_period, seed_source, title). `input_period`
+# picks the constant input the fixed points are solved under (that period's
+# midpoint); `seed_source` picks where the optimizer starts. A seed source is
+# either a period name (that period's LAST recorded M) or the special token below.
+_NAIVE_RANK1 = "naive_rank1"     # random rank-one M, no stimulus information
+
+# Off-diagonal probes:
+#   *_memseed    the FIXATION input seeded from the end of the DELAY — a state
+#                that already holds a stimulus-specific memory. If the ring
+#                survives under the fixation input, the ring is a property of the
+#                STATE (M), not of the delay input, and the two coexist: a
+#                multistable network. NB when the fixation and delay inputs are
+#                the same vector (the delaygo family) this is by construction the
+#                same solve as the diagonal delay probe; it is kept because it
+#                puts the point and the ring side by side under ONE named input,
+#                and because solving it verifies the input identity instead of
+#                assuming it.
+#   *_naiveseed  one per DISTINCT period input, seeded from random rank-one
+#                matrices (see _naive_rank1_seeds). These carry no stimulus
+#                information, so whatever they find was discovered rather than
+#                transplanted — and unlike a diagonal probe, which re-finds the
+#                one solution the trial happened to visit, they sample the input's
+#                whole fixed-point SET. Each point is annotated with its distance
+#                to every same-input diagonal reference (ring_dist /
+#                ring_angle_idx / ref_dist), so "did naive seeds land on the
+#                structure the task uses?" is a number, not an eyeball judgement.
+_MEMSEED_PROBE = ("longfixation_memseed", "longfixation", "longdelay",
+                  "Fixation (memory seed)")
+
+
+def _diagonal_probes(period_win):
+    """The historical battery: every period solved under its own input, starting
+    from its own end-of-period state."""
+    return [(v, v, v, _PERIOD_TITLE.get(v, v)) for v in period_win]
+
+
+def _naive_probe(period):
+    """The naive-seed probe for one period's constant input."""
+    return (f"{period}_naiveseed", period, _NAIVE_RANK1,
+            f"{_PERIOD_TITLE.get(period, period)} (naive seeds)")
+
+
+def _same_input_groups(input_info, tol=0.0):
+    """Group period names by IDENTICAL constant input, e.g.
+    [["longfixation", "longdelay"], ["longstimulus"], ["longresponse"]].
+
+    Periods in one group pose the same fixed-point problem, so their fixed-point
+    sets are the same set and any probe differing only by which of them is named
+    is a duplicate solve. Grouping is measured per run (input_info["dist"]), not
+    assumed: with extra epochs, `fixate_off`, or another task family the fixation
+    ≡ delay coincidence can fail, and then both deserve their own probe."""
+    names, dist = input_info["periods"], input_info["dist"]
+    groups = []
+    for i, v in enumerate(names):
+        for g in groups:
+            if dist[i, names.index(g[0])] <= tol:
+                g.append(v)
+                break
+        else:
+            groups.append([v])
+    return groups
+
+
+def _extra_probes(present, input_info, cross_seed_probes=True,
+                  naive_seed_probes=True, tag=""):
+    """The off-diagonal battery for the periods actually solved (`present`).
+
+    One naive probe per DISTINCT input rather than per period: with fixation ≡
+    delay the delay naive probe would repeat the fixation one, and the skip is
+    decided from the measured distances so it self-corrects on other tasks."""
+    extra = []
+    if cross_seed_probes and {"longfixation", "longdelay"} <= set(present):
+        extra.append(_MEMSEED_PROBE)
+    if naive_seed_probes:
+        for g in _same_input_groups(input_info):
+            g_here = [v for v in g if v in present]
+            if not g_here:
+                continue
+            extra.append(_naive_probe(g_here[0]))
+            if len(g_here) > 1 and tag:
+                print(f"  {tag} naive probe for {g_here[1:]} skipped: same input "
+                      f"as {g_here[0]}, so it would be the identical solve.")
+    return extra
+
+
+def _input_pair_distance(input_info, a, b):
+    """max|x_a − x_b| between two periods' constant inputs, or NaN if either is
+    absent from this trial. 0 means the two periods pose the same map."""
+    names = input_info["periods"]
+    if a not in names or b not in names:
+        return float("nan")
+    return float(input_info["dist"][names.index(a), names.index(b)])
+
+
+def _relative_spread(fixed_M):
+    """max_i ||M*_i − mean|| / ||mean|| over a probe's solved points.
+
+    The single number that separates "one fixed point" from "a manifold of them":
+    0 means every point is the SAME matrix (which is what the fixation probe must
+    return, since all its seeds are identical), while a large value means the
+    points spread out along a ring."""
+    A = np.asarray(fixed_M, dtype=np.float64)
+    A = A.reshape(A.shape[0], -1)
+    mu = A.mean(axis=0)
+    return float(np.linalg.norm(A - mu[None, :], axis=1).max()
+                 / max(np.linalg.norm(mu), 1e-12))
+
+
+def _naive_rank1_seeds(n, x_embed, mp, seed=0):
+    """`n` random rank-one modulation matrices M0 = [η/(1−λ)] ⊙ (v xᵀ).
+
+    Every fixed point of the modulation dynamics is exactly rank one with the
+    CURRENT INPUT as its presynaptic factor:
+
+        M* = λM* + η h* xᵀ   ⇒   M* = [η/(1−λ)] h* xᵀ,
+
+    so {v xᵀ} is the ambient family that contains every solution. Drawing the
+    postsynaptic factor v uniformly on [-1, 1] (the range of the tanh hidden
+    units) seeds the optimizer ON that family but at a random place on it, using
+    no stimulus information whatsoever — the point of the naive probe.
+
+    A seed that violates the layer's modulation bounds is infeasible (the
+    dynamics could never occupy it), so each seed is RESCALED — not clipped — by
+    the largest factor ≤ 1 that fits inside the bounds. Rescaling preserves the
+    exact rank-one form and, more importantly, the SIGN pattern of v, which is
+    what selects the latched branch: a unit whose self-gain exceeds 1 has an
+    unstable quiet state, so any nonzero seed component grows to the latched
+    value and the seed amplitude barely matters. Clipping, by contrast, would
+    saturate rows independently and destroy the rank-one structure.
+
+    n       : number of seeds (kept equal to the dense angle count so every saved
+              array in the probe entry has the same leading dimension).
+    x_embed : (n, pre) embedded MP-layer input rows the solve is run under.
+    mp      : the multi-plastic layer — supplies η, λ and the modulation bounds.
+    seed    : RNG seed, so the naive battery is reproducible.
+
+    Returns (M0, fit_factors): the (n, post, pre) seeds and the per-seed rescale
+    factor actually applied (1.0 = the raw seed already fit).
+    """
+    eta = mp.build_M_parameter(mp.eta, mp.eta_type).detach().cpu().numpy()
+    lam = mp.build_M_parameter(mp.lam, mp.lam_type).detach().cpu().numpy()
+    # Broadcastable to (post, pre) for every eta/lam type (scalar, pre/post
+    # vector, full matrix); atleast_2d covers the scalar case's (1,) shape.
+    scale = np.atleast_2d(eta / np.maximum(1.0 - lam, 1e-6))
+    rng = np.random.RandomState(int(seed))
+    v = rng.uniform(-1.0, 1.0, size=(int(n), int(mp.n_output)))          # (n, post)
+    M0 = scale[None, :, :] * (v[:, :, None] * np.asarray(x_embed)[:, None, :])
+
+    fit = np.ones(M0.shape[0])
+    if getattr(mp, "modulation_bounds", False):
+        hi = mp.M_bounds[0].detach().cpu().numpy()      # upper bounds (post, pre)
+        lo = mp.M_bounds[1].detach().cpu().numpy()      # lower bounds (post, pre)
+        # Per entry, how much of the way to its bound the seed may travel; the
+        # per-seed factor is the tightest of them (zeros impose no limit).
+        with np.errstate(divide="ignore", invalid="ignore"):
+            room = np.where(M0 > 0, hi / M0, np.where(M0 < 0, lo / M0, np.inf))
+        room = np.where(np.isfinite(room), room, np.inf)
+        fit = np.minimum(1.0, room.reshape(M0.shape[0], -1).min(axis=1))
+        M0 = M0 * fit[:, None, None]
+    return M0.astype(np.float32), fit
+
+
+def _annotate_ring_distance(results, probe_name, ref_names):
+    """Record where a naive-seeded probe's points LANDED, relative to the fixed
+    points the trial itself visits under the same input.
+
+    `ref_names` are the diagonal probes solved under an identical input (the
+    probe's own period plus any period grouped with it by _same_input_groups).
+    For the fixation input that is normally BOTH the single fixation point and the
+    delay ring, and the two references answer different questions — "did the seeds
+    fall back to the trivial state?" versus "did they find the memory ring?" — so
+    all of them are recorded:
+
+      ref_dist[ref]     (n,) min over that reference's points of
+                        ||M* − M*_ref|| / ||M*_ref||
+      ref_nearest[ref]  (n,) the argmin's stimulus index in that reference
+      ref_spread[ref]   scalar relative spread of the reference itself
+                        (≈0 = the reference is a single point, large = a ring)
+
+    The most ring-like reference (largest spread) additionally fills the plain
+    ring_dist / ring_angle_idx / ring_ref fields, so a reader who wants one
+    number gets the meaningful one. No-op if no reference is present. Mutates
+    `results` in place."""
+    e = results.get(probe_name)
+    if e is None:
+        return
+    A = np.asarray(e["fixed_M"], dtype=np.float64)
+    A = A.reshape(A.shape[0], -1)                             # (n, D)
+    a_sq = (A ** 2).sum(axis=1)
+
+    e["ref_dist"], e["ref_nearest"], e["ref_spread"] = {}, {}, {}
+    for ref in ref_names:
+        ref_e = results.get(ref)
+        if ref_e is None:
+            continue
+        R = np.asarray(ref_e["fixed_M"], dtype=np.float64)
+        R = R.reshape(R.shape[0], -1)                         # (m, D)
+        r_sq = (R ** 2).sum(axis=1)
+        r_norm = np.maximum(np.sqrt(r_sq), 1e-12)
+        # ||a − r||² = |a|² + |r|² − 2a·r, then normalize each column by |r|.
+        d2 = a_sq[:, None] + r_sq[None, :] - 2.0 * (A @ R.T)
+        rel = np.sqrt(np.maximum(d2, 0.0)) / r_norm[None, :]
+        j = np.argmin(rel, axis=1)
+        e["ref_dist"][ref] = rel[np.arange(rel.shape[0]), j]
+        e["ref_nearest"][ref] = np.asarray(ref_e["stim"], dtype=int)[j]
+        e["ref_spread"][ref] = _relative_spread(ref_e["fixed_M"])
+
+    if not e["ref_dist"]:
+        return
+    ringiest = max(e["ref_spread"], key=lambda r: e["ref_spread"][r])
+    e["ring_ref"] = ringiest
+    e["ring_dist"] = e["ref_dist"][ringiest]
+    e["ring_angle_idx"] = e["ref_nearest"][ringiest]
 
 
 def derive_fixed_point_views(net, fixed_M, const_input, final_speeds, W, device,
@@ -96,7 +333,8 @@ def solve_period_modulation_fixed_points(
         n_interp=64, steps=200000, learningRate=1e-3,
         loss_tol=1e-8, lbfgs_steps=2000, rel_tol=0.05,
         stim_channels=None, n_seeds=5, seed_base=0,
-        analyze_stability=True, n_eigs=16):
+        analyze_stability=True, n_eigs=16,
+        cross_seed_probes=True, naive_seed_probes=True, naive_rng_seed=0):
     """
     Solve TRUE gradient fixed points of the modulation matrix M per trial period.
 
@@ -142,6 +380,25 @@ def solve_period_modulation_fixed_points(
                   signature. Only the SELECTED seed is analyzed (cheap: ~O(n_eigs)
                   backward passes per point).
     n_eigs      : number of leading eigenvalues per fixed point.
+    cross_seed_probes : add the "longfixation_memseed" probe — the FIXATION input
+                  solved from the end-of-DELAY state. Same input as the plain
+                  fixation probe, different basin, so a ring here means the
+                  network is multistable and the ring lives in M rather than in
+                  the delay input.
+    naive_seed_probes : add one "{period}_naiveseed" probe per DISTINCT period
+                  input — solved from random rank-one seeds that carry no stimulus
+                  information (_naive_rank1_seeds), with each solved point's
+                  distance to the same-input diagonal probes recorded. This is
+                  both the control for "the ring was transplanted with the seed"
+                  and the only probe that samples an input's fixed-point SET
+                  rather than re-finding the one solution the trial visits.
+                  Periods sharing an input get a single probe (see
+                  _same_input_groups).
+    naive_rng_seed : RNG seed for those random seeds (reproducibility).
+                  Both probe batteries are solved ONCE, on the selected template
+                  seed only: the selection score looks at the stimulus and
+                  response periods, so solving them per candidate seed would cost
+                  n_seeds× for nothing.
 
     Writes fixed_points_grad_{aname}{out_suffix}.pkl and returns its path (or None
     if no period could be solved).
@@ -200,10 +457,13 @@ def solve_period_modulation_fixed_points(
                 f"for rule={rule} (n_input={template.shape[1]}).")
         return ring_start, ring_start + 1
 
-    def _solve_one_seed(task_seed):
+    def _solve_one_seed(task_seed, probes=None):
         """Build the dense-angle template for a FIXED task RNG seed and solve the
-        per-period fixed points. Returns (results_dict, angles). Deterministic in
-        task_seed, so re-running is reproducible."""
+        requested probes. `probes` is a list of (name, input_period, seed_source,
+        title) tuples; None means the diagonal battery (each period from its own
+        end state). Returns (results_dict, angles, input_info) where input_info
+        holds the pairwise period-input distances (see below).
+        Deterministic in task_seed, so re-running is reproducible."""
         # ── Dense interpolated-stimulus batch (one normal trial per angle) ────
         tp = copy.deepcopy(cfg["task_params"])
         tp["long_fixation"] = tp["long_stimulus"] = tp["long_delay"] = tp["long_response"] = "normal"
@@ -255,22 +515,81 @@ def solve_period_modulation_fixed_points(
             x, run_mode="track_states", save_to_cpu=True, detach_saved=True)
         M_all = np.asarray(db[f"M{layer_index}"])                  # (n_interp,T,hid,emb)
         hid_all = np.asarray(db[f"hidden{layer_index}"])           # (n_interp,T,hidden)
+        # Embedded MP-layer input x(t) (post input-embedding). Needed to build the
+        # naive rank-one seeds, whose presynaptic factor must be the x the solve
+        # runs under — every fixed point has that form (see _naive_rank1_seeds).
+        # Only that probe needs it, so a net layout without the key stays usable.
+        _x_key = f"input{layer_index}"
+        x_embed_all = np.asarray(db[_x_key]) if _x_key in db else None
         stim = np.arange(n_interp)
         # Exemplar stimulus whose within-period trajectory we record for the
         # figure (angle 0 = first dense stimulus; matches paper_plot's connector).
         traj_stim = 0
 
+        # ── How many DISTINCT constant inputs does the period battery have? ───
+        # Pairwise max|x_a - x_b| between the period midpoints. Two periods at
+        # distance 0 pose the SAME fixed-point problem — their fixed-point sets
+        # are one set — so the four periods can probe fewer than four maps. For
+        # the delaygo family fixation and delay coincide (fixation bit and rule
+        # cue on in both, stimulus channels zero in both), giving three maps for
+        # four periods. Measured per run so a task where that fails (extra
+        # epochs, fixate_off, another family) is caught instead of assumed, and
+        # so the naive battery can skip the duplicate input by itself.
+        in_names = [v for v, (a, b) in period_win.items() if 0 <= a < b <= T]
+        in_t = {v: min((period_win[v][0] + period_win[v][1]) // 2, T - 1)
+                for v in in_names}
+        in_dist = np.zeros((len(in_names), len(in_names)))
+        for i, a in enumerate(in_names):
+            for j, b in enumerate(in_names):
+                in_dist[i, j] = np.abs(batch[:, in_t[a], :]
+                                       - batch[:, in_t[b], :]).max()
+        input_info = {"periods": in_names, "t_mid": in_t, "dist": in_dist}
+        groups = _same_input_groups(input_info)
+        print(f"  {tag} seed={task_seed}: {len(groups)} distinct period input(s) "
+              f"among {len(in_names)}: "
+              + " | ".join("=".join(g) for g in groups))
+        for i, a in enumerate(in_names):
+            print(f"      max|x_{a} - x_*| = "
+                  + "  ".join(f"{b}:{in_dist[i, j]:.2e}"
+                              for j, b in enumerate(in_names) if j != i))
+
+        if probes is None:
+            probes = _diagonal_probes(period_win)
+
         results = {}
-        for v, (ps, pe) in period_win.items():
+        for name, in_period, seed_src, title in probes:
+            ps, pe = period_win.get(in_period, (0, 0))
             if not (0 <= ps < pe <= T):
                 continue
-            t_seed = min(pe - 1, T - 1)
             t_mid = min((ps + pe) // 2, T - 1)
-            init_M = M_all[:, t_seed, :, :]
             const_input = batch[:, t_mid, :]
+            # Seed: a period's end state, or synthesized seeds carrying no
+            # stimulus information (t_seed = -1 marks "not from a recorded step").
+            if seed_src == _NAIVE_RANK1:
+                if x_embed_all is None:
+                    print(f"  {tag} {name}: db has no '{_x_key}' (embedded MP-layer "
+                          f"input), so naive rank-one seeds cannot be built; "
+                          f"skipping the probe.")
+                    continue
+                t_seed = -1
+                init_M, fit = _naive_rank1_seeds(
+                    n_interp, x_embed_all[:, t_mid, :], net.mp_layers[0],
+                    seed=naive_rng_seed)
+                print(f"  {tag} {name}: naive rank-one seeds, bound-fit factor "
+                      f"median {np.median(fit):.3f} (1.0 = raw seed already fit)")
+            else:
+                qs, qe = period_win.get(seed_src, (0, 0))
+                if not (0 <= qs < qe <= T):
+                    print(f"  {tag} {name}: seed period '{seed_src}' absent from "
+                          f"this trial; skipping the probe.")
+                    continue
+                t_seed = min(qe - 1, T - 1)
+                init_M = M_all[:, t_seed, :, :]
 
-            print(f"  {tag} seed={task_seed} {v}: solving {n_interp} fixed points "
-                  f"(seed t={t_seed}, input t={t_mid})")
+            seed_desc = (f"{seed_src} t={t_seed}" if t_seed >= 0
+                         else f"{seed_src} (rng {naive_rng_seed})")
+            print(f"  {tag} seed={task_seed} {name}: solving {n_interp} fixed "
+                  f"points (input {in_period} t={t_mid}, seed {seed_desc})")
             fixed_M, loss_hist, final_speeds = find_modulation_fixed_points(
                 net, init_M, const_input, steps=steps, learningRate=learningRate,
                 printPeriod=max(steps // 20, 1), loss_tol=loss_tol,
@@ -283,11 +602,17 @@ def solve_period_modulation_fixed_points(
             # how the state actually moves over this period, en route to the fixed
             # point. M(t) under the true (time-varying) period input, so it settles
             # NEAR — not exactly onto — M* (solved under sustained input).
-            traj_M = M_all[traj_stim, ps:pe, :, :]                 # (win_T, hid, emb)
-            traj_M_flat = traj_M.reshape(traj_M.shape[0], -1)      # (win_T, hid*emb)
-            traj_WM = (traj_M * np.asarray(W)[None, :, :]).reshape(
-                traj_M.shape[0], -1) if W is not None else None    # (win_T, hid*emb)
-            traj_hidden = hid_all[traj_stim, ps:pe, :]             # (win_T, hidden)
+            # DIAGONAL probes only: for an off-diagonal probe the recorded path
+            # never visited these fixed points, so a connector would be fiction.
+            # paper_plot draws no connector when traj_* is None.
+            diagonal = (seed_src == in_period)
+            traj_M_flat = traj_hidden = traj_WM = None
+            if diagonal:
+                traj_M = M_all[traj_stim, ps:pe, :, :]             # (win_T, hid, emb)
+                traj_M_flat = traj_M.reshape(traj_M.shape[0], -1)  # (win_T, hid*emb)
+                traj_WM = (traj_M * np.asarray(W)[None, :, :]).reshape(
+                    traj_M.shape[0], -1) if W is not None else None
+                traj_hidden = hid_all[traj_stim, ps:pe, :]         # (win_T, hidden)
 
             # Scale-free convergence metric rel_step = ||F(M*)-M*|| / ||M*||;
             # final_speeds is q = 1/2||F-M||^2, so ||F-M|| = sqrt(2 q).
@@ -296,12 +621,22 @@ def solve_period_modulation_fixed_points(
             m_norm = np.maximum(np.linalg.norm(fm, axis=1), 1e-12)
             rel_step = step_norm / m_norm
             is_fixed = rel_step <= rel_tol
-            print(f"  {tag} seed={task_seed} {v}: {int(is_fixed.sum())}/{is_fixed.size} "
+            print(f"  {tag} seed={task_seed} {name}: {int(is_fixed.sum())}/{is_fixed.size} "
                   f"converged (rel_step<= {rel_tol:g}); "
                   f"median {np.median(rel_step):.2e} max {rel_step.max():.2e}")
 
-            results[v] = {
-                "period_title": _PERIOD_TITLE.get(v, v),
+            results[name] = {
+                "period_title": title,
+                # Which input the points were solved under, and where the solve
+                # started — the two axes that make this a probe rather than just
+                # "the fixation period".
+                "input_period": in_period,
+                "seed_source": seed_src,
+                "is_diagonal": bool(diagonal),
+                # `stim` is the dense stimulus-angle index for period-seeded
+                # probes. Naive seeds carry no stimulus, so there it is only a
+                # seed index — colour those points by ring_angle_idx instead.
+                "stim_is_stimulus": bool(seed_src != _NAIVE_RANK1),
                 "period": (int(ps), int(pe)),
                 "t_seed": int(t_seed),
                 "t_input": int(t_mid),
@@ -323,12 +658,19 @@ def solve_period_modulation_fixed_points(
                 # Exemplar-stimulus within-period trajectory (angle 0) for the
                 # figures: raw M, effective W⊙M, and hidden, one row per timestep.
                 "traj_stim": int(traj_stim),
-                "traj_M": np.asarray(traj_M_flat, dtype=np.float32),
+                "traj_M": (np.asarray(traj_M_flat, dtype=np.float32)
+                           if traj_M_flat is not None else None),
                 "traj_WM": (np.asarray(traj_WM, dtype=np.float32)
                             if traj_WM is not None else None),
-                "traj_hidden": np.asarray(traj_hidden, dtype=np.float32),
+                "traj_hidden": (np.asarray(traj_hidden, dtype=np.float32)
+                                if traj_hidden is not None else None),
+                # 0 ⇒ every point is the same matrix (one fixed point); large ⇒
+                # the points spread along a manifold. See _relative_spread.
+                "across_angle_spread": _relative_spread(fixed_M),
             }
-        return results, angles
+            print(f"  {tag} seed={task_seed} {name}: across-angle spread of M* = "
+                  f"{results[name]['across_angle_spread']:.3e}")
+        return results, angles, input_info
 
     def _selection_score(results):
         """Lower = better. Median rel_step over the STIMULUS + RESPONSE periods
@@ -342,10 +684,10 @@ def solve_period_modulation_fixed_points(
         return float(np.median(vals))
 
     # ── Try n_seeds deterministic templates; keep the best-converging one ────
-    best = None   # (score, task_seed, results, angles)
+    best = None   # (score, task_seed, results, angles, input_info)
     for s in range(seed_base, seed_base + max(int(n_seeds), 1)):
         try:
-            results, angles = _solve_one_seed(s)
+            results, angles, input_info = _solve_one_seed(s)
         except Exception as exc:
             print(f"  {tag} seed={s} failed: {exc}")
             continue
@@ -355,15 +697,56 @@ def solve_period_modulation_fixed_points(
         print(f"  {tag} seed={s}: selection score (stim+resp median rel_step) "
               f"= {score:.3e}")
         if best is None or score < best[0]:
-            best = (score, s, results, angles)
+            best = (score, s, results, angles, input_info)
 
     if best is None:
         print(f"  {tag} no seed produced fixed points; skipping save.")
         return None
 
-    best_score, best_seed, results, angles = best
+    best_score, best_seed, results, angles, input_info = best
     print(f"  {tag} selected seed={best_seed} (score {best_score:.3e} over "
           f"{n_seeds} seed(s)).")
+
+    # ── Off-diagonal multistability probes (selected seed only) ──────────────
+    # Same input as the plain fixation probe, different starting state. Solved
+    # here rather than inside the sweep because the selection score only looks at
+    # the stimulus and response periods — running these per candidate seed would
+    # cost n_seeds× and change nothing. Re-entering _solve_one_seed rebuilds the
+    # identical template (deterministic in the seed) for one extra forward pass.
+    groups = _same_input_groups(input_info)
+    extra = _extra_probes(list(results), input_info,
+                          cross_seed_probes=cross_seed_probes,
+                          naive_seed_probes=naive_seed_probes, tag=tag)
+    if extra:
+        print(f"  {tag} solving {len(extra)} multistability probe(s) on the "
+              f"selected seed={best_seed}: {[p[0] for p in extra]}")
+        try:
+            extra_results, _, _ = _solve_one_seed(best_seed, probes=extra)
+            results.update(extra_results)
+            # Naive seeds carry no stimulus label, so instead of a label record
+            # WHERE they landed: distance to every diagonal probe solved under
+            # the same input (for the fixation input that is both the single
+            # fixation point and the delay ring — different questions, both worth
+            # asking).
+            for p in extra:
+                if p[2] != _NAIVE_RANK1 or p[0] not in results:
+                    continue
+                grp = next((g for g in groups if p[1] in g), [p[1]])
+                refs = [v for v in grp
+                        if v in results and results[v].get("is_diagonal")]
+                _annotate_ring_distance(results, p[0], refs)
+                e = results[p[0]]
+                for ref, rd in e.get("ref_dist", {}).items():
+                    rd = np.asarray(rd, dtype=float)
+                    kind = ("ring" if e["ref_spread"][ref] > 1e-3 else "point")
+                    print(f"  {tag} {p[0]}: landing distance to {ref} "
+                          f"({kind}, spread {e['ref_spread'][ref]:.3e}) — median "
+                          f"{np.median(rd):.3f}, min {rd.min():.3f}, "
+                          f"{int((rd <= 0.1).sum())}/{rd.size} within 10%")
+        except Exception as exc:
+            print(f"  {tag} multistability probes failed: {exc}")
+            import traceback
+            traceback.print_exc()
 
     # ── Linear-stability analysis on the SELECTED seed's fixed points ────────
     # Linearize F about each M* and record the leading Jacobian eigenvalues, so
@@ -397,6 +780,22 @@ def solve_period_modulation_fixed_points(
                      "n_seeds": int(n_seeds), "selected_seed": int(best_seed),
                      "selection_score": float(best_score),
                      "angles": np.asarray(angles, dtype=float),
+                     # Provenance of every entry in `results`: which input it was
+                     # solved under and where the solve started.
+                     "probes": [(v, e.get("input_period", v),
+                                 e.get("seed_source", v), e.get("period_title", v))
+                                for v, e in results.items()],
+                     # Pairwise max|x_a - x_b| between the period midpoint inputs
+                     # of the selected template, and the resulting grouping. A 0
+                     # entry means those two periods solve the SAME map, so any
+                     # difference between their panels is purely the seed — which
+                     # is exactly the fixation-point vs delay-ring case.
+                     "input_periods": list(input_info["periods"]),
+                     "input_dist": np.asarray(input_info["dist"], dtype=float),
+                     "input_groups": groups,
+                     "input_diff_fix_delay": _input_pair_distance(
+                         input_info, "longfixation", "longdelay"),
+                     "naive_rng_seed": int(naive_rng_seed),
                      "results": results}, _f)
     print(f"  Saved gradient fixed-point data: {out_pkl}")
     return out_pkl
