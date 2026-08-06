@@ -62,3 +62,6 @@ paper_plot/
 
 # Cartoon figures (incl. the mouse.png reference the silhouette is traced from)
 cartoon_plot/
+
+# Biological data (MICrONS / functional scans — tens of GB of .nc and .feather)
+biology/

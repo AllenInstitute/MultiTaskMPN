@@ -94,6 +94,33 @@ def _save_fig(fig, out_path, extra=""):
     print(f"Saved: {out_path}{extra}")
 
 
+def _save_standalone_colorbar(out_path, cmap, vmin, vmax, ticks=None,
+                              ticklabels=None, label=None,
+                              orientation="horizontal", figsize=(1.5, 0.45),
+                              rect=(0.05, 0.5, 0.9, 0.35), labelsize=8,
+                              label_fontsize=8):
+    """Save JUST a colorbar as its own small figure at `out_path`.
+
+    For panels that share one color scale: drawing the bar once beside them beats
+    repeating it inside each, and a standalone bar can be placed and sized in the
+    manuscript independently of the panels. `rect` is the bar's axes rectangle
+    within the figure, leaving room for the tick labels and `label`."""
+    figc = plt.figure(figsize=figsize)
+    axc = figc.add_axes(rect)                     # [left, bottom, width, height]
+    sm = mpl.cm.ScalarMappable(cmap=cmap,
+                               norm=mpl.colors.Normalize(vmin=vmin, vmax=vmax))
+    sm.set_array([])
+    cbar = figc.colorbar(sm, cax=axc, orientation=orientation)
+    if ticks is not None:
+        cbar.set_ticks(ticks)
+        if ticklabels is not None:
+            cbar.set_ticklabels(ticklabels)
+    if label:
+        cbar.set_label(label, fontsize=label_fontsize)
+    cbar.ax.tick_params(labelsize=labelsize)
+    _save_fig(figc, out_path)
+
+
 def _load_pkl_or_skip(pkl_path, hint="", use_name=False):
     """Return the unpickled object at `pkl_path`, or None (with a "Skipped"
     message) if it does not exist. `hint` is appended to the message (e.g.
@@ -325,6 +352,19 @@ def _ensure_out_dir():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+# Filename prefix for the MULTI-TASK figures, matching what the one-task and
+# two-task families already do (onetask_*, twotask_*): every figure in the
+# `multiple_tasks` mode is named through `_multitask_out`, so a listing of
+# paper_plot/ groups by experiment family instead of scattering these among the
+# others. Change the prefix here and every multi-task figure follows.
+MULTITASK_PREFIX = "multitask"
+
+
+def _multitask_out(name):
+    """OUT_DIR path for a multi-task figure, with the shared `multitask_` prefix."""
+    return OUT_DIR / f"{MULTITASK_PREFIX}_{name}"
+
+
 def _breaks(lbls):
     """Cluster boundary positions from an ordered label array."""
     idx = np.nonzero(np.diff(lbls))[0] + 1
@@ -379,12 +419,38 @@ _PHASE_DISPLAY = {
     "go1": "Response",
 }
 _PHASE_COLORS = {
-    "stim1": "#c3b1e1",   # purple
-    "stim2": "#bfdbfe",   # light blue
-    "delay1": "#bbf7d0",  # light green
-    "delay2": "#fed7aa",  # light orange
-    "go1": "#d1d5db",     # light gray
+    "stim1": "#8c62b4",   # deep purple      (dark tier,  L* 49)
+    "stim2": "#e4c7f4",   # pale purple      (light tier, L* 84)
+    "delay1": "#0e8122",  # deep green       (dark tier,  L* 47)
+    "delay2": "#93e297",  # light green      (light tier, L* 83)
+    "go1": "#d1d5db",     # light gray       (light tier, L* 85)
 }
+# The two stimulus epochs SHARE a hue and the two memory epochs share another, so a
+# reader sees at a glance that Stimulus 2 is another *stimulus* epoch rather than a
+# different kind of thing — which the original palette (stim2 light blue, delay2
+# light orange) hid by giving every epoch an unrelated hue.
+#
+# The palette sits on TWO BRIGHTNESS TIERS, and every epoch belongs to one of them:
+# a dark tier at L* ~48 (stim1 49, delay1 47) and a light tier at L* ~84 (stim2 84,
+# delay2 83, go1 85). Within each tier the members are within ~2 L* of each other, so
+# no block reads as heavier than its counterpart in the other pair; between tiers they
+# are ~35 L* apart, which is what makes the pairing legible.
+#
+# The FIRST epoch of a pair is always the dark member, in both pairs — a reader who
+# learns "darker = earlier" in one pair can carry it to the other, which an inverted
+# pair would break. Pair separation is 40-42 CIELAB.
+#
+# Two constraints bound how dark the first members may go. These colors are the
+# background highlight behind black tick labels (_color_phase_ticklabels,
+# _PERIOD_LABEL_COLORS), so each keeps black text above 5:1 contrast once composited
+# at the highlight's alpha (6.5:1 and 6.0:1 here) — delay1 #0e8122 is the darkest
+# green that still clears it. And the cluster strip shares the figure, so each is
+# kept >= ~26 from every `_CLUSTER_COLORS` entry, a palette that itself holds a dark
+# forest green and a dark plum.
+#
+# NB stim1 and delay1 are also `_ONETASK_PERIOD_COLORS[1:3]`, the Stimulus and Memory
+# blocks of the one-task / two-task period bars (and cartoon.py's period strip, which
+# imports them), so those darken along with the heatmap.
 
 # Period colorbar palette for the one-task / two-task period strip, ordered
 # Fixation → Stimulus → Memory → Response. Stimulus/Memory/Response reuse the
@@ -589,6 +655,51 @@ def _compute_order_from_labels(linkage, labels):
     return np.array(ordered, dtype=int)
 
 
+# ─── Multi-task heatmap color scale ───────────────────────────────────────────
+# The input / hidden / modulation task-variance heatmaps all show the SAME
+# quantity on the SAME scale, so the scale is defined once here and the colorbar is
+# a figure of its own (`plot_multitask_heatmap_colorbar`) rather than a strip
+# repeated inside each panel — the same split the one-task modulation snapshots use
+# (_plot_onetask_snapshot_single + _onetask_hcbar). Change the scale here and the
+# heatmaps and their colorbar move together.
+_MULTITASK_HEATMAP_CMAP = "magma"
+_MULTITASK_HEATMAP_VLIM = (0.0, 1.0)
+_MULTITASK_HEATMAP_CLABEL = "Normalized variance"
+
+
+# ─── Cluster (neuron-class) strip colors ──────────────────────────────────────
+# The multi-task heatmaps mark each column/row cluster with a colored block. This
+# replaces the old 20-color tab20 cycle: eight colors are plenty for reading where
+# one class ends and the next begins, and a short list keeps the strip from looking
+# like a random assortment.
+#
+# Chosen to be a TONE the rest of the project does not use — deep, muted earth and
+# jewel shades, where the stimulus rainbow and `c_vals` are vivid, the phase strip
+# is pale pastel, and the alpha ramp is plasma. Picked by maximizing the minimum
+# CIELAB distance to every already-used color (c_vals, the _IO_* set, the phase
+# palette, the alpha ramp and the stimulus rainbow) and to each other: each of
+# these is >= ~28 from the others and >= ~25 from anything used elsewhere, so a
+# cluster block cannot be mistaken for a stimulus, an epoch or a task color.
+#
+# With more clusters than colors the list cycles, so classes 8 apart share a color.
+# Neighbors never do, which is what the strip is read for.
+_CLUSTER_COLORS = [
+    "#591212",   # deep maroon
+    "#595912",   # dark olive
+    "#4b1f59",   # dark plum
+    "#8ba63a",   # moss green
+    "#a67c53",   # tan
+    "#8c5b80",   # mauve
+    "#125924",   # dark forest
+    "#123659",   # dark navy
+]
+
+
+def _cluster_color(ci):
+    """Color for cluster index `ci`, cycling `_CLUSTER_COLORS`."""
+    return _CLUSTER_COLORS[ci % len(_CLUSTER_COLORS)]
+
+
 def _add_col_cluster_strip(ax, cl_ordered, cbreaks):
     """Add a thin colored strip below the heatmap, one color per column cluster,
     to visually group the x-axis columns by their cluster assignment."""
@@ -598,10 +709,9 @@ def _add_col_cluster_strip(ax, cl_ordered, cbreaks):
     n_clusters = len(bounds) - 1
 
     strip = ax.inset_axes([0, -0.06, 1, 0.04], transform=ax.transAxes)
-    cmap_clusters = plt.get_cmap("tab20")
     for ci in range(n_clusters):
         start, end = bounds[ci], bounds[ci + 1]
-        strip.axvspan(start, end, color=cmap_clusters(ci % 20), lw=0)
+        strip.axvspan(start, end, color=_cluster_color(ci), lw=0)
     strip.set_xlim(0, n_cols)
     strip.set_ylim(0, 1)
     strip.set_xticks([])
@@ -619,10 +729,9 @@ def _add_row_cluster_strip(ax, rl_ordered, rbreaks):
     n_clusters = len(bounds) - 1
 
     strip = ax.inset_axes([1.01, 0, 0.025, 1], transform=ax.transAxes)
-    cmap_clusters = plt.get_cmap("tab20")
     for ci in range(n_clusters):
         start, end = bounds[ci], bounds[ci + 1]
-        strip.axhspan(start, end, color=cmap_clusters(ci % 20), lw=0)
+        strip.axhspan(start, end, color=_cluster_color(ci), lw=0)
     # Heatmap rows increase downward; match that orientation
     strip.set_ylim(n_rows, 0)
     strip.set_xlim(0, 1)
@@ -658,8 +767,9 @@ def _add_period_strip(ax, spans, xmax, height=0.05, pad=0.02):
 
 def _plot_clustered_variance(
     cell_vars, result, tb_break_name,
-    title="", cmap="magma", vmin=0, vmax=1,
-    figsize=(8, 7),
+    title="", cmap=_MULTITASK_HEATMAP_CMAP,
+    vmin=_MULTITASK_HEATMAP_VLIM[0], vmax=_MULTITASK_HEATMAP_VLIM[1],
+    figsize=(8.4, 7),          # 5% wider than the original 8 in
     row_k_override=None,
     col_k_override=None,
 ):
@@ -707,14 +817,9 @@ def _plot_clustered_variance(
 
     fig, ax = plt.subplots(1, 1, figsize=figsize)
 
-    hm = sns.heatmap(
-        ordered, ax=ax, cmap=cmap, vmin=vmin, vmax=vmax,
-        cbar=True, cbar_kws={"shrink": 0.4, "label": "Normalized variance"},
-    )
-    cbar = hm.collections[0].colorbar
-    cbar.set_ticks([vmin, vmax])
-    cbar.set_ticklabels([f"{vmin:.0f}", f"{vmax:.0f}"])
-    cbar.ax.tick_params(labelsize=12)
+    # No colorbar: all three heatmaps share one scale, so it is published once as
+    # its own figure (plot_multitask_heatmap_colorbar) instead of three times here.
+    sns.heatmap(ordered, ax=ax, cmap=cmap, vmin=vmin, vmax=vmax, cbar=False)
 
     for rb in rbreaks:
         ax.axhline(rb, color="0.6", lw=0.5, zorder=3, alpha=0.6)
@@ -753,7 +858,7 @@ def plot_clustered_input():
         title="Input Layer — Normalized Task Variance",
     )
 
-    out_path = OUT_DIR / "clustered_input_normalized.png"
+    out_path = _multitask_out("clustered_input_normalized.png")
     _save_fig(fig, out_path)
 
 
@@ -773,7 +878,7 @@ def plot_clustered_hidden(col_k_override=20):
         col_k_override=col_k_override,
     )
 
-    out_path = OUT_DIR / "clustered_hidden_normalized.png"
+    out_path = _multitask_out("clustered_hidden_normalized.png")
     _save_fig(fig, out_path)
 
 
@@ -818,14 +923,10 @@ def plot_clustered_modulation(G_index=1):
 
     fig, ax = plt.subplots(1, 1, figsize=(16, 7))
 
-    hm = sns.heatmap(
-        ordered, ax=ax, cmap="magma", vmin=0, vmax=1,
-        cbar=True, cbar_kws={"shrink": 0.4, "label": "Normalized variance"},
-    )
-    cbar = hm.collections[0].colorbar
-    cbar.set_ticks([0, 1])
-    cbar.set_ticklabels(["0", "1"])
-    cbar.ax.tick_params(labelsize=12)
+    # No colorbar here either — see plot_multitask_heatmap_colorbar.
+    sns.heatmap(ordered, ax=ax, cmap=_MULTITASK_HEATMAP_CMAP,
+                vmin=_MULTITASK_HEATMAP_VLIM[0], vmax=_MULTITASK_HEATMAP_VLIM[1],
+                cbar=False)
 
     for rb in rbreaks:
         ax.axhline(rb, color="0.6", lw=0.5, zorder=3, alpha=0.6)
@@ -847,8 +948,32 @@ def plot_clustered_modulation(G_index=1):
 
     fig.tight_layout()
 
-    out_path = OUT_DIR / "clustered_modulation_normalized.png"
+    out_path = _multitask_out("clustered_modulation_normalized.png")
     _save_fig(fig, out_path)
+
+
+def plot_multitask_heatmap_colorbar():
+    """
+    The colorbar for the multi-task task-variance heatmaps (input, hidden and
+    modulation), as its own figure.
+
+    Those three panels show the same quantity on the same scale
+    (`_MULTITASK_HEATMAP_CMAP` over `_MULTITASK_HEATMAP_VLIM`), so none of them
+    draws a colorbar: one bar published once serves all three, is not repeated
+    three times at three different panel widths, and can be placed and sized in the
+    manuscript independently of the panels. Reads no data — the scale is fixed.
+    """
+    _ensure_out_dir()
+    vmin, vmax = _MULTITASK_HEATMAP_VLIM
+    _save_standalone_colorbar(
+        _multitask_out("heatmap_colorbar.png"),
+        cmap=_MULTITASK_HEATMAP_CMAP, vmin=vmin, vmax=vmax,
+        ticks=[vmin, vmax], ticklabels=[f"{vmin:.0f}", f"{vmax:.0f}"],
+        label=_MULTITASK_HEATMAP_CLABEL,
+        # Horizontal: the bar sits in the upper part of the figure, leaving the
+        # space below it for the tick labels and then the axis label.
+        orientation="horizontal", figsize=(1.9, 0.62),
+        rect=(0.05, 0.62, 0.90, 0.24), labelsize=8, label_fontsize=8)
 
 
 # ─── Figure: L2 vs Accuracy ──────────────────────────────────────────────────
@@ -886,7 +1011,7 @@ def plot_l2_vs_accuracy():
     ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
 
     fig.tight_layout()
-    out_path = OUT_DIR / "l2_vs_accuracy.png"
+    out_path = _multitask_out("l2_vs_accuracy.png")
     _save_fig(fig, out_path)
 
 
@@ -945,60 +1070,67 @@ def _load_state_space_pca():
     return pickle.load(open(matches[0], "rb"))
 
 
+def _plot_state_space_panel(data, key, ylabel_prefix, out_name, category_order,
+                            category_to_color):
+    """One context-end PCA panel as its own figure, colored by task category."""
+    all_rules = data["all_rules"]
+    rule_motif_mapping = data["rule_motif_mapping"]
+    pca = data["pca_results"][key]
+    X_2d, ctx_rule_labels = pca["X_2d"], pca["ctx_rule_labels"]
+
+    fig, ax = plt.subplots(1, 1, figsize=(2.5, 2.4))
+    for cat in category_order:
+        rule_idxs_in_cat = [idx for idx, rule in enumerate(all_rules)
+                            if rule_motif_mapping[rule][0] == cat]
+        sel = np.isin(ctx_rule_labels, rule_idxs_in_cat)
+        ax.scatter(X_2d[sel, 0], X_2d[sel, 1], label=cat,
+                   color=category_to_color[cat], alpha=0.5, s=14,
+                   edgecolors="none")
+
+    ax.set_xlabel("PC1", fontsize=8)
+    ax.set_ylabel(f"{ylabel_prefix}\nPC2", fontsize=8)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.xaxis.set_major_locator(mpl.ticker.MaxNLocator(integer=True))
+    ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(integer=True))
+    # Each figure stands alone, so each carries the category key (routed through
+    # _legend, so --no-legend still suppresses both).
+    _legend(ax, frameon=True, loc="best", fontsize=5, markerscale=1.0)
+
+    fig.tight_layout()
+    _save_fig(fig, _multitask_out(out_name))
+
+
 def plot_state_space_combined():
-    """Figure: Context-end PCA for hidden (top) and eff_mod (bottom) stacked vertically."""
+    """
+    Figures: context-end PCA colored by task category — hidden state and effective
+    modulation, as TWO separate figures:
+      multitask_state_space_hidden.png
+      multitask_state_space_eff_mod.png
+
+    They were previously one stacked 2-panel figure. Split because the two panels
+    are separate PCA spaces whose PCs are not comparable, so nothing was gained by
+    forcing them onto a shared x axis and into one layout — and each is now sized
+    and placed independently. Each carries its own axis labels and category legend.
+    """
     _ensure_out_dir()
     data = _load_state_space_pca()
     if data is None:
         print("  Skipped: state_space PCA pickle not found. Run state_space_shift.py first.")
         return
 
-    all_rules = data["all_rules"]
     rule_motif_mapping = data["rule_motif_mapping"]
-
     category_order = [
         "Pro Delayed", "Anti Delayed", "Pro Reaction",
         "Anti Reaction", "Pro Integration", "Categorization",
     ]
     category_to_color = {cat: col for _, (cat, col) in rule_motif_mapping.items()}
 
-    fig, axes = plt.subplots(2, 1, figsize=(2.5, 4.5), sharex=True)
-
-    panels = [
-        ("hidden", "Hidden state", False),
-        ("eff_mod", "Eff. modulation", True),
-    ]
-
-    for ax, (key, ylabel_prefix, show_legend) in zip(axes, panels):
-        pca = data["pca_results"][key]
-        X_2d = pca["X_2d"]
-        ctx_rule_labels = pca["ctx_rule_labels"]
-
-        for cat in category_order:
-            rule_idxs_in_cat = [
-                idx for idx, rule in enumerate(all_rules)
-                if rule_motif_mapping[rule][0] == cat
-            ]
-            sel = np.isin(ctx_rule_labels, rule_idxs_in_cat)
-            ax.scatter(
-                X_2d[sel, 0], X_2d[sel, 1],
-                label=cat, color=category_to_color[cat],
-                alpha=0.5, s=14, edgecolors="none",
-            )
-
-        ax.set_ylabel(f"{ylabel_prefix}\nPC2", fontsize=8)
-        ax.spines[["top", "right"]].set_visible(False)
-        ax.xaxis.set_major_locator(mpl.ticker.MaxNLocator(integer=True))
-        ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(integer=True))
-        if show_legend:
-            _legend(ax, frameon=True, loc="best", fontsize=5, markerscale=1.0)
-
-    axes[1].set_xlabel("PC1", fontsize=8)
-    axes[0].tick_params(labelbottom=False)
-
-    fig.tight_layout()
-    out_path = OUT_DIR / "state_space_combined.png"
-    _save_fig(fig, out_path)
+    for key, ylabel_prefix, out_name in (
+        ("hidden", "Hidden state", "state_space_hidden.png"),
+        ("eff_mod", "Eff. modulation", "state_space_eff_mod.png"),
+    ):
+        _plot_state_space_panel(data, key, ylabel_prefix, out_name,
+                                category_order, category_to_color)
 
 
 RVAL_RESULT_PATH = STATE_SPACE_DIR / "initial_condition_distance_vs_angle_results.pkl"
@@ -1043,7 +1175,7 @@ def plot_state_space_r_values():
     ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
 
     fig.tight_layout()
-    out_path = OUT_DIR / "state_space_r_values.png"
+    out_path = _multitask_out("state_space_r_values.png")
     _save_fig(fig, out_path)
 
 
@@ -1125,7 +1257,7 @@ def _plot_overmembership_single(pkl_template, out_filename):
         ax.spines[["top", "right"]].set_visible(False)
 
     fig.subplots_adjust(hspace=0.45)
-    out_path = OUT_DIR / out_filename
+    out_path = _multitask_out(out_filename)
     _save_fig(fig, out_path, extra=f"  (n={n_experiments} experiments)")
 
 
@@ -1254,7 +1386,7 @@ def plot_lesion_heatmap():
     cbar.set_ticks(_ticks)
     cbar.set_ticklabels([f"{t:.0f}" for t in _ticks])
     cbar.ax.tick_params(labelsize=10)
-    out_path = OUT_DIR / "lesion_heatmap_unnorm.png"
+    out_path = _multitask_out("lesion_heatmap_unnorm.png")
     _save_fig(fig, out_path)
 
 
@@ -1397,7 +1529,7 @@ def plot_om_vs_lesion():
     ax1.set_ylabel("|Lesion effect diff|", fontsize=8)
     ax1.spines[["top", "right"]].set_visible(False)
     fig1.tight_layout()
-    out_path1 = OUT_DIR / "om_vs_lesion_scatter.png"
+    out_path1 = _multitask_out("om_vs_lesion_scatter.png")
     _save_fig(fig1, out_path1)
 
     # --- Figure 2: predicted vs actual ---
@@ -1415,7 +1547,7 @@ def plot_om_vs_lesion():
     ax2.set_ylabel("Actual mod lesion effect (%)", fontsize=8)
     ax2.spines[["top", "right"]].set_visible(False)
     fig2.tight_layout()
-    out_path2 = OUT_DIR / "om_vs_lesion_prediction.png"
+    out_path2 = _multitask_out("om_vs_lesion_prediction.png")
     _save_fig(fig2, out_path2)
 
 
@@ -1429,7 +1561,8 @@ def plot_fixed_points(addtask="delaydm1", plot_name="e_modulation"):
     between two conditions. One panel per PC pair (PC1-2, PC1-3, PC2-3).
 
     addtask: "delaydm1" or "dmcgo"
-    plot_name: "hidden", "e_modulation", or "m_modulation"
+    plot_name: "hidden" or "e_modulation" (raw M is no longer analyzed — see
+        multiple_task_analysis.py's shared_run)
     """
     _ensure_out_dir()
 
@@ -1475,14 +1608,14 @@ def plot_fixed_points(addtask="delaydm1", plot_name="e_modulation"):
             _legend(ax, frameon=True, fontsize=6)
 
     fig.tight_layout()
-    out_path = OUT_DIR / f"fixed_points_{addtask}_{plot_name}.png"
+    out_path = _multitask_out(f"fixed_points_{addtask}_{plot_name}.png")
     _save_fig(fig, out_path)
 
 
 def plot_fixed_points_all():
     """Generate fixed-point figures for both addtasks and all representations."""
     for addtask in ["delaydm1", "dmcgo"]:
-        for plot_name in ["hidden", "e_modulation", "m_modulation"]:
+        for plot_name in ["hidden", "e_modulation"]:
             plot_fixed_points(addtask=addtask, plot_name=plot_name)
 
 
@@ -1533,7 +1666,7 @@ def plot_input_weight_correlation():
     ax.set_yticklabels(all_input, rotation=0, fontsize=7)
 
     fig.tight_layout()
-    out_path = OUT_DIR / "input_weight_correlation.png"
+    out_path = _multitask_out("input_weight_correlation.png")
     _save_fig(fig, out_path)
 
 
@@ -1594,7 +1727,7 @@ def plot_cluster_corr_vs_lesion():
             fig.tight_layout()
             # e.g. "input_normalized_k20" -> "input_norm"
             clean_name = name.replace("_normalized", "_norm").replace("_unnormalized", "_unnorm").replace("_k20", "")
-            out_path = OUT_DIR / f"cluster_corr_vs_lesion_{clean_name}.png"
+            out_path = _multitask_out(f"cluster_corr_vs_lesion_{clean_name}.png")
             _save_fig(fig, out_path)
 
 
@@ -2738,17 +2871,10 @@ ONETASK_SNAPSHOT_SINGLE_STIM = 1
 def _onetask_hcbar(vmax, out_name):
     """Save a standalone short/wide horizontal bwr colorbar (ticks only, no
     label) spanning [-vmax, vmax], to OUT_DIR/out_name."""
-    figc = plt.figure(figsize=(1.5, 0.45))
-    axc = figc.add_axes([0.05, 0.5, 0.9, 0.35])   # [left, bottom, width, height]
-    norm = mpl.colors.Normalize(vmin=-vmax, vmax=vmax)
-    sm = mpl.cm.ScalarMappable(cmap="bwr", norm=norm)
-    sm.set_array([])
-    cbar = figc.colorbar(sm, cax=axc, orientation="horizontal")
-    cbar.set_ticks([-vmax, 0, vmax])
-    cbar.set_ticklabels([f"{-vmax:.2g}", "0", f"{vmax:.2g}"])
-    cbar.ax.tick_params(labelsize=8)
-    cbar_path = OUT_DIR / out_name
-    _save_fig(figc, cbar_path)
+    _save_standalone_colorbar(
+        OUT_DIR / out_name, cmap="bwr", vmin=-vmax, vmax=vmax,
+        ticks=[-vmax, 0, vmax],
+        ticklabels=[f"{-vmax:.2g}", "0", f"{vmax:.2g}"])
 
 
 def _plot_onetask_snapshot_single(mat, stim, title, out_name, cbar_out_name,
@@ -5866,7 +5992,7 @@ def _plot_memory_attractor(pkl_path, out_prefix, aname):
     Shared body for the DMC / delayDM memory-attractor figures.
 
     Reloads a fixed-point pickle written by multiple_task_analysis.py's
-    shared_run and, for each representation (hidden, m_modulation, e_modulation),
+    shared_run and, for each representation (hidden, e_modulation),
     plots the delay-period trajectory + end-of-delay fixed points for 8 stimuli
     x 2 tasks in that representation's optimal 2-PC plane (the plane with the
     highest group-separation 2D silhouette). Color = stimulus, marker = task
@@ -5932,8 +6058,8 @@ def _plot_memory_attractor(pkl_path, out_prefix, aname):
         ax.set_xlabel(f"PC{bx+1}", fontsize=8)
         ax.set_ylabel(f"PC{by+1}", fontsize=8)
         ax.spines[["top", "right"]].set_visible(False)
-        # hidden / m_modulation span a wide range, so use sparser ticks there.
-        nbins = 3 if rep in ("hidden", "m_modulation") else None
+        # hidden spans a wide range, so use sparser ticks there.
+        nbins = 3 if rep == "hidden" else None
         ax.xaxis.set_major_locator(mpl.ticker.MaxNLocator(integer=True, nbins=nbins))
         ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(integer=True, nbins=nbins))
         ax.tick_params(labelsize=7)
@@ -5955,14 +6081,14 @@ def _plot_memory_attractor(pkl_path, out_prefix, aname):
         out_path = OUT_DIR / f"{out_prefix}_{rep}_{aname}.png"
         _save_fig(fig, out_path, extra=f"  (PC{bx+1}-PC{by+1}, 2D sil={sil:.3f})")
 
-    for rep in ("hidden", "m_modulation", "e_modulation"):
+    for rep in ("hidden", "e_modulation"):
         _plot_one(rep)
 
 
 def plot_dmc_memory_attractor():
     """
     Figure: DMC category-memory attractors for each representation (hidden,
-    m_modulation, e_modulation), each in its own optimal 2-PC plane.
+    e_modulation), each in its own optimal 2-PC plane.
 
     Reloads the fixed-point pickle written by multiple_task_analysis.py's
     shared_run (multiple_tasks/{DMC_ANAME}/dmcgo_fixed_points_{DMC_ANAME}.pkl).
@@ -5980,7 +6106,7 @@ def plot_dmc_memory_attractor():
 def plot_delaydm_memory_attractor():
     """
     Figure: delayDM integration-memory attractors for each representation
-    (hidden, m_modulation, e_modulation), each in its own optimal 2-PC plane.
+    (hidden, e_modulation), each in its own optimal 2-PC plane.
 
     Reloads the fixed-point pickle written by multiple_task_analysis.py's
     shared_run("delaydm1") (multiple_tasks/{DELAYDM_ANAME}/
@@ -6031,6 +6157,7 @@ FIGURES_BY_MODE = {
         "input": plot_clustered_input,
         "hidden": plot_clustered_hidden,
         "modulation": plot_clustered_modulation,
+        "heatmap_colorbar": plot_multitask_heatmap_colorbar,
         "l2_accuracy": plot_l2_vs_accuracy,
         "state_space_combined": plot_state_space_combined,
         "state_space_r_values": plot_state_space_r_values,
@@ -6090,11 +6217,18 @@ def main():
     parser = argparse.ArgumentParser(
         description="Generate paper figures for one or more analysis modes."
     )
+    # Modes are validated by hand, below, instead of with argparse's `choices=`.
+    # With nargs="*" and no positional given, argparse on Python <= 3.11 checks the
+    # EMPTY DEFAULT against `choices` and exits with "invalid choice: []" — which
+    # made every `--only FIGURE` call fail on those interpreters, even though the
+    # figure name was fine. (Python 3.12 fixed it, which is why it went unnoticed.)
+    valid_modes = ("all", *FIGURES_BY_MODE.keys())
     parser.add_argument(
         "mode",
         nargs="*",
-        choices=["all", *FIGURES_BY_MODE.keys()],
-        help="Which group(s) of figures to generate. Accepts multiple modes "
+        metavar="MODE",
+        help="Which group(s) of figures to generate: "
+             f"{', '.join(valid_modes)}. Accepts multiple modes "
              "(e.g. 'one_task two_task'). 'all' runs every mode (default when "
              "none given).",
     )
@@ -6110,6 +6244,11 @@ def main():
              "default).",
     )
     args = parser.parse_args()
+
+    bad_modes = [m for m in args.mode if m not in valid_modes]
+    if bad_modes:
+        parser.error(f"invalid mode(s): {', '.join(bad_modes)}. "
+                     f"Choose from: {', '.join(valid_modes)}")
 
     # Apply the legend toggle globally; every figure routes through _legend(),
     # which reads this module-level flag.

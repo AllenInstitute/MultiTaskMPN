@@ -27,7 +27,6 @@ import os
 import sys
 import gc
 import numpy as np
-from numpy.linalg import norm
 from pathlib import Path
 import json
 import psutil
@@ -217,7 +216,8 @@ def main(seed, feature, clean=True):
     # 2025-11-19: make sure the bias is only cell-dependent but not time- or trail-dependent
     ref = bs[0, 0, :]
     same_per_k = np.all(bs == ref, axis=(0, 1))
-    all_k_constant = np.all(same_per_k)
+    assert np.all(same_per_k), \
+        "bias is not cell-only: it varies across time steps or trials"
     del bs, ref, same_per_k
 
     # %%
@@ -266,10 +266,13 @@ def main(seed, feature, clean=True):
         ---------
         1. Generate `test_n_batch` trials for the two sibling tasks and run
            them through the (frozen) trained network, recording the
-           delay-period internal state in three representations:
+           delay-period internal state in two representations:
              - hidden        : recurrent activity  (db["hidden1"])
-             - m_modulation  : raw plasticity matrix M (db["M1"])
              - e_modulation  : effective modulation  W ⊙ M
+           Raw M is deliberately NOT analyzed here: the effective modulation is
+           built from it, so its map is near-duplicate, and at (n_hidden x n_input)
+           per step it is the most expensive representation to hold and to sweep
+           PCA seeds over.
         2. Fit a 6-component PCA (n_pcs) on each representation's delay-period
            states, giving a common low-D "memory subspace" per representation.
         3. Group trials into 16 buckets — 2 tasks × 8 stimulus directions
@@ -437,9 +440,8 @@ def main(seed, feature, clean=True):
         if addtask in ("dmcgo", "delaydm1", ):
             hidden_test = db_test["hidden1"][:, delay_period[0]:delay_period[1]-1, :].cpu().numpy()
             em_test = (db_test["M1"][:, delay_period[0]:delay_period[1]-1, :, :] * W_dev).cpu().numpy()
-            m_test = db_test["M1"][:, delay_period[0]:delay_period[1]-1, :, :].cpu().numpy()
 
-        print(f"hidden_test: {hidden_test.shape}; em_test: {em_test.shape}; m_test: {m_test.shape}")
+        print(f"hidden_test: {hidden_test.shape}; em_test: {em_test.shape}")
 
         def combo_indices_16(A, B):
             A = np.asarray(A)
@@ -524,7 +526,6 @@ def main(seed, feature, clean=True):
             stacked_inputs_labels[0].append(b)
             stacked_inputs_labels[1].append(b)
 
-        trial_num = 1  # one pair per retained stim1 angle
         n_kept = len(stacked_inputs_labels[0])
         match_mode = "stim-matched" if stim_matched else "angle-matched"
         print(f"  [{match_mode}] {addtask}: kept {n_kept}/8 stim1 angles: "
@@ -561,12 +562,14 @@ def main(seed, feature, clean=True):
         n_pcs = 6
         as_hidden_wantperiod = hidden_test.reshape(-1, hidden_test.shape[-1])
         as_em_wantperiod = em_test.reshape(-1, em_test.shape[-1] * em_test.shape[-2])
-        as_m_wantperiod = m_test.reshape(-1, m_test.shape[-1] * m_test.shape[-2])
 
         # [name, PCA-fit data]; the PCA itself is fit per-seed in the loop below.
+        # Only the hidden state and the EFFECTIVE modulation (W ⊙ M) are analyzed
+        # here: raw M is what the effective modulation is built from, so it adds a
+        # third near-duplicate map, and at (n_hidden x n_input) per step it is by far
+        # the most expensive one to hold and to fit 20 PCA seeds on.
         plot_all = [["hidden", as_hidden_wantperiod],
-                    ["e_modulation", as_em_wantperiod],
-                    ["m_modulation", as_m_wantperiod]]
+                    ["e_modulation", as_em_wantperiod]]
         n_pca_seeds = 20  # PCA seeds swept per representation
 
         # The two real (non-interpolated) conditions: task 0 (Pro, e.g. dmcgo) and
@@ -598,9 +601,6 @@ def main(seed, feature, clean=True):
                     # while W_dev is on the model device — move W to M1's device.
                     W_same = W_dev.to(db["M1"].device)
                     data = (db["M1"] * W_same).cpu().numpy()
-                    as_flat = data.reshape(-1, data.shape[-1] * data.shape[-2])
-                elif plot_name == "m_modulation":
-                    data = db["M1"]
                     as_flat = data.reshape(-1, data.shape[-1] * data.shape[-2])
                 del db
 
@@ -828,8 +828,8 @@ def main(seed, feature, clean=True):
             pickle.dump(fixed_points_save, _f)
         print(f"Saved fixed-point data: {fp_pkl_path}")
 
-    shared_run("delaydm1")
-    # shared_run("dmcgo")
+    # shared_run("delaydm1")
+    shared_run("dmcgo")
     sys.exit()
 
     # analyze the fitted weight matrices; we focus on the first layer of modulation and the output layer, since they are more interpretable than the hidden layer
@@ -1269,7 +1269,6 @@ def main(seed, feature, clean=True):
         
         for el in range(len(tb_break)):
             n_rules = len(task_params['rules'])
-            n_cells = clustering_data.shape[-1]
                 
             rule_idx, period_time = tb_break[el][0], tb_break[el][1]
             
@@ -1713,14 +1712,14 @@ def main(seed, feature, clean=True):
             # extract the grouping information, i.e. which neuron belong to which cluster
             # instead of the view of dendrogram
             # 2025-10-20: we register the tolerant version of optimal cluster selection
-            col_labels, col_k = result["col_tol_labels"], result["col_tol_k"]
+            col_labels = result["col_tol_labels"]
             # group the neuron based on the labels
             col_clusters = {int(lab): np.where(col_labels == lab)[0] for lab in np.unique(col_labels)}
             # 2025-11-04: do similar things for row separation
             # we checked so that the cluster label (name) is monotonically increasing 
             # i.e. near by cluster (e.g. cluster 1 and cluster 2) should be more similiar in population 
             # as well, since increasing the cutoff threshold in dendrogram will "merge" these clusters
-            row_labels, row_k = result["row_tol_labels"], result["row_tol_k"]
+            row_labels = result["row_tol_labels"]
             row_clusters = {int(lab): np.where(row_labels == lab)[0] for lab in np.unique(row_labels)}
             print(f"col_clusters: {len(col_clusters)}; row_clusters: {len(row_clusters)}")
             
@@ -1856,7 +1855,6 @@ def main(seed, feature, clean=True):
             for axcorr_index in range(len(axcorrs)): 
                 axcorr = axcorrs[axcorr_index]
                 # plot the group information (delimiter between different cluster)
-                nn = cell_vars_rules_sorted_norm_ordered_measure.shape[0]
                 boundaries = row_breakers
                 for b in boundaries:
                     axcorr.axvline(b, 0, 1, color="k", linewidth=1.2)
@@ -2404,7 +2402,6 @@ def main(seed, feature, clean=True):
             print(f"cluster_input_num: {cluster_input_num}; cluster_hidden_num: {cluster_hidden_num}")
             # by the setup, cluster_combine will be organized by shared pre
             # same pre neuron will be placed adjacently
-            cluster_combine_pre = copy.deepcopy(cluster_combine)
             # create order of key to put post neuron together 
             post_order = []
             for c1 in range(cluster_input_num):
@@ -2452,9 +2449,6 @@ def main(seed, feature, clean=True):
                     block.extend(group_neurons[ind-1])
                 group_neurons_post.append(block)
 
-            # assert helper.all_leq(group_neurons_comb, cell_vars_rules_sorted_norm.shape[1])
-
-            # cell_vars_rules_sorted_norm_r1 = cell_vars_rules_sorted_norm[:,group_neurons_comb]
             cell_vars_rules_sorted_norm_outer_bypre = cell_vars_rules_sorted_norm[:,group_neurons_comb_pre]
             cell_vars_rules_sorted_norm_outer_bypost = cell_vars_rules_sorted_norm[:,group_neurons_comb_post]
 
@@ -2463,8 +2457,8 @@ def main(seed, feature, clean=True):
             sns.heatmap(cell_vars_rules_sorted_norm_outer_bypre, ax=axs[1], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
             sns.heatmap(cell_vars_rules_sorted_norm_outer_bypost, ax=axs[2], cmap=cs, cbar=True, vmin=vmins, vmax=vmaxs)
             axs[0].set_title("Original", fontsize=15)
-            axs[1].set_title(f"Ordering based on the Outer Product of Input & Hidden Clusters [Input Adjacent]", fontsize=15)
-            axs[2].set_title(f"Ordering based on the Outer Product of Input & Hidden Clusters [Hidden Adjacent]", fontsize=15)
+            axs[1].set_title("Ordering based on the Outer Product of Input & Hidden Clusters [Input Adjacent]", fontsize=15)
+            axs[2].set_title("Ordering based on the Outer Product of Input & Hidden Clusters [Hidden Adjacent]", fontsize=15)
             for iii in range(3):
                 axs[iii].set_yticks(np.arange(len(tb_break_name)))
                 axs[iii].set_yticklabels(tb_break_name, rotation=0, ha='right', va='center', fontsize=9)
@@ -2739,7 +2733,7 @@ def main(seed, feature, clean=True):
                 # it is not possible for different modulation sharing the same pre and post neuron,
                 # but they may still share the same neuron cluster
                 # here we are curious about their collective behavior and calculate the total summation of count
-                row_all, col_all = result_all["row_labels"], result_all["col_labels"]
+                col_all = result_all["col_labels"]
 
                 print(f"col_all: {col_all}")
 
@@ -3025,7 +3019,6 @@ def main(seed, feature, clean=True):
                     in_num = np.array([len(cluster_input[k]) for k in cluster_input])
                     hid_num = np.array([len(cluster_hidden[k]) for k in cluster_hidden])
                     all_num = np.outer(in_num, hid_num).astype(float)
-                    flat_all_num = all_num.flatten()
                     n_in, n_hid = len(cluster_input), len(cluster_hidden)
 
                     # Precompute neuron -> cluster index (0-based) lookup arrays once.
@@ -3586,7 +3579,6 @@ def main(seed, feature, clean=True):
             _n_groups_log = len(_mbd_log)
             _x_log = np.arange(_n_groups_log)
             _kept_log    = np.array([d["n_kept"]               for d in _mbd_log], dtype=float)
-            _m1_log      = np.array([d["n_drop_unres_mod"]     for d in _mbd_log], dtype=float)
             _um_pre_log  = np.array([d["n_unres_mod_pre_only"] for d in _mbd_log], dtype=float)
             _um_post_log = np.array([d["n_unres_mod_post_only"]for d in _mbd_log], dtype=float)
             _um_both_log = np.array([d["n_unres_mod_both"]     for d in _mbd_log], dtype=float)
