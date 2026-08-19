@@ -4,7 +4,9 @@
 Post-training analysis of a single-task MPN.
 
 Reloads the per-stage training traces saved by one_task.py and reproduces the
-single-task analyses:
+single-task analyses.
+
+From the saved per-stage traces alone:
 
 1. Loss / accuracy across training.
 2. Input weight matrix heatmap (W_initial_linear).
@@ -15,7 +17,22 @@ single-task analyses:
    per-stimulus cancellation (show) figures.
 4. Modulation-change / synaptic & hidden correlation across learning.
 5. Weight-component projection to output across learning.
-6. Low-D PCA of the modulation matrix M during the stimulus period.
+6. Low-D PCA of the fixon modulation, hidden activity, full M and W⊙M over the
+   WHOLE trial (basis fit on every timestep of every trial, two-task style).
+7. Cross-period PCA explained variance (`cross_period_dimensionality`): how well
+   each period's top-k subspace captures every other period's variance.
+8. Per-input-component modulation magnitude over time
+   (`modulation_magnitude_by_component`).
+
+Reloading the trained checkpoint (savednet_{aname}.pt) as well:
+
+9. Long-period fixed-point geometry (`long_period_fixed_points`): each trial
+   period extended in turn, trajectories and settling endpoints in a shared
+   delay-period PCA.
+10. TRUE gradient fixed points M* = F(M*; x) over a dense 64-angle stimulus
+    ring, solved by core/grad_fixed_points.py — the continuous-attractor probe.
+11. Fixed-point stability classification (`classify_fixed_point_stability`):
+    the saved spectrum re-packaged into stable / marginal / unstable.
 
 All outputs go into ./onetask/{aname}/. Aggregated correlation curves (across
 seeds) are written to ./onetask_data/ and re-plotted if multiple runs exist.
@@ -24,7 +41,6 @@ Usage:
     python one_task_analysis.py                 # newest run in ./onetask/
     python one_task_analysis.py --aname <name>  # a specific run
 """
-import os
 import copy
 import glob
 import json
@@ -42,7 +58,6 @@ ticker.Locator.MAXTICKS = 10000
 import seaborn as sns
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
-import helper
 import torch
 import mpn
 import networks as nets
@@ -74,15 +89,8 @@ c_vals_l = [
     "#fecdd3", "#a7f3d0", "#f9a8d4", "#fde68a", "#bfdbfe",
 ] * 10
 
-c_vals_d = [
-    "#9b2c2c", "#2c5282", "#276749", "#975a16", "#97266d",
-    "#4338ca", "#7b341e", "#0369a1", "#15803d", "#6b21a8",
-    "#9f1239", "#0f4c3a", "#702459", "#854d0e", "#1e3a8a",
-] * 10
-
 l_vals = ['solid', 'dashed', 'dotted', 'dashdot', '-', '--', '-.', ':', (0, (3, 1, 1, 1)), (0, (5, 10))]
 markers_vals = ['o', 'v', '*', '+', '>', '1', '2', '3', '4', 's', 'p', '*', 'h', 'H', '+', 'x', 'D', 'd', '|', '_']
-linestyles = ["-", "--", "-."]
 
 ONETASK_DIR = Path("onetask")
 ONETASK_DATA_DIR = Path("onetask_data")
@@ -109,14 +117,15 @@ def _rebuild_net(net_params, device):
     return netFunction(net_params, verbose=False)
 
 
-def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by,
+def long_period_fixed_points(aname, save_dir, cfg,
                              fp_n_seeds=5, run_fixed_points=True):
     """Take the trained single-task network, generate test data with each trial
     period extended in turn (long fixation / stimulus / delay / response), fit a
     top-2 PCA on the pooled DELAY-period states, and scatter each variant's
     fixed point (last timestep) colored by stimulus. Mirrors the two-task
-    attractor analysis. Done for both the hidden state and the effective
-    modulation W ⊙ M. Requires the live checkpoint savednet_{aname}.pt."""
+    attractor analysis. Done for THREE representations — the hidden state, the
+    raw modulation M, and the effective modulation W ⊙ M — one figure each.
+    Requires the live checkpoint savednet_{aname}.pt."""
     ckpt_path = ONETASK_DIR / f"savednet_{aname}.pt"
     if not ckpt_path.exists():
         print(f"  [long-fp] checkpoint not found ({ckpt_path}); skipping.")
@@ -202,7 +211,10 @@ def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by,
     # shows: the per-trial trajectory over that window (line, colored by
     # stimulus) + the fixed point = last frame of the window (black-edged marker).
     present = [v for v in variants if v in cache]
-    period_title = {"longfixation": "Fixation", "longstimulus": "Stimulus",
+    # First epoch is "Context", not "Fixation" (SCHEME.md): it is where the rule
+    # cue sets up the trial. Only the DISPLAY name — the period KEYS
+    # ("longfixation", "fix1") are untouched, since they index saved data.
+    period_title = {"longfixation": "Context", "longstimulus": "Stimulus",
                     "longdelay": "Delay", "longresponse": "Response"}
 
     # Accumulate the projected 2-D trajectories so paper_plot can re-render this
@@ -256,8 +268,10 @@ def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by,
                 p = proj[i]                                 # (win_T, 2)
                 ax.plot(p[disp_start:, 0], p[disp_start:, 1], color=col,
                         alpha=0.4, linewidth=0.8, zorder=2)
+                # No outline on the fixed-point marker: an outline on a small
+                # marker eats into the fill. Matches paper_plot's convention.
                 ax.scatter(p[-1, 0], p[-1, 1], color=col, marker="o", s=45,
-                           edgecolor="black", linewidth=0.5, alpha=0.85, zorder=3)
+                           edgecolor="none", alpha=0.85, zorder=3)
             ax.set_xlabel("Delay PC1", fontsize=10)
             ax.set_ylabel("Delay PC2", fontsize=10)
             ax.set_title(period_title.get(v, v), fontsize=11)
@@ -269,7 +283,7 @@ def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by,
         uniq_stim = sorted(set(int(s) for c in cache.values() for s in c["stim"]))
         stim_handles = [plt.Line2D([0], [0], marker="o", linestyle="None",
                                    markerfacecolor=c_vals[s % len(c_vals)],
-                                   markeredgecolor="black", markersize=6, label=f"stim {s}")
+                                   markeredgecolor="none", markersize=6, label=f"stim {s}")
                         for s in uniq_stim]
         axs[0, 0].legend(handles=stim_handles, frameon=True, fontsize=6, ncol=2,
                          title="stimulus", loc="best")
@@ -321,12 +335,16 @@ def long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by,
     else:
         print("  [grad-fp] skipped (--no-fixed-points).")
 
-    # free GPU memory
+    # free GPU memory. Rebound to None rather than `del`-eted: `_gen_and_run`
+    # closes over `net`, and deleting a name a closure captures makes every
+    # linter read that closure as referencing an undefined variable (it is fine
+    # at runtime — the closure is only called earlier). Dropping the reference
+    # this way frees the model just the same.
     try:
         net.to("cpu")
     except Exception:
         pass
-    del net
+    net = None
     import gc as _gc
     _gc.collect()
     if torch.cuda.is_available():
@@ -429,17 +447,18 @@ def cross_period_dimensionality(aname, save_dir, hs_final, Ms_final, W_eff,
                                 top_k=4):
     """
     One-task cross-period PCA explained-variance heatmaps (the single-task analog
-    of two_task_analysis's d_combine figure). For hidden activity, modulation
-    (raw M) and effective modulation (W⊙M), fit a top-k PCA on each trial
-    period's states and measure how well it captures every other period's
-    variance — a 4x4 (Fixation/Stimulus/Memory/Response) matrix per series.
+    of two_task_analysis's d_combine figure). For hidden activity and effective
+    modulation (W⊙M) — raw M is deliberately left out, being near-duplicate of
+    W⊙M — fit a top-k PCA on each trial period's states and measure how well it
+    captures every other period's variance: a 4x4 matrix per series, over the
+    Context / Stimulus / Memory / Response periods.
 
     Saves d_combine_{aname}.png and .pkl (for paper_plot reuse).
     """
     T = hs_final.shape[1]
     # Trial periods (match the two-task period layout: fixation/stim/delay/resp).
     periods = {
-        "Fixation": (0, max(stimulus_start - 1, 1)),
+        "Context": (0, max(stimulus_start - 1, 1)),
         "Stimulus": (stimulus_start, stimulus_end),
         "Memory": (stimulus_end, max(response_start - 1, stimulus_end + 1)),
         "Response": (response_start, T),
@@ -699,6 +718,19 @@ def classify_fixed_point_stability(aname, save_dir):
 
 
 def main(aname, fp_n_seeds=5, run_fixed_points=True):
+    """Run every analysis for ONE trained single-task run, in the order the
+    module docstring lists them.
+
+    Loads that run's per-stage traces (param_{aname}_result.npz) and
+    hyperparameters (param_{aname}_param.json); the fixed-point sections
+    additionally reload the live checkpoint (savednet_{aname}.pt). Every figure
+    and its backing pickle are written to onetask/{aname}/.
+
+    `run_fixed_points=False` (--no-fixed-points) skips the slow gradient solve —
+    and then the output directory is NOT wiped first, so fixed_points_* files
+    from an earlier full run survive for paper_plot to read. `fp_n_seeds` is how
+    many trial templates that solve tries before keeping the best-converging one.
+    """
     result_path = ONETASK_DIR / f"param_{aname}_result.npz"
     param_path = ONETASK_DIR / f"param_{aname}_param.json"
     if not result_path.exists():
@@ -714,8 +746,6 @@ def main(aname, fp_n_seeds=5, run_fixed_points=True):
     dt = task_params.get("dt", 40)
 
     data = np.load(result_path, allow_pickle=True)
-    hyp_dict = data["hyp_dict"].item()
-    seed = int(data["seed"])
     shift_index = int(data["shift_index"])
     color_by = str(data["color_by"])
     counter_lst = data["counter_lst"]
@@ -1306,7 +1336,7 @@ def main(aname, fp_n_seeds=5, run_fixed_points=True):
     modulation_change_stage = np.array(modulation_change_stage)
     m_corr_stage = np.array(m_corr_stage)
     h_corr_stage = np.array(h_corr_stage)
-    period_names = ["Fixation", "Stimulus", "Delay", "Response"]
+    period_names = ["Context", "Stimulus", "Delay", "Response"]
 
     figmc, axsmc = plt.subplots(3, 1, figsize=(6, 3 * 3))
     for i in range(4):
@@ -1430,7 +1460,7 @@ def main(aname, fp_n_seeds=5, run_fixed_points=True):
     # window, and each period boundary gets a large solid transition marker.
     T_total = fixon_mod.shape[1]
     # phase name -> (start, end_exclusive, marker index in markers_vals)
-    phases = [("Fixation", 0, stimulus_start, 1),
+    phases = [("Context", 0, stimulus_start, 1),
               ("Stimulus", stimulus_start, stimulus_end, 2),
               ("Delay", stimulus_end, response_start, 3),
               ("Response", response_start, T_total, 0)]
@@ -1521,9 +1551,10 @@ def main(aname, fp_n_seeds=5, run_fixed_points=True):
     # ── Long-period fixed-point geometry (uses the LIVE trained network) ─────
     # Generate test data with each trial period extended in turn, fit a top-2
     # PCA on the pooled delay-period states, and scatter each variant's fixed
-    # point (last delay frame) colored by stimulus — for hidden and W⊙M.
+    # point (last delay frame) colored by stimulus — for hidden, raw M and W⊙M.
+    # Also solves the TRUE gradient fixed points (unless --no-fixed-points).
     try:
-        long_period_fixed_points(aname, save_dir, cfg, seed, shift_index, color_by,
+        long_period_fixed_points(aname, save_dir, cfg,
                                  fp_n_seeds=fp_n_seeds,
                                  run_fixed_points=run_fixed_points)
     except Exception as exc:

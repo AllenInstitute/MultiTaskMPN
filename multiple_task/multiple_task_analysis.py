@@ -3,24 +3,46 @@ Post-training analysis of a multi-task MPN.
 
 Loads a trained DeepMultiPlasticNet checkpoint and its recorded hidden states,
 modulation matrices (M), and input activations, then characterizes how the
-network organizes task-specific computation:
+network organizes task-specific computation.
 
-1. Weight structure visualization — heatmaps of W_initial_linear, W (recurrent),
-   and W_output to inspect static connectivity.
-2. Task-conditioned activity — averages hidden-layer and modulation responses
-   per task to build neuron × task tuning profiles.
-3. Hierarchical clustering — clusters input neurons (by their tuning across
-   tasks) and hidden neurons (likewise), with automatic k selection via
-   silhouette score. Also clusters modulation synapses (columns of M) by their
-   task-tuning patterns.
-4. Low-dimensional trajectory plots — PCA projections of hidden-state
-   trajectories colored by task/stimulus/response.
+The file has TWO STAGES and `main` currently stops between them: it calls
+`shared_run` and then `sys.exit()`, which the __main__ loop catches and reads as
+"this trial is intentionally done" before moving to the next seed. Delete that
+call to reach stage 2.
 
-Outputs:
-  - Figures saved to ./multiple_tasks/{aname}/
-  - cluster_info_{aname}.pkl — neuron cluster assignments for downstream
-    lesion experiments
-  - cluster_info_mod_{aname}.pkl — modulation synapse cluster assignments
+Stage 1 — sibling-task memory geometry (`shared_run`; the part that runs today):
+  * accuracy on normal-delay trials, overall and per sibling task, plus an
+    input/output sanity figure;
+  * TRUE gradient fixed points of the delay period for each sibling rule, solved
+    by the shared solver in core/grad_fixed_points.py;
+  * the cross-task memory separation of those fixed points
+    (`grad_fp_category_separation`): one shared PCA over both rules' points and
+    the 2-PC plane whose silhouette best separates the abstract memory groups.
+
+Stage 2 — weight structure and clustering (everything after the sys.exit):
+  1. Weight-structure heatmaps of W_initial_linear, W (recurrent) and W_output,
+     plus the end-to-end pathway W_out @ W_mod @ W_in and its SVD spectrum.
+  2. Task-conditioned VARIANCE — per-rule, per-period variance of the input,
+     hidden and modulation activity, giving neuron × task-condition matrices.
+  3. Hierarchical clustering of those matrices along both axes (task conditions
+     and neurons / modulation synapses), k chosen by silhouette within a
+     tolerance band. Modulation synapses are additionally grouped by shared pre-
+     neuron, by shared post-neuron, and by K-means pre-grouping at several G.
+  4. Over-membership and entropy diagnostics asking whether modulation clusters
+     align with presynaptic or postsynaptic neuron clusters.
+
+Outputs land in ./multiple_tasks/{savefigure_name_base}/, where
+savefigure_name_base = {ruleset}_seed{seed}_{addon_name} is rebuilt from the
+run's saved hyp_dict. For the runs in hand `addon_name` already carries the
++hidden/+batch/+angle part, so this equals `aname` and paper_plot.py finds these
+files by aname — but the two are computed from different sources and would
+diverge for a run saved with a shorter addon_name:
+  - figures (every savefig prints its path)
+  - fixed_points_grad_{aname}_{rule}.pkl        — solved fixed points per rule
+  - {addtask}_separation_{aname}.pkl            — cross-task separation data
+  - cluster_info_{savefigure_name_base}.pkl     — neuron cluster assignments,
+    consumed by the lesion experiments
+  - cluster_info_mod_{savefigure_name_base}.pkl — modulation synapse clusters
 """
 # %%
 import os
@@ -37,6 +59,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from matplotlib.colors import LogNorm
+from matplotlib.lines import Line2D
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, silhouette_score
 from sklearn.metrics.cluster import contingency_matrix as sk_contingency_matrix
 ticker.Locator.MAXTICKS = 10000 
@@ -57,6 +80,7 @@ mpl.rcParams.update({
 
 from sklearn.metrics.pairwise import cosine_similarity
 from scipy.spatial.distance import pdist, squareform
+from scipy.cluster.hierarchy import fcluster
 from sklearn.decomposition import PCA
 
 import torch
@@ -65,6 +89,7 @@ from torch.serialization import add_safe_globals
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import helper
 import clustering
+from grad_fixed_points import solve_period_modulation_fixed_points
 import clustering_metric
 import color_func
 import mpn
@@ -125,33 +150,296 @@ c_vals_l = [
     "#bfdbfe",  # light deep blue
 ] * 10
 
-c_vals_d = [
-    "#9b2c2c",  # dark red
-    "#2c5282",  # dark blue
-    "#276749",  # dark green
-    "#975a16",  # dark golden
-    "#97266d",  # dark magenta
-    "#4338ca",  # dark indigo
-    "#7b341e",  # dark orange
-    "#0369a1",  # dark sky blue
-    "#15803d",  # dark bright green
-    "#6b21a8",  # dark purple
-    "#9f1239",  # dark red-pink
-    "#0f4c3a",  # dark teal
-    "#702459",  # dark violet-magenta
-    "#854d0e",  # dark amber
-    "#1e3a8a",  # dark deep blue
-] * 10
-
-
-l_vals = ['solid', 'dashed', 'dotted', 'dashdot', '-', '--', '-.', ':', (0, (3, 1, 1, 1)), (0, (5, 10))]
-markers_vals = ['o', 'v', '*', '+', '>', '1', '2', '3', '4', 's', 'p', '*', 'h', 'H', '+', 'x', 'D', 'd', '|', '_']
-linestyles = ["-", "--", "-."]
 cs = "coolwarm"
 
 
-def main(seed, feature, clean=True):
+# Representations carried through the separation analysis:
+# (display name, the solver's fixed-point key, its per-stimulus trajectory key).
+# Raw M ("fixed_M") is deliberately absent — see shared_run's docstring.
+_SEPARATION_REPS = (("hidden", "fixed_hidden", "traj_all_hidden"),
+                    ("e_modulation", "fixed_WM", "traj_all_WM"))
+
+# The sibling-task families `shared_run` can probe, keyed by the `addtask` name it
+# takes. Each entry is (rules solved, the paper_plot.py run identifier whose
+# figures read the result). A family is named after its FIRST rule, which is also
+# the prefix of its output files.
+#
+# Both are solved in one `main` call by default (--families) — they are
+# independent solves over the same checkpoint, so doing them together costs one
+# load of the network and the recorded activity instead of two.
+#
+# NB paper_plot.py reads each family from its OWN identifier (DMC_ANAME,
+# DELAYDM_ANAME), and those may name different seeds. Solving both families for
+# one seed therefore updates only the paper figure whose identifier points at that
+# seed; run the other seed too (or repoint the constant) to refresh both.
+SHARED_RUN_FAMILIES = {
+    "dmcgo":    (["dmcgo", "dmcnogo"],       "DMC_ANAME"),
+    "delaydm1": (["delaydm1", "delaydm2"],   "DELAYDM_ANAME"),
+}
+
+
+# ─── Clustering helpers shared by the neuron and modulation analyses ──────────
+# Module level, not nested inside main's branches: both are needed by the
+# input/hidden pass AND by the modulation pass, and a closure defined in one
+# branch would only be in scope in the other because the branches happen to run
+# in that order.
+
+def _gap_curve(Z, k_vals):
+    """Ward merge-height gap for each k in `k_vals`, from a linkage matrix.
+
+    The gap at k is the drop in merge height across the k-cluster cut: a large
+    value means the dendrogram resists merging past k, which is what the "gap"
+    k-selection strategy looks for. NaN for a missing linkage."""
+    if Z is None:
+        return np.full(len(k_vals), np.nan)
+    n = Z.shape[0] + 1
+    gaps = []
+    for k in k_vals:
+        idx_above = n - k
+        idx_below = n - k - 1
+        h_above = float(Z[idx_above, 2]) if 0 <= idx_above < Z.shape[0] else np.inf
+        h_below = float(Z[idx_below, 2]) if 0 <= idx_below < Z.shape[0] else 0.0
+        gaps.append(h_above - h_below)
+    return np.asarray(gaps, dtype=float)
+
+
+def _fixed_k_col_clusters(ci_entry, fk):
+    """Re-cut a saved column dendrogram at exactly `fk` clusters.
+
+    Returns {1-based label: neuron indices}. The unresponsive class that
+    clustering.py appends (label col_tol_k + 1) is held out of the cut and
+    re-appended as label fk + 1, so a fixed-k grouping keeps the same
+    "silent neurons are their own class" convention as the tolerance-selected
+    one — which is what makes the two comparable."""
+    res = ci_entry["result"]
+    tol_labels = res["col_tol_labels"]
+    unres_mask = tol_labels == (res["col_tol_k"] + 1)
+    active_labels = fcluster(res["col_linkage"], fk, criterion="maxclust")
+    full = np.zeros(len(tol_labels), dtype=int)
+    full[~unres_mask] = active_labels
+    if unres_mask.any():
+        full[unres_mask] = fk + 1
+    return {int(lab): np.where(full == lab)[0] for lab in np.unique(full) if lab > 0}
+
+
+def _memory_group_labels(addtask, task_idx, stim_idx, n_stim):
+    """Abstract "memory group" label per solved fixed point.
+
+    The grouping is what the separating plane is chosen to reveal, and it differs
+    by task family:
+
+      * dmcgo/dmcnogo — the DMC *category* split, which cuts ACROSS task and
+        stimulus identity:
+            Group A: task0 stim {0..n/2-1} + task1 stim {n/2..n-1}
+            Group B: task0 stim {n/2..n-1} + task1 stim {0..n/2-1}
+        i.e. group A iff (task == 0) == (stim < n_stim/2). A plane that separates
+        these two is one that encodes the remembered CATEGORY rather than the
+        stimulus or the task cue.
+      * delaydm1/delaydm2 — there is no match-category; what delay1 holds is the
+        remembered stim1 ANGLE, so points are grouped by angle with both tasks
+        pooled. A high silhouette then means each angle forms its own cluster,
+        i.e. the memory is angle-specific and task-independent.
     """
+    half = n_stim // 2
+    if addtask == "dmcgo":
+        return np.asarray([int((t == 0) == (a < half))
+                           for t, a in zip(task_idx, stim_idx)], dtype=int)
+    return np.asarray(list(stim_idx), dtype=int)
+
+
+def grad_fp_category_separation(aname, save_dir, addtask, rules,
+                                probe="longdelay", n_pcs=6, n_pca_seeds=20):
+    """Cross-task memory separation, measured on SOLVED fixed points.
+
+    Reads the per-rule pickles written by solve_period_modulation_fixed_points and,
+    for each representation in `_SEPARATION_REPS`:
+
+      1. stacks both rules' `probe`-period fixed points (task-major, then
+         stimulus);
+      2. fits an `n_pcs` PCA on that stack, so BOTH rules share one basis and are
+         directly comparable point-for-point;
+      3. sweeps the PCA random_state over `n_pca_seeds` and keeps the seed whose
+         best 2-PC plane most separates the memory groups (`_memory_group_labels`)
+         by silhouette — the randomized solver's basis is seed-dependent, so this
+         is a reproducible choice rather than a lucky one;
+      4. projects each stimulus's recorded DELAY PATH through that same basis, so
+         a path and the fixed point it ends at are directly comparable — skipped
+         when the solve saved no per-stimulus paths, which is the normal case now
+         that `shared_run` runs at 64 angles with save_all_trajectories off;
+      5. saves the projected points and paths, the winning seed/plane and every
+         plane's silhouette, and draws an n×n grid of pairwise PC planes with the
+         winning plane outlined.
+
+    Every point scored is a solved fixed point carrying its own convergence flag,
+    and unconverged points are excluded from the silhouettes.
+
+    Writes {addtask}_separation_{aname}.pkl (+ one figure per representation) into
+    `save_dir` and returns the pickle path.
+    """
+    save_dir = Path(save_dir)
+    per_rule = []
+    for rule in rules:
+        pkl = save_dir / f"fixed_points_grad_{aname}_{rule}.pkl"
+        if not pkl.exists():
+            print(f"  [{addtask}/separation] missing {pkl.name}; skipped.")
+            return None
+        with open(pkl, "rb") as f:
+            per_rule.append((rule, pickle.load(f)))
+
+    out = {}
+    for plot_name, fp_key, traj_key in _SEPARATION_REPS:
+        # ── Stack both rules' fixed points into one matrix, task-major ────────
+        # Trajectories, when the solver saved them, are stacked in the SAME row
+        # order, so one PCA serves both: endpoints and the paths that reach them.
+        mats, trajs, task_idx, stim_idx, good = [], [], [], [], []
+        for t, (rule, d) in enumerate(per_rule):
+            entry = d["results"].get(probe)
+            if entry is None or entry.get(fp_key) is None:
+                print(f"  [{addtask}/separation] {rule}: no '{probe}'/{fp_key}; skipped.")
+                return None
+            arr = np.asarray(entry[fp_key], dtype=float)
+            mats.append(arr.reshape(arr.shape[0], -1))
+            tr = entry.get(traj_key)
+            trajs.append(None if tr is None else np.asarray(tr, dtype=float))
+            stim = np.asarray(entry["stim"], dtype=int)
+            task_idx += [t] * stim.size
+            stim_idx += stim.tolist()
+            good += np.asarray(entry.get("is_fixed",
+                                         np.ones(stim.size, bool)), dtype=bool).tolist()
+        X = np.vstack(mats)
+        task_idx = np.asarray(task_idx); stim_idx = np.asarray(stim_idx)
+        good = np.asarray(good, dtype=bool)
+        n_stim = int(stim_idx.max()) + 1
+        labels = _memory_group_labels(addtask, task_idx, stim_idx, n_stim)
+        n_comp = int(min(n_pcs, X.shape[0], X.shape[1]))
+        print(f"  [{addtask}/separation] {plot_name}: {X.shape[0]} points "
+              f"({good.sum()} converged), {n_stim} stimuli x {len(rules)} rules, "
+              f"{n_comp} PCs")
+
+        # ── Pick the PCA seed whose best 2-PC plane separates the groups most ──
+        # Silhouettes are computed on CONVERGED points only: an unconverged solve
+        # is not a fixed point and must not vote on the plane.
+        best = None
+        seed_scores = []
+        for pca_seed in range(n_pca_seeds):
+            pca = PCA(n_components=n_comp, random_state=pca_seed)
+            proj = pca.fit_transform(X)
+            plane_sil, seed_best, seed_best_plane = {}, -np.inf, None
+            for px in range(n_comp):
+                for py in range(px + 1, n_comp):
+                    sub, lab = proj[good][:, [px, py]], labels[good]
+                    s2d = (silhouette_score(sub, lab)
+                           if np.unique(lab).size > 1 and sub.shape[0] > np.unique(lab).size
+                           else np.nan)
+                    plane_sil[(px, py)] = float(s2d)
+                    if np.isfinite(s2d) and s2d > seed_best:
+                        seed_best, seed_best_plane = float(s2d), (px, py)
+            seed_scores.append(seed_best)
+            if best is None or seed_best > best[0]:
+                best = (seed_best, pca_seed, seed_best_plane, proj, plane_sil, pca)
+        best_sil, best_seed, best_plane, proj, plane_sil, pca = best
+        bx, by = best_plane
+        print(f"  [{addtask}/separation] {plot_name}: PCA seed {best_seed}, "
+              f"best plane PC{bx+1}-PC{by+1}, 2D silhouette={best_sil:.4f}")
+
+        # Paths through the SAME basis the endpoints live in — a path is only
+        # comparable to its fixed point if both went through one transform.
+        traj_proj = None
+        if all(tr is not None for tr in trajs):
+            stacked = np.concatenate(trajs, axis=0)            # (n_pts, win_T, feat)
+            n_pts, win_T, feat = stacked.shape
+            traj_proj = pca.transform(stacked.reshape(n_pts * win_T, feat)
+                                      ).reshape(n_pts, win_T, n_comp)
+            print(f"  [{addtask}/separation] {plot_name}: projected "
+                  f"{n_pts} delay paths of {win_T} steps")
+        else:
+            print(f"  [{addtask}/separation] {plot_name}: no per-stimulus paths in "
+                  f"the pickle (solve with save_all_trajectories=True to get them).")
+
+        # ── Figure: every pairwise PC plane, winning plane outlined ───────────
+        fig, axs = plt.subplots(n_comp, n_comp, figsize=(3.2 * n_comp, 3.2 * n_comp),
+                                squeeze=False)
+        for row in range(n_comp):
+            for col in range(n_comp):
+                ax = axs[row][col]
+                if row >= col:
+                    ax.axis("off")
+                    continue
+                for t, (rule, _) in enumerate(per_rule):
+                    for a in range(n_stim):
+                        sel = (task_idx == t) & (stim_idx == a)
+                        if not np.any(sel):
+                            continue
+                        if traj_proj is not None:
+                            # The recorded delay path that ends at this point:
+                            # solid for task 0, dashed for task 1, in the
+                            # stimulus's color but faded, so the endpoint stays
+                            # the figure's subject.
+                            tp = traj_proj[sel][0]
+                            ax.plot(tp[:, col], tp[:, row], color=c_vals[a],
+                                    alpha=0.45, linewidth=1.0, zorder=2,
+                                    linestyle=("-", "--")[t % 2])
+                        ax.scatter(proj[sel, col], proj[sel, row],
+                                   color=c_vals[a], s=60, alpha=0.8, zorder=3,
+                                   marker=("s", "^")[t % 2],
+                                   edgecolor="black",
+                                   linewidth=0.8 if good[sel].all() else 0.0)
+                ax.set_xlabel(f"PC{col+1}", fontsize=9)
+                ax.set_ylabel(f"PC{row+1}", fontsize=9)
+                if (col, row) == best_plane:
+                    for sp in ax.spines.values():
+                        sp.set_color("red"); sp.set_linewidth(2.5)
+        handles = [Line2D([], [], marker=("s", "^")[t % 2], color="k", linestyle="",
+                          label=rule) for t, (rule, _) in enumerate(per_rule)]
+        fig.legend(handles=handles, loc="upper right", fontsize=11)
+        fig.suptitle(f"{addtask} / {plot_name}  |  solved {probe} fixed points  |  "
+                     f"best plane PC{bx+1}-PC{by+1} (2D sil={best_sil:.3f})",
+                     fontsize=13)
+        fig.tight_layout()
+        fig_path = save_dir / f"{addtask}_separation_{plot_name}_{aname}.png"
+        fig.savefig(fig_path, dpi=300)
+        plt.close(fig)
+        print(f"  Saved figure: {fig_path}")
+
+        out[plot_name] = {
+            "proj": proj,                      # (n_points, n_comp) shared-basis PCA
+            # (n_points, win_T, n_comp) recorded delay paths in the same basis, row
+            # i ending at point i; None when the solve saved no per-stimulus paths.
+            "traj_proj": traj_proj,
+            "task_idx": task_idx, "stim_idx": stim_idx,
+            "is_fixed": good, "group_labels": labels,
+            "task_names": list(rules), "probe": probe,
+            "pca_seed": best_seed,
+            "best_plane": (int(bx), int(by)),
+            "best_plane_silhouette": float(best_sil),
+            "seed_silhouettes": [float(v) for v in seed_scores],
+            "plane_silhouettes": {f"{px+1}-{py+1}": v for (px, py), v in plane_sil.items()},
+            # True when the points form a stim-angle ring worth connecting in stim
+            # order (delaydm1), False for the dmcgo category split.
+            "connect_endpoint_ring": bool(addtask != "dmcgo"),
+        }
+
+    pkl_path = save_dir / f"{addtask}_separation_{aname}.pkl"
+    with open(pkl_path, "wb") as f:
+        pickle.dump(out, f)
+    print(f"Saved separation data: {pkl_path}")
+    return pkl_path
+
+
+def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
+    """Run the analysis for ONE trained network, identified by `seed`/`feature`.
+
+    Rebuilds `aname` from the naming convention, loads that run's recorded
+    activity (param_{aname}_result.npz), hyperparameters (…_param.json) and
+    checkpoint (savednet_{aname}.pt), then runs the two stages described in the
+    module docstring — stage 1 (`shared_run` for every family in `families`)
+    followed by `sys.exit()`, which the __main__ loop treats as a clean per-trial
+    finish.
+
+    `families` selects which sibling-task families stage 1 probes; the default is
+    ALL of `SHARED_RUN_FAMILIES`, i.e. dmcgo/dmcnogo and delaydm1/delaydm2 in one
+    run. `clean` empties the run's output directory first, so a re-run cannot
+    leave figures from a previous configuration sitting beside the new ones.
     """
     mem = psutil.virtual_memory()
     print(f"Total: {mem.total / 1e9:.2f} GB")
@@ -251,79 +539,64 @@ def main(seed, feature, clean=True):
     def shared_run(addtask):
         """
         Probe how the network's delay-period memory geometry separates two
-        related tasks, replicating the input-interpolation analysis of
-        Driscoll et al. 2024 (Fig 3D-E).
+        related tasks.
 
         The idea: take a pair of sibling tasks that share the same stimulus
         set but demand different computations —
             addtask="dmcgo"    → ["dmcgo", "dmcnogo"]      (match vs non-match)
             addtask="delaydm1" → ["delaydm1", "delaydm2"]  (modality 1 vs 2)
-        — and ask whether the two tasks live in distinct regions of the
-        delay-period state space, and how the state morphs as the input is
-        continuously interpolated from one task's condition to the other's.
+        — and ask whether what the delay holds separates along an ABSTRACT
+        grouping (the remembered DMC category, or the remembered angle) rather
+        than along task identity. The measurement is made on solved fixed points
+        of the delay period, not on raw delay activity.
 
         Procedure
         ---------
-        1. Generate `test_n_batch` trials for the two sibling tasks and run
-           them through the (frozen) trained network, recording the
-           delay-period internal state in two representations:
-             - hidden        : recurrent activity  (db["hidden1"])
-             - e_modulation  : effective modulation  W ⊙ M
-           Raw M is deliberately NOT analyzed here: the effective modulation is
-           built from it, so its map is near-duplicate, and at (n_hidden x n_input)
-           per step it is the most expensive representation to hold and to sweep
-           PCA seeds over.
-        2. Fit a 6-component PCA (n_pcs) on each representation's delay-period
-           states, giving a common low-D "memory subspace" per representation.
-        3. Group trials into 16 buckets — 2 tasks × 8 stimulus directions
-           (stim1) — and build matched input tensors `stacked_inputs[0]`
-           (task 0) and `stacked_inputs[1]` (task 1). For each stimulus, the
-           two endpoint trials are verified to have IDENTICAL stimulus input
-           through the delay (only the task cue differs), so the interpolation
-           morphs the TASK while holding the stimulus fixed.
-        4. Run each task's REAL (non-interpolated) input through the network,
-           project the delay-period state into the shared PCA subspace, and keep
-           both the end-of-delay state ("fixed point", after asserting the delay
-           state has converged) and the full delay-period trajectory.
-        5. Plot, in an n_pcs×n_pcs grid of pairwise PC planes (diagonal blank),
-           the delay states for all 8 stimuli × 2 tasks (color = stimulus,
-           marker/linestyle = task: square/solid = task0/Pro, triangle/dashed =
-           task1/Anti). One figure per representation; arrays saved to a pickle
-           for downstream paper plotting.
+        1. Report accuracy on normal-delay trials, overall and per sibling task,
+           and emit a sanity figure of example input/output traces.
+        2. Solve TRUE gradient fixed points per sibling rule with the shared
+           solver (`core/grad_fixed_points.py`, also used by one_task_analysis.py
+           and two_task_analysis.py): M* = F(M*; x) relaxed under the DELAY-1
+           period's held-constant input, seeded from that period's end state, over
+           a dense 64-angle stimulus ring (the same density the one/two-task
+           callers use). One pickle per rule, carrying M*, its W⊙M* / hidden /
+           cos-output views, the convergence metric rel_step and the
+           linear-stability spectrum. The off-diagonal multistability probes are
+           off here — see the call site for why.
+        3. Recompute the CROSS-TASK memory separation on those solved points
+           (`grad_fp_category_separation`): a shared PCA over both rules'
+           delay-period fixed points, and the 2-PC plane whose silhouette best
+           separates the two abstract memory groups.
 
-        Also emits a per-task sanity figure of example input/output traces.
+        Representations analyzed downstream are the hidden state and the EFFECTIVE
+        modulation (W ⊙ M). Raw M is deliberately excluded: the effective
+        modulation is built from it, so its map is near-duplicate, and at
+        (n_hidden x n_input) per point it is the most expensive one to handle.
+
         Results are written under `save_dir`:
-            {addtask}_{savefigure_name}.png                     — IO traces
-            {addtask}_fixed_points_{plot_name}_{...}.png        — PCA maps
-            {addtask}_fixed_points_{savefigure_name}.pkl        — raw data
+            {addtask}_{savefigure_name}.png                      — IO traces
+            fixed_points_grad_{aname}_{rule}.pkl                 — solved M* per rule
+            {addtask}_separation_{plot_name}_{aname}.png          — separation maps
+            {addtask}_separation_{aname}.pkl                     — separation data
         """
-        assert addtask in ("dmcgo", "delaydm1", )
+        if addtask not in SHARED_RUN_FAMILIES:
+            raise ValueError(f"unknown family {addtask!r}; choose from "
+                             f"{list(SHARED_RUN_FAMILIES)}")
 
         # Remove any previous outputs for this addtask so stale figures/pickles
-        # from an earlier run don't linger alongside the fresh ones.
+        # from an earlier run don't linger alongside the fresh ones. Scoped to the
+        # family's own prefix, so probing both families in one run leaves the other
+        # one's results untouched.
         for _old in Path(save_dir).glob(f"{addtask}*"):
             if _old.is_file():
                 _old.unlink()
 
-        # Device-resident copy of the plastic weight W so that elementwise
-        # products with on-device modulation tensors (db["M1"]) don't hit a
-        # CPU/GPU device mismatch.
-        W_dev = state_dict["mp_layer1.W"].to(device)
-
-        # Accumulator for fixed-point PCA data, saved for paper_plot reuse.
-        fixed_points_save = {}
-
-        task_params_dmcgo = copy.deepcopy(task_params_c)
-
-        if addtask == "dmcgo":
-            task_params_dmcgo["rules"] = ["dmcgo", "dmcnogo"]
-        elif addtask == "delaydm1":
-            task_params_dmcgo["rules"] = ["delaydm1", "delaydm2"]
-            
-        task_params_dmcgo['hp']['batch_size_train'] = 30
+        task_params_family = copy.deepcopy(task_params_c)
+        task_params_family["rules"] = list(SHARED_RUN_FAMILIES[addtask][0])
+        task_params_family['hp']['batch_size_train'] = 30
 
         def _gen(long_delay, test_n_batch):
-            tp = copy.deepcopy(task_params_dmcgo)
+            tp = copy.deepcopy(task_params_family)
             tp["long_delay"] = long_delay
             # align_periods resets the shared RNG before each rule so the two
             # sibling tasks (e.g. dmcgo/dmcnogo) draw IDENTICAL epoch timing
@@ -338,13 +611,15 @@ def main(seed, feature, clean=True):
                 align_periods=True)
             return data, extra
 
-        # ── Normal-delay dataset: used for accuracy report + IO visualization ──
-        # The "long" delay used downstream is an out-of-distribution stress test
-        # for the memory geometry; accuracy should instead be reported on the
-        # in-distribution (normal) delay the network was trained on.
-        norm_data, norm_extra = _gen("normal", 100)
+        # ── Normal-delay dataset: accuracy report + IO visualization ──────────
+        # Accuracy is reported on the in-distribution (normal) delay the network
+        # was trained on. This is the only dataset this function generates: the
+        # fixed-point solver below builds its own trial template internally (with
+        # every period set to "normal"), so `_gen`'s long_delay knob is only here
+        # for a caller that wants to stress-test the memory geometry by hand.
+        norm_data, _ = _gen("normal", 100)
         norm_input, norm_output, norm_mask = norm_data
-        norm_task = helper.find_task(task_params_dmcgo, norm_input.detach().cpu().numpy(), 0)
+        norm_task = helper.find_task(task_params_family, norm_input.detach().cpu().numpy(), 0)
         norm_task = [int(t - min(norm_task)) for t in norm_task]
 
         norm_out, _, _ = model.iterate_sequence_batch(norm_input.to(device), run_mode='track_states')
@@ -359,7 +634,7 @@ def main(seed, feature, clean=True):
         print(f"  [acc] {addtask} (normal delay, both tasks): {float(acc_all):.3f}")
         norm_task_arr = np.asarray(norm_task)
         per_task_acc = {}  # task_name -> accuracy on normal-delay trials
-        for task_i, task_name in enumerate(task_params_dmcgo["rules"]):
+        for task_i, task_name in enumerate(task_params_family["rules"]):
             sel = np.flatnonzero(norm_task_arr == task_i)
             if sel.size == 0:
                 print(f"  [acc] {task_name}: no trials")
@@ -377,7 +652,7 @@ def main(seed, feature, clean=True):
         # IO visualization on the normal-delay trials. Title carries the per-task
         # test accuracy so the figure is self-describing.
         acc_str = ", ".join(f"{name} acc={per_task_acc[name]:.3f}"
-                            for name in task_params_dmcgo["rules"] if name in per_task_acc)
+                            for name in task_params_family["rules"] if name in per_task_acc)
         fig, axs = plt.subplots(5,2,figsize=(5*2,5*2))
         for i in range(5):
             for inp in range(norm_input.shape[2]):
@@ -392,445 +667,101 @@ def main(seed, feature, clean=True):
         fig.savefig(f"{save_dir}/{addtask}_{savefigure_name}.png", dpi=300)
         del norm_out, norm_out_dev, norm_output_dev, norm_input_dev, norm_mask_dev
 
-        # ── Long-delay dataset: used for the downstream memory-geometry analysis ──
-        # dmcgo/dmcnogo share an identical stimulus per matched pair, so 30 long
-        # trials reliably cover all 8 stim1 angles for both tasks. delaydm1/
-        # delaydm2 are matched by stim1 ANGLE ONLY (their stimulus lives on
-        # different modality channels), so BOTH tasks must independently populate
-        # all 8 angle buckets — draw more trials so that is essentially certain.
-        long_n_batch = 30
-        test_data, test_trials_extra = _gen("long", long_n_batch)
-        test_input, test_output, _ = test_data
-
-        print(f"test_input.shape: {test_input.shape}")
-
-        test_task = helper.find_task(task_params_dmcgo, test_input.detach().cpu().numpy(), 0)
-        test_task = [int(test_task_ - min(test_task)) for test_task_ in test_task]
-
-        _, test_trials, _ = test_trials_extra
-
-        stim1_choices = np.concatenate([test_trials[0].meta["stim1"], test_trials[1].meta["stim1"]])
-        print(f"stim1_choices: {stim1_choices}")
-
-        epochs = test_trials[0].epochs
-
-        # Guard: the downstream analysis reads a SINGLE delay window (from
-        # test_trials[0]) and applies it to BOTH tasks' trials, so it is only
-        # valid if the two sibling tasks share the same epochs. align_periods
-        # above should guarantee this; assert it so any regression fails loudly
-        # instead of silently slicing the second task at the wrong timesteps.
-        ep0 = tuple(test_trials[0].epochs["delay1"])
-        ep1 = tuple(test_trials[1].epochs["delay1"])
-        assert ep0 == ep1, (
-            f"[{addtask}] period mismatch across tasks: {task_params_dmcgo['rules'][0]} "
-            f"delay1={ep0} vs {task_params_dmcgo['rules'][1]} delay1={ep1}. "
-            f"Periods are not aligned (align_periods failed/changed)."
-        )
-
-        if addtask in ("dmcgo", "delaydm1", ):
-            delay_period = epochs["delay1"]
-
-        # is delay period start inclusive and end exclusive?
-        print(f"delay_period: {delay_period}")
-
-        assert len(test_task) == len(stim1_choices)
-
-        net_out, _, db_test = model.iterate_sequence_batch(test_input.to(device), run_mode='track_states')
-
-        if addtask in ("dmcgo", "delaydm1", ):
-            hidden_test = db_test["hidden1"][:, delay_period[0]:delay_period[1]-1, :].cpu().numpy()
-            em_test = (db_test["M1"][:, delay_period[0]:delay_period[1]-1, :, :] * W_dev).cpu().numpy()
-
-        print(f"hidden_test: {hidden_test.shape}; em_test: {em_test.shape}")
-
-        def combo_indices_16(A, B):
-            A = np.asarray(A)
-            B = np.asarray(B)
-            if A.shape != B.shape:
-                raise ValueError(f"Length mismatch: A{A.shape} vs B{B.shape}")
-
-            out = {}
-            for a in (0, 1):
-                for b in range(8):
-                    out[(a, b)] = np.flatnonzero((A == a) & (B == b)).tolist()
-            return out
-
-        idx_map = combo_indices_16(test_task, stim1_choices)
-
-        # ── Pick a (task0, task1) trial pair per stim1 angle ─────────────────
-        # We build one endpoint pair per stim1 angle bucket b∈{0..7}. HOW the
-        # two tasks are matched depends on the task family:
+        # ── TRUE gradient fixed points, one solve per sibling rule ────────────
+        # The shared solver (core/grad_fixed_points.py — the same one
+        # one_task_analysis.py and two_task_analysis.py use) relaxes M* = F(M*; x)
+        # under each period's held-constant input, so every saved point is an
+        # actual fixed point carrying its own convergence metric (rel_step) and an
+        # is_fixed mask, plus the multistability probes (memory-seeded, naive
+        # rank-one) and the linear-stability spectrum.
         #
-        #  • dmcgo/dmcnogo (STIM-MATCHED): the two siblings differ only in the
-        #    required RESPONSE, not in the stimulus. A meaningful comparison
-        #    (morphing the task while holding the stimulus fixed) requires the
-        #    two endpoint trials to have IDENTICAL input through the delay, so
-        #    we verify the stimulus/fixation channels match bit-for-bit.
+        # Scope: the DELAY period only, for both sibling rules — that is where the
+        # memory this analysis is about lives, and solving the other three periods
+        # would cost 4x for nothing here. "longdelay" is the FIRST delay epoch
+        # (delay1) in both families, which is the one that holds the remembered
+        # stimulus in dmc (before stim2 arrives) and in delaydm.
         #
-        #  • delaydm1/delaydm2 (ANGLE-MATCHED): these siblings present the SAME
-        #    stimulus geometry but on DIFFERENT modality input channels (mod 1 vs
-        #    mod 2), so their inputs can never be identical. We instead match on
-        #    the stim1 ANGLE bucket only (8 angles) and analyse the stim1→delay1
-        #    memory of that angle — ignoring stim2/delay2, which is exactly the
-        #    "focus on stim1 and delay1" the delaydm analysis calls for. One
-        #    representative trial per angle per task is taken.
-        de = delay_period[1]                       # end of delay1 window (exclusive)
-        stim_matched = (addtask == "dmcgo")
-
-        # The input is [6 stimulus/fixation channels] + [one task-cue column per
-        # rule] (see all_input label list). The two sibling tasks MUST differ in
-        # their task-cue columns; for the stim-matched check we therefore compare
-        # only the STIMULUS/FIXATION channels (the first 6).
-        n_stim_ch = 6
-
-        def _input_matches(k0, k1):
-            a = test_input[k0, :de, :n_stim_ch]
-            c = test_input[k1, :de, :n_stim_ch]
-            if a.shape != c.shape:
-                return False
-            # timing/support must coincide: same nonzero pattern (which stimulus
-            # channels are active at which timesteps).
-            if not torch.equal((a.abs() > 1e-8), (c.abs() > 1e-8)):
-                return False
-            return torch.allclose(a, c, rtol=0.0, atol=1e-5)
-
-        def _pick_pair(b):
-            """Return an (k0, k1) index pair for stim1 angle b, or None."""
-            if not idx_map[(0, b)] or not idx_map[(1, b)]:
-                return None
-            if stim_matched:
-                # dmcgo: require identical stimulus/fixation input through delay1.
-                for k0 in idx_map[(0, b)]:
-                    for k1 in idx_map[(1, b)]:
-                        if _input_matches(k0, k1):
-                            return k0, k1
-                return None
-            # delaydm: angle-matched only — take the first trial of each task
-            # that has this stim1 angle (inputs differ by modality by design).
-            return idx_map[(0, b)][0], idx_map[(1, b)][0]
-
-        stacked_inputs = [[], []]
-        stacked_inputs_labels = [[], []]
-        skipped_angles = []
-        for b in range(8):
-            pair = _pick_pair(b)
-            if pair is None:
-                reason = ("empty bucket"
-                          if not idx_map[(0, b)] or not idx_map[(1, b)]
-                          else "no stim-matched pair")
-                skipped_angles.append((b, reason))
-                continue
-            k0, k1 = pair
-            stacked_inputs[0].append(test_input[k0])
-            stacked_inputs[1].append(test_input[k1])
-            stacked_inputs_labels[0].append(b)
-            stacked_inputs_labels[1].append(b)
-
-        n_kept = len(stacked_inputs_labels[0])
-        match_mode = "stim-matched" if stim_matched else "angle-matched"
-        print(f"  [{match_mode}] {addtask}: kept {n_kept}/8 stim1 angles: "
-              f"{stacked_inputs_labels[0]}")
-        # Require ALL 8 stimulus angles to have a pair. A partial set would bias
-        # the memory-geometry comparison, so fail loudly rather than silently
-        # analyzing fewer stimuli.
-        assert n_kept == 8, (
-            f"[{addtask}] expected 8 stim1 angles, got {n_kept} ({match_mode}). "
-            f"Skipped: {skipped_angles}. "
-            f"Increase long_n_batch or check stimulus/modality alignment."
-        )
-
-        for i in range(2):
-            xs = stacked_inputs[i]
-            stacked_inputs[i] = torch.stack(
-                [x if isinstance(x, torch.Tensor) else torch.as_tensor(x) for x in xs],
-                dim=0
-            )
-
-        assert stacked_inputs_labels[0] == stacked_inputs_labels[1], "The two conditions should have the same set of stimuli for interpolation to make sense"
-
-        # common delay period PCA fit data (one matrix per representation).
+        # n_interp=64 matches one_task_analysis.py and two_task_analysis.py: a dense
+        # ring of interpolated stimulus angles, bypassing the task generator's
+        # 8-way snapping (n_eachring=8). 56 of the 64 angles were never trained,
+        # which is the point — a fixed point found BETWEEN trained directions is
+        # what distinguishes a continuous memory manifold from 8 discrete
+        # attractors. n_seeds=1 solves a single deterministic template.
         #
-        # The PCA basis depends on its random_state seed: with n_components=6 and
-        # the randomized solver, the recovered basis — and hence the projected
-        # delay-period fixed points — can shift run-to-run, sometimes dramatically
-        # changing how the two tasks' memory states separate. We therefore fit the
-        # PCA inside a seed sweep below and keep, per representation, the seed
-        # whose projection best separates the two abstract "memory groups"
-        # (see _group_labels). The forward passes that produce the states are
-        # seed-independent, so we run them ONCE and only re-fit / re-project PCA
-        # across seeds — the sweep is cheap.
-        n_pcs = 6
-        as_hidden_wantperiod = hidden_test.reshape(-1, hidden_test.shape[-1])
-        as_em_wantperiod = em_test.reshape(-1, em_test.shape[-1] * em_test.shape[-2])
+        # NB the separation silhouettes are not comparable across n_interp: the
+        # delaydm grouping is per stimulus angle, so a denser ring means more
+        # groups whose neighbours sit closer together, which lowers the score even
+        # when the geometry is unchanged. Compare runs at equal n_interp only.
+        # Writes {save_dir}/fixed_points_grad_{aname}_{rule}.pkl per rule.
+        cfg_fp = {"task_params": task_params, "train_params": train_params,
+                  "net_params": net_params}
+        W_fp = state_dict["mp_layer1.W"].detach().cpu().numpy()
+        solved_rules = []
+        for _rule in task_params_family["rules"]:
+            try:
+                solve_period_modulation_fixed_points(
+                    aname, Path(save_dir), model, cfg_fp, device,
+                    rule=_rule, out_suffix=f"_{_rule}",
+                    layer_index=1, W=W_fp,
+                    periods=("longdelay",), n_interp=64, n_seeds=1,
+                    # Double the solver's Adam cap (default 200k) for THIS family
+                    # battery only — one_task/two_task keep the default. The cap
+                    # is an upper bound, not a step count: Adam stops as soon as
+                    # the speed loss reaches loss_tol (1e-8), so this changes
+                    # nothing for points that already converge and only buys more
+                    # room for the ones that were still being cut off. Watch the
+                    # "N/64 converged (rel_step<=...)" line to see if it helped.
+                    steps=400000,
+                    # No per-stimulus delay paths. They are (n_interp, win_T,
+                    # hidden*embed) — ~0.1-0.9 GB per rule at n_interp=64 with this
+                    # 300x300 layer, against ~70 MB for the fixed points
+                    # themselves — and 64 faded paths would bury the endpoints they
+                    # were meant to explain. The separation code handles their
+                    # absence: traj_proj comes back None and the paths are simply
+                    # not drawn. Set True (with a smaller n_interp) to get them back.
+                    save_all_trajectories=False,
+                    # Diagonal probe only — the delay input solved from the delay's
+                    # own end state. The memory-seed probe is a FIXATION-input solve
+                    # (out of scope for a delay-only run), and the naive rank-one
+                    # probe is off too: one/two-task keep it as the control for
+                    # "was the ring transplanted with the seed", but here it doubles
+                    # the solves for a question this analysis is not asking.
+                    cross_seed_probes=False, naive_seed_probes=False)
+                solved_rules.append(_rule)
+            except Exception as exc:
+                print(f"  [grad-fp/{_rule}] failed: {exc}")
+                import traceback
+                traceback.print_exc()
 
-        # [name, PCA-fit data]; the PCA itself is fit per-seed in the loop below.
-        # Only the hidden state and the EFFECTIVE modulation (W ⊙ M) are analyzed
-        # here: raw M is what the effective modulation is built from, so it adds a
-        # third near-duplicate map, and at (n_hidden x n_input) per step it is by far
-        # the most expensive one to hold and to fit 20 PCA seeds on.
-        plot_all = [["hidden", as_hidden_wantperiod],
-                    ["e_modulation", as_em_wantperiod]]
-        n_pca_seeds = 20  # PCA seeds swept per representation
+        # ── Cross-task memory separation, recomputed on the SOLVED points ──────
+        if len(solved_rules) == len(task_params_family["rules"]):
+            try:
+                grad_fp_category_separation(aname, save_dir, addtask, solved_rules)
+            except Exception as exc:
+                print(f"  [{addtask}/separation] failed: {exc}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print(f"  [{addtask}/separation] skipped: only {len(solved_rules)}/"
+                  f"{len(task_params_family['rules'])} rules solved.")
 
-        # The two real (non-interpolated) conditions: task 0 (Pro, e.g. dmcgo) and
-        # task 1 (Anti, e.g. dmcnogo), each holding the same 8 stim-matched stimuli.
-        cond_inputs = [stacked_inputs[0], stacked_inputs[1]]
-        task_names_pair = task_params_dmcgo["rules"]
-        task_styles = ["-", "--"]          # solid = task0/Pro, dashed = task1/Anti
-        task_markers = ["s", "^"]          # square = task0/Pro, triangle = task1/Anti
-
-        for plot_name, pca_fit_data in plot_all:
-            # Run each task's real input through the net ONCE (the states are
-            # PCA-seed-independent), keeping the flattened delay-window states and
-            # their (n_stim, T) shapes. We then re-project these across PCA seeds
-            # without re-running the model. No input interpolation.
-            flats_by_task = []    # per task: (n_stim*T, feat) flattened states
-            shapes_by_task = []   # per task: (n_stim, T) to un-flatten projections
-
-            for t_idx, cond_input in enumerate(cond_inputs):
-                _, _, db = model.iterate_sequence_batch(
-                    cond_input.to(device), run_mode="track_states",
-                    save_to_cpu=True, detach_saved=True)
-
-                if plot_name == "hidden":
-                    data = db["hidden1"]
-                    as_flat = data.reshape(-1, data.shape[-1])
-                elif plot_name == "e_modulation":
-                    # W ⊙ M, same definition as em_test (which fit the PCA basis).
-                    # db is saved with save_to_cpu=True so db["M1"] may be on CPU
-                    # while W_dev is on the model device — move W to M1's device.
-                    W_same = W_dev.to(db["M1"].device)
-                    data = (db["M1"] * W_same).cpu().numpy()
-                    as_flat = data.reshape(-1, data.shape[-1] * data.shape[-2])
-                del db
-
-                flats_by_task.append(np.asarray(as_flat))
-                shapes_by_task.append((data.shape[0], data.shape[1]))
-                del data, as_flat
-
-            n_task = len(cond_inputs)
-
-            # ── Abstract "memory group" labels for the fixed points ──────────
-            # The PCA seed / plane is chosen to best separate two abstract memory
-            # groups. The grouping differs by task family:
-            #
-            #  • dmcgo/dmcnogo: the DMC *category* split, which cuts ACROSS task
-            #    and stimulus identity:
-            #       Group A: Pro stim {0,1,2,3} + Anti stim {4,5,6,7}
-            #       Group B: Pro stim {4,5,6,7} + Anti stim {0,1,2,3}
-            #    i.e. group A iff (t == 0) == (a < 4).
-            #
-            #  • delaydm1/delaydm2: there is no match-category; the quantity held
-            #    in delay1 is the remembered stim1 ANGLE. The two modality tasks
-            #    remember the SAME angle, so the grouping is by stim1 angle bucket
-            #    (8 groups, each holding both tasks' endpoint for that angle).
-            #    Maximizing the silhouette on this labeling picks the plane where
-            #    each stimulus's two-task endpoints sit CLOSE together (small
-            #    within-group spread) while distinct stimuli stay apart — i.e. the
-            #    memory encodes the remembered angle, invariant to which modality
-            #    (task) was attended.
-            # Built in the same (task-major, then stim) order as fp.reshape(-1, .).
-            stim_angles = np.asarray(stacked_inputs_labels[0])
-            if addtask == "dmcgo":
-                group_labels = np.array([
-                    0 if ((t_idx == 0) == (a < 4)) else 1
-                    for t_idx in range(n_task)
-                    for a in stim_angles
-                ])
-            else:  # delaydm1: group by remembered stim1 angle (both tasks together)
-                group_labels = np.array([
-                    a
-                    for t_idx in range(n_task)
-                    for a in stim_angles
-                ])
-
-            def _project_with(pca):
-                """Project the (seed-independent) states with a fitted PCA and
-                return (fp_by_task, traj_by_task)."""
-                fp_by_task, traj_by_task = [], []
-                for t_idx in range(n_task):
-                    b, t = shapes_by_task[t_idx]
-                    projected_data = pca.transform(flats_by_task[t_idx]).reshape(b, t, -1)
-                    delay_proj = projected_data[:, delay_period[0]:delay_period[1], :]
-                    fp_by_task.append(projected_data[:, delay_period[1]-1, :])
-                    traj_by_task.append(delay_proj)
-                return np.stack(fp_by_task, axis=0), traj_by_task
-
-            # ── PCA-seed sweep: keep the seed whose BEST 2-D PC plane best ──────
-            # separates the memory groups (2 category groups for dmcgo; 8 per-
-            # angle groups for delaydm1, where a high silhouette means each
-            # stimulus's two-task endpoints coincide). For each seed we compute
-            # the silhouette on every pairwise 2-PC plane of the end-of-delay
-            # fixed points and score the seed by its best plane (not by the
-            # full-n_pcs silhouette) — the cluster structure is read off a single
-            # 2-D plane, so the selection criterion matches what is displayed.
-            n_groups = np.unique(group_labels).size
-            best_seed, best_score = None, -np.inf
-            best_fp, best_traj, best_plane_sil_dict = None, None, None
-            best_plane = (0, 1)
-            seed_scores = []  # best-plane silhouette per swept PCA seed
-            for pca_seed in range(n_pca_seeds):
-                pca_delay = PCA(n_components=n_pcs, random_state=pca_seed)
-                pca_delay.fit(pca_fit_data)
-                fp_try, traj_try = _project_with(pca_delay)
-                pts = fp_try.reshape(-1, fp_try.shape[-1])   # (2*n_stim, n_pcs)
-                sil_ok = (n_groups >= 2) and (n_groups <= pts.shape[0] - 1)
-                # 2-D silhouette on every pairwise plane; the seed's score is the
-                # best plane's silhouette.
-                this_plane_sil = {}
-                seed_best_sil, seed_best_plane = -np.inf, (0, 1)
-                for px in range(n_pcs):
-                    for py in range(px + 1, n_pcs):
-                        s2d = float(silhouette_score(pts[:, [px, py]], group_labels)) if sil_ok else float("nan")
-                        this_plane_sil[(px, py)] = s2d
-                        if np.isfinite(s2d) and s2d > seed_best_sil:
-                            seed_best_sil, seed_best_plane = s2d, (px, py)
-                seed_scores.append(seed_best_sil)
-                if seed_best_sil > best_score or best_fp is None:
-                    best_score, best_seed = seed_best_sil, pca_seed
-                    best_fp, best_traj = fp_try, traj_try
-                    best_plane_sil_dict, best_plane = this_plane_sil, seed_best_plane
-
-            print(f"  [pca-seed] {addtask}/{plot_name}: best seed={best_seed} "
-                  f"best-plane 2D silhouette={best_score:.4f} "
-                  f"(swept {n_pca_seeds} seeds)")
-
-            fp_by_task = best_fp        # (2 task, n_stim, n_pc)
-            traj_by_task = best_traj
-            n_task, n_stim, n_pc = fp_by_task.shape
-            print(f"fp_by_task: {fp_by_task.shape}")
-            n_grid = min(n_pc, n_pcs)
-
-            # Convergence guard on the chosen projection: the last delay frame is
-            # treated as the fixed point, so verify the trajectory has settled
-            # (small tail movement relative to the overall delay excursion).
-            for t_idx in range(n_task):
-                delay_proj = traj_by_task[t_idx]
-                if delay_proj.shape[1] >= 6:
-                    tail_step = np.linalg.norm(np.diff(delay_proj[:, -5:, :], axis=1), axis=-1).mean()
-                    excursion = np.linalg.norm(delay_proj[:, -1, :] - delay_proj[:, 0, :], axis=-1).mean()
-                    ratio = tail_step / (excursion + 1e-9)
-                    assert ratio < 0.05, (
-                        f"[{addtask}/{plot_name}] {task_names_pair[t_idx]} delay state "
-                        f"not converged: tail per-step move / excursion = {ratio:.3f} "
-                        f"(>=0.05); last delay frame is not a settled fixed point.")
-
-            # Per-plane 2-D silhouettes for the chosen seed (computed during the
-            # sweep). best_plane is the plane that drove the seed selection.
-            plane_sil = best_plane_sil_dict
-            bx, by = best_plane
-            best_plane_sil = plane_sil[best_plane]
-            print(f"  [best-plane] {addtask}/{plot_name}: PC{bx+1}-PC{by+1} "
-                  f"2D silhouette={best_plane_sil:.4f}")
-            title_str = (f"{addtask} / {plot_name}  |  best plane PC{bx+1}-PC{by+1} "
-                         f"(2D sil={best_plane_sil:.3f})")
-
-            # Figure: n_grid x n_grid grid of pairwise PC planes. Per stimulus
-            # (color) and task (marker: square=Pro, triangle=Anti), show the
-            # end-of-delay fixed point; optionally overlay the delay trajectory.
-            # For delaydm1, the endpoints are a ring in stim1-angle space, so we
-            # connect each task's fixed points in stim order (0→1→…→7→0) to make
-            # the ring geometry visible. dmcgo has no such ring (the split is by
-            # category, not a stimulus cycle), so it keeps unconnected endpoints.
-            connect_endpoint_ring = (addtask != "dmcgo")
-
-            def _draw_pair(ax, pc_x, pc_y, with_traj=True):
-                for t_idx in range(n_task):
-                    for stim in range(n_stim):
-                        col = c_vals[stacked_inputs_labels[0][stim]]
-                        if with_traj:
-                            traj = traj_by_task[t_idx][stim]
-                            ax.plot(traj[:, pc_x], traj[:, pc_y], color=col,
-                                    alpha=0.5, linewidth=1.0,
-                                    linestyle=task_styles[t_idx % len(task_styles)])
-                        ax.scatter(fp_by_task[t_idx, stim, pc_x], fp_by_task[t_idx, stim, pc_y],
-                                   facecolor=col, edgecolor="black", linewidth=0.8,
-                                   marker=task_markers[t_idx % len(task_markers)],
-                                   s=60, alpha=0.7, zorder=3)
-                    if connect_endpoint_ring and n_stim >= 2:
-                        # Close the loop: stim0→stim1→…→stimN→stim0. stimuli are
-                        # already in ascending label order (stacked_inputs_labels).
-                        ring = np.concatenate(
-                            [fp_by_task[t_idx, :, [pc_x, pc_y]].T,
-                             fp_by_task[t_idx, :1, [pc_x, pc_y]].T], axis=0)
-                        ax.plot(ring[:, 0], ring[:, 1], color="0.4",
-                                linewidth=1.0, alpha=0.6,
-                                linestyle=task_styles[t_idx % len(task_styles)],
-                                zorder=2)
-                ax.set_xlabel(f"Memory State PC{pc_x+1}", fontsize=10)
-                ax.set_ylabel(f"Memory State PC{pc_y+1}", fontsize=10)
-
-            # Two variants: (a) with delay trajectories overlaid, (b) endpoint
-            # fixed points only (no trajectory). Lower triangle only (row > col);
-            # upper triangle is the mirror and the diagonal is empty.
-            # Stimulus-color legend handles (one entry per kept stim angle).
-            stim_handles = [plt.Line2D([0], [0], marker="o", linestyle="None",
-                                       markerfacecolor=c_vals[lab], markeredgecolor="black",
-                                       markersize=8, label=f"stim {lab}")
-                            for lab in stacked_inputs_labels[0]]
-
-            for with_traj, suffix in [(True, "memory"), (False, "memory_endpoint")]:
-                figmap, axsmap = plt.subplots(n_grid, n_grid, figsize=(4*n_grid, 4*n_grid))
-                for row in range(n_grid):
-                    for col in range(n_grid):
-                        ax = axsmap[row, col]
-                        if row > col:
-                            _draw_pair(ax, pc_x=col, pc_y=row, with_traj=with_traj)
-                            # per-subplot 2D silhouette in the title
-                            s2d = plane_sil.get((col, row), float("nan"))
-                            ax.set_title(f"PC{col+1}-PC{row+1}  2D sil={s2d:.3f}", fontsize=9)
-                            # highlight the best-separating plane (col=px, row=py)
-                            if (col, row) == best_plane:
-                                for sp in ax.spines.values():
-                                    sp.set_edgecolor(c_vals[1]); sp.set_linewidth(2.5)
-                        else:
-                            ax.axis("off")
-                figmap.suptitle(title_str, fontsize=13)
-                # task-marker legend in a blank upper-triangle cell (top-right corner)
-                handles = [plt.Line2D([0], [0], color="k", marker=task_markers[i],
-                                      linestyle=task_styles[i] if with_traj else "None",
-                                      label=task_names_pair[i])
-                           for i in range(n_task)]
-                axsmap[0, n_grid - 1].legend(handles=handles, frameon=True, fontsize=9, loc="center")
-                # stimulus-color legend on the PC1-PC2 panel (pc_x=0, pc_y=1 -> row 1, col 0)
-                if n_grid >= 2:
-                    axsmap[1, 0].legend(handles=stim_handles, frameon=True, fontsize=7,
-                                        loc="best", ncol=2, title="stimulus")
-                figmap.tight_layout()
-                figmap.savefig(f"{save_dir}/{addtask}_{suffix}_{plot_name}_{savefigure_name}.png", dpi=300)
-                plt.close(figmap)
-
-            # Save the underlying data for paper_plot reuse
-            fixed_points_save[plot_name] = {
-                "fp_by_task": fp_by_task,                              # (2 task, n_stim, n_pc)
-                "traj_by_task": [np.asarray(t) for t in traj_by_task],  # per task (n_stim, delay_T, n_pc)
-                "task_names": list(task_names_pair),
-                "stim_labels": list(stacked_inputs_labels[0]),
-                "delay_period": list(delay_period),
-                # PCA seed chosen by the best-2D-plane silhouette sweep, plus the
-                # group labels (Pro{0-3}+Anti{4-7} vs Pro{4-7}+Anti{0-3}) optimized.
-                "pca_seed": best_seed,
-                "pca_seed_best_plane_silhouette": best_score,  # = best_plane_silhouette
-                "group_labels": group_labels,
-                "seed_silhouettes": list(seed_scores),     # best-plane silhouette per seed
-                "best_plane": (int(bx), int(by)),          # most-separating 2-PC plane
-                "best_plane_silhouette": best_plane_sil,
-                "plane_silhouettes": {f"{px+1}-{py+1}": v for (px, py), v in plane_sil.items()},
-                # Whether the per-task endpoints form a stim-angle ring that
-                # should be connected in stim order (stim0→…→stimN→stim0). True
-                # for delaydm1 (angle ring), False for dmcgo (category split).
-                "connect_endpoint_ring": bool(connect_endpoint_ring),
-            }
-
-        # Save all fixed-point PCA data for this addtask
-        fp_pkl_path = f"{save_dir}/{addtask}_fixed_points_{savefigure_name}.pkl"
-        with open(fp_pkl_path, "wb") as _f:
-            pickle.dump(fixed_points_save, _f)
-        print(f"Saved fixed-point data: {fp_pkl_path}")
-
-    # shared_run("delaydm1")
-    shared_run("dmcgo")
+    # Probe every requested sibling family (both, by default) in this one run: the
+    # solves are independent, so doing them here shares the checkpoint load and the
+    # recorded-activity load between them. Each family is guarded on its own, so a
+    # failure in one still leaves the other's pickles and figures on disk.
+    for _addtask in families:
+        _rules, _paper_ident = SHARED_RUN_FAMILIES[_addtask]
+        print(f"\n{'=' * 70}\n[shared_run] family {_addtask} "
+              f"({' + '.join(_rules)}) — feeds paper_plot's {_paper_ident}"
+              f"\n{'=' * 70}", flush=True)
+        try:
+            shared_run(_addtask)
+        except Exception as exc:
+            print(f"  [{_addtask}] family failed: {exc}")
+            import traceback
+            traceback.print_exc()
     sys.exit()
+    
 
     # analyze the fitted weight matrices; we focus on the first layer of modulation and the output layer, since they are more interpretable than the hidden layer
     output_W = state_dict["W_output"].cpu().numpy()
@@ -864,7 +795,7 @@ def main(seed, feature, clean=True):
 
         When one dimension is very small (e.g. ≤ 5 rows for the readout
         matrix), the corresponding marginal is suppressed: a 3-bin curve
-        is uninformative and looks like noise. Tick labels at Zthe two
+        is uninformative and looks like noise. Tick labels at the two
         endpoints are kept so the axis-direction stays readable.
         """
         M = np.asarray(M)
@@ -1153,8 +1084,16 @@ def main(seed, feature, clean=True):
         
         all_rules = np.array(task_params["rules"])
         
-        def generate_response_stimulus(task_params, test_trials): 
-            """
+        def generate_response_stimulus(task_params, test_trials):
+            """Per-trial condition labels for every rule, concatenated rule-major.
+
+            Returns (labels_resp, labels_stim1, labels_stim2, rules_epochs), each
+            label array shaped (n_trials, 1) in the same trial order as the
+            generated batch. The response label is the MATCH decision for the
+            match-to-sample family (dmsgo/dmcgo/dmsnogo/dmcnogo) and the resp1
+            angle otherwise; stim2 is NaN-filled for rules that have no second
+            stimulus. `rules_epochs` maps rule name -> its epoch boundaries, which
+            is what the per-period variance breakdown below slices with.
             """
             labels_resp, labels_stim1, labels_stim2 = [], [], []
             rules_epochs = {} 
@@ -1188,10 +1127,14 @@ def main(seed, feature, clean=True):
     weighted_Ms_orig = Ms_orig * modulation_W
     print(f"weighted_Ms_orig: {weighted_Ms_orig.shape}")
 
-    # 2026-03-29: for the modulation-weighted activity, we will not normalize across rules, 
+    # 2026-03-29: for the modulation-weighted activity, we will not normalize across rules,
     # otherwise per-neuron normalization
     # will wash out the multiplication effect
-    # 2026-04-06: downstream analysis implicitly require the order of
+    # 2026-04-06: the ORDER of these entries is load-bearing. Downstream blocks key
+    # off it: the input/hidden passes must come first (the cross-comparison and the
+    # cluster_info pickle both fire on len(clustering_corr_info) == 4), and the
+    # modulation passes rely on those neuron clusters already being registered in
+    # col_clusters_all. Reordering the list silently changes what they see.
     clustering_data_analysis = [xs, xs, hs, hs, Ms_orig, Ms_orig, weighted_Ms_orig, Ms_orig]
     clustering_data_analysis_names = ["input", "input", "hidden", "hidden", \
         "modulation_all", "modulation_all", "modulation_all_weighted", "modulation_all_var_weighted"]
@@ -1219,7 +1162,7 @@ def main(seed, feature, clean=True):
     lower_cluster = 5 # for input & hidden
     lower_cluster_mod = 10 # for modulation
     silhouette_tol = 0.05
-    tol_mode = "relative"   # or "relative"
+    tol_mode = "relative"   # or "absolute"
     tol_k_select = "gap"
     score_quantile = 0.50
     unresponsive_norm_frac = 1e-3
@@ -1285,8 +1228,14 @@ def main(seed, feature, clean=True):
                 varval = helper.task_variance_period_numpy(rule_cluster, labels_stim[test_task == rule_idx].flatten())
                 cell_vars_rules.append(varval) 
             else:
-                clustering_data_old = clustering_data                
-                if "all" in clustering_name: # modulation 
+                # Only el == 0 reaches here: the reshape below turns the 4D
+                # modulation array into a 3D one, so every later el takes the
+                # branch above (which computes the same variance for a 3D array).
+                # That is why clustering_data_old keeps the 4D array — it is the
+                # only record of the (post, pre) shape, and the modulation block
+                # further down asserts on it.
+                clustering_data_old = clustering_data
+                if "all" in clustering_name: # modulation
                     clustering_data = clustering_data.reshape(clustering_data.shape[0], clustering_data.shape[1], -1)
                     rule_cluster = clustering_data[test_task == rule_idx, 
                                                    period_time[0]:period_time[1], :]
@@ -1325,7 +1274,7 @@ def main(seed, feature, clean=True):
             cell_vars_rules_norm = cell_vars_rules_norm * modulation_W.flatten()[np.newaxis, :]
 
         # modulation only, reshape to (N, post, pre) shape after calculating the variance
-        # modulation_W shape is (post, pre): previously assumed (pre, post)
+        # modulation_W is (post, pre)
         # N here as the number of sessions after breakdown
         # 2026-04-06: the code implicitly requires the modulation to be a square matrix
         if "all" in clustering_name:
@@ -1542,12 +1491,13 @@ def main(seed, feature, clean=True):
         # this is for better interpretability and also to avoid potential 
         # undesirable bugs in the clustering code that might be triggered by a non-identity sorting
         
-        # sort_idxs = np.argsort(rules_struct, order=rule_names)[::-1] # descending lexicographic sort across all rule columns 
+        # sort_idxs = np.argsort(rules_struct, order=rule_names)[::-1] # descending lexicographic sort across all rule columns
         sort_idxs = np.arange(rules_struct.shape[0], dtype=np.intp) # identity map for better interpretability
 
-        # 2025-07-07: first sorting based on the normalized magnitude
-        # all the following should be aligned with this change
-        # 2025-08-22: sort based on the variance ordering OR using an identity map (i.e. do nothing)
+        # sort_idxs is currently the IDENTITY, so this indexing and the
+        # helper.basic_sort(..., sort_idxs) calls in the modulation block are
+        # no-ops; they stay because uncommenting the line above is meant to
+        # re-sort the whole downstream chain in one place.
         cell_vars_rules_sorted_norm = cell_vars_rules_norm[:, sort_idxs]
         base_data[clustering_save_name] = cell_vars_rules_sorted_norm
         print(f"cell_vars_rules_sorted_norm: {cell_vars_rules_sorted_norm.shape}")  
@@ -1738,18 +1688,6 @@ def main(seed, feature, clean=True):
             # plot the optimization score as a function of number of clustering
             # also plot the indicator for the optimal number of cluster (and with tolerance version)
             # 2026-04-16: add more details in the plotting
-            def _gap_curve(Z, k_vals):
-                """Compute the Ward merge-height gap for each k from a linkage matrix."""
-                n = Z.shape[0] + 1
-                gaps = []
-                for k in k_vals:
-                    idx_above = n - k
-                    idx_below = n - k - 1
-                    h_above = float(Z[idx_above, 2]) if 0 <= idx_above < Z.shape[0] else np.inf
-                    h_below = float(Z[idx_below, 2]) if 0 <= idx_below < Z.shape[0] else 0.0
-                    gaps.append(h_above - h_below)
-                return np.asarray(gaps, dtype=float)
-
             # solid vline = strict silhouette argmax; dashed vline = tol_k_select decision
             row_decision_k, col_decision_k = strat_ks[tol_k_select]
 
@@ -1829,7 +1767,6 @@ def main(seed, feature, clean=True):
             figscore.savefig(f"{save_dir}/{clustering_name}_variance_cluster_score_{savefigure_name}.png", dpi=300)
             plt.close(figscore)
 
-            # 
             ordered_row_name = tb_break_name[result["row_order"]]
             row_breakers = [0]
             for row_group in row_clusters.values():
@@ -2352,7 +2289,7 @@ def main(seed, feature, clean=True):
             input_order_col_ind  = clustering_corr_info["input_normalized"][2]
             hidden_order_col_ind = clustering_corr_info["hidden_normalized"][2]
             # cell_vars_rules_norm_keepshape: 3D array with shape (N, post, pre)
-            # modulation_W shape is (post, pre): previously assumed (pre, post)
+            # modulation_W is (post, pre)
             # axis 1 = post (hidden), axis 2 = pre (input)
             cell_vars_rules_norm_keepshape_ih = cell_vars_rules_norm_keepshape[:, hidden_order_col_ind, :]
             cell_vars_rules_norm_keepshape_ih = cell_vars_rules_norm_keepshape_ih[:, :, input_order_col_ind]
@@ -2373,7 +2310,6 @@ def main(seed, feature, clean=True):
             fig.savefig(f"{save_dir}/modulation_input2hidden_variance_hierarchy_{savefigure_name}.png", dpi=300)
             plt.close(fig)
 
-            #
             print(cell_vars_rules_sorted_norm.shape)
             if clustering_normalize:
                 cluster_input  = col_clusters_all["input_normalized"]
@@ -2392,7 +2328,7 @@ def main(seed, feature, clean=True):
                     nc1_input, nc2_hidden = cluster_input[c1], cluster_hidden[c2]
                     nc_combine = [(int(i),int(j)) for i in nc1_input for j in nc2_hidden]
                     # transform to reshaped matrix index
-                    # modulation_W shape is (post, pre): previously assumed (pre, post)
+                    # modulation_W is (post, pre)
                     # flat index in (post, pre) layout: post * M + pre
                     nc_combine = [cc[1] * M + cc[0] for cc in nc_combine]
                     cluster_combine[newc] = nc_combine
@@ -2803,7 +2739,7 @@ def main(seed, feature, clean=True):
                         _unres_hidden_neurons = set(cluster_hidden.get(_hidden_col_k + 1, []))
 
                         if _unres_input_neurons or _unres_hidden_neurons:
-                            # modulation_W shape is (post, pre): previously assumed (pre, post)
+                            # modulation_W is (post, pre)
                             _post_idx = _flat_idx_active // M
                             _pre_idx  = _flat_idx_active % M
                             _is_unres_pre  = np.isin(_pre_idx,  list(_unres_input_neurons))
@@ -2913,26 +2849,10 @@ def main(seed, feature, clean=True):
                         })
 
                 # ── Fixed-k prepost_belonging (k=FIXED_K_OM for input, hidden, modulation) ──
-                from scipy.cluster.hierarchy import fcluster as _fcluster_ppb
-
-                def _fk_col_clusters_ppb(ci_entry, fk):
-                    """Cut dendrogram at fk, return {1-based label: neuron_indices}."""
-                    res = ci_entry["result"]
-                    lnk = res["col_linkage"]
-                    tol_k = res["col_tol_k"]
-                    tol_labels = res["col_tol_labels"]
-                    unres_mask = tol_labels == (tol_k + 1)
-                    active_labels = _fcluster_ppb(lnk, fk, criterion="maxclust")
-                    full = np.zeros(len(tol_labels), dtype=int)
-                    full[~unres_mask] = active_labels
-                    if unres_mask.any():
-                        full[unres_mask] = fk + 1
-                    return {int(lab): np.where(full == lab)[0] for lab in np.unique(full) if lab > 0}
-
                 _ppb_input_key = "input_normalized" if clustering_normalize else "input_unnormalized"
                 _ppb_hidden_key = "hidden_normalized" if clustering_normalize else "hidden_unnormalized"
-                _ppb_fk_input = _fk_col_clusters_ppb(cluster_info_save[_ppb_input_key], FIXED_K_OM)
-                _ppb_fk_hidden = _fk_col_clusters_ppb(cluster_info_save[_ppb_hidden_key], FIXED_K_OM)
+                _ppb_fk_input = _fixed_k_col_clusters(cluster_info_save[_ppb_input_key], FIXED_K_OM)
+                _ppb_fk_hidden = _fixed_k_col_clusters(cluster_info_save[_ppb_hidden_key], FIXED_K_OM)
                 _ppb_fk_input = dict(sorted(_ppb_fk_input.items()))
                 _ppb_fk_hidden = dict(sorted(_ppb_fk_hidden.items()))
 
@@ -3033,7 +2953,7 @@ def main(seed, feature, clean=True):
                         post_lookup[np.asarray(neurons)] = key - 1
 
                     # Precompute cluster assignment using original flat positions (_flat_idx_active).
-                    # modulation_W shape is (post, pre): previously assumed (pre, post)
+                    # modulation_W is (post, pre)
                     # so flat_idx // M = post (hidden), flat_idx % M = pre (input).
                     pre_clusters  = pre_lookup[_flat_idx_active % M]    # shape (N_active,), 0-based
                     post_clusters = post_lookup[_flat_idx_active // M]  # shape (N_active,), 0-based
@@ -3075,26 +2995,10 @@ def main(seed, feature, clean=True):
                     # ── Fixed-k overmembership (for leison_plot.py) ──
                     # Recompute overmembership using FIXED_K_OM for input, hidden,
                     # and modulation clusters so it aligns with the fixed-k lesion.
-                    from scipy.cluster.hierarchy import fcluster as _fcluster_om
-
-                    def _fk_col_clusters_om(ci_entry, fk):
-                        """Cut dendrogram at fk, return {1-based label: neuron_indices}."""
-                        res = ci_entry["result"]
-                        lnk = res["col_linkage"]
-                        tol_k = res["col_tol_k"]
-                        tol_labels = res["col_tol_labels"]
-                        unres_mask = tol_labels == (tol_k + 1)
-                        active_labels = _fcluster_om(lnk, fk, criterion="maxclust")
-                        full = np.zeros(len(tol_labels), dtype=int)
-                        full[~unres_mask] = active_labels
-                        if unres_mask.any():
-                            full[unres_mask] = fk + 1
-                        return {int(lab): np.where(full == lab)[0] for lab in np.unique(full) if lab > 0}
-
                     _input_base_om = "input_normalized" if clustering_normalize else "input_unnormalized"
                     _hidden_base_om = "hidden_normalized" if clustering_normalize else "hidden_unnormalized"
-                    _fk_input = _fk_col_clusters_om(cluster_info_save[_input_base_om], FIXED_K_OM)
-                    _fk_hidden = _fk_col_clusters_om(cluster_info_save[_hidden_base_om], FIXED_K_OM)
+                    _fk_input = _fixed_k_col_clusters(cluster_info_save[_input_base_om], FIXED_K_OM)
+                    _fk_hidden = _fixed_k_col_clusters(cluster_info_save[_hidden_base_om], FIXED_K_OM)
                     _fk_n_in = len(_fk_input)
                     _fk_n_hid = len(_fk_hidden)
 
@@ -3863,20 +3767,6 @@ def main(seed, feature, clean=True):
                 pickle.dump(cell_vars_rules_sorted_norm_all_save, f)
 
             # plot the score
-            def _gap_curve_mod(Z, k_vals):
-                """Compute Ward merge-height gap for each k from a linkage matrix."""
-                if Z is None:
-                    return np.full(len(k_vals), np.nan)
-                n = Z.shape[0] + 1
-                gaps = []
-                for k in k_vals:
-                    idx_above = n - k
-                    idx_below = n - k - 1
-                    h_above = float(Z[idx_above, 2]) if 0 <= idx_above < Z.shape[0] else np.inf
-                    h_below = float(Z[idx_below, 2]) if 0 <= idx_below < Z.shape[0] else 0.0
-                    gaps.append(h_above - h_below)
-                return np.asarray(gaps, dtype=float)
-
             figscore, (axscore, axgap) = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
 
             # result_pre / result_post: single grouping → col_score_recording_mean has no meaningful std
@@ -3919,13 +3809,13 @@ def main(seed, feature, clean=True):
             axscore.legend()
 
             # ---------- gap: pre ----------
-            axgap.plot(pre_ks, _gap_curve_mod(result_pre["col_linkage"], pre_ks),
+            axgap.plot(pre_ks, _gap_curve(result_pre["col_linkage"], pre_ks),
                        label="col pre", color=c_vals[1])
             axgap.axvline(result_pre["col_strict_best_k"], color=c_vals[1], linestyle="-",  linewidth=1.0)
             axgap.axvline(result_pre["col_k"],             color=c_vals[1], linestyle="--", linewidth=1.0)
 
             # ---------- gap: post ----------
-            axgap.plot(post_ks, _gap_curve_mod(result_post["col_linkage"], post_ks),
+            axgap.plot(post_ks, _gap_curve(result_post["col_linkage"], post_ks),
                        label="col post", color=c_vals[3])
             axgap.axvline(result_post["col_strict_best_k"], color=c_vals[3], linestyle="-",  linewidth=1.0)
             axgap.axvline(result_post["col_k"],             color=c_vals[3], linestyle="--", linewidth=1.0)
@@ -3935,7 +3825,7 @@ def main(seed, feature, clean=True):
                 r     = result_all_lst[k_idx]
                 ks    = np.asarray(r["col_k_values"], dtype=int)
                 color = c_vals[5 + k_idx]
-                axgap.plot(ks, _gap_curve_mod(r["col_linkage"], ks),
+                axgap.plot(ks, _gap_curve(r["col_linkage"], ks),
                            label=f"col all, G={G_lst[k_idx]}", color=color, linestyle="--")
                 axgap.axvline(r["col_strict_best_k"], color=color, linestyle="-",  linewidth=1.0)
                 axgap.axvline(r["col_k"],             color=color, linestyle="--", linewidth=1.0)
@@ -4054,6 +3944,12 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=None,
                         help="Only run the model with this seed (e.g. 749). "
                              "Combine with --feature to disambiguate.")
+    parser.add_argument("--families", nargs="+", default=list(SHARED_RUN_FAMILIES),
+                        choices=list(SHARED_RUN_FAMILIES),
+                        help="Which sibling-task families to probe. Default: all of "
+                             f"{list(SHARED_RUN_FAMILIES)} in one run. Each family "
+                             "is named after its first rule and solves both of its "
+                             "rules.")
     args = parser.parse_args()
 
     # Clean up old output files
@@ -4080,7 +3976,7 @@ if __name__ == "__main__":
 
     for seed, feature in param_lst:
         try:
-            main(seed, feature, clean=clean)
+            main(seed, feature, clean=clean, families=args.families)
         except SystemExit as e:
             # main() may call sys.exit() to finish a trial early ON PURPOSE
             # (e.g. after shared_run, before the full weight-matrix analysis).

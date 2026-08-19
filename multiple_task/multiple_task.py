@@ -83,7 +83,7 @@ SEED_LIST = None
 RULESET = 'everything'          # low_dim, all, test, everything, ...
 CHOSEN_NETWORK = "dmpn"         # mpn1, dmpn, vanilla, gru
 N_HIDDEN = 300
-ADDON_NAME = "L21e2"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appended below
+ADDON_NAME = "L21e4relu"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appended below
 train = True                    # whether or not to train the network
 verbose = True
 
@@ -187,7 +187,7 @@ def current_basic_params(hyp_dict):
         'n_epochs_per_set': 1, 
         'weight_reg': 'L2',
         'activity_reg': 'L2', 
-        'reg_lambda': 1e-2,
+        'reg_lambda': 1e-4,
         
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'
@@ -211,7 +211,7 @@ def current_basic_params(hyp_dict):
         'linear_embed': n_hidden, 
         'output_bias': False, # Turn off biases for easier interpretation
         'loss_type': 'MSE', # XE, MSE
-        'activation': 'tanh', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside
+        'activation': 'ReLU', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside
         'cuda': True,
         'monitor_freq': train_params["n_epochs_per_set"],
         'monitor_valid_out': True, # Whether or not to save validation output throughout training

@@ -57,8 +57,12 @@ from fixed_point import (find_modulation_fixed_points,
 
 
 # Long-period variant -> display title (shared with the plotting scripts).
+# The first epoch is "Context", not "Fixation": it is where the rule cue sets up
+# which computation the trial demands. Only the DISPLAY name changes — the period
+# KEYS ("longfixation", "fix1") are unchanged, since they index saved pickles.
+# paper_plot._period_display normalizes titles from pickles solved before this.
 _PERIOD_TITLE = {
-    "longfixation": "Fixation",
+    "longfixation": "Context",
     "longstimulus": "Stimulus",
     "longdelay": "Delay",
     "longresponse": "Response",
@@ -332,7 +336,8 @@ def solve_period_modulation_fixed_points(
         layer_index=1, W=None,
         n_interp=64, steps=200000, learningRate=1e-3,
         loss_tol=1e-8, lbfgs_steps=2000, rel_tol=0.05,
-        stim_channels=None, n_seeds=5, seed_base=0,
+        stim_channels=None, periods=None, save_all_trajectories=False,
+        n_seeds=5, seed_base=0,
         analyze_stability=True, n_eigs=16,
         cross_seed_probes=True, naive_seed_probes=True, naive_rng_seed=0):
     """
@@ -356,6 +361,23 @@ def solve_period_modulation_fixed_points(
                   find_modulation_fixed_points (Adam until loss<=loss_tol capped at
                   `steps`, then L-BFGS polishing).
     rel_tol     : a point counts as a fixed point when rel_step <= rel_tol.
+    periods     : restrict the solve to these period keys (a subset of
+                  longfixation / longstimulus / longdelay / longresponse), in
+                  canonical order regardless of the order given. None (default)
+                  solves all four — the one-task / two-task behavior. Narrowing it
+                  cuts the cost proportionally and narrows the probe battery with
+                  it: the memory-seed probe needs both fixation and delay, and the
+                  naive probes are built per distinct input among the periods
+                  actually solved. "longdelay" is the FIRST delay epoch (`delay1`)
+                  for every task family, including the two-delay ones (dmc,
+                  delaydm), whose later epochs this solver does not probe.
+    save_all_trajectories : also save the recorded within-period path of EVERY
+                  stimulus (`traj_all_hidden`, `traj_all_WM`), not just the angle-0
+                  exemplar. Off by default because the W⊙M one is
+                  (n_interp, win_T, hidden*embed): ~55 MB at n_interp=8 but ~440 MB
+                  at the 64 the one/two-task callers use. Turn it on when the
+                  figures draw a path per stimulus (the multi-task sibling
+                  families do).
     stim_channels : the two input channels holding the active ring's (sinθ, cosθ).
                   If None (default), they are AUTO-DETECTED from the template as
                   the channels energized during the stimulus window but ~zero
@@ -493,9 +515,21 @@ def solve_period_modulation_fixed_points(
         period_win = {
             "longfixation": (fix_on, fix_off),
             "longstimulus": (stim_on, stim_off),
-            "longdelay":    (delay_on, delay_off),
+            "longdelay":    (delay_on, delay_off),   # = delay1, the FIRST delay
             "longresponse": (resp_on, resp_off),
         }
+        if periods is not None:
+            unknown = [v for v in periods if v not in period_win]
+            if unknown:
+                raise ValueError(f"unknown period(s) {unknown}; choose from "
+                                 f"{list(period_win)}")
+            # Filter by iterating period_win, so the canonical
+            # fixation→stimulus→delay→response order survives whatever order the
+            # caller listed. Everything downstream — the diagonal probes, the
+            # measured input distances, the naive-probe grouping — is derived from
+            # this dict, so restricting it here restricts the whole solve.
+            keep = set(periods)
+            period_win = {v: w for v, w in period_win.items() if v in keep}
 
         if stim_channels is not None:
             ch_a, ch_b = int(stim_channels[0]), int(stim_channels[1])
@@ -607,12 +641,21 @@ def solve_period_modulation_fixed_points(
             # paper_plot draws no connector when traj_* is None.
             diagonal = (seed_src == in_period)
             traj_M_flat = traj_hidden = traj_WM = None
+            traj_all_hidden = traj_all_WM = None
             if diagonal:
                 traj_M = M_all[traj_stim, ps:pe, :, :]             # (win_T, hid, emb)
                 traj_M_flat = traj_M.reshape(traj_M.shape[0], -1)  # (win_T, hid*emb)
                 traj_WM = (traj_M * np.asarray(W)[None, :, :]).reshape(
                     traj_M.shape[0], -1) if W is not None else None
                 traj_hidden = hid_all[traj_stim, ps:pe, :]         # (win_T, hidden)
+                if save_all_trajectories:
+                    # Same window, every stimulus — row i pairs with fixed point i,
+                    # so a caller can project paths and endpoints through one basis.
+                    traj_all_hidden = hid_all[:, ps:pe, :]         # (B, win_T, hidden)
+                    if W is not None:
+                        M_win = M_all[:, ps:pe, :, :]
+                        traj_all_WM = (M_win * np.asarray(W)[None, None, :, :]
+                                       ).reshape(M_win.shape[0], M_win.shape[1], -1)
 
             # Scale-free convergence metric rel_step = ||F(M*)-M*|| / ||M*||;
             # final_speeds is q = 1/2||F-M||^2, so ||F-M|| = sqrt(2 q).
@@ -664,6 +707,12 @@ def solve_period_modulation_fixed_points(
                             if traj_WM is not None else None),
                 "traj_hidden": (np.asarray(traj_hidden, dtype=np.float32)
                                 if traj_hidden is not None else None),
+                # Per-stimulus paths (save_all_trajectories); row i pairs with
+                # fixed point i. None unless the caller asked for them.
+                "traj_all_hidden": (np.asarray(traj_all_hidden, dtype=np.float32)
+                                    if traj_all_hidden is not None else None),
+                "traj_all_WM": (np.asarray(traj_all_WM, dtype=np.float32)
+                                if traj_all_WM is not None else None),
                 # 0 ⇒ every point is the same matrix (one fixed point); large ⇒
                 # the points spread along a manifold. See _relative_spread.
                 "across_angle_spread": _relative_spread(fixed_M),
