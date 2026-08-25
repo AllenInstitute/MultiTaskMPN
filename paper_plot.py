@@ -190,6 +190,15 @@ ONETASK_ANAME = "delaygo_seed395_hidden200+batch128+angle"
 ONETASK_INPUT_ANAME = ONETASK_ANAME
 ONETASK_OUTPUT_ANAME = ONETASK_ANAME
 
+# ── Single-task vanilla RNN (the no-plasticity control) ──
+# Trained by one_task/one_task_rnn.py and solved by one_task_rnn_analysis.py, which
+# writes onetask_rnn/{aname}/fixed_points_hidden_{aname}.pkl in the SAME schema as
+# the MPN's fixed_points_grad pickle — so the RNN 3D figure is rendered by the very
+# same code, and any difference the reader sees is a difference in the networks,
+# not in how the two were drawn.
+ONETASK_RNN_DIR = Path("onetask_rnn")
+ONETASK_RNN_ANAME = "delaygo_seed459_rnnL21e4+hidden200+batch128+angle"
+
 
 def _twotask_seed_tag():
     """Seed substring of TWOTASK_ANAME (e.g. 'seed894'), for figure filenames.
@@ -319,11 +328,18 @@ def stim_colors(n=ONETASK_N_STIM):
 # A perceptually-uniform MULTI-HUE map (plasma: dark indigo → magenta → orange)
 # rather than one hue's dark→light: it still lightens monotonically, so the sweep
 # direction is unambiguous, but neighboring alphas are far easier to tell apart than
-# in a monochrome ramp. The top end is TRUNCATED short of plasma's near-white yellow
-# because the HOLLOW (non-converged) markers are drawn in the ramp color as an
-# outline only, with nothing but that stroke to see against the page.
+# in a monochrome ramp. The FULL plasma range is used, so alpha=1 lands on
+# plasma's near-white yellow and the ramp spans the widest luminance it has
+# (0.07 -> 0.91, against 0.08 -> 0.71 for the (0.03, 0.82) truncation used
+# earlier). The known cost: HOLLOW (non-converged) markers are drawn in the ramp
+# color as an outline only, so a hollow point near alpha=1 is close to invisible
+# on white. Kept anyway because in the runs these figures are made from every
+# point converges (88/88 per period/representation on seed21), and the wider ramp
+# is what makes the sweep direction unmistakable. If a run does produce
+# non-converged points at high alpha, give the hollow markers their own truncated
+# stroke color rather than pulling this range back in — that keeps both.
 _ALPHA_CMAP = "plasma"
-_ALPHA_CMAP_RANGE = (0.03, 0.82)         # dark indigo (alpha=0) → orange (alpha=1)
+_ALPHA_CMAP_RANGE = (0.0, 1.0)           # dark indigo (alpha=0) → yellow (alpha=1)
 
 
 def _alpha_ramp_color(t):
@@ -424,9 +440,9 @@ _PHASE_DISPLAY = {
 }
 _PHASE_COLORS = {
     "stim1": "#c3b1e1",   # light purple     (L* 75)
-    "stim2": "#e4c7f4",   # pale purple      (L* 84)
+    "stim2": "#9c79d8",   # medium purple    (L* 58)
     "delay1": "#bbf7d0",  # light green      (L* 92)
-    "delay2": "#93e297",  # medium green     (L* 83)
+    "delay2": "#4dcb79",  # medium green     (L* 73)
     "go1": "#d1d5db",     # light gray       (L* 85)
 }
 # The two stimulus epochs SHARE a hue and the two memory epochs share another, so a
@@ -434,30 +450,29 @@ _PHASE_COLORS = {
 # different kind of thing — which the original palette (stim2 light blue, delay2
 # light orange) hid by giving every epoch an unrelated hue.
 #
-# ALL FIVE ARE ON ONE LIGHT TIER (L* 75-92), restoring the earlier pastel palette:
-# stim1/delay1 were briefly darkened to L* ~48 to put each pair on two brightness
-# tiers, and this reverts that. What the revert costs, measured, so nobody has to
-# rediscover it:
-#   * stim1 vs stim2 separation falls from 42 to 9.7 CIELAB — the two stimulus
-#     epochs are now close enough that the heatmap tells them apart mostly by
-#     position, not by color. delay1 vs delay2 falls from 40 to 23, still legible.
-#   * the pairs no longer agree on direction: stim1 (75) is DARKER than stim2 (84),
-#     but delay1 (92) is LIGHTER than delay2 (83), so "darker = earlier" cannot be
-#     carried from one pair to the other.
-# Both were the point of the dark tier; the light palette is kept anyway because it
-# is what the published one-task period bars use.
+# EACH PAIR SPANS TWO BRIGHTNESS TIERS, darker = later: stim2/delay2 are the deep
+# members (L* 58/73) under their pastel partners (L* 75/92). An earlier attempt put
+# the pairs on two tiers by darkening stim1/delay1 instead; that was reverted,
+# because stim1/delay1 are also the published one-task period-bar pastels (see NB
+# below). Darkening the "2" epochs restores the separation without touching them:
+#   * stim1 vs stim2 is 33 CIELAB and delay1 vs delay2 is 37 (up from 9.7 / 23 when
+#     all five sat on one light tier), so each pair is told apart by color, not
+#     just by position in the heatmap.
+#   * both pairs now agree on direction — the second epoch is the darker one — so
+#     "darker = later" carries from one pair to the other.
 #
 # The two constraints that DO still hold, and must keep holding: these colors are
 # the background highlight behind black tick labels (_color_phase_ticklabels,
-# _PERIOD_LABEL_COLORS), and every one clears 5:1 black-text contrast with room to
-# spare (10.7:1 stim1, 17.3:1 delay1 — light backgrounds make this easier, not
-# harder). And the cluster strip shares the figure, so each is kept >= ~26 CIELAB
-# from every `_CLUSTER_COLORS` entry (33.1 stim1, 47.6 delay1).
+# _PERIOD_LABEL_COLORS), and every one clears 5:1 black-text contrast (the new dark
+# members are the low ends at 6.1:1 stim2 and 10.1:1 delay2; the pastels sit at
+# 10.7-17.3:1). And the cluster strip shares the figure, so each is kept >= ~26
+# CIELAB from every `_CLUSTER_COLORS` entry (34.7 stim2 vs the mauve, 35.4 delay2
+# vs the moss green) and from the stimulus rainbow (26.6 stim2, 29.9 delay2).
 #
 # NB stim1 and delay1 are also `_ONETASK_PERIOD_COLORS[1:3]`, the Stimulus and Memory
 # blocks of the one-task / two-task period bars (and cartoon.py's period strip, which
-# imports them) — one definition drives both, which is why reverting these two here
-# is what puts the period bars back on the light pastels.
+# imports them) — one definition drives both, which is why the dark tier lives on
+# stim2/delay2 and stim1/delay1 must stay on the published pastels.
 
 # Period colorbar palette for the one-task / two-task period strip, ordered
 # Context → Stimulus → Memory → Response. Stimulus/Memory/Response reuse the
@@ -3748,10 +3763,13 @@ def _grad_fp_period_panels(results):
         if panel not in panels:
             panels.extend(overlay.pop(panel))
 
-    naive = [n for names in overlay.values() for n in names
-             if results[n].get("seed_source") == "naive_rank1"
-             or n.endswith("_naiveseed")]
-    for name in naive:
+    # Synthesized-seed probes (naive, and the RNN's trajectory-seeded family)
+    # characterize their INPUT's whole fixed-point set rather than one recorded
+    # state, so each is mirrored into every panel sharing that input.
+    synth = [n for names in overlay.values() for n in names
+             if results[n].get("seed_source") in ("naive_rank1", "traj_noise")
+             or n.endswith(("_naiveseed", "_trajseed"))]
+    for name in synth:
         home = results[name].get("input_period", name)
         for panel in panels:
             if panel == home or name in overlay.get(panel, []):
@@ -3833,9 +3851,10 @@ def _grad_fp_overlay_legend(ax, results, names, base_s=18, fontsize=6):
 #   Stimulus — none; its own added ring is a second lower-amplitude branch that the
 #              2D figures carry.
 _GRAD_FP_3D_OVERLAY_PROBES = {
-    "longfixation": ("longfixation_memseed", "longfixation_naiveseed"),
-    "longdelay": ("longfixation_naiveseed",),
-    "longresponse": ("longresponse_naiveseed",),
+    "longfixation": ("longfixation_memseed", "longfixation_trajseed",
+                     "longfixation_naiveseed"),
+    "longdelay": ("longfixation_trajseed", "longfixation_naiveseed"),
+    "longresponse": ("longresponse_trajseed", "longresponse_naiveseed"),
 }
 _GRAD_FP_3D_OVERLAY_COLOR = "0.55"
 
@@ -4368,6 +4387,28 @@ def plot_onetask_grad_fixed_points_3d():
     _plot_onetask_grad_fixed_points_3d("fixed_M", "onetask_grad_fixed_points_3d_modulation.png")
     _plot_onetask_grad_fixed_points_3d("fixed_WM", "onetask_grad_fixed_points_3d_emodulation.png")
     _plot_onetask_grad_fixed_points_3d("fixed_hidden", "onetask_grad_fixed_points_3d_hidden.png")
+
+
+def plot_onetask_rnn_fixed_points_3d():
+    """
+    3D hidden-state fixed points of the single-task VANILLA RNN — the control for
+    onetask_grad_fixed_points_3d_hidden, drawn by the same renderer so the two can
+    be laid side by side: x-y = delay-period PCA of h*, z = the ideal cos-output
+    target (0 outside Response), points colored by stimulus direction.
+
+    The RNN has no modulation matrix, so `fixed_hidden` is its ONLY representation
+    — there is no modulation/eff-modulation counterpart to draw.
+
+      onetask_rnn_fixed_points_3d_hidden.png
+    Reads onetask_rnn/{aname}/fixed_points_hidden_{aname}.pkl.
+    """
+    pkl_path = (ONETASK_RNN_DIR / ONETASK_RNN_ANAME
+                / f"fixed_points_hidden_{ONETASK_RNN_ANAME}.pkl")
+    d = _load_pkl_or_skip(pkl_path, "Run one_task/one_task_rnn_analysis.py first.")
+    if d is None:
+        return
+    _render_grad_fixed_points_3d(
+        d, "fixed_hidden", OUT_DIR / "onetask_rnn_fixed_points_3d_hidden.png")
 
 
 def _render_interp_fixed_points(d, out_path, n_trained=ONETASK_N_STIM,
@@ -5429,6 +5470,170 @@ def _render_interp_alpha_fp_3d(d, rep_key, out_path, basis):
     _save_fig(fig, out_path)
 
 
+def _render_interp_alpha_fp_2d(d, rep_key, out_path, basis, pc=0):
+    """2D view of `_render_interp_alpha_fp_3d`: the same panels, the same alpha
+    sweep, the same shared basis and the same marker conventions, with the z axis
+    (Delay PC2) dropped — so this is that figure seen straight down PC2, x = alpha
+    and y = Delay PC1. Reading one PC against alpha is what makes a fan
+    splitting or merging legible as a curve rather than as depth in a cube.
+
+    Deliberately shares three things with the 3D renderer so the two can be read
+    as a pair, and any difference is the projection rather than the plotting:
+      * the SAME panel set and order (canonical Context->Response, minus
+        `_TWOTASK_FP_3D_SKIP_PANELS`), one period per row with the period named by
+        a rotated label to the left;
+      * the SAME shared symmetric limit, taken over BOTH PCs rather than only the
+        one drawn. That makes the y axis here identical to the 3D figure's y axis,
+        and it costs almost nothing: on this run max|PC2| / max|PC1| is 0.96-1.03
+        for all three representations, so restricting it to PC1 would widen the
+        range by at most ~4%;
+      * the alpha ramp (`_ALPHA_CMAP`), the mid-tone connector, and filled =
+        converged / hollow = over the relative-step threshold.
+
+    It departs in two places, both because 2D has room the cube did not: the alpha
+    axis is SHARED and labelled once at the bottom instead of redrawn per panel,
+    and the PC axis keeps its tick labels (the 3D panels hide theirs as
+    unreadable), since reading that coordinate is the point of this view.
+    """
+    _ensure_out_dir()
+    results = d.get("results", {})
+    _CANON = ["longfixation", "longstimulus", "longdelay", "longresponse"]
+    periods = ([v for v in _CANON if v in results]
+               + [v for v in results if v not in _CANON])
+    periods = [v for v in periods
+               if not any(skip in v.lower() for skip in _TWOTASK_FP_3D_SKIP_PANELS)]
+    if not periods or any(results[v].get(rep_key) is None for v in periods):
+        print(f"  Skipped '{rep_key}': not in interp pickle "
+              f"(re-run two_task_analysis.py).")
+        return
+    alphas = np.asarray(d["alphas"], dtype=float)
+
+    def _proj(arr):
+        # arr: (n_alpha, n_stim, feat) -> (n_alpha, n_stim, 2) in the shared basis.
+        a = np.asarray(arr, dtype=float)
+        na, ns = a.shape[0], a.shape[1]
+        return basis.transform(a.reshape(na * ns, -1)).reshape(na, ns, 2)
+
+    proj_by_period = {v: _proj(results[v][rep_key]) for v in periods}
+    n_stim = proj_by_period[periods[0]].shape[1]
+    lim = max(np.abs(np.concatenate([p.reshape(-1, 2)
+                                     for p in proj_by_period.values()])).max()
+              * 1.08, 1e-9)
+
+    n_rows = len(periods)
+    # Sized to match the 3D figure AS SAVED, which is not the same as matching
+    # figsize: both go through _save_fig's bbox_inches="tight", and that CROPS the
+    # 3D figure (mplot3d leaves wide margins around each cube, and its rows use a
+    # negative hspace so the rects overlap) while it EXPANDS this one by the label
+    # margins. Measured at 300 dpi, the 3D figure lands at 1.95 x 3.47 in for two
+    # period rows; asking for 1.8 x (1.64 x rows) here lands this one at
+    # 1.99 x 3.43 in — same width, same ~1.7 in of height per row — so the pair
+    # can sit side by side at one scale.
+    # Constrained layout, not subplots_adjust: the shared PC label is vertically
+    # CENTERED, which is exactly where the top panel's lowest tick label and the
+    # bottom panel's highest one sit, so any hand-placed x either leaves a gap or
+    # runs through "-1.5"/"1.5" (both were tried). Constrained layout measures the
+    # tick extents and puts each label just outside them, which is what "close to
+    # the axes" actually means here.
+    fig, axs = plt.subplots(n_rows, 1, figsize=(1.8, 1.64 * n_rows),
+                            sharex=True, squeeze=False, layout="constrained")
+    t = _alpha_ramp_norm(alphas)
+    line_col = _alpha_ramp_color(0.5)
+    for j, v in enumerate(periods):
+        ax = axs[j][0]
+        xy = proj_by_period[v]                       # (n_alpha, n_stim, 2)
+        good = np.asarray(results[v].get("is_fixed",
+                          np.ones(xy.shape[:2], bool)), dtype=bool)
+        for s in range(n_stim):
+            ax.plot(alphas, xy[:, s, pc], "-", color=line_col, linewidth=1.1,
+                    alpha=0.5, zorder=2)
+            for ai in range(xy.shape[0]):
+                col = _alpha_ramp_color(t[ai])
+                if good[ai, s]:
+                    ax.scatter(alphas[ai], xy[ai, s, pc], color=col, marker="o",
+                               s=12, edgecolor="none", alpha=0.9, zorder=3)
+                else:
+                    ax.scatter(alphas[ai], xy[ai, s, pc], facecolor="none",
+                               edgecolor=col, marker="o", s=12, linewidth=0.7,
+                               alpha=0.9, zorder=3)
+        # No period label on the panel. The rows stay in canonical order
+        # (Stimulus above Response), so the epoch is carried by the caption rather
+        # than by text competing with the curves for a 1.8 in column.
+        #
+        # x padded by 10% of the sweep on each side so the alpha=0 and alpha=1
+        # markers sit inside the axes instead of being clipped in half by the
+        # spines; the ticks stay at the true endpoints. Proportional rather than a
+        # hardcoded -0.1/1.1 so a different sweep range pads correctly.
+        _xpad = 0.1 * max(alphas.max() - alphas.min(), 1e-9)
+        ax.set_xlim(alphas.min() - _xpad, alphas.max() + _xpad)
+        ax.set_ylim(-lim, lim)
+        ax.set_xticks([alphas.min(), alphas.max()])
+        # PC label on EVERY panel and NO y tick labels — both as in the 3D figure,
+        # whose y/z tick labels are hidden too. The numbers were also what filled
+        # the gap between the panels (only 4 px of it was actually blank), so
+        # hiding them is what lets that gap read as a gap.
+        ax.set_ylabel(f"Delay PC{pc + 1}", fontsize=7)
+        ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(3))
+        ax.tick_params(axis="x", labelsize=7)
+        ax.tick_params(axis="y", labelleft=False)
+        ax.spines[["top", "right"]].set_visible(False)
+    # labelpad = -2, not the default 4: swept and measured on the saved PNG, the
+    # blank between the x tick labels and the alpha label goes 31 px (pad 4) ->
+    # 14 px (0) -> 6 px (-2), then back up to 14 px at -4 and -6 because by then
+    # the label has moved INTO the tick labels and the band being measured is a
+    # different one. -2 is therefore the tightest clean setting.
+    axs[-1][0].set_xlabel(r"$\alpha$", fontsize=9, labelpad=-2)
+    # Tight pads pull the labels in against their axes; `hspace` sets the gap
+    # between the panels, and is chosen to MATCH the 3D figure's. That gap cannot
+    # be copied from the 3D figure's own `hspace=-0.05`: there the value is
+    # negative because mplot3d leaves wide margins inside each rect, so overlapping
+    # rects still leave a wide gap between the drawn cubes. Measured on the saved
+    # PNGs instead — the 3D panels are separated by 69 px (0.230 in) of blank at
+    # 300 dpi — and hspace here is set to reproduce that.
+    fig.get_layout_engine().set(w_pad=0.005, h_pad=0.005, hspace=0.15, wspace=0.0)
+    _save_fig(fig, out_path)
+
+
+def _plot_two_task_interp_alpha_fp(render_fn, stem, log_label):
+    """Shared driver for the task-interpolation alpha figures (3D and its 2D
+    view): load the interp pickle once, fetch the delayanti delay-period basis per
+    representation — the SAME shared basis the grad fixed-point figures use — and
+    render each representation through `render_fn`."""
+    d = _load_twotask_glob_or_skip("interp_fixed_points_*.pkl")
+    if d is None:
+        return
+    tag = _twotask_seed_tag()
+    paths = _twotask_grad_fp_paths()
+    shared_bases = _twotask_shared_fp_bases(paths, log_label,
+                                            period="longdelay") if paths else {}
+    for rep_key, suffix in (("fixed_M", "modulation"),
+                            ("fixed_WM", "emodulation"),
+                            ("fixed_hidden", "hidden")):
+        basis = shared_bases.get(rep_key)
+        if basis is None:
+            print(f"  Skipped '{rep_key}': no delayanti delay basis "
+                  f"(need fixed_points_grad_*_delayanti.pkl).")
+            continue
+        render_fn(d, rep_key, OUT_DIR / f"{stem}_{tag}_{suffix}.png", basis)
+
+
+def plot_two_task_interp_alpha_fixed_points_2d():
+    """
+    2D view of the task-interpolation fixed-point figure: per trial period,
+    x = the pro<->anti interpolation level alpha, y = PC1 of the delayanti
+    delay-period basis. Exactly `twotask_interp_alpha_fixed_points_3d` seen
+    straight down its PC2 axis — same panels, same basis, same alpha ramp
+    (dark at alpha=0 -> light at alpha=1), filled = converged / hollow = not — so
+    a fan that splits or merges with alpha reads as a curve instead of as depth in
+    a cube. One figure per representation:
+      twotask_interp_alpha_fixed_points_2d_{seed}_modulation.png  (+ emodulation, hidden)
+    Reads interp_fixed_points_{aname}.pkl (which stores all three representations).
+    """
+    _plot_two_task_interp_alpha_fp(
+        _render_interp_alpha_fp_2d,
+        "twotask_interp_alpha_fixed_points_2d", "twotask-interp-alpha-2d")
+
+
 def plot_two_task_interp_alpha_fixed_points_3d():
     """
     3D figure of the task-interpolation fixed points: per trial period, x = the
@@ -5442,27 +5647,12 @@ def plot_two_task_interp_alpha_fixed_points_3d():
       twotask_interp_alpha_fixed_points_3d_{seed}_modulation.png  (+ emodulation, hidden)
     Reads interp_fixed_points_{aname}.pkl (which stores all three representations).
     """
-    d = _load_twotask_glob_or_skip("interp_fixed_points_*.pkl")
-    if d is None:
-        return
-    tag = _twotask_seed_tag()
-    # Shared x-y (here y-z) basis: delayanti delay-period grad fixed points, one
-    # per representation — identical to the grad-fixed-point 3D figures.
-    paths = _twotask_grad_fp_paths()
-    shared_bases = _twotask_shared_fp_bases(paths, "twotask-interp-alpha",
-                                            period="longdelay") if paths else {}
-    for rep_key, suffix in (("fixed_M", "modulation"),
-                            ("fixed_WM", "emodulation"),
-                            ("fixed_hidden", "hidden")):
-        basis = shared_bases.get(rep_key)
-        if basis is None:
-            print(f"  Skipped '{rep_key}': no delayanti delay basis "
-                  f"(need fixed_points_grad_*_delayanti.pkl).")
-            continue
-        _render_interp_alpha_fp_3d(
-            d, rep_key,
-            OUT_DIR / f"twotask_interp_alpha_fixed_points_3d_{tag}_{suffix}.png",
-            basis)
+    # Shared y-z basis: delayanti delay-period grad fixed points, one per
+    # representation — identical to the grad-fixed-point 3D figures, and to the 2D
+    # view above, which goes through this same driver.
+    _plot_two_task_interp_alpha_fp(
+        _render_interp_alpha_fp_3d,
+        "twotask_interp_alpha_fixed_points_3d", "twotask-interp-alpha")
 
 
 def _interp_alphas_or_default(n_default=11):
@@ -5488,9 +5678,9 @@ def _interp_alphas_or_default(n_default=11):
 
 def plot_two_task_alpha_colorscheme():
     """
-    Illustration: the rule-input alpha color convention used by every two-task
-    task-interpolation figure (`twotask_interp_alpha_fixed_points_3d`,
-    `twotask_interp_alpha_bifurcation{,_hidden}`).
+    Illustration: the rule-input alpha color convention used by the two-task
+    task-interpolation figures (`twotask_interp_alpha_fixed_points_3d` and its 2D
+    view, `twotask_interp_alpha_fixed_points_2d`).
 
     ONE object carries the whole convention — a continuous ramp from the anti rule
     to the pro rule, with the sampled alphas strung along it as the very markers
@@ -5566,91 +5756,6 @@ def plot_two_task_alpha_colorscheme():
     ax.patch.set_visible(False)
     fig.subplots_adjust(left=0.03, right=0.97, top=margin_hi, bottom=margin_lo)
     _save_fig(fig, OUT_DIR / "twotask_alpha_colorscheme.png")
-
-
-def plot_two_task_interp_alpha_bifurcation(period="longstimulus", rep_key="fixed_WM",
-                                           pc=0):
-    """
-    2D bifurcation diagram of the task-interpolation fixed points for a single
-    period/representation: x = the pro<->anti interpolation level alpha, y = one
-    PC of the delayanti delay-period basis (PC1 by default). Each of the 8 stimuli
-    is one line traced across alpha, all in the SAME universal dark→light ramp
-    (`_ALPHA_CMAP`: dark at alpha=0 → light at alpha=1) rather than colored by
-    stimulus, so a fan that collapses/splits as alpha varies reads as a bifurcation
-    of the fixed-point structure. Defaults to the STIMULUS period, effective modulation
-    (W⊙M). Reads interp_fixed_points_{aname}.pkl (which stores all three
-    representations). Writes
-      twotask_interp_alpha_bifurcation_{seed}_{period}_{rep}_pc{pc+1}.png
-    """
-    d = _load_twotask_glob_or_skip("interp_fixed_points_*.pkl")
-    if d is None:
-        return
-    results = d.get("results", {})
-    if period not in results or results[period].get(rep_key) is None:
-        print(f"  Skipped: period '{period}' / '{rep_key}' not in interp pickle "
-              f"(re-run two_task_analysis.py).")
-        return
-    paths = _twotask_grad_fp_paths()
-    shared = _twotask_shared_fp_bases(paths, "twotask-bifurcation",
-                                      period="longdelay") if paths else {}
-    basis = shared.get(rep_key)
-    if basis is None:
-        print(f"  Skipped '{rep_key}': no delayanti delay basis "
-              f"(need fixed_points_grad_*_delayanti.pkl).")
-        return
-
-    alphas = np.asarray(d["alphas"], dtype=float)
-    arr = np.asarray(results[period][rep_key], dtype=float)   # (n_alpha, n_stim, feat)
-    na, n_stim = arr.shape[0], arr.shape[1]
-    proj = basis.transform(arr.reshape(na * n_stim, -1)).reshape(na, n_stim, 2)
-    good = np.asarray(results[period].get("is_fixed",
-                      np.ones((na, n_stim), bool)), dtype=bool)
-
-    # NOT colored by stimulus: one universal dark→light ramp along alpha, the same
-    # scale the 3D interpolation figure uses (_ALPHA_CMAP), so color encodes only
-    # the sweep direction and the fan's splitting/merging is what stands out.
-    t = _alpha_ramp_norm(alphas)
-    line_col = _alpha_ramp_color(0.5)     # mid tone; the markers carry the gradient
-
-    _ensure_out_dir()
-    fig, ax = plt.subplots(1, 1, figsize=(2.6, 2.2))
-    for s in range(n_stim):
-        ax.plot(alphas, proj[:, s, pc], "-", color=line_col, linewidth=1.0,
-                alpha=0.5, zorder=2)
-        for ai in range(na):
-            col = _alpha_ramp_color(t[ai])
-            if good[ai, s]:
-                ax.scatter(alphas[ai], proj[ai, s, pc], color=col, marker="o",
-                           s=16, edgecolor="none", alpha=0.9, zorder=3)
-            else:
-                ax.scatter(alphas[ai], proj[ai, s, pc], facecolor="none",
-                           edgecolor=col, marker="o", s=16, linewidth=0.7,
-                           alpha=0.9, zorder=3)
-    title = _period_display(results[period].get("period_title", period))
-    ax.set_xlabel(r"$\alpha$", fontsize=9)
-    ax.set_ylabel(f"Delay PC{pc + 1}", fontsize=9)
-    ax.set_title(f"{title} bifurcation", fontsize=10)
-    ax.tick_params(labelsize=8)
-    ax.spines[["top", "right"]].set_visible(False)
-    fig.tight_layout()
-    _rep_tag = {"fixed_M": "modulation", "fixed_WM": "emodulation",
-                "fixed_hidden": "hidden"}.get(rep_key, rep_key)
-    # Clean period infix for the filename: drop the internal "long" prefix
-    # ("longstimulus" -> "stimulus") so the name reads as the trial epoch.
-    _period_tag = period[len("long"):] if period.startswith("long") else period
-    out_path = OUT_DIR / (f"twotask_interp_alpha_bifurcation_{_twotask_seed_tag()}"
-                          f"_{_period_tag}_{_rep_tag}_pc{pc + 1}.png")
-    _save_fig(fig, out_path)
-
-
-def plot_two_task_interp_alpha_bifurcation_hidden():
-    """Hidden-state analog of plot_two_task_interp_alpha_bifurcation: the same
-    stimulus-period alpha bifurcation diagram (PC1 of the delayanti delay basis),
-    but for the HIDDEN representation. Writes
-      twotask_interp_alpha_bifurcation_{seed}_stimulus_hidden_pc1.png
-    """
-    plot_two_task_interp_alpha_bifurcation(
-        period="longstimulus", rep_key="fixed_hidden", pc=0)
 
 
 def plot_two_task_fixed_point_stability():
@@ -5770,8 +5875,12 @@ def plot_two_task_d_combine():
         if col == 0:
             _color_period_ticklabels(ax, plabels, axis="y")
 
-    # One shared colorbar for all panels.
-    cb = fig.colorbar(mesh, ax=list(axs), shrink=0.8)
+    # One shared colorbar for all panels. Ticks only at the ends and the middle:
+    # the panels are read for which blocks are bright, not for a cell's exact
+    # value (annot=False above), so three labels carry the scale and the default
+    # denser set only adds clutter. FVE is bounded to [0, 1] and this pickle's
+    # vmin/vmax are exactly that, so all three ticks sit inside the range.
+    cb = fig.colorbar(mesh, ax=list(axs), shrink=0.8, ticks=[0.0, 0.5, 1.0])
     cb.ax.tick_params(labelsize=7)
     out_path = OUT_DIR / f"twotask_d_combine_{_twotask_seed_tag()}.png"
     _save_fig(fig, out_path)
@@ -6443,6 +6552,7 @@ FIGURES_BY_MODE = {
         "onetask_long_fixed_points": plot_onetask_long_fixed_points,
         "onetask_grad_fixed_points": plot_onetask_grad_fixed_points,
         "onetask_grad_fixed_points_3d": plot_onetask_grad_fixed_points_3d,
+        "onetask_rnn_fixed_points_3d": plot_onetask_rnn_fixed_points_3d,
         "onetask_interp_fixed_points": plot_onetask_interp_fixed_points,
         "onetask_fixed_point_stability": plot_onetask_fixed_point_stability,
         "onetask_fixed_point_classification": plot_onetask_fixed_point_classification,
@@ -6494,9 +6604,8 @@ FIGURES_BY_MODE = {
         "twotask_grad_fixed_points_3d": plot_two_task_grad_fixed_points_3d,
         "twotask_interp_fixed_points": plot_two_task_interp_fixed_points,
         "twotask_alpha_colorscheme": plot_two_task_alpha_colorscheme,
+        "twotask_interp_alpha_fixed_points_2d": plot_two_task_interp_alpha_fixed_points_2d,
         "twotask_interp_alpha_fixed_points_3d": plot_two_task_interp_alpha_fixed_points_3d,
-        "twotask_interp_alpha_bifurcation": plot_two_task_interp_alpha_bifurcation,
-        "twotask_interp_alpha_bifurcation_hidden": plot_two_task_interp_alpha_bifurcation_hidden,
         "twotask_fixed_point_stability": plot_two_task_fixed_point_stability,
         "twotask_fixed_point_classification": plot_two_task_fixed_point_classification,
         "twotask_w_gram_matrix": plot_two_task_w_gram_matrix,

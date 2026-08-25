@@ -10,20 +10,15 @@ import time
 import random
 import sys
 
-def get_rules(ruleset):
-    return rules_dict[ruleset]
-
-# def get_num_ring(ruleset):
-#     '''get number of stimulus rings'''
-#     return 3 if ruleset=='oicdmc' else 2
-
-def get_num_rule(ruleset):
-    '''get number of rules'''
-    return len(rules_dict[ruleset])
-
-def get_rule_index(rule, config):
-    '''get the input index for the given rule'''
-    return rule_index_map[config['ruleset']][rule]+config['rule_start']
+# NB there is deliberately no `get_rules` / `get_num_rule` / `get_rule_index`
+# here. They used to look a ruleset up in module-level `rules_dict` /
+# `rule_index_map` tables, but those tables are long gone from this file, so the
+# three functions could only ever raise NameError; nothing in the repo called
+# them (their two call sites are commented out, each with a working replacement
+# on the next line). The ruleset -> rules mapping now lives in each TRAINING
+# script's own `rules_dict` (one_task.py, two_task.py, multiple_task.py,
+# flex_task*.py) and reaches the task code as `config['rules']`, which is also
+# what a rule's input index is derived from: `config['rules'].index(rule)`.
 
 def get_prefs(config):
     """ Perferred locations given the config, used in trial and also used for computing accuracy"""
@@ -211,7 +206,7 @@ class Trial(object):
         if isinstance(rule, int):
             self.x[on:off, :, self.config['rule_start']+rule] = strength
         else:
-            # ind_rule = get_rule_index(rule, self.config)
+            # Rule index = its position in the configured rule list.
             ind_rule = self.config['rules'].index(rule)
             self.x[on:off, :, self.config['rule_start']+ind_rule] = strength
 
@@ -1757,7 +1752,6 @@ def convert_and_init_multitask_params(params):
     """
     task_params, train_params, net_params = params
 
-    # task_params['rules'] = get_rules(task_params['ruleset'])
     num_ring = 2 if 'oic' not in task_params['rules'] else 3
     n_rule = len(task_params['rules']) 
     task_params['n_rules'] = n_rule
@@ -1939,9 +1933,13 @@ def generate_trials_wrap(task_params,
         if verbose:
             print('Rule: {}'.format(rules[0]))
     elif type(rules) == str: # Single rule passed in as string
-        assert rule in task_params['rules']
+        # NB the index is taken BEFORE `rules` is wrapped into a tuple: these two
+        # lines used to say `rule` (singular), a name that does not exist here, so
+        # passing a bare string raised NameError. Every caller in the repo passes
+        # a list, which is why it went unnoticed.
+        assert rules in task_params['rules']
+        rule_idxs = (task_params['rules'].index(rules),)
         rules = (rules,)
-        rule_idxs = (task_params['rules'].index(rule),)
     elif type(rules) == tuple or type(rules) == list: # Many rules together
         rule_idxs = []
         for rule in rules:

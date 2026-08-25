@@ -31,6 +31,11 @@ Reloading the trained checkpoint (savednet_{aname}.pt) as well:
    delay-period PCA.
 10. TRUE gradient fixed points M* = F(M*; x) over a dense 64-angle stimulus
     ring, solved by core/grad_fixed_points.py — the continuous-attractor probe.
+    Not one solve per period but a BATTERY: each period under its own input from
+    its own end state, plus the same inputs re-solved from a memory-carrying
+    state, from the recorded M(t) jittered, and from stimulus-free random states,
+    since a probe seeded on the trajectory can only re-find what the trajectory
+    already reached.
 11. Fixed-point stability classification (`classify_fixed_point_stability`):
     the saved spectrum re-packaged into stable / marginal / unstable.
 
@@ -102,8 +107,11 @@ def _generate_random_orthonormal_matrix(N, num_columns=3):
     return Q[:, :num_columns]
 
 
-def _rebuild_net(net_params, device):
-    """Instantiate the network class implied by net_params (no weights loaded)."""
+def _rebuild_net(net_params):
+    """Instantiate the network class implied by net_params (no weights loaded).
+
+    No `device` argument: the constructors read it from net_params themselves and
+    the caller moves the net afterwards."""
     if net_params['net_type'] == 'mpn1':
         netFunction = mpn.MultiPlasticNet
     elif net_params['net_type'] == 'dmpn':
@@ -134,7 +142,7 @@ def long_period_fixed_points(aname, save_dir, cfg,
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     net_params_ckpt = ckpt["net_params"]
-    net = _rebuild_net(net_params_ckpt, device)
+    net = _rebuild_net(net_params_ckpt)
     net.load_state_dict(ckpt["state_dict"])
     net.to(device)
     net.eval()
@@ -327,7 +335,15 @@ def long_period_fixed_points(aname, save_dir, cfg,
                 # fixed-point set instead of re-finding the solution the trial
                 # visited. Set False to skip; each is one extra 64-point solve,
                 # on the selected template seed only.
-                cross_seed_probes=True, naive_seed_probes=True)
+                cross_seed_probes=True, naive_seed_probes=True,
+                # traj_seed_probes: the same inputs solved from the M matrices the
+                # network actually visits, jittered, half pulled toward the mean M.
+                # Unlike the naive battery this does not rely on the rank-one
+                # family being the solution set — the modulation bounds break that
+                # — and it is the only probe that can reach a fixed point no
+                # trajectory passes through. One extra 64-point solve per distinct
+                # input, on the selected template seed only.
+                traj_seed_probes=True)
         except Exception as exc:
             print(f"  [grad-fp] failed: {exc}")
             import traceback
@@ -615,10 +631,20 @@ def classify_fixed_point_stability(aname, save_dir):
     No recomputation — this re-packages the per-point spectral radius ρ = max|λ|
     and the marginal tolerance into an explicit 3-way class, per trial period:
       unstable  ρ > 1 + tol      (an expanding direction)
-      marginal  |ρ − 1| ≤ tol    (neutral direction — the ring-attractor signature)
+      marginal  |ρ − 1| ≤ tol    (a neutral direction)
       stable    ρ < 1 − tol      (all directions contracting)
     Only converged fixed points (is_fixed) are classified; non-converged points
     are reported separately so they don't masquerade as stable.
+
+    Read "marginal" carefully here: it is NOT by itself the ring-attractor
+    signature. The modulation Jacobian is λI + (1−λ)·∂M_target/∂M, so with the
+    default λ = 0.9 every direction that does not move the hidden state already
+    sits at ρ = λ, the band |ρ − 1| ≤ tol is really |μ − 1| ≤ 10·tol on the
+    undamped map, and a plainly expanding μ = 1.4 lands inside it. The solver
+    saves `spectral_radius_undamped` and `n_marginal_leak_only` (see
+    grad_fixed_points._decay_factor) precisely so that can be checked rather than
+    assumed; this classifier deliberately keeps the raw ρ so its classes stay
+    comparable with older pickles.
 
     Writes fixed_point_classification_{aname}.pkl (arrays for paper_plot) and a
     human-readable .csv (one row per period × fixed point). Skips gracefully if

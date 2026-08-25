@@ -2460,7 +2460,11 @@ def main(aname, fp_n_seeds=5, interp_n_alpha=10, run_fixed_points=True):
                     # random seeds under every distinct period input — see
                     # grad_fixed_points._extra_probes. One extra 64-point solve
                     # each per rule, on the selected seed only.
-                    cross_seed_probes=True, naive_seed_probes=True)
+                    cross_seed_probes=True, naive_seed_probes=True,
+                    # Plus the trajectory-seeded probe per distinct input — see
+                    # grad_fixed_points._trajectory_M_seeds. Reaches fixed points
+                    # off the recorded path, including the interior of a ring.
+                    traj_seed_probes=True)
             except Exception as exc:
                 print(f"  [grad-fp/{_rule}] failed: {exc}")
                 import traceback

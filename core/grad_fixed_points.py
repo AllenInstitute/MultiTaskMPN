@@ -36,10 +36,21 @@ Two things follow, and the solver reports both rather than assuming them:
   * each probe's `across_angle_spread` says whether it found ONE fixed point
     (≈0, which the fixation probe must return by construction) or a manifold.
 
-The off-diagonal probes then vary only the seed: a memory-carrying state, and
-random rank-one states that carry no stimulus information at all — the latter for
-every distinct input, since a diagonal probe only ever re-finds the one solution
-its own trajectory reached, while random seeds sample the whole solution set.
+The off-diagonal probes then vary only the seed, one per distinct input, since a
+diagonal probe only ever re-finds the one solution its own trajectory reached:
+  * a memory-carrying state (the end of the delay);
+  * the recorded M(t), jittered, half of it pulled toward the mean M — the only
+    probe that can reach a fixed point no trajectory passes through, e.g. the
+    interior of a ring;
+  * random rank-one states carrying no stimulus information at all.
+
+The rank-one battery came first and rests on M* = [eta/(1-lam)] h* x', which is
+exact only while the modulation BOUNDS are slack. They are not: on a solved
+delaygo run 3-9% of the entries sit at the bound and the top singular value
+carries 78-83% of the spectrum rather than ~100%, so the true solutions are
+rank-one on their interior support and clamped elsewhere, and the rank-one family
+does not contain them. That is why the trajectory-seeded probe exists, and why it
+is the one to trust when the two disagree.
 
 Results are pickled to `fixed_points_grad_{aname}{out_suffix}.pkl`. The
 `out_suffix` lets a multi-rule caller (two-task) write one file per rule.
@@ -74,6 +85,11 @@ _PERIOD_TITLE = {
 # midpoint); `seed_source` picks where the optimizer starts. A seed source is
 # either a period name (that period's LAST recorded M) or the special token below.
 _NAIVE_RANK1 = "naive_rank1"     # random rank-one M, no stimulus information
+_TRAJ_SEED = "traj_noise"        # recorded M(t) + jitter (Sussillo & Barak)
+# Both synthesize their seeds instead of reading one recorded step, so for both
+# `stim` is only a seed index and the points must be coloured by where they
+# LANDED (ring_angle_idx), not by a stimulus they never carried.
+_SYNTH_SEEDS = (_NAIVE_RANK1, _TRAJ_SEED)
 
 # Off-diagonal probes:
 #   *_memseed    the FIXATION input seeded from the end of the DELAY — a state
@@ -111,6 +127,12 @@ def _naive_probe(period):
             f"{_PERIOD_TITLE.get(period, period)} (naive seeds)")
 
 
+def _traj_probe(period):
+    """The trajectory-seed probe for one period's constant input."""
+    return (f"{period}_trajseed", period, _TRAJ_SEED,
+            f"{_PERIOD_TITLE.get(period, period)} (trajectory seeds)")
+
+
 def _same_input_groups(input_info, tol=0.0):
     """Group period names by IDENTICAL constant input, e.g.
     [["longfixation", "longdelay"], ["longstimulus"], ["longresponse"]].
@@ -133,24 +155,29 @@ def _same_input_groups(input_info, tol=0.0):
 
 
 def _extra_probes(present, input_info, cross_seed_probes=True,
-                  naive_seed_probes=True, tag=""):
+                  naive_seed_probes=True, traj_seed_probes=True, tag=""):
     """The off-diagonal battery for the periods actually solved (`present`).
 
-    One naive probe per DISTINCT input rather than per period: with fixation ≡
-    delay the delay naive probe would repeat the fixation one, and the skip is
-    decided from the measured distances so it self-corrects on other tasks."""
+    One synthesized-seed probe per DISTINCT input rather than per period: with
+    fixation ≡ delay the delay probes would repeat the fixation ones, and the
+    skip is decided from the measured distances so it self-corrects on other
+    tasks."""
     extra = []
     if cross_seed_probes and {"longfixation", "longdelay"} <= set(present):
         extra.append(_MEMSEED_PROBE)
-    if naive_seed_probes:
+    if naive_seed_probes or traj_seed_probes:
         for g in _same_input_groups(input_info):
             g_here = [v for v in g if v in present]
             if not g_here:
                 continue
-            extra.append(_naive_probe(g_here[0]))
+            if traj_seed_probes:
+                extra.append(_traj_probe(g_here[0]))
+            if naive_seed_probes:
+                extra.append(_naive_probe(g_here[0]))
             if len(g_here) > 1 and tag:
-                print(f"  {tag} naive probe for {g_here[1:]} skipped: same input "
-                      f"as {g_here[0]}, so it would be the identical solve.")
+                print(f"  {tag} synthesized-seed probes for {g_here[1:]} skipped: "
+                      f"same input as {g_here[0]}, so they would be the identical "
+                      f"solve.")
     return extra
 
 
@@ -229,6 +256,88 @@ def _naive_rank1_seeds(n, x_embed, mp, seed=0):
         fit = np.minimum(1.0, room.reshape(M0.shape[0], -1).min(axis=1))
         M0 = M0 * fit[:, None, None]
     return M0.astype(np.float32), fit
+
+
+def _trajectory_M_seeds(n, M_all, mp, noise_frac=0.25, seed=0):
+    """`n` seeds drawn from the modulation matrices the network ACTUALLY visits.
+
+    The canonical Sussillo & Barak (2013) sampler, moved to M. It exists because
+    `_naive_rank1_seeds`'s justification does not survive contact with this
+    network on two counts:
+
+      * The rank-one family is NOT the family of solutions once the modulation
+        BOUNDS bite. The true equation is M* = clamp(lam*M* + eta*h*x'), so
+        interior entries obey the rank-one relation while saturated ones sit at
+        +/- the bound, and the sum is not rank one. Measured on a solved
+        delaygo run: 3-9% of entries at the bound and the top singular value
+        carries only 78-83% of the spectrum, not ~100%.
+      * Even where the family is right, drawing v uniformly in R^n_hidden samples
+        it about as thinly as any uniform draw in a few hundred dimensions does.
+
+    These seeds start from states the dynamics genuinely occupy instead, in two
+    halves:
+      * RECORDED M(t) drawn uniformly over (stimulus, time), plus Gaussian
+        jitter. The jitter is what lets the optimizer leave the trajectory and
+        settle on the saddles and repellers between attractors.
+      * the same matrices pulled a RANDOM fraction of the way toward the MEAN
+        recorded M, which is the only thing in the battery that ever seeds the
+        INTERIOR of a ring — no trajectory passes through it.
+
+    Seeds are CLIPPED to the layer's modulation bounds, not rescaled the way the
+    rank-one seeds are. Rescaling exists there to preserve a global rank-one sign
+    pattern; these seeds are not rank one to begin with, and the solutions they
+    aim at have their largest entries pinned AT the bound, so shrinking the whole
+    matrix would start them systematically small.
+
+    noise_frac : jitter sigma as a fraction of the per-entry std across all
+                 recorded matrices, so the scale follows the network.
+
+    Returns (M0, how) with `how` describing the draw, for the caller to print.
+    """
+    rng = np.random.RandomState(int(seed))
+    M = np.asarray(M_all, dtype=np.float64)
+    flat = M.reshape(-1, *M.shape[-2:])                     # (stim*T, post, pre)
+    base = flat[rng.randint(0, flat.shape[0], size=int(n))]
+    n_pull = int(n) // 2
+    if n_pull:
+        mu = flat.mean(axis=0)
+        frac = rng.uniform(0.0, 1.0, size=(n_pull, 1, 1))
+        base[:n_pull] = mu[None] + frac * (base[:n_pull] - mu[None])
+    base = base + noise_frac * flat.std(axis=0)[None] * rng.randn(*base.shape)
+
+    clipped = 0.0
+    if getattr(mp, "modulation_bounds", False):
+        hi = mp.M_bounds[0].detach().cpu().numpy()
+        lo = mp.M_bounds[1].detach().cpu().numpy()
+        out = (base > hi[None]) | (base < lo[None])
+        clipped = float(out.mean())
+        base = np.clip(base, lo[None], hi[None])
+    return (base.astype(np.float32),
+            f"{int(n) - n_pull} recorded + {n_pull} pulled toward the mean, "
+            f"jitter {noise_frac:g}x per-entry std, {100 * clipped:.1f}% of "
+            f"entries clipped to the modulation bounds")
+
+
+def _decay_factor(mp):
+    """(lam, 1 - lam) for the modulation update M <- lam*M + eta*h*x', as
+    representative scalars (the median over entries when lam is a vector or a
+    full matrix).
+
+    Both the residual and the Jacobian spectrum are compressed by (1 - lam):
+
+        F(M) - M = -(1 - lam)M + eta*h*x' = (1 - lam)[M_target(M) - M]
+        J = lam*I + (1 - lam) * d M_target / d M   =>   lam_J = lam + (1 - lam)mu
+
+    With the default m_time_scale = 400 ms and dt = 40 ms, lam = 0.9, so the
+    factor is 0.1: a residual reads TEN times more converged than the underlying
+    map warrants, and the marginal band |lam_J - 1| <= tol is really
+    |mu - 1| <= 10*tol. The RNN counterpart has 1 - alpha = 0.2, a different
+    factor, so rel_step is NOT comparable between the two models. Nothing here
+    changes a threshold; the normalized twins are recorded beside the raw ones so
+    the looseness is visible instead of implicit."""
+    lam = mp.build_M_parameter(mp.lam, mp.lam_type).detach().cpu().numpy()
+    lam_med = float(np.median(np.atleast_1d(lam)))
+    return lam_med, max(1.0 - lam_med, 1e-12)
 
 
 def _annotate_ring_distance(results, probe_name, ref_names):
@@ -339,7 +448,8 @@ def solve_period_modulation_fixed_points(
         stim_channels=None, periods=None, save_all_trajectories=False,
         n_seeds=5, seed_base=0,
         analyze_stability=True, n_eigs=16,
-        cross_seed_probes=True, naive_seed_probes=True, naive_rng_seed=0):
+        cross_seed_probes=True, naive_seed_probes=True,
+        traj_seed_probes=True, traj_noise_frac=0.25, naive_rng_seed=0):
     """
     Solve TRUE gradient fixed points of the modulation matrix M per trial period.
 
@@ -416,8 +526,18 @@ def solve_period_modulation_fixed_points(
                   rather than re-finding the one solution the trial visits.
                   Periods sharing an input get a single probe (see
                   _same_input_groups).
-    naive_rng_seed : RNG seed for those random seeds (reproducibility).
-                  Both probe batteries are solved ONCE, on the selected template
+    traj_seed_probes : add one "{period}_trajseed" probe per DISTINCT period
+                  input — solved from the modulation matrices the network actually
+                  visits, jittered, half of them pulled toward the mean recorded M
+                  (_trajectory_M_seeds). This is the probe that reaches fixed
+                  points no trajectory passes through, and unlike the naive
+                  battery it does not depend on the rank-one family being the
+                  solution set — which the modulation BOUNDS break (measured:
+                  3-9% of entries at the bound, top singular value carrying only
+                  78-83% of the spectrum).
+    traj_noise_frac : jitter for those seeds, as a fraction of the per-entry std.
+    naive_rng_seed : RNG seed for the synthesized batteries (reproducibility).
+                  All the off-diagonal probes are solved ONCE, on the selected
                   seed only: the selection score looks at the stimulus and
                   response periods, so solving them per candidate seed would cost
                   n_seeds× for nothing.
@@ -425,6 +545,18 @@ def solve_period_modulation_fixed_points(
     Writes fixed_points_grad_{aname}{out_suffix}.pkl and returns its path (or None
     if no period could be solved).
     """
+    # Decay factor, for the normalized twins of the convergence and stability
+    # numbers. Stated once, up front, because every rel_step and every |lam_J - 1|
+    # below is damped by it.
+    decay_lam, decay_leak = _decay_factor(net.mp_layers[0])
+    tag_pre = f"[grad-fp/{rule}]" if rule else "[grad-fp]"
+    print(f"  {tag_pre} decay: lam={decay_lam:.3f}, 1-lam={decay_leak:.3f} — both "
+          f"the residual and the eigenvalue band are compressed by that factor, "
+          f"so rel_tol={rel_tol:g} is {rel_tol / decay_leak:.3g} on the undamped "
+          f"map and every threshold below reads {1.0 / decay_leak:.1f}x tighter "
+          f"than it is. Undamped twins are printed and saved beside the damped "
+          f"numbers.")
+
     def _hidden_from_M(M_np, x_np):
         """Hidden state and cos-output readout produced by setting the layer's
         modulation to M_np and running one forward pass under input x_np. M is
@@ -599,7 +731,13 @@ def solve_period_modulation_fixed_points(
             const_input = batch[:, t_mid, :]
             # Seed: a period's end state, or synthesized seeds carrying no
             # stimulus information (t_seed = -1 marks "not from a recorded step").
-            if seed_src == _NAIVE_RANK1:
+            if seed_src == _TRAJ_SEED:
+                t_seed = -1
+                init_M, how = _trajectory_M_seeds(
+                    n_interp, M_all, net.mp_layers[0],
+                    noise_frac=traj_noise_frac, seed=naive_rng_seed)
+                print(f"  {tag} {name}: seeds drawn {how}")
+            elif seed_src == _NAIVE_RANK1:
                 if x_embed_all is None:
                     print(f"  {tag} {name}: db has no '{_x_key}' (embedded MP-layer "
                           f"input), so naive rank-one seeds cannot be built; "
@@ -664,9 +802,18 @@ def solve_period_modulation_fixed_points(
             m_norm = np.maximum(np.linalg.norm(fm, axis=1), 1e-12)
             rel_step = step_norm / m_norm
             is_fixed = rel_step <= rel_tol
+            # Decay-normalized twin (see _decay_factor): the measured residual is
+            # damped by (1 - lam), so with lam = 0.9 every point reads ten times
+            # more converged than the underlying map warrants. rel_tol is
+            # deliberately NOT changed — it keeps one meaning across this
+            # codebase and across the saved pickles — but the normalized number
+            # is recorded and printed beside it.
+            rel_step_undamped = rel_step / decay_leak
             print(f"  {tag} seed={task_seed} {name}: {int(is_fixed.sum())}/{is_fixed.size} "
                   f"converged (rel_step<= {rel_tol:g}); "
-                  f"median {np.median(rel_step):.2e} max {rel_step.max():.2e}")
+                  f"median {np.median(rel_step):.2e} max {rel_step.max():.2e}"
+                  f" | undamped median {np.median(rel_step_undamped):.2e} "
+                  f"max {rel_step_undamped.max():.2e}")
 
             results[name] = {
                 "period_title": title,
@@ -679,7 +826,7 @@ def solve_period_modulation_fixed_points(
                 # `stim` is the dense stimulus-angle index for period-seeded
                 # probes. Naive seeds carry no stimulus, so there it is only a
                 # seed index — colour those points by ring_angle_idx instead.
-                "stim_is_stimulus": bool(seed_src != _NAIVE_RANK1),
+                "stim_is_stimulus": bool(seed_src not in _SYNTH_SEEDS),
                 "period": (int(ps), int(pe)),
                 "t_seed": int(t_seed),
                 "t_input": int(t_mid),
@@ -691,6 +838,11 @@ def solve_period_modulation_fixed_points(
                 "fixed_out_cos": np.asarray(fixed_out_cos, dtype=np.float32),
                 "final_speeds": np.asarray(final_speeds, dtype=float),
                 "rel_step": np.asarray(rel_step, dtype=float),
+                # The same residual relative to the UNDAMPED map, i.e. divided by
+                # (1 - lam). See _decay_factor.
+                "rel_step_undamped": np.asarray(rel_step_undamped, dtype=float),
+                "lam": float(decay_lam),
+                "leak": float(decay_leak),
                 "is_fixed": np.asarray(is_fixed, dtype=bool),
                 "rel_tol": float(rel_tol),
                 "loss_hist": np.asarray(loss_hist, dtype=float),
@@ -765,7 +917,8 @@ def solve_period_modulation_fixed_points(
     groups = _same_input_groups(input_info)
     extra = _extra_probes(list(results), input_info,
                           cross_seed_probes=cross_seed_probes,
-                          naive_seed_probes=naive_seed_probes, tag=tag)
+                          naive_seed_probes=naive_seed_probes,
+                          traj_seed_probes=traj_seed_probes, tag=tag)
     if extra:
         print(f"  {tag} solving {len(extra)} multistability probe(s) on the "
               f"selected seed={best_seed}: {[p[0] for p in extra]}")
@@ -778,7 +931,7 @@ def solve_period_modulation_fixed_points(
             # fixation point and the delay ring — different questions, both worth
             # asking).
             for p in extra:
-                if p[2] != _NAIVE_RANK1 or p[0] not in results:
+                if p[2] not in _SYNTH_SEEDS or p[0] not in results:
                     continue
                 grp = next((g for g in groups if p[1] in g), [p[1]])
                 refs = [v for v in grp
@@ -816,16 +969,42 @@ def solve_period_modulation_fixed_points(
                 "stab_is_stable": stab["is_stable"],
                 "marginal_tol": stab["marginal_tol"],
             })
+            # Decay-normalized spectrum. lam_J = lam + (1 - lam)mu, so
+            # |lam_J - 1| = (1 - lam)|mu - 1| and the marginal band is ten times
+            # wider than it reads at lam = 0.9. Two consequences worth having as
+            # numbers: `n_marginal_leak_only` counts directions that are marginal
+            # ONLY because of the decay (|mu - 1| is outside the band), and mu
+            # exposes that the M-dynamics' BULK spectrum sits at lam by
+            # construction — every direction that does not move h has mu = 0 and
+            # lam_J = lam — so "spectral radius < 1" is far weaker evidence here
+            # than the same sentence about a vanilla RNN.
+            ev = np.asarray(stab["eigenvalues"])
+            mtol = float(stab["marginal_tol"])
+            mu = (ev - decay_lam) / decay_leak
+            leak_only = (np.abs(ev - 1.0) <= mtol) & (np.abs(mu - 1.0) > mtol)
+            e.update({
+                "eigenvalues_undamped": mu,
+                "spectral_radius_undamped": np.abs(mu).max(axis=-1),
+                "n_marginal_leak_only": leak_only.sum(axis=-1),
+            })
             rad = stab["spectral_radius"]
             print(f"  {tag} {v}: spectral radius median {np.nanmedian(rad):.3f} "
                   f"(max {np.nanmax(rad):.3f}); "
                   f"{int(stab['is_stable'].sum())}/{stab['is_stable'].size} stable, "
                   f"marginal-dir median {int(np.median(stab['n_marginal']))}")
+            print(f"  {tag} {v}: undamped spectral radius median "
+                  f"{np.nanmedian(e['spectral_radius_undamped']):.3f}; of the "
+                  f"marginal directions, a median of "
+                  f"{int(np.median(e['n_marginal_leak_only']))} are marginal ONLY "
+                  f"because of the decay (|mu-1| > {mtol:g})")
 
     out_pkl = save_dir / f"fixed_points_grad_{aname}{out_suffix}.pkl"
     with open(out_pkl, "wb") as _f:
         pickle.dump({"aname": aname, "rule": rule, "n_interp": int(n_interp),
                      "rel_tol": float(rel_tol),
+                     # Modulation decay, so a reader can undo the damping of
+                     # rel_step and of the eigenvalue band (see _decay_factor).
+                     "lam": float(decay_lam), "leak": float(decay_leak),
                      "n_seeds": int(n_seeds), "selected_seed": int(best_seed),
                      "selection_score": float(best_score),
                      "angles": np.asarray(angles, dtype=float),

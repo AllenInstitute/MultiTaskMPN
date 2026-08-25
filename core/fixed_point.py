@@ -347,3 +347,261 @@ def find_modulation_fixed_points(network, init_M, inputs, steps=2000,
         inputs, steps, learningRate=learningRate, printPeriod=printPeriod,
         lbfgs_steps=lbfgs_steps, loss_tol=loss_tol)
     return fixed_M.cpu().numpy(), loss_hist, final_speeds
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Hidden-state fixed points (vanilla RNN / GRU)
+# ═════════════════════════════════════════════════════════════════════════════
+# The MPN's state is the modulation matrix M, so everything above solves
+# M* = F(M*; x). A vanilla RNN has no M — its state is the HIDDEN VECTOR, and the
+# same question becomes h* = F(h*; x) with
+#     F(h; x) = alpha*h + (1-alpha)*act(W_rec h + W_input x + b_input + b_hidden)
+# (the leaky update in networks.VanillaRNN.forward; alpha = 0 for a non-leaky
+# net). The classes below mirror the modulation ones one-for-one so the two
+# analyses can be read side by side.
+
+
+class HiddenFixedPointNetwork(nn.Module):
+    """
+    Finds fixed points of an RNN's HIDDEN state under a constant input.
+
+    The trained network's weights are frozen; the trainable parameters are a
+    batch of candidate hidden vectors (`self.states`, shape (B, n_hidden)). One
+    forward pass applies a single network update under the constant input and
+    returns the resulting hidden state; minimizing MSE(F(h), h) drives the batch
+    toward fixed points. Direct analog of `ModulationFixedPointNetwork`.
+    """
+
+    def __init__(self, network, init_states):
+        """
+        network     : a trained VanillaRNN / GRU (its parameters are frozen).
+        init_states : (B, n_hidden) initial candidate hidden vectors, e.g. the
+                      recorded hidden state at the end of a trial period.
+        """
+        super().__init__()
+        self.eval()
+        self.name = self.__class__.__name__
+
+        # `network.hidden` is a live tensor from earlier forward passes and may
+        # carry a graph, which deepcopy cannot follow. Swap it for a detached
+        # leaf while copying, then put the caller's tensor back untouched — the
+        # same dance ModulationFixedPointNetwork does for mp.M.
+        stashed = getattr(network, "hidden", None)
+        if isinstance(stashed, torch.Tensor):
+            network.hidden = stashed.detach().clone()
+        try:
+            net_fzn = copy.deepcopy(network)
+        finally:
+            if isinstance(stashed, torch.Tensor):
+                network.hidden = stashed
+
+        for param in net_fzn.parameters():
+            param.requires_grad = False
+        net_fzn.eval()
+        self.net = net_fzn
+
+        init = torch.as_tensor(np.asarray(init_states), dtype=torch.float)
+        assert init.dim() == 2, (
+            f"init_states must be (B, n_hidden); got shape {tuple(init.shape)}")
+        self.states = nn.Parameter(init.clone())
+
+        print("FP Network - NetType: {}, States (h) size: {}".format(
+            type(net_fzn).__name__, tuple(self.states.shape)))
+
+    # ── One update step of h under a constant input ──────────────────────────
+    def _step_h(self, inputs, current_states):
+        """
+        Return F(h; x): the hidden state after ONE network step, starting from
+        `current_states` (B, n_hidden) under constant input `inputs`
+        (B, n_input). The layer's stored hidden state is restored afterward so
+        repeated calls are side-effect free.
+
+        Calls `forward` rather than `network_step`: the latter also assigns
+        self.hidden and may call state_detach() (tbptt), which would cut the
+        gradient path back to `self.states`.
+        """
+        saved_hidden = self.net.hidden
+        # Assign a TENSOR, not the nn.Parameter itself (see the note in
+        # ModulationFixedPointNetwork._step_M); the *1.0 keeps it grad-tracking.
+        self.net.hidden = current_states * 1.0
+        _, next_h, _ = self.net.forward(inputs, run_mode="minimal")
+        self.net.hidden = saved_hidden
+        return next_h
+
+    def forward(self, inputs, current_states=None):
+        """One-step update of h. Uses the optimized `self.states` by default, or
+        `current_states` if provided. Returns the next hidden state (B, n_hidden)."""
+        states = self.states if current_states is None else current_states
+        return self._step_h(inputs, states)
+
+    # ── Speeds q(h) = 1/2 ||F(h) - h||^2 ─────────────────────────────────────
+    def get_speeds(self, inputs, current_states=None):
+        """Per-point speed q(h) for the batch (numpy, shape (B,)); the norm runs
+        over the hidden dimension."""
+        with torch.no_grad():
+            ref = self.states if current_states is None else current_states
+            next_state = self(inputs, current_states=current_states)
+            return (0.5 * torch.norm(next_state - ref, dim=1) ** 2).cpu().numpy()
+
+    def _speed_loss(self, inputs):
+        """MSE(F(h), h): minimizing it drives the total speed q(h) to zero."""
+        next_state = self(inputs)
+        return F.mse_loss(next_state, self.states, reduction="mean")
+
+    def find_fixed_points(self, inputs, steps, learningRate=1e-3, printPeriod=200,
+                          lbfgs_steps=500, loss_tol=1e-8):
+        """
+        Descend the candidate hidden states toward fixed points under the
+        constant input `inputs` (B, n_input). Two stages, identical in spirit to
+        `ModulationFixedPointNetwork.find_fixed_points`:
+          1. Adam until the MSE speed loss reaches `loss_tol`, capped at `steps`
+             (so `steps` is a MAX-iteration cap, not a fixed count);
+          2. L-BFGS polishing (strong-Wolfe), the Sussillo & Barak refinement,
+             which drives q(h*) orders of magnitude below what Adam reaches.
+
+        Returns (states, loss_hist, final_speeds).
+        """
+        inputs = torch.as_tensor(np.asarray(inputs), dtype=torch.float,
+                                 device=self.states.device)
+
+        init_speeds = self.get_speeds(inputs)
+        print("Init speeds - Max: {:.2e} / Min: {:.2e}".format(
+            float(np.max(init_speeds)), float(np.min(init_speeds))))
+
+        self.optimizer = torch.optim.Adam([self.states], lr=learningRate)
+        loss_hist = []
+        last_loss = float("inf")
+        for step in range(steps):
+            self.optimizer.zero_grad()
+            loss = self._speed_loss(inputs)
+            loss_val = loss.item()
+            loss_hist.append(loss_val)
+            last_loss = loss_val
+            loss.backward()
+            self.optimizer.step()
+            if step % printPeriod == 0:
+                print("  [adam] Step {} - Loss: {:.3e}".format(step, loss_val))
+            if loss_tol and loss_val <= loss_tol:
+                print("  [adam] converged: Step {} - Loss: {:.3e} "
+                      "(<= tol {:.1e})".format(step, loss_val, loss_tol))
+                break
+        else:
+            if loss_tol:
+                print("  [adam] hit max steps ({}) without reaching tol {:.1e}; "
+                      "last loss {:.3e}".format(steps, loss_tol, last_loss))
+
+        if lbfgs_steps and lbfgs_steps > 0:
+            lbfgs = torch.optim.LBFGS(
+                [self.states], max_iter=int(lbfgs_steps), lr=1.0,
+                tolerance_grad=1e-16, tolerance_change=1e-18,
+                history_size=50, line_search_fn="strong_wolfe")
+
+            def _closure():
+                lbfgs.zero_grad()
+                loss = self._speed_loss(inputs)
+                loss.backward()
+                return loss
+
+            lbfgs.step(_closure)
+
+        final_speeds = self.get_speeds(inputs)
+        print("Final speeds - Max: {:.2e} / Min: {:.2e}".format(
+            float(np.max(final_speeds)), float(np.min(final_speeds))))
+
+        return self.states.detach(), loss_hist, final_speeds
+
+
+def find_hidden_fixed_points(network, init_h, inputs, steps=2000,
+                             learningRate=1e-3, printPeriod=200,
+                             lbfgs_steps=500, loss_tol=1e-8, device=None):
+    """
+    Convenience wrapper: build a HiddenFixedPointNetwork seeded at `init_h` and
+    optimize it under constant `inputs`. The hidden-state counterpart of
+    `find_modulation_fixed_points`.
+
+    network : trained VanillaRNN / GRU.
+    init_h  : (B, n_hidden) initial hidden vectors (e.g. the recorded state at a
+              period's end), one per candidate / stimulus.
+    inputs  : (B, n_input) constant per-candidate input held fixed during the
+              relaxation (e.g. the delay-period input for a memory fixed point).
+    Returns (fixed_h, loss_hist, final_speeds) with fixed_h as a numpy array.
+    """
+    fpn = HiddenFixedPointNetwork(network, init_h)
+    if device is not None:
+        fpn.to(device)
+        fpn.states.data = fpn.states.data.to(device)
+    fixed_h, loss_hist, final_speeds = fpn.find_fixed_points(
+        inputs, steps, learningRate=learningRate, printPeriod=printPeriod,
+        lbfgs_steps=lbfgs_steps, loss_tol=loss_tol)
+    return fixed_h.cpu().numpy(), loss_hist, final_speeds
+
+
+def characterize_hidden_fixed_point_stability(network, fixed_h, inputs,
+                                              k=16, marginal_tol=5e-2,
+                                              device=None):
+    """
+    Linear-stability analysis of hidden-state fixed points (Sussillo & Barak
+    2013): linearize F(h; x) about each h* and read stability off the Jacobian
+    eigenvalues.
+
+    Unlike the modulation case — where the state has post*pre ≈ 10^4-10^5 dims
+    and the Jacobian must be handled matrix-free — the hidden state is only
+    n_hidden (a few hundred) dims, so J is formed DENSELY here and the FULL
+    spectrum is computed exactly. No ARPACK, no k < n-1 restriction; `k` only
+    decides how many of the leading eigenvalues are reported back.
+
+    Discrete-map reading of the eigenvalues λ:
+      |λ| < 1 contracting, |λ| > 1 expanding; spectral_radius = max|λ| < 1 ⇒ an
+      attracting fixed point. A lone marginal direction (|λ − 1| < marginal_tol)
+      with everything else contracting is the ring-attractor signature — the free
+      direction along the memory manifold.
+
+    Returns the same dict of per-point arrays as
+    `characterize_fixed_point_stability`, so downstream code can treat the two
+    interchangeably.
+    """
+    fpn = HiddenFixedPointNetwork(network, fixed_h)
+    if device is not None:
+        fpn.to(device)
+        fpn.states.data = fpn.states.data.to(device)
+    dev = fpn.states.device
+    inp = torch.as_tensor(np.asarray(inputs), dtype=torch.float, device=dev)
+
+    B, n = fpn.states.shape
+    k_report = min(k, n)
+
+    eig_all = np.zeros((B, k_report), dtype=complex)
+    radius = np.zeros(B)
+    n_unstable = np.zeros(B, dtype=int)
+    n_marginal = np.zeros(B, dtype=int)
+
+    for b in range(B):
+        h_b = fpn.states[b:b + 1].detach().clone().requires_grad_(True)  # (1, n)
+        x_b = inp[b:b + 1]                                               # (1, n_input)
+        F_b = fpn._step_h(x_b, h_b)                                      # (1, n)
+        # Dense Jacobian, one reverse-mode pass per output coordinate. n is a few
+        # hundred, so this is cheap and exact.
+        J = np.zeros((n, n))
+        for i in range(n):
+            seed = torch.zeros_like(F_b)
+            seed[0, i] = 1.0
+            (g,) = torch.autograd.grad(F_b, h_b, grad_outputs=seed,
+                                       retain_graph=True)
+            J[i, :] = g.detach().cpu().numpy().reshape(-1)
+        vals = np.linalg.eigvals(J)
+        vals = vals[np.argsort(-np.abs(vals))]      # largest |λ| first
+        eig_all[b, :] = vals[:k_report]
+        mag = np.abs(vals)
+        radius[b] = float(mag.max())
+        n_unstable[b] = int(np.sum(mag > 1.0 + marginal_tol))
+        n_marginal[b] = int(np.sum(np.abs(vals - 1.0) < marginal_tol))
+
+    is_stable = radius <= (1.0 + marginal_tol)
+    return {
+        "eigenvalues": eig_all,
+        "spectral_radius": radius,
+        "n_unstable": n_unstable,
+        "n_marginal": n_marginal,
+        "is_stable": is_stable,
+        "marginal_tol": float(marginal_tol),
+    }

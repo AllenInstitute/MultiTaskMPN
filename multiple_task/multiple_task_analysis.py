@@ -726,7 +726,11 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                     # probe is off too: one/two-task keep it as the control for
                     # "was the ring transplanted with the seed", but here it doubles
                     # the solves for a question this analysis is not asking.
-                    cross_seed_probes=False, naive_seed_probes=False)
+                    cross_seed_probes=False, naive_seed_probes=False,
+                    # Off for the same reason: it is one more 64-point solve per
+                    # rule, and this analysis asks only where the delay ring is,
+                    # not what else the delay input could settle to.
+                    traj_seed_probes=False)
                 solved_rules.append(_rule)
             except Exception as exc:
                 print(f"  [grad-fp/{_rule}] failed: {exc}")

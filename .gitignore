@@ -33,6 +33,7 @@ multiple_tasks_perf/
 multiple_task_heatmaps/
 onetask/
 onetask_data/
+onetask_rnn/
 twotasks/
 twotasks_data/
 pretraining/
