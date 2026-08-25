@@ -1032,9 +1032,21 @@ def plot_multitask_heatmap_colorbar():
 PERF_RESULT_PATH = Path("multiple_tasks_perf") / "performance_results.json"
 
 
+def _performance_feature_tag(model_name, result):
+    """Return a performance entry's full feature tag, with legacy fallback."""
+    import re as _re
+
+    feature = result.get("feature")
+    if feature is not None:
+        return feature
+    match = _re.search(r"_(L2[^+]*)\+hidden\d+", model_name)
+    return match.group(1) if match else None
+
+
 def plot_l2_vs_accuracy():
-    """Figure: Test accuracy (%) vs L2 regularization strength."""
+    """Figure: Tanh-model test accuracy (%) vs L2 regularization strength."""
     import json as _json
+    import re as _re
 
     _ensure_out_dir()
     if not PERF_RESULT_PATH.exists():
@@ -1044,12 +1056,37 @@ def plot_l2_vs_accuracy():
     with open(PERF_RESULT_PATH) as f:
         result_dict = _json.load(f)
 
-    l2_vals = np.array([e["l2_info"] for e in result_dict.values()])
-    acc_vals = np.array([e["acc"] for e in result_dict.values()]) * 100
+    # A bare L2 tag denotes the default Tanh activation.  Exact matching
+    # deliberately excludes activation experiments such as L21e4relu and
+    # L21e4sigmoid from the regularization-strength comparison.
+    tanh_results = [
+        result
+        for model_name, result in result_dict.items()
+        if _re.fullmatch(
+            r"L2\d+(?:\.\d+)?e\d+",
+            _performance_feature_tag(model_name, result) or "",
+        )
+    ]
+    if not tanh_results:
+        print("  Skipped: no Tanh performance results with a bare L2 feature tag.")
+        return
+
+    l2_vals = np.array([e["l2_info"] for e in tanh_results])
+    acc_vals = np.array([e["acc"] for e in tanh_results]) * 100
 
     fig, ax = plt.subplots(1, 1, figsize=(2.3, 3))
     ax.scatter(l2_vals, acc_vals, color="#3182ce", edgecolors="k",
                linewidths=0.5, s=40, alpha=0.8, zorder=3)
+
+    # Overlay the across-seed mean at each L2 value and connect those means to
+    # make the regularization trend visible without hiding the individual runs.
+    unique_l2 = np.unique(l2_vals)
+    mean_acc = np.array([acc_vals[l2_vals == l2].mean() for l2 in unique_l2])
+    ax.plot(
+        unique_l2, mean_acc, color="k", linewidth=1.2, marker="D",
+        markerfacecolor="white", markeredgecolor="k", markeredgewidth=0.8,
+        markersize=4, zorder=4,
+    )
     ax.set_xscale("log")
     ax.set_xlabel("L2 regularization strength")
     ax.set_ylabel("Test accuracy (%)")
@@ -1063,7 +1100,80 @@ def plot_l2_vs_accuracy():
 
     fig.tight_layout()
     out_path = _multitask_out("l2_vs_accuracy.png")
-    _save_fig(fig, out_path)
+    _save_fig(fig, out_path, extra=f" (Tanh n={len(tanh_results)})")
+
+
+# ─── Figure: L2=1e-4 activation comparison ──────────────────────────────────
+
+def plot_l2e4_activation_accuracy():
+    """Figure: Test accuracy for ReLU, sigmoid, and Tanh activations at L2=1e-4.
+
+    The full feature tag is read from each result's ``feature`` field when
+    available and otherwise inferred from its model identifier.  The unadorned
+    ``L21e4`` tag denotes the default Tanh activation.
+    """
+    import json as _json
+    _ensure_out_dir()
+    if not PERF_RESULT_PATH.exists():
+        print(f"  Skipped: {PERF_RESULT_PATH} not found. Run multiple_task_performance.py first.")
+        return
+
+    with open(PERF_RESULT_PATH) as f:
+        result_dict = _json.load(f)
+
+    group_specs = [
+        ("L21e4relu", "ReLU", "#dd6b20"),
+        ("L21e4sigmoid", "Sigmoid", "#805ad5"),
+        ("L21e4", "Tanh", "#3182ce"),
+    ]
+    accuracies = {feature: [] for feature, _, _ in group_specs}
+
+    for model_name, result in result_dict.items():
+        feature = _performance_feature_tag(model_name, result)
+        if feature in accuracies:
+            accuracies[feature].append(float(result["acc"]) * 100.0)
+
+    missing = [feature for feature, _, _ in group_specs if not accuracies[feature]]
+    if missing:
+        print(f"  Skipped: no performance results for {', '.join(missing)}.")
+        return
+
+    fig, ax = plt.subplots(1, 1, figsize=(2.3, 3))
+    positions = np.arange(len(group_specs))
+
+    all_values = []
+    for x, (feature, _, color) in zip(positions, group_specs):
+        values = np.asarray(accuracies[feature], dtype=float)
+        all_values.extend(values.tolist())
+        jitter = np.linspace(-0.10, 0.10, len(values)) if len(values) > 1 else np.zeros(1)
+        ax.scatter(
+            x + jitter, values, color=color, edgecolors="k", linewidths=0.5,
+            s=40, alpha=0.8, zorder=3,
+        )
+        ax.errorbar(
+            x, values.mean(), yerr=values.std(), fmt="D", color="k",
+            markerfacecolor="white", markeredgewidth=0.8, markersize=4,
+            capsize=3, linewidth=1.0, zorder=4,
+        )
+
+    labels = [label for _, label, _ in group_specs]
+    ax.set_xticks(positions)
+    ax.set_xticklabels(labels)
+    ax.set_xlabel("Activation function")
+    ax.set_ylabel("Test accuracy (%)")
+    lo, hi = min(all_values), max(all_values)
+    pad = max((hi - lo) * 0.08, 2.0)
+    ax.set_ylim(max(0.0, lo - pad), min(100.0, hi + pad))
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
+
+    fig.tight_layout()
+    out_path = _multitask_out("l2e4_activation_accuracy.png")
+    counts = ", ".join(
+        f"{label} n={len(accuracies[feature])}"
+        for feature, label, _ in group_specs
+    )
+    _save_fig(fig, out_path, extra=f" ({counts})")
 
 
 # ─── Figure: State space PCA ─────────────────────────────────────────────────
@@ -6563,6 +6673,7 @@ FIGURES_BY_MODE = {
         "modulation": plot_clustered_modulation,
         "heatmap_colorbar": plot_multitask_heatmap_colorbar,
         "l2_accuracy": plot_l2_vs_accuracy,
+        "l2e4_activation_accuracy": plot_l2e4_activation_accuracy,
         "state_space_combined": plot_state_space_combined,
         "state_space_r_values": plot_state_space_r_values,
         "overmembership_unnorm": plot_overmembership_unnorm,

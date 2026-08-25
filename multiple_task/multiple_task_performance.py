@@ -8,6 +8,7 @@ Usage:
     python multiple_task_performance.py
 """
 from pathlib import Path
+import argparse
 import re
 import gc
 import json
@@ -58,10 +59,35 @@ def parse_hidden_and_l2(path_str: str):
     return hidden_size, l2
 
 
+def parse_feature(path_str: str):
+    """Return the complete feature tag between the seed and hidden-size fields."""
+    s = Path(path_str).name
+    m_feature = re.search(r'_(L2[^+]*)\+hidden\d+', s)
+    if not m_feature:
+        raise ValueError(f"Couldn't find feature tag in: {s}")
+    return m_feature.group(1)
+
+
 RESULT_PATH = Path("multiple_tasks_perf") / "performance_results.json"
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--feature",
+        action="append",
+        default=[],
+        help=("Evaluate only checkpoints with this exact feature tag. "
+              "Repeat for multiple tags, e.g. --feature L21e4sigmoid "
+              "--feature L21e4relu."),
+    )
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        help="Merge evaluated entries into the existing result JSON instead of replacing it.",
+    )
+    args = parser.parse_args()
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -69,6 +95,7 @@ if __name__ == "__main__":
 
     def eval_one(netpathname):
         hidden_size, l2_info = parse_hidden_and_l2(netpathname)
+        feature = parse_feature(netpathname)
         core_name = netpathname[24:-3]
 
         out_param_path = Path("multiple_tasks") / f"param_{core_name}_param.json"
@@ -87,7 +114,9 @@ if __name__ == "__main__":
         )
         test_input, test_output, test_mask = test_data
 
-        checkpoint = torch.load(netpathname, map_location=device)
+        # These are trusted, locally generated project checkpoints and include
+        # NumPy-backed parameter metadata in addition to tensor weights.
+        checkpoint = torch.load(netpathname, map_location=device, weights_only=False)
         model = mpn.DeepMultiPlasticNet(checkpoint["net_params"], verbose=False, forzihan=True)
         model.load_state_dict(checkpoint["state_dict"], strict=True)
         model.to(device)
@@ -108,14 +137,29 @@ if __name__ == "__main__":
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        return core_name, hidden_size, l2_info, float(acc)
+        return core_name, hidden_size, l2_info, feature, float(acc)
 
     pt_paths = list_pt_files("./multiple_tasks", recursive=False)
+    if args.feature:
+        requested_features = set(args.feature)
+        pt_paths = [p for p in pt_paths if parse_feature(p) in requested_features]
+        if not pt_paths:
+            parser.error(f"no checkpoints found for feature(s): {', '.join(args.feature)}")
 
-    result_dict = {}
+    if args.merge and RESULT_PATH.exists():
+        with RESULT_PATH.open() as f:
+            result_dict = json.load(f)
+    else:
+        result_dict = {}
+
     for netpathname in pt_paths:
-        core_name, hidden_size, l2_info, acc = eval_one(netpathname)
-        result_dict[core_name] = {"hidden_size": hidden_size, "l2_info": l2_info, "acc": acc}
+        core_name, hidden_size, l2_info, feature, acc = eval_one(netpathname)
+        result_dict[core_name] = {
+            "hidden_size": hidden_size,
+            "l2_info": l2_info,
+            "feature": feature,
+            "acc": acc,
+        }
         print(f"  {core_name}: acc={acc:.4f}")
 
     with open(RESULT_PATH, "w") as f:
