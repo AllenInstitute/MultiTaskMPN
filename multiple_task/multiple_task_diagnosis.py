@@ -13,6 +13,8 @@ Each diagnostic is a small function registered in ``DIAGNOSES`` via
 registered diagnostic is run over the discovered experiments, its summary is
 printed, and all results are saved to
 ``multiple_tasks_diagnosis/diagnosis_{feature}[_seed{seed}].{pkl,json}``.
+The output directory is cleared at the start of each run. All requested
+same-cluster diagnostics are drawn in one figure, with one task pair per row.
 
 Cluster data read per experiment (all under ``multiple_tasks/{aname}/``):
   - input / hidden  : ``cluster_info_{aname}.pkl`` →
@@ -35,12 +37,13 @@ Current diagnostics:
 Usage:
     python multiple_task/multiple_task_diagnosis.py --feature L21e4
     python multiple_task/multiple_task_diagnosis.py --feature L21e3 --seed 299
-    python multiple_task/multiple_task_diagnosis.py            # every experiment
+    python multiple_task/multiple_task_diagnosis.py            # defaults to L21e4
 """
 import re
 import json
 import pickle
 import argparse
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -110,6 +113,17 @@ _REP_COLORS = {
     "hidden": "#e53e3e",      # red
     "modulation": "#38a169",  # green
 }
+
+
+def _clear_output_dir():
+    """Remove every previous diagnosis result before starting a new run."""
+    if OUT_DIR.exists():
+        for path in OUT_DIR.iterdir():
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ─── Experiment discovery & loading ──────────────────────────────────────────
@@ -324,6 +338,25 @@ def _register_plot(name):
     return deco
 
 
+def _draw_same_cluster_bars(ax, per_rep, phase):
+    """Draw one trial-phase panel shared by individual and combined figures."""
+    reps = list(per_rep)
+    pcts = [per_rep[r]["pct_same_cluster"] for r in reps]
+    colors = [_REP_COLORS.get(r, "#718096") for r in reps]
+    xs = np.arange(len(reps))
+    ax.bar(xs, pcts, color=colors, edgecolor="k", linewidth=0.5, alpha=0.85)
+    for x, rep, pct in zip(xs, reps, pcts):
+        stats = per_rep[rep]
+        if np.isfinite(pct):
+            ax.text(x, pct + 2, f"{stats['n_same']}/{stats['n_total']}",
+                    ha="center", va="bottom", fontsize=7)
+    ax.set_xticks(xs)
+    ax.set_xticklabels(reps, rotation=30, ha="right", fontsize=8)
+    ax.set_title(_PHASE_DISPLAY.get(phase, phase), fontsize=10)
+    ax.set_ylim(0, 105)
+    ax.spines[["top", "right"]].set_visible(False)
+
+
 @_register_plot("category_same_cluster")
 @_register_plot("context_modality_same_cluster")
 @_register_plot("integration_modality_same_cluster")
@@ -345,27 +378,57 @@ def plot_pair_same_cluster(result, out_path):
     b_disp = result.get("rule_b_display", result.get("rule_b", "B"))
 
     for ax, phase in zip(axes, phases):
-        per_rep = per_phase[phase]
-        reps = list(per_rep)
-        pcts = [per_rep[r]["pct_same_cluster"] for r in reps]
-        colors = [_REP_COLORS.get(r, "#718096") for r in reps]
-        xs = np.arange(len(reps))
-        ax.bar(xs, pcts, color=colors, edgecolor="k", linewidth=0.5, alpha=0.85)
-        # Annotate each bar with n_same/n_total.
-        for x, r, pct in zip(xs, reps, pcts):
-            st = per_rep[r]
-            if np.isfinite(pct):
-                ax.text(x, pct + 2, f"{st['n_same']}/{st['n_total']}",
-                        ha="center", va="bottom", fontsize=7)
-        ax.set_xticks(xs)
-        ax.set_xticklabels(reps, rotation=30, ha="right", fontsize=8)
-        ax.set_title(_PHASE_DISPLAY.get(phase, phase), fontsize=10)
-        ax.set_ylim(0, 105)
-        ax.spines[["top", "right"]].set_visible(False)
+        _draw_same_cluster_bars(ax, per_phase[phase], phase)
 
     axes[0].set_ylabel("Same-cluster experiments (%)", fontsize=9)
     fig.suptitle(f"{a_disp} vs {b_disp}: same row cluster", fontsize=11)
     fig.tight_layout()
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_combined_same_cluster(results, out_path):
+    """Combine all requested task-pair diagnostics into one multi-row figure.
+
+    Each diagnostic occupies one row. Its trial phases run left-to-right using
+    the same panels as the former standalone figures; unused trailing cells are
+    hidden when task pairs have different numbers of phases.
+    """
+    plot_items = [(name, result) for name, result in results.items()
+                  if name in PLOTTERS and result.get("phases")]
+    if not plot_items:
+        print("  [plot] no same-cluster diagnostics to combine; skipping figure.")
+        return
+
+    n_rows = len(plot_items)
+    n_phase_cols = max(len(result["phases"]) for _, result in plot_items)
+    fig = plt.figure(figsize=(1.6 + 2.35 * n_phase_cols, 2.8 * n_rows))
+    grid = fig.add_gridspec(
+        n_rows, n_phase_cols + 1,
+        width_ratios=[1.35] + [1.0] * n_phase_cols,
+        hspace=0.55, wspace=0.35,
+    )
+
+    for row, (_, result) in enumerate(plot_items):
+        label_ax = fig.add_subplot(grid[row, 0])
+        label_ax.axis("off")
+        a_disp = result.get("rule_a_display", result.get("rule_a", "A"))
+        b_disp = result.get("rule_b_display", result.get("rule_b", "B"))
+        label_ax.text(1.0, 0.5, f"{a_disp}\nvs\n{b_disp}",
+                      ha="right", va="center", fontsize=10)
+
+        phases = result["phases"]
+        for col in range(n_phase_cols):
+            ax = fig.add_subplot(grid[row, col + 1])
+            if col >= len(phases):
+                ax.axis("off")
+                continue
+            phase = phases[col]
+            _draw_same_cluster_bars(ax, result["per_phase"][phase], phase)
+            if col == 0:
+                ax.set_ylabel("Same-cluster\nexperiments (%)", fontsize=9)
+
+    fig.suptitle("Task-pair row-cluster sharing", fontsize=12, y=0.995)
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
@@ -415,11 +478,14 @@ def _json_safe(obj):
     return obj
 
 
-def main(feature=None, seed=None, which=None):
+def main(feature="L21e4", seed=None, which=None):
     """Run the requested diagnostics over all matching experiments and save.
 
     which : optional list of diagnostic names to run (default: all registered).
     """
+    _clear_output_dir()
+    print(f"Cleared previous diagnosis results from {OUT_DIR}/")
+
     anames = _discover_anames(feature, seed)
     print(f"Discovered {len(anames)} experiment(s) "
           f"(feature={feature}, seed={seed}): {anames}")
@@ -443,7 +509,6 @@ def main(feature=None, seed=None, which=None):
         raise SystemExit(f"Unknown diagnostic(s): {unknown}. "
                          f"Available: {list(DIAGNOSES)}")
 
-    OUT_DIR.mkdir(exist_ok=True)
     tag = feature if feature else "all"
     if seed is not None:
         tag += f"_seed{seed}"
@@ -452,10 +517,10 @@ def main(feature=None, seed=None, which=None):
     for name in to_run:
         results[name] = DIAGNOSES[name](experiments)
         _print_result(name, results[name])
-        # Figure (if this diagnostic registered a plotter).
-        if name in PLOTTERS:
-            fig_path = OUT_DIR / f"{name}_{tag}.png"
-            PLOTTERS[name](results[name], fig_path)
+
+    # One combined figure: one requested task-pair diagnostic per row.
+    fig_path = OUT_DIR / f"same_cluster_diagnoses_{tag}.png"
+    plot_combined_same_cluster(results, fig_path)
 
     # Save results (pkl keeps full detail incl. numpy; json is a portable copy).
     payload = {
@@ -477,8 +542,9 @@ def main(feature=None, seed=None, which=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Cross-experiment MPN diagnostics.")
-    parser.add_argument("--feature", type=str, default=None,
-                        help="Only diagnose models with this feature (e.g. 'L21e4').")
+    parser.add_argument("--feature", type=str, default="L21e4",
+                        help="Only diagnose models with this exact feature "
+                             "(default: 'L21e4').")
     parser.add_argument("--seed", type=int, default=None,
                         help="Only diagnose the model with this seed (e.g. 299).")
     parser.add_argument("--diagnosis", type=str, nargs="*", default=None,

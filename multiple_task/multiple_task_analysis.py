@@ -13,11 +13,13 @@ call to reach stage 2.
 Stage 1 — sibling-task memory geometry (`shared_run`; the part that runs today):
   * accuracy on normal-delay trials, overall and per sibling task, plus an
     input/output sanity figure;
+  * shared Delay-PC bases fit on complete `delay1` trajectories: joint and
+    first-task-only reference bases for every sibling family;
   * TRUE gradient fixed points of the delay period for each sibling rule, solved
     by the shared solver in core/grad_fixed_points.py;
-  * the cross-task memory separation of those fixed points
-    (`grad_fp_category_separation`): one shared PCA over both rules' points and
-    the 2-PC plane whose silhouette best separates the abstract memory groups.
+  * projection of those points into all six PCs of both the joint and
+    first-task-only delay-trajectory bases; paper_plot.py explicitly chooses the
+    PC pair for both delayDM and DMC.
 
 Stage 2 — weight structure and clustering (everything after the sys.exit):
   1. Weight-structure heatmaps of W_initial_linear, W (recurrent) and W_output,
@@ -38,8 +40,14 @@ run's saved hyp_dict. For the runs in hand `addon_name` already carries the
 files by aname — but the two are computed from different sources and would
 diverge for a run saved with a shorter addon_name:
   - figures (every savefig prints its path)
+  - {addtask}_delay_trajectory_pca_{aname}.pkl — joint Delay-PC basis
+  - {addtask}_delay_trajectory_pca_{addtask}_only_{aname}.pkl
+                                                — first-task reference basis
   - fixed_points_grad_{aname}_{rule}.pkl        — solved fixed points per rule
-  - {addtask}_separation_{aname}.pkl            — cross-task separation data
+  - {addtask}_delay_pc_projections[_{addtask}_only]_{aname}.pkl
+                                                — complete six-PC projections
+  - {addtask}_delay_pc_gallery[_{addtask}_only]_{representation}_{aname}.png
+                                                — all 15 PC-pair views
   - cluster_info_{savefigure_name_base}.pkl     — neuron cluster assignments,
     consumed by the lesion experiments
   - cluster_info_mod_{savefigure_name_base}.pkl — modulation synapse clusters
@@ -59,8 +67,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from matplotlib.colors import LogNorm
-from matplotlib.lines import Line2D
-from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, silhouette_score
+from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from sklearn.metrics.cluster import contingency_matrix as sk_contingency_matrix
 ticker.Locator.MAXTICKS = 10000 
 import seaborn as sns 
@@ -81,8 +88,6 @@ mpl.rcParams.update({
 from sklearn.metrics.pairwise import cosine_similarity
 from scipy.spatial.distance import pdist, squareform
 from scipy.cluster.hierarchy import fcluster
-from sklearn.decomposition import PCA
-
 import torch
 from torch.serialization import add_safe_globals
 
@@ -94,6 +99,11 @@ import clustering_metric
 import color_func
 import mpn
 import mpn_tasks
+from sibling_delay_analysis import (
+    DELAY_PCA_SCOPES,
+    fit_delay_trajectory_pca,
+    save_sibling_fixed_point_pc_projections,
+)
 
 # Log every saved figure path (like paper_plot.py). Wrap Figure.savefig once so
 # all call sites — including multi-line ones — print their destination without
@@ -153,12 +163,6 @@ c_vals_l = [
 cs = "coolwarm"
 
 
-# Representations carried through the separation analysis:
-# (display name, the solver's fixed-point key, its per-stimulus trajectory key).
-# Raw M ("fixed_M") is deliberately absent — see shared_run's docstring.
-_SEPARATION_REPS = (("hidden", "fixed_hidden", "traj_all_hidden"),
-                    ("e_modulation", "fixed_WM", "traj_all_WM"))
-
 # The sibling-task families `shared_run` can probe, keyed by the `addtask` name it
 # takes. Each entry is (rules solved, the paper_plot.py run identifier whose
 # figures read the result). A family is named after its FIRST rule, which is also
@@ -176,6 +180,47 @@ SHARED_RUN_FAMILIES = {
     "dmcgo":    (["dmcgo", "dmcnogo"],       "DMC_ANAME"),
     "delaydm1": (["delaydm1", "delaydm2"],   "DELAYDM_ANAME"),
 }
+
+# Match the task generator's native eight stimulus directions. This sibling
+# analysis deliberately does not solve additional between-direction inputs.
+SIBLING_FP_N_STIM = 8
+
+
+def _clean_stale_sibling_artifacts(save_dir, families):
+    """Delete old outputs for the sibling families about to be recomputed.
+
+    Matching is restricted to ordinary files directly inside this run's output
+    directory. Each selected family's two rule names are used as tokens, so the
+    cleanup catches both prefix-style products (for example
+    ``delaydm1_delay_pc_projections_...``) and solver products whose rule is a suffix
+    (for example ``fixed_points_grad_..._delaydm2.pkl``). Checkpoints, parameter
+    files, subdirectories, and outputs from unselected families are untouched.
+    """
+    save_dir = Path(save_dir)
+    families = tuple(families)
+    unknown = set(families) - set(SHARED_RUN_FAMILIES)
+    if unknown:
+        raise ValueError(f"unknown sibling families: {sorted(unknown)}")
+
+    tokens = {
+        rule
+        for family in families
+        for rule in SHARED_RUN_FAMILIES[family][0]
+    }
+    stale = sorted(
+        path for path in save_dir.iterdir()
+        if path.is_file() and any(token in path.name for token in tokens)
+    )
+    for path in stale:
+        path.unlink()
+
+    if stale:
+        print(f"  [cleanup] removed {len(stale)} stale sibling-analysis "
+              f"artifact(s) from {save_dir}:")
+        for path in stale:
+            print(f"    - {path.name}")
+    else:
+        print(f"  [cleanup] no stale sibling-analysis artifacts in {save_dir}")
 
 
 # ─── Clustering helpers shared by the neuron and modulation analyses ──────────
@@ -222,210 +267,6 @@ def _fixed_k_col_clusters(ci_entry, fk):
     return {int(lab): np.where(full == lab)[0] for lab in np.unique(full) if lab > 0}
 
 
-def _memory_group_labels(addtask, task_idx, stim_idx, n_stim):
-    """Abstract "memory group" label per solved fixed point.
-
-    The grouping is what the separating plane is chosen to reveal, and it differs
-    by task family:
-
-      * dmcgo/dmcnogo — the DMC *category* split, which cuts ACROSS task and
-        stimulus identity:
-            Group A: task0 stim {0..n/2-1} + task1 stim {n/2..n-1}
-            Group B: task0 stim {n/2..n-1} + task1 stim {0..n/2-1}
-        i.e. group A iff (task == 0) == (stim < n_stim/2). A plane that separates
-        these two is one that encodes the remembered CATEGORY rather than the
-        stimulus or the task cue.
-      * delaydm1/delaydm2 — there is no match-category; what delay1 holds is the
-        remembered stim1 ANGLE, so points are grouped by angle with both tasks
-        pooled. A high silhouette then means each angle forms its own cluster,
-        i.e. the memory is angle-specific and task-independent.
-    """
-    half = n_stim // 2
-    if addtask == "dmcgo":
-        return np.asarray([int((t == 0) == (a < half))
-                           for t, a in zip(task_idx, stim_idx)], dtype=int)
-    return np.asarray(list(stim_idx), dtype=int)
-
-
-def grad_fp_category_separation(aname, save_dir, addtask, rules,
-                                probe="longdelay", n_pcs=6, n_pca_seeds=20):
-    """Cross-task memory separation, measured on SOLVED fixed points.
-
-    Reads the per-rule pickles written by solve_period_modulation_fixed_points and,
-    for each representation in `_SEPARATION_REPS`:
-
-      1. stacks both rules' `probe`-period fixed points (task-major, then
-         stimulus);
-      2. fits an `n_pcs` PCA on that stack, so BOTH rules share one basis and are
-         directly comparable point-for-point;
-      3. sweeps the PCA random_state over `n_pca_seeds` and keeps the seed whose
-         best 2-PC plane most separates the memory groups (`_memory_group_labels`)
-         by silhouette — the randomized solver's basis is seed-dependent, so this
-         is a reproducible choice rather than a lucky one;
-      4. projects each stimulus's recorded DELAY PATH through that same basis, so
-         a path and the fixed point it ends at are directly comparable — skipped
-         when the solve saved no per-stimulus paths, which is the normal case now
-         that `shared_run` runs at 64 angles with save_all_trajectories off;
-      5. saves the projected points and paths, the winning seed/plane and every
-         plane's silhouette, and draws an n×n grid of pairwise PC planes with the
-         winning plane outlined.
-
-    Every point scored is a solved fixed point carrying its own convergence flag,
-    and unconverged points are excluded from the silhouettes.
-
-    Writes {addtask}_separation_{aname}.pkl (+ one figure per representation) into
-    `save_dir` and returns the pickle path.
-    """
-    save_dir = Path(save_dir)
-    per_rule = []
-    for rule in rules:
-        pkl = save_dir / f"fixed_points_grad_{aname}_{rule}.pkl"
-        if not pkl.exists():
-            print(f"  [{addtask}/separation] missing {pkl.name}; skipped.")
-            return None
-        with open(pkl, "rb") as f:
-            per_rule.append((rule, pickle.load(f)))
-
-    out = {}
-    for plot_name, fp_key, traj_key in _SEPARATION_REPS:
-        # ── Stack both rules' fixed points into one matrix, task-major ────────
-        # Trajectories, when the solver saved them, are stacked in the SAME row
-        # order, so one PCA serves both: endpoints and the paths that reach them.
-        mats, trajs, task_idx, stim_idx, good = [], [], [], [], []
-        for t, (rule, d) in enumerate(per_rule):
-            entry = d["results"].get(probe)
-            if entry is None or entry.get(fp_key) is None:
-                print(f"  [{addtask}/separation] {rule}: no '{probe}'/{fp_key}; skipped.")
-                return None
-            arr = np.asarray(entry[fp_key], dtype=float)
-            mats.append(arr.reshape(arr.shape[0], -1))
-            tr = entry.get(traj_key)
-            trajs.append(None if tr is None else np.asarray(tr, dtype=float))
-            stim = np.asarray(entry["stim"], dtype=int)
-            task_idx += [t] * stim.size
-            stim_idx += stim.tolist()
-            good += np.asarray(entry.get("is_fixed",
-                                         np.ones(stim.size, bool)), dtype=bool).tolist()
-        X = np.vstack(mats)
-        task_idx = np.asarray(task_idx); stim_idx = np.asarray(stim_idx)
-        good = np.asarray(good, dtype=bool)
-        n_stim = int(stim_idx.max()) + 1
-        labels = _memory_group_labels(addtask, task_idx, stim_idx, n_stim)
-        n_comp = int(min(n_pcs, X.shape[0], X.shape[1]))
-        print(f"  [{addtask}/separation] {plot_name}: {X.shape[0]} points "
-              f"({good.sum()} converged), {n_stim} stimuli x {len(rules)} rules, "
-              f"{n_comp} PCs")
-
-        # ── Pick the PCA seed whose best 2-PC plane separates the groups most ──
-        # Silhouettes are computed on CONVERGED points only: an unconverged solve
-        # is not a fixed point and must not vote on the plane.
-        best = None
-        seed_scores = []
-        for pca_seed in range(n_pca_seeds):
-            pca = PCA(n_components=n_comp, random_state=pca_seed)
-            proj = pca.fit_transform(X)
-            plane_sil, seed_best, seed_best_plane = {}, -np.inf, None
-            for px in range(n_comp):
-                for py in range(px + 1, n_comp):
-                    sub, lab = proj[good][:, [px, py]], labels[good]
-                    s2d = (silhouette_score(sub, lab)
-                           if np.unique(lab).size > 1 and sub.shape[0] > np.unique(lab).size
-                           else np.nan)
-                    plane_sil[(px, py)] = float(s2d)
-                    if np.isfinite(s2d) and s2d > seed_best:
-                        seed_best, seed_best_plane = float(s2d), (px, py)
-            seed_scores.append(seed_best)
-            if best is None or seed_best > best[0]:
-                best = (seed_best, pca_seed, seed_best_plane, proj, plane_sil, pca)
-        best_sil, best_seed, best_plane, proj, plane_sil, pca = best
-        bx, by = best_plane
-        print(f"  [{addtask}/separation] {plot_name}: PCA seed {best_seed}, "
-              f"best plane PC{bx+1}-PC{by+1}, 2D silhouette={best_sil:.4f}")
-
-        # Paths through the SAME basis the endpoints live in — a path is only
-        # comparable to its fixed point if both went through one transform.
-        traj_proj = None
-        if all(tr is not None for tr in trajs):
-            stacked = np.concatenate(trajs, axis=0)            # (n_pts, win_T, feat)
-            n_pts, win_T, feat = stacked.shape
-            traj_proj = pca.transform(stacked.reshape(n_pts * win_T, feat)
-                                      ).reshape(n_pts, win_T, n_comp)
-            print(f"  [{addtask}/separation] {plot_name}: projected "
-                  f"{n_pts} delay paths of {win_T} steps")
-        else:
-            print(f"  [{addtask}/separation] {plot_name}: no per-stimulus paths in "
-                  f"the pickle (solve with save_all_trajectories=True to get them).")
-
-        # ── Figure: every pairwise PC plane, winning plane outlined ───────────
-        fig, axs = plt.subplots(n_comp, n_comp, figsize=(3.2 * n_comp, 3.2 * n_comp),
-                                squeeze=False)
-        for row in range(n_comp):
-            for col in range(n_comp):
-                ax = axs[row][col]
-                if row >= col:
-                    ax.axis("off")
-                    continue
-                for t, (rule, _) in enumerate(per_rule):
-                    for a in range(n_stim):
-                        sel = (task_idx == t) & (stim_idx == a)
-                        if not np.any(sel):
-                            continue
-                        if traj_proj is not None:
-                            # The recorded delay path that ends at this point:
-                            # solid for task 0, dashed for task 1, in the
-                            # stimulus's color but faded, so the endpoint stays
-                            # the figure's subject.
-                            tp = traj_proj[sel][0]
-                            ax.plot(tp[:, col], tp[:, row], color=c_vals[a],
-                                    alpha=0.45, linewidth=1.0, zorder=2,
-                                    linestyle=("-", "--")[t % 2])
-                        ax.scatter(proj[sel, col], proj[sel, row],
-                                   color=c_vals[a], s=60, alpha=0.8, zorder=3,
-                                   marker=("s", "^")[t % 2],
-                                   edgecolor="black",
-                                   linewidth=0.8 if good[sel].all() else 0.0)
-                ax.set_xlabel(f"PC{col+1}", fontsize=9)
-                ax.set_ylabel(f"PC{row+1}", fontsize=9)
-                if (col, row) == best_plane:
-                    for sp in ax.spines.values():
-                        sp.set_color("red"); sp.set_linewidth(2.5)
-        handles = [Line2D([], [], marker=("s", "^")[t % 2], color="k", linestyle="",
-                          label=rule) for t, (rule, _) in enumerate(per_rule)]
-        fig.legend(handles=handles, loc="upper right", fontsize=11)
-        fig.suptitle(f"{addtask} / {plot_name}  |  solved {probe} fixed points  |  "
-                     f"best plane PC{bx+1}-PC{by+1} (2D sil={best_sil:.3f})",
-                     fontsize=13)
-        fig.tight_layout()
-        fig_path = save_dir / f"{addtask}_separation_{plot_name}_{aname}.png"
-        fig.savefig(fig_path, dpi=300)
-        plt.close(fig)
-        print(f"  Saved figure: {fig_path}")
-
-        out[plot_name] = {
-            "proj": proj,                      # (n_points, n_comp) shared-basis PCA
-            # (n_points, win_T, n_comp) recorded delay paths in the same basis, row
-            # i ending at point i; None when the solve saved no per-stimulus paths.
-            "traj_proj": traj_proj,
-            "task_idx": task_idx, "stim_idx": stim_idx,
-            "is_fixed": good, "group_labels": labels,
-            "task_names": list(rules), "probe": probe,
-            "pca_seed": best_seed,
-            "best_plane": (int(bx), int(by)),
-            "best_plane_silhouette": float(best_sil),
-            "seed_silhouettes": [float(v) for v in seed_scores],
-            "plane_silhouettes": {f"{px+1}-{py+1}": v for (px, py), v in plane_sil.items()},
-            # True when the points form a stim-angle ring worth connecting in stim
-            # order (delaydm1), False for the dmcgo category split.
-            "connect_endpoint_ring": bool(addtask != "dmcgo"),
-        }
-
-    pkl_path = save_dir / f"{addtask}_separation_{aname}.pkl"
-    with open(pkl_path, "wb") as f:
-        pickle.dump(out, f)
-    print(f"Saved separation data: {pkl_path}")
-    return pkl_path
-
-
 def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
     """Run the analysis for ONE trained network, identified by `seed`/`feature`.
 
@@ -438,9 +279,11 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
 
     `families` selects which sibling-task families stage 1 probes; the default is
     ALL of `SHARED_RUN_FAMILIES`, i.e. dmcgo/dmcnogo and delaydm1/delaydm2 in one
-    run. `clean` empties the run's output directory first, so a re-run cannot
-    leave figures from a previous configuration sitting beside the new ones.
+    run. Before computation, artifacts belonging to every selected family are
+    removed from this run's output directory. `clean=True` additionally empties
+    all other files in that directory.
     """
+    families = tuple(families)
     mem = psutil.virtual_memory()
     print(f"Total: {mem.total / 1e9:.2f} GB")
     print(f"Available: {mem.available / 1e9:.2f} GB")
@@ -499,6 +342,7 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
         for _old_file in Path(save_dir).iterdir():
             if _old_file.is_file():
                 _old_file.unlink()
+    _clean_stale_sibling_artifacts(save_dir, families)
 
     # %%
     # 2025-11-19: make sure the bias is only cell-dependent but not time- or trail-dependent
@@ -538,35 +382,40 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
 
     def shared_run(addtask):
         """
-        Probe how the network's delay-period memory geometry separates two
-        related tasks.
+        Probe the delay-period memory geometry of two related tasks.
 
         The idea: take a pair of sibling tasks that share the same stimulus
         set but demand different computations —
             addtask="dmcgo"    → ["dmcgo", "dmcnogo"]      (match vs non-match)
             addtask="delaydm1" → ["delaydm1", "delaydm2"]  (modality 1 vs 2)
-        — and ask whether what the delay holds separates along an ABSTRACT
-        grouping (the remembered DMC category, or the remembered angle) rather
-        than along task identity. The measurement is made on solved fixed points
-        of the delay period, not on raw delay activity.
+        The measurement is made on solved fixed points of the delay period, not
+        on raw delay activity. DMC additionally saves category labels alongside
+        its complete trajectory-PC projection.
 
         Procedure
         ---------
         1. Report accuracy on normal-delay trials, overall and per sibling task,
-           and emit a sanity figure of example input/output traces.
+           emit a sanity figure of example input/output traces, and fit two
+           Delay-PC bases: concatenate BOTH tasks' complete delay1 trajectories
+           for the joint basis, and use the first task alone for a reference
+           basis (dmcgo-only or delaydm1-only). The compact bases are saved for
+           paper_plot.py.
         2. Solve TRUE gradient fixed points per sibling rule with the shared
            solver (`core/grad_fixed_points.py`, also used by one_task_analysis.py
            and two_task_analysis.py): M* = F(M*; x) relaxed under the DELAY-1
            period's held-constant input, seeded from that period's end state, over
-           a dense 64-angle stimulus ring (the same density the one/two-task
-           callers use). One pickle per rule, carrying M*, its W⊙M* / hidden /
-           cos-output views, the convergence metric rel_step and the
-           linear-stability spectrum. The off-diagonal multistability probes are
-           off here — see the call site for why.
-        3. Recompute the CROSS-TASK memory separation on those solved points
-           (`grad_fp_category_separation`): a shared PCA over both rules'
-           delay-period fixed points, and the 2-PC plane whose silhouette best
-           separates the two abstract memory groups.
+           the task's eight native trained stimulus directions, without
+           between-direction interpolation. One pickle per rule, carrying M*,
+           its W⊙M* / hidden / cos-output views and the convergence metric
+           rel_step. Linear-stability and off-diagonal multistability analyses
+           are intentionally off here.
+        3. Project each family's fixed points into two six-PC bases fit only on
+           delay trajectories: joint sibling-task trajectories and first-task-only
+           trajectories. Save all six coordinates (plus DMC category labels as
+           metadata). Also save a 15-panel PC-pair gallery for each basis and
+           representation so the plane can be inspected visually; the gallery
+           computes no score and selects nothing. paper_plot.py explicitly
+           specifies the displayed plane. No PCA is fit on fixed points.
 
         Representations analyzed downstream are the hidden state and the EFFECTIVE
         modulation (W ⊙ M). Raw M is deliberately excluded: the effective
@@ -575,21 +424,21 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
 
         Results are written under `save_dir`:
             {addtask}_{savefigure_name}.png                      — IO traces
+            {addtask}_delay_trajectory_pca_{aname}.pkl           — joint Delay PCs
+            {addtask}_delay_trajectory_pca_{addtask}_only_{aname}.pkl
+                                                               — reference PCs
             fixed_points_grad_{aname}_{rule}.pkl                 — solved M* per rule
-            {addtask}_separation_{plot_name}_{aname}.png          — separation maps
-            {addtask}_separation_{aname}.pkl                     — separation data
+            delaydm1_delay_pc_projections_{aname}.pkl            — joint six PCs
+            delaydm1_delay_pc_projections_delaydm1_only_{aname}.pkl
+                                                               — reference six PCs
+            dmcgo_delay_pc_projections_{aname}.pkl              — joint six PCs
+            dmcgo_delay_pc_projections_dmcgo_only_{aname}.pkl   — reference six PCs
+            {addtask}_delay_pc_gallery[_{addtask}_only]_
+                {hidden|e_modulation}_{aname}.png               — all 15 pairs
         """
         if addtask not in SHARED_RUN_FAMILIES:
             raise ValueError(f"unknown family {addtask!r}; choose from "
                              f"{list(SHARED_RUN_FAMILIES)}")
-
-        # Remove any previous outputs for this addtask so stale figures/pickles
-        # from an earlier run don't linger alongside the fresh ones. Scoped to the
-        # family's own prefix, so probing both families in one run leaves the other
-        # one's results untouched.
-        for _old in Path(save_dir).glob(f"{addtask}*"):
-            if _old.is_file():
-                _old.unlink()
 
         task_params_family = copy.deepcopy(task_params_c)
         task_params_family["rules"] = list(SHARED_RUN_FAMILIES[addtask][0])
@@ -617,12 +466,14 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
         # fixed-point solver below builds its own trial template internally (with
         # every period set to "normal"), so `_gen`'s long_delay knob is only here
         # for a caller that wants to stress-test the memory geometry by hand.
-        norm_data, _ = _gen("normal", 100)
+        norm_data, norm_extra = _gen("normal", 200)
         norm_input, norm_output, norm_mask = norm_data
         norm_task = helper.find_task(task_params_family, norm_input.detach().cpu().numpy(), 0)
         norm_task = [int(t - min(norm_task)) for t in norm_task]
 
-        norm_out, _, _ = model.iterate_sequence_batch(norm_input.to(device), run_mode='track_states')
+        norm_out, _, norm_db = model.iterate_sequence_batch(
+            norm_input.to(device), run_mode='track_states',
+            save_to_cpu=True, detach_saved=True)
 
         # Accuracy on the normal-delay trials, overall and per sibling task.
         norm_out_dev = norm_out.to(device)
@@ -665,6 +516,20 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
         fig.suptitle(f"{addtask} (normal delay)  |  {acc_str}", fontsize=12)
         fig.tight_layout()
         fig.savefig(f"{save_dir}/{addtask}_{savefigure_name}.png", dpi=300)
+
+        # Two trajectory-defined Delay-PC coordinate systems per sibling family:
+        # joint (both rules) and a first-rule-only reference. Neither is fit on
+        # fixed points. Only compact PCA parameters are saved; the large tracked
+        # tensors can be released before fixed-point solving starts.
+        W_fp = state_dict["mp_layer1.W"].detach().cpu().numpy()
+        _, norm_trials, _ = norm_extra
+        for _basis_scope in DELAY_PCA_SCOPES:
+            fit_delay_trajectory_pca(
+                aname, save_dir, addtask, task_params_family["rules"], norm_db,
+                norm_trials, norm_task_arr, W_fp, layer_index=1,
+                n_components=6,
+                basis_scope=_basis_scope)
+        del norm_db, norm_extra
         del norm_out, norm_out_dev, norm_output_dev, norm_input_dev, norm_mask_dev
 
         # ── TRUE gradient fixed points, one solve per sibling rule ────────────
@@ -672,8 +537,8 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
         # one_task_analysis.py and two_task_analysis.py use) relaxes M* = F(M*; x)
         # under each period's held-constant input, so every saved point is an
         # actual fixed point carrying its own convergence metric (rel_step) and an
-        # is_fixed mask, plus the multistability probes (memory-seeded, naive
-        # rank-one) and the linear-stability spectrum.
+        # is_fixed mask. This focused sibling analysis does not compute the
+        # solver's optional multistability or linear-stability diagnostics.
         #
         # Scope: the DELAY period only, for both sibling rules — that is where the
         # memory this analysis is about lives, and solving the other three periods
@@ -681,21 +546,14 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
         # (delay1) in both families, which is the one that holds the remembered
         # stimulus in dmc (before stim2 arrives) and in delaydm.
         #
-        # n_interp=64 matches one_task_analysis.py and two_task_analysis.py: a dense
-        # ring of interpolated stimulus angles, bypassing the task generator's
-        # 8-way snapping (n_eachring=8). 56 of the 64 angles were never trained,
-        # which is the point — a fixed point found BETWEEN trained directions is
-        # what distinguishes a continuous memory manifold from 8 discrete
-        # attractors. n_seeds=1 solves a single deterministic template.
+        # Use exactly the task generator's eight trained directions
+        # (n_eachring=8). Unlike the one/two-task interpolation analyses, this
+        # sibling comparison does not probe the 56 between-direction inputs.
+        # n_seeds=1 solves a single deterministic template.
         #
-        # NB the separation silhouettes are not comparable across n_interp: the
-        # delaydm grouping is per stimulus angle, so a denser ring means more
-        # groups whose neighbours sit closer together, which lowers the score even
-        # when the geometry is unchanged. Compare runs at equal n_interp only.
         # Writes {save_dir}/fixed_points_grad_{aname}_{rule}.pkl per rule.
         cfg_fp = {"task_params": task_params, "train_params": train_params,
                   "net_params": net_params}
-        W_fp = state_dict["mp_layer1.W"].detach().cpu().numpy()
         solved_rules = []
         for _rule in task_params_family["rules"]:
             try:
@@ -703,23 +561,24 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                     aname, Path(save_dir), model, cfg_fp, device,
                     rule=_rule, out_suffix=f"_{_rule}",
                     layer_index=1, W=W_fp,
-                    periods=("longdelay",), n_interp=64, n_seeds=1,
-                    # Double the solver's Adam cap (default 200k) for THIS family
-                    # battery only — one_task/two_task keep the default. The cap
-                    # is an upper bound, not a step count: Adam stops as soon as
-                    # the speed loss reaches loss_tol (1e-8), so this changes
-                    # nothing for points that already converge and only buys more
+                    periods=("longdelay",), n_interp=SIBLING_FP_N_STIM,
+                    n_seeds=1,
+                    # Raise the solver's Adam cap to 800k (default 200k) for
+                    # THIS family battery only — one_task/two_task keep the
+                    # default. The cap is an upper bound, not a step count: Adam
+                    # stops when the speed loss reaches loss_tol (1e-8), so this
+                    # changes nothing for points that already converge and only
+                    # buys more
                     # room for the ones that were still being cut off. Watch the
-                    # "N/64 converged (rel_step<=...)" line to see if it helped.
-                    steps=400000,
-                    # No per-stimulus delay paths. They are (n_interp, win_T,
-                    # hidden*embed) — ~0.1-0.9 GB per rule at n_interp=64 with this
-                    # 300x300 layer, against ~70 MB for the fixed points
-                    # themselves — and 64 faded paths would bury the endpoints they
-                    # were meant to explain. The separation code handles their
-                    # absence: traj_proj comes back None and the paths are simply
-                    # not drawn. Set True (with a smaller n_interp) to get them back.
+                    # convergence-count line to see if it helped.
+                    steps=800000,
+                    # No per-stimulus delay paths: all retained downstream figures
+                    # use the solved endpoints only.
                     save_all_trajectories=False,
+                    # Jacobian eigenvalues, spectral radius, stable/marginal
+                    # labels, and the decay-normalized spectrum are not consumed
+                    # by the retained sibling analyses or paper figures.
+                    analyze_stability=False,
                     # Diagonal probe only — the delay input solved from the delay's
                     # own end state. The memory-seed probe is a FIXATION-input solve
                     # (out of scope for a delay-only run), and the naive rank-one
@@ -727,7 +586,7 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                     # "was the ring transplanted with the seed", but here it doubles
                     # the solves for a question this analysis is not asking.
                     cross_seed_probes=False, naive_seed_probes=False,
-                    # Off for the same reason: it is one more 64-point solve per
+                    # Off for the same reason: it is one more eight-point solve per
                     # rule, and this analysis asks only where the delay ring is,
                     # not what else the delay input could settle to.
                     traj_seed_probes=False)
@@ -737,17 +596,21 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                 import traceback
                 traceback.print_exc()
 
-        # ── Cross-task memory separation, recomputed on the SOLVED points ──────
+        # ── Fixed points in all six PCs of both trajectory bases ────────
         if len(solved_rules) == len(task_params_family["rules"]):
             try:
-                grad_fp_category_separation(aname, save_dir, addtask, solved_rules)
+                for _basis_scope in DELAY_PCA_SCOPES:
+                    save_sibling_fixed_point_pc_projections(
+                        aname, save_dir, addtask, solved_rules,
+                        basis_scope=_basis_scope)
             except Exception as exc:
-                print(f"  [{addtask}/separation] failed: {exc}")
+                print(f"  [{addtask}/pc-projection] failed: {exc}")
                 import traceback
                 traceback.print_exc()
         else:
-            print(f"  [{addtask}/separation] skipped: only {len(solved_rules)}/"
-                  f"{len(task_params_family['rules'])} rules solved.")
+            print(f"  [{addtask}/pc-projection] skipped: only "
+                  f"{len(solved_rules)}/{len(task_params_family['rules'])} "
+                  "rules solved.")
 
     # Probe every requested sibling family (both, by default) in this one run: the
     # solves are independent, so doing them here shares the checkpoint load and the
