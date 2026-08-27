@@ -443,7 +443,8 @@ def solve_period_modulation_fixed_points(
         aname, save_dir, net, cfg, device,
         rule=None, out_suffix="",
         layer_index=1, W=None,
-        n_interp=64, steps=200000, learningRate=1e-3,
+        n_interp=64, stim_magnitudes=None,
+        steps=200000, learningRate=1e-3,
         loss_tol=1e-8, lbfgs_steps=2000, rel_tol=0.05,
         stim_channels=None, periods=None, save_all_trajectories=False,
         n_seeds=5, seed_base=0,
@@ -467,6 +468,12 @@ def solve_period_modulation_fixed_points(
     W           : recurrent plastic weight matrix (hidden, embed) for the effective
                   modulation view W⊙M*; if None, that view is skipped.
     n_interp    : number of interpolated stimulus angles on [0, 2π).
+    stim_magnitudes : optional one-dimensional sequence of positive stimulus
+                  magnitudes. Every angle is crossed with every magnitude, and
+                  the optimizer is initialized from the corresponding recorded
+                  end-of-period M. None keeps the historical unit-magnitude
+                  sweep. The saved ``stim`` label remains the angle index, while
+                  ``stimulus_magnitude`` identifies repeated points at that angle.
     steps / learningRate / loss_tol / lbfgs_steps : optimizer settings passed to
                   find_modulation_fixed_points (Adam until loss<=loss_tol capped at
                   `steps`, then L-BFGS polishing).
@@ -549,6 +556,15 @@ def solve_period_modulation_fixed_points(
     # numbers. Stated once, up front, because every rel_step and every |lam_J - 1|
     # below is damped by it.
     decay_lam, decay_leak = _decay_factor(net.mp_layers[0])
+    if stim_magnitudes is None:
+        stimulus_magnitude_levels = np.array([1.0], dtype=float)
+    else:
+        stimulus_magnitude_levels = np.asarray(stim_magnitudes, dtype=float)
+        if stimulus_magnitude_levels.ndim != 1 or stimulus_magnitude_levels.size == 0:
+            raise ValueError("stim_magnitudes must be a non-empty 1D sequence")
+        if (not np.isfinite(stimulus_magnitude_levels).all()
+                or np.any(stimulus_magnitude_levels <= 0)):
+            raise ValueError("stim_magnitudes must contain finite positive values")
     tag_pre = f"[grad-fp/{rule}]" if rule else "[grad-fp]"
     print(f"  {tag_pre} decay: lam={decay_lam:.3f}, 1-lam={decay_leak:.3f} — both "
           f"the residual and the eigenvalue band are compressed by that factor, "
@@ -670,26 +686,35 @@ def solve_period_modulation_fixed_points(
                                                stim_on, stim_off)
         print(f"  {tag} seed={task_seed}: stimulus ring channels ({ch_a}, {ch_b})")
 
-        # The ring's two channels hold (sin θ, cos θ) in generator order.
+        # The ring's two channels hold magnitude * (sin θ, cos θ) in
+        # generator order. Keep `stim` as the ANGLE label when magnitudes are
+        # repeated, so downstream hue continues to mean stimulus direction.
         angles = np.arange(n_interp) * (2 * np.pi / n_interp)
-        batch = np.repeat(template[None, :, :], n_interp, axis=0)   # (n_interp,T,n_in)
-        batch[:, stim_on:stim_off, ch_a] = np.sin(angles)[:, None]
-        batch[:, stim_on:stim_off, ch_b] = np.cos(angles)[:, None]
+        stim = np.repeat(np.arange(n_interp, dtype=int),
+                         stimulus_magnitude_levels.size)
+        point_angles = angles[stim]
+        point_magnitudes = np.tile(stimulus_magnitude_levels, n_interp)
+        n_points = int(stim.size)
+        batch = np.repeat(template[None, :, :], n_points, axis=0)
+        batch[:, stim_on:stim_off, ch_a] = (
+            point_magnitudes * np.sin(point_angles))[:, None]
+        batch[:, stim_on:stim_off, ch_b] = (
+            point_magnitudes * np.cos(point_angles))[:, None]
 
         x = torch.as_tensor(batch, dtype=torch.float, device=device)
         _, _, db = net.iterate_sequence_batch(
             x, run_mode="track_states", save_to_cpu=True, detach_saved=True)
-        M_all = np.asarray(db[f"M{layer_index}"])                  # (n_interp,T,hid,emb)
-        hid_all = np.asarray(db[f"hidden{layer_index}"])           # (n_interp,T,hidden)
+        M_all = np.asarray(db[f"M{layer_index}"])                  # (n_points,T,hid,emb)
+        hid_all = np.asarray(db[f"hidden{layer_index}"])           # (n_points,T,hidden)
         # Embedded MP-layer input x(t) (post input-embedding). Needed to build the
         # naive rank-one seeds, whose presynaptic factor must be the x the solve
         # runs under — every fixed point has that form (see _naive_rank1_seeds).
         # Only that probe needs it, so a net layout without the key stays usable.
         _x_key = f"input{layer_index}"
         x_embed_all = np.asarray(db[_x_key]) if _x_key in db else None
-        stim = np.arange(n_interp)
         # Exemplar stimulus whose within-period trajectory we record for the
-        # figure (angle 0 = first dense stimulus; matches paper_plot's connector).
+        # figure (first magnitude at angle 0). `traj_stim` is the angle label,
+        # retained for compatibility with paper_plot's exemplar lookup.
         traj_stim = 0
 
         # ── How many DISTINCT constant inputs does the period battery have? ───
@@ -734,7 +759,7 @@ def solve_period_modulation_fixed_points(
             if seed_src == _TRAJ_SEED:
                 t_seed = -1
                 init_M, how = _trajectory_M_seeds(
-                    n_interp, M_all, net.mp_layers[0],
+                    n_points, M_all, net.mp_layers[0],
                     noise_frac=traj_noise_frac, seed=naive_rng_seed)
                 print(f"  {tag} {name}: seeds drawn {how}")
             elif seed_src == _NAIVE_RANK1:
@@ -745,7 +770,7 @@ def solve_period_modulation_fixed_points(
                     continue
                 t_seed = -1
                 init_M, fit = _naive_rank1_seeds(
-                    n_interp, x_embed_all[:, t_mid, :], net.mp_layers[0],
+                    n_points, x_embed_all[:, t_mid, :], net.mp_layers[0],
                     seed=naive_rng_seed)
                 print(f"  {tag} {name}: naive rank-one seeds, bound-fit factor "
                       f"median {np.median(fit):.3f} (1.0 = raw seed already fit)")
@@ -760,8 +785,10 @@ def solve_period_modulation_fixed_points(
 
             seed_desc = (f"{seed_src} t={t_seed}" if t_seed >= 0
                          else f"{seed_src} (rng {naive_rng_seed})")
-            print(f"  {tag} seed={task_seed} {name}: solving {n_interp} fixed "
-                  f"points (input {in_period} t={t_mid}, seed {seed_desc})")
+            print(f"  {tag} seed={task_seed} {name}: solving {n_points} fixed "
+                  f"points ({n_interp} angles x "
+                  f"{stimulus_magnitude_levels.size} magnitudes; input "
+                  f"{in_period} t={t_mid}, seed {seed_desc})")
             fixed_M, loss_hist, final_speeds = find_modulation_fixed_points(
                 net, init_M, const_input, steps=steps, learningRate=learningRate,
                 printPeriod=max(steps // 20, 1), loss_tol=loss_tol,
@@ -847,6 +874,8 @@ def solve_period_modulation_fixed_points(
                 "rel_tol": float(rel_tol),
                 "loss_hist": np.asarray(loss_hist, dtype=float),
                 "stim": np.asarray(stim),
+                "stimulus_angle": np.asarray(point_angles, dtype=float),
+                "stimulus_magnitude": np.asarray(point_magnitudes, dtype=float),
                 # Constant input this period's M* was solved under; kept so the
                 # (deferred) stability analysis can linearize F at the same point.
                 "const_input": np.asarray(const_input, dtype=np.float32),
@@ -869,7 +898,7 @@ def solve_period_modulation_fixed_points(
                 # the points spread along a manifold. See _relative_spread.
                 "across_angle_spread": _relative_spread(fixed_M),
             }
-            print(f"  {tag} seed={task_seed} {name}: across-angle spread of M* = "
+            print(f"  {tag} seed={task_seed} {name}: across-stimulus spread of M* = "
                   f"{results[name]['across_angle_spread']:.3e}")
         return results, angles, input_info
 
@@ -882,10 +911,10 @@ def solve_period_modulation_fixed_points(
             keys = list(results.keys())
         vals = np.concatenate([np.asarray(results[k]["rel_step"], float)
                                for k in keys]) if keys else np.array([np.inf])
-        return float(np.median(vals))
+        return float(np.median(vals)), keys
 
     # ── Try n_seeds deterministic templates; keep the best-converging one ────
-    best = None   # (score, task_seed, results, angles, input_info)
+    best = None   # (score, task_seed, results, angles, input_info, score_periods)
     for s in range(seed_base, seed_base + max(int(n_seeds), 1)):
         try:
             results, angles, input_info = _solve_one_seed(s)
@@ -894,17 +923,18 @@ def solve_period_modulation_fixed_points(
             continue
         if not results:
             continue
-        score = _selection_score(results)
-        print(f"  {tag} seed={s}: selection score (stim+resp median rel_step) "
-              f"= {score:.3e}")
+        score, score_periods = _selection_score(results)
+        score_label = "+".join(score_periods) if score_periods else "none"
+        print(f"  {tag} seed={s}: selection score ({score_label} median "
+              f"rel_step) = {score:.3e}")
         if best is None or score < best[0]:
-            best = (score, s, results, angles, input_info)
+            best = (score, s, results, angles, input_info, score_periods)
 
     if best is None:
         print(f"  {tag} no seed produced fixed points; skipping save.")
         return None
 
-    best_score, best_seed, results, angles, input_info = best
+    best_score, best_seed, results, angles, input_info, score_periods = best
     print(f"  {tag} selected seed={best_seed} (score {best_score:.3e} over "
           f"{n_seeds} seed(s)).")
 
@@ -1001,12 +1031,17 @@ def solve_period_modulation_fixed_points(
     out_pkl = save_dir / f"fixed_points_grad_{aname}{out_suffix}.pkl"
     with open(out_pkl, "wb") as _f:
         pickle.dump({"aname": aname, "rule": rule, "n_interp": int(n_interp),
+                     "stimulus_magnitudes": np.asarray(
+                         stimulus_magnitude_levels, dtype=float),
+                     "n_stimulus_points": int(
+                         n_interp * stimulus_magnitude_levels.size),
                      "rel_tol": float(rel_tol),
                      # Modulation decay, so a reader can undo the damping of
                      # rel_step and of the eigenvalue band (see _decay_factor).
                      "lam": float(decay_lam), "leak": float(decay_leak),
                      "n_seeds": int(n_seeds), "selected_seed": int(best_seed),
                      "selection_score": float(best_score),
+                     "selection_periods": list(score_periods),
                      "angles": np.asarray(angles, dtype=float),
                      # Provenance of every entry in `results`: which input it was
                      # solved under and where the solve started.

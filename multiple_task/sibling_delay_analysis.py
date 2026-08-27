@@ -16,11 +16,19 @@ import torch
 
 __all__ = [
     "DELAY_PCA_SCOPES",
+    "SIBLING_FIXED_POINT_N_SEEDS",
+    "SIBLING_FIXED_POINT_STEPS",
     "fit_delay_trajectory_pca",
     "save_sibling_fixed_point_pc_projections",
 ]
 
 DELAY_PCA_SCOPES = ("joint", "first_task_only")
+# Deterministic task-template seeds tried independently for each sibling rule.
+# core/grad_fixed_points.py saves only the seed with the lowest median rel_step.
+SIBLING_FIXED_POINT_N_SEEDS = 1
+# Maximum Adam steps for each candidate seed. The optimizer can stop earlier
+# when its fixed-point speed loss reaches the configured tolerance.
+SIBLING_FIXED_POINT_STEPS = 800000
 
 
 def _delay_pca_scope_spec(rules, basis_scope):
@@ -241,7 +249,7 @@ def _stimulus_color(stim, n_stim):
 
 
 def _adaptive_limits(xy, padding=0.10):
-    """Independent x/y limits from the joint extent of both displayed cycles."""
+    """Independent x/y limits from the joint extent of all displayed points."""
     xy = np.asarray(xy, dtype=float)
     finite = np.isfinite(xy).all(axis=1)
     if not np.any(finite):
@@ -282,24 +290,21 @@ def _save_pc_pair_gallery(save_dir, aname, addtask, artifact_suffix,
     for ax, (pc_x, pc_y) in zip(axs.flat, pairs):
         for task, rule in enumerate(task_names):
             sel_task = task_idx == task
-            if addtask == "delaydm1":
-                good_task = sel_task & is_fixed
-                order = np.argsort(stim_idx[good_task])
-                ring = proj[good_task][order][:, [pc_x, pc_y]]
-                if ring.shape[0] >= 2:
-                    ring = np.vstack([ring, ring[:1]])
-                    ax.plot(ring[:, 0], ring[:, 1], color="0.60", lw=0.7,
-                            alpha=0.7, linestyle=("-", "--")[task % 2],
-                            zorder=1)
             for stim in np.unique(stim_idx[sel_task]):
                 sel = sel_task & (stim_idx == stim)
                 color = _stimulus_color(stim, n_stim)
-                converged = bool(is_fixed[sel].all())
-                ax.scatter(proj[sel, pc_x], proj[sel, pc_y],
-                           color=color if converged else "none",
-                           edgecolor="none" if converged else color,
-                           linewidth=0 if converged else 0.9,
-                           marker=markers[task % len(markers)], s=25, zorder=2)
+                good = sel & is_fixed
+                bad = sel & ~is_fixed
+                if np.any(good):
+                    ax.scatter(proj[good, pc_x], proj[good, pc_y],
+                               color=color, edgecolor="none", linewidth=0,
+                               marker=markers[task % len(markers)], s=25,
+                               zorder=2)
+                if np.any(bad):
+                    ax.scatter(proj[bad, pc_x], proj[bad, pc_y],
+                               color="none", edgecolor=color, linewidth=0.9,
+                               marker=markers[task % len(markers)], s=25,
+                               zorder=2)
 
         xlim, ylim = _adaptive_limits(proj[:, [pc_x, pc_y]])
         ax.set_xlim(*xlim)
@@ -359,7 +364,7 @@ def save_sibling_fixed_point_pc_projections(
     per_rule = _load_fixed_point_rules(aname, save_dir, rules)
 
     out = {
-        "version": 1,
+        "version": 2,
         "aname": aname,
         "family": addtask,
         "task_names": list(rules),
@@ -383,7 +388,8 @@ def save_sibling_fixed_point_pc_projections(
                              f"got {components.shape}")
         components = components[:6]
 
-        projected, task_labels, stim_labels, fixed_labels = [], [], [], []
+        projected, task_labels, stim_labels = [], [], []
+        magnitude_labels, fixed_labels = [], []
         for task, (rule, data) in enumerate(per_rule):
             entry = data.get("results", {}).get(probe)
             if entry is None or entry.get(fp_key) is None:
@@ -395,19 +401,27 @@ def save_sibling_fixed_point_pc_projections(
                                  f"trajectory PCA expects {mean.size}")
             projected.append((values - mean) @ components.T)
             stim = np.asarray(entry["stim"], dtype=int)
+            magnitude = np.asarray(
+                entry.get("stimulus_magnitude", np.ones(stim.size)), dtype=float)
+            if magnitude.shape != stim.shape:
+                raise ValueError(f"{rule}: stimulus_magnitude shape "
+                                 f"{magnitude.shape} != stim shape {stim.shape}")
             task_labels.extend([task] * stim.size)
             stim_labels.extend(stim.tolist())
+            magnitude_labels.extend(magnitude.tolist())
             fixed_labels.extend(np.asarray(
                 entry.get("is_fixed", np.ones(stim.size, bool)), dtype=bool).tolist())
 
         proj = np.vstack(projected)
         task_idx = np.asarray(task_labels, dtype=int)
         stim_idx = np.asarray(stim_labels, dtype=int)
+        stimulus_magnitude = np.asarray(magnitude_labels, dtype=float)
         is_fixed = np.asarray(fixed_labels, dtype=bool)
         rep_out = {
             "proj": np.asarray(proj, dtype=np.float32),
             "task_idx": task_idx,
             "stim_idx": stim_idx,
+            "stimulus_magnitude": stimulus_magnitude,
             "is_fixed": is_fixed,
             "task_names": list(rules),
             "explained_variance_ratio": np.asarray(

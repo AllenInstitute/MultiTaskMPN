@@ -101,6 +101,8 @@ import mpn
 import mpn_tasks
 from sibling_delay_analysis import (
     DELAY_PCA_SCOPES,
+    SIBLING_FIXED_POINT_N_SEEDS,
+    SIBLING_FIXED_POINT_STEPS,
     fit_delay_trajectory_pca,
     save_sibling_fixed_point_pc_projections,
 )
@@ -184,6 +186,11 @@ SHARED_RUN_FAMILIES = {
 # Match the task generator's native eight stimulus directions. This sibling
 # analysis deliberately does not solve additional between-direction inputs.
 SIBLING_FP_N_STIM = 8
+# Both delayDM sibling rules probe whether different in-distribution stimulus
+# magnitudes at the same angle relax to the same or different delay fixed points.
+# The training generator's marginal stimulus-strength support is approximately
+# [0.48, 1.52]; use five interior levels, including the historical magnitude 1.
+DELAYDM_FP_STIM_MAGNITUDES = (0.6, 0.8, 1.0, 1.2, 1.4)
 
 
 def _clean_stale_sibling_artifacts(save_dir, families):
@@ -466,7 +473,7 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
         # fixed-point solver below builds its own trial template internally (with
         # every period set to "normal"), so `_gen`'s long_delay knob is only here
         # for a caller that wants to stress-test the memory geometry by hand.
-        norm_data, norm_extra = _gen("normal", 200)
+        norm_data, norm_extra = _gen("normal", 100)
         norm_input, norm_output, norm_mask = norm_data
         norm_task = helper.find_task(task_params_family, norm_input.detach().cpu().numpy(), 0)
         norm_task = [int(t - min(norm_task)) for t in norm_task]
@@ -549,7 +556,11 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
         # Use exactly the task generator's eight trained directions
         # (n_eachring=8). Unlike the one/two-task interpolation analyses, this
         # sibling comparison does not probe the 56 between-direction inputs.
-        # n_seeds=1 solves a single deterministic template.
+        # For both delaydm1 and delaydm2, cross those angles with five
+        # in-distribution magnitude levels. Both DMC rules retain the historical
+        # unit-magnitude sweep.
+        # Try the deterministic task-template seeds configured in
+        # sibling_delay_analysis.py and save only the lowest-rel_step result.
         #
         # Writes {save_dir}/fixed_points_grad_{aname}_{rule}.pkl per rule.
         cfg_fp = {"task_params": task_params, "train_params": train_params,
@@ -562,16 +573,15 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                     rule=_rule, out_suffix=f"_{_rule}",
                     layer_index=1, W=W_fp,
                     periods=("longdelay",), n_interp=SIBLING_FP_N_STIM,
-                    n_seeds=1,
-                    # Raise the solver's Adam cap to 800k (default 200k) for
-                    # THIS family battery only — one_task/two_task keep the
-                    # default. The cap is an upper bound, not a step count: Adam
-                    # stops when the speed loss reaches loss_tol (1e-8), so this
-                    # changes nothing for points that already converge and only
-                    # buys more
-                    # room for the ones that were still being cut off. Watch the
-                    # convergence-count line to see if it helped.
-                    steps=800000,
+                    stim_magnitudes=(DELAYDM_FP_STIM_MAGNITUDES
+                                     if _rule in ("delaydm1", "delaydm2")
+                                     else None),
+                    n_seeds=SIBLING_FIXED_POINT_N_SEEDS,
+                    # Use the sibling-analysis Adam cap configured beside its
+                    # seed count. one_task/two_task keep the solver default. This
+                    # is an upper bound: Adam stops when the speed loss reaches
+                    # loss_tol (1e-8), so already-converged points stop early.
+                    steps=SIBLING_FIXED_POINT_STEPS,
                     # No per-stimulus delay paths: all retained downstream figures
                     # use the solved endpoints only.
                     save_all_trajectories=False,

@@ -8,7 +8,7 @@ figures, or import individual functions as needed.
 Figures are grouped into modes by the experiment they depend on:
     one_task         single-task training analyses
     multiple_tasks   full multi-task network (clustering, lesion, state space)
-    two_in_multiple  two-task probes within the multi-task network (DMC memory)
+    two_in_multiple  delayDM fixed-point geometry probe of the multi-task network
     pretraining      pretraining → post-training transfer analyses
     two_task         two-task network (cross-task / cross-period PCA)
 
@@ -155,31 +155,16 @@ OUT_DIR = Path("paper_plot")
 # ── Multi-task (one full multi-task network) ──
 ANAME = "everything_seed749_L21e4+hidden300+batch128+angle"
 DATA_DIR = Path("multiple_tasks") / ANAME
-# DMC category-memory probe (two_in_multiple mode). May differ from ANAME — set
-# independently so the probe figures can come from a different seed/regularization
-# than the clustering/lesion figures.
-DMC_ANAME = "everything_seed749_L21e4+hidden300+batch128+angle"
-# delayDM integration-memory probe (two_in_multiple mode). Independent of
-# ANAME/DMC_ANAME.
-DELAYDM_ANAME = "everything_seed749_L21e4+hidden300+batch128+angle"
-# Both are produced by multiple_task_analysis.py's shared_run, which writes, per
-# family, into multiple_tasks/{aname}/:
-#     fixed_points_grad_{aname}_{rule}.pkl   one per rule of the family
-#     {first_rule}_delay_trajectory_pca_{aname}.pkl
-#                                             joint delay1-trajectory PCA basis
-#                                             (six PCs for delayDM)
-#     {first_rule}_delay_trajectory_pca_{first_rule}_only_{aname}.pkl
-#                                             first-task-only reference basis
+# delayDM integration-memory probe (two_in_multiple mode). May differ from
+# ANAME — set independently so the probe figure can come from a different
+# seed/regularization than the clustering/lesion figures.
+DELAYDM_ANAME = "everything_seed842_L21e4+hidden300+batch128+angle"
+# Produced by multiple_task_analysis.py's shared_run, which writes into
+# multiple_tasks/{aname}/ the two pickles the delayDM geometry figure reads:
+#     fixed_points_grad_{aname}_{rule}.pkl   one per delayDM rule
 #     delaydm1_delay_pc_projections_{aname}.pkl
-#                                             complete joint six-PC coordinates
-#     delaydm1_delay_pc_projections_delaydm1_only_{aname}.pkl
-#                                             complete reference coordinates
-#     dmcgo_delay_pc_projections_{aname}.pkl
-#                                             complete joint six-PC coordinates
-#     dmcgo_delay_pc_projections_dmcgo_only_{aname}.pkl
-#                                             complete reference coordinates
-# (An older end-of-delay format, {addtask}_fixed_points_{aname}.pkl, is retired
-# and no longer read by any figure.)
+#                                             joint six-PC delay-trajectory
+#                                             coordinates of the fixed points
 
 # ── Two-task network ──
 TWOTASKS_DIR = Path("twotasks")
@@ -322,11 +307,6 @@ def stim_color(k, n=ONETASK_N_STIM):
     frac = (k % n) / max(n - 1, 1)
     hue = 0.83 * frac
     return mpl.colors.hsv_to_rgb((hue, 0.85, 0.9))
-
-
-def stim_colors(n=ONETASK_N_STIM):
-    """List of n stimulus colors on the red→purple rainbow ramp."""
-    return [stim_color(k, n) for k in range(n)]
 
 
 # ─── Sequential (dark → light) color scheme: interpolation level alpha ────────
@@ -930,10 +910,11 @@ def plot_clustered_hidden(col_k_override=20):
 # ─── Figure: Clustered modulation variance matrix ────────────────────────────
 
 def _load_cluster_info_mod():
-    """Load the modulation cluster_info pickle for the target model."""
+    """Load the modulation cluster_info pickle for the target model, or None if
+    it has not been produced yet (callers print their own "Skipped" message)."""
     pkl_path = DATA_DIR / f"cluster_info_mod_{ANAME}.pkl"
     if not pkl_path.exists():
-        raise FileNotFoundError(f"Modulation cluster info not found: {pkl_path}")
+        return None
     with open(pkl_path, "rb") as f:
         return pickle.load(f)
 
@@ -948,6 +929,10 @@ def plot_clustered_modulation(G_index=1):
     """
     _ensure_out_dir()
     mod_info = _load_cluster_info_mod()
+    if mod_info is None:
+        print(f"  Skipped: cluster_info_mod_{ANAME}.pkl not found. "
+              "Run multiple_task_analysis.py first.")
+        return
     mod_data = mod_info["modulation_all_normalized"]
 
     cell_vars = mod_data["cell_vars_rules_sorted_norm"]
@@ -1173,47 +1158,6 @@ def plot_l2e4_activation_accuracy():
 # ─── Figure: State space PCA ─────────────────────────────────────────────────
 
 STATE_SPACE_DIR = Path("state_space")
-
-
-def _plot_state_space_pca(X_2d, ctx_rule_labels, all_rules, rule_motif_mapping,
-                          title="", figsize=(2.5, 2.5), show_legend=True):
-    """
-    Scatter of context-endpoint PCA colored by computation category.
-    Returns (fig, ax).
-    """
-    category_order = [
-        "Pro Delayed",
-        "Anti Delayed",
-        "Pro Reaction",
-        "Anti Reaction",
-        "Pro Integration",
-        "Categorization",
-    ]
-    category_to_color = {cat: col for _, (cat, col) in rule_motif_mapping.items()}
-
-    fig, ax = plt.subplots(1, 1, figsize=figsize)
-
-    for cat in category_order:
-        rule_idxs_in_cat = [
-            idx for idx, rule in enumerate(all_rules)
-            if rule_motif_mapping[rule][0] == cat
-        ]
-        sel = np.isin(ctx_rule_labels, rule_idxs_in_cat)
-        ax.scatter(
-            X_2d[sel, 0], X_2d[sel, 1],
-            label=cat, color=category_to_color[cat],
-            alpha=0.5, s=18, edgecolors="none",
-        )
-
-    ax.set_xlabel("PC1")
-    ax.set_ylabel("PC2")
-    ax.set_title(title, fontsize=10, pad=6)
-    if show_legend:
-        _legend(ax, frameon=True, loc="best", fontsize=5, markerscale=1.0)
-    ax.spines[["top", "right"]].set_visible(False)
-
-    fig.tight_layout()
-    return fig, ax
 
 
 def _load_state_space_pca():
@@ -1546,15 +1490,6 @@ def plot_lesion_heatmap():
 
 
 # ─── Figure: OM vs lesion ────────────────────────────────────────────────────
-
-def _load_cluster_info_mod():
-    """Load the modulation cluster_info pickle for the target model."""
-    pkl_path = DATA_DIR / f"cluster_info_mod_{ANAME}.pkl"
-    if not pkl_path.exists():
-        return None
-    with open(pkl_path, "rb") as f:
-        return pickle.load(f)
-
 
 def plot_om_vs_lesion():
     """
@@ -4813,20 +4748,17 @@ _TWOTASK_FP_BASIS_RULE = "delayanti"
 _TWOTASK_FP_ROW_ORDER = ["delaygo", "delayanti"]
 
 
-def _twotask_shared_fp_bases(paths, label, period="longdelay", basis_rule=None,
-                             hint="Run two_task_analysis.py first."):
-    """Fit ONE shared 2-PC PCA per representation from a reference rule's pickle,
-    for the combined grad fixed-point figures. `period` selects which trial epoch's
-    fixed points define the basis ("longdelay" or "longstimulus"). `paths` is a
-    (rule, path) list; `label` tags the log line; `basis_rule` is the reference rule
-    (default `_TWOTASK_FP_BASIS_RULE`, the two-task case) — the multi-task sibling
-    families pass their own.
+def _twotask_shared_fp_bases(paths, label, period="longdelay"):
+    """Fit ONE shared 2-PC PCA per representation from the reference rule's
+    (_TWOTASK_FP_BASIS_RULE) pickle, for the combined grad fixed-point figures.
+    `period` selects which trial epoch's fixed points define the basis
+    ("longdelay" or "longstimulus"). `paths` is a (rule, path) list; `label` tags
+    the log line.
 
     Returns a dict rep_key -> fitted PCA (usable as the renderers' `basis` arg).
     An EMPTY dict means the reference pickle was missing or unreadable, in which
     case each rule falls back to its own basis (the per-pickle default)."""
-    if basis_rule is None:
-        basis_rule = _TWOTASK_FP_BASIS_RULE
+    basis_rule = _TWOTASK_FP_BASIS_RULE
     ref_paths = [p for (r, p) in paths if r == basis_rule]
     shared = {}
     if ref_paths:
@@ -4844,21 +4776,19 @@ def _twotask_shared_fp_bases(paths, label, period="longdelay", basis_rule=None,
     return shared
 
 
-def _load_two_task_grad_fp_rules(paths, row_order=None,
-                                 hint="Run two_task_analysis.py first."):
-    """Load each rule's grad-fp pickle once, ordered top→bottom per `row_order`
-    (default `_TWOTASK_FP_ROW_ORDER`; rules not in the list are appended after, in
-    discovery order). Returns an ordered list of (rule, loaded-pickle-dict),
-    skipping rules whose pickle is missing/unreadable. Shared by the combined 2D
-    and 3D drivers — two-task and multi-task — so all of them order rows alike."""
-    if row_order is None:
-        row_order = _TWOTASK_FP_ROW_ORDER
+def _load_two_task_grad_fp_rules(paths):
+    """Load each rule's grad-fp pickle once, ordered top→bottom per
+    _TWOTASK_FP_ROW_ORDER (rules not in the list are appended after, in discovery
+    order). Returns an ordered list of (rule, loaded-pickle-dict), skipping rules
+    whose pickle is missing/unreadable. Shared by the combined 2D and 3D drivers
+    so both order rows alike."""
+    row_order = _TWOTASK_FP_ROW_ORDER
     by_rule = dict(paths)
     ordered_rules = ([r for r in row_order if r in by_rule]
                      + [r for r in by_rule if r not in row_order])
     rule_data = []
     for rule in ordered_rules:
-        d = _load_pkl_or_skip(by_rule[rule], hint)
+        d = _load_pkl_or_skip(by_rule[rule], "Run two_task_analysis.py first.")
         if d is not None:
             rule_data.append((rule, d))
     return rule_data
@@ -5128,48 +5058,19 @@ def plot_two_task_grad_fixed_points_3d():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Multi-task sibling families (DMC, delayDM): gradient fixed points
+# Multi-task DelayDM fixed-point geometry
 # ═════════════════════════════════════════════════════════════════════════════
-# multiple_task_analysis.py's shared_run now solves TRUE fixed points per sibling
-# rule with the same solver one_task / two_task use, writing one pickle per rule:
-#   multiple_tasks/{aname}/fixed_points_grad_{aname}_{rule}.pkl
-# Fixed points are projected through compact trajectory-PCA artifacts. Each family
-# has a joint sibling-task basis and a first-task-only reference basis. There is
-# no Stimulus-PC variant or plotting-time PCA fallback.
-#
-# Each family keeps its OWN run identifier, as the retired attractor figures did:
-# the probes may come from a different seed/regularization than the clustering and
-# lesion figures (ANAME). family -> (aname, rules in row order).
-_MULTITASK_FP_FAMILIES = {
-    "dmc":     (DMC_ANAME,     ["dmcgo", "dmcnogo"]),
-    "delaydm": (DELAYDM_ANAME, ["delaydm1", "delaydm2"]),
-}
-_MULTITASK_DELAY_BASIS_SCOPES = ("joint", "first_task_only")
-# Explicit PAPER projection, using 1-based PC numbers. Edit these pairs after
-# inspecting the saved six-dimensional projection artifacts; no upstream code
-# scores or selects a plane automatically.
+# This is the sole retained two_in_multiple analysis. It reads the two solved
+# delay-rule fixed-point pickles and their joint six-PC delay-trajectory
+# projection; paper_plot never refits PCA on fixed points.
+_DELAYDM_RULES = ("delaydm1", "delaydm2")
 _DELAYDM_PAPER_PC_PLANES = {
-    "joint": {
-        "hidden": (1, 2),
-        "e_modulation": (1, 2),
-    },
-    "first_task_only": {
-        "hidden": (1, 2),
-        "e_modulation": (1, 2),
-    },
-}
-_DMC_PAPER_PC_PLANES = {
-    "joint": {
-        "hidden": (1, 2),
-        "e_modulation": (1, 2),
-    },
-    "first_task_only": {
-        "hidden": (1, 2),
-        "e_modulation": (1, 2),
-    },
+    "hidden": (1, 2),
+    "e_modulation": (1, 2),
 }
 _MULTITASK_FP_HINT = ("Run multiple_task_analysis.py shared_run first to create "
-                      "the delay fixed points and delay-trajectory PCA bases.")
+                      "the DelayDM fixed points and joint delay-trajectory PCA.")
+_MULTITASK_RULE_MARKERS = ("s", "^")
 
 
 def _paper_pc_indices(pair, projection, context):
@@ -5184,7 +5085,7 @@ def _paper_pc_indices(pair, projection, context):
 
 
 def _adaptive_pc_limits(projection, pc_x, pc_y, padding=0.10):
-    """Independent x/y limits from both sibling-task cycles' joint extent."""
+    """Independent x/y limits from both DelayDM modalities' joint extent."""
     xy = np.asarray(projection[:, [pc_x, pc_y]], dtype=float)
     finite = np.isfinite(xy).all(axis=1)
     if not np.any(finite):
@@ -5200,415 +5101,263 @@ def _adaptive_pc_limits(projection, pc_x, pc_y, padding=0.10):
             (center[1] - half[1], center[1] + half[1]))
 
 
-def _multitask_delay_basis_spec(family, basis_scope):
-    """Filename suffix and axis label for one family-agnostic PCA scope."""
-    reference_rule = _MULTITASK_FP_FAMILIES[family][1][0]
-    if basis_scope == "joint":
-        return "", "Joint Delay"
-    if basis_scope == "first_task_only":
-        label = _TASK_DISPLAY.get(reference_rule, reference_rule)
-        return f"_{reference_rule}_only", f"{label} Delay"
-    raise ValueError(f"unknown trajectory-PCA basis scope {basis_scope!r}")
+def _ordered_delaydm_conditions(stim_idx, magnitude, context):
+    """Return a stable stimulus×magnitude order and reject ambiguous matches."""
+    stim_idx = np.asarray(stim_idx, dtype=int)
+    magnitude = np.asarray(magnitude, dtype=float)
+    if stim_idx.shape != magnitude.shape:
+        raise ValueError(f"{context}: stimulus and magnitude shapes disagree: "
+                         f"{stim_idx.shape} vs {magnitude.shape}")
+    order = np.lexsort((magnitude, stim_idx))
+    keys = np.column_stack((stim_idx[order], np.round(magnitude[order], 8)))
+    if np.unique(keys, axis=0).shape[0] != keys.shape[0]:
+        raise ValueError(f"{context}: stimulus×magnitude conditions are not unique")
+    return order, stim_idx[order], magnitude[order]
 
 
-def _multitask_grad_fp_paths(aname, rules):
-    """(rule, path) for each of a family's grad fixed-point pickles that exists."""
+def _matched_delaydm_projection_indices(entry):
+    """Indices pairing identical angle×magnitude conditions across modalities."""
+    task_idx = np.asarray(entry["task_idx"], dtype=int)
+    stim_idx = np.asarray(entry["stim_idx"], dtype=int)
+    magnitude = np.asarray(
+        entry.get("stimulus_magnitude", np.ones(stim_idx.size)), dtype=float)
+    if task_idx.shape != stim_idx.shape or magnitude.shape != stim_idx.shape:
+        raise ValueError("delayDM projection labels must have identical shapes")
+
+    paired = []
+    for task in (0, 1):
+        idx = np.flatnonzero(task_idx == task)
+        order, stim, mag = _ordered_delaydm_conditions(
+            stim_idx[idx], magnitude[idx], f"delayDM task {task}")
+        paired.append((idx[order], stim, mag))
+    if (not np.array_equal(paired[0][1], paired[1][1])
+            or not np.allclose(paired[0][2], paired[1][2], atol=1e-8, rtol=0)):
+        raise ValueError("delayDM modalities do not contain the same "
+                         "stimulus×magnitude conditions")
+    return paired[0][0], paired[1][0]
+
+
+def _condensed_euclidean(x):
+    """Upper-triangle Euclidean distances without a scipy.spatial dependency."""
+    x = np.asarray(x, dtype=float)
+    gram = x @ x.T
+    sq = np.maximum(
+        np.diag(gram)[:, None] + np.diag(gram)[None, :] - 2.0 * gram, 0.0)
+    return np.sqrt(sq)[np.triu_indices(x.shape[0], 1)]
+
+
+def _delaydm_alignment_metrics(rep_key="fixed_WM", probe="longdelay"):
+    """Quantify translation and geometry in the original representation.
+
+    Translation explained is the fraction of the mean squared paired
+    cross-task displacement accounted for by one shared displacement vector.
+    Geometry correlation compares the two within-task pairwise-distance
+    matrices and is therefore translation invariant. These metrics are computed
+    before PCA; the trajectory-PC panels below only visualize them.
+    """
+    aname, rules = DELAYDM_ANAME, _DELAYDM_RULES
     run_dir = Path("multiple_tasks") / aname
-    out = []
+    records = []
     for rule in rules:
-        p = run_dir / f"fixed_points_grad_{aname}_{rule}.pkl"
-        if p.exists():
-            out.append((rule, p))
-    return out
+        path = run_dir / f"fixed_points_grad_{aname}_{rule}.pkl"
+        data = _load_pkl_or_skip(path, _MULTITASK_FP_HINT)
+        if data is None:
+            return None
+        entry = data.get("results", {}).get(probe)
+        if entry is None or entry.get(rep_key) is None:
+            raise KeyError(f"{path}: missing {probe!r}/{rep_key!r}")
+        values = np.asarray(entry[rep_key], dtype=float)
+        values = values.reshape(values.shape[0], -1)
+        stim = np.asarray(entry["stim"], dtype=int)
+        magnitude = np.asarray(
+            entry.get("stimulus_magnitude", np.ones(stim.size)), dtype=float)
+        order, ordered_stim, ordered_mag = _ordered_delaydm_conditions(
+            stim, magnitude, f"{rule}/{probe}")
+        fixed = np.asarray(
+            entry.get("is_fixed", np.ones(stim.size, bool)), dtype=bool)[order]
+        records.append((values[order], ordered_stim, ordered_mag, fixed))
+
+    if (not np.array_equal(records[0][1], records[1][1])
+            or not np.allclose(records[0][2], records[1][2],
+                               atol=1e-8, rtol=0)):
+        raise ValueError("delayDM fixed-point pickles do not contain matching "
+                         "stimulus×magnitude conditions")
+    keep = records[0][3] & records[1][3]
+    if int(keep.sum()) < 3:
+        raise ValueError("need at least three converged matched delayDM conditions")
+    first, second = records[0][0][keep], records[1][0][keep]
+
+    displacement = second - first
+    task_translation = displacement.mean(axis=0)
+    total_squared = float(np.mean(np.sum(displacement ** 2, axis=1)))
+    translation_squared = float(np.sum(task_translation ** 2))
+    translation_explained = (translation_squared / total_squared
+                             if total_squared > 0 else np.nan)
+    residual = displacement - task_translation
+
+    dist_first = _condensed_euclidean(first)
+    dist_second = _condensed_euclidean(second)
+    if np.std(dist_first) == 0 or np.std(dist_second) == 0:
+        geometry_r = np.nan
+    else:
+        geometry_r = float(np.corrcoef(dist_first, dist_second)[0, 1])
+    return {
+        "translation_explained": translation_explained,
+        "geometry_r": geometry_r,
+        "n_pairs": int(keep.sum()),
+        "raw_rms": float(np.sqrt(total_squared)),
+        "residual_rms": float(np.sqrt(np.mean(np.sum(residual ** 2, axis=1)))),
+    }
 
 
-def _multitask_delay_bases(family, basis_scope="joint"):
-    """Load one upstream trajectory-PCA basis for a sibling family.
+def _plot_multitask_delaydm_fixed_point_geometry_representation(
+        plot_name, rep_key, output_suffix):
+    """Render one delayDM representation before/after task translation.
 
-    The artifact contains only transform parameters, not raw trajectories. This
-    keeps plotting lightweight and, critically, prevents paper_plot from silently
-    changing the scientific definition of the axes by refitting on fixed points
-    or falling back to another period. Every family has a joint basis and a
-    first-task-only reference basis.
+    Both panels use that representation's configured joint delay-trajectory PC
+    plane. Panel B subtracts only the mean paired modality displacement from
+    modality 2. It never refits PCA and performs no rotation or scaling.
+    Quantitative annotations are computed in the corresponding original
+    high-dimensional representation, before PCA.
     """
-    aname, rules = _MULTITASK_FP_FAMILIES[family]
-    addtask = rules[0]
-    artifact_suffix, _pc_label = _multitask_delay_basis_spec(
-        family, basis_scope)
+    aname, rules = DELAYDM_ANAME, _DELAYDM_RULES
+    pc_label = "Joint Delay"
     path = (Path("multiple_tasks") / aname
-            / f"{addtask}_delay_trajectory_pca{artifact_suffix}_{aname}.pkl")
-    artifact = _load_pkl_or_skip(path, _MULTITASK_FP_HINT)
-    if artifact is None:
-        return {}
-    if artifact.get("aname") != aname:
-        raise ValueError(f"{path}: expected aname={aname!r}, got "
-                         f"{artifact.get('aname')!r}")
-    if list(artifact.get("rules", [])) != list(rules):
-        raise ValueError(f"{path}: expected rules={rules}, got "
-                         f"{artifact.get('rules')}")
-    if artifact.get("period") != "delay1":
-        raise ValueError(f"{path}: expected a delay1 basis, got "
-                         f"{artifact.get('period')!r}")
-    if artifact.get("basis_scope") != basis_scope:
-        raise ValueError(f"{path}: expected basis_scope={basis_scope!r}, got "
-                         f"{artifact.get('basis_scope')!r}")
-    records = artifact.get("representations", {})
-    bases = {key: _StoredPCABasis(records[key])
-             for key in ("fixed_WM", "fixed_hidden") if key in records}
-    counts = artifact.get("trial_counts", {})
-    print(f"  [multitask-{family}/delaypc/{basis_scope}] basis from "
-          f"{artifact.get('fit_trial_counts', counts)} "
-          f"({len(bases)}/2 representations).")
-    return bases
-
-
-def _plot_multitask_grad_fp_combined(family, stem_prefix, render_fn,
-                                     with_pc_label, render_kwargs=None):
-    """Shared driver for one sibling family's combined grad fixed-point figures.
-
-    Every family has a joint Delay-PC basis and a first-task-only reference
-    basis. In every case the plotted points are BOTH tasks' solved delay fixed
-    points transformed into the stored trajectory basis.
-    """
-    aname, rules = _MULTITASK_FP_FAMILIES[family]
-    paths = _multitask_grad_fp_paths(aname, rules)
-    if not paths:
-        print(f"  Skipped: no fixed_points_grad_{aname}_*.pkl in "
-              f"multiple_tasks/{aname}. {_MULTITASK_FP_HINT}")
+            / f"{rules[0]}_delay_pc_projections_{aname}.pkl")
+    data = _load_pkl_or_skip(path, _MULTITASK_FP_HINT)
+    if data is None:
         return
-    rule_data = _load_two_task_grad_fp_rules(paths, row_order=rules,
-                                            hint=_MULTITASK_FP_HINT)
-    if not rule_data:
+    entry = data.get("representations", {}).get(plot_name)
+    if entry is None:
+        raise KeyError(f"{path}: missing representation {plot_name!r}")
+
+    projection = np.asarray(entry["proj"], dtype=float)
+    task_idx = np.asarray(entry["task_idx"], dtype=int)
+    stim_idx = np.asarray(entry["stim_idx"], dtype=int)
+    is_fixed = np.asarray(
+        entry.get("is_fixed", np.ones(projection.shape[0], bool)), dtype=bool)
+    first_idx, second_idx = _matched_delaydm_projection_indices(entry)
+    paired_fixed = is_fixed[first_idx] & is_fixed[second_idx]
+    if not np.any(paired_fixed):
+        raise ValueError("no converged matched delayDM fixed-point pairs")
+
+    try:
+        pc_x, pc_y = _DELAYDM_PAPER_PC_PLANES[plot_name]
+    except KeyError as exc:
+        raise KeyError(f"Set _DELAYDM_PAPER_PC_PLANES[{plot_name!r}] "
+                       "in paper_plot.py") from exc
+    pc_x, pc_y, bx, by = _paper_pc_indices(
+        (pc_x, pc_y), projection,
+        f"delayDM fixed-point geometry/joint/{plot_name}")
+
+    # Because PCA projection is linear, subtracting this six-PC translation is
+    # exactly the projection of subtracting its high-dimensional counterpart.
+    translation = np.mean(
+        projection[second_idx[paired_fixed]]
+        - projection[first_idx[paired_fixed]], axis=0)
+    aligned = projection.copy()
+    aligned[task_idx == 1] -= translation
+    metrics = _delaydm_alignment_metrics(rep_key=rep_key, probe="longdelay")
+    if metrics is None:
         return
-    for basis_scope in _MULTITASK_DELAY_BASIS_SCOPES:
-        scope_suffix, pc_label = _multitask_delay_basis_spec(
-            family, basis_scope)
-        shared_bases = _multitask_delay_bases(family, basis_scope)
-        for rep_key, suffix in (("fixed_WM", "emodulation"),
-                                ("fixed_hidden", "hidden")):
-            basis = shared_bases.get(rep_key)
-            if basis is None:
-                print(f"  Skipped '{rep_key}' ({basis_scope}): trajectory PCA "
-                      f"is missing. {_MULTITASK_FP_HINT}")
+
+    task_names = list(entry.get("task_names", rules))
+    n_stim = int(stim_idx.max()) + 1
+    fig, axs = plt.subplots(1, 2, figsize=(6.2, 2.75), squeeze=False)
+    panels = ((projection, "a   Original state space"),
+              (aligned, "b   Task offset removed"))
+    for panel_index, (ax, (shown, title)) in enumerate(zip(axs[0], panels)):
+        # Matched-condition connectors expose the displacement field in panel A
+        # and the remaining non-translational mismatch in panel B.
+        for i, j, converged in zip(first_idx, second_idx, paired_fixed):
+            if not converged:
                 continue
-            out_path = _multitask_out(
-                f"{stem_prefix}_delaypc{scope_suffix}_{suffix}.png")
-            extra = {"pc_label": pc_label} if with_pc_label else {}
-            extra.update(render_kwargs or {})
-            render_fn(rule_data, rep_key, out_path, basis, **extra)
+            ax.plot([shown[i, bx], shown[j, bx]],
+                    [shown[i, by], shown[j, by]],
+                    color="0.55", linewidth=0.45,
+                    alpha=(0.18 if panel_index == 0 else 0.28), zorder=1)
 
-
-# Marker per sibling rule when both are overlaid on ONE axes: hue is already spent
-# on the stimulus (SCHEME.md family 1), so the rule has to be shape. Same pair the
-# separation figures and the retired attractor figures used.
-_MULTITASK_RULE_MARKERS = ("s", "^")
-
-
-def _render_multitask_grad_fp_overlay(rule_data, rep_key, out_path, basis,
-                                      pc_label="Delay", connect_ring=False):
-    """Both sibling rules on ONE axes per trial period, told apart by MARKER.
-
-    The two-task renderer gives each rule its own row, which is right when there
-    are four period columns to line up. These families solve a single period, so
-    two rows of one panel only separated points that belong side by side; overlaid,
-    the two rules' fixed points are compared directly, point for point, in the
-    shared basis they were already projected into.
-
-    Color = stimulus, marker = rule (square / triangle), filled = converged and
-    hollow = over the relative-step threshold (the usual convention). `connect_ring`
-    joins each rule's converged points in stimulus order — meaningful where the
-    memory is an angle (delayDM), not where the split is by category (DMC).
-    """
-    per_rule = []
-    for rule, d in rule_data:
-        results = d["results"]
-        if not results or any(results[v].get(rep_key) is None for v in results):
-            print(f"  Skipped '{rep_key}' for rule '{rule}': not in pickle.")
-            continue
-        periods, ovl, proj, _traj, _a0, n_stim = _grad_fp_2d_project(d, rep_key, basis)
-        per_rule.append((rule, results, periods, ovl, proj, n_stim))
-    if not per_rule:
-        print(f"  Skipped '{rep_key}': no rule had it.")
-        return
-
-    # Panels = every period any rule solved, in canonical trial order.
-    order = ["longfixation", "longstimulus", "longdelay", "longresponse"]
-    seen = [v for (_, _, periods, _, _, _) in per_rule for v in periods]
-    panels = ([v for v in order if v in seen]
-              + [v for v in dict.fromkeys(seen) if v not in order])
-
-    fig, axs = plt.subplots(1, len(panels), figsize=(2.9 * len(panels), 2.8),
-                            squeeze=False)
-    for j, v in enumerate(panels):
-        ax = axs[0][j]
-        panel_points = []
-        for t, (rule, results, periods, ovl, proj, n_stim) in enumerate(per_rule):
-            if v not in results:
-                continue
-            for name in [v] + _grad_fp_3d_overlay(v, ovl, results):
-                if name not in proj:
-                    continue
-                pe = results[name]
-                xy = proj[name]
-                panel_points.append(xy)
-                cols, _ = _grad_fp_point_colors(pe, np.asarray(pe["stim"]), n_stim)
-                good = _fixed_point_mask(pe, xy.shape[0])
-                _scatter_grad_fp(ax, xy,
-                                 dict(marker=_MULTITASK_RULE_MARKERS[t % 2],
-                                      s=34, fill=True, z=3),
-                                 cols, good)
-                if connect_ring and name == v and int(good.sum()) >= 2:
-                    stim = np.asarray(pe["stim"], dtype=int)
-                    ring = np.array([xy[(stim == a) & good].mean(axis=0)
-                                     for a in sorted(set(stim[good].tolist()))])
-                    ring = np.vstack([ring, ring[:1]])          # close the loop
-                    ax.plot(ring[:, 0], ring[:, 1], color="0.55", lw=0.8,
-                            alpha=0.7, zorder=2, linestyle=("-", "--")[t % 2])
-        title = next((_period_display(r[1][v].get("period_title", v)) for r in per_rule if v in r[1]), v)
-        ax.set_title(title, fontsize=10)
-        ax.set_xlabel(f"{pc_label} PC1", fontsize=9)
-        if j == 0:
-            ax.set_ylabel(f"{pc_label} PC2", fontsize=9)
-        if panel_points:
-            xlim, ylim = _adaptive_pc_limits(np.vstack(panel_points), 0, 1)
-            ax.set_xlim(*xlim)
-            ax.set_ylim(*ylim)
-        ax.spines[["top", "right"]].set_visible(False)
-
-    handles = [plt.Line2D([], [], marker=_MULTITASK_RULE_MARKERS[t % 2],
-                          color="0.35", linestyle="", markersize=5,
-                          label=_TASK_DISPLAY.get(rule, rule))
-               for t, (rule, _, _, _, _, _) in enumerate(per_rule)]
-    _legend(axs[0][0], handles=handles, frameon=True, fontsize=6, loc="best")
-    fig.tight_layout()
-    _save_fig(fig, out_path)
-
-
-
-def plot_multitask_dmc_grad_fixed_points():
-    """
-    2D DMC delay fixed points — dmcgo and dmcnogo overlaid in both joint and
-    dmcgo-only Delay-PC bases. One figure per representation and basis, colored
-    by stimulus.
-    Reads multiple_tasks/{DMC_ANAME}/fixed_points_grad_{DMC_ANAME}_{rule}.pkl.
-    """
-    _plot_multitask_grad_fp_combined(
-        "dmc", "dmc_grad_fixed_points",
-        _render_multitask_grad_fp_overlay, with_pc_label=True,
-        render_kwargs={"connect_ring": False})
-
-
-def plot_multitask_delaydm_grad_fixed_points():
-    """2D delayDM delay fixed points — delaydm1 and delaydm2 overlaid in the
-    joint and delaydm1-only Delay-PC bases fit on delay1 trajectories. Reads
-    multiple_tasks/{DELAYDM_ANAME}/fixed_points_grad_{DELAYDM_ANAME}_{rule}.pkl."""
-    _plot_multitask_grad_fp_combined(
-        "delaydm", "delaydm_grad_fixed_points",
-        _render_multitask_grad_fp_overlay, with_pc_label=True,
-        render_kwargs={"connect_ring": True})
-
-
-# ─── Figure: configured DMC delay-trajectory PCA projection ────────────────
-
-def _plot_multitask_dmc_category_projection_basis(basis_scope):
-    """Plot configured DMC PCs for one delay-trajectory PCA scope."""
-    family = "dmc"
-    aname, rules = _MULTITASK_FP_FAMILIES[family]
-    addtask = rules[0]
-    artifact_suffix, pc_label = _multitask_delay_basis_spec(
-        family, basis_scope)
-    pkl_path = (Path("multiple_tasks") / aname
-                / f"{addtask}_delay_pc_projections{artifact_suffix}_{aname}.pkl")
-    d = _load_pkl_or_skip(pkl_path, _MULTITASK_FP_HINT)
-    if d is None:
-        return
-    if d.get("basis_scope") != basis_scope:
-        raise ValueError(f"{pkl_path}: expected basis_scope={basis_scope!r}, got "
-                         f"{d.get('basis_scope')!r}")
-
-    for plot_name, e in d.get("representations", {}).items():
-        proj = np.asarray(e["proj"])
-        try:
-            pc_x, pc_y = _DMC_PAPER_PC_PLANES[basis_scope][plot_name]
-        except KeyError as exc:
-            raise KeyError(f"Set _DMC_PAPER_PC_PLANES[{basis_scope!r}]"
-                           f"[{plot_name!r}] in paper_plot.py") from exc
-        pc_x, pc_y, bx, by = _paper_pc_indices(
-            (pc_x, pc_y), proj, f"DMC/{basis_scope}/{plot_name}")
-        task_idx, stim_idx = np.asarray(e["task_idx"]), np.asarray(e["stim_idx"])
-        good = np.asarray(e.get("is_fixed", np.ones(proj.shape[0], bool)), dtype=bool)
-        n_stim = int(stim_idx.max()) + 1
-        markers = ("s", "^")
-
-        fig, ax = plt.subplots(1, 1, figsize=(2.9, 2.6))
-        for t, rule in enumerate(e.get("task_names", rules)):
-            sel_t = task_idx == t
-            for a in range(n_stim):
-                sel = sel_t & (stim_idx == a)
-                if not np.any(sel):
-                    continue
-                conv = good[sel].all()
-                ax.scatter(proj[sel, bx], proj[sel, by],
-                           color=stim_color(a, n_stim) if conv else "none",
-                           edgecolor="none" if conv else stim_color(a, n_stim),
-                           linewidth=0 if conv else 1.0,
-                           marker=markers[t % 2], s=44, zorder=3,
-                           label=None)
-        handles = [plt.Line2D([], [], marker=markers[t % 2], color="black",
-                              linestyle="", markersize=5,
-                              label=_TASK_DISPLAY.get(rule, rule))
-                   for t, rule in enumerate(e.get("task_names", rules))]
-        _legend(ax, handles=handles, frameon=True, fontsize=6, loc="best")
-        xlim, ylim = _adaptive_pc_limits(proj, bx, by)
-        ax.set_xlim(*xlim)
-        ax.set_ylim(*ylim)
-        ax.set_xlabel(f"{pc_label} PC{pc_x}", fontsize=9)
-        ax.set_ylabel(f"{pc_label} PC{pc_y}", fontsize=9)
-        ax.spines[["top", "right"]].set_visible(False)
-        fig.tight_layout()
-        _save_fig(fig, _multitask_out(
-            f"{family}_category_projection{artifact_suffix}_{plot_name}.png"),
-            extra=f"  ({pc_label} PC{pc_x}-PC{pc_y})")
-
-
-def plot_multitask_dmc_category_projection():
-    """DMC fixed points in configured joint and dmcgo-only Delay PCs."""
-    for basis_scope in _MULTITASK_DELAY_BASIS_SCOPES:
-        _plot_multitask_dmc_category_projection_basis(basis_scope)
-
-
-def _plot_multitask_delaydm_pc_projection_basis(basis_scope):
-    """Plot explicitly configured delayDM PCs for one trajectory-PCA scope.
-
-    The upstream artifact stores all six coordinates and makes no plane choice.
-    `_DELAYDM_PAPER_PC_PLANES` above is the sole definition of the paper plane.
-    """
-    aname, rules = _MULTITASK_FP_FAMILIES["delaydm"]
-    artifact_suffix, pc_label = _multitask_delay_basis_spec(
-        "delaydm", basis_scope)
-    output_suffix = artifact_suffix
-    path = (Path("multiple_tasks") / aname
-            / f"{rules[0]}_delay_pc_projections{artifact_suffix}_{aname}.pkl")
-    d = _load_pkl_or_skip(
-        path, "Run multiple_task_analysis.py shared_run to create the six-PC "
-              "delayDM fixed-point projections.")
-    if d is None:
-        return
-    if d.get("basis_scope") != basis_scope:
-        raise ValueError(f"{path}: expected basis_scope={basis_scope!r}, got "
-                         f"{d.get('basis_scope')!r}")
-
-    for plot_name, entry in d.get("representations", {}).items():
-        proj = np.asarray(entry["proj"], dtype=float)
-        task_idx = np.asarray(entry["task_idx"], dtype=int)
-        stim_idx = np.asarray(entry["stim_idx"], dtype=int)
-        is_fixed = np.asarray(entry.get(
-            "is_fixed", np.ones(proj.shape[0], bool)), dtype=bool)
-        try:
-            pc_x, pc_y = _DELAYDM_PAPER_PC_PLANES[basis_scope][plot_name]
-        except KeyError as exc:
-            raise KeyError(f"Set _DELAYDM_PAPER_PC_PLANES[{basis_scope!r}]"
-                           f"[{plot_name!r}] in paper_plot.py") from exc
-        pc_x, pc_y, bx, by = _paper_pc_indices(
-            (pc_x, pc_y), proj, f"delayDM/{basis_scope}/{plot_name}")
-        task_names = list(entry.get("task_names", rules))
-        n_stim = int(stim_idx.max()) + 1
-
-        fig, ax = plt.subplots(1, 1, figsize=(2.9, 2.8))
         for task, rule in enumerate(task_names):
             sel_task = task_idx == task
-            good_task = sel_task & is_fixed
-            order = np.argsort(stim_idx[good_task])
-            ring = proj[good_task][order][:, [bx, by]]
-            if ring.shape[0] >= 2:
-                ring = np.vstack([ring, ring[:1]])
-                ax.plot(ring[:, 0], ring[:, 1], color="0.55", lw=0.9,
-                        alpha=0.7, linestyle=("-", "--")[task % 2], zorder=2)
             for stim in np.unique(stim_idx[sel_task]):
                 sel = sel_task & (stim_idx == stim)
-                conv = bool(is_fixed[sel].all())
                 color = stim_color(int(stim), n_stim)
-                ax.scatter(proj[sel, bx], proj[sel, by],
-                           color=color if conv else "none",
-                           edgecolor="none" if conv else color,
-                           linewidth=0 if conv else 1.0,
-                           marker=_MULTITASK_RULE_MARKERS[task % 2],
-                           s=44, zorder=3)
+                good, bad = sel & is_fixed, sel & ~is_fixed
+                if np.any(good):
+                    ax.scatter(shown[good, bx], shown[good, by], color=color,
+                               edgecolor="white", linewidth=0.25,
+                               marker=_MULTITASK_RULE_MARKERS[task % 2],
+                               s=31, alpha=0.88, zorder=3)
+                if np.any(bad):
+                    ax.scatter(shown[bad, bx], shown[bad, by], color="none",
+                               edgecolor=color, linewidth=0.9,
+                               marker=_MULTITASK_RULE_MARKERS[task % 2],
+                               s=31, zorder=3)
 
-        xlim, ylim = _adaptive_pc_limits(proj, bx, by)
+        if panel_index == 0:
+            c0 = shown[first_idx[paired_fixed]][:, [bx, by]].mean(axis=0)
+            c1 = shown[second_idx[paired_fixed]][:, [bx, by]].mean(axis=0)
+            ax.annotate("", xy=c1, xytext=c0,
+                        arrowprops=dict(arrowstyle="-|>", color="0.18",
+                                        linewidth=1.2, mutation_scale=9),
+                        zorder=4)
+            midpoint = 0.5 * (c0 + c1)
+            ax.annotate(r"$\Delta_{\mathrm{task}}$", xy=midpoint,
+                        xytext=(3, 4), textcoords="offset points",
+                        fontsize=8, color="0.18")
+        else:
+            trans_pct = 100.0 * metrics["translation_explained"]
+            ax.text(0.03, 0.97,
+                    f"Translation explained: {trans_pct:.0f}%\n"
+                    f"Geometry correlation: $r$ = {metrics['geometry_r']:.2f}",
+                    transform=ax.transAxes, ha="left", va="top", fontsize=7.2,
+                    color="0.18",
+                    bbox=dict(boxstyle="round,pad=0.28", facecolor="white",
+                              edgecolor="0.82", linewidth=0.6, alpha=0.92),
+                    zorder=5)
+
+        xlim, ylim = _adaptive_pc_limits(shown, bx, by, padding=0.13)
         ax.set_xlim(*xlim)
         ax.set_ylim(*ylim)
-        ax.set_xlabel(f"{pc_label} PC{bx + 1}", fontsize=9)
-        ax.set_ylabel(f"{pc_label} PC{by + 1}", fontsize=9)
+        ax.set_title(title, fontsize=9.5, loc="left")
+        ax.set_xlabel(f"{pc_label} PC{pc_x}", fontsize=8.5)
+        if panel_index == 0:
+            ax.set_ylabel(f"{pc_label} PC{pc_y}", fontsize=8.5)
+        ax.tick_params(length=2.5)
         ax.spines[["top", "right"]].set_visible(False)
-        handles = [plt.Line2D([], [], marker=_MULTITASK_RULE_MARKERS[t % 2],
-                              color="0.35", linestyle="", markersize=5,
-                              label=_TASK_DISPLAY.get(rule, rule))
-                   for t, rule in enumerate(task_names)]
-        _legend(ax, handles=handles, frameon=True, fontsize=6, loc="best")
-        fig.tight_layout()
-        _save_fig(fig, _multitask_out(
-            f"delaydm_pc_projection{output_suffix}_{plot_name}.png"),
-            extra=f"  ({pc_label} PC{pc_x}-PC{pc_y})")
+
+    handles = [plt.Line2D([], [],
+                          marker=_MULTITASK_RULE_MARKERS[t % 2],
+                          markerfacecolor="0.45", markeredgecolor="white",
+                          color="none", markersize=5.5,
+                          label=_TASK_DISPLAY.get(rule, rule))
+               for t, rule in enumerate(task_names)]
+    _legend(axs[0, 0], handles=handles, frameon=False, fontsize=6.5,
+            loc="best", handletextpad=0.3)
+    fig.tight_layout(w_pad=1.5)
+    _save_fig(
+        fig,
+        _multitask_out(f"delaydm_fixed_point_geometry_{output_suffix}.png"),
+        extra=(f"  ({pc_label} PC{pc_x}-PC{pc_y}; "
+               f"representation={rep_key}; "
+               f"translation={100 * metrics['translation_explained']:.1f}%; "
+               f"geometry r={metrics['geometry_r']:.3f}; "
+               f"n={metrics['n_pairs']})"))
 
 
-def plot_multitask_delaydm_pc_projection():
-    """Render configured planes for joint and delaydm1-only trajectory PCAs."""
-    for basis_scope in _MULTITASK_DELAY_BASIS_SCOPES:
-        _plot_multitask_delaydm_pc_projection_basis(basis_scope)
+def plot_multitask_delaydm_fixed_point_geometry():
+    """DelayDM task-translation analysis for effective modulation and hidden.
 
-
-# ─── One entry point per sibling family ──────────────────────────────────────
-# A family's figures all come from the SAME solve (the per-rule
-# fixed_points_grad_* pickles, plus the DMC projection pickle written by
-# multiple_task_analysis.py's shared_run), so they are generated together too.
-#
-# These are what the two_in_multiple mode holds. The per-figure names remain
-# reachable through `--only` (see FIGURE_ALIASES) for when only one panel needs
-# redrawing.
-_MULTITASK_FAMILY_FIGURES = {
-    "dmc": (("dmc_grad_fixed_points", plot_multitask_dmc_grad_fixed_points),
-            ("dmc_category_projection", plot_multitask_dmc_category_projection)),
-    "delaydm": (("delaydm_grad_fixed_points", plot_multitask_delaydm_grad_fixed_points),
-                ("delaydm_pc_projection", plot_multitask_delaydm_pc_projection)),
-}
-
-
-def _plot_multitask_family_all(family):
-    """Generate every figure of one sibling family.
-
-    Each sub-figure is guarded on its own, so a failure in one still produces the
-    others; the failures are then re-raised as one error so the caller's summary
-    still counts this family as failed rather than silently passing."""
-    import traceback
-
-    failed = []
-    for name, fn in _MULTITASK_FAMILY_FIGURES[family]:
-        print(f"  · {name}")
-        try:
-            fn()
-        except Exception as exc:
-            print(f"    ERROR in {name}: {exc}")
-            traceback.print_exc()
-            failed.append(name)
-    if failed:
-        raise RuntimeError(f"{family}: {len(failed)} sub-figure(s) failed: {failed}")
-
-
-def plot_multitask_dmc():
-    """Every DMC figure: fixed points in joint and dmcgo-only trajectory-PCA
-    bases for both representations, plus the configured category projection.
-    Reads multiple_tasks/{DMC_ANAME}/."""
-    _plot_multitask_family_all("dmc")
-
-
-def plot_multitask_delaydm():
-    """Every delayDM (delaydm1 / delaydm2) figure: the 2D delay fixed points in
-    the leading joint and delaydm1-only trajectory PCs, plus the explicitly
-    configured paper projection from each complete six-PC artifact.
-    Reads multiple_tasks/{DELAYDM_ANAME}/."""
-    _plot_multitask_family_all("delaydm")
-
+    Produces two matched-layout figures from the same solved fixed points:
+      * ``..._emodulation.png``: original high-dimensional W⊙M* metrics;
+      * ``..._hidden.png``: original high-dimensional hidden-state metrics.
+    Both use joint delay-trajectory PCA only for visualization.
+    """
+    for plot_name, rep_key, output_suffix in (
+            ("e_modulation", "fixed_WM", "emodulation"),
+            ("hidden", "fixed_hidden", "hidden")):
+        _plot_multitask_delaydm_fixed_point_geometry_representation(
+            plot_name, rep_key, output_suffix)
 
 
 def plot_two_task_interp_fixed_points(period="longdelay"):
@@ -6822,7 +6571,7 @@ def plot_two_task_attractor_first():
 #
 #   one_task         single-task training analyses (multiple_task single-task run)
 #   multiple_tasks   the full multi-task network: clustering, lesion, state space
-#   two_in_multiple  two-task probes within the multi-task net (DMC memory attractor)
+#   two_in_multiple  delayDM fixed-point geometry probe of the multi-task net
 #   pretraining      pretraining → post-training transfer analyses
 #   two_task         the two-task network: cross-task / cross-period PCA
 FIGURES_BY_MODE = {
@@ -6863,16 +6612,11 @@ FIGURES_BY_MODE = {
         "om_vs_lesion": plot_om_vs_lesion,
     },
     "two_in_multiple": {
-        # Sibling-family probes inside the multi-task network. The DMC / delayDM
-        # memory geometry is read off TRUE gradient fixed points (solved by
-        # multiple_task_analysis.py's shared_run with the same solver one_task and
-        # two_task use).
-        #
-        # ONE ENTRY PER FAMILY: all panels from a sibling-family solve are
-        # refreshed together. Individual panel names still work with --only
-        # (FIGURE_ALIASES); delayDM now has fixed-point panels only.
-        "dmc": plot_multitask_dmc,
-        "delaydm": plot_multitask_delaydm,
+        # DelayDM task-translation geometry inside the multi-task network, read
+        # off TRUE gradient fixed points (solved by multiple_task_analysis.py's
+        # shared_run with the same solver one_task and two_task use).
+        "delaydm_fixed_point_geometry":
+            plot_multitask_delaydm_fixed_point_geometry,
     },
     "pretraining": {
         "transfer_speed": plot_transfer_speed,
@@ -6909,18 +6653,6 @@ ALL_FIGURES = {
     for mode_figs in FIGURES_BY_MODE.values()
     for name, fn in mode_figs.items()
 }
-
-# Extra `--only` targets that are NOT mode entries: the individual panels of the
-# sibling families, whose mode entry is the whole family (see
-# _MULTITASK_FAMILY_FIGURES). Keeping them out of FIGURES_BY_MODE is what stops a
-# mode run from drawing each panel twice — once on its own and once via the
-# family — while `--only dmc_category_projection` still redraws that panel.
-FIGURE_ALIASES = {
-    name: fn
-    for parts in _MULTITASK_FAMILY_FIGURES.values()
-    for name, fn in parts
-}
-
 
 def main():
     import argparse
@@ -6969,15 +6701,12 @@ def main():
 
     # Resolve the set of figures to generate.
     if args.only is not None:
-        # Mode entries plus the per-panel aliases, so --only reaches both a whole
-        # family ("delaydm") and one of its retained panels.
-        only_targets = {**ALL_FIGURES, **FIGURE_ALIASES}
-        if args.only not in only_targets:
+        if args.only not in ALL_FIGURES:
             parser.error(
                 f"unknown figure '{args.only}'. "
-                f"Available: {', '.join(only_targets)}"
+                f"Available: {', '.join(ALL_FIGURES)}"
             )
-        figures = {args.only: only_targets[args.only]}
+        figures = {args.only: ALL_FIGURES[args.only]}
         modes_run = "only"
     else:
         modes = args.mode or ["all"]
@@ -6997,7 +6726,7 @@ def main():
     mode_experiment = {
         "one_task": ONETASK_ANAME,
         "multiple_tasks": ANAME,
-        "two_in_multiple": f"DMC={DMC_ANAME}, delayDM={DELAYDM_ANAME}",
+        "two_in_multiple": DELAYDM_ANAME,
         "two_task": TWOTASK_ANAME,
         "pretraining": "(aggregated across seeds)",
     }
