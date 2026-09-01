@@ -20,11 +20,12 @@ synapse clusters are selectively important for specific tasks. Produces:
    modulation lesion and combined neuron lesion effects.
 
 Outputs saved to ./multiple_tasks_norm/{aname}/.
+
+No CLI entry point: `main(seed, feature)` is invoked by run_pipeline.py.
 """
 import os
 from pathlib import Path
 import numpy as np
-import pandas as pd
 
 import pickle
 from scipy.stats import linregress
@@ -34,6 +35,7 @@ import matplotlib as mpl
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import helper
+import clustering
 
 mpl.rcParams.update({
     "font.family": "sans-serif",
@@ -66,44 +68,10 @@ def main(seed, feature):
     baseline_keys = {"pre_cNone", "post_cNone", "pre_noleison", "post_noleison"}
     mod_leison_results = results.get("mod_leison", {})
 
-    from scipy.cluster.hierarchy import fcluster as _fcluster
-
-    def _derive_fixed_k_clusters(ci_entry, fk):
-        """Cut dendrogram at fk, return col_clusters dict {label: indices}.
-        Unresponsive neurons get label fk+1."""
-        res = ci_entry["result"]
-        lnk = res["col_linkage"]
-        tol_k = res["col_tol_k"]
-        tol_labels = res["col_tol_labels"]
-        unres_mask = tol_labels == (tol_k + 1)
-        active_labels = _fcluster(lnk, fk, criterion="maxclust")
-        full_labels = np.zeros(len(tol_labels), dtype=int)
-        full_labels[~unres_mask] = active_labels
-        if unres_mask.any():
-            full_labels[unres_mask] = fk + 1
-        return {int(lab): np.where(full_labels == lab)[0] for lab in np.unique(full_labels) if lab > 0}
-
-    def _derive_fixed_k_labels(ci_entry, fk):
-        """Cut dendrogram at fk, return full label array (same as _derive_fixed_k_clusters
-        but returns the raw array instead of a dict)."""
-        res = ci_entry["result"]
-        lnk = res["col_linkage"]
-        tol_k = res["col_tol_k"]
-        tol_labels = res["col_tol_labels"]
-        unres_mask = tol_labels == (tol_k + 1)
-        active_labels = _fcluster(lnk, fk, criterion="maxclust")
-        full_labels = np.zeros(len(tol_labels), dtype=int)
-        full_labels[~unres_mask] = active_labels
-        if unres_mask.any():
-            full_labels[unres_mask] = fk + 1
-        return full_labels
-
     def compute_and_plot_normalized_lesion(leison_key, random_key, savename, xlabel_suffix=""):
-        """Compute normalized lesion effect (random - cluster), plot heatmap + violin.
-        Returns (select_props, all_comb_names_filtered, ihtask_accs) for downstream use.
+        """Compute normalized lesion effect (random - cluster) and plot its heatmap.
+        Returns (select_props, all_comb_names_filtered) for downstream use.
         """
-        import seaborn as sns
-
         all_comb_names = results[leison_key]["all_comb_names_leison"]
         def _rename(k):
             return k.replace("pre_c", "i").replace("post_c", "h")
@@ -127,18 +95,17 @@ def main(seed, feature):
                             savename=savename, aname=aname, label="Normalized Accuracy",
                             vmin=None, vmax=None, save_dir=save_dir)
 
-        return props, all_comb_names_filtered, ihtask
+        return props, all_comb_names_filtered
 
-    select_props, all_comb_names_leison_, ihtask_accs = compute_and_plot_normalized_lesion(
+    select_props, all_comb_names_leison_ = compute_and_plot_normalized_lesion(
         "leison", "random_leison", "normalized_leison",
     )
-    all_comb_names_leison = results["leison"]["all_comb_names_leison"]
     all_tasks = results["leison"]["all_tasks"]
 
     select_props_unnorm = None
     all_comb_names_unnorm_ = None
     if "leison_unnorm" in results and "random_leison_unnorm" in results:
-        select_props_unnorm, all_comb_names_unnorm_, _ = compute_and_plot_normalized_lesion(
+        select_props_unnorm, all_comb_names_unnorm_ = compute_and_plot_normalized_lesion(
             "leison_unnorm", "random_leison_unnorm",
             "normalized_leison_unnorm", xlabel_suffix="(unnorm)",
         )
@@ -199,11 +166,9 @@ def main(seed, feature):
         print("Saved combined input/hidden violin plot (4 panels)")
 
     # Histogram of mean lesion effect per cluster for input/hidden (4 categories)
-    _fixed_k_val = results.get("fixed_k", 20)
     # Split select_props into input and hidden based on the all_comb structure
     # all_comb_names_leison_ has i1..iN then h1..hM (after _rename)
     _n_input_norm = len([n for n in all_comb_names_leison_ if n.startswith("i")])
-    _n_hidden_norm = len([n for n in all_comb_names_leison_ if n.startswith("h")])
 
     _hist_data = {}
     _hist_data["Input (norm)"] = select_props[:, :_n_input_norm].mean(axis=0) * 100
@@ -349,17 +314,22 @@ def main(seed, feature):
         if n_panels == 1:
             axes_traj = [axes_traj]
 
-        # Use a colormap for tasks
-        _task_cmap = plt.cm.get_cmap("tab20", len(all_tasks))
+        # Use a colormap for tasks. plt.get_cmap, not plt.cm.get_cmap —
+        # matplotlib.cm.get_cmap was removed in matplotlib 3.9.
+        _task_cmap = plt.get_cmap("tab20", len(all_tasks))
 
         for panel_idx, (type_tag, effect) in enumerate(_traj_mod_data):
             ax = axes_traj[panel_idx]
             n_cls = effect.shape[1]
 
-            # Each task sorts clusters by its own effect (descending)
+            # One COMMON cluster order per panel: rank clusters by their mean
+            # effect across tasks (descending), then draw every task's line in
+            # that shared order — each x position is the same cluster on every
+            # line, as the axis label promises. (Sorting each task's effects
+            # independently would make the lines incomparable cluster-wise.)
+            order = np.argsort(-effect.mean(axis=0))
             for ti, task in enumerate(all_tasks):
-                sorted_vals = np.sort(effect[ti])[::-1]
-                ax.plot(range(n_cls), sorted_vals, alpha=0.5, linewidth=0.8,
+                ax.plot(range(n_cls), effect[ti, order], alpha=0.5, linewidth=0.8,
                         color=_task_cmap(ti), label=task if panel_idx == 0 else None)
 
             ax.axhline(0, color="grey", linewidth=0.5, linestyle="--", alpha=0.5)
@@ -811,7 +781,6 @@ def main(seed, feature):
     # Second pass: for each clustering type that has both lesion modes,
     # plot side-by-side heatmaps and a scatter comparison.
     import seaborn as sns
-    from matplotlib.ticker import MaxNLocator
 
     for base_key, modes_dict in mod_by_type.items():
         base_tag = base_key.replace("modulation_all_", "").replace("_", "-")
@@ -968,8 +937,6 @@ def main(seed, feature):
             skip_hidden.add(n_hid - 1)
             print(f"[om_vs_lesion] excluding unresponsive: input idx={n_in-1}, hidden idx={n_hid-1}")
 
-        unres_mod_label = None
-
         # --- Modulation lesion effect (random - cluster), per task ---
         mod_data = results["mod_leison"][mod_result_key]
         mod_baseline_keys = {"mod_noleison"}
@@ -982,8 +949,6 @@ def main(seed, feature):
             if key in mod_baseline_keys:
                 continue
             cid = int(key.replace("mod_c", ""))
-            if unres_mod_label is not None and cid == unres_mod_label:
-                continue
             mod_effects[cid] = modrandomtask_accs[:, key_idx] - modtask_accs[:, key_idx]
 
         # --- Combined lesion effect (random - cluster), per task ---
@@ -1055,9 +1020,30 @@ def main(seed, feature):
         plt.close(fig)
         print(f"[om_vs_lesion] saved: {savepath}")
 
+        # Save the scatter data so the figure is reproducible without re-deriving
+        # the OM × combined-lesion matching from the two upstream pickles.
+        data_path = f"{save_dir}/om_vs_lesion_diff_{type_tag}_{mode_tag}_{variant}_{aname}.pkl"
+        with open(data_path, "wb") as _f:
+            pickle.dump({
+                "om_vals": om_vals,
+                "lesion_diffs": lesion_diffs,
+                "labels": labels,
+                "regression": {"slope": slope, "intercept": intercept, "r": r, "p": p},
+                "mod_type_key": mod_type_key,
+                "mod_lesion_mode": mod_lesion_mode,
+                "variant": variant,
+                "skip_input": sorted(skip_input),
+                "skip_hidden": sorted(skip_hidden),
+            }, _f)
+        print(f"[om_vs_lesion] saved data: {data_path}")
+
     def _plot_om_vs_lesion_combined(results, cluster_info_mod, cluster_info, variant,
-                                    base_key, modes, aname, save_dir, single_plot_fn):
-        """Plot zero_W and freeze_M overmembership vs lesion diff side-by-side."""
+                                    base_key, modes, aname, save_dir):
+        """Plot zero_W and freeze_M overmembership vs lesion diff side-by-side.
+
+        The per-mode scatter data is rebuilt inline with the same derivation
+        as plot_overmembership_vs_lesion_diff (duplicated, not shared — keep
+        the two in sync when changing either)."""
         type_tag = base_key.replace("modulation_all_", "").replace("_", "-")
 
         # Collect scatter data for each mode
@@ -1065,8 +1051,6 @@ def main(seed, feature):
         for mode in ["zero_W", "freeze_M"]:
             if mode not in modes:
                 continue
-            # Reuse the logic from the single-plot function to get om_vals/lesion_diffs
-            # by calling a data-only variant
             mod_result_key = f"{base_key}__{mode}"
             if mod_result_key not in results["mod_leison"]:
                 continue
@@ -1240,9 +1224,27 @@ def main(seed, feature):
         plt.close(fig)
         print(f"[om_vs_lesion] saved combined: {savepath}")
 
+        # Save per-mode scatter data and the per-cluster prediction so the
+        # combined figure (and paper_plot's re-derivation of the same matching)
+        # can be reproduced directly from this pickle.
+        data_path = f"{save_dir}/om_vs_lesion_diff_{type_tag}_combined_{variant}_{aname}.pkl"
+        with open(data_path, "wb") as _f:
+            pickle.dump({
+                "mode_data": {
+                    mode: {"om_vals": vals[0], "lesion_diffs": vals[1]}
+                    for mode, vals in mode_data_all.items()
+                },
+                "prediction": ({"predicted_pct": np.asarray(_pred_x),
+                                "actual_pct": np.asarray(_pred_y)}
+                               if _has_pred else None),
+                "base_key": base_key,
+                "variant": variant,
+            }, _f)
+        print(f"[om_vs_lesion] saved combined data: {data_path}")
+
     # Load cluster_info and cluster_info_mod for overmembership analysis
-    cluster_path = f"./multiple_tasks/{aname}/cluster_info_{aname}.pkl"
-    cluster_mod_path = f"./multiple_tasks/{aname}/cluster_info_mod_{aname}.pkl"
+    cluster_path = f"./multiple_tasks_analysis/{aname}/cluster_info_{aname}.pkl"
+    cluster_mod_path = f"./multiple_tasks_analysis/{aname}/cluster_info_mod_{aname}.pkl"
     if os.path.exists(cluster_mod_path) and os.path.exists(cluster_path):
         with open(cluster_mod_path, "rb") as f:
             cluster_info_mod = pickle.load(f)
@@ -1265,7 +1267,7 @@ def main(seed, feature):
                 # Plot both modes as two subplots in one figure
                 _plot_om_vs_lesion_combined(
                     results, cluster_info_mod, cluster_info, variant, base_key,
-                    modes, aname, save_dir, plot_overmembership_vs_lesion_diff,
+                    modes, aname, save_dir,
                 )
             else:
                 for mode in modes:
@@ -1279,12 +1281,16 @@ def main(seed, feature):
     # ── Cluster similarity vs normalized lesion effect ──
     def plot_cluster_corr_vs_lesion(corr_matrices_dict, select_props_mat, slices_dict,
                                     savesuffix, aname, save_dir,
-                                    l1_dist_matrices_dict=None, cluster_means_dict=None,
+                                    cluster_means_dict=None,
                                     exclude_last_cluster=False):
         """3×N figure: for each cluster type (column),
         row 0 = cluster tuning cosine similarity heatmap,
         row 1 = lesion effect L1 distance heatmap,
         row 2 = scatter of tuning cosine sim vs lesion L1 distance.
+
+        corr_matrices_dict only supplies the panel names and cluster counts;
+        both plotted matrices are computed here — tuning similarity from
+        cluster_means_dict, lesion L1 distance from select_props_mat.
 
         If exclude_last_cluster=True, the last cluster (unresponsive) is excluded
         from the scatter plot (row 2) but still shown in the heatmaps."""
@@ -1300,11 +1306,16 @@ def main(seed, feature):
         for col, (name, corr_matrix) in enumerate(corr_matrices_dict.items()):
             lesion_vecs = select_props_mat[:, slices_dict[name]].T  # (n_clusters, n_tasks)
 
-            # Cluster tuning: cosine similarity between cluster mean profiles
-            if cluster_means_dict is not None and name in cluster_means_dict:
-                tuning_cos = _cosine_sim(cluster_means_dict[name].T)
-            else:
-                tuning_cos = _cosine_sim(np.eye(corr_matrix.shape[0]))
+            # Cluster tuning: cosine similarity between cluster mean profiles.
+            # Required — a silent fallback here (the old np.eye placeholder)
+            # would draw a meaningless identity-similarity panel instead of
+            # failing, so missing means are treated as a caller error.
+            if cluster_means_dict is None or name not in cluster_means_dict:
+                raise ValueError(
+                    f"cluster_means_dict must provide {name!r}: the tuning-"
+                    "similarity panel is computed from cluster mean profiles"
+                )
+            tuning_cos = _cosine_sim(cluster_means_dict[name].T)
             # Lesion effect: L1 distance between lesion effect vectors
             lesion_l1 = _squareform(_pdist(lesion_vecs, metric="cityblock"))
 
@@ -1386,7 +1397,6 @@ def main(seed, feature):
 
     # --- Normalized variant ---
     corr_matrices_norm = results["cluster_similarity"]["corr_matrices"]
-    l1_dist_norm = results["cluster_similarity"]["l1_dist_matrices"]
     cluster_means_norm = results["cluster_similarity"]["cluster_means"]
     # Keys may be "input_normalized" or "input_normalized_k{N}" depending on FIXED_K
     _input_norm_key = [k for k in corr_matrices_norm if k.startswith("input_normalized")][0]
@@ -1400,7 +1410,7 @@ def main(seed, feature):
     plot_cluster_corr_vs_lesion(
         corr_matrices_norm, select_props, slices_norm,
         "normalized_leison_effect", aname, save_dir,
-        l1_dist_matrices_dict=l1_dist_norm, cluster_means_dict=cluster_means_norm,
+        cluster_means_dict=cluster_means_norm,
     )
 
     # --- Unnormalized variant ---
@@ -1415,7 +1425,6 @@ def main(seed, feature):
         _fixed_k_plot = results.get("fixed_k", 20)
 
         corr_matrices_unnorm = {}
-        l1_dist_unnorm = {}
         cluster_means_unnorm = {}
         _unnorm_keys = {}
         for name in ["input_unnormalized", "hidden_unnormalized"]:
@@ -1423,7 +1432,7 @@ def main(seed, feature):
                 continue
             ci = cluster_info[name]
             V = ci["cell_vars_rules_sorted_norm"]
-            col_clusters = _derive_fixed_k_clusters(ci, _fixed_k_plot)
+            col_clusters = clustering.fixed_k_col_clusters(ci, _fixed_k_plot)
             n_clusters = len(col_clusters)
             cluster_means = np.stack(
                 [V[:, col_clusters[c]].mean(axis=1) for c in range(1, n_clusters + 1)],
@@ -1431,8 +1440,6 @@ def main(seed, feature):
             )
             fk_name = f"{name}_k{_fixed_k_plot}"
             corr_matrices_unnorm[fk_name] = np.corrcoef(cluster_means.T)
-            from scipy.spatial.distance import squareform as _sq_u, pdist as _pd_u
-            l1_dist_unnorm[fk_name] = _sq_u(_pd_u(cluster_means.T, metric="cityblock"))
             cluster_means_unnorm[fk_name] = cluster_means
             _unnorm_keys[name] = fk_name
 
@@ -1448,7 +1455,7 @@ def main(seed, feature):
             plot_cluster_corr_vs_lesion(
                 corr_matrices_unnorm, select_props_unnorm, slices_unnorm,
                 "normalized_leison_effect_unnorm", aname, save_dir,
-                l1_dist_matrices_dict=l1_dist_unnorm, cluster_means_dict=cluster_means_unnorm,
+                cluster_means_dict=cluster_means_unnorm,
                 exclude_last_cluster=True,
             )
 
@@ -1499,40 +1506,12 @@ def main(seed, feature):
                 mode_tag = mode.replace("_", "-")
                 mod_name = f"{type_tag}_{mode_tag}"
 
-                from scipy.spatial.distance import squareform as _sq_m, pdist as _pd_m
-                l1_mod = _sq_m(_pd_m(cluster_means_mod.T, metric="cityblock"))
                 _is_unnorm_mod = "unnormalized" in mod_type_key
                 plot_cluster_corr_vs_lesion(
                     {mod_name: corr_matrix_mod},
                     mod_select_props,
                     {mod_name: slice(0, n_mod_clusters)},
                     f"mod_leison_effect_{type_tag}_{mode_tag}", aname, save_dir,
-                    l1_dist_matrices_dict={mod_name: l1_mod},
                     cluster_means_dict={mod_name: cluster_means_mod},
                     exclude_last_cluster=_is_unnorm_mod,
                 )
-
-
-if __name__ == "__main__":
-    import argparse
-    import re
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--feature", type=str, default=None,
-                        help="Only run models with this feature (e.g. 'L21e4')")
-    args = parser.parse_args()
-
-    saved_nets = sorted(Path("multiple_tasks").glob("savednet_everything_seed*+angle.pt"))
-    param_lst = []
-    for p in saved_nets:
-        m = re.match(r"savednet_everything_seed(\d+)_(\w+)\+hidden\d+\+batch\d+\+angle\.pt", p.name)
-        if m:
-            param_lst.append((int(m.group(1)), m.group(2)))
-
-    if args.feature:
-        param_lst = [(s, f) for s, f in param_lst if f == args.feature]
-
-    print(f"Running {len(param_lst)} models: {param_lst}")
-
-    for seed, feature in param_lst:
-        main(seed, feature)

@@ -111,6 +111,49 @@ def labels_at_k(Z, k):
     t = np.nextafter(t_low, t_high)     # just above t_low, still below t_high
     return fcluster(Z, t, criterion="distance")
 
+def fixed_k_col_clusters(ci_entry, fk):
+    """Re-cut a saved column dendrogram at exactly `fk` clusters.
+
+    `ci_entry` is one entry of a cluster_info pickle: a dict whose "result"
+    comes from cluster_variance_matrix_repeat / cluster_variance_matrix_forgroup.
+    Returns {1-based label: column (neuron) indices}. The unresponsive class
+    those functions append (label col_tol_k + 1) is held out of the cut and
+    re-appended after the active clusters, so a fixed-k grouping keeps the same
+    "silent neurons are their own class" convention as the tolerance-selected
+    one — which is what makes the two comparable.
+
+    Contract: the returned keys are ALWAYS contiguous 1..len(result), with the
+    unresponsive class (if any) last. fcluster(maxclust=fk) can return fewer
+    than fk clusters when merge heights tie, so the raw cut labels are remapped
+    to 1..K here; downstream `range(1, n + 1)` lookups and `label - 1` 0-based
+    indexing rely on this and must not be "fixed" locally in the callers.
+
+    Single shared implementation for multiple_task_analysis.py, leison.py and
+    leison_plot.py; do not copy it back into those scripts.
+    """
+    res = ci_entry["result"]
+    tol_labels = np.asarray(res["col_tol_labels"])
+    unres_mask = tol_labels == (res["col_tol_k"] + 1)
+    active_labels = fcluster(res["col_linkage"], fk, criterion="maxclust")
+    uniq = np.unique(active_labels)
+    n_active_clusters = uniq.size
+    if n_active_clusters < fk:
+        warnings.warn(
+            f"fixed-k cut yielded {n_active_clusters} < {fk} clusters "
+            f"(tied merge heights); relabeling to 1..{n_active_clusters}.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    # Remap to contiguous 1..K, preserving the raw labels' numeric order
+    # (identity in the usual case where fcluster already returns 1..fk).
+    active_labels = np.searchsorted(uniq, active_labels) + 1
+    full = np.zeros(len(tol_labels), dtype=int)
+    full[~unres_mask] = active_labels
+    if unres_mask.any():
+        full[unres_mask] = n_active_clusters + 1
+    return {int(lab): np.where(full == lab)[0] for lab in np.unique(full) if lab > 0}
+
+
 def _score_threshold_from_best(best_score, silhouette_tol=0.02, tol_mode="relative"):
     """
     Compute the score threshold used for tolerance-based model selection.

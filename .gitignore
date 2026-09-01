@@ -29,6 +29,7 @@ __pycache__/
 
 # Output directories (figures, analysis results)
 multiple_tasks/
+multiple_tasks_analysis/
 multiple_tasks_perf/
 multiple_tasks_diagnosis/
 multiple_task_heatmaps/

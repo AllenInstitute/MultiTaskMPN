@@ -62,7 +62,8 @@ python pretrain/pretraining.py
 python paper_plot.py
 ```
 
-Key data outputs: `multiple_tasks/` (checkpoints, curves, cluster info),
+Key data outputs: `multiple_tasks/` (checkpoints, curves),
+`multiple_tasks_analysis/` (per-run analysis figures, cluster info),
 `multiple_tasks_perf/` and `multiple_tasks_norm/` (lesion results/plots),
 `onetask/`, `twotasks/`, `pretraining/`, `state_space/`, `paper_plot/`.
 

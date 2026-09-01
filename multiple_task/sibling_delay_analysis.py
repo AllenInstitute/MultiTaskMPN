@@ -25,10 +25,10 @@ __all__ = [
 DELAY_PCA_SCOPES = ("joint", "first_task_only")
 # Deterministic task-template seeds tried independently for each sibling rule.
 # core/grad_fixed_points.py saves only the seed with the lowest median rel_step.
-SIBLING_FIXED_POINT_N_SEEDS = 1
+SIBLING_FIXED_POINT_N_SEEDS = 5
 # Maximum Adam steps for each candidate seed. The optimizer can stop earlier
 # when its fixed-point speed loss reaches the configured tolerance.
-SIBLING_FIXED_POINT_STEPS = 800000
+SIBLING_FIXED_POINT_STEPS = 1000000
 
 
 def _delay_pca_scope_spec(rules, basis_scope):

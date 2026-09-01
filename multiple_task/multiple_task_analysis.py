@@ -5,12 +5,11 @@ Loads a trained DeepMultiPlasticNet checkpoint and its recorded hidden states,
 modulation matrices (M), and input activations, then characterizes how the
 network organizes task-specific computation.
 
-The file has TWO STAGES and `main` currently stops between them: it calls
-`shared_run` and then `sys.exit()`, which the __main__ loop catches and reads as
-"this trial is intentionally done" before moving to the next seed. Delete that
-call to reach stage 2.
+The file has TWO STAGES, both run by `main`: stage 1 (`shared_run`) probes the
+sibling families selected by `families` (skipped entirely when `families` is
+empty), then stage 2 (weight structure and clustering) always follows.
 
-Stage 1 — sibling-task memory geometry (`shared_run`; the part that runs today):
+Stage 1 — sibling-task memory geometry (`shared_run`):
   * accuracy on normal-delay trials, overall and per sibling task, plus an
     input/output sanity figure;
   * shared Delay-PC bases fit on complete `delay1` trajectories: joint and
@@ -21,7 +20,7 @@ Stage 1 — sibling-task memory geometry (`shared_run`; the part that runs today
     first-task-only delay-trajectory bases; paper_plot.py explicitly chooses the
     PC pair for both delayDM and DMC.
 
-Stage 2 — weight structure and clustering (everything after the sys.exit):
+Stage 2 — weight structure and clustering (always runs):
   1. Weight-structure heatmaps of W_initial_linear, W (recurrent) and W_output,
      plus the end-to-end pathway W_out @ W_mod @ W_in and its SVD spectrum.
   2. Task-conditioned VARIANCE — per-rule, per-period variance of the input,
@@ -33,7 +32,7 @@ Stage 2 — weight structure and clustering (everything after the sys.exit):
   4. Over-membership and entropy diagnostics asking whether modulation clusters
      align with presynaptic or postsynaptic neuron clusters.
 
-Outputs land in ./multiple_tasks/{savefigure_name_base}/, where
+Outputs land in ./multiple_tasks_analysis/{savefigure_name_base}/, where
 savefigure_name_base = {ruleset}_seed{seed}_{addon_name} is rebuilt from the
 run's saved hyp_dict. For the runs in hand `addon_name` already carries the
 +hidden/+batch/+angle part, so this equals `aname` and paper_plot.py finds these
@@ -51,10 +50,11 @@ diverge for a run saved with a shorter addon_name:
   - cluster_info_{savefigure_name_base}.pkl     — neuron cluster assignments,
     consumed by the lesion experiments
   - cluster_info_mod_{savefigure_name_base}.pkl — modulation synapse clusters
+
+No CLI entry point: `main(seed, feature, ...)` is invoked by run_pipeline.py.
 """
 # %%
 import os
-import sys
 import gc
 import numpy as np
 from pathlib import Path
@@ -87,7 +87,6 @@ mpl.rcParams.update({
 
 from sklearn.metrics.pairwise import cosine_similarity
 from scipy.spatial.distance import pdist, squareform
-from scipy.cluster.hierarchy import fcluster
 import torch
 from torch.serialization import add_safe_globals
 
@@ -255,23 +254,9 @@ def _gap_curve(Z, k_vals):
     return np.asarray(gaps, dtype=float)
 
 
-def _fixed_k_col_clusters(ci_entry, fk):
-    """Re-cut a saved column dendrogram at exactly `fk` clusters.
-
-    Returns {1-based label: neuron indices}. The unresponsive class that
-    clustering.py appends (label col_tol_k + 1) is held out of the cut and
-    re-appended as label fk + 1, so a fixed-k grouping keeps the same
-    "silent neurons are their own class" convention as the tolerance-selected
-    one — which is what makes the two comparable."""
-    res = ci_entry["result"]
-    tol_labels = res["col_tol_labels"]
-    unres_mask = tol_labels == (res["col_tol_k"] + 1)
-    active_labels = fcluster(res["col_linkage"], fk, criterion="maxclust")
-    full = np.zeros(len(tol_labels), dtype=int)
-    full[~unres_mask] = active_labels
-    if unres_mask.any():
-        full[unres_mask] = fk + 1
-    return {int(lab): np.where(full == lab)[0] for lab in np.unique(full) if lab > 0}
+# Fixed-k dendrogram re-cut shared with leison.py / leison_plot.py — single
+# implementation in core/clustering.py so the three scripts cannot drift.
+_fixed_k_col_clusters = clustering.fixed_k_col_clusters
 
 
 def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
@@ -281,12 +266,12 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
     activity (param_{aname}_result.npz), hyperparameters (…_param.json) and
     checkpoint (savednet_{aname}.pt), then runs the two stages described in the
     module docstring — stage 1 (`shared_run` for every family in `families`)
-    followed by `sys.exit()`, which the __main__ loop treats as a clean per-trial
-    finish.
+    followed by stage 2 (weight structure and clustering).
 
     `families` selects which sibling-task families stage 1 probes; the default is
     ALL of `SHARED_RUN_FAMILIES`, i.e. dmcgo/dmcnogo and delaydm1/delaydm2 in one
-    run. Before computation, artifacts belonging to every selected family are
+    run. Pass an empty tuple to skip stage 1 entirely and go straight to stage 2.
+    Before computation, artifacts belonging to every selected family are
     removed from this run's output directory. `clean=True` additionally empties
     all other files in that directory.
     """
@@ -305,6 +290,8 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
     aname = f"{task}_seed{seed}_{feature}+hidden{hidden}+batch{batch}{accfeature}"
     out_path_name = "multiple_tasks/" + f"param_{aname}_result.npz"
     out_path = Path(out_path_name)
+    # Always True: the npz is read only for metadata (rules_epochs, hyp_dict, ...);
+    # activity (xs/hs/Ms_orig) is regenerated by a fresh forward pass in stage 2.
     reevaluate = True
 
     size_bytes = out_path.stat().st_size  
@@ -316,17 +303,8 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
         hyp_dict = data["hyp_dict"].item()
         all_rules = data["all_rules"]
         test_task = data["test_task"]
-        # Only load large arrays if we won't reevaluate (reevaluate overwrites them)
-        if not reevaluate:
-            Ms_orig = data["Ms_orig"]
-            hs = data["hs"]
-            xs = data["xs"]
         bs = data["bs"]
 
-    if not reevaluate:
-        print(f"Ms_orig: {Ms_orig.shape}")
-        print(f"hs: {hs.shape}")
-        print(f"xs: {xs.shape}")
     print(f"bs: {bs.shape}")
     print(f"test_task: {test_task.shape}")
     print(f"all_rules: {all_rules}")
@@ -343,7 +321,7 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
     savefigure_name_base = copy.deepcopy(savefigure_name)
 
     # all outputs for this experiment go into their own subfolder
-    save_dir = f"./multiple_tasks/{savefigure_name_base}"
+    save_dir = f"./multiple_tasks_analysis/{savefigure_name_base}"
     os.makedirs(save_dir, exist_ok=True)
     if clean:
         for _old_file in Path(save_dir).iterdir():
@@ -636,9 +614,7 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
         except Exception as exc:
             print(f"  [{_addtask}] family failed: {exc}")
             import traceback
-            traceback.print_exc()
-    sys.exit()
-    
+            traceback.print_exc()    
 
     # analyze the fitted weight matrices; we focus on the first layer of modulation and the output layer, since they are more interpretable than the hidden layer
     output_W = state_dict["W_output"].cpu().numpy()
@@ -760,10 +736,10 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
         save_dir="./multiple_tasks",
     ):
         """
-        Three weight matrices saved both as separate files and as a
-        single combined panel. Aspect ratios follow each matrix's
-        actual shape so the readout (small × n_hidden) doesn't stretch
-        to the same vertical extent as the recurrent matrix.
+        Each of the three weight matrices saved as its own file.
+        Aspect ratios follow each matrix's actual shape so the readout
+        (small × n_hidden) doesn't stretch to the same vertical extent
+        as the recurrent matrix.
         """
         # Symmetric color limits per matrix (around 0) for readability.
         def _sym(M):
@@ -800,27 +776,6 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
             fig.savefig(f"{save_dir}/{outname}_{aname}.png",
                         dpi=300, bbox_inches="tight")
             plt.close(fig)
-
-        # Combined 3-panel figure stacked vertically. Heights scale with
-        # each matrix's row count so the readout doesn't dominate.
-        heights = [_figsize_for_matrix(*m.shape)[1] + 1.4
-                   for _, m, *_ in triplet]
-        widths  = [max(_figsize_for_matrix(*m.shape)[0] + 1.6
-                       for _, m, *_ in triplet)]
-
-        fig, axes = plt.subplots(
-            3, 1, figsize=(widths[0], sum(heights)),
-            gridspec_kw={"height_ratios": heights},
-        )
-        for ax, (tag, mat, xl, yl, title) in zip(axes, triplet):
-            vmin, vmax = _sym(mat)
-            heatmap_with_top_left_marginals(
-                mat, ax=ax, cmap=cs, center=0, vmin=vmin, vmax=vmax,
-                xlabel=xl, ylabel=yl, title=title, square=False)
-        fig.tight_layout()
-        fig.savefig(f"{save_dir}/weight_matrices_combined_{aname}.png",
-                    dpi=300, bbox_inches="tight")
-        plt.close(fig)
 
         return
 
@@ -949,6 +904,58 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
         del chunk_db  # free per-chunk state lists now that db_test is assembled
         acc, _ = model.compute_acc(net_out.to(device), test_output, test_mask, test_input, isvalid=True, mode=model.acc_measure)
         print(f"Accuracy: {acc}")
+
+        # ── 每个任务单独计算精度并绘制柱状图 ────────────────────────────────────
+        # 在进行后续聚类分析之前，先快速直观地汇报网络在每个任务上的表现，
+        # 便于判断网络训练是否收敛，以及哪些任务相对困难。
+        # 这里复用已有的 net_out / test_output / test_mask / test_input（均在 device 上），
+        # 通过 helper.find_task 识别每条 trial 属于哪个 rule，再逐 rule 计算精度。
+        _test_task_tmp = np.array([
+            int(c) for c in helper.find_task(task_params, test_input.detach().cpu().numpy(), 0)
+        ]).flatten()
+        _net_out_dev = net_out.to(device)
+        per_rule_accs = {}
+        for _ri, _rname in enumerate(task_params_c["rules"]):
+            _sel = np.flatnonzero(_test_task_tmp == _ri)
+            if _sel.size == 0:
+                per_rule_accs[_rname] = float("nan")
+                continue
+            _sel_t = torch.as_tensor(_sel, device=device)
+            _acc_r, _ = model.compute_acc(
+                _net_out_dev.index_select(0, _sel_t),
+                test_output.index_select(0, _sel_t),
+                test_mask.index_select(0, _sel_t),
+                test_input.index_select(0, _sel_t),
+                isvalid=True, mode=model.acc_measure,
+            )
+            per_rule_accs[_rname] = float(_acc_r)
+            print(f"  [per-task acc] {_rname}: {float(_acc_r):.3f}  (n={_sel.size})")
+        del _net_out_dev
+
+        _rnames = list(per_rule_accs.keys())
+        _raccs  = [per_rule_accs[r] for r in _rnames]
+        _overall_acc = float(acc)
+        _bar_colors  = [c_vals[i % len(c_vals)] for i in range(len(_rnames))]
+
+        fig_acc, ax_acc = plt.subplots(1, 1, figsize=(max(8, len(_rnames) * 0.75), 5))
+        ax_acc.bar(np.arange(len(_rnames)), _raccs, color=_bar_colors, width=0.7, zorder=2)
+        ax_acc.axhline(_overall_acc, color="black", linestyle="--", linewidth=1.5,
+                       label=f"overall = {_overall_acc:.3f}", zorder=3)
+        ax_acc.set_xticks(np.arange(len(_rnames)))
+        ax_acc.set_xticklabels(_rnames, rotation=45, ha="right", fontsize=9)
+        ax_acc.set_ylabel("Accuracy", fontsize=12)
+        ax_acc.set_xlabel("Task", fontsize=12)
+        ax_acc.set_ylim(0, 1.05)
+        ax_acc.set_title(f"Per-task accuracy  |  overall = {_overall_acc:.3f}", fontsize=12)
+        ax_acc.legend(fontsize=9, framealpha=0.7)
+        ax_acc.yaxis.grid(True, linestyle=":", linewidth=0.6, color="0.8", zorder=0)
+        ax_acc.set_axisbelow(True)
+        ax_acc.spines[["top", "right"]].set_visible(False)
+        fig_acc.tight_layout()
+        fig_acc.savefig(f"{save_dir}/per_task_accuracy_{aname}.png", dpi=300)
+        plt.close(fig_acc)
+        # ─────────────────────────────────────────────────────────────────────────
+
         del net_out, test_output, test_mask  # no longer needed after accuracy; test_input kept for find_task below
 
         Ms_orig = db_test["M1"].cpu().numpy()
@@ -1021,19 +1028,12 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
     assert len(clustering_data_analysis) == len(clustering_data_analysis_names) \
         == len(clustering_data_normalize)
 
-    # data registertion buffer
-    clustering_data_hierarchy = {}
+    # data registration buffers (read by later iterations of this loop)
     clustering_corr_info = {}
-    col_clusters_all, row_clusters_all = {}, {}
+    col_clusters_all = {}
     row_cluster_breaker_all = {}
-    input_hidden_comparison = {}
-    base_data = {}
-    metrics_all_all = {}
-    rbreaks_all, cbreaks_all = {}, {}
     cluster_info_save = {}
     cluster_info_save_mod = {}
-
-    selection_key = ["CH_blocks", "DB_blocks"]
 
     upper_cluster = 300
     lower_cluster = 5 # for input & hidden
@@ -1070,6 +1070,9 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                 ("delay2", [6, 7, 8, 9, 10]),
                 ("go1",    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
             ]
+        else:
+            raise ValueError("phase_to_indices is only defined for ruleset "
+                             f"'everything', got {hyp_dict['ruleset']!r}")
         
         tb_break = [
             [idx, rules_epochs[all_rules[idx]][phase]]
@@ -1376,7 +1379,6 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
         # no-ops; they stay because uncommenting the line above is meant to
         # re-sort the whole downstream chain in one place.
         cell_vars_rules_sorted_norm = cell_vars_rules_norm[:, sort_idxs]
-        base_data[clustering_save_name] = cell_vars_rules_sorted_norm
         print(f"cell_vars_rules_sorted_norm: {cell_vars_rules_sorted_norm.shape}")  
 
         # 2026-04-06: analyze input and hidden
@@ -1425,46 +1427,6 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
             assert np.unique(result["row_labels"]).size in (result["row_k"], result["row_k"] + 1)
             assert np.unique(result["col_labels"]).size in (result["col_k"], result["col_k"] + 1)
             
-            eval_res = clustering_metric.evaluate_bicluster_clustering(
-                cell_vars_rules_sorted_norm, row_labels=result["row_tol_labels"], col_labels=result["col_tol_labels"]
-            )
-            
-            eval_metrics = eval_res["metrics"]
-            eval_blocks = eval_res["blocks"]
-            eval_stdmean = np.nanmedian(eval_blocks["std"] / eval_blocks["means"])
-
-            eval_random_metrics_all = []
-            eval_random_blocks_all = []
-            for _ in range(100):
-                rng = np.random.default_rng(seed=np.random.randint(0, 10000))
-                row_arr = rng.permutation(result["row_tol_labels"])
-                col_arr = rng.permutation(result["col_tol_labels"])
-                eval_res_random = clustering_metric.evaluate_bicluster_clustering(
-                    cell_vars_rules_sorted_norm, row_labels=row_arr, col_labels=col_arr
-                )
-                eval_random_metrics_all.append(eval_res_random["metrics"])
-                eval_random_blocks_all.append(eval_res_random["blocks"])
-
-            eval_random_stdmean = [np.nanmedian(eval_random_blocks["std"] / eval_random_blocks["means"]) 
-                                   for eval_random_blocks in eval_random_blocks_all]
-
-            metrics_all = {}
-            for metric_key in selection_key: 
-                optimized_value = eval_metrics[metric_key]
-                random_values = [eval_random_metrics[metric_key] 
-                                for eval_random_metrics in eval_random_metrics_all]
-                metrics_all[metric_key] = [optimized_value, np.mean(random_values), 
-                                           np.std(random_values, ddof=1)/np.sqrt(len(random_values))]
-
-            metrics_all["std/mean"] = [eval_stdmean, 
-                                       np.mean(eval_random_stdmean), 
-                                       np.std(eval_random_stdmean, ddof=1)/np.sqrt(len(eval_random_stdmean))]
-            
-            # registeration
-            metrics_all_all[clustering_save_name] = metrics_all
-
-            input_hidden_comparison[clustering_save_name] = [result, cell_vars_rules_sorted_norm]
-            
             # reorder the original matrix based on the clustering result
             cell_vars_rules_sorted_norm_ordered = cell_vars_rules_sorted_norm[
                 np.ix_(result["row_order"], result["col_order"])]
@@ -1473,8 +1435,6 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
             cl = np.asarray(result["col_tol_labels"])[result["col_order"]]
             rbreaks = clustering._breaks(rl)
             cbreaks = clustering._breaks(cl)
-            rbreaks_all[clustering_save_name] = rbreaks
-            cbreaks_all[clustering_save_name] = cbreaks
 
             # Print k decisions across all selection strategies for comparison.
             row_sil_mean = result["row_score_recording_mean"]
@@ -1550,9 +1510,8 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
             row_clusters = {int(lab): np.where(row_labels == lab)[0] for lab in np.unique(row_labels)}
             print(f"col_clusters: {len(col_clusters)}; row_clusters: {len(row_clusters)}")
             
-            # registeration
+            # registration
             col_clusters_all[clustering_save_name] = col_clusters
-            row_clusters_all[clustering_save_name] = row_clusters
             
             cluster_info_save[clustering_save_name] = {
                 "col_clusters": col_clusters,
@@ -1768,8 +1727,11 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
             session_norm = session_norm[norm_order]
             session_norm_name = (tb_break_name[result["row_order"]])[norm_order]
 
+            # NB: named x_sess, not xs — `xs` is the recorded input-activity
+            # array registered in clustering_data_analysis above; shadowing it
+            # here would silently rebind the name mid-loop.
             n_sess = len(session_norm)
-            xs = np.arange(n_sess)
+            x_sess = np.arange(n_sess)
             norm_min, norm_max = session_norm.min(), session_norm.max()
             norm_range = norm_max - norm_min if norm_max > norm_min else 1.0
 
@@ -1778,8 +1740,8 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
             bar_colors = [cmap_sn((v - norm_min) / norm_range) for v in session_norm]
 
             fig, ax = plt.subplots(1, 1, figsize=(max(12, n_sess * 0.55), 5))
-            ax.bar(xs, session_norm, color=bar_colors, width=0.7, zorder=2)
-            ax.plot(xs, session_norm, "-o", color="0.25", markersize=4,
+            ax.bar(x_sess, session_norm, color=bar_colors, width=0.7, zorder=2)
+            ax.plot(x_sess, session_norm, "-o", color="0.25", markersize=4,
                     linewidth=1.0, zorder=3)
 
             # horizontal reference line at the median
@@ -1787,7 +1749,7 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
             ax.axhline(median_val, color="0.5", linestyle="--", linewidth=1.0,
                        label=f"median = {median_val:.2f}", zorder=1)
 
-            ax.set_xticks(xs)
+            ax.set_xticks(x_sess)
             ax.set_xticklabels(session_norm_name, rotation=45,
                                ha="right", va="top", fontsize=9)
             ax.set_xlim(-0.7, n_sess - 0.3)
@@ -1803,9 +1765,6 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
             fig.tight_layout()
             fig.savefig(f"{save_dir}/{clustering_name}_variance_norm_{savefigure_name}.png", dpi=300)
             plt.close(fig)
-            
-            # register hierarchy clustering
-            clustering_data_hierarchy[clustering_name] = result["col_linkage"]
 
         # align the correlation matrix for input and hidden based on an identical ordering 
         # this loop will be run during the hidden analysis iteration (not modulation iteration)
@@ -3541,9 +3500,6 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                 cell_vars_rules_sorted_norm_all = cell_vars_rules_sorted_norm[np.ix_(result_all_["row_order"], result_all_["col_order"])]
                 cell_vars_rules_sorted_norm_all_lst.append(cell_vars_rules_sorted_norm_all)
 
-            clustering_data_hierarchy["modulation_all_pre"] = result_pre["col_linkage"]
-            clustering_data_hierarchy["modulation_all_post"] = result_post["col_linkage"]
-
             # check if length is consistent
             assert len(G_lst) == len(result_all_lst)
 
@@ -3802,66 +3758,12 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
         clustering_data_analysis[clustering_index] = None
         gc.collect()
 
-    # Free the large modulation arrays now that all clustering iterations are done
-    del Ms_orig, weighted_Ms_orig
+    # Free the large activity/modulation arrays now that all clustering
+    # iterations are done (the list entries were only cleared to None; these
+    # top-level names still hold the last references).
+    del xs, hs, Ms_orig, weighted_Ms_orig
     gc.collect()
 
     # save this only at the end     
     with open(f"{save_dir}/cluster_info_mod_{savefigure_name_base}.pkl", "wb") as f:
         pickle.dump(cluster_info_save_mod, f)
-        
-
-if __name__ == "__main__":
-    import argparse
-    import re
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--feature", type=str, default=None,
-                        help="Only run models with this feature (e.g. 'L21e4')")
-    parser.add_argument("--seed", type=int, default=None,
-                        help="Only run the model with this seed (e.g. 749). "
-                             "Combine with --feature to disambiguate.")
-    parser.add_argument("--families", nargs="+", default=list(SHARED_RUN_FAMILIES),
-                        choices=list(SHARED_RUN_FAMILIES),
-                        help="Which sibling-task families to probe. Default: all of "
-                             f"{list(SHARED_RUN_FAMILIES)} in one run. Each family "
-                             "is named after its first rule and solves both of its "
-                             "rules.")
-    args = parser.parse_args()
-
-    # Clean up old output files
-    clean = False
-    if clean:
-        for f in Path("multiple_tasks").glob("*.png"):
-            f.unlink()
-        for f in Path("multiple_tasks").glob("*.pkl"):
-            f.unlink()
-
-    saved_nets = sorted(Path("multiple_tasks").glob("savednet_everything_seed*+angle.pt"))
-    param_lst = []
-    for p in saved_nets:
-        m = re.match(r"savednet_everything_seed(\d+)_(\w+)\+hidden\d+\+batch\d+\+angle\.pt", p.name)
-        if m:
-            param_lst.append((int(m.group(1)), m.group(2)))
-
-    if args.feature:
-        param_lst = [(s, f) for s, f in param_lst if f == args.feature]
-    if args.seed is not None:
-        param_lst = [(s, f) for s, f in param_lst if s == args.seed]
-
-    print(f"Running {len(param_lst)} models: {param_lst}")
-
-    for seed, feature in param_lst:
-        try:
-            main(seed, feature, clean=clean, families=args.families)
-        except SystemExit as e:
-            # main() may call sys.exit() to finish a trial early ON PURPOSE
-            # (e.g. after shared_run, before the full weight-matrix analysis).
-            # That raises SystemExit, which would otherwise tear down the whole
-            # process and skip every remaining trial. Treat a clean exit
-            # (code 0 or None) as "this trial is intentionally done" and move on
-            # to the next trial; re-raise any non-zero code as a genuine error.
-            if e.code not in (None, 0):
-                raise
-            print(f"[seed{seed}_{feature}] finished early via sys.exit(); "
-                  f"continuing to next trial.")

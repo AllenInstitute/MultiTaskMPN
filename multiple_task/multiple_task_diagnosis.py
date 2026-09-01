@@ -16,7 +16,7 @@ printed, and all results are saved to
 The output directory is cleared at the start of each run. All requested
 same-cluster diagnostics are drawn in one figure, with one task pair per row.
 
-Cluster data read per experiment (all under ``multiple_tasks/{aname}/``):
+Cluster data read per experiment (all under ``multiple_tasks_analysis/{aname}/``):
   - input / hidden  : ``cluster_info_{aname}.pkl`` →
         ``{input,hidden}_normalized → result → row_tol_labels`` (+ tb_break_name)
   - modulation      : ``cluster_info_mod_{aname}.pkl`` →
@@ -71,7 +71,7 @@ if not getattr(_Figure.savefig, "_logs_path", False):
     _Figure.savefig = _savefig_logged
 
 # Data lives at repo root (scripts are run from there); see README "Workflow".
-MULTI_DIR = Path("multiple_tasks")
+MULTI_DIR = Path("multiple_tasks_analysis")
 OUT_DIR = Path("multiple_tasks_diagnosis")
 
 # Modulation clustering variant to read. The mod pickle stores several
@@ -129,7 +129,7 @@ def _clear_output_dir():
 # ─── Experiment discovery & loading ──────────────────────────────────────────
 
 def _discover_anames(feature=None, seed=None):
-    """Experiment identifiers under multiple_tasks/ that have cluster info.
+    """Experiment identifiers under multiple_tasks_analysis/ that have cluster info.
 
     Filters by regularization `feature` (e.g. 'L21e4') and/or `seed` when given,
     mirroring multiple_task_analysis.py's CLI. Sorted for deterministic output.

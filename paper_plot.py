@@ -154,13 +154,13 @@ OUT_DIR = Path("paper_plot")
 
 # ── Multi-task (one full multi-task network) ──
 ANAME = "everything_seed749_L21e4+hidden300+batch128+angle"
-DATA_DIR = Path("multiple_tasks") / ANAME
+DATA_DIR = Path("multiple_tasks_analysis") / ANAME
 # delayDM integration-memory probe (two_in_multiple mode). May differ from
 # ANAME — set independently so the probe figure can come from a different
 # seed/regularization than the clustering/lesion figures.
-DELAYDM_ANAME = "everything_seed842_L21e4+hidden300+batch128+angle"
+DELAYDM_ANAME = "everything_seed921_L21e4+hidden300+batch128+angle"
 # Produced by multiple_task_analysis.py's shared_run, which writes into
-# multiple_tasks/{aname}/ the two pickles the delayDM geometry figure reads:
+# multiple_tasks_analysis/{aname}/ the two pickles the delayDM geometry figure reads:
 #     fixed_points_grad_{aname}_{rule}.pkl   one per delayDM rule
 #     delaydm1_delay_pc_projections_{aname}.pkl
 #                                             joint six-PC delay-trajectory
@@ -1085,11 +1085,12 @@ def plot_l2_vs_accuracy():
 # ─── Figure: L2=1e-4 activation comparison ──────────────────────────────────
 
 def plot_l2e4_activation_accuracy():
-    """Figure: Test accuracy for ReLU, sigmoid, and Tanh activations at L2=1e-4.
+    """Figure: Test accuracy at L2=1e-4 for every trained activation function.
 
-    The full feature tag is read from each result's ``feature`` field when
-    available and otherwise inferred from its model identifier.  The unadorned
-    ``L21e4`` tag denotes the default Tanh activation.
+    Compares linear, ReLU, softplus, sigmoid, and the default Tanh.  The full
+    feature tag is read from each result's ``feature`` field when available and
+    otherwise inferred from its model identifier.  The unadorned ``L21e4`` tag
+    denotes the default Tanh activation.
     """
     import json as _json
     _ensure_out_dir()
@@ -1100,10 +1101,14 @@ def plot_l2e4_activation_accuracy():
     with open(PERF_RESULT_PATH) as f:
         result_dict = _json.load(f)
 
+    # Categorical distinction → c_vals (SCHEME.md); Tanh keeps the same blue
+    # as the tanh points in plot_l2_vs_accuracy (c_vals[1]).
     group_specs = [
-        ("L21e4relu", "ReLU", "#dd6b20"),
-        ("L21e4sigmoid", "Sigmoid", "#805ad5"),
-        ("L21e4", "Tanh", "#3182ce"),
+        ("L21e4linear", "Linear", c_vals[2]),
+        ("L21e4relu", "ReLU", c_vals[6]),
+        ("L21e4softplus", "Softplus", c_vals[3]),
+        ("L21e4sigmoid", "Sigmoid", c_vals[9]),
+        ("L21e4", "Tanh", c_vals[1]),
     ]
     accuracies = {feature: [] for feature, _, _ in group_specs}
 
@@ -1112,12 +1117,18 @@ def plot_l2e4_activation_accuracy():
         if feature in accuracies:
             accuracies[feature].append(float(result["acc"]) * 100.0)
 
+    # Drop activations with no evaluated checkpoints instead of skipping the
+    # whole figure, so a partially populated database still plots.
     missing = [feature for feature, _, _ in group_specs if not accuracies[feature]]
     if missing:
-        print(f"  Skipped: no performance results for {', '.join(missing)}.")
+        print(f"  Note: no performance results for {', '.join(missing)}; omitted.")
+        group_specs = [spec for spec in group_specs if spec[0] not in missing]
+    if not group_specs:
+        print("  Skipped: no L2=1e-4 activation results found.")
         return
 
-    fig, ax = plt.subplots(1, 1, figsize=(2.3, 3))
+    # Same per-column width as plot_l2_vs_accuracy (2.3 in / 4 L2 values).
+    fig, ax = plt.subplots(1, 1, figsize=(0.575 * len(group_specs), 3))
     positions = np.arange(len(group_specs))
 
     all_values = []
@@ -1137,7 +1148,7 @@ def plot_l2e4_activation_accuracy():
 
     labels = [label for _, label, _ in group_specs]
     ax.set_xticks(positions)
-    ax.set_xticklabels(labels)
+    ax.set_xticklabels(labels, rotation=45, ha="right")
     ax.set_xlabel("Activation function")
     ax.set_ylabel("Test accuracy (%)")
     lo, hi = min(all_values), max(all_values)
@@ -1281,13 +1292,13 @@ def plot_state_space_r_values():
 # ─── Figure: Over-membership ─────────────────────────────────────────────────
 
 def _find_experiment_dirs():
-    """Return all experiment subfolders under multiple_tasks/ matching the
-    same feature/hidden/batch signature as ANAME (any seed)."""
+    """Return all experiment subfolders under multiple_tasks_analysis/ matching
+    the same feature/hidden/batch signature as ANAME (any seed)."""
     import re as _re
     # ANAME = everything_seed{seed}_{feature}+hidden{h}+batch{b}+angle
     m = _re.match(r"everything_seed\d+_(.+)$", ANAME)
     suffix = m.group(1) if m else ""
-    base = Path("multiple_tasks")
+    base = Path("multiple_tasks_analysis")
     dirs = sorted(base.glob(f"everything_seed*_{suffix}"))
     return [d for d in dirs if d.is_dir()]
 
@@ -5156,7 +5167,7 @@ def _delaydm_alignment_metrics(rep_key="fixed_WM", probe="longdelay"):
     before PCA; the trajectory-PC panels below only visualize them.
     """
     aname, rules = DELAYDM_ANAME, _DELAYDM_RULES
-    run_dir = Path("multiple_tasks") / aname
+    run_dir = Path("multiple_tasks_analysis") / aname
     records = []
     for rule in rules:
         path = run_dir / f"fixed_points_grad_{aname}_{rule}.pkl"
@@ -5222,7 +5233,7 @@ def _plot_multitask_delaydm_fixed_point_geometry_representation(
     """
     aname, rules = DELAYDM_ANAME, _DELAYDM_RULES
     pc_label = "Joint Delay"
-    path = (Path("multiple_tasks") / aname
+    path = (Path("multiple_tasks_analysis") / aname
             / f"{rules[0]}_delay_pc_projections_{aname}.pkl")
     data = _load_pkl_or_skip(path, _MULTITASK_FP_HINT)
     if data is None:
