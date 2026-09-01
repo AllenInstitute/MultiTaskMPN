@@ -46,6 +46,7 @@ flextask/
 data/
 
 # Logs & temp
+log/
 *.log
 *.tmp
 *.out

@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
+from run_logging import tee_output
 import multiple_task_analysis
 import leison
 import leison_plot
@@ -52,7 +53,7 @@ def run_pipeline(seed, feature, families=()):
     print(f"\n  Pipeline complete: {aname} ({time.time() - t0:.1f}s total)")
 
 
-if __name__ == "__main__":
+def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--feature", type=str, default=None,
@@ -86,3 +87,8 @@ if __name__ == "__main__":
 
     for seed, feature in param_lst:
         run_pipeline(seed, feature, families=tuple(args.families))
+
+
+if __name__ == "__main__":
+    with tee_output("run_pipeline"):
+        main()

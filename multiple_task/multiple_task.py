@@ -47,6 +47,7 @@ from scipy.stats import pearsonr
 from scipy.cluster.hierarchy import dendrogram
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
+from run_logging import tee_output
 import networks as nets  # Contains RNNs
 import net_helpers
 import mpn_tasks
@@ -83,9 +84,33 @@ SEED_LIST = None
 RULESET = 'everything'          # low_dim, all, test, everything, ...
 CHOSEN_NETWORK = "dmpn"         # mpn1, dmpn, vanilla, gru
 N_HIDDEN = 300
-ADDON_NAME = "L21e4linear"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appended below
+ADDON_NAME = "L21e4proj200"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appended below
 train = True                    # whether or not to train the network
 verbose = True
+
+
+def validate_reg_lambda_addon_name(reg_lambda, addon_name, weight_reg="L2"):
+    """Ensure the run name starts with the tag encoded by ``reg_lambda``.
+
+    The project convention drops the minus sign from a negative scientific
+    exponent: ``1e-4`` becomes ``L21e4``. Additional experiment descriptors
+    may follow the tag, for example ``L21e4proj100``.
+    """
+    if reg_lambda <= 0:
+        raise ValueError(
+            f"reg_lambda must be positive to build an ADDON_NAME tag; got {reg_lambda!r}."
+        )
+
+    mantissa, exponent = f"{reg_lambda:.0e}".split("e")
+    expected_tag = f"{weight_reg}{mantissa}e{abs(int(exponent))}"
+    if not addon_name.startswith(expected_tag):
+        raise ValueError(
+            f"ADDON_NAME={addon_name!r} does not match reg_lambda={reg_lambda:g}. "
+            f"It must start with {expected_tag!r} (for example, "
+            f"{expected_tag!r} or {expected_tag + 'proj100'!r})."
+        )
+
+    return expected_tag
 
 # Reload modules if changes have been made to them
 from importlib import reload
@@ -200,6 +225,10 @@ def current_basic_params(hyp_dict):
         },
     }
 
+    validate_reg_lambda_addon_name(
+        train_params['reg_lambda'], ADDON_NAME, train_params['weight_reg']
+    )
+
     print(f"valid_n_batch: {train_params['valid_n_batch']}")
 
     if not train: # some 
@@ -208,10 +237,10 @@ def current_basic_params(hyp_dict):
     net_params = {
         'net_type': hyp_dict['chosen_network'], # mpn1, dmpn, vanilla
         'n_neurons': [1] + [n_hidden] * mpn_depth + [1],
-        'linear_embed': n_hidden, 
+        'linear_embed': 200,
         'output_bias': False, # Turn off biases for easier interpretation
         'loss_type': 'MSE', # XE, MSE
-        'activation': 'linear', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside
+        'activation': 'tanh', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside
         'cuda': True,
         'monitor_freq': train_params["n_epochs_per_set"],
         'monitor_valid_out': True, # Whether or not to save validation output throughout training
@@ -545,7 +574,7 @@ def run_trial(seed):
 
 
 # ─── Run K independent trials (same params, different seeds) ──────────────────
-if __name__ == "__main__":
+def main():
     Path("multiple_tasks").mkdir(parents=True, exist_ok=True)
 
     if SEED_LIST is not None:
@@ -589,7 +618,9 @@ if __name__ == "__main__":
     print(f"Wrote manifest: {manifest_path}")
 
 
-
+if __name__ == "__main__":
+    with tee_output("multiple_task"):
+        main()
 
 
 
