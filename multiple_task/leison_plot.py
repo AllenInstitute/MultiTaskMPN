@@ -47,6 +47,12 @@ synapse clusters are selectively important for specific tasks. Produces:
    static weight W. Aggregated per task and compared between memory-family
    tasks (delay/dm/dms/dmc) and reaction-family tasks (fd/react) — the
    MPN prediction is that working-memory tasks run on M.
+10. Protective-cluster dissection — decomposes every NEGATIVE normalized
+    lesion effect (cluster lesion hurting LESS than the size-matched random
+    control) into own damage vs control damage on the shared test set, to
+    separate the mechanical reading (the cluster is inert and the control
+    sampled critical hub neurons) from genuine protection (removing the
+    cluster IMPROVES absolute accuracy above the intact baseline).
 
 Outputs saved to ./multiple_tasks_norm/{aname}/.
 
@@ -491,6 +497,161 @@ def main(seed, feature):
             print(f"[causal-vs-activity] {side}: Mantel r={r_m:.2f}, p={p_m:.4f}")
     else:
         print("[causal-vs-activity] cluster_info pickle not found, skipping")
+
+    # ══════════════════════════════════════════════════════════════════
+    # Protective-cluster dissection (module docstring #10).
+    # Many cluster lesions have NEGATIVE normalized effect — the size-
+    # matched random control hurts more than the cluster lesion. Two very
+    # different readings that this block separates:
+    #   (i)  mechanical — the cluster itself is inert (own damage ≈ 0);
+    #        the negativity comes entirely from the random control
+    #        sampling critical (hub) neurons;
+    #   (ii) genuine protection — removing the cluster IMPROVES absolute
+    #        accuracy above the intact baseline (disinhibition-like).
+    # Decomposition per (task, cluster) cell, all on the SAME trials (each
+    # task's test set is shared by the baseline, cluster and control runs
+    # inside leison.py, and the forward pass is deterministic):
+    #   own_damage  = baseline − lesion acc        (< 0 ⇒ improvement)
+    #   ctrl_damage = baseline − mean control acc
+    #   normalized effect (random − lesion) ≡ own_damage − ctrl_damage
+    # Noise scale: accuracies are means over ~_N_EVAL_TRIALS trials, so a
+    # binomial-style se = sqrt(base(1−base)/N), with a sqrt(2) independence
+    # (upper-bound) factor for the paired difference. These are heuristic
+    # SCREENING thresholds, not formal tests — a genuinely protective
+    # cluster must show systematic improvement across tasks, not one cell.
+    # ══════════════════════════════════════════════════════════════════
+    _N_EVAL_TRIALS = 200   # leison.py's test_n_batch (not stored in the pickle)
+
+    for _pc_vtag, _pc_leison, _pc_random in [
+        ("norm", "leison", "random_leison"),
+        ("unnorm", "leison_unnorm", "random_leison_unnorm"),
+    ]:
+        if _pc_leison not in results or _pc_random not in results:
+            continue
+        _names_pc = results[_pc_leison]["all_comb_names_leison"]
+        _acc_pc = np.asarray(results[_pc_leison]["ihtask_accs"], float)
+        _rnd_pc = np.asarray(results[_pc_random]["ihrandomtask_accs"], float)
+        _units_pc = results[_pc_leison].get("lesion_units", {})
+
+        # The two no-lesion baselines are both no-op forwards on the same
+        # test set and should be identical; average defensively if not.
+        _b_pre = _acc_pc[:, _names_pc.index("pre_noleison")]
+        _b_post = _acc_pc[:, _names_pc.index("post_noleison")]
+        if not np.allclose(_b_pre, _b_post, atol=1e-6):
+            print(f"[protective {_pc_vtag}] warning: the two no-lesion "
+                  "baselines differ; using their mean")
+        base_pc = (_b_pre + _b_post) / 2.0                        # (T,)
+
+        keep_pc = [k for k, n in enumerate(_names_pc) if n not in baseline_keys]
+        cn_pc = [_names_pc[k].replace("pre_c", "i").replace("post_c", "h")
+                 for k in keep_pc]
+        is_input_pc = np.array([n.startswith("i") for n in cn_pc])
+        sizes_pc = np.array([float(_units_pc.get(_names_pc[k], np.nan))
+                             for k in keep_pc])
+
+        own = base_pc[:, None] - _acc_pc[:, keep_pc]    # (T, C); < 0 = improvement
+        ctrl = base_pc[:, None] - _rnd_pc[:, keep_pc]   # (T, C)
+        E_pc = own - ctrl                               # ≡ random − lesion
+        se_pc = np.sqrt(np.clip(base_pc * (1 - base_pc), 1e-6, None)
+                        / _N_EVAL_TRIALS)               # (T,)
+        z_own = own / (np.sqrt(2.0) * se_pc[:, None])
+
+        improving = (own < 0) & (z_own < -2)            # true improvement cells
+        damaging = (own > 0) & (z_own > 2)
+        inert = ~improving & ~damaging
+        neg = E_pc < 0
+        n_neg = int(neg.sum())
+        _frac = lambda m: (100.0 * (neg & m).sum() / n_neg) if n_neg else 0.0
+
+        # Per-cluster verdict on the task-mean own damage
+        mean_own = own.mean(axis=0)
+        se_mean = np.sqrt((2.0 * se_pc ** 2).sum()) / len(all_tasks)
+        z_cl = mean_own / se_mean
+        protective_cand = z_cl < -2
+        damaging_cl = z_cl > 2
+
+        fig, axs = plt.subplots(1, 3, figsize=(13.2, 3.9), dpi=300)
+
+        # P1: cell-level decomposition — own vs control damage
+        for _mask, _col, _lbl in [(is_input_pc, "#4292c6", "input"),
+                                  (~is_input_pc, "#e6550d", "hidden")]:
+            axs[0].scatter(own[:, _mask].ravel() * 100,
+                           ctrl[:, _mask].ravel() * 100,
+                           s=8, alpha=0.45, color=_col, edgecolors="none",
+                           label=_lbl)
+        _lim = [min(own.min(), ctrl.min()) * 100, max(own.max(), ctrl.max()) * 100]
+        axs[0].plot(_lim, _lim, color="grey", linestyle="--", linewidth=0.6,
+                    label="effect = 0")
+        axs[0].axvline(0, color="black", linewidth=0.6)
+        axs[0].set_xlabel("Own damage (%)  [< 0 = lesion IMPROVES accuracy]",
+                          fontsize=8)
+        axs[0].set_ylabel("Random-control damage (%)", fontsize=8)
+        axs[0].set_title("Above diagonal = negative normalized effect;\n"
+                         "left of x=0 = candidate true protection", fontsize=8)
+        axs[0].legend(fontsize=6, frameon=False, loc="upper left")
+
+        # P2: per-cluster task-mean own damage, sorted, class-colored
+        _ord_pc = np.argsort(mean_own)
+        _cols = ["#d73027" if protective_cand[c]
+                 else ("#2171b5" if damaging_cl[c] else "#bdbdbd")
+                 for c in _ord_pc]
+        axs[1].bar(np.arange(len(_ord_pc)), mean_own[_ord_pc] * 100,
+                   yerr=2 * se_mean * 100, color=_cols, edgecolor="black",
+                   linewidth=0.3, error_kw={"elinewidth": 0.4})
+        axs[1].axhline(0, color="black", linewidth=0.6)
+        axs[1].set_xticks(np.arange(len(_ord_pc)))
+        axs[1].set_xticklabels([cn_pc[c] for c in _ord_pc], rotation=60,
+                               ha="right", fontsize=5)
+        axs[1].set_ylabel("Task-mean own damage (%)", fontsize=8)
+        axs[1].set_title("red = protective candidate (z < −2)\n"
+                         "blue = damaging, grey = inert", fontsize=8)
+
+        # P3: the mechanical driver — control damage grows with lesion size
+        _fin = np.isfinite(sizes_pc)
+        _ctrl_cl = ctrl.mean(axis=0)
+        for _mask, _col, _lbl in [(is_input_pc & _fin, "#4292c6", "input"),
+                                  (~is_input_pc & _fin, "#e6550d", "hidden")]:
+            axs[2].scatter(sizes_pc[_mask], _ctrl_cl[_mask] * 100, s=16,
+                           alpha=0.75, color=_col, edgecolors="none", label=_lbl)
+        if _fin.sum() > 2:
+            _sl, _ic, _r, _pv, _ = linregress(sizes_pc[_fin], _ctrl_cl[_fin] * 100)
+            _xf = np.linspace(np.nanmin(sizes_pc), np.nanmax(sizes_pc), 50)
+            axs[2].plot(_xf, _sl * _xf + _ic, color="grey", linewidth=0.8)
+            axs[2].text(0.05, 0.95, f"r={_r:.2f}", transform=axs[2].transAxes,
+                        va="top", fontsize=7)
+        axs[2].set_xlabel("Lesion size (# neurons)", fontsize=8)
+        axs[2].set_ylabel("Task-mean control damage (%)", fontsize=8)
+        axs[2].set_title("Mechanical driver: bigger random draws\n"
+                         "hit more critical neurons", fontsize=8)
+        axs[2].legend(fontsize=6, frameon=False)
+
+        for ax in axs:
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.tick_params(labelsize=7)
+        fig.suptitle(f"Protective-cluster dissection [{_pc_vtag}]", fontsize=9)
+        fig.tight_layout()
+        _path = f"{save_dir}/protective_clusters_{_pc_vtag}_{aname}"
+        fig.savefig(f"{_path}.png", dpi=300)
+        plt.close(fig)
+
+        with open(f"{_path}.pkl", "wb") as _f:
+            pickle.dump({
+                "own_damage": own, "ctrl_damage": ctrl, "effect": E_pc,
+                "z_own": z_own, "improving": improving, "damaging": damaging,
+                "baseline": base_pc, "cluster_names": cn_pc,
+                "lesion_sizes": sizes_pc, "tasks": list(all_tasks),
+                "task_mean_own": mean_own, "z_cluster": z_cl,
+                "protective_candidates": [cn_pc[c] for c in
+                                          np.flatnonzero(protective_cand)],
+                "n_eval_trials_assumed": _N_EVAL_TRIALS,
+            }, _f)
+        _cand = [cn_pc[c] for c in np.flatnonzero(protective_cand)] or ["none"]
+        print(f"[protective {_pc_vtag}] negative-effect cells: {n_neg}/{E_pc.size} "
+              f"— of these, {_frac(inert):.0f}% inert (mechanical), "
+              f"{_frac(damaging):.0f}% damaging-but-less-than-control, "
+              f"{_frac(improving):.0f}% true improvement; "
+              f"protective cluster candidates: {', '.join(_cand)}")
 
     # Normalized combined lesion effect (input × hidden) for both norm and unnorm
     for vtag in ["norm", "unnorm"]:

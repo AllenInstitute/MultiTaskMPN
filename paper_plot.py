@@ -1070,10 +1070,13 @@ def plot_l2_vs_accuracy():
     ax.set_xlabel("L2 regularization strength")
     ax.set_ylabel("Test accuracy (%)")
     # Adaptive y-range: pad the observed accuracy span by 5% of its extent
-    # (min 2 pts), clamped to the valid [0, 100] accuracy interval.
+    # (min 2 pts), clamped to [0, 100], then snapped outward to multiples of 5
+    # so the 5%-interval ticks land on the axis edges.
     lo, hi = float(acc_vals.min()), float(acc_vals.max())
     pad = max((hi - lo) * 0.05, 2.0)
-    ax.set_ylim(max(0.0, lo - pad), min(100.0, hi + pad))
+    ax.set_ylim(np.floor(max(0.0, lo - pad) / 5.0) * 5.0,
+                np.ceil(min(100.0, hi + pad) / 5.0) * 5.0)
+    ax.yaxis.set_major_locator(mpl.ticker.MultipleLocator(5))
     ax.spines[["top", "right"]].set_visible(False)
     ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
 
@@ -1153,7 +1156,9 @@ def plot_l2e4_activation_accuracy():
     ax.set_ylabel("Test accuracy (%)")
     lo, hi = min(all_values), max(all_values)
     pad = max((hi - lo) * 0.08, 2.0)
-    ax.set_ylim(max(0.0, lo - pad), min(100.0, hi + pad))
+    ax.set_ylim(np.floor(max(0.0, lo - pad) / 5.0) * 5.0,
+                np.ceil(min(100.0, hi + pad) / 5.0) * 5.0)
+    ax.yaxis.set_major_locator(mpl.ticker.MultipleLocator(5))
     ax.spines[["top", "right"]].set_visible(False)
     ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
 
@@ -1162,6 +1167,87 @@ def plot_l2e4_activation_accuracy():
     counts = ", ".join(
         f"{label} n={len(accuracies[feature])}"
         for feature, label, _ in group_specs
+    )
+    _save_fig(fig, out_path, extra=f" ({counts})")
+
+
+# ─── Figure: L2=1e-4 projection-dimension comparison ─────────────────────────
+
+def plot_projection_dim_accuracy():
+    """Figure: Test accuracy at L2=1e-4 vs input projection dimension.
+
+    Compares the L21e4proj50/100/200 runs against the default L21e4 runs
+    (Tanh, projection dimension 300).  Feature tags are hard-coded because the
+    bare ``L21e4`` tag carries no explicit projection dimension.
+    """
+    import json as _json
+    _ensure_out_dir()
+    if not PERF_RESULT_PATH.exists():
+        print(f"  Skipped: {PERF_RESULT_PATH} not found. Run multiple_task_performance.py first.")
+        return
+
+    with open(PERF_RESULT_PATH) as f:
+        result_dict = _json.load(f)
+
+    # (feature tag, projection dimension). Bare L21e4 = default proj 300.
+    group_specs = [
+        ("L21e4proj50", 50),
+        ("L21e4proj100", 100),
+        ("L21e4proj200", 200),
+        ("L21e4", 300),
+    ]
+    accuracies = {feature: [] for feature, _ in group_specs}
+
+    for model_name, result in result_dict.items():
+        feature = _performance_feature_tag(model_name, result)
+        if feature in accuracies:
+            accuracies[feature].append(float(result["acc"]) * 100.0)
+
+    missing = [feature for feature, _ in group_specs if not accuracies[feature]]
+    if missing:
+        print(f"  Note: no performance results for {', '.join(missing)}; omitted.")
+        group_specs = [spec for spec in group_specs if spec[0] not in missing]
+    if not group_specs:
+        print("  Skipped: no projection-dimension results found.")
+        return
+
+    # Same layout as plot_l2_vs_accuracy: individual seeds as scatter, the
+    # across-seed means connected to show the trend over projection dimension.
+    # Categorical x positions (equal spacing); the dimension is the tick label.
+    fig, ax = plt.subplots(1, 1, figsize=(2.3, 3))
+    positions = np.arange(len(group_specs))
+    mean_acc = []
+    all_values = []
+    for x, (feature, dim) in zip(positions, group_specs):
+        values = np.asarray(accuracies[feature], dtype=float)
+        all_values.extend(values.tolist())
+        mean_acc.append(values.mean())
+        ax.scatter(
+            np.full(len(values), x), values, color=c_vals[1], edgecolors="k",
+            linewidths=0.5, s=40, alpha=0.8, zorder=3,
+        )
+    ax.plot(
+        positions, mean_acc, color="k", linewidth=1.2, marker="D",
+        markerfacecolor="white", markeredgecolor="k", markeredgewidth=0.8,
+        markersize=4, zorder=4,
+    )
+
+    ax.set_xticks(positions)
+    ax.set_xticklabels([f"{dim}" for _, dim in group_specs])
+    ax.set_xlabel("Projection dimension")
+    ax.set_ylabel("Test accuracy (%)")
+    lo, hi = min(all_values), max(all_values)
+    pad = max((hi - lo) * 0.08, 2.0)
+    ax.set_ylim(np.floor(max(0.0, lo - pad) / 5.0) * 5.0,
+                np.ceil(min(100.0, hi + pad) / 5.0) * 5.0)
+    ax.yaxis.set_major_locator(mpl.ticker.MultipleLocator(5))
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
+
+    fig.tight_layout()
+    out_path = _multitask_out("projection_dim_accuracy.png")
+    counts = ", ".join(
+        f"proj{dim} n={len(accuracies[feature])}" for feature, dim in group_specs
     )
     _save_fig(fig, out_path, extra=f" ({counts})")
 
@@ -1369,6 +1455,14 @@ def _plot_overmembership_single(pkl_template, out_filename):
     fig.subplots_adjust(hspace=0.45)
     out_path = _multitask_out(out_filename)
     _save_fig(fig, out_path, extra=f"  (n={n_experiments} experiments)")
+
+
+def plot_overmembership_norm():
+    """Figure: Over-membership for normalized modulation (G=100), aggregated across seeds."""
+    _plot_overmembership_single(
+        "modulation_all_prepost_belonging_{aname}_normalized.pkl",
+        "overmembership_normalized.png",
+    )
 
 
 def plot_overmembership_unnorm():
@@ -1860,7 +1954,7 @@ def plot_transfer_speed():
     ax.set_xlabel("Iterations to reach threshold")
     ax.set_ylabel("Accuracy\nthreshold (%)", ha="center")
     ax.set_xscale("log")
-    ax.set_yticks([50, 75, 100])
+    ax.yaxis.set_major_locator(mpl.ticker.MultipleLocator(5))
     _legend(ax, fontsize=6, frameon=True)
     ax.spines[["top", "right"]].set_visible(False)
 
@@ -1949,7 +2043,8 @@ def plot_learning_trajectory():
     ax.set_xlabel("Iteration")
     ax.set_ylabel("Accuracy (%)")
     ax.set_xscale("log")
-    ax.set_yticks([0, 50, 100])
+    # ylim tops at 105 for headroom; explicit ticks stop at 100 so no >100% tick.
+    ax.set_yticks(np.arange(0, 101, 5))
     ax.set_ylim([0, 105])
     _legend(ax, fontsize=6, frameon=True)
     ax.spines[["top", "right"]].set_visible(False)
@@ -6504,6 +6599,7 @@ def plot_two_task_w_hurt():
                        fontsize=7)
     ax.set_xlabel("Sparsity of W (%)", fontsize=9)
     ax.set_ylabel("Accuracy (%)", fontsize=9)
+    ax.yaxis.set_major_locator(mpl.ticker.MultipleLocator(5))
     ax.spines[["top", "right"]].set_visible(False)
 
     fig.tight_layout()
@@ -6612,8 +6708,10 @@ FIGURES_BY_MODE = {
         "heatmap_colorbar": plot_multitask_heatmap_colorbar,
         "l2_accuracy": plot_l2_vs_accuracy,
         "l2e4_activation_accuracy": plot_l2e4_activation_accuracy,
+        "projection_dim_accuracy": plot_projection_dim_accuracy,
         "state_space_combined": plot_state_space_combined,
         "state_space_r_values": plot_state_space_r_values,
+        "overmembership_norm": plot_overmembership_norm,
         "overmembership_unnorm": plot_overmembership_unnorm,
         "overmembership_weighted": plot_overmembership_weighted,
         "overmembership_var_weighted": plot_overmembership_var_weighted,

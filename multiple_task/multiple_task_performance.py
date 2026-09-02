@@ -103,6 +103,8 @@ if __name__ == "__main__":
             raw_cfg_param = json.load(f)
 
         task_params, train_params, net_params = raw_cfg_param["task_params"], raw_cfg_param["train_params"], raw_cfg_param["net_params"]
+        # Input projection dimension; bare-feature runs (e.g. L21e4) default to 300.
+        proj_dim = int(net_params.get("linear_embed", 300))
         task_params_c, train_params_c, net_params_c = mpn_tasks.convert_and_init_multitask_params((task_params, train_params, net_params))
 
         test_n_batch = 50
@@ -137,7 +139,7 @@ if __name__ == "__main__":
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        return core_name, hidden_size, l2_info, feature, float(acc)
+        return core_name, hidden_size, l2_info, feature, proj_dim, float(acc)
 
     pt_paths = list_pt_files("./multiple_tasks", recursive=False)
     if args.feature:
@@ -153,11 +155,12 @@ if __name__ == "__main__":
         result_dict = {}
 
     for netpathname in pt_paths:
-        core_name, hidden_size, l2_info, feature, acc = eval_one(netpathname)
+        core_name, hidden_size, l2_info, feature, proj_dim, acc = eval_one(netpathname)
         result_dict[core_name] = {
             "hidden_size": hidden_size,
             "l2_info": l2_info,
             "feature": feature,
+            "proj_dim": proj_dim,
             "acc": acc,
         }
         print(f"  {core_name}: acc={acc:.4f}")

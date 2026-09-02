@@ -260,11 +260,17 @@ def main(seed, feature):
     mod_type_lst = [(k, g) for k, g in mod_type_lst_all if k in cluster_info_mod]
     print(f"Modulation types to lesion ({len(mod_type_lst)}): {[k for k,_ in mod_type_lst]}")
 
-    # Infer M from the first available type (same for all — shared modulation matrix size)
+    # Modulation-matrix geometry straight from the loaded network — supports a
+    # NON-SQUARE plastic layer (n_post hidden x n_pre embed). Flat synapse
+    # indices are C-order over (post, pre):
+    #   post = flat // n_pre,  pre = flat % n_pre.
+    n_post_mod, n_pre_mod = model.mp_layer1.W.shape
+    MM = n_post_mod * n_pre_mod
     _first_labels = cluster_info_mod[mod_type_lst[0][0]]["result_all_lst"][mod_type_lst[0][1]]["col_labels"]
-    MM = len(_first_labels)
-    M = int(np.sqrt(MM))
-    assert M * M == MM, f"Expected square modulation matrix, got {MM} entries"
+    assert len(_first_labels) == MM, (
+        f"cluster_info_mod has {len(_first_labels)} synapse labels but the "
+        f"checkpoint's plastic layer is {n_post_mod}x{n_pre_mod}={MM} — "
+        "analysis pickle and checkpoint do not match")
 
     def leison_prepost_inplace(net, cluster_index, preorpost, random=False, variant="normalized"):
         """Apply lesion in-place on net; returns (saved_state, leison_units).
@@ -311,9 +317,10 @@ def main(seed, feature):
 
         return saved, leison_units
 
-    def leison_modulation_inplace(net, cluster_index, mod_col_clusters_, MM_, M_, random=False):
+    def leison_modulation_inplace(net, cluster_index, mod_col_clusters_, MM_, n_pre_, random=False):
         """Lesion a modulation cluster by zeroing mp_layer1.W[post, pre] entries.
-        W is (post, pre); flat_idx k → post = k // M_, pre = k % M_.
+        W is (post, pre); C-order flat_idx k → post = k // n_pre_, pre = k % n_pre_
+        (valid for square and non-square layers alike).
         Returns (saved_state, n_lesioned)."""
         if cluster_index is None:
             return {}, 0
@@ -321,8 +328,8 @@ def main(seed, feature):
         n = len(flat_idxs)
         if random:
             flat_idxs = np.random.choice(MM_, size=n, replace=False)
-        post_t = torch.tensor(flat_idxs // M_, dtype=torch.long, device=net.mp_layer1.W.device)
-        pre_t = torch.tensor(flat_idxs % M_, dtype=torch.long, device=net.mp_layer1.W.device)
+        post_t = torch.tensor(flat_idxs // n_pre_, dtype=torch.long, device=net.mp_layer1.W.device)
+        pre_t = torch.tensor(flat_idxs % n_pre_, dtype=torch.long, device=net.mp_layer1.W.device)
         with torch.no_grad():
             saved = {
                 "preorpost": "modulation",
@@ -333,10 +340,11 @@ def main(seed, feature):
             net.mp_layer1.W[post_t, pre_t] = 0.0
         return saved, n
 
-    def leison_modulation_freeze_inplace(net, cluster_index, mod_col_clusters_, MM_, M_, random=False):
+    def leison_modulation_freeze_inplace(net, cluster_index, mod_col_clusters_, MM_, n_pre_, random=False):
         """Freeze plasticity at a modulation cluster: M stays at its initial value
         at those (post, pre) positions throughout the trial, but W is untouched.
-        W is (post, pre); flat_idx k → post = k // M_, pre = k % M_.
+        W is (post, pre); C-order flat_idx k → post = k // n_pre_, pre = k % n_pre_
+        (valid for square and non-square layers alike).
         Returns (saved_state, n_frozen)."""
         if cluster_index is None:
             return {}, 0
@@ -344,8 +352,8 @@ def main(seed, feature):
         n = len(flat_idxs)
         if random:
             flat_idxs = np.random.choice(MM_, size=n, replace=False)
-        post_t = torch.tensor(flat_idxs // M_, dtype=torch.long, device=net.mp_layer1.W.device)
-        pre_t = torch.tensor(flat_idxs % M_, dtype=torch.long, device=net.mp_layer1.W.device)
+        post_t = torch.tensor(flat_idxs // n_pre_, dtype=torch.long, device=net.mp_layer1.W.device)
+        pre_t = torch.tensor(flat_idxs % n_pre_, dtype=torch.long, device=net.mp_layer1.W.device)
         net.mp_layer1.set_plasticity_freeze(post_t, pre_t)
         saved = {
             "preorpost": "modulation_freeze",
@@ -843,7 +851,7 @@ def main(seed, feature):
                 for tag, ci in all_comb_mod:
                     saved, _ = _lesion_fn(
                         model, cluster_index=ci,
-                        mod_col_clusters_=mod_col_clusters_cur, MM_=MM, M_=M,
+                        mod_col_clusters_=mod_col_clusters_cur, MM_=MM, n_pre_=n_pre_mod,
                     )
                     with torch.inference_mode():
                         net_out, _, _ = model.iterate_sequence_batch(test_input, run_mode='minimal')
@@ -860,7 +868,7 @@ def main(seed, feature):
                         for _ in range(repeat_num):
                             saved_r, _ = _lesion_fn(
                                 model, cluster_index=ci,
-                                mod_col_clusters_=mod_col_clusters_cur, MM_=MM, M_=M,
+                                mod_col_clusters_=mod_col_clusters_cur, MM_=MM, n_pre_=n_pre_mod,
                                 random=True,
                             )
                             with torch.inference_mode():

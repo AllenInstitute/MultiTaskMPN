@@ -1156,11 +1156,19 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
         # modulation only, reshape to (N, post, pre) shape after calculating the variance
         # modulation_W is (post, pre)
         # N here as the number of sessions after breakdown
-        # 2026-04-06: the code implicitly requires the modulation to be a square matrix
+        # (post_num, pre_num) come from the recorded 4D activity, so a
+        # NON-SQUARE plastic layer (e.g. 300 hidden x 200 embed) is fully
+        # supported; nothing below may assume MM is a perfect square. The
+        # C-order flat-index convention everywhere is
+        #   flat = post * pre_num + pre  ->  post = flat // pre_num,
+        #                                    pre  = flat %  pre_num.
         if "all" in clustering_name:
             N, MM = cell_vars_rules_norm.shape
-            M = int(np.sqrt(MM))
-            cell_vars_rules_norm_keepshape = cell_vars_rules_norm.reshape(N, M, M)
+            post_num, pre_num = clustering_data_old.shape[2], clustering_data_old.shape[3]
+            assert post_num * pre_num == MM, (
+                f"modulation feature count {MM} != post_num*pre_num "
+                f"{post_num}x{pre_num}")
+            cell_vars_rules_norm_keepshape = cell_vars_rules_norm.reshape(N, post_num, pre_num)
 
             # ── W-only over-membership analysis (no modulation clustering) ──
             # Threshold the static recurrent weight |W| at fixed percentiles
@@ -1237,7 +1245,7 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                         same_pre, same_post, no_same, \
                             same_preC, same_postC, same_bothC, no_bothC = \
                             clustering_metric.count_pairs_with_clusters(
-                                col_all_W, M, cl_input, cl_hidden,
+                                col_all_W, pre_num, cl_input, cl_hidden,
                                 flat_idx=flat_idx_above)
 
                         # The control needs to draw `n_above` synapses uniformly
@@ -1259,7 +1267,7 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                         same_pre_c, same_post_c, no_same_c, \
                             same_preC_c, same_postC_c, same_bothC_c, no_bothC_c = \
                             clustering_metric.count_pairs_with_clusters_control(
-                                col_all_full, M, cl_input, cl_hidden,
+                                col_all_full, pre_num, cl_input, cl_hidden,
                                 repeat=10000, flat_idx=flat_idx_full)
                         # The control returns aggregated counts over both
                         # groups (in and out). For an unbiased null on the
@@ -2165,8 +2173,8 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                     nc_combine = [(int(i),int(j)) for i in nc1_input for j in nc2_hidden]
                     # transform to reshaped matrix index
                     # modulation_W is (post, pre)
-                    # flat index in (post, pre) layout: post * M + pre
-                    nc_combine = [cc[1] * M + cc[0] for cc in nc_combine]
+                    # flat index in (post, pre) layout: post * pre_num + pre
+                    nc_combine = [cc[1] * pre_num + cc[0] for cc in nc_combine]
                     cluster_combine[newc] = nc_combine
 
             # 2026-10-08: qualitatively, training MPN without regularization will cause more hidden cluster
@@ -2520,6 +2528,12 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                 else:
                     _exclusion_modes = ["mod_only", "mod_and_endpoint"]
 
+                # Each mode's surviving set is registered here BY NAME so that
+                # consumers outside this loop (the OM block below) can select
+                # an explicit population instead of relying on whichever
+                # iteration happened to run last.
+                _active_by_mode = {}
+
                 for _excl_mode in _exclusion_modes:
                     print(f"  --- Exclusion mode: {_excl_mode} ---")
 
@@ -2549,9 +2563,9 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                         _n_unres_input_neurons = len(_unres_input_um)
                         _n_unres_hidden_neurons = len(_unres_hidden_um)
                         _flat_unres_mod  = np.where(~_active_mod_mask)[0]
-                        # modulation_W shape is (post, pre)
-                        _um_post = _flat_unres_mod // M
-                        _um_pre  = _flat_unres_mod % M
+                        # modulation_W shape is (post, pre); C-order decode by pre_num
+                        _um_post = _flat_unres_mod // pre_num
+                        _um_pre  = _flat_unres_mod % pre_num
                         _um_is_pre  = np.isin(_um_pre,  list(_unres_input_um))
                         _um_is_post = np.isin(_um_post, list(_unres_hidden_um))
                         _n_unres_mod_pre_only  = int((_um_is_pre & ~_um_is_post).sum())
@@ -2575,9 +2589,9 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                         _unres_hidden_neurons = set(cluster_hidden.get(_hidden_col_k + 1, []))
 
                         if _unres_input_neurons or _unres_hidden_neurons:
-                            # modulation_W is (post, pre)
-                            _post_idx = _flat_idx_active // M
-                            _pre_idx  = _flat_idx_active % M
+                            # modulation_W is (post, pre); C-order decode by pre_num
+                            _post_idx = _flat_idx_active // pre_num
+                            _pre_idx  = _flat_idx_active % pre_num
                             _is_unres_pre  = np.isin(_pre_idx,  list(_unres_input_neurons))
                             _is_unres_post = np.isin(_post_idx, list(_unres_hidden_neurons))
                             _endpoint_mask = ~(_is_unres_pre | _is_unres_post)
@@ -2618,14 +2632,16 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                         "n_unres_hidden_neurons":    _n_unres_hidden_neurons,
                     })
 
+                    _active_by_mode[_excl_mode] = (_col_all_active, _flat_idx_active)
+
                     # Membership using the actual clustering information
                     same_pre_all, same_post_all, no_same_pre_post_all, same_pre_cluster_all, same_post_cluster_all, \
                         same_pre_post_cluster_all, no_same_pre_post_cluster_all = clustering_metric.count_pairs_with_clusters(
-                            _col_all_active, M, cluster_input, cluster_hidden, flat_idx=_flat_idx_active)
+                            _col_all_active, pre_num, cluster_input, cluster_hidden, flat_idx=_flat_idx_active)
                     # (control) membership using random shuffled clustering information
                     same_pre_all_c, same_post_all_c, no_same_pre_post_all_c, same_pre_cluster_all_c, same_post_cluster_all_c, \
                         same_pre_post_cluster_all_c, no_same_pre_post_cluster_all_c = clustering_metric.count_pairs_with_clusters_control(
-                            _col_all_active, M, cluster_input, cluster_hidden, repeat=10000, flat_idx=_flat_idx_active)
+                            _col_all_active, pre_num, cluster_input, cluster_hidden, repeat=10000, flat_idx=_flat_idx_active)
 
                     print(f"    same_pre_all: {same_pre_all}; same_post_all: {same_post_all}; no_same_pre_post_all: {no_same_pre_post_all}")
                     print(f"    same_pre_cluster_all: {same_pre_cluster_all}; same_post_cluster_all: {same_post_cluster_all}")
@@ -2713,14 +2729,14 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                         _ppb_fk_same_preC, _ppb_fk_same_postC, \
                         _ppb_fk_same_bothC, _ppb_fk_no_bothC = \
                         clustering_metric.count_pairs_with_clusters(
-                            _ppb_fk_col_active, M, _ppb_fk_input, _ppb_fk_hidden,
+                            _ppb_fk_col_active, pre_num, _ppb_fk_input, _ppb_fk_hidden,
                             flat_idx=_ppb_fk_flat_idx)
 
                     _ppb_fk_same_pre_c, _ppb_fk_same_post_c, _ppb_fk_no_same_c, \
                         _ppb_fk_same_preC_c, _ppb_fk_same_postC_c, \
                         _ppb_fk_same_bothC_c, _ppb_fk_no_bothC_c = \
                         clustering_metric.count_pairs_with_clusters_control(
-                            _ppb_fk_col_active, M, _ppb_fk_input, _ppb_fk_hidden,
+                            _ppb_fk_col_active, pre_num, _ppb_fk_input, _ppb_fk_hidden,
                             repeat=10000, flat_idx=_ppb_fk_flat_idx)
 
                     _ppb_fk_bar_all = [
@@ -2760,9 +2776,17 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                 # 2025-11-17: revise to plot for G=300 case
                 if G_idx == 1:
                     print(f"Plot for G={G_lst[G_idx]} Case")
-                    # Use active (responsive) modulations only, consistent with count_pairs_with_clusters.
-                    # _col_all_active / _flat_idx_active are all-inclusive no-ops when
-                    # clustering_normalize=True (unresponsive detection is skipped).
+                    # Select the OM synapse population EXPLICITLY by mode name
+                    # (never via the exclusion loop's leftover variables, whose
+                    # value would depend on the order of _exclusion_modes):
+                    # mod_only for normalized (an all-inclusive no-op there —
+                    # unresponsive detection is skipped), mod_and_endpoint for
+                    # the unnormalized variants (silent-mod synapses and silent
+                    # input/hidden endpoints both removed).
+                    _om_mode = "mod_only" if clustering_normalize else "mod_and_endpoint"
+                    _col_all_active, _flat_idx_active = _active_by_mode[_om_mode]
+                    print(f"    [OM] population: {_om_mode} "
+                          f"({_col_all_active.size} surviving synapses)")
                     all_choice_order_dict = helper.value_counts_desc(_col_all_active)
                     all_choice_order = list(all_choice_order_dict.keys())
 
@@ -2771,10 +2795,6 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                     cluster_size_percent = cluster_size_all / cluster_size_all.sum()
                     assert np.isclose(cluster_size_percent.sum(), 1.0)
 
-                    # all_num is the outer product of input and hidden cluster sizes
-                    in_num = np.array([len(cluster_input[k]) for k in cluster_input])
-                    hid_num = np.array([len(cluster_hidden[k]) for k in cluster_hidden])
-                    all_num = np.outer(in_num, hid_num).astype(float)
                     n_in, n_hid = len(cluster_input), len(cluster_hidden)
 
                     # Precompute neuron -> cluster index (0-based) lookup arrays once.
@@ -2789,10 +2809,31 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                         post_lookup[np.asarray(neurons)] = key - 1
 
                     # Precompute cluster assignment using original flat positions (_flat_idx_active).
-                    # modulation_W is (post, pre)
-                    # so flat_idx // M = post (hidden), flat_idx % M = pre (input).
-                    pre_clusters  = pre_lookup[_flat_idx_active % M]    # shape (N_active,), 0-based
-                    post_clusters = post_lookup[_flat_idx_active // M]  # shape (N_active,), 0-based
+                    # modulation_W is (post, pre), so in C-order
+                    # flat_idx // pre_num = post (hidden), flat_idx % pre_num = pre (input).
+                    pre_clusters  = pre_lookup[_flat_idx_active % pre_num]    # (N_active,), 0-based
+                    post_clusters = post_lookup[_flat_idx_active // pre_num]  # (N_active,), 0-based
+
+                    # Denominator base for the over-membership null: the number
+                    # of SURVIVING (active) synapses in each (input, hidden)
+                    # cluster block. The null is "shuffle modulation-cluster
+                    # labels among the surviving synapses, positions fixed"
+                    # (the same null the paired prepost control uses), so
+                    #   E[Z_c(i, j)] = n_active_block(i, j) * |c| / N_active.
+                    # NB the surviving set is the one selected by name above
+                    # (_om_mode): mod_only for normalized, mod_and_endpoint
+                    # for the unnormalized variants.
+                    # An earlier version used the FULL block capacity
+                    # outer(cluster sizes) here, which silently multiplied every
+                    # OM value by its block's survival rate — numerically
+                    # harmless for normalized/unnormalized (exclusions align
+                    # with whole silent rows/columns; responsive-block survival
+                    # > 99.9%) but a real per-block distortion for
+                    # weighted/var_weighted, where ~40-50% of the synapses
+                    # inside responsive blocks are excluded as weak-|W|.
+                    n_active_block = np.bincount(
+                        pre_clusters * n_hid + post_clusters,
+                        minlength=n_in * n_hid).reshape(n_in, n_hid).astype(float)
 
                     over_membership_lst = []
                     z_count_lst = []
@@ -2803,8 +2844,12 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                         flat_idx = pre_clusters[idx] * n_hid + post_clusters[idx]
                         Z_count = np.bincount(flat_idx, minlength=n_in * n_hid).reshape(n_in, n_hid).astype(float)
 
-                        all_num_avg = all_num * cluster_size_percent[cidx]
-                        over_membership = Z_count / all_num_avg
+                        expected = n_active_block * cluster_size_percent[cidx]
+                        # Blocks with no surviving synapses carry no evidence:
+                        # OM is defined as 0 there (Z is 0 as well).
+                        with np.errstate(divide="ignore", invalid="ignore"):
+                            over_membership = np.where(expected > 0,
+                                                       Z_count / expected, 0.0)
                         over_membership_lst.append(over_membership)
                         z_count_lst.append(Z_count)
 
@@ -2826,6 +2871,10 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                         "cluster_size_percent": cluster_size_percent,
                         "n_in": n_in,
                         "n_hid": n_hid,
+                        # Surviving synapses per block — lets downstream
+                        # consumers mask blocks whose expected counts are too
+                        # small for a stable OM ratio.
+                        "n_active_block": n_active_block,
                     }
 
                     # ── Fixed-k overmembership (for leison_plot.py) ──
@@ -2848,8 +2897,8 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                     for key, neurons in _fk_hidden.items():
                         _fk_post_lookup[np.asarray(neurons)] = key - 1
 
-                    _fk_pre_clusters = _fk_pre_lookup[_flat_idx_active % M]
-                    _fk_post_clusters = _fk_post_lookup[_flat_idx_active // M]
+                    _fk_pre_clusters = _fk_pre_lookup[_flat_idx_active % pre_num]
+                    _fk_post_clusters = _fk_post_lookup[_flat_idx_active // pre_num]
 
                     # Fixed-k modulation cluster labels
                     if "col_labels_by_k" in result_all and FIXED_K_OM in result_all["col_labels_by_k"]:
@@ -2869,17 +2918,23 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                         _fk_mod_sizes = np.array([_fk_mod_order_dict[k] for k in _fk_mod_order])
                         _fk_mod_pct = _fk_mod_sizes / _fk_mod_sizes.sum()
 
-                        _fk_in_num = np.array([len(_fk_input[k]) for k in sorted(_fk_input.keys())])
-                        _fk_hid_num = np.array([len(_fk_hidden[k]) for k in sorted(_fk_hidden.keys())])
-                        _fk_all_num = np.outer(_fk_in_num, _fk_hid_num).astype(float)
+                        # Same corrected null as the optimal-k OM above:
+                        # expected counts are based on the SURVIVING synapses
+                        # per block, not the full block capacity.
+                        _fk_n_active_block = np.bincount(
+                            _fk_pre_clusters * _fk_n_hid + _fk_post_clusters,
+                            minlength=_fk_n_in * _fk_n_hid
+                        ).reshape(_fk_n_in, _fk_n_hid).astype(float)
 
                         _fk_om_lst = []
                         for cidx, cnum in enumerate(_fk_mod_order):
                             idx = np.where(_fk_mod_active == cnum)[0]
                             flat_idx_fk = _fk_pre_clusters[idx] * _fk_n_hid + _fk_post_clusters[idx]
                             Z_count_fk = np.bincount(flat_idx_fk, minlength=_fk_n_in * _fk_n_hid).reshape(_fk_n_in, _fk_n_hid).astype(float)
-                            all_num_avg_fk = _fk_all_num * _fk_mod_pct[cidx]
-                            _fk_om_lst.append(Z_count_fk / all_num_avg_fk)
+                            expected_fk = _fk_n_active_block * _fk_mod_pct[cidx]
+                            with np.errstate(divide="ignore", invalid="ignore"):
+                                _fk_om_lst.append(np.where(expected_fk > 0,
+                                                           Z_count_fk / expected_fk, 0.0))
 
                         global_assignment_fixed_k_cache = {
                             "om_stack": np.stack(_fk_om_lst),
@@ -2888,6 +2943,7 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                             "n_in": _fk_n_in,
                             "n_hid": _fk_n_hid,
                             "fixed_k": FIXED_K_OM,
+                            "n_active_block": _fk_n_active_block,
                         }
                         print(f"    [fixed-k OM] computed: {len(_fk_mod_order)} mod clusters × "
                               f"{_fk_n_in} input × {_fk_n_hid} hidden (k={FIXED_K_OM})")
@@ -3752,6 +3808,9 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
                 "cell_vars_rules_sorted_norm": cell_vars_rules_sorted_norm,
                 "global_assignment": global_assignment_cache,
                 f"global_assignment_fixed_k{FIXED_K_OM}": global_assignment_fixed_k_cache,
+                # (n_post, n_pre) of the plastic layer — lets consumers decode
+                # flat synapse indices without assuming a square matrix.
+                "mod_shape": (post_num, pre_num),
             }
 
         # Free the reference to the large source array for this iteration

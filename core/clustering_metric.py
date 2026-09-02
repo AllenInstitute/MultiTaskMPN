@@ -24,7 +24,7 @@ def _build_reverse_map(cluster_dict, size_hint):
     return arr, n_clusters
 
 
-def _precompute_pair_arrays(N, M, pre_cluster, post_cluster, flat_idx=None):
+def _precompute_pair_arrays(N, n_pre, pre_cluster, post_cluster, flat_idx=None):
     """Precompute all index-level arrays shared across every shuffle repeat.
 
     Returns a dict with:
@@ -33,20 +33,22 @@ def _precompute_pair_arrays(N, M, pre_cluster, post_cluster, flat_idx=None):
       comb_id                    — ravelled (preC, postC) pair id per modulation
       n_pre_clusters, n_post_clusters
 
+    n_pre : number of PRE (input) neurons — the second axis of the
+        (post, pre) modulation matrix. C-order flattening gives
+        post = flat_idx // n_pre and pre = flat_idx % n_pre, which holds for
+        square AND non-square plastic layers (e.g. 300 hidden x 200 embed).
+        Previously this assumed (pre, post); fixed 2026-05-02.
+
     flat_idx : optional array of original flat indices (length N).
         Pass when col_all has been filtered (e.g. unresponsive entries removed)
-        so that post = flat_idx // M and pre = flat_idx % M remain correct.
+        so that the post/pre decode above remains correct.
         Defaults to np.arange(N).
-
-    Note: modulation_W has shape (post, pre), so C-order flattening gives
-    flat_idx // M = post (hidden) and flat_idx % M = pre (input).
-    Previously this assumed (pre, post); fixed 2026-05-02.
     """
     if flat_idx is None:
         flat_idx = np.arange(N)
     # modulation_W shape is (post, pre): previously assumed (pre, post)
-    pre_all = flat_idx % M
-    post_all = flat_idx // M
+    pre_all = flat_idx % n_pre
+    post_all = flat_idx // n_pre
 
     pre_to_cluster, n_pre_clusters = _build_reverse_map(pre_cluster, pre_all.max() + 1)
     post_to_cluster, n_post_clusters = _build_reverse_map(post_cluster, post_all.max() + 1)
@@ -68,7 +70,7 @@ def _precompute_pair_arrays(N, M, pre_cluster, post_cluster, flat_idx=None):
     )
 
 
-def _aggregate_pair_counts(col_all, M, arrays):
+def _aggregate_pair_counts(col_all, arrays):
     """Compute the 7 pair-count statistics for one assignment of col_all.
 
     Uses pre-computed arrays from _precompute_pair_arrays to avoid
@@ -103,7 +105,7 @@ def _aggregate_pair_counts(col_all, M, arrays):
         cnt_pre = np.bincount(pre)
         same_pre = int(np.sum(cnt_pre * (cnt_pre - 1) // 2))
 
-        cnt_post = np.bincount(post, minlength=M)
+        cnt_post = np.bincount(post)
         same_post = int(np.sum(cnt_post * (cnt_post - 1) // 2))
 
         cnt_preC = np.bincount(preC, minlength=n_pre_clusters)
@@ -131,7 +133,7 @@ def _aggregate_pair_counts(col_all, M, arrays):
 
 
 def count_pairs_with_clusters(col_all,
-                              M,
+                              n_pre,
                               pre_cluster,
                               post_cluster,
                               flat_idx=None):
@@ -140,8 +142,8 @@ def count_pairs_with_clusters(col_all,
 
     Returns a tuple:
       (
-        same_pre_all,                  # i%M equal
-        same_post_all,                 # i//M equal
+        same_pre_all,                  # i % n_pre equal
+        same_post_all,                 # i // n_pre equal
         no_same_all,                   # neither same pre nor same post
 
         same_pre_cluster_all,          # same pre *cluster*
@@ -150,14 +152,14 @@ def count_pairs_with_clusters(col_all,
         no_pre_post_cluster_all        # neither same pre-cluster nor same post-cluster
       )
 
-    flat_idx : see _precompute_pair_arrays.
+    n_pre / flat_idx : see _precompute_pair_arrays.
     """
     N = col_all.size
     if N == 0:
         return (0, 0, 0, 0, 0, 0, 0)
 
-    arrays = _precompute_pair_arrays(N, M, pre_cluster, post_cluster, flat_idx=flat_idx)
-    return _aggregate_pair_counts(col_all, M, arrays)
+    arrays = _precompute_pair_arrays(N, n_pre, pre_cluster, post_cluster, flat_idx=flat_idx)
+    return _aggregate_pair_counts(col_all, arrays)
 
 
 def _count_same_pairs_all_repeats(shuffled_groups, feature_all, feature_range, n_groups, repeat, N):
@@ -181,11 +183,12 @@ def _count_same_pairs_all_repeats(shuffled_groups, feature_all, feature_range, n
 
 
 def count_pairs_with_clusters_control(col_all,
-                                      M,
+                                      n_pre,
                                       pre_cluster,
                                       post_cluster,
                                       repeat=10,
-                                      flat_idx=None):
+                                      flat_idx=None,
+                                      random_state=0):
     """
     Control distribution for pre/post neuron & neuron clustering belonging.
 
@@ -196,13 +199,16 @@ def count_pairs_with_clusters_control(col_all,
     shuffles simultaneously via combined-key flat bincount — O(repeat * N)
     instead of O(repeat * N * n_groups).
 
-    flat_idx : see _precompute_pair_arrays.
+    n_pre / flat_idx : see _precompute_pair_arrays.
+    random_state : seed for the permutation null (default 0), so re-running
+        the same analysis reproduces identical control values (and hence
+        identical over-membership figures). Pass None for OS-entropy seeding.
     """
     N = col_all.size
     if N == 0:
         return np.zeros(7)
 
-    arrays = _precompute_pair_arrays(N, M, pre_cluster, post_cluster, flat_idx=flat_idx)
+    arrays = _precompute_pair_arrays(N, n_pre, pre_cluster, post_cluster, flat_idx=flat_idx)
     pre_all = arrays["pre_all"]
     post_all = arrays["post_all"]
     preC_all = arrays["preC_all"]
@@ -222,15 +228,21 @@ def count_pairs_with_clusters_control(col_all,
     group_sizes = np.bincount(col_mapped, minlength=n_groups)
     total_pairs = int(np.sum(group_sizes * (group_sizes - 1) // 2))
 
-    # Generate all permutations at once → shuffled group labels (repeat, N)
-    perm_matrix = np.stack([np.random.permutation(N) for _ in range(repeat)])  # (repeat, N)
-    shuffled_groups = col_mapped[perm_matrix].astype(np.int64)                  # (repeat, N)
+    # Generate all permutations at once → shuffled group labels (repeat, N).
+    # Seeded generator (not the global np.random state): the control is a
+    # deterministic function of its inputs by default.
+    rng = np.random.default_rng(random_state)
+    perm_matrix = np.stack([rng.permutation(N) for _ in range(repeat)])  # (repeat, N)
+    shuffled_groups = col_mapped[perm_matrix].astype(np.int64)           # (repeat, N)
 
-    # Vectorized pair counts for every feature across all repeats
+    # Vectorized pair counts for every feature across all repeats.
+    # Every feature_range is derived from the DATA, never from n_pre: with a
+    # non-square layer, post indices run up to n_post - 1 > n_pre - 1, and an
+    # undersized range would make the combined-key encoding collide silently.
     same_pre = _count_same_pairs_all_repeats(
-        shuffled_groups, pre_all.astype(np.int64), pre_all.max() + 1, n_groups, repeat, N)
+        shuffled_groups, pre_all.astype(np.int64), int(pre_all.max()) + 1, n_groups, repeat, N)
     same_post = _count_same_pairs_all_repeats(
-        shuffled_groups, post_all.astype(np.int64), M, n_groups, repeat, N)
+        shuffled_groups, post_all.astype(np.int64), int(post_all.max()) + 1, n_groups, repeat, N)
     same_preC = _count_same_pairs_all_repeats(
         shuffled_groups, preC_all.astype(np.int64), n_pre_clusters, n_groups, repeat, N)
     same_postC = _count_same_pairs_all_repeats(
