@@ -91,7 +91,7 @@ ruleset_colors = {
 }
 
 chosen_network = "dmpn"
-N = 300
+N = 200
 # PCA component cap for modulation / modulation_weighted analyses.
 # Hidden uses N (the ambient dim). Modulation lives in N² = 40 000 dims, so a
 # larger cap is needed to see whether CVE eventually saturates. sklearn still
@@ -107,7 +107,7 @@ N_MOD_PCS = 1000
 N_ANGLES = 20
 
 # Naming components that form addon_name in pretraining.py:
-#   addon_name = f"+hidden{N}+L21e4+batch{batch}+{metric}"
+#   addon_name = f"+hidden{N}+{reg}+batch{batch}+{metric}"
 metric = "angle"
 reg = "L21e3"
 addon_name = f"+hidden{N}+{reg}+batch128+{metric}"
@@ -1750,6 +1750,7 @@ if __name__ == "__main__":
         for ax in axscmp[:, 0]:
             ax.set_ylabel("Validation accuracy (%)")
             ax.set_ylim([0, 105])
+            ax.set_yticks(np.arange(0, 101, 20))
         for ax in axscmp[:, 1]:
             ax.set_ylabel("Validation loss")
             ax.set_yscale("log")
@@ -1829,6 +1830,7 @@ if __name__ == "__main__":
 
         axts.set_xlabel("First post-training iter to reach threshold")
         axts.set_ylabel("Accuracy threshold (%)")
+        axts.set_yticks(np.arange(0, 101, 10))
         axts.set_xscale("log")
         axts.set_title("Transfer speed — iterations to threshold")
         axts.legend(fontsize=7)

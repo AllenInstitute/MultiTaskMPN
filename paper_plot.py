@@ -121,6 +121,72 @@ def _save_standalone_colorbar(out_path, cmap, vmin, vmax, ticks=None,
     _save_fig(figc, out_path)
 
 
+OM_MIN_EXPECTED = 5.0
+
+
+def _om_point_mask(ga, om_idx, *, skip_input=(), skip_hidden=(), min_expected=OM_MIN_EXPECTED):
+    """Mask stable OM blocks for one modulation cluster.
+
+    Keeps only blocks whose expected surviving-synapse count under the OM null
+    is at least `min_expected`. If older cached OM metadata lacks the expected
+    count ingredients, falls back to the non-skipped grid.
+    """
+    n_in = int(ga["n_in"])
+    n_hid = int(ga["n_hid"])
+    mask = np.ones((n_in, n_hid), dtype=bool)
+    if skip_input:
+        mask[np.array(sorted(skip_input), dtype=int), :] = False
+    if skip_hidden:
+        mask[:, np.array(sorted(skip_hidden), dtype=int)] = False
+
+    cluster_size_percent = ga.get("cluster_size_percent")
+    n_active_block = ga.get("n_active_block")
+    if cluster_size_percent is None or n_active_block is None:
+        return mask, None
+
+    cluster_size_percent = np.asarray(cluster_size_percent, dtype=float)
+    n_active_block = np.asarray(n_active_block, dtype=float)
+    if om_idx >= cluster_size_percent.shape[0]:
+        return mask, None
+
+    expected = n_active_block * cluster_size_percent[om_idx]
+    mask &= expected >= float(min_expected)
+    return mask, expected
+
+
+OM_N_PERM = 1000
+
+
+def _om_scatter_perm_test(mod_profiles, row_om, row_cm, n_perm=OM_N_PERM, seed=0):
+    """Cluster-permutation p-value for the OM vs profile-L1 scatter.
+
+    Mirrors multiple_task/leison_plot.py's helper of the same name (keep the
+    two in sync): the scatter's (mod cluster, block) points are massively
+    non-independent, so the parametric regression p is inflated. The null
+    keeps every lesion effect fixed and permutes WHICH cluster owns WHICH OM
+    footprint, recomputing the pooled Pearson r each time. One-sided toward
+    negative r. Returns (r_obs, p_perm, null_r)."""
+    nC = len(mod_profiles)
+
+    def _pooled_r(assign):
+        x = np.concatenate([row_om[k] for k in assign])
+        y = np.concatenate([
+            np.mean(np.abs(row_cm[k] - mod_profiles[c][None, :]), axis=1)
+            for c, k in enumerate(assign)])
+        if np.std(x) < 1e-12 or np.std(y) < 1e-12:
+            return np.nan
+        return float(np.corrcoef(x, y)[0, 1])
+
+    r_obs = _pooled_r(np.arange(nC))
+    rng = np.random.default_rng(seed)
+    null_r = np.array([_pooled_r(rng.permutation(nC)) for _ in range(n_perm)])
+    finite = np.isfinite(null_r)
+    if not np.isfinite(r_obs) or not finite.any():
+        return r_obs, np.nan, null_r
+    p_perm = (1.0 + np.sum(null_r[finite] <= r_obs)) / (finite.sum() + 1.0)
+    return r_obs, float(p_perm), null_r
+
+
 def _load_pkl_or_skip(pkl_path, hint="", use_name=False):
     """Return the unpickled object at `pkl_path`, or None (with a "Skipped"
     message) if it does not exist. `hint` is appended to the message (e.g.
@@ -1505,13 +1571,17 @@ def _load_lesion_results():
 
 def plot_lesion_heatmap():
     """
-    Figure: Normalized lesion effect heatmap (unnormalized clusters).
+        Figure: Normalized lesion effect heatmaps for unnormalized clusterings.
 
     Two panels stacked vertically:
-      Top — input (pre) cluster lesion effect (tasks × input clusters)
-      Bottom — hidden (post) cluster lesion effect (tasks × hidden clusters)
+            Top — hidden (post) cluster lesion effect from `leison_unnorm`
+                        (tasks × hidden clusters)
+            Bottom — modulation cluster lesion effect from
+                             `modulation_all_var_weighted_unnormalized__freeze_M`
+                             (tasks × modulation clusters)
 
-    Normalized effect = random_acc - cluster_acc (positive = cluster matters).
+        Normalized effect = random_acc - cluster_acc (positive = cluster matters).
+        The colorbar is saved as its own figure so the panel layout stays compact.
     """
     _ensure_out_dir()
     data = _load_lesion_results()
@@ -1537,8 +1607,8 @@ def plot_lesion_heatmap():
     pre_labels = [f"C{i+1}" for i in range(len(pre_idx))]
     post_labels = [f"C{i+1}" for i in range(len(post_idx))]
 
-    # Modulation freeze_M lesion (weighted unnormalized)
-    mod_entry = data["mod_leison"]["modulation_all_weighted_unnormalized__freeze_M"]
+    # Modulation freeze_M lesion (var-weighted unnormalized)
+    mod_entry = data["mod_leison"]["modulation_all_var_weighted_unnormalized__freeze_M"]
     mod_accs = np.array(mod_entry["modtask_accs"])
     mod_random = np.array(mod_entry["modrandomtask_accs"])
     mod_comb = mod_entry["all_comb_names_mod"]
@@ -1578,32 +1648,41 @@ def plot_lesion_heatmap():
         # Color each task tick label's background by its computation-category motif
         _color_motif_ticklabels(ax, all_tasks, axis="y")
 
-    # Shared colorbar
-    norm = mpl.colors.Normalize(vmin=-vmax, vmax=vmax)
-    sm = mpl.cm.ScalarMappable(cmap="RdBu_r", norm=norm)
-    sm.set_array([])
-    cbar = fig.colorbar(sm, ax=axes, shrink=0.5, pad=0.04)
-    cbar.set_label("Normalized effect (%)", fontsize=8)
     # Ticks every 30, symmetric around 0, within [-vmax, vmax]
     _tick_max = int(np.floor(vmax / 30.0)) * 30
     _ticks = np.arange(-_tick_max, _tick_max + 1, 30)
-    cbar.set_ticks(_ticks)
-    cbar.set_ticklabels([f"{t:.0f}" for t in _ticks])
-    cbar.ax.tick_params(labelsize=10)
     out_path = _multitask_out("lesion_heatmap_unnorm.png")
     _save_fig(fig, out_path)
+    _save_standalone_colorbar(
+        _multitask_out("lesion_heatmap_unnorm_colorbar.png"),
+        cmap="RdBu_r",
+        vmin=-vmax,
+        vmax=vmax,
+        ticks=_ticks,
+        ticklabels=[f"{t:.0f}" for t in _ticks],
+        label="Normalized effect (%)",
+        orientation="vertical",
+        figsize=(0.7, 2.4),
+        rect=(0.35, 0.08, 0.3, 0.84),
+        labelsize=10,
+        label_fontsize=8,
+    )
 
 
 # ─── Figure: OM vs lesion ────────────────────────────────────────────────────
 
 def plot_om_vs_lesion():
     """
-    Figure: Over-membership predicts modulation lesion effect.
+    Figure: Over-membership tracks functional similarity between modulation
+    and combined (input, hidden) lesions.
 
-    Panel 1 (left): OM vs |lesion effect diff| for freeze_M mode.
-    Panel 2 (right): Per-cluster OM-predicted effect vs actual mod lesion effect.
+    Single scatter: OM vs task-profile L1/T distance (mean over tasks of
+    |mod effect(t) − combined effect(t)|) for the freeze_M mode, one point per
+    (mod cluster, surviving block). Annotated with the cluster-permutation p
+    (footprint ownership shuffled; see _om_scatter_perm_test) — the parametric
+    regression p treats the replicated points as independent and is inflated.
 
-    Uses weighted-unnormalized modulation, fixed_k20 global assignment,
+    Uses var-weighted-unnormalized modulation, fixed_k global assignment,
     and combined_leison_unnorm.
     """
     _ensure_out_dir()
@@ -1647,9 +1726,8 @@ def plot_om_vs_lesion():
         return
     cdata = results[ckey]
     combined_effect = np.asarray(cdata["combined_random_accs"], dtype=float) - np.asarray(cdata["combined_accs"], dtype=float)
-    comb_mean = combined_effect.mean(axis=0)  # (pre_n, post_n)
 
-    # --- Panel 1: OM vs |lesion effect diff| for freeze_M ---
+    # --- OM vs lesion-profile distance, freeze_M ---
     mod_result_key_fm = f"{base_key}__freeze_M"
     mod_data_fm = results["mod_leison"][mod_result_key_fm]
     modtask_accs_fm = np.asarray(mod_data_fm["modtask_accs"], dtype=float)
@@ -1663,87 +1741,54 @@ def plot_om_vs_lesion():
         cid = int(key.replace("mod_c", ""))
         mod_effects_fm[cid] = modrandom_fm[:, key_idx] - modtask_accs_fm[:, key_idx]
 
-    om_vals, lesion_diffs = [], []
+    # Per-cluster (footprint) structure, so the permutation test can shuffle
+    # cluster -> footprint ownership. y per block = task-profile L1/T distance,
+    # matching leison_plot.py's revised derivation.
+    mod_profiles, row_om_list, row_cm_list = [], [], []
     for cid in sorted(mod_effects_fm.keys()):
         if cid not in om_id_to_idx:
             continue
         om_idx = om_id_to_idx[cid]
-        mod_eff = mod_effects_fm[cid]
-        for pi in range(n_in):
-            if pi in skip_input:
-                continue
-            for qi in range(n_hid):
-                if qi in skip_hidden:
-                    continue
-                om_val = om_stack[om_idx, pi, qi]
-                comb_eff = combined_effect[:, pi, qi]
-                diff = np.abs(np.mean(mod_eff) - np.mean(comb_eff))
-                om_vals.append(om_val)
-                lesion_diffs.append(diff)
-
-    om_vals = np.array(om_vals)
-    lesion_diffs = np.array(lesion_diffs)
-
-    # --- Panel 2: per-cluster prediction (zero_W) ---
-    mod_result_key_zw = f"{base_key}__zero_W"
-    mod_data_zw = results["mod_leison"][mod_result_key_zw]
-    modtask_accs_zw = np.asarray(mod_data_zw["modtask_accs"], dtype=float)
-    modrandom_zw = np.asarray(mod_data_zw["modrandomtask_accs"], dtype=float)
-
-    pred_x, pred_y = [], []
-    for key_idx, key in enumerate(mod_data_zw["all_comb_names_mod"]):
-        if key == "mod_noleison":
+        point_mask, _ = _om_point_mask(
+            ga, om_idx, skip_input=skip_input, skip_hidden=skip_hidden
+        )
+        if not np.any(point_mask):
             continue
-        cid = int(key.replace("mod_c", ""))
-        if cid not in om_id_to_idx:
-            continue
-        om_idx = om_id_to_idx[cid]
-        om_profile = om_stack[om_idx]
-        if om_profile.sum() > 0:
-            predicted = (om_profile * comb_mean).sum() / om_profile.sum()
-        else:
-            predicted = 0.0
-        actual = (modrandom_zw[:, key_idx] - modtask_accs_zw[:, key_idx]).mean()
-        pred_x.append(predicted * 100)
-        pred_y.append(actual * 100)
+        mod_profiles.append(np.asarray(mod_effects_fm[cid], float))
+        row_om_list.append(np.asarray(om_stack[om_idx][point_mask], float))
+        row_cm_list.append(combined_effect[:, point_mask].T)  # (B, T)
 
-    pred_x = np.array(pred_x)
-    pred_y = np.array(pred_y)
+    if not row_om_list:
+        print(f"  Skipped: OM scatter has no filtered points (expected >= {OM_MIN_EXPECTED:g}).")
+        return
+    mod_profiles = np.array(mod_profiles)
+    om_vals = np.concatenate(row_om_list)
+    lesion_diffs = np.concatenate([
+        np.mean(np.abs(cm - mp[None, :]), axis=1)
+        for mp, cm in zip(mod_profiles, row_cm_list)])
+    if om_vals.size < 2:
+        print(f"  Skipped: OM scatter has fewer than 2 filtered points (expected >= {OM_MIN_EXPECTED:g}).")
+        return
 
-    # --- Figure 1: OM vs |lesion diff| ---
+    # --- Figure: OM vs task-profile L1 distance ---
     from scipy.stats import linregress as _linregress
     fig1, ax1 = plt.subplots(1, 1, figsize=(3, 2.8))
     slope, intercept, r, p, _ = _linregress(om_vals, lesion_diffs)
+    _, p_perm, _ = _om_scatter_perm_test(mod_profiles, row_om_list, row_cm_list)
     ax1.scatter(om_vals, lesion_diffs, color="#3182ce", edgecolors="k",
                 linewidths=0.5, s=40, alpha=0.8, zorder=3)
     x_line = np.linspace(om_vals.min(), om_vals.max(), 100)
     ax1.plot(x_line, slope * x_line + intercept, color="tomato", linewidth=1.2, zorder=4)
-    p_str = f"p = {p:.2e}" if p < 0.001 else f"p = {p:.3f}"
-    _legend(ax1, [f"r = {r:.2f}, {p_str}"], loc="upper right", fontsize=7, frameon=True)
+    _pp_str = (f"p = {p_perm:.3f}" if np.isfinite(p_perm) else "p = n/a")
+    _legend(ax1, [f"r = {r:.2f}, {_pp_str}"], loc="upper right", fontsize=7, frameon=True)
     ax1.set_xlabel("Over-membership", fontsize=8)
-    ax1.set_ylabel("|Lesion effect diff|", fontsize=8)
+    ax1.set_ylabel("Lesion profile L1 distance", fontsize=8)
     ax1.spines[["top", "right"]].set_visible(False)
     fig1.tight_layout()
     out_path1 = _multitask_out("om_vs_lesion_scatter.png")
     _save_fig(fig1, out_path1)
-
-    # --- Figure 2: predicted vs actual ---
-    fig2, ax2 = plt.subplots(1, 1, figsize=(3, 2.8))
-    slope_p, intercept_p, r_p, p_p, _ = _linregress(pred_x, pred_y)
-    ax2.scatter(pred_x, pred_y, color="#3182ce", edgecolors="k",
-                linewidths=0.5, s=40, alpha=0.8, zorder=3)
-    lim = [min(pred_x.min(), pred_y.min()), max(pred_x.max(), pred_y.max())]
-    ax2.plot(lim, lim, color="black", linewidth=0.6, linestyle="--", alpha=0.5)
-    x_fit = np.linspace(pred_x.min(), pred_x.max(), 100)
-    ax2.plot(x_fit, slope_p * x_fit + intercept_p, color="tomato", linewidth=1.2, zorder=4)
-    p_str_p = f"p = {p_p:.2e}" if p_p < 0.001 else f"p = {p_p:.3f}"
-    _legend(ax2, [f"r = {r_p:.2f}, {p_str_p}"], loc="upper left", fontsize=7, frameon=True)
-    ax2.set_xlabel("OM-predicted effect (%)", fontsize=8)
-    ax2.set_ylabel("Actual mod lesion effect (%)", fontsize=8)
-    ax2.spines[["top", "right"]].set_visible(False)
-    fig2.tight_layout()
-    out_path2 = _multitask_out("om_vs_lesion_prediction.png")
-    _save_fig(fig2, out_path2)
+    print(f"  om_vs_lesion_scatter: r={r:.2f}, p_perm={p_perm:.3f} "
+          f"({OM_N_PERM} perms, {len(mod_profiles)} clusters, naive p={p:.1e})")
 
 
 # ─── Figure: Fixed-point PCA trajectories ────────────────────────────────────
@@ -1806,7 +1851,9 @@ LESION_NORM_DIR = Path("multiple_tasks_norm") / ANAME
 
 def plot_cluster_corr_vs_lesion():
     """
-    Figure: Scatter of cluster tuning cosine similarity vs lesion effect L1 distance.
+    Figure: Scatter of cluster tuning cosine similarity vs lesion-effect
+    task-profile Pearson correlation (magnitude-free), annotated with the
+    Mantel permutation statistics computed by leison_plot.py.
 
     Produces separate figures for each variant (normalized, unnormalized).
     Each figure has one subplot per cluster type (input, hidden).
@@ -1833,24 +1880,30 @@ def plot_cluster_corr_vs_lesion():
             scatter_data = pickle.load(f)
 
         for name, data in scatter_data.items():
+            if "lesion_profile_corr" not in data:
+                print(f"  Skipped {name}: old-format pkl (L1 distance) — "
+                      "re-run leison_plot.py for the profile-correlation data.")
+                continue
             fig, ax = plt.subplots(1, 1, figsize=(3, 2.8))
             x = np.array(data["tuning_cos_sim"])
-            y = np.array(data["lesion_l1_dist"])
+            y = np.array(data["lesion_profile_corr"])
 
             ax.scatter(x, y, color="#3182ce", edgecolors="k",
                        linewidths=0.5, s=40, alpha=0.8, zorder=3)
 
+            mantel = data.get("mantel", {})
+            r_m, p_m = mantel.get("r", np.nan), mantel.get("p", np.nan)
             if np.std(x) > 1e-12 and np.std(y) > 1e-12:
-                slope, intercept, r, p, _ = _linregress(x, y)
+                slope, intercept, _r, _p, _ = _linregress(x, y)
                 x_line = np.linspace(x.min(), x.max(), 100)
                 ax.plot(x_line, slope * x_line + intercept, color="tomato",
                         linewidth=1.2, zorder=4)
-                p_str = f"p = {p:.2e}" if p < 0.001 else f"p = {p:.3f}"
-                _legend(ax, [f"r = {r:.2f}, {p_str}"], loc="upper right",
-                          fontsize=7, frameon=True)
+                if np.isfinite(r_m):
+                    _legend(ax, [f"Mantel r = {r_m:.2f}, p = {p_m:.3f}"],
+                            loc="upper left", fontsize=7, frameon=True)
 
             ax.set_xlabel("Tuning cosine similarity", fontsize=8)
-            ax.set_ylabel("Lesion effect L1 distance", fontsize=8)
+            ax.set_ylabel("Lesion profile correlation", fontsize=8)
             ax.spines[["top", "right"]].set_visible(False)
 
             fig.tight_layout()
@@ -1863,18 +1916,32 @@ def plot_cluster_corr_vs_lesion():
 # ─── Figure: Transfer speed ──────────────────────────────────────────────────
 
 PRETRAINING_ANALYSIS_DIR = Path("pretraining_analysis")
+PRETRAINING_ADDON_NAME = "+hidden200+L21e3+batch128+angle"
+
+
+def _pretraining_result_pkls():
+    """Return the configured per-seed pretraining result pickles."""
+    pattern = f"*_dmpn_seed*_{PRETRAINING_ADDON_NAME}_result.pkl"
+    return sorted(PRETRAINING_ANALYSIS_DIR.glob(pattern))
+
+
+def _pretraining_ruleset_from_result_name(filename):
+    """Extract the stage-1 ruleset from a configured pretraining result filename."""
+    import re as _re
+
+    pattern = rf"(.+)_dmpn_seed\d+_{_re.escape(PRETRAINING_ADDON_NAME)}_result\.pkl"
+    match = _re.match(pattern, filename)
+    return match.group(1) if match else None
 
 
 def plot_transfer_speed():
     """
     Figure: Transfer speed — iterations to reach accuracy thresholds during
-    post-training, comparing fdgo_delaygo vs fdanti_delaygo rulesets (L21e3).
+    post-training, comparing fdgo_delaygo vs fdanti_delaygo rulesets.
 
     Loads from the combined transfer_speed.pkl if available; otherwise falls
     back to loading individual per-seed result pickles.
     """
-    import re as _re
-
     _ensure_out_dir()
     if not PRETRAINING_ANALYSIS_DIR.exists():
         print("  Skipped: pretraining_analysis/ not found.")
@@ -1889,19 +1956,15 @@ def plot_transfer_speed():
         by_ruleset_mats = ts_data["by_ruleset"]
     else:
         # Fallback: load individual seed pickles
-        addon_name = "+hidden200+L21e3+batch128+angle"
-        pkls = sorted(PRETRAINING_ANALYSIS_DIR.glob(f"*_dmpn_seed*_{addon_name}_result.pkl"))
+        pkls = _pretraining_result_pkls()
         if not pkls:
             print("  Skipped: no pretraining result pickles found.")
             return
 
         by_ruleset_raw = {}
         for p in pkls:
-            m = _re.match(
-                r'(.+)_dmpn_seed\d+_\+hidden200\+L21e3\+batch128\+angle_result\.pkl', p.name
-            )
-            if m:
-                ruleset = m.group(1)
+            ruleset = _pretraining_ruleset_from_result_name(p.name)
+            if ruleset is not None:
                 with open(p, "rb") as f:
                     by_ruleset_raw.setdefault(ruleset, []).append(pickle.load(f))
 
@@ -1954,7 +2017,7 @@ def plot_transfer_speed():
     ax.set_xlabel("Iterations to reach threshold")
     ax.set_ylabel("Accuracy\nthreshold (%)", ha="center")
     ax.set_xscale("log")
-    ax.yaxis.set_major_locator(mpl.ticker.MultipleLocator(5))
+    ax.yaxis.set_major_locator(mpl.ticker.MultipleLocator(10))
     _legend(ax, fontsize=6, frameon=True)
     ax.spines[["top", "right"]].set_visible(False)
 
@@ -1966,23 +2029,21 @@ def plot_transfer_speed():
 def plot_learning_trajectory():
     """
     Figure: post-training learning trajectory — accuracy vs training iteration,
-    comparing fdgo_delaygo vs fdanti_delaygo rulesets (L21e3). Same rulesets /
-    colors as plot_transfer_speed, but plotting the full accuracy curve (mean ±
-    std across seeds) rather than iterations-to-threshold.
+    comparing fdgo_delaygo vs fdanti_delaygo rulesets. Same rulesets /
+    colors as plot_transfer_speed, but plotting the full accuracy curve with
+    transparent per-seed trajectories plus the mean rather than
+    iterations-to-threshold.
 
     Reads per-seed result pickles (learning.acc_iter_post / learning.acc_post).
     Seeds are resampled onto a shared iteration grid before averaging, so it is
     robust to slightly different logging cadences across seeds.
     """
-    import re as _re
-
     _ensure_out_dir()
     if not PRETRAINING_ANALYSIS_DIR.exists():
         print("  Skipped: pretraining_analysis/ not found.")
         return
 
-    addon_name = "+hidden200+L21e3+batch128+angle"
-    pkls = sorted(PRETRAINING_ANALYSIS_DIR.glob(f"*_dmpn_seed*_{addon_name}_result.pkl"))
+    pkls = _pretraining_result_pkls()
     if not pkls:
         print("  Skipped: no pretraining result pickles found.")
         return
@@ -1990,12 +2051,9 @@ def plot_learning_trajectory():
     # Collect each ruleset's per-seed (iterations, accuracy) trajectories.
     by_ruleset_traj = {}  # rs -> list of (iters, acc)
     for p in pkls:
-        m = _re.match(
-            r'(.+)_dmpn_seed\d+_\+hidden200\+L21e3\+batch128\+angle_result\.pkl', p.name
-        )
-        if not m:
+        rs = _pretraining_ruleset_from_result_name(p.name)
+        if rs is None:
             continue
-        rs = m.group(1)
         with open(p, "rb") as f:
             data = pickle.load(f)
         learn = data.get("learning", {})
@@ -2034,18 +2092,20 @@ def plot_learning_trajectory():
         grid = grid[grid >= 1].astype(float)
         resampled = np.array([np.interp(grid, it, ac) for (it, ac) in trajs])
 
+        for seed_curve in resampled:
+            ax.plot(grid, seed_curve * 100, "-", color=color,
+                linewidth=0.9, alpha=0.18)
+
         mean_vals = resampled.mean(axis=0) * 100
-        std_vals = resampled.std(axis=0) * 100
-        ax.plot(grid, mean_vals, "-", color=color, linewidth=2.0, label=label)
-        ax.fill_between(grid, mean_vals - std_vals, mean_vals + std_vals,
-                        color=color, alpha=0.15)
+        ax.plot(grid, mean_vals, "-", color=color, linewidth=2.2, label=label)
 
     ax.set_xlabel("Iteration")
     ax.set_ylabel("Accuracy (%)")
     ax.set_xscale("log")
     # ylim tops at 105 for headroom; explicit ticks stop at 100 so no >100% tick.
-    ax.set_yticks(np.arange(0, 101, 5))
+    ax.set_yticks(np.arange(0, 101, 20))
     ax.set_ylim([0, 105])
+    ax.tick_params(axis="both", labelsize=7)
     _legend(ax, fontsize=6, frameon=True)
     ax.spines[["top", "right"]].set_visible(False)
 
@@ -2063,8 +2123,6 @@ def plot_rule_vectors():
     Shows how the novel task's learned rule vector relates to the two
     pretrained rule vectors, for each ruleset (relevant vs irrelevant motif).
     """
-    import re as _re
-
     _ensure_out_dir()
     if not PRETRAINING_ANALYSIS_DIR.exists():
         print("  Skipped: pretraining_analysis/ not found.")
@@ -2078,8 +2136,7 @@ def plot_rule_vectors():
         by_ruleset = rv_data["by_ruleset"]
     else:
         # Fallback: load from individual seed pickles
-        addon_name = "+hidden200+L21e3+batch128+angle"
-        pkls = sorted(PRETRAINING_ANALYSIS_DIR.glob(f"*_dmpn_seed*_{addon_name}_result.pkl"))
+        pkls = _pretraining_result_pkls()
         if not pkls:
             print("  Skipped: no pretraining result pickles found.")
             return
@@ -2092,11 +2149,8 @@ def plot_rule_vectors():
 
         by_ruleset = {}
         for p in pkls:
-            m = _re.match(
-                r'(.+)_dmpn_seed\d+_\+hidden200\+L21e3\+batch128\+angle_result\.pkl', p.name
-            )
-            if m:
-                rs = m.group(1)
+            rs = _pretraining_ruleset_from_result_name(p.name)
+            if rs is not None:
                 with open(p, "rb") as f:
                     data = pickle.load(f)
                 if "rule_vectors" in data:
@@ -2208,7 +2262,8 @@ def plot_rule_vectors():
         x += group_gap  # gap between successive interleaved column groups
 
     ax.set_xticks(all_x)
-    ax.set_xticklabels(all_labels, rotation=0, ha="center", fontsize=6)
+    ax.set_xticklabels(all_labels, rotation=0, ha="center", fontsize=7)
+    ax.tick_params(axis="y", labelsize=7)
     ax.axhline(0.0, color="gray", linewidth=0.8, linestyle="--")
     ax.set_ylabel("Cosine similarity")
     _legend(ax, fontsize=7, frameon=True)
@@ -2231,8 +2286,6 @@ def _load_aggregate_cve_by_ruleset(analysis_types, periods):
     where agg_dict holds `{dtype}_{period}_self` / `_cross` lists of per-seed
     curves. Returns {} if no data is available.
     """
-    import re as _re
-
     if not PRETRAINING_ANALYSIS_DIR.exists():
         return {}
 
@@ -2249,18 +2302,14 @@ def _load_aggregate_cve_by_ruleset(analysis_types, periods):
         return by_ruleset
 
     # Fallback: reconstruct from individual seed pickles
-    addon_name = "+hidden200+L21e3+batch128+angle"
-    pkls = sorted(PRETRAINING_ANALYSIS_DIR.glob(f"*_dmpn_seed*_{addon_name}_result.pkl"))
+    pkls = _pretraining_result_pkls()
     if not pkls:
         return {}
 
     raw_by_rs = {}
     for p in pkls:
-        m = _re.match(
-            r'(.+)_dmpn_seed\d+_\+hidden200\+L21e3\+batch128\+angle_result\.pkl', p.name
-        )
-        if m:
-            rs = m.group(1)
+        rs = _pretraining_ruleset_from_result_name(p.name)
+        if rs is not None:
             with open(p, "rb") as f:
                 raw_by_rs.setdefault(rs, []).append(pickle.load(f))
 
@@ -2339,83 +2388,36 @@ def _plot_aggregate_cve_panel(ax, by_ruleset, dtype, period, ruleset_colors,
         ax.plot(xs, mean_cross, color=color, linewidth=2.0, linestyle="--",
                 label=label if show_legend else None)
 
-    ax.set_xlim(0, x_lim)
-    ax.set_xticks(x_ticks)
+    if dtype == "modulation_weighted":
+        ax.set_xscale("log")
+        ax.set_xlim(1, x_lim)
+        ax.set_xticks([1, 10, 100, 1000])
+        ax.set_xticklabels(["1", "10", "100", "1000"])
+    else:
+        ax.set_xlim(1, x_lim)
+        ax.set_xticks(x_ticks)
     ax.set_ylim(0, 1.05)
+    ax.tick_params(axis="both", labelsize=7)
     ax.spines[["top", "right"]].set_visible(False)
     if show_legend:
         _legend(ax, fontsize=7, frameon=True)
 
 
-def plot_aggregate_cve():
+def _plot_aggregate_cve_period(period):
     """
-    Figure: Cumulative variance explained (CVE) of the novel task in its own
-    PCs vs in the pretraining task PCs. Overlays fdgo_delaygo (irrelevant motif)
-    and fdanti_delaygo (relevant motif) on the same axes.
+    Draw a one-row aggregate-CVE figure for a single task period.
 
-    Produces a 3×2 grid: rows = hidden, modulation, modulation_weighted;
-    columns = stimulus, response. Each panel saved as a separate file.
+    Supported periods are "stimulus" and "response". The layout is hidden
+    on the left and effective modulation on the right.
     """
-    _ensure_out_dir()
-
-    analysis_types = ["hidden", "modulation", "modulation_weighted"]
-    periods = ["stimulus", "response"]
-
-    by_ruleset = _load_aggregate_cve_by_ruleset(analysis_types, periods)
-    if not by_ruleset:
-        print("  Skipped: no aggregate data found.")
-        return
-
-    ruleset_colors = {
-        "fdgo_delaygo": "#3182ce",
-        "fdanti_delaygo": "#e53e3e",
-    }
-    ruleset_labels = {
-        "fdgo_delaygo": "Irrelevant motif",
-        "fdanti_delaygo": "Relevant motif",
-    }
-
-    # 2×2 combined figure: rows = [hidden, modulation_weighted], cols = [stimulus, response]
-    panel_layout = [
-        ("hidden", "stimulus"),
-        ("hidden", "response"),
-        ("modulation_weighted", "stimulus"),
-        ("modulation_weighted", "response"),
-    ]
-    x_lim_map = {"hidden": 20, "modulation_weighted": 1000}
-    x_tick_map = {"hidden": np.arange(0, 21, 5), "modulation_weighted": np.arange(0, 1001, 200)}
-
-    dtype_titles = {"hidden": "Hidden", "modulation_weighted": "Effective Modulation"}
-    period_titles = {"stimulus": "Stimulus Period", "response": "Response Period"}
-
-    fig, axes = plt.subplots(2, 2, figsize=(6, 4.5 * 2 / 3))  # height squeezed by 1/3
-
-    for idx, (dtype, period) in enumerate(panel_layout):
-        row, col = idx // 2, idx % 2
-        ax = axes[row, col]
-        _plot_aggregate_cve_panel(
-            ax, by_ruleset, dtype, period, ruleset_colors, ruleset_labels,
-            x_lim=x_lim_map[dtype], x_ticks=x_tick_map[dtype],
-            show_legend=(row == 0 and col == 0))
-        ax.set_title(f"{dtype_titles[dtype]} — {period_titles[period]}",
-                     fontsize=8, pad=4)
-        if col > 0:
-            ax.set_yticklabels([])
-
-    fig.text(0.5, 0.005, "# PCs", ha="center", fontsize=9)
-    fig.text(0.005, 0.5, "MemoryAnti Variance Explained", va="center",
-             rotation="vertical", fontsize=9)
-    fig.tight_layout(rect=[0.03, 0.02, 1, 1])
-    out_path = OUT_DIR / "aggregate_cve.png"
-    _save_fig(fig, out_path)
-
-
-def plot_aggregate_cve_stimulus():
     """
-    Figure: stimulus-period-only CVE. Single row, two columns — hidden (left)
+    Figure: single-period-only CVE. Single row, two columns — hidden (left)
     and effective modulation (right) — overlaying the relevant and irrelevant
-    motif rulesets, same conventions as plot_aggregate_cve.
+    motif rulesets.
     """
+    if period not in {"stimulus", "response"}:
+        raise ValueError(f"Unsupported aggregate CVE period: {period}")
+
     _ensure_out_dir()
 
     analysis_types = ["hidden", "modulation", "modulation_weighted"]
@@ -2436,22 +2438,22 @@ def plot_aggregate_cve_stimulus():
     }
 
     x_lim_map = {"hidden": 20, "modulation_weighted": 1000}
-    x_tick_map = {"hidden": np.arange(0, 21, 5),
+    x_tick_map = {"hidden": np.array([1, 5, 10, 15, 20]),
                   "modulation_weighted": np.arange(0, 1001, 200)}
     dtype_titles = {"hidden": "Hidden", "modulation_weighted": "Effective Modulation"}
+    period_title = f"{period.capitalize()} Period"
 
-    # One row, two columns: hidden | effective modulation, both stimulus period.
     col_dtypes = ["hidden", "modulation_weighted"]
 
-    fig, axes = plt.subplots(1, 2, figsize=(6, 2.6 * 2 / 3))  # height squeezed by 1/3
+    fig, axes = plt.subplots(1, 2, figsize=(6, 2.6 * 2 / 3))
 
     for col, dtype in enumerate(col_dtypes):
         ax = axes[col]
         _plot_aggregate_cve_panel(
-            ax, by_ruleset, dtype, "stimulus", ruleset_colors, ruleset_labels,
+            ax, by_ruleset, dtype, period, ruleset_colors, ruleset_labels,
             x_lim=x_lim_map[dtype], x_ticks=x_tick_map[dtype],
             show_legend=False)
-        ax.set_title(f"{dtype_titles[dtype]} — Stimulus Period",
+        ax.set_title(f"{dtype_titles[dtype]} — {period_title}",
                      fontsize=8, pad=4)
         if col > 0:
             ax.set_yticklabels([])
@@ -2460,8 +2462,26 @@ def plot_aggregate_cve_stimulus():
     fig.text(0.005, 0.5, "MemoryAnti\nVariance Explained", va="center",
              ha="center", rotation="vertical", fontsize=9)
     fig.tight_layout(rect=[0.03, 0.04, 1, 1])
-    out_path = OUT_DIR / "aggregate_cve_stimulus.png"
+    out_path = OUT_DIR / f"aggregate_cve_{period}.png"
     _save_fig(fig, out_path)
+
+
+def plot_aggregate_cve_stimulus():
+    """
+    Figure: stimulus-period-only CVE. Single row, two columns — hidden (left)
+    and effective modulation (right) — overlaying the relevant and irrelevant
+    motif rulesets.
+    """
+    _plot_aggregate_cve_period("stimulus")
+
+
+def plot_aggregate_cve_response():
+    """
+    Figure: response-period-only CVE. Single row, two columns — hidden (left)
+    and effective modulation (right) — overlaying the relevant and irrelevant
+    motif rulesets, same conventions as plot_aggregate_cve_stimulus.
+    """
+    _plot_aggregate_cve_period("response")
 
 
 # ─── One-task figures ─────────────────────────────────────────────────────────
@@ -6731,8 +6751,8 @@ FIGURES_BY_MODE = {
         "transfer_speed": plot_transfer_speed,
         "learning_trajectory": plot_learning_trajectory,
         "rule_vectors": plot_rule_vectors,
-        "aggregate_cve": plot_aggregate_cve,
         "aggregate_cve_stimulus": plot_aggregate_cve_stimulus,
+        "aggregate_cve_response": plot_aggregate_cve_response,
     },
     "two_task": {
         "twotask_d_combine": plot_two_task_d_combine,

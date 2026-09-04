@@ -84,7 +84,7 @@ SEED_LIST = None
 RULESET = 'everything'          # low_dim, all, test, everything, ...
 CHOSEN_NETWORK = "dmpn"         # mpn1, dmpn, vanilla, gru
 N_HIDDEN = 300
-ADDON_NAME = "L21e4proj200"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appended below
+ADDON_NAME = "L21e4proj10"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appended below
 train = True                    # whether or not to train the network
 verbose = True
 
@@ -237,7 +237,7 @@ def current_basic_params(hyp_dict):
     net_params = {
         'net_type': hyp_dict['chosen_network'], # mpn1, dmpn, vanilla
         'n_neurons': [1] + [n_hidden] * mpn_depth + [1],
-        'linear_embed': 200,
+        'linear_embed': 10,
         'output_bias': False, # Turn off biases for easier interpretation
         'loss_type': 'MSE', # XE, MSE
         'activation': 'tanh', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside
