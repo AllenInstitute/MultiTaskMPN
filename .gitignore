@@ -41,6 +41,7 @@ twotasks_data/
 pretraining/
 pretraining_analysis/
 pretraining_diagnosis/
+pretrain/**/*.png
 state_space/
 mnist/
 flextask/
