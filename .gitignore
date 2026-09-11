@@ -40,6 +40,7 @@ twotasks/
 twotasks_data/
 pretraining/
 pretraining_analysis/
+pretraining_diagnosis/
 state_space/
 mnist/
 flextask/

@@ -85,7 +85,7 @@ _TASK_DISPLAY = {
     "fdanti": "DelayAnti",
     "delaygo": "MemoryPro",
     "delayanti": "MemoryAnti",
-    "reactgo": "ReactGo",
+    "reactgo": "ReactPro",
     "reactanti": "ReactAnti",
     "delaydm1": "IntegrationModality1",
     "delaydm2": "IntegrationModality2",

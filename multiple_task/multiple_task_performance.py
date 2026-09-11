@@ -1,8 +1,12 @@
 """
 Evaluate trained multi-task MPN models and save results.
 
-Loads each checkpoint, runs inference, computes accuracy, and saves
-the result dictionary to a JSON file for downstream plotting.
+Loads each checkpoint, runs inference, and saves overall ``acc`` and
+task-name-keyed ``acc_per_task`` to JSON for downstream plotting. Both use
+angle accuracy over scored response timepoints, on a 0-1 scale. Tasks absent
+from the scored results have null accuracy, not zero.
+Per-task scores are computed on trial subsets identified using the saved rule
+channel offset, not compute_acc's inferred task-group dictionary.
 
 Usage:
     python multiple_task_performance.py
@@ -68,6 +72,38 @@ def parse_feature(path_str: str):
     return m_feature.group(1)
 
 
+def task_specific_accuracy(model, outputs, targets, masks, inputs, task_params):
+    """Score each task's existing outputs using metadata-aligned trial subsets."""
+    if task_params.get("randomize_inputs", False) or not task_params.get("task_info", True):
+        raise ValueError("Per-task scoring requires explicit, non-randomized task cue channels")
+    rules = task_params["rules"]
+    rule_start = task_params["hp"]["rule_start"]
+    if not rules or len(set(rules)) != len(rules):
+        raise ValueError("Task names must be nonempty and unique")
+    if not isinstance(rule_start, int) or rule_start < 0 or rule_start + len(rules) != inputs.shape[-1]:
+        raise ValueError("Rule channel metadata does not match input width")
+    cues = inputs[:, 0, rule_start:]
+    if not torch.all(((cues == 0) | (cues == 1)).all(dim=-1) & (cues.sum(dim=-1) == 1)):
+        raise ValueError("Expected one active task cue at the first timepoint of each trial")
+    task_ids = cues.argmax(dim=-1)
+    scores = {}
+    with torch.no_grad():
+        for index, rule in enumerate(rules):
+            selected = torch.nonzero(task_ids == index, as_tuple=True)[0]
+            if selected.numel() == 0:
+                scores[rule] = None
+                continue
+            accuracy, _ = model.compute_acc(
+                outputs.index_select(0, selected), targets.index_select(0, selected),
+                masks.index_select(0, selected), inputs.index_select(0, selected),
+                isvalid=False, mode="angle")
+            value = float(accuracy)
+            if not 0 <= value <= 1:
+                raise ValueError(f"Invalid accuracy for {rule}: {value}")
+            scores[rule] = value
+    return scores
+
+
 RESULT_PATH = Path("multiple_tasks_perf") / "performance_results.json"
 
 
@@ -129,8 +165,13 @@ if __name__ == "__main__":
         test_mask = test_mask.to(device)
 
         with torch.no_grad():
-            net_out, _, db_test = model.iterate_sequence_batch(test_input, run_mode='track_states')
-            acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input, isvalid=True, mode="angle")
+            # minimal: accuracy only needs net_out; track_states would allocate
+            # (B, T, 300, 300) modulation buffers on GPU (~45 GiB) just to be discarded.
+            net_out, _, db_test = model.iterate_sequence_batch(test_input, run_mode='minimal')
+            acc, _ = model.compute_acc(
+                net_out, test_output, test_mask, test_input, isvalid=True, mode="angle")
+            acc_per_task = task_specific_accuracy(
+                model, net_out, test_output, test_mask, test_input, task_params_c)
 
         del test_data, test_trials_extra, test_input, test_output, test_mask
         del checkpoint, model, net_out, db_test
@@ -139,7 +180,7 @@ if __name__ == "__main__":
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        return core_name, hidden_size, l2_info, feature, proj_dim, float(acc)
+        return core_name, hidden_size, l2_info, feature, proj_dim, float(acc), acc_per_task
 
     pt_paths = list_pt_files("./multiple_tasks", recursive=False)
     if args.feature:
@@ -155,13 +196,14 @@ if __name__ == "__main__":
         result_dict = {}
 
     for netpathname in pt_paths:
-        core_name, hidden_size, l2_info, feature, proj_dim, acc = eval_one(netpathname)
+        core_name, hidden_size, l2_info, feature, proj_dim, acc, acc_per_task = eval_one(netpathname)
         result_dict[core_name] = {
             "hidden_size": hidden_size,
             "l2_info": l2_info,
             "feature": feature,
             "proj_dim": proj_dim,
             "acc": acc,
+            "acc_per_task": acc_per_task,
         }
         print(f"  {core_name}: acc={acc:.4f}")
 

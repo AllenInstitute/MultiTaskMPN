@@ -8,6 +8,7 @@ figures, or import individual functions as needed.
 Figures are grouped into modes by the experiment they depend on:
     one_task         single-task training analyses
     multiple_tasks   full multi-task network (clustering, lesion, state space)
+    acc_plot         accuracy comparisons (L2, activation, projection/hidden dims)
     two_in_multiple  delayDM fixed-point geometry probe of the multi-task network
     pretraining      pretraining → post-training transfer analyses
     two_task         two-task network (cross-task / cross-period PCA)
@@ -17,6 +18,7 @@ Usage:
     python paper_plot.py all                   # same as above
     python paper_plot.py one_task              # only the one-task figures
     python paper_plot.py multiple_tasks        # only the multi-task figures
+    python paper_plot.py acc_plot              # only the accuracy figures
     python paper_plot.py two_in_multiple       # only the two-in-multiple figures
     python paper_plot.py pretraining           # only the pretraining figures
     python paper_plot.py two_task              # only the two-task figures
@@ -455,7 +457,7 @@ _TASK_DISPLAY = {
     "fdanti": "DelayAnti",
     "delaygo": "MemoryPro",
     "delayanti": "MemoryAnti",
-    "reactgo": "ReactGo",
+    "reactgo": "ReactPro",
     "reactanti": "ReactAnti",
     "delaydm1": "IntegrationModality1",
     "delaydm2": "IntegrationModality2",
@@ -468,7 +470,17 @@ _TASK_DISPLAY = {
     "dmcnogo": "ReactCategoryAnti",
 }
 
-# Task → computation-category motif and color (matches state_space_shift.py)
+# Task → computation-category motif and color. This table is the paper-side
+# source of truth for motif colors: the state-space panels color from it too
+# (the pickle's rule_motif_mapping supplies data, not colors), and
+# state_space_shift.py mirrors these hexes for its own analysis-side figures.
+# The dms pair keeps the go/anti pairing DELIBERATELY: ReactMatch2Sample
+# (dmsgo) shares Pro Reaction's green and ReactNonMatch2Sample (dmsnogo)
+# shares Anti Reaction's orange — match/non-match is a pro/anti response
+# rule, so the label color carries that. Only the dmc pair takes
+# Categorization's own deeppink. NB the state-space scatter colors by
+# CATEGORY (dict last-wins => Categorization = deeppink there), so dms
+# points are deeppink in that figure while their heatmap labels stay paired.
 _RULE_MOTIF = {
     "fdgo":            ("Pro Delayed",    "#3182ce"),  # blue
     "fdanti":          ("Anti Delayed",   "#e53e3e"),  # red
@@ -476,13 +488,13 @@ _RULE_MOTIF = {
     "delayanti":       ("Anti Delayed",   "#e53e3e"),
     "reactgo":         ("Pro Reaction",   "#38a169"),  # green
     "reactanti":       ("Anti Reaction",  "#dd6b20"),  # orange
-    "contextdelaydm1": ("Pro Integration", "#4682b4"),  # steelblue
-    "contextdelaydm2": ("Pro Integration", "#4682b4"),
-    "delaydm1":        ("Pro Integration", "#4682b4"),
-    "delaydm2":        ("Pro Integration", "#4682b4"),
-    "multidelaydm":    ("Pro Integration", "#4682b4"),
-    "dmsgo":           ("Categorization", "#38a169"),
-    "dmsnogo":         ("Categorization", "#dd6b20"),
+    "contextdelaydm1": ("Pro Integration", "#805ad5"),  # purple
+    "contextdelaydm2": ("Pro Integration", "#805ad5"),
+    "delaydm1":        ("Pro Integration", "#805ad5"),
+    "delaydm2":        ("Pro Integration", "#805ad5"),
+    "multidelaydm":    ("Pro Integration", "#805ad5"),
+    "dmsgo":           ("Categorization", "#38a169"),  # green, pairs reactgo
+    "dmsnogo":         ("Categorization", "#dd6b20"),  # orange, pairs reactanti
     "dmcgo":           ("Categorization", "#ff1493"),  # deeppink
     "dmcnogo":         ("Categorization", "#ff1493"),
 }
@@ -1239,13 +1251,163 @@ def plot_l2e4_activation_accuracy():
 
 # ─── Figure: L2=1e-4 projection-dimension comparison ─────────────────────────
 
-def plot_projection_dim_accuracy():
-    """Figure: Test accuracy at L2=1e-4 vs input projection dimension.
+def _projection_accuracy_groups(result_dict, config_dir=Path("multiple_tasks"), *, vary_hidden=False,
+                                per_task=False):
+    """Group saved widths at Tanh/L2=1e-4, fixing the other width to 300.
 
-    Compares the L21e4proj50/100/200 runs against the default L21e4 runs
-    (Tanh, projection dimension 300).  Feature tags are hard-coded because the
-    bare ``L21e4`` tag carries no explicit projection dimension.
+    By default vary projection at hidden300; vary_hidden selects hidden widths
+    at projection300. Only single-hidden-layer configurations are included.
+    Model identifiers locate configuration files only; feature tags and cached
+    filename-derived dimensions are not used to select or group runs.
+    per_task returns dimension -> task name -> accuracy list; missing or invalid
+    task scores are omitted rather than replaced by overall accuracy or zero.
     """
+    import json as _json
+
+    accuracies = {}
+    for model_name, result in result_dict.items():
+        config_path = config_dir / f"param_{model_name}_param.json"
+        try:
+            with config_path.open() as handle:
+                config = _json.load(handle)
+            net_params = config["net_params"]
+            train_params = config["train_params"]
+            hidden_dims = net_params["n_neurons"][1:-1]
+            if (len(hidden_dims) != 1
+                    or net_params["activation"] != "tanh"
+                    or train_params["weight_reg"] != "L2"
+                    or not np.isclose(float(train_params["reg_lambda"]), 1e-4,
+                                      rtol=1e-9, atol=0)):
+                continue
+            if not net_params["input_layer_add"]:
+                continue
+            dimension = net_params["linear_embed"]
+            if isinstance(dimension, bool) or not isinstance(dimension, int) or dimension <= 0:
+                raise ValueError("linear_embed must be a positive integer")
+            hidden_dim = hidden_dims[0]
+            if isinstance(hidden_dim, bool) or not isinstance(hidden_dim, int) or hidden_dim <= 0:
+                raise ValueError("hidden dimension must be a positive integer")
+            if vary_hidden:
+                if dimension != 300:
+                    continue
+                dimension = hidden_dim
+            elif hidden_dim != 300:
+                continue
+            accuracy = float(result["acc"])
+            if not np.isfinite(accuracy) or not 0 <= accuracy <= 1:
+                raise ValueError("accuracy must be finite and in [0, 1]")
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            print(f"  Note: skipped {model_name}: invalid or missing metadata/result ({error}).")
+            continue
+        if per_task:
+            task_groups = accuracies.setdefault(dimension, {})
+            task_scores = result.get("acc_per_task")
+            if not isinstance(task_scores, dict):
+                print(f"  Note: {model_name} has no acc_per_task; rerun multiple_task_performance.py.")
+                continue
+            for task, score in task_scores.items():
+                if score is None:
+                    continue
+                try:
+                    value = float(score)
+                    if not np.isfinite(value) or not 0 <= value <= 1:
+                        raise ValueError("task accuracy must be finite and in [0, 1]")
+                except (ValueError, TypeError) as error:
+                    print(f"  Note: skipped {model_name}/{task}: {error}.")
+                    continue
+                task_groups.setdefault(task, []).append(value * 100.0)
+        else:
+            accuracies.setdefault(dimension, []).append(accuracy * 100.0)
+    return dict(sorted(accuracies.items()))
+
+
+def plot_projection_dim_accuracy():
+    """Plot accuracy vs metadata projection width at hidden300/Tanh/L2=1e-4.
+
+    Read each evaluated run's configuration JSON and include all matching widths,
+    regardless of feature naming. Use evenly spaced positions labeled by width.
+    """
+    _plot_dimension_accuracy(vary_hidden=False)
+
+
+def plot_hidden_dim_accuracy():
+    """Plot accuracy vs saved hidden width at projection300/Tanh/L2=1e-4."""
+    _plot_dimension_accuracy(vary_hidden=True)
+
+
+def plot_projection_dim_task_accuracy():
+    """Plot stacked task panels vs projection width at hidden300/Tanh/L2=1e-4."""
+    _plot_dimension_task_accuracy(vary_hidden=False)
+
+
+def plot_hidden_dim_task_accuracy():
+    """Plot stacked task panels vs hidden width at projection300/Tanh/L2=1e-4."""
+    _plot_dimension_task_accuracy(vary_hidden=True)
+
+
+def _plot_dimension_task_accuracy(*, vary_hidden):
+    """Show 15 compact task panels with seed dots and connected seed means.
+
+    Use paper task names/order and index positions labeled by actual dimensions.
+    Each panel has an adaptive y range. Missing task/dimension pairs remain NaN;
+    tasks without any scores retain an empty panel rather than disappearing.
+    """
+    import json as _json
+
+    _ensure_out_dir()
+    if not PERF_RESULT_PATH.exists():
+        print(f"  Skipped: {PERF_RESULT_PATH} not found. Run multiple_task_performance.py first.")
+        return
+    with PERF_RESULT_PATH.open() as handle:
+        result_dict = _json.load(handle)
+    groups = _projection_accuracy_groups(result_dict, vary_hidden=vary_hidden, per_task=True)
+    if not any(groups.values()):
+        print("  Skipped: no metadata-matched per-task accuracies; rerun multiple_task_performance.py.")
+        return
+    fig, axes = plt.subplots(len(_TASK_DISPLAY), 1, figsize=(3.5, 11.5), sharex=True)
+    positions = np.arange(len(groups))
+    for ax, (task, display_name) in zip(axes, _TASK_DISPLAY.items()):
+        entries = [tasks.get(task, []) for tasks in groups.values()]
+        means = [float(np.mean(values)) if values else np.nan for values in entries]
+        for position, values in zip(positions, entries):
+            if values:
+                ax.scatter(np.full(len(values), position), values, color=c_vals[1],
+                           edgecolors="k", linewidths=0.4, s=12, alpha=0.8, zorder=3)
+        ax.plot(positions, means, color="k", linewidth=1.0, marker="D",
+                markerfacecolor="white", markeredgecolor="k", markeredgewidth=0.6,
+                markersize=3, zorder=4)
+        ax.set_title(display_name, loc="left", fontsize=7, pad=2)
+        all_values = [value for values in entries for value in values]
+        if all_values:
+            lo, hi = min(all_values), max(all_values)
+            pad = max((hi - lo) * 0.08, 2.0)
+            ax.set_ylim(np.floor(max(0.0, lo - pad) / 5.0) * 5.0,
+                        np.ceil((hi + pad) / 5.0) * 5.0)
+            locator = mpl.ticker.MaxNLocator(nbins=2, steps=[1, 2, 5, 10])
+            ticks = locator.tick_values(*ax.get_ylim())
+            ax.set_yticks([tick for tick in ticks if 0 <= tick <= 100
+                          and ax.get_ylim()[0] <= tick <= ax.get_ylim()[1]])
+        else:
+            ax.set_ylim(0, 100)
+            ax.set_yticks([0, 100])
+            ax.text(0.5, 0.5, "No data", transform=ax.transAxes,
+                    ha="center", va="center", fontsize=7, color="0.5")
+        ax.tick_params(axis="both", labelsize=6, length=2)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
+        print(f"  {display_name}: " + ", ".join(f"{dimension} n={len(values)}"
+                                       for dimension, values in zip(groups, entries)))
+    axes[-1].set_xticks(positions)
+    axes[-1].set_xticklabels([str(dimension) for dimension in groups])
+    axes[-1].set_xlabel("Hidden dimension" if vary_hidden else "Projection dimension")
+    fig.supylabel("Task test accuracy (%)", x=0.02, fontsize=9)
+    fig.subplots_adjust(left=0.18, right=0.98, top=0.98, bottom=0.045, hspace=0.9)
+    dimension_name = "hidden" if vary_hidden else "projection"
+    _save_fig(fig, _multitask_out(f"{dimension_name}_dim_task_accuracy.png"))
+
+
+def _plot_dimension_accuracy(*, vary_hidden):
+    """Render either width sweep at index positions labeled by actual dimensions."""
     import json as _json
     _ensure_out_dir()
     if not PERF_RESULT_PATH.exists():
@@ -1255,41 +1417,25 @@ def plot_projection_dim_accuracy():
     with open(PERF_RESULT_PATH) as f:
         result_dict = _json.load(f)
 
-    # (feature tag, projection dimension). Bare L21e4 = default proj 300.
-    group_specs = [
-        ("L21e4proj50", 50),
-        ("L21e4proj100", 100),
-        ("L21e4proj200", 200),
-        ("L21e4", 300),
-    ]
-    accuracies = {feature: [] for feature, _ in group_specs}
-
-    for model_name, result in result_dict.items():
-        feature = _performance_feature_tag(model_name, result)
-        if feature in accuracies:
-            accuracies[feature].append(float(result["acc"]) * 100.0)
-
-    missing = [feature for feature, _ in group_specs if not accuracies[feature]]
-    if missing:
-        print(f"  Note: no performance results for {', '.join(missing)}; omitted.")
-        group_specs = [spec for spec in group_specs if spec[0] not in missing]
-    if not group_specs:
-        print("  Skipped: no projection-dimension results found.")
+    accuracies = _projection_accuracy_groups(result_dict, vary_hidden=vary_hidden)
+    dimension_name = "hidden" if vary_hidden else "projection"
+    fixed_name = "projection300" if vary_hidden else "hidden300"
+    if not accuracies:
+        print(f"  Skipped: no metadata-matched {fixed_name}/Tanh/L2=1e-4 {dimension_name} results.")
         return
 
     # Same layout as plot_l2_vs_accuracy: individual seeds as scatter, the
-    # across-seed means connected to show the trend over projection dimension.
-    # Categorical x positions (equal spacing); the dimension is the tick label.
-    fig, ax = plt.subplots(1, 1, figsize=(2.3, 3))
-    positions = np.arange(len(group_specs))
+    # across-seed means connected to show the trend over the varying dimension.
+    fig, ax = plt.subplots(1, 1, figsize=(3.5, 3))
+    positions = np.arange(len(accuracies))
     mean_acc = []
     all_values = []
-    for x, (feature, dim) in zip(positions, group_specs):
-        values = np.asarray(accuracies[feature], dtype=float)
+    for position, entries in zip(positions, accuracies.values()):
+        values = np.asarray(entries, dtype=float)
         all_values.extend(values.tolist())
         mean_acc.append(values.mean())
         ax.scatter(
-            np.full(len(values), x), values, color=c_vals[1], edgecolors="k",
+            np.full(len(values), position), values, color=c_vals[1], edgecolors="k",
             linewidths=0.5, s=40, alpha=0.8, zorder=3,
         )
     ax.plot(
@@ -1299,8 +1445,8 @@ def plot_projection_dim_accuracy():
     )
 
     ax.set_xticks(positions)
-    ax.set_xticklabels([f"{dim}" for _, dim in group_specs])
-    ax.set_xlabel("Projection dimension")
+    ax.set_xticklabels([str(dimension) for dimension in accuracies])
+    ax.set_xlabel("Hidden dimension" if vary_hidden else "Projection dimension")
     ax.set_ylabel("Test accuracy (%)")
     lo, hi = min(all_values), max(all_values)
     pad = max((hi - lo) * 0.08, 2.0)
@@ -1311,9 +1457,10 @@ def plot_projection_dim_accuracy():
     ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
 
     fig.tight_layout()
-    out_path = _multitask_out("projection_dim_accuracy.png")
+    out_path = _multitask_out(f"{dimension_name}_dim_accuracy.png")
+    count_prefix = "hidden" if vary_hidden else "proj"
     counts = ", ".join(
-        f"proj{dim} n={len(accuracies[feature])}" for feature, dim in group_specs
+        f"{count_prefix}{dimension} n={len(entries)}" for dimension, entries in accuracies.items()
     )
     _save_fig(fig, out_path, extra=f" ({counts})")
 
@@ -1332,21 +1479,35 @@ def _load_state_space_pca():
     return pickle.load(open(matches[0], "rb"))
 
 
-def _plot_state_space_panel(data, key, ylabel_prefix, out_name, category_order,
-                            category_to_color):
-    """One context-end PCA panel as its own figure, colored by task category."""
+# Legend for the state-space panels: one entry per DISTINCT color in
+# _RULE_MOTIF, labeled by what that color means across figures (dms shares
+# the Reaction hues by the match=pro / non-match=anti pairing, so green and
+# orange cover both).
+_STATE_SPACE_LEGEND = [
+    ("Pro Delayed", "#3182ce"),
+    ("Anti Delayed", "#e53e3e"),
+    ("Pro Reaction / Match", "#38a169"),
+    ("Anti Reaction / Non-match", "#dd6b20"),
+    ("Integration", "#805ad5"),
+    ("Category", "#ff1493"),
+]
+
+
+def _plot_state_space_panel(data, key, ylabel_prefix, out_name):
+    """One context-end PCA panel as its own figure, colored PER TASK from
+    _RULE_MOTIF — the single color mapping every figure shares (same colors
+    as the lesion-heatmap task labels). The pickle's rule_motif_mapping
+    supplies data only, so recoloring never requires re-running
+    state_space_shift.py."""
     all_rules = data["all_rules"]
-    rule_motif_mapping = data["rule_motif_mapping"]
     pca = data["pca_results"][key]
     X_2d, ctx_rule_labels = pca["X_2d"], pca["ctx_rule_labels"]
 
     fig, ax = plt.subplots(1, 1, figsize=(2.5, 2.4))
-    for cat in category_order:
-        rule_idxs_in_cat = [idx for idx, rule in enumerate(all_rules)
-                            if rule_motif_mapping[rule][0] == cat]
-        sel = np.isin(ctx_rule_labels, rule_idxs_in_cat)
-        ax.scatter(X_2d[sel, 0], X_2d[sel, 1], label=cat,
-                   color=category_to_color[cat], alpha=0.5, s=14,
+    for idx, rule in enumerate(all_rules):
+        sel = ctx_rule_labels == idx
+        ax.scatter(X_2d[sel, 0], X_2d[sel, 1],
+                   color=_RULE_MOTIF[rule][1], alpha=0.5, s=14,
                    edgecolors="none")
 
     ax.set_xlabel("PC1", fontsize=8)
@@ -1354,9 +1515,14 @@ def _plot_state_space_panel(data, key, ylabel_prefix, out_name, category_order,
     ax.spines[["top", "right"]].set_visible(False)
     ax.xaxis.set_major_locator(mpl.ticker.MaxNLocator(integer=True))
     ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(integer=True))
-    # Each figure stands alone, so each carries the category key (routed through
-    # _legend, so --no-legend still suppresses both).
-    _legend(ax, frameon=True, loc="best", fontsize=5, markerscale=1.0)
+    # Each figure stands alone, so each carries the color key (routed through
+    # _legend, so --no-legend still suppresses it). Handles are built from the
+    # shared color list, not the scatters, so one entry per color.
+    handles = [mpl.lines.Line2D([0], [0], marker="o", linestyle="",
+                                color=col, alpha=0.5, markersize=4, label=lab)
+               for lab, col in _STATE_SPACE_LEGEND]
+    _legend(ax, handles=handles, frameon=True, loc="best", fontsize=5,
+            markerscale=1.0)
 
     fig.tight_layout()
     _save_fig(fig, _multitask_out(out_name))
@@ -1380,19 +1546,11 @@ def plot_state_space_combined():
         print("  Skipped: state_space PCA pickle not found. Run state_space_shift.py first.")
         return
 
-    rule_motif_mapping = data["rule_motif_mapping"]
-    category_order = [
-        "Pro Delayed", "Anti Delayed", "Pro Reaction",
-        "Anti Reaction", "Pro Integration", "Categorization",
-    ]
-    category_to_color = {cat: col for _, (cat, col) in rule_motif_mapping.items()}
-
     for key, ylabel_prefix, out_name in (
         ("hidden", "Hidden state", "state_space_hidden.png"),
         ("eff_mod", "Eff. modulation", "state_space_eff_mod.png"),
     ):
-        _plot_state_space_panel(data, key, ylabel_prefix, out_name,
-                                category_order, category_to_color)
+        _plot_state_space_panel(data, key, ylabel_prefix, out_name)
 
 
 RVAL_RESULT_PATH = STATE_SPACE_DIR / "initial_condition_distance_vs_angle_results.pkl"
@@ -1439,6 +1597,65 @@ def plot_state_space_r_values():
     fig.tight_layout()
     out_path = _multitask_out("state_space_r_values.png")
     _save_fig(fig, out_path)
+
+
+def plot_state_space_dist_angle():
+    """
+    Figure: initial-condition distance vs first-step trajectory angle for the
+    paper seed (ANAME) — the per-task-pair scatter that the R-value bars
+    (plot_state_space_r_values) summarize.
+
+    Two panels (hidden state, effective modulation). Each point is one task
+    pair: x = mean Euclidean distance between the two tasks' pre-stimulus
+    states (end of the Context period, matched by stimulus), y = mean angle
+    (deg) between their first post-stimulus displacement vectors. The line and
+    the annotated r/slope are the through-origin fit state_space_shift.py
+    computed — read from the same pickle, never refit here, so this figure and
+    the R-value bars cannot drift apart. Needs the raw scatter data
+    state_space_shift.py now saves; older pickles (r-values only) are skipped
+    with a message to re-run it.
+    """
+    _ensure_out_dir()
+    result_dict = _load_pkl_or_skip(RVAL_RESULT_PATH, "Run state_space_shift.py first.")
+    if result_dict is None:
+        return
+    entry = result_dict.get(ANAME)
+    if entry is None:
+        print(f"  Skipped: {ANAME} not in {RVAL_RESULT_PATH.name}.")
+        return
+    scatter = entry.get("scatter")
+    if not scatter:
+        print("  Skipped: pickle has no raw scatter data (older format stored "
+              "only the r-values) — re-run state_space_shift.py.")
+        return
+
+    panels = [("hidden", "Hidden state"), ("eff_mod", "Eff. modulation")]
+    fig, axs = plt.subplots(1, 2, figsize=(5.4, 2.6))
+    for ax, (key, title) in zip(axs, panels):
+        sd = scatter.get(key)
+        if sd is None:
+            ax.set_visible(False)
+            continue
+        x = np.asarray(sd["dists"], float)
+        y = np.asarray(sd["angles_deg"], float)
+        r_value, slope, p_value = entry["rval_dict"][key]
+
+        ax.scatter(x, y, color="#3182ce", edgecolors="k", linewidths=0.4,
+                   s=22, alpha=0.75, zorder=3)
+        x_fit = np.linspace(x.min(), x.max(), 50)
+        ax.plot(x_fit, slope * x_fit, color="tomato", linewidth=1.2, zorder=4)
+
+        p_str = "p < 1e-4" if p_value < 1e-4 else f"p = {p_value:.3f}"
+        _legend(ax, [f"r = {r_value:.2f}, {p_str}"], loc="lower right",
+                fontsize=6, frameon=True)
+        ax.set_xlabel("Initial-condition distance", fontsize=8)
+        ax.set_ylabel("First-step angle (deg.)", fontsize=8)
+        ax.set_title(title, fontsize=9)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.tick_params(labelsize=7)
+
+    fig.tight_layout()
+    _save_fig(fig, _multitask_out("state_space_dist_angle.png"))
 
 
 # ─── Figure: Over-membership ─────────────────────────────────────────────────
@@ -1667,6 +1884,67 @@ def plot_lesion_heatmap():
         labelsize=10,
         label_fontsize=8,
     )
+
+
+def plot_lesion_cluster_sizes():
+    """
+    Figure: relative size of every cluster shown in the lesion heatmap
+    (plot_lesion_heatmap), as two stacked bar panels sharing its column order:
+
+        Top    — hidden (post) neuron clusters from the unnormalized
+                 clustering: % of all hidden neurons per cluster
+        Bottom — var-weighted-unnormalized modulation (synapse) clusters:
+                 % of all clustered synapses per cluster
+
+    Companion to the heatmap: it says how much substrate each column's lesion
+    removes, so a big effect from a small cluster reads as selectivity rather
+    than mass. Cluster indices match the heatmap's C1..Cn labels (the two
+    panels' numberings are independent of each other, as there).
+    """
+    _ensure_out_dir()
+    data = _load_lesion_results()
+    if data is None:
+        print("  Skipped: lesion results not found. Run leison.py first.")
+        return
+
+    # Top: hidden (post) cluster sizes, in the heatmap's column order
+    lu = data["leison_unnorm"].get("lesion_units", {})
+    comb_names = data["leison_unnorm"]["all_comb_names_leison"]
+    post_names = [n for n in comb_names if n.startswith("post_c")]
+    if not post_names or any(n not in lu for n in post_names):
+        print("  Skipped: lesion_units missing for hidden clusters.")
+        return
+    hid_sizes = np.array([lu[n] for n in post_names], float)
+
+    # Bottom: var-weighted modulation cluster sizes (sorted ids = heatmap order)
+    mod_entry = data["mod_leison"].get(
+        "modulation_all_var_weighted_unnormalized__freeze_M")
+    if mod_entry is None:
+        print("  Skipped: var-weighted freeze_M lesion entry not found.")
+        return
+    col_clusters = mod_entry["mod_col_clusters"]
+    mod_sizes = np.array([len(col_clusters[c]) for c in sorted(col_clusters)],
+                         float)
+
+    panels = [
+        (hid_sizes, f"Hidden neuron clusters (n = {int(hid_sizes.sum())} neurons)"),
+        (mod_sizes, f"Modulation clusters (n = {int(mod_sizes.sum())} synapses)"),
+    ]
+    fig, axes = plt.subplots(2, 1, figsize=(6, 3.6), sharex=False)
+    for ax, (sizes, title) in zip(axes, panels):
+        pct = sizes / sizes.sum() * 100
+        xs = np.arange(len(pct))
+        ax.bar(xs, pct, color="#4682b4", edgecolor="k", linewidth=0.4, width=0.7)
+        ax.set_xticks(xs)
+        ax.set_xticklabels([f"C{i + 1}" for i in xs], fontsize=6)
+        ax.set_ylabel("Cluster size (%)", fontsize=8)
+        ax.set_title(title, fontsize=8)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.tick_params(labelsize=7)
+    axes[1].set_xlabel("Cluster", fontsize=8)
+
+    fig.tight_layout()
+    _save_fig(fig, _multitask_out("lesion_cluster_sizes.png"))
 
 
 # ─── Figure: OM vs lesion ────────────────────────────────────────────────────
@@ -1913,6 +2191,224 @@ def plot_cluster_corr_vs_lesion():
             _save_fig(fig, out_path)
 
 
+# ─── Figure: Cross-seed summary of the var-weighted lesion results ──────────
+
+def plot_cross_seed_summary():
+    """
+    Figure: cross-seed consistency of the var-weighted-unnormalized lesion
+    results — one point per seed, five panels:
+
+      P1  OM vs lesion-profile-L1 pooled r (zero_W & freeze_M);
+          filled = cluster-permutation p < 0.05
+      P2  plasticity share median (freeze_M effect / zero_W effect on
+          significant cells)
+      P3  zero_W vs freeze_M effect-map pattern correlation
+      P4  tuning-similarity vs lesion-profile-correlation Mantel r (zero_W);
+          filled = Mantel p < 0.05
+      P5  per-cluster Spearman(memory-family bias, plasticity share) —
+          are the memory-serving clusters the plasticity-dependent ones?
+
+    Every number is read from the per-seed pickles leison_plot.py saves in
+    multiple_tasks_norm/ (no model forwards, no cluster_info_mod). Each
+    panel is annotated with the Fisher-z mean r (or plain mean) and a
+    one-sided sign test across seeds. The raw per-seed numbers are also
+    written to {MULTITASK_PREFIX}_cross_seed_summary.csv.
+    """
+    import re as _re
+    from scipy.stats import spearmanr as _spearmanr, binomtest as _binomtest
+
+    _ensure_out_dir()
+    tag = "var-weighted-unnormalized"
+    run_pattern = _re.sub(r"seed\d+", "seed*", ANAME)
+    run_dirs = sorted(Path("multiple_tasks_norm").glob(run_pattern))
+    if not run_dirs:
+        print(f"  Skipped: no runs match multiple_tasks_norm/{run_pattern}.")
+        return
+
+    def _task_family(t):
+        return ("memory"
+                if ("delay" in t or t.startswith("dms") or t.startswith("dmc"))
+                else "reaction")
+
+    rows = []
+    for run in run_dirs:
+        aname = run.name
+        seed = _re.search(r"seed(\d+)", aname).group(1)
+        row = {"seed": seed}
+
+        # P1: OM vs lesion-profile-L1 scatter, both modes
+        p = run / f"om_vs_lesion_diff_{tag}_combined_unnorm_{aname}.pkl"
+        if p.exists():
+            with open(p, "rb") as f:
+                d = pickle.load(f)
+            for mode in ["zero_W", "freeze_M"]:
+                md = d["mode_data"].get(mode)
+                if md is None or "p_perm" not in md:
+                    continue
+                row[f"om_r_{mode}"] = float(
+                    np.corrcoef(md["om_vals"], md["lesion_diffs"])[0, 1])
+                row[f"om_p_perm_{mode}"] = float(md["p_perm"])
+
+        # P2/P3/P5: plasticity-share pickle
+        p = run / f"plasticity_share_{tag}_{aname}.pkl"
+        if p.exists():
+            with open(p, "rb") as f:
+                d = pickle.load(f)
+            share = np.asarray(d["share"], float)            # (T, C), NaN = n.s.
+            E_zw = np.asarray(d["effect_zero_w"], float)     # (T, C)
+            E_fm = np.asarray(d["effect_freeze_m"], float)
+            row["share_median"] = float(np.nanmedian(share))
+            row["pattern_r"] = float(
+                np.corrcoef(E_zw.ravel(), E_fm.ravel())[0, 1])
+
+            is_mem = np.array([_task_family(t) == "memory" for t in d["tasks"]])
+            bias = E_zw[is_mem].mean(axis=0) - E_zw[~is_mem].mean(axis=0)
+            # Per-cluster median share; clusters with no significant cell are
+            # all-NaN columns — give them NaN without numpy's warning.
+            _any = np.isfinite(share).any(axis=0)
+            share_c = np.full(share.shape[1], np.nan)
+            share_c[_any] = np.nanmedian(share[:, _any], axis=0)
+            ok = np.isfinite(share_c)
+            if ok.sum() >= 5:
+                row["bias_share_rho"] = float(
+                    _spearmanr(bias[ok], share_c[ok]).statistic)
+
+        # P4: tuning similarity vs lesion profile correlation (Mantel)
+        p = run / f"cluster_corr_vs_mod_leison_effect_{tag}_zero-W_{aname}.pkl"
+        if p.exists():
+            with open(p, "rb") as f:
+                d = pickle.load(f)
+            entry = next(iter(d.values()))
+            mantel = entry.get("mantel")
+            if mantel is not None and np.isfinite(mantel.get("r", np.nan)):
+                row["mantel_r"] = float(mantel["r"])
+                row["mantel_p"] = float(mantel["p"])
+        rows.append(row)
+
+    def _col(key):
+        return np.array([r.get(key, np.nan) for r in rows], float)
+
+    def _fisher_mean(r):
+        r = r[np.isfinite(r)]
+        return float(np.tanh(np.arctanh(np.clip(r, -0.999, 0.999)).mean())) \
+            if r.size else np.nan
+
+    def _sign_p(vals, positive):
+        """One-sided sign test that the seeds agree with the expected sign."""
+        v = vals[np.isfinite(vals)]
+        if v.size == 0:
+            return np.nan
+        k = int((v > 0).sum() if positive else (v < 0).sum())
+        return float(_binomtest(k, v.size, 0.5, alternative="greater").pvalue)
+
+    seeds = [r["seed"] for r in rows]
+    xs = np.arange(len(rows))
+    fig, axs = plt.subplots(1, 5, figsize=(14.5, 2.9))
+
+    def _seed_axis(ax):
+        ax.set_xticks(xs)
+        ax.set_xticklabels(seeds, rotation=60, fontsize=6)
+        ax.set_xlabel("Seed", fontsize=8)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.tick_params(labelsize=7)
+
+    # P1: OM scatter r, both modes, filled = p_perm < 0.05
+    ax = axs[0]
+    for off, mode, color in [(-0.15, "zero_W", "#3182ce"),
+                             (0.15, "freeze_M", "#9ecae1")]:
+        r = _col(f"om_r_{mode}")
+        sig = _col(f"om_p_perm_{mode}") < 0.05
+        fin = np.isfinite(r)
+        ax.scatter(xs[fin & sig] + off, r[fin & sig], s=26,
+                   facecolors=color, edgecolors=color, linewidths=0.8,
+                   zorder=3, label=mode.replace("_", "-"))
+        ax.scatter(xs[fin & ~sig] + off, r[fin & ~sig], s=26,
+                   facecolors="white", edgecolors=color, linewidths=0.8, zorder=3)
+        ax.axhline(_fisher_mean(r), color=color, linewidth=0.7,
+                   linestyle="--", alpha=0.7)
+    ax.axhline(0, color="grey", linewidth=0.5)
+    _z = _col("om_r_zero_W")
+    ax.set_title(f"OM vs profile-L1 r\nsign p={_sign_p(_z, positive=False):.3f}",
+                 fontsize=8)
+    ax.set_ylabel("Pooled r", fontsize=8)
+    ax.legend(fontsize=6, frameon=False, loc="lower right")
+    _seed_axis(ax)
+
+    # P2: plasticity share median
+    ax = axs[1]
+    v = _col("share_median")
+    ax.scatter(xs, v, s=26, color="#1b9e77", edgecolors="k", linewidths=0.4, zorder=3)
+    ax.axhline(np.nanmean(v), color="#1b9e77", linewidth=0.7, linestyle="--", alpha=0.7)
+    ax.axhline(0.5, color="grey", linewidth=0.5, linestyle=":")
+    ax.axhline(1.0, color="grey", linewidth=0.5, linestyle=":")
+    _k = int(np.nansum(v > 0.5))
+    ax.set_title(f"Plasticity share (median)\nmean={np.nanmean(v):.2f}, "
+                 f"{_k}/{int(np.isfinite(v).sum())} > 0.5", fontsize=8)
+    ax.set_ylabel("freeze-M / zero-W", fontsize=8)
+    ax.set_ylim(0, 1.1)
+    _seed_axis(ax)
+
+    # P3: zero_W vs freeze_M pattern correlation
+    ax = axs[2]
+    v = _col("pattern_r")
+    ax.scatter(xs, v, s=26, color="#3182ce", edgecolors="k", linewidths=0.4, zorder=3)
+    ax.axhline(_fisher_mean(v), color="#3182ce", linewidth=0.7, linestyle="--", alpha=0.7)
+    ax.axhline(0, color="grey", linewidth=0.5)
+    ax.set_title(f"zero-W vs freeze-M map r\nFisher mean={_fisher_mean(v):.2f}",
+                 fontsize=8)
+    ax.set_ylabel("Pattern r", fontsize=8)
+    ax.set_ylim(0, 1)
+    _seed_axis(ax)
+
+    # P4: Mantel r (tuning sim vs lesion profile corr)
+    ax = axs[3]
+    v = _col("mantel_r")
+    pp = _col("mantel_p")
+    sig = pp < 0.05
+    fin = np.isfinite(v)
+    ax.scatter(xs[fin & sig], v[fin & sig], s=26, color="#7e3ff2",
+               edgecolors="#7e3ff2", linewidths=0.8, zorder=3)
+    ax.scatter(xs[fin & ~sig], v[fin & ~sig], s=26, facecolors="white",
+               edgecolors="#7e3ff2", linewidths=0.8, zorder=3)
+    ax.axhline(0, color="grey", linewidth=0.5)
+    if fin.any():
+        ax.axhline(_fisher_mean(v), color="#7e3ff2", linewidth=0.7,
+                   linestyle="--", alpha=0.7)
+    ax.set_title(f"Tuning-sim vs lesion-corr Mantel r\n"
+                 f"sign p={_sign_p(v, positive=True):.3f}", fontsize=8)
+    ax.set_ylabel("Mantel r", fontsize=8)
+    _seed_axis(ax)
+
+    # P5: memory-bias x share Spearman
+    ax = axs[4]
+    v = _col("bias_share_rho")
+    ax.scatter(xs, v, s=26, color="#d95f02", edgecolors="k", linewidths=0.4, zorder=3)
+    ax.axhline(0, color="grey", linewidth=0.5)
+    ax.axhline(np.nanmean(v), color="#d95f02", linewidth=0.7, linestyle="--", alpha=0.7)
+    ax.set_title(f"Spearman(memory bias, share)\nsign p={_sign_p(v, positive=True):.3f}",
+                 fontsize=8)
+    ax.set_ylabel("rho", fontsize=8)
+    ax.set_ylim(-1, 1)
+    _seed_axis(ax)
+
+    fig.suptitle(f"Cross-seed summary — {tag} ({len(rows)} seeds)", fontsize=9)
+    fig.tight_layout()
+    _save_fig(fig, _multitask_out("cross_seed_summary.png"))
+
+    # CSV with the raw per-seed numbers
+    cols = ["seed", "om_r_zero_W", "om_p_perm_zero_W", "om_r_freeze_M",
+            "om_p_perm_freeze_M", "share_median", "pattern_r",
+            "mantel_r", "mantel_p", "bias_share_rho"]
+    csv_path = OUT_DIR / f"{MULTITASK_PREFIX}_cross_seed_summary.csv"
+    with open(csv_path, "w") as f:
+        f.write(",".join(cols) + "\n")
+        for r in rows:
+            f.write(",".join(
+                (f"{r[c]:.4f}" if isinstance(r.get(c), float) else str(r.get(c, "")))
+                for c in cols) + "\n")
+    print(f"Saved: {csv_path}")
+
+
 # ─── Figure: Transfer speed ──────────────────────────────────────────────────
 
 PRETRAINING_ANALYSIS_DIR = Path("pretraining_analysis")
@@ -1934,6 +2430,20 @@ def _pretraining_ruleset_from_result_name(filename):
     return match.group(1) if match else None
 
 
+def _transfer_speed_summary(per_seed_iters):
+    """Summarize positive first-hit times among reaching seeds; NaN means not reached."""
+    values = np.asarray(per_seed_iters, dtype=float)
+    if values.ndim != 2 or np.isinf(values).any() or np.any(values <= 0):
+        raise ValueError("Expected a seed-by-threshold matrix of positive times or NaN")
+    reached = np.sum(np.isfinite(values), axis=0)
+    quartiles = np.full((3, values.shape[1]), np.nan)
+    for column, count in enumerate(reached):
+        if count:
+            quartiles[:, column] = np.percentile(values[np.isfinite(values[:, column]), column],
+                                                  [25, 50, 75])
+    return quartiles[1], quartiles[0], quartiles[2], reached, values.shape[0]
+
+
 def plot_transfer_speed():
     """
     Figure: Transfer speed — iterations to reach accuracy thresholds during
@@ -1941,6 +2451,9 @@ def plot_transfer_speed():
 
     Loads from the combined transfer_speed.pkl if available; otherwise falls
     back to loading individual per-seed result pickles.
+    Points show individual reaching seeds, lines their median, and bands their
+    25th-75th percentiles. Non-reaching seeds are excluded from these summaries;
+    this is conditional on reaching, not a survival estimate.
     """
     _ensure_out_dir()
     if not PRETRAINING_ANALYSIS_DIR.exists():
@@ -1999,31 +2512,125 @@ def plot_transfer_speed():
         "fdanti_delaygo": "Relevant motif",
     }
 
-    fig, ax = plt.subplots(1, 1, figsize=(3, 2.2 * 2 / 3))  # height squeezed by 1/3
+    fig, ax = plt.subplots(figsize=(3, 2.2 * 2 / 3))
 
     for rs, rs_data in by_ruleset_mats.items():
         color = ruleset_colors.get(rs, "#718096")
         label = ruleset_labels.get(rs, rs)
         per_seed_mat = np.asarray(rs_data["per_seed_iters"], dtype=float)
-        n_seeds = rs_data["n_seeds"]
-
-        mean_vals = np.nanmean(per_seed_mat, axis=0)
-        std_vals = np.nanstd(per_seed_mat, axis=0)
-        ax.plot(mean_vals, ys, "s-", color=color, linewidth=2.0,
+        medians, lower, upper, _, n_seeds = _transfer_speed_summary(per_seed_mat)
+        if per_seed_mat.shape[1] != len(ys) or rs_data["n_seeds"] != n_seeds:
+            raise ValueError(f"{rs}: transfer-speed shape or seed count mismatch")
+        for column, threshold in enumerate(ys):
+            times = per_seed_mat[:, column]
+            times = times[np.isfinite(times)]
+            ax.scatter(times, np.full(len(times), threshold), color=color,
+                       s=12, alpha=0.55, linewidths=0, zorder=3)
+        ax.plot(medians, ys, "s-", color=color, linewidth=1.5,
                 markersize=5, label=label)
-        ax.fill_betweenx(ys, mean_vals - std_vals, mean_vals + std_vals,
+        ax.fill_betweenx(ys, lower, upper,
                          color=color, alpha=0.15)
 
     ax.set_xlabel("Iterations to reach threshold")
     ax.set_ylabel("Accuracy\nthreshold (%)", ha="center")
     ax.set_xscale("log")
     ax.yaxis.set_major_locator(mpl.ticker.MultipleLocator(10))
+    ax.set_ylim(float(np.min(ys)) - 3, float(np.max(ys)) + 3)
+    ax.set_title("Reaching seeds: median and IQR", fontsize=8)
     _legend(ax, fontsize=6, frameon=True)
     ax.spines[["top", "right"]].set_visible(False)
 
     fig.tight_layout()
     out_path = OUT_DIR / "transfer_speed.png"
     _save_fig(fig, out_path)
+
+
+def plot_backbone_probe():
+    """Random-rule backbone probe: seed-mean accuracy with adaptive y limits.
+
+    Points average random rule initializations within each seed; diamonds show
+    the across-seed mean with population SD. This is not the exact stage-2 init.
+    A two-sided independent-seed permutation test compares group means, assuming
+    exchangeability under the null; random initializations are not replicates.
+    """
+    from scipy.stats import permutation_test
+
+    groups = {
+        "fdgo_delaygo": ("Irrelevant\nmotif", "#3182ce"),
+        "fdanti_delaygo": ("Relevant\nmotif", "#e53e3e"),
+    }
+    values = {ruleset: [] for ruleset in groups}
+    for path in _pretraining_result_pkls():
+        ruleset = _pretraining_ruleset_from_result_name(path.name)
+        if ruleset not in groups:
+            continue
+        with path.open("rb") as handle:
+            probe = pickle.load(handle).get("backbone_probe", {})
+        samples = np.asarray(probe.get("acc", []), dtype=float)
+        if samples.size == 0 or not np.isfinite(samples).all():
+            print(f"  Note: {path.name}: missing or non-finite backbone probe acc; omitted.")
+            continue
+        values[ruleset].append(float(samples.mean()) * 100.0)
+
+    if not any(values.values()):
+        print("  Skipped: no usable backbone probe results for the configured pretraining experiment.")
+        return
+
+    _ensure_out_dir()
+    fig, axis = plt.subplots(figsize=(2.6, 2.4))
+    counts = []
+    bounds = []
+    for position, (ruleset, (_, color)) in enumerate(groups.items()):
+        samples = np.asarray(values[ruleset])
+        counts.append(f"{ruleset} acc n={samples.size}")
+        if samples.size == 0:
+            continue
+        mean, std = samples.mean(), samples.std()
+        bounds.extend([samples.min(), samples.max(), mean - std, mean + std])
+        jitter = np.linspace(-0.10, 0.10, samples.size) if samples.size > 1 else np.zeros(1)
+        axis.scatter(position + jitter, samples, color=color, s=24,
+                     alpha=0.7, edgecolors="k", linewidths=0.4, zorder=3)
+        axis.errorbar(position, mean, yerr=std,
+                      fmt="D", color="k", markerfacecolor="white",
+                      markersize=4, capsize=3, linewidth=1.0, zorder=4)
+    axis.set_xticks([0, 1])
+    axis.set_xticklabels([label for label, _ in groups.values()])
+    axis.set_xlim(-0.5, 1.5)
+    axis.set_ylabel("Accuracy (%)", fontsize=8)
+    axis.tick_params(labelsize=7)
+    axis.spines[["top", "right"]].set_visible(False)
+    lower, upper = min(bounds), max(bounds)
+    padding = max((upper - lower) * 0.1, 0.5)
+    axis.set_ylim(lower - padding, upper + padding)
+    axis.yaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=5))
+    irrelevant = np.asarray(values["fdgo_delaygo"], dtype=float)
+    relevant = np.asarray(values["fdanti_delaygo"], dtype=float)
+    if min(irrelevant.size, relevant.size) >= 2:
+        test = permutation_test(
+            (relevant, irrelevant),
+            lambda first, second: np.mean(first) - np.mean(second),
+            permutation_type="independent", alternative="two-sided",
+            n_resamples=9999, random_state=0,
+        )
+        stats_label = (
+            f"Two-sided permutation p={test.pvalue:.3g}\n"
+            f"Relevant - Irrelevant = {test.statistic:+.2f} pp\n"
+            f"Seeds: relevant={relevant.size}, irrelevant={irrelevant.size}"
+        )
+    else:
+        stats_label = "Permutation test unavailable: need >=2 seeds/group"
+    print(f"  Backbone probe statistics: {stats_label.replace(chr(10), '; ')}")
+    from datetime import datetime
+    log_path = Path("log") / "backbone_probe.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            f"[{datetime.now().isoformat(timespec='seconds')}] "
+            f"{PRETRAINING_ADDON_NAME}: {stats_label.replace(chr(10), '; ')}\n"
+        )
+    fig.suptitle("Random-rule backbone probe", fontsize=9)
+    fig.tight_layout()
+    _save_fig(fig, OUT_DIR / "backbone_probe.png", extra=f" ({'; '.join(counts)})")
 
 
 def plot_learning_trajectory():
@@ -2341,10 +2948,15 @@ def _plot_aggregate_cve_panel(ax, by_ruleset, dtype, period, ruleset_colors,
     """
     Draw one CVE panel: novel-in-own-PCs (self, black) plus novel-in-
     pretraining-PCs (cross, colored per ruleset), with per-seed thin lines
-    and seed-mean thick lines. Shared by the full and stimulus-only figures.
+    and seed-mean thick lines. Shared by the stimulus and response figures.
     """
     key_self = f"{dtype}_{period}_self"
     key_cross = f"{dtype}_{period}_cross"
+    seed_width = 0.9
+    mean_width = 2.2
+    self_alpha = 0.18
+    cross_alpha = 0.18
+    cross_style = "-"
 
     # Plot self (black) — same across rulesets, just use the first available
     self_plotted = False
@@ -2359,9 +2971,9 @@ def _plot_aggregate_cve_panel(ax, by_ruleset, dtype, period, ruleset_colors,
             min_len = all_self.shape[1]
             xs = np.arange(1, min_len + 1)
             for i in range(all_self.shape[0]):
-                ax.plot(xs, all_self[i], color="black", linewidth=0.5, alpha=0.2)
+                ax.plot(xs, all_self[i], color="black", linewidth=seed_width, alpha=self_alpha)
             mean_self = np.mean(all_self, axis=0)
-            ax.plot(xs, mean_self, color="black", linewidth=2.0,
+            ax.plot(xs, mean_self, color="black", linewidth=mean_width,
                     label="Self" if show_legend else None)
             self_plotted = True
 
@@ -2381,11 +2993,11 @@ def _plot_aggregate_cve_panel(ax, by_ruleset, dtype, period, ruleset_colors,
         xs = np.arange(1, min_len + 1)
 
         for i in range(all_cross.shape[0]):
-            ax.plot(xs, all_cross[i], color=color, linewidth=0.5,
-                    alpha=0.25, linestyle="--")
+            ax.plot(xs, all_cross[i], color=color, linewidth=seed_width,
+                    alpha=cross_alpha, linestyle=cross_style)
 
         mean_cross = np.mean(all_cross, axis=0)
-        ax.plot(xs, mean_cross, color=color, linewidth=2.0, linestyle="--",
+        ax.plot(xs, mean_cross, color=color, linewidth=mean_width, linestyle=cross_style,
                 label=label if show_legend else None)
 
     if dtype == "modulation_weighted":
@@ -2473,6 +3085,75 @@ def plot_aggregate_cve_stimulus():
     motif rulesets.
     """
     _plot_aggregate_cve_period("stimulus")
+
+
+def plot_pretraining_principal_angles():
+    """Plot saved rank-filtered principal-angle spectra in degrees.
+
+    Rows are periods, columns are representations. Means use the common
+    available spectrum length; indices order angles, not individual PCs.
+    Regenerate legacy analysis results after the numerical-rank correction.
+    """
+    groups = {
+        "fdgo_delaygo": ("Irrelevant motif", "#3182ce"),
+        "fdanti_delaygo": ("Relevant motif", "#e53e3e"),
+    }
+    representations = [("hidden", "Hidden"), ("modulation_weighted", "Effective Modulation")]
+    periods = ["stimulus", "response"]
+    spectra = {(period, dtype, ruleset): [] for period in periods
+               for dtype, _ in representations for ruleset in groups}
+    for path in _pretraining_result_pkls():
+        ruleset = _pretraining_ruleset_from_result_name(path.name)
+        if ruleset not in groups:
+            continue
+        with path.open("rb") as handle:
+            result = pickle.load(handle)
+        for period in periods:
+            for dtype, _ in representations:
+                angles = np.asarray(result.get(dtype, {}).get(f"angles_{period}", []), dtype=float)
+                if angles.ndim != 1 or angles.size == 0 or not np.isfinite(angles).all():
+                    print(f"  Note: {path.name}: missing/invalid {dtype} {period} angles; omitted.")
+                    continue
+                spectra[period, dtype, ruleset].append(np.degrees(angles))
+    if not any(spectra.values()):
+        print("  Skipped: no principal angles for the configured pretraining experiment.")
+        return
+
+    _ensure_out_dir()
+    fig, axes = plt.subplots(2, 2, figsize=(6, 4), sharey=True)
+    counts = []
+    for row, period in enumerate(periods):
+        for column, (dtype, title) in enumerate(representations):
+            axis = axes[row, column]
+            max_length = 1
+            for ruleset, (label, color) in groups.items():
+                curves = spectra[period, dtype, ruleset]
+                if not curves:
+                    continue
+                common_length = min(map(len, curves))
+                max_length = max(max_length, max(map(len, curves)))
+                for curve in curves:
+                    axis.plot(np.arange(1, len(curve) + 1), curve, "-",
+                              color=color, linewidth=0.9, alpha=0.18)
+                mean = np.mean([curve[:common_length] for curve in curves], axis=0)
+                axis.plot(np.arange(1, common_length + 1), mean, "-",
+                          color=color, linewidth=2.2, label=label)
+                counts.append(f"{period}/{dtype}/{ruleset}: n={len(curves)}, common k={common_length}")
+            axis.set_xlim(0.5, max_length + 0.5)
+            axis.xaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=5, integer=True))
+            axis.set_ylim(-2, 92)
+            axis.set_yticks([0, 30, 60, 90])
+            axis.set_title(f"{title} ({period.capitalize()})", fontsize=8)
+            axis.tick_params(labelsize=7)
+            axis.spines[["top", "right"]].set_visible(False)
+            if column == 0:
+                axis.set_ylabel("Principal angle (deg)", fontsize=8)
+            if row == 1:
+                axis.set_xlabel("Angle index (ascending)", fontsize=8)
+            if axis.get_legend_handles_labels()[0]:
+                _legend(axis, fontsize=6, frameon=False)
+    fig.tight_layout()
+    _save_fig(fig, OUT_DIR / "pretraining_principal_angles.png", extra=f" ({'; '.join(counts)})")
 
 
 def plot_aggregate_cve_response():
@@ -6698,6 +7379,7 @@ def plot_two_task_attractor_first():
 #
 #   one_task         single-task training analyses (multiple_task single-task run)
 #   multiple_tasks   the full multi-task network: clustering, lesion, state space
+#   acc_plot         accuracy comparisons across training configurations
 #   two_in_multiple  delayDM fixed-point geometry probe of the multi-task net
 #   pretraining      pretraining → post-training transfer analyses
 #   two_task         the two-task network: cross-task / cross-period PCA
@@ -6726,19 +7408,27 @@ FIGURES_BY_MODE = {
         "hidden": plot_clustered_hidden,
         "modulation": plot_clustered_modulation,
         "heatmap_colorbar": plot_multitask_heatmap_colorbar,
-        "l2_accuracy": plot_l2_vs_accuracy,
-        "l2e4_activation_accuracy": plot_l2e4_activation_accuracy,
-        "projection_dim_accuracy": plot_projection_dim_accuracy,
         "state_space_combined": plot_state_space_combined,
         "state_space_r_values": plot_state_space_r_values,
+        "state_space_dist_angle": plot_state_space_dist_angle,
         "overmembership_norm": plot_overmembership_norm,
         "overmembership_unnorm": plot_overmembership_unnorm,
         "overmembership_weighted": plot_overmembership_weighted,
         "overmembership_var_weighted": plot_overmembership_var_weighted,
         "input_weight_correlation": plot_input_weight_correlation,
         "lesion_heatmap": plot_lesion_heatmap,
+        "lesion_cluster_sizes": plot_lesion_cluster_sizes,
         "cluster_corr_vs_lesion": plot_cluster_corr_vs_lesion,
         "om_vs_lesion": plot_om_vs_lesion,
+        "cross_seed_summary": plot_cross_seed_summary,
+    },
+    "acc_plot": {
+        "l2_accuracy": plot_l2_vs_accuracy,
+        "l2e4_activation_accuracy": plot_l2e4_activation_accuracy,
+        "projection_dim_accuracy": plot_projection_dim_accuracy,
+        "hidden_dim_accuracy": plot_hidden_dim_accuracy,
+        "projection_dim_task_accuracy": plot_projection_dim_task_accuracy,
+        "hidden_dim_task_accuracy": plot_hidden_dim_task_accuracy,
     },
     "two_in_multiple": {
         # DelayDM task-translation geometry inside the multi-task network, read
@@ -6748,6 +7438,8 @@ FIGURES_BY_MODE = {
             plot_multitask_delaydm_fixed_point_geometry,
     },
     "pretraining": {
+        "backbone_probe": plot_backbone_probe,
+        "principal_angles": plot_pretraining_principal_angles,
         "transfer_speed": plot_transfer_speed,
         "learning_trajectory": plot_learning_trajectory,
         "rule_vectors": plot_rule_vectors,
@@ -6855,6 +7547,7 @@ def main():
     mode_experiment = {
         "one_task": ONETASK_ANAME,
         "multiple_tasks": ANAME,
+        "acc_plot": "(aggregated across seeds)",
         "two_in_multiple": DELAYDM_ANAME,
         "two_task": TWOTASK_ANAME,
         "pretraining": "(aggregated across seeds)",
@@ -6871,13 +7564,16 @@ def main():
     print(f"Legends: {'on' if SHOW_LEGEND else 'off'}")
     print()
 
-    # Clear old figures before (re)generating. The output directory is wiped on
-    # every run — including a single-mode or --only run — so stale outputs never
-    # linger.
+    # Clear old figures on "all" and on mode runs, so stale outputs from
+    # renamed/removed figures never linger. A --only run must NOT wipe the
+    # directory: it regenerates just its own file (savefig overwrites in
+    # place), and wiping there used to silently delete every other figure —
+    # including ones whose inputs are expensive to reload.
     _ensure_out_dir()
-    for f in OUT_DIR.iterdir():
-        if f.is_file():
-            f.unlink()
+    if modes_run != "only":
+        for f in OUT_DIR.iterdir():
+            if f.is_file():
+                f.unlink()
 
     import traceback
 

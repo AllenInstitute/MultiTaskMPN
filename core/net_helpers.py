@@ -716,7 +716,7 @@ def relu_fn_p(x):
     return torch.heaviside(x, torch.zeros_like(x)) # For x = 0, return 0 just like pytorch default
 
 def sigmoid(x):
-    return 1 / (1 + torch.exp(-x))    
+    return torch.sigmoid(x)
 def sigmoid_np(x):
     return 1 / (1 + np.exp(-x))
 def sigmoid_p(x):
@@ -1466,11 +1466,19 @@ class BaseNetwork(BaseNetworkFunctions):
 
         return self.loss_fn(masked_output, masked_labels) + reg_term, loss_components, error_term
 
-    def compute_acc(self, output, labels, output_mask, input_, round_type='prefs', mode="angle",  verbose=False, isvalid=False):
-        """
-        output shape: (batches, seq_len, output_size)
-        labels shape: (batches, seq_len)
-        output_mask shape: (batches, seq_len, output_size)
+    def compute_acc(self, output, labels, output_mask, input_, round_type='prefs', mode="angle",  verbose=False, isvalid=False,
+                    *, rule_start=None):
+        """Compute accuracy and, with isvalid=True, scores grouped by task cue.
+
+        For MSE, output, labels, and output_mask have shape (batch, time, output).
+        rule_start is the optional task-cue channel offset from task metadata.
+        Without it, infer offset 5 or 6 for the legacy low-dimensional layout
+        by checking fixation complementarity outside all-zero input padding.
+        This inference is not intended for arbitrary or randomized encodings;
+        explicit rule_start is preferred when task channels are known.
+        Task IDs are read at time zero, which must contain the task cue.
+        rule_start is ignored when isvalid=False. Response-window selection and
+        output scoring do not depend on task IDs or this offset.
         """		
         start_time = time.time()
         
@@ -1484,17 +1492,21 @@ class BaseNetwork(BaseNetworkFunctions):
         output_mask_alter = torch.full(output_mask.shape, float('nan'), device=output_mask.device) 
 
         if isvalid:
-            # select the input part that is task related
-            # under assumption for which the fixation off signal is provided (task_params)
-            # 2026-02-04: modified to adapt when fixation off signal is not provided
-            fixon = input_[:,:,0]
-            fixoff_candidate = input_[:,:,1]
-            s = fixon + fixoff_candidate
-            fixoff_add = torch.allclose(
-                s, torch.ones_like(s), rtol=1e-5, atol=1e-6
-            )
-            
-            task_mask_truc = input_[:,:,6-abs(1-fixoff_add):] 
+            if rule_start is None:
+                nonpadding = torch.any(input_ != 0, dim=-1)
+                if not torch.any(nonpadding):
+                    raise ValueError("Cannot infer task channels from all-zero inputs")
+                fixation_sum = (input_[:, :, 0] + input_[:, :, 1])[nonpadding]
+                fixoff_add = torch.allclose(
+                    fixation_sum, torch.ones_like(fixation_sum), rtol=1e-5, atol=1e-6
+                )
+                rule_start = 6 if fixoff_add else 5
+            if (isinstance(rule_start, (bool, np.bool_))
+                    or not isinstance(rule_start, (int, np.integer))
+                    or not 0 <= rule_start < input_.shape[-1]):
+                raise ValueError("rule_start must be an integer task-channel offset within the input width")
+
+            task_mask_truc = input_[:, :, rule_start:]
 
             task_mask = one_hot_argidx(task_mask_truc)
             

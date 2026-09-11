@@ -1,5 +1,22 @@
 #!/usr/bin/env python
 # coding: utf-8
+"""Train multi-task networks with independently sized projection and bottleneck.
+
+For the one-layer DMPN with input_layer_add=True, dimensions are
+task input -> proj -> bottleneck -> task output. ``proj`` means
+net_params['linear_embed'], the output width of W_initial_linear;
+``bottleneck`` means N_HIDDEN, the plastic layer's hidden/output width.
+The plastic weight and per-trial modulation matrices have shape
+(bottleneck, proj), not necessarily (hidden, hidden).
+
+Set linear_embed and N_HIDDEN to change dimensions; ADDON_NAME is only a
+label. For example, L21e4proj300bottleneck100 labels proj=300, bottleneck=100
+with L2=1e-4. The existing L21e4bottleneck100 label omits the default proj300.
+run_trial appends +hidden{N_HIDDEN}+batch{n_batches}+{acc_measure}; keep this
+legacy hidden suffix for readers, with hidden meaning bottleneck, not proj.
+Input/output endpoints in n_neurons start as placeholders and are filled by
+convert_and_init_multitask_params from the task encoding and ruleset.
+"""
 
 # In[1]:
 
@@ -83,8 +100,8 @@ SEED_LIST = None
 
 RULESET = 'everything'          # low_dim, all, test, everything, ...
 CHOSEN_NETWORK = "dmpn"         # mpn1, dmpn, vanilla, gru
-N_HIDDEN = 300
-ADDON_NAME = "L21e4proj10"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appended below
+N_HIDDEN = 400
+ADDON_NAME = "L21e4proj300bottleneck400"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appended below
 train = True                    # whether or not to train the network
 verbose = True
 
@@ -237,7 +254,7 @@ def current_basic_params(hyp_dict):
     net_params = {
         'net_type': hyp_dict['chosen_network'], # mpn1, dmpn, vanilla
         'n_neurons': [1] + [n_hidden] * mpn_depth + [1],
-        'linear_embed': 10,
+        'linear_embed': 300,
         'output_bias': False, # Turn off biases for easier interpretation
         'loss_type': 'MSE', # XE, MSE
         'activation': 'tanh', # linear, ReLU, sigmoid, tanh, tanh_re, tukey, heaviside

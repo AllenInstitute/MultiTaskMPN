@@ -3,9 +3,9 @@
 """
 Pretraining -> Post-training transfer experiment.
 
-This module keeps the existing pretraining setup and file outputs, but is
-organized like multiple_task_analysis.py: one main orchestrator per seed,
-small helpers for each stage, and a narrow script entry point.
+run_trial runs one seed; main uses the configuration below to run a batch.
+run_many remains a callable batch entry point. Fixed SEED_LIST values override
+N_TRIALS; otherwise each invocation selects distinct random seeds.
 
 Protocol
 --------
@@ -14,12 +14,13 @@ Stage 1 (Pretraining)
     task-indicator column for the held-out post-training task.
 
 Stage 2 (Post-training)
-    Reload the pretrained network state in-memory, freeze all parameters via
+    Reuse the pretrained network, freeze all parameters via
     expand_and_freeze(option=1), and continue training only the last input
     column on the held-out task.
 
-Outputs are written to ./pretraining/ with the same naming convention as the
-previous script.
+Outputs in ./pretraining/ include configuration, stage-specific test outputs,
+final recorded states, the final checkpoint, and both stages' histories.
+The feature argument labels files; it does not set the regularization strength.
 """
 
 import copy
@@ -27,30 +28,17 @@ import gc
 import json
 import pickle
 import random
+import traceback
 from importlib import reload
 from pathlib import Path
 
-import h5py
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-import plotly.graph_objects as go
-import seaborn as sns
 import torch
-from hdf5plugin import Blosc
-from mpl_toolkits.mplot3d import Axes3D
-from plotly.subplots import make_subplots
-from scipy.cluster.hierarchy import dendrogram
-from scipy.linalg import subspace_angles
-from scipy.spatial.distance import cosine
-from scipy.stats import pearsonr
-from skimage.metrics import structural_similarity as ssim
-from sklearn.decomposition import PCA
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.preprocessing import StandardScaler
-from torchvision import datasets, transforms
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
+from run_logging import tee_output
 import helper
 import mpn
 import mpn_tasks
@@ -73,11 +61,6 @@ gc.collect()
 torch.cuda.empty_cache()
 torch.cuda.ipc_collect()
 
-# 0 Red, 1 blue, 2 green, 3 purple, 4 orange, 5 teal, 6 gray, 7 pink, 8 yellow
-c_vals = ['#e53e3e', '#3182ce', '#38a169', '#805ad5', '#dd6b20', '#319795', '#718096', '#d53f8c', '#d69e2e'] * 10
-c_vals_l = ['#feb2b2', '#90cdf4', '#9ae6b4', '#d6bcfa', '#fbd38d', '#81e6d9', '#e2e8f0', '#fbb6ce', '#faf089'] * 10
-c_vals_d = ['#9b2c2c', '#2c5282', '#276749', '#553c9a', '#9c4221', '#285e61', '#2d3748', '#97266d', '#975a16'] * 10
-
 ACCEPT_RULES = (
     'fdgo', 'fdanti', 'delaygo', 'delayanti', 'reactgo', 'reactanti',
     'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1',
@@ -94,6 +77,12 @@ RULES_DICT_FREQUENCY = {
     'delayanti': np.array([1]),
 }
 OUT_DIR = Path("./pretraining")
+
+N_TRIALS = 5
+SEED_LIST = None
+PRETRAIN_RULESET = "fdanti_delaygo"
+POSTTRAIN_RULESET = "delayanti"
+FEATURE = "L21e3"
 
 reload(nets)
 reload(net_helpers)
@@ -227,28 +216,16 @@ def _current_basic_params(hyp_dict_input, *, train, n_hidden, mpn_depth):
     return task_params, train_params, net_params
 
 
-def _generate_response_stimulus(task_params, test_trials, hyp_dict_input):
-    labels_resp, labels_stim = [], []
+def _extract_rule_epochs(task_params, test_trials):
     rules_epochs = {}
     for rule_idx, rule in enumerate(task_params['rules']):
         print(rule)
         if rule not in ACCEPT_RULES:
             raise NotImplementedError()
         rules_epochs[rule] = test_trials[rule_idx].epochs
-        if hyp_dict_input['ruleset'] in ('dmsgo', 'dmcgo'):
-            labels_resp.append(test_trials[rule_idx].meta['matches'])
-            labels_stim.append(test_trials[rule_idx].meta['stim1'])
-        else:
-            try:
-                labels_resp.append(test_trials[rule_idx].meta['resp1'])
-            except Exception:
-                labels_resp.append(test_trials[rule_idx].meta['matches'])
-            labels_stim.append(test_trials[rule_idx].meta['stim1'])
 
     print(rules_epochs)
-    labels_resp = np.concatenate(labels_resp, axis=0).reshape(-1, 1)
-    labels_stim = np.concatenate(labels_stim, axis=0).reshape(-1, 1)
-    return labels_resp, labels_stim, rules_epochs
+    return rules_epochs
 
 
 def _find_task(task_params, test_input_np, shift_index):
@@ -328,7 +305,7 @@ def _build_experiment_hyp_dicts(feature, pretrain_ruleset, posttrain_ruleset, *,
     return hyp_dict_old, hyp_dict
 
 
-def main(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", posttrain_ruleset="delayanti"):
+def run_trial(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", posttrain_ruleset="delayanti"):
     train = True
     verbose = True
 
@@ -392,7 +369,6 @@ def main(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", posttrai
         print('Using CPU...')
         device = torch.device('cpu')
 
-    epoch_multiply = train_params["n_epochs_per_set"]
     train_params2["n_datasets"] = 80000
     train_params2['n_epochs_per_set'] = 1
 
@@ -401,7 +377,6 @@ def main(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", posttrai
     netFunction = _select_net_function(net_params['net_type'])
 
     test_n_batch = train_params["valid_n_batch"]
-    color_by = "stim"
 
     pretraining_shift = len(task_params['rules'])
     pretraining_shift_pre = len(task_params2['rules'])
@@ -436,15 +411,8 @@ def main(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", posttrai
     task_params['dataset_name'] = 'multitask'
     task_params2['dataset_name'] = 'multitask'
 
-    labels_resp, labels_stim, rules_epochs = _generate_response_stimulus(
-        task_params, test_trials, hyp_dict_old
-    )
-    labels_resp2, labels_stim2, rules_epochs2 = _generate_response_stimulus(
-        task_params2, test_trials2, hyp_dict
-    )
-
-    labels = labels_stim if color_by == "stim" else labels_resp
-    labels2 = labels_stim2 if color_by == "stim" else labels_resp2
+    rules_epochs = _extract_rule_epochs(task_params, test_trials)
+    rules_epochs2 = _extract_rule_epochs(task_params2, test_trials2)
 
     test_input, test_output, _ = test_data
     test_input2, test_output2, _ = test_data2
@@ -453,11 +421,8 @@ def main(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", posttrai
     permutation2 = np.random.permutation(test_input2.shape[0])
     test_input = test_input[permutation]
     test_output = test_output[permutation]
-    labels = labels[permutation]
     test_input2 = test_input2[permutation2]
     test_output2 = test_output2[permutation2]
-    labels2 = labels2[permutation2]
-    del labels, labels2
 
     test_input_np = test_input.detach().cpu().numpy()
     test_output_np = test_output.detach().cpu().numpy()
@@ -483,6 +448,7 @@ def main(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", posttrai
     )
 
     params2[1]["valid_check"] = None
+    stage1_end_iter = int(net_pretrain.hist["iter"])
     net_stage1 = copy.deepcopy(net_pretrain)
 
     if hyp_dict_old["chosen_network"] == "dmpn":
@@ -493,7 +459,7 @@ def main(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", posttrai
         input_orig = None
 
     print("================================= Stage 2 =================================")
-    net, _, (counter_lst, netout_lst, db_lst, _, _, Woutput_lst, Wall_lst, marker_lst, _, _), _ = net_helpers.train_network(
+    net, _, (_, netout_lst, db_lst, _, _, _, Wall_lst, marker_lst, _, _), _ = net_helpers.train_network(
         params2,
         net=net_pretrain,
         device=device,
@@ -518,10 +484,6 @@ def main(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", posttrai
         diff = (input_orig[:, :-1] - input_after[:, :-1]).abs()
         assert torch.all(diff < 1e-4)
 
-    if hyp_dict['chosen_network'] == "dmpn" and net_params["input_layer_add"]:
-        counter_lst = [x * epoch_multiply + 1 for x in counter_lst]
-        del counter_lst
-
     if net_params["ml_params"]["W_freeze"]:
         assert np.allclose(Wall_lst[-1][0], Wall_lst[0][0])
     if net_params["input_layer_bias"]:
@@ -529,17 +491,12 @@ def main(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", posttrai
 
     print('Done!')
 
-    use_finalstage = False
-    if use_finalstage:
-        net_out_final, db = net.iterate_sequence_batch(test_input, run_mode='track_states')
-    else:
-        ind = len(marker_lst) - 1
-        ind_stage1 = len(marker_stage1_lst) - 1
-        network_at_percent = (marker_lst[ind] + 1) / train_params2['n_datasets'] * 100
-        print(f"Using network at {network_at_percent}%")
-        net_out_final = netout_lst[0][ind]
-        net_out_stage1_final = netout_stage1_lst[0][ind_stage1]
-        db = db_lst[0][ind]
+    ind = len(marker_lst) - 1
+    ind_stage1 = len(marker_stage1_lst) - 1
+    network_at_percent = (marker_lst[ind] + 1) / train_params2['n_datasets'] * 100
+    print(f"Using network at {network_at_percent}%")
+    net_out_final = netout_lst[0][ind]
+    net_out_stage1_final = netout_stage1_lst[0][ind_stage1]
 
     stage1_output_path = OUT_DIR / f"output_{_build_file_tag(hyp_dict_old, hyp_dict, seed)}_stage1.npz"
     np.savez_compressed(
@@ -579,11 +536,11 @@ def main(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", posttrai
     print(f"all_rules: {all_rules}")
     print(f"test_task: {test_task}")
 
-    Ms_stage1, Ms_orig_stage1, hs_stage1, bs_stage1, xs_stage1 = _modulation_extraction(
+    _, Ms_orig_stage1, hs_stage1, bs_stage1, xs_stage1 = _modulation_extraction(
         db_stage1_lst[0][-1], max_seq_len1, layer_index, n_batch_all,
         nettype=hyp_dict["chosen_network"],
     )
-    Ms_stage2, Ms_orig_stage2, hs_stage2, bs_stage2, xs_stage2 = _modulation_extraction(
+    _, Ms_orig_stage2, hs_stage2, bs_stage2, xs_stage2 = _modulation_extraction(
         db_lst[0][-1], max_seq_len2, layer_index, n_batch_all,
         half=True, nettype=hyp_dict["chosen_network"],
     )
@@ -609,6 +566,7 @@ def main(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", posttrai
         bs_stage2=bs_stage2,
         xs_stage2=xs_stage2,
         pretrain_stop=pretrain_stop,
+        stage1_end_iter=stage1_end_iter,
         valid_acc_iter=net.hist['iters_monitor'][1:],
         valid_acc=net.hist['valid_acc'][1:],
     )
@@ -626,6 +584,7 @@ def main(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", posttrai
             "stage1": _hist_to_serializable(net_stage1.hist),
             "stage2": _hist_to_serializable(net.hist),
             "pretrain_stop": pretrain_stop,
+            "stage1_end_iter": stage1_end_iter,
         }, f)
     print(f"Training history saved: {hist_path}")
 
@@ -641,16 +600,60 @@ def main(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", posttrai
     }
 
 
-def run_many(n_runs=5, feature="L21e3", pretrain_ruleset="fdanti_delaygo", posttrain_ruleset="delayanti"):
+def run_many(n_runs=5, feature="L21e3", pretrain_ruleset="fdanti_delaygo", posttrain_ruleset="delayanti", *, seeds=None):
+    """Run independent seeds, continue after failures, and list successful runs."""
+    if seeds is None:
+        seeds = random.Random().sample(range(1, 1001), n_runs)
+    else:
+        seeds = list(seeds)
+        if any(not isinstance(seed, int) or seed < 0 for seed in seeds):
+            raise ValueError("seeds must contain nonnegative integers")
+        if len(set(seeds)) != len(seeds):
+            raise ValueError("seeds must be distinct to avoid overwriting runs")
+
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"Running {len(seeds)} independent trials: seeds={seeds}")
     results = []
-    for _ in range(n_runs):
-        results.append(main(
-            feature=feature,
-            pretrain_ruleset=pretrain_ruleset,
-            posttrain_ruleset=posttrain_ruleset,
-        ))
+    for seed in seeds:
+        try:
+            results.append(run_trial(
+                seed=seed,
+                feature=feature,
+                pretrain_ruleset=pretrain_ruleset,
+                posttrain_ruleset=posttrain_ruleset,
+            ))
+        except Exception as exc:
+            print(f"Trial seed={seed} FAILED: {exc}")
+            traceback.print_exc()
+        finally:
+            plt.close("all")
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+
+    anames = [result["net_path"].stem.removeprefix("savednet_") for result in results]
+    manifest_path = OUT_DIR / "last_run_anames.txt"
+    with manifest_path.open("w") as manifest:
+        manifest.write("\n".join(anames) + ("\n" if anames else ""))
+    print(f"Completed {len(results)}/{len(seeds)} trials.")
+    for aname in anames:
+        print(f"  {aname}")
+    print(f"Wrote manifest: {manifest_path}")
     return results
 
 
+def main():
+    """Run the configured seed pool without changing the two-stage protocol."""
+    return run_many(
+        n_runs=N_TRIALS,
+        feature=FEATURE,
+        pretrain_ruleset=PRETRAIN_RULESET,
+        posttrain_ruleset=POSTTRAIN_RULESET,
+        seeds=SEED_LIST,
+    )
+
+
 if __name__ == "__main__":
-    run_many()
+    with tee_output("pretraining"):
+        main()

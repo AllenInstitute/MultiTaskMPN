@@ -147,24 +147,29 @@ def eval_one(netpathname):
     
     # rule -> (paper-style computation category, plotting color)
     # https://www.nature.com/articles/s41593-024-01668-6/figures/4
+    # Hexes mirrored from paper_plot._RULE_MOTIF (the paper-side source of
+    # truth) so analysis and paper figures agree. The dms pair keeps the
+    # go/anti pairing deliberately: dmsgo shares Pro Reaction's green and
+    # dmsnogo shares Anti Reaction's orange (match/non-match is a pro/anti
+    # response rule); only the dmc pair takes Categorization's own deeppink.
     rule_motif_mapping = {
-        "fdgo":           ("Pro Delayed",    "blue"),
-        "fdanti":         ("Anti Delayed",   "red"),
-        "delaygo":        ("Pro Delayed",    "blue"),
-        "delayanti":      ("Anti Delayed",   "red"),
-        "reactgo":        ("Pro Reaction",   "green"),
-        "reactanti":      ("Anti Reaction",  "orange"),
+        "fdgo":           ("Pro Delayed",    "#3182ce"),  # blue
+        "fdanti":         ("Anti Delayed",   "#e53e3e"),  # red
+        "delaygo":        ("Pro Delayed",    "#3182ce"),
+        "delayanti":      ("Anti Delayed",   "#e53e3e"),
+        "reactgo":        ("Pro Reaction",   "#38a169"),  # green
+        "reactanti":      ("Anti Reaction",  "#dd6b20"),  # orange
 
-        "contextdelaydm1": ("Pro Integration", "steelblue"),
-        "contextdelaydm2": ("Pro Integration", "steelblue"),
-        "delaydm1":        ("Pro Integration", "steelblue"),
-        "delaydm2":        ("Pro Integration", "steelblue"),
-        "multidelaydm":    ("Pro Integration", "steelblue"),
+        "contextdelaydm1": ("Pro Integration", "#805ad5"),  # purple
+        "contextdelaydm2": ("Pro Integration", "#805ad5"),
+        "delaydm1":        ("Pro Integration", "#805ad5"),
+        "delaydm2":        ("Pro Integration", "#805ad5"),
+        "multidelaydm":    ("Pro Integration", "#805ad5"),
 
-        "dmsgo":          ("Categorization", "green"),
-        "dmsnogo":        ("Categorization", "orange"),
-        "dmcgo":          ("Categorization", "deeppink"),
-        "dmcnogo":        ("Categorization", "deeppink"),
+        "dmsgo":          ("Categorization", "#38a169"),  # green, pairs reactgo
+        "dmsnogo":        ("Categorization", "#dd6b20"),  # orange, pairs reactanti
+        "dmcgo":          ("Categorization", "#ff1493"),  # deeppink
+        "dmcnogo":        ("Categorization", "#ff1493"),
     }
 
     assert set(all_rules).issubset(set(rule_motif_mapping.keys()))
@@ -282,7 +287,11 @@ def eval_one(netpathname):
     def fig4c(shift_time):
         fig, axs = plt.subplots(1, len(embed_data), figsize=(4*len(embed_data),4))
         rval_dict = {}
-    
+        # Raw per-task-pair scatter (x = initial-condition distance, y = first-
+        # step angle), saved alongside the fit so paper_plot can redraw the
+        # scatter without re-running the model forwards.
+        scatter_dict = {}
+
         for idx, data in enumerate(embed_data):
             all_x, all_y = [], []
 
@@ -347,6 +356,10 @@ def eval_one(netpathname):
                         
             x_fit, y_fit, r_value, slope, intercept, p_value = helper.linear_regression(np.array(all_x), np.array(all_y), log=False, through_origin=True)
             rval_dict[embed_data_names[idx]] = (r_value, slope, p_value)
+            scatter_dict[embed_data_names[idx]] = {
+                "dists": np.asarray(all_x, dtype=float),
+                "angles_deg": np.asarray(all_y, dtype=float),
+            }
             axs[idx].plot(x_fit, y_fit, color='red', label=f"Fit: slope={slope:.2f}, r={r_value:.2f}, p={p_value:.3f}")
         
             axs[idx].set_xlabel("Distance between initial conditions")
@@ -358,9 +371,9 @@ def eval_one(netpathname):
         fig.savefig(f"./state_space/initial_condition_distance_vs_angle_{aname}_{shift_time+1}_noise{noise_level}.png", dpi=300)
         plt.close(fig)
 
-        return rval_dict
-    
-    rval_dict = fig4c(shift_time=0)
+        return rval_dict, scatter_dict
+
+    rval_dict, scatter_dict = fig4c(shift_time=0)
 
     # Cleanup to prevent GPU/CPU memory compounding across experiments
     del model, checkpoint, state_dict, net_out, db_test
@@ -371,15 +384,16 @@ def eval_one(netpathname):
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    return aname, hidden_size, l2_info, rval_dict
+    return aname, hidden_size, l2_info, rval_dict, scatter_dict
 
 def run_all():
     pt_paths = mpf.list_pt_files("./multiple_tasks", recursive=False)
-    
+
     result_dict = {}
     for netpathname in pt_paths:
-        aname, hidden_size, l2_info, rval_dict = eval_one(netpathname)
-        result_dict[aname] = {"hidden_size": hidden_size, "l2_info": l2_info, "rval_dict": rval_dict}
+        aname, hidden_size, l2_info, rval_dict, scatter_dict = eval_one(netpathname)
+        result_dict[aname] = {"hidden_size": hidden_size, "l2_info": l2_info,
+                              "rval_dict": rval_dict, "scatter": scatter_dict}
         
     with open("./state_space/initial_condition_distance_vs_angle_results.pkl", "wb") as f:
         pickle.dump(result_dict, f)

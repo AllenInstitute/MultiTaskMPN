@@ -13,29 +13,48 @@ synapse clusters are selectively important for specific tasks. Produces:
 3. Violin plots — distribution of normalized effect across tasks for each
    cluster, highlighting clusters with broad vs. task-specific roles.
 4. Cluster similarity vs lesion effect — correlates cluster tuning similarity
-   (from activity profiles) with functional lesion similarity (Pearson
-   correlation between lesion-effect task profiles; magnitude-free) to test
-   whether similarly-tuned clusters have similar causal roles. Statistic:
-   one-sided Mantel permutation test between the two similarity matrices,
-   plus a partial correlation controlling pair effect magnitude.
+   (from activity profiles) with functional lesion similarity (from accuracy
+   patterns) to test whether similarly-tuned clusters have similar causal roles.
 5. Overmembership vs lesion difference — relates modulation cluster enrichment
    in (input, hidden) neuron pairs to the functional similarity (task-profile
    L1 distance) between modulation lesion and combined neuron lesion effects,
    with a cluster-permutation p (footprint ownership shuffled) alongside the
    naive per-point regression p.
-6. Plasticity-dependence decomposition — for every (task, synapse cluster)
+6. Causal dependency map — z-scores every (task, cluster) lesion effect
+   against its stored random-control repeats (one-sided, BH-FDR across
+   cells), biclusters the masked dependency matrix, and Mantel-tests whether
+   the task organization implied by CAUSAL dependence matches the one
+   implied by ACTIVITY tuning (cluster_info variance profiles).
+7. Combined-lesion interaction map — I(i,j) = combined − single_i − single_j
+   per (input, hidden) cluster pair (I < 0 sub-additive/redundant, I > 0
+   synergistic), regressed against each block's peak synapse-cluster
+   over-membership to test whether anatomical co-location explains
+   functional interaction. A saturation control separates genuine pathway
+   redundancy from floor effects (a cluster that alone crushes a task to
+   its accuracy floor makes ANY second lesion look sub-additive): (a) a
+   headroom-restricted view keeps only cells whose single effects leave
+   room for additive damage, and (b) a multiplicative survival baseline
+   replaces the additive one on the bounded accuracy scale.
+8. OM profile prediction — predicts each synapse cluster's full PER-TASK
+    own-damage profile (not just its task-averaged magnitude) from the
+   OM-weighted combination of the combined-lesion task profiles, and sweeps
+   a concentration exponent alpha (weights OM^α: α=0 uniform anatomy-free
+   baseline … α=∞ argmax block only) to ask whether a synapse cluster's
+   function is carried by its whole anatomical footprint or by its few
+   most-enriched blocks.
+9. Plasticity-dependence decomposition — for every (task, synapse cluster)
    cell whose zero_W effect is significant, plasticity share =
    freeze_M effect / zero_W effect, i.e. the fraction of the cluster's
    contribution that flows through the plastic channel M rather than the
    static weight W. Aggregated per task and compared between memory-family
    tasks (delay/dm/dms/dmc) and reaction-family tasks (fd/react) — the
    MPN prediction is that working-memory tasks run on M.
-7. Protective-cluster dissection — decomposes every NEGATIVE normalized
-   lesion effect (cluster lesion hurting LESS than the size-matched random
-   control) into own damage vs control damage on the shared test set, to
-   separate the mechanical reading (the cluster is inert and the control
-   sampled critical hub neurons) from genuine protection (removing the
-   cluster IMPROVES absolute accuracy above the intact baseline).
+10. Protective-cluster dissection — decomposes every NEGATIVE normalized
+    lesion effect (cluster lesion hurting LESS than the size-matched random
+    control) into own damage vs control damage on the shared test set, to
+    separate the mechanical reading (the cluster is inert and the control
+    sampled critical hub neurons) from genuine protection (removing the
+    cluster IMPROVES absolute accuracy above the intact baseline).
 
 Outputs saved to ./multiple_tasks_norm/{aname}/.
 
@@ -413,8 +432,24 @@ def main(seed, feature):
                             "Ranked cluster importance (input/hidden)",
                             f"{save_dir}/normalized_leison_ranked_{aname}.png")
 
-    # ── Shared statistical helpers (used by the plasticity-share and
-    # cluster-similarity-vs-lesion sections below) ───────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    # Causal dependency map — significance layer + biclustering, and the
+    # causal-vs-activity task-organization comparison (module docstring #6).
+    #
+    # Statistics: every (task, cluster) lesion effect is z-scored against
+    # its own size-matched random-control distribution, using the raw
+    # repeats leison.py stores (ihrandomtask_accs_raw):
+    #     z = (mean_ctrl - acc_lesion) / std_ctrl,   p = Phi(-z)  one-sided
+    # The normal approximation is justified because each control accuracy
+    # is itself a mean over test_n_batch trials. BH-FDR at q = 0.05 across
+    # all cells of a variant. NB leison.py's control cache shares draws
+    # between same-(side, size) conditions, so p-values of such cells are
+    # correlated — fine for a per-cell mask, but the cells are not fully
+    # independent.
+    # ══════════════════════════════════════════════════════════════════
+    import seaborn as sns
+    from scipy.cluster.hierarchy import linkage as _sch_linkage, \
+        leaves_list as _sch_leaves
 
     def _bh_fdr_mask(p, q=0.05):
         """Benjamini-Hochberg rejection mask, same shape as p."""
@@ -427,6 +462,85 @@ def main(seed, feature):
         mask[order[:k]] = True
         return mask.reshape(np.asarray(p).shape)
 
+    def _causal_dependency(leison_key, random_key, vtag):
+        """FDR-masked (task, cluster) dependency matrix + biclustered view.
+
+        Returns the UNMASKED effect matrix (n_tasks, n_clusters) for reuse
+        by the task-similarity comparison below (correlations pool over all
+        clusters and are robust to per-cell noise, so they use the full
+        matrix; the masked matrix drives the module-map figure only)."""
+        names_all = results[leison_key]["all_comb_names_leison"]
+        keep_idx = [k for k, n in enumerate(names_all) if n not in baseline_keys]
+        cnames = [names_all[k].replace("pre_c", "i").replace("post_c", "h")
+                  for k in keep_idx]
+        accs = np.asarray(results[leison_key]["ihtask_accs"], float)[:, keep_idx]
+        raw = np.asarray(results[random_key]["ihrandomtask_accs_raw"],
+                         float)[:, keep_idx, :]
+        E = raw.mean(axis=2) - accs                       # (n_tasks, n_clusters)
+        # Floor the control std: saturated or degenerate controls can have
+        # zero spread, which would declare negligible effects significant.
+        std = np.maximum(raw.std(axis=2), 1e-4)
+        z = E / std
+        pvals = gauss_norm.sf(z)                          # one-sided: worse than control
+        sig = _bh_fdr_mask(pvals, q=0.05)
+        E_sig = np.where(sig, E, 0.0)
+
+        # Bicluster the MASKED matrix so the ordering is driven by
+        # significant structure, not by sub-threshold noise.
+        row_order = _sch_leaves(_sch_linkage(E_sig, method="ward"))
+        col_order = _sch_leaves(_sch_linkage(E_sig.T, method="ward"))
+
+        n_sig, n_cells = int(sig.sum()), E.size
+        vmax = max(float(np.abs(E).max()) * 100, 1e-6)
+        n_cl = len(cnames)
+        fig, axs = plt.subplots(
+            2, 1, figsize=(max(10, 0.32 * n_cl + 2.5),
+                           2 * (0.32 * len(all_tasks) + 1.6)), dpi=300)
+        sns.heatmap(E * 100, ax=axs[0], cmap="RdBu_r", center=0,
+                    vmin=-vmax, vmax=vmax,
+                    xticklabels=cnames, yticklabels=all_tasks,
+                    cbar_kws={"label": "Effect (%)", "shrink": 0.8})
+        _sr, _sc = np.nonzero(sig)
+        axs[0].scatter(_sc + 0.5, _sr + 0.5, s=4, color="black", zorder=3)
+        axs[0].set_title(
+            f"Normalized effect; dots = significant "
+            f"({n_sig}/{n_cells} cells, one-sided BH-FDR q=0.05)", fontsize=9)
+
+        sns.heatmap(E_sig[np.ix_(row_order, col_order)] * 100, ax=axs[1],
+                    cmap="RdBu_r", center=0, vmin=-vmax, vmax=vmax,
+                    xticklabels=[cnames[c] for c in col_order],
+                    yticklabels=[all_tasks[r] for r in row_order],
+                    cbar_kws={"label": "Effect (%)", "shrink": 0.8})
+        axs[1].set_title("FDR-masked dependency matrix, biclustered (Ward)",
+                         fontsize=9)
+        for ax in axs:
+            ax.tick_params(labelsize=7)
+            ax.set_xlabel("Cluster", fontsize=8)
+            ax.set_ylabel("Task", fontsize=8)
+        fig.suptitle(f"Causal dependency map [{vtag}]", fontsize=10)
+        fig.tight_layout()
+        fig.savefig(f"{save_dir}/causal_dependency_{vtag}_{aname}.png", dpi=300)
+        plt.close(fig)
+
+        with open(f"{save_dir}/causal_dependency_{vtag}_{aname}.pkl", "wb") as _f:
+            pickle.dump({
+                "effect": E, "z": z, "p": pvals, "sig": sig,
+                "cluster_names": cnames, "tasks": list(all_tasks),
+                "row_order": np.asarray(row_order),
+                "col_order": np.asarray(col_order),
+                "fdr_q": 0.05, "n_sig": n_sig,
+            }, _f)
+        print(f"[causal-dep {vtag}] {n_sig}/{n_cells} significant cells "
+              f"(BH-FDR q=0.05); saved map + pkl")
+        return E
+
+    E_dep_norm = _causal_dependency("leison", "random_leison", "norm")
+    if "leison_unnorm" in results and "random_leison_unnorm" in results:
+        _causal_dependency("leison_unnorm", "random_leison_unnorm", "unnorm")
+
+    # ── Causal vs activity task organization (norm variant) ─────────────
+    # Task-task similarity from lesion-dependency profiles vs from
+    # task-averaged activity tuning; one-sided Mantel permutation test.
     def _mantel(S_ref, S_other, n_perm=10000, seed=0):
         """One-sided Mantel test (positive association) on upper triangles."""
         n = S_ref.shape[0]
@@ -441,9 +555,54 @@ def main(seed, feature):
                 count += 1
         return r_obs, (count + 1) / (n_perm + 1)
 
+    _ci_path = f"./multiple_tasks_analysis/{aname}/cluster_info_{aname}.pkl"
+    if os.path.exists(_ci_path):
+        with open(_ci_path, "rb") as _f:
+            cluster_info = pickle.load(_f)  # also reused by later sections
+
+        S_les = np.corrcoef(E_dep_norm)     # task × task, causal profiles
+        for side in ["hidden", "input"]:
+            V = cluster_info[f"{side}_normalized"]["cell_vars_rules_sorted_norm"]
+            tb = cluster_info[f"{side}_normalized"]["tb_break_name"]
+            A_task = np.stack([
+                V[[r for r, nm in enumerate(tb)
+                   if str(nm).split("-")[0] == t]].mean(axis=0)
+                for t in all_tasks
+            ])                               # (n_tasks, n_neurons)
+            S_act = np.corrcoef(A_task)
+            if not (np.isfinite(S_les).all() and np.isfinite(S_act).all()):
+                print(f"[causal-vs-activity] {side}: non-finite similarity, skipping")
+                continue
+            r_m, p_m = _mantel(S_act, S_les)
+
+            fig, axs = plt.subplots(1, 3, figsize=(13, 3.8), dpi=300)
+            for ax, S, ttl in [(axs[0], S_les, "Causal (lesion profiles)"),
+                               (axs[1], S_act, f"Activity ({side} tuning)")]:
+                sns.heatmap(S, ax=ax, cmap="RdBu_r", vmin=-1, vmax=1, center=0,
+                            xticklabels=all_tasks, yticklabels=all_tasks,
+                            cbar_kws={"shrink": 0.75})
+                ax.set_title(ttl, fontsize=9)
+                ax.tick_params(labelsize=6)
+            iu = np.triu_indices(len(all_tasks), k=1)
+            axs[2].scatter(S_act[iu], S_les[iu], s=14, alpha=0.7,
+                           color="steelblue", edgecolors="none")
+            axs[2].set_xlabel(f"Activity task similarity ({side})", fontsize=8)
+            axs[2].set_ylabel("Causal task similarity", fontsize=8)
+            axs[2].set_title(f"Mantel r={r_m:.2f}, p={p_m:.4f}", fontsize=9)
+            axs[2].spines["top"].set_visible(False)
+            axs[2].spines["right"].set_visible(False)
+            fig.suptitle("Do tasks that look alike (activity) depend on the "
+                         "same clusters (lesion)?", fontsize=9)
+            fig.tight_layout()
+            fig.savefig(f"{save_dir}/causal_vs_activity_tasksim_{side}_{aname}.png",
+                        dpi=300)
+            plt.close(fig)
+            print(f"[causal-vs-activity] {side}: Mantel r={r_m:.2f}, p={p_m:.4f}")
+    else:
+        print("[causal-vs-activity] cluster_info pickle not found, skipping")
 
     # ══════════════════════════════════════════════════════════════════
-    # Protective-cluster dissection (module docstring #7).
+    # Protective-cluster dissection (module docstring #10).
     # Many cluster lesions have NEGATIVE normalized effect — the size-
     # matched random control hurts more than the cluster lesion. Two very
     # different readings that this block separates:
@@ -1129,7 +1288,7 @@ def main(seed, feature):
         print(f"Saved comparison scatter for {base_key}")
 
     # ══════════════════════════════════════════════════════════════════
-    # Plasticity-dependence decomposition (module docstring #6).
+    # Plasticity-dependence decomposition (module docstring #9).
     # share(task, cluster) = freeze_M effect / zero_W effect — the fraction
     # of a synapse cluster's contribution to a task that flows through the
     # plastic channel M (freeze_M removes only plasticity, W stays), rather
@@ -1711,6 +1870,218 @@ def main(seed, feature):
             }, _f)
         print(f"[om_vs_lesion] saved combined data: {data_path}")
 
+    def _om_profile_prediction(results, cluster_info_mod, variant, base_key,
+                               aname, save_dir):
+        """Predict each synapse cluster's PER-TASK own-damage profile from
+        its OM footprint over the combined-lesion map, and sweep a
+        concentration exponent (module docstring #8).
+
+            pred_c(t; α) = Σij w_ij · CE(t, i, j) / Σij w_ij,   w = OM[c]^α
+
+        α = 0 is the uniform, anatomy-free baseline (every cluster gets the
+        same predicted profile, so the task-mean regression is undefined
+        there and reported as NaN); α = 1 is the plain OM weighting used by
+        the om_vs_lesion panel-3 prediction; α → ∞ keeps only the argmax
+        block. zero_W lesion mode only, mirroring that panel; unresponsive
+        input/hidden classes excluded for the unnorm variant, as elsewhere.
+        """
+        mod_result_key = f"{base_key}__zero_W"
+        if (mod_result_key not in results["mod_leison"]
+                or base_key not in cluster_info_mod):
+            return
+        _mk = cluster_info_mod[base_key]
+        _fk_keys = [k for k in _mk if k.startswith("global_assignment_fixed_k")]
+        ga = _mk[_fk_keys[0]] if _fk_keys else _mk.get("global_assignment")
+        if ga is None:
+            return
+        om_stack = np.asarray(ga["om_stack"], float)
+        om_id_to_idx = {cid: idx for idx, cid in enumerate(ga["all_choice_order"])}
+        n_in, n_hid = ga["n_in"], ga["n_hid"]
+
+        ckey = f"combined_leison_{variant}"
+        if ckey not in results or not results[ckey]:
+            return
+        cdata = results[ckey]
+        if n_in != cdata["pre_n"] or n_hid != cdata["post_n"]:
+            print(f"[om-profile] {base_key}: OM grid ({n_in},{n_hid}) ≠ combined "
+                  f"grid ({cdata['pre_n']},{cdata['post_n']}), skipping")
+            return
+        CE = (np.asarray(cdata["combined_random_accs"], float)
+              - np.asarray(cdata["combined_accs"], float))       # (T, P, H)
+        sel_i = np.arange(n_in - 1 if variant == "unnorm" else n_in)
+        sel_h = np.arange(n_hid - 1 if variant == "unnorm" else n_hid)
+        CE_s = CE[:, sel_i][:, :, sel_h]                         # (T, P', H')
+
+        mod_data = results["mod_leison"][mod_result_key]
+        _mt = np.asarray(mod_data["modtask_accs"], float)
+        _baseline_idx = mod_data["all_comb_names_mod"].index("mod_noleison")
+        _base = _mt[:, _baseline_idx]
+        clusters, om_rows, actual = [], [], []
+        for key_idx, key in enumerate(mod_data["all_comb_names_mod"]):
+            if key == "mod_noleison":
+                continue
+            cid = int(key.replace("mod_c", ""))
+            if cid not in om_id_to_idx:
+                continue
+            om_idx = om_id_to_idx[cid]
+            point_mask, _ = _om_point_mask(
+                ga, om_idx,
+                skip_input=set(range(n_in)) - set(sel_i.tolist()),
+                skip_hidden=set(range(n_hid)) - set(sel_h.tolist()),
+            )
+            point_mask = point_mask[np.ix_(sel_i, sel_h)]
+            if not np.any(point_mask):
+                continue
+            W = np.where(point_mask, om_stack[om_idx][np.ix_(sel_i, sel_h)], 0.0)
+            if W.sum() <= 0:
+                continue
+            clusters.append(cid)
+            om_rows.append(W)
+            actual.append(_base - _mt[:, key_idx])
+        if len(clusters) < 3:
+            print(f"[om-profile] {base_key}: only {len(clusters)} usable "
+                  "clusters, skipping")
+            return
+        om_rows = np.stack(om_rows)                              # (C, P', H')
+        actual = np.stack(actual)                                # (C, T)
+        nC = actual.shape[0]
+
+        def _predict(alpha):
+            """(C, T) predicted profiles with weights OM^alpha (normalized)."""
+            if np.isinf(alpha):
+                w = np.zeros_like(om_rows)
+                flat = om_rows.reshape(nC, -1)
+                w.reshape(nC, -1)[np.arange(nC), flat.argmax(axis=1)] = 1.0
+            elif alpha == 0:
+                w = np.ones_like(om_rows)
+            else:
+                w = om_rows ** alpha
+            w = w / w.sum(axis=(1, 2), keepdims=True)
+            return np.einsum("cij,tij->ct", w, CE_s)
+
+        # ── Analysis 1 (α = 1): per-cluster task-profile prediction ──
+        pred1 = _predict(1.0)                                    # (C, T)
+        prof_r = np.array([
+            pearsonr(pred1[c], actual[c])[0]
+            if np.std(pred1[c]) > 1e-12 and np.std(actual[c]) > 1e-12
+            else np.nan
+            for c in range(nC)])
+
+        # ── Analysis 2: concentration-exponent sweep ──
+        alphas = [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, np.inf]
+        sweep = []
+        for a in alphas:
+            pr = _predict(a)
+            r_cell = pearsonr(pr.ravel(), actual.ravel())[0]
+            xm, ym = pr.mean(axis=1), actual.mean(axis=1)
+            if np.std(xm) > 1e-12:
+                _sl, _, r_mag, _, _ = linregress(xm, ym)
+            else:
+                _sl, r_mag = np.nan, np.nan
+            sweep.append({"alpha": a, "r_cell": float(r_cell),
+                          "r_mag": float(r_mag) if np.isfinite(r_mag) else np.nan,
+                          "slope": float(_sl) if np.isfinite(_sl) else np.nan})
+        _finite = [s for s in sweep if np.isfinite(s["r_cell"])]
+        best = max(_finite, key=lambda s: s["r_cell"])
+        pred_best = _predict(best["alpha"])
+
+        type_tag = base_key.replace("modulation_all_", "").replace("_", "-")
+        fig, axs = plt.subplots(1, 4, figsize=(17, 3.8), dpi=300)
+
+        # P1: per-cluster profile r, sorted
+        _ord = np.argsort(-np.nan_to_num(prof_r, nan=-2))
+        axs[0].bar(np.arange(nC), prof_r[_ord],
+                   color=["#2171b5" if v > 0 else "#cb181d" for v in prof_r[_ord]],
+                   edgecolor="black", linewidth=0.3)
+        axs[0].axhline(np.nanmean(prof_r), color="grey", linestyle="--",
+                       linewidth=0.7, label=f"mean={np.nanmean(prof_r):.2f}")
+        axs[0].set_xticks(np.arange(nC))
+        axs[0].set_xticklabels([f"MC{clusters[c]}" for c in _ord],
+                               rotation=60, ha="right", fontsize=5)
+        axs[0].set_ylabel("Task-profile r (α=1)", fontsize=8)
+        axs[0].set_ylim(-1, 1)
+        axs[0].legend(fontsize=6, frameon=False)
+        axs[0].set_title("Does the OM footprint predict\nWHICH tasks a cluster serves?",
+                         fontsize=8)
+
+        # P2: pooled (cluster, task) cells at α=1
+        _r_cell1 = pearsonr(pred1.ravel(), actual.ravel())[0]
+        axs[1].scatter(pred1.ravel() * 100, actual.ravel() * 100, s=7,
+                       alpha=0.4, color="steelblue", edgecolors="none")
+        _lim = [min(pred1.min(), actual.min()) * 100,
+                max(pred1.max(), actual.max()) * 100]
+        axs[1].plot(_lim, _lim, color="grey", linestyle="--", linewidth=0.6)
+        axs[1].set_xlabel("Predicted effect (%)", fontsize=8)
+        axs[1].set_ylabel("Actual own damage (%)", fontsize=8)
+        axs[1].set_title(f"All (cluster, task) cells, α=1\nr={_r_cell1:.2f}, "
+                         f"n={pred1.size}", fontsize=8)
+
+        # P3: alpha sweep
+        _x = np.arange(len(alphas))
+        _xl = ["0", "0.5", "1", "2", "4", "8", "max"]
+        axs[2].plot(_x, [s["r_cell"] for s in sweep], "-o", markersize=4,
+                    color="#2171b5", label="cell-level r")
+        axs[2].plot(_x, [s["r_mag"] for s in sweep], "-s", markersize=4,
+                    color="#6baed6", label="task-mean r")
+        axs[2].set_xticks(_x)
+        axs[2].set_xticklabels(_xl)
+        axs[2].set_xlabel("Concentration exponent α", fontsize=8)
+        axs[2].set_ylabel("Prediction r", fontsize=8)
+        axs[2].legend(fontsize=6, frameon=False, loc="lower right")
+        _tw = axs[2].twinx()
+        _tw.plot(_x, [s["slope"] for s in sweep], ":d", markersize=4,
+                 color="tomato")
+        _tw.axhline(1.0, color="tomato", linestyle="--", linewidth=0.5, alpha=0.5)
+        _tw.set_ylabel("Task-mean slope", fontsize=8, color="tomato")
+        _tw.tick_params(labelsize=7, colors="tomato")
+        axs[2].set_title(f"footprint (α small) vs peak blocks (α large)\n"
+                         f"best α={_xl[alphas.index(best['alpha'])]} "
+                         f"(cell r={best['r_cell']:.2f})", fontsize=8)
+
+        # P4: task-mean scatter at the best α
+        _xm, _ym = pred_best.mean(axis=1) * 100, actual.mean(axis=1) * 100
+        axs[3].scatter(_xm, _ym, s=20, alpha=0.7, color="steelblue",
+                       edgecolors="none")
+        _lim = [min(_xm.min(), _ym.min()), max(_xm.max(), _ym.max())]
+        axs[3].plot(_lim, _lim, color="grey", linestyle="--", linewidth=0.6)
+        if np.std(_xm) > 1e-12:
+            _sl, _ic, _r, _p, _ = linregress(_xm, _ym)
+            _xf = np.linspace(_xm.min(), _xm.max(), 50)
+            axs[3].plot(_xf, _sl * _xf + _ic, color="tomato", linewidth=1.0)
+            axs[3].text(0.05, 0.95, f"r={_r:.2f}\nslope={_sl:.2f}",
+                        transform=axs[3].transAxes, va="top", fontsize=7)
+        axs[3].set_xlabel("Predicted task-mean effect (%)", fontsize=8)
+        axs[3].set_ylabel("Actual task-mean own damage (%)", fontsize=8)
+        axs[3].set_title(f"Per-cluster magnitude at best α", fontsize=8)
+
+        for ax in axs:
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.tick_params(labelsize=7)
+        fig.suptitle(f"OM profile prediction — {type_tag} [{variant}] (zero_W)",
+                     fontsize=9)
+        fig.tight_layout()
+        _path = f"{save_dir}/om_profile_prediction_{type_tag}_{variant}_{aname}"
+        fig.savefig(f"{_path}.png", dpi=300)
+        plt.close(fig)
+
+        with open(f"{_path}.pkl", "wb") as _f:
+            pickle.dump({
+                "clusters": clusters, "om_rows": om_rows,
+                "actual_profiles": actual, "predicted_profiles_alpha1": pred1,
+                "predicted_profiles_best": pred_best,
+                "profile_r_alpha1": prof_r,
+                "alpha_sweep": sweep, "best_alpha": best["alpha"],
+                "tasks": list(all_tasks), "base_key": base_key,
+                "variant": variant,
+                "actual_definition": "baseline_minus_lesion",
+            }, _f)
+        print(f"[om-profile] {type_tag} [{variant}]: profile r mean="
+              f"{np.nanmean(prof_r):.2f} ({np.nanmean(prof_r > 0) * 100:.0f}%>0); "
+              f"cell r(α=1)={_r_cell1:.2f}; best α="
+              f"{_xl[alphas.index(best['alpha'])]} (cell r={best['r_cell']:.2f}, "
+              f"slope={best['slope']:.2f})")
+
     # Load cluster_info and cluster_info_mod for overmembership analysis
     cluster_path = f"./multiple_tasks_analysis/{aname}/cluster_info_{aname}.pkl"
     cluster_mod_path = f"./multiple_tasks_analysis/{aname}/cluster_info_mod_{aname}.pkl"
@@ -1744,6 +2115,8 @@ def main(seed, feature):
                         results, cluster_info_mod, cluster_info, variant, base_key, mode,
                         aname, save_dir,
                     )
+            _om_profile_prediction(results, cluster_info_mod, variant, base_key,
+                                   aname, save_dir)
     else:
         print(f"[om_vs_lesion] cluster pickle(s) not found, skipping")
 
@@ -1754,32 +2127,21 @@ def main(seed, feature):
                                     exclude_last_cluster=False):
         """3×N figure: for each cluster type (column),
         row 0 = cluster tuning cosine similarity heatmap,
-        row 1 = lesion-effect task-profile Pearson correlation heatmap,
-        row 2 = scatter of tuning cosine sim vs lesion profile correlation.
-
-        The lesion side is a CENTERED correlation (not the earlier L1
-        distance), so it carries task-identity information only — the L1
-        version was magnitude-sensitive and produced a paradoxical positive
-        "similar tuning -> more different effects" trend driven by pairs of
-        big-effect clusters. The pooled pair statistic is a one-sided Mantel
-        permutation test between the two similarity matrices (pairs sharing a
-        cluster are not independent, so the per-pair regression p is inflated
-        and kept only as reference), plus a partial correlation controlling
-        each pair's summed effect magnitude as a residual-magnitude check.
+        row 1 = lesion effect L1 distance heatmap,
+        row 2 = scatter of tuning cosine sim vs lesion L1 distance.
 
         corr_matrices_dict only supplies the panel names and cluster counts;
         both plotted matrices are computed here — tuning similarity from
-        cluster_means_dict, lesion profile correlation from select_props_mat.
+        cluster_means_dict, lesion L1 distance from select_props_mat.
 
         If exclude_last_cluster=True, the last cluster (unresponsive) is excluded
-        from the scatter/statistics (row 2) but still shown in the heatmaps.
-        Clusters with a near-constant lesion profile (undefined correlation)
-        are likewise dropped from row 2, with the drop count annotated."""
+        from the scatter plot (row 2) but still shown in the heatmaps."""
         n_cols = len(corr_matrices_dict)
         fig, axs = plt.subplots(3, n_cols, figsize=(4.5 * n_cols, 11), dpi=300,
                                 squeeze=False)
 
         from sklearn.metrics.pairwise import cosine_similarity as _cosine_sim
+        from scipy.spatial.distance import squareform as _squareform, pdist as _pdist
 
         scatter_save_data = {}
 
@@ -1796,15 +2158,8 @@ def main(seed, feature):
                     "similarity panel is computed from cluster mean profiles"
                 )
             tuning_cos = _cosine_sim(cluster_means_dict[name].T)
-
-            # Lesion side: Pearson correlation between lesion-effect task
-            # profiles; rows with (near-)constant profiles have no defined
-            # correlation and are masked to NaN.
-            _row_ok = lesion_vecs.std(axis=1) > 1e-12
-            lesion_corr = np.full((lesion_vecs.shape[0],) * 2, np.nan)
-            if _row_ok.sum() >= 2:
-                _sub = np.corrcoef(lesion_vecs[_row_ok])
-                lesion_corr[np.ix_(_row_ok, _row_ok)] = _sub
+            # Lesion effect: L1 distance between lesion effect vectors
+            lesion_l1 = _squareform(_pdist(lesion_vecs, metric="cityblock"))
 
             n = corr_matrix.shape[0]
             tril_idx = np.tril_indices(n, k=-1)
@@ -1826,87 +2181,49 @@ def main(seed, feature):
 
             ax1 = axs[1, col]
             mat1 = np.full((n, n), np.nan)
-            mat1[tril_idx] = lesion_corr[tril_idx]
-            im1 = ax1.imshow(mat1, aspect="auto", cmap="RdBu_r", vmin=-1, vmax=1,
+            mat1[tril_idx] = lesion_l1[tril_idx]
+            im1 = ax1.imshow(mat1, aspect="auto", cmap="viridis",
                              origin="upper")
-            fig.colorbar(im1, ax=ax1, shrink=0.8, label="Profile corr.")
+            fig.colorbar(im1, ax=ax1, shrink=0.8, label="L1 distance")
             ax1.set_xticks(range(n))
             ax1.set_yticks(range(n))
             ax1.set_xticklabels(cluster_labels)
             ax1.set_yticklabels(cluster_labels)
             ax1.set_xlabel("Cluster index")
             ax1.set_ylabel("Cluster index")
-            ax1.set_title(f"{name}: lesion profile correlation")
+            ax1.set_title(f"{name}: lesion effect L1 distance")
 
-            # ── Row 2: paired scatter + Mantel statistics on the selected
-            # cluster subset (drop unresponsive last cluster and NaN rows) ──
             ax2 = axs[2, col]
-            n_active = n - 1 if (exclude_last_cluster and n > 1) else n
-            sel = np.flatnonzero(_row_ok)
-            sel = sel[sel < n_active]
-            n_dropped = n - len(sel)
-
-            S_tun = tuning_cos[np.ix_(sel, sel)]
-            S_les = lesion_corr[np.ix_(sel, sel)]
-            tril_sel = np.tril_indices(len(sel), k=-1)
-            x = S_tun[tril_sel]
-            y = S_les[tril_sel]
+            if exclude_last_cluster and n > 1:
+                # Exclude pairs involving the last cluster (unresponsive)
+                n_active = n - 1
+                tril_idx_active = np.tril_indices(n_active, k=-1)
+                x = tuning_cos[:n_active, :n_active][tril_idx_active]
+                y = lesion_l1[:n_active, :n_active][tril_idx_active]
+            else:
+                x = tuning_cos[tril_idx]
+                y = lesion_l1[tril_idx]
             ax2.scatter(x, y, alpha=0.6, s=30, edgecolors="none", color="steelblue")
 
-            mantel_r, mantel_p = np.nan, np.nan
-            partial_r = np.nan
-            naive = None
-            if len(sel) >= 3 and np.std(x) > 1e-12 and np.std(y) > 1e-12:
-                # One-sided Mantel (positive association): permutes cluster
-                # identity of the tuning matrix, so pair non-independence is
-                # respected. Reuses main()'s _mantel (10000 perms).
-                mantel_r, mantel_p = _mantel(S_tun, S_les)
-
+            if np.std(x) > 1e-12 and np.std(y) > 1e-12:
                 slope, intercept, r, p, _ = linregress(x, y)
-                naive = {"slope": slope, "intercept": intercept, "r": r, "p": p}
                 x_line = np.linspace(x.min(), x.max(), 100)
-                ax2.plot(x_line, slope * x_line + intercept, color="tomato",
-                         linewidth=1.2)
+                ax2.plot(x_line, slope * x_line + intercept, color="tomato", linewidth=1.2)
 
-                # Partial correlation given pair magnitude: residualize both
-                # axes on m_ij = mean|e_i| + mean|e_j| — if the profile-corr
-                # revision left any magnitude confound, this differs from r.
-                mag = np.abs(lesion_vecs[sel]).mean(axis=1)
-                m_pair = (mag[:, None] + mag[None, :])[tril_sel]
-                if np.std(m_pair) > 1e-12:
-                    rx = x - np.polyval(np.polyfit(m_pair, x, 1), m_pair)
-                    ry = y - np.polyval(np.polyfit(m_pair, y, 1), m_pair)
-                    if np.std(rx) > 1e-12 and np.std(ry) > 1e-12:
-                        partial_r = float(np.corrcoef(rx, ry)[0, 1])
-
-                _drop_str = f", {n_dropped} cluster(s) dropped" if n_dropped else ""
-                ax2.text(0.05, 0.95,
-                         f"Mantel r = {mantel_r:.2f}, p = {mantel_p:.4f}\n"
-                         f"partial r|mag = {partial_r:.2f}\n"
-                         f"(naive p = {p:.1e}{_drop_str})",
+                p_str = f"p = {p:.2e}" if p < 0.001 else f"p = {p:.3f}"
+                ax2.text(0.05, 0.95, f"r = {r:.2f}\n{p_str}",
                          transform=ax2.transAxes, va="top", ha="left", fontsize=8)
             else:
-                ax2.text(0.05, 0.95, "too few valid clusters",
-                         transform=ax2.transAxes, va="top", ha="left", fontsize=8)
+                ax2.text(0.05, 0.95, "constant x or y", transform=ax2.transAxes,
+                         va="top", ha="left", fontsize=8)
 
             ax2.set_xlabel("Tuning cosine similarity")
-            ax2.set_ylabel("Lesion profile correlation")
+            ax2.set_ylabel("Lesion effect L1 distance")
             ax2.set_title(f"{name} clusters")
 
             scatter_save_data[name] = {
                 "tuning_cos_sim": x.tolist(),
-                "lesion_profile_corr": y.tolist(),
-                "tuning_cos_matrix": tuning_cos,
-                "lesion_corr_matrix": lesion_corr,
-                "selected_clusters": sel.tolist(),
-                "n_dropped_clusters": int(n_dropped),
-                "mantel": {"r": float(mantel_r), "p": float(mantel_p),
-                           "n_perm": 10000,
-                           "side": "one-sided (positive association)"},
-                "partial_r_given_magnitude": float(partial_r),
-                "naive_regression": naive,
-                "y_definition": ("Pearson correlation between lesion-effect "
-                                 "task profiles (was: L1 distance)"),
+                "lesion_l1_dist": y.tolist(),
             }
 
         fig.tight_layout()
@@ -2040,6 +2357,251 @@ def main(seed, feature):
                     cluster_means_dict={mod_name: cluster_means_mod},
                     exclude_last_cluster=_is_unnorm_mod,
                 )
+
+    # ══════════════════════════════════════════════════════════════════
+    # Interaction map from the combined lesions (module docstring #7).
+    #     I(i, j) = combined_effect(i, j) − single_effect(i) − single_effect(j)
+    # per task, in normalized-effect units (random − lesion):
+    #     I < 0  sub-additive — the two clusters overlap / are redundant
+    #     I > 0  super-additive — synergy (each compensates for the other)
+    # The task-averaged map is the primary view: singles were measured at
+    # test_n_batch (200) and combined at combined_test_n_batch (100) with
+    # independent noise, and averaging over tasks suppresses it.
+    # If the modulation OM data is already in memory (loaded by the
+    # om_vs_lesion section above), the interaction strength is regressed
+    # against each (input, hidden) block's PEAK synapse-cluster enrichment:
+    # does anatomical co-location explain functional interaction? The
+    # 3+ GB cluster_info_mod pickle is deliberately NOT re-loaded here.
+    # ══════════════════════════════════════════════════════════════════
+    try:
+        _cim_for_interaction = cluster_info_mod
+    except NameError:
+        _cim_for_interaction = None
+
+    for vtag, singles, names_f in [
+        ("norm", select_props, all_comb_names_leison_),
+        ("unnorm", select_props_unnorm, all_comb_names_unnorm_),
+    ]:
+        ckey = f"combined_leison_{vtag}"
+        if singles is None or ckey not in results or not results[ckey]:
+            print(f"[interaction {vtag}] missing singles or combined data, skipping")
+            continue
+        cdata = results[ckey]
+        c_pre_n, c_post_n = cdata["pre_n"], cdata["post_n"]
+        n_pre_s = len([n for n in names_f if n.startswith("i")])
+        n_post_s = len(names_f) - n_pre_s
+        if n_pre_s != c_pre_n or n_post_s != c_post_n:
+            print(f"[interaction {vtag}] single/combined cluster count mismatch "
+                  f"({n_pre_s},{n_post_s}) vs ({c_pre_n},{c_post_n}), skipping")
+            continue
+
+        CE = (np.asarray(cdata["combined_random_accs"], float)
+              - np.asarray(cdata["combined_accs"], float))     # (T, P, H)
+        SI = singles[:, :n_pre_s]                               # (T, P)
+        SH = singles[:, n_pre_s:]                               # (T, H)
+        I_task = CE - SI[:, :, None] - SH[:, None, :]           # (T, P, H)
+        I_avg = I_task.mean(axis=0)                             # (P, H)
+
+        # ── Saturation control ────────────────────────────────────────
+        # A high-effect cluster can saturate a task (accuracy at floor); on
+        # a bounded scale ANY second lesion then looks sub-additive, pathway
+        # overlap or not. Two complementary controls:
+        #   (a) headroom-restricted cells — keep (task, i, j) cells whose two
+        #       single effects are both damaging AND together claim at most
+        #       half of the task's available range: saturation cannot
+        #       explain sub-additivity there;
+        #   (b) multiplicative (survival) baseline — expected combined damage
+        #       under independence on the bounded scale is
+        #       1 − (1 − d_i)(1 − d_j) with d = effect / headroom, so
+        #       I_mult = CE − headroom · (1 − (1 − d_i)(1 − d_j)); pure
+        #       saturation gives I_mult ≈ 0, genuine overlap stays negative.
+        # The floor is the worst accuracy OBSERVED in this variant's combined
+        # grid — an upper bound on the true floor, which UNDERestimates the
+        # headroom and OVERcorrects toward saturation: redundancy surviving
+        # this control is therefore claimed conservatively.
+        _base_t = np.asarray(cdata.get(
+            "combined_baseline",
+            np.asarray(cdata["combined_random_accs"], float)
+              .reshape(len(all_tasks), -1).max(axis=1)), float)     # (T,)
+        _floor_t = np.asarray(cdata["combined_accs"], float)\
+            .reshape(len(all_tasks), -1).min(axis=1)                # (T,)
+        headroom = np.maximum(_base_t - _floor_t, 1e-3)             # (T,)
+
+        d_i = np.clip(SI / headroom[:, None], 0.0, 1.0)             # (T, P)
+        d_h = np.clip(SH / headroom[:, None], 0.0, 1.0)             # (T, H)
+        E_pred_mult = headroom[:, None, None] * (
+            1.0 - (1.0 - d_i[:, :, None]) * (1.0 - d_h[:, None, :]))
+        I_mult_task = CE - E_pred_mult                              # (T, P, H)
+        I_mult_avg = I_mult_task.mean(axis=0)                       # (P, H)
+
+        _hr_mask = ((SI[:, :, None] > 0) & (SH[:, None, :] > 0) &
+                    (SI[:, :, None] + SH[:, None, :]
+                     <= 0.5 * headroom[:, None, None]))             # (T, P, H)
+        _hr_vals = I_task[_hr_mask]
+
+        # Peak OM per (input, hidden) block from the matching modulation
+        # clustering, when available in memory.
+        om_max = None
+        if _cim_for_interaction is not None:
+            _om_type = ("modulation_all_normalized" if vtag == "norm"
+                        else "modulation_all_unnormalized")
+            _mk = _cim_for_interaction.get(_om_type, {})
+            _fk_keys = [k for k in _mk if k.startswith("global_assignment_fixed_k")]
+            _ga = _mk[_fk_keys[0]] if _fk_keys else _mk.get("global_assignment")
+            if _ga is not None and _ga["n_in"] == c_pre_n and _ga["n_hid"] == c_post_n:
+                om_max = _ga["om_stack"].max(axis=0)            # (P, H)
+            elif _ga is not None:
+                print(f"[interaction {vtag}] OM grid ({_ga['n_in']},{_ga['n_hid']}) "
+                      f"≠ combined grid ({c_pre_n},{c_post_n}); OM panel skipped")
+
+        n_panels = 3 if om_max is not None else 2
+        fig, axs = plt.subplots(1, n_panels, figsize=(4.3 * n_panels, 3.8), dpi=300)
+
+        _v = max(float(np.abs(I_avg).max()) * 100, 1e-6)
+        sns.heatmap(I_avg * 100, ax=axs[0], cmap="RdBu_r", center=0,
+                    vmin=-_v, vmax=_v,
+                    xticklabels=[f"h{j}" for j in range(1, c_post_n + 1)],
+                    yticklabels=[f"i{i}" for i in range(1, c_pre_n + 1)],
+                    cbar_kws={"label": "Interaction (%)", "shrink": 0.8})
+        axs[0].set_title("Task-averaged interaction\n(<0 redundant, >0 synergistic)",
+                         fontsize=8)
+        axs[0].tick_params(labelsize=5)
+
+        axs[1].hist(I_avg.ravel() * 100, bins=25, color="steelblue",
+                    edgecolor="black", linewidth=0.3, alpha=0.8)
+        axs[1].axvline(0, color="grey", linestyle="--", linewidth=0.7)
+        axs[1].set_title(
+            f"mean={I_avg.mean() * 100:+.2f}%  |  "
+            f"{(I_avg < 0).mean() * 100:.0f}% sub-additive", fontsize=8)
+        axs[1].set_xlabel("Interaction (%)", fontsize=8)
+        axs[1].set_ylabel("# (input, hidden) pairs", fontsize=8)
+        axs[1].spines["top"].set_visible(False)
+        axs[1].spines["right"].set_visible(False)
+
+        om_reg = None
+        if om_max is not None:
+            # For the unnorm variant the LAST input/hidden cluster is the
+            # unresponsive class (same convention as om_vs_lesion above) —
+            # excluded from the regression, kept in the heatmap.
+            _sel_i = np.arange(c_pre_n - 1 if vtag == "unnorm" else c_pre_n)
+            _sel_h = np.arange(c_post_n - 1 if vtag == "unnorm" else c_post_n)
+            x = om_max[np.ix_(_sel_i, _sel_h)].ravel()
+            y = I_avg[np.ix_(_sel_i, _sel_h)].ravel() * 100
+            _sl, _ic, _r, _pv, _ = linregress(x, y)
+            om_reg = {"slope": _sl, "intercept": _ic, "r": _r, "p": _pv}
+            axs[2].scatter(x, y, s=10, alpha=0.5, color="steelblue",
+                           edgecolors="none")
+            _xf = np.linspace(x.min(), x.max(), 50)
+            axs[2].plot(_xf, _sl * _xf + _ic, color="tomato", linewidth=1.0)
+            _ps = f"p = {_pv:.2e}" if _pv < 0.001 else f"p = {_pv:.3f}"
+            axs[2].text(0.05, 0.95, f"r = {_r:.2f}\n{_ps}\nn = {len(x)}",
+                        transform=axs[2].transAxes, va="top", fontsize=7)
+            axs[2].set_xlabel("Peak synapse-cluster OM of block", fontsize=8)
+            axs[2].set_ylabel("Interaction (%)", fontsize=8)
+            axs[2].set_title("Anatomical co-location vs interaction", fontsize=8)
+            axs[2].spines["top"].set_visible(False)
+            axs[2].spines["right"].set_visible(False)
+
+        fig.suptitle(f"Combined-lesion interaction map [{vtag}]", fontsize=9)
+        fig.tight_layout()
+        fig.savefig(f"{save_dir}/lesion_interaction_{vtag}_{aname}.png", dpi=300)
+        plt.close(fig)
+
+        # ── Saturation-control figure ──
+        fig2, ax2 = plt.subplots(1, 3, figsize=(12.9, 3.8), dpi=300)
+
+        # P1: additive vs multiplicative interaction, one point per pair.
+        # Pairs whose y is pulled toward 0 owed their (additive)
+        # sub-additivity to saturation; pairs staying below 0 keep a
+        # genuine-overlap interpretation.
+        ax = ax2[0]
+        ax.scatter(I_avg.ravel() * 100, I_mult_avg.ravel() * 100, s=10,
+                   alpha=0.5, color="steelblue", edgecolors="none")
+        _lim = [min(I_avg.min(), I_mult_avg.min()) * 100,
+                max(I_avg.max(), I_mult_avg.max()) * 100]
+        ax.plot(_lim, _lim, color="grey", linewidth=0.6, linestyle="--", alpha=0.6)
+        ax.axhline(0, color="grey", linewidth=0.5, alpha=0.5)
+        ax.axvline(0, color="grey", linewidth=0.5, alpha=0.5)
+        ax.set_xlabel("Additive interaction (%)", fontsize=8)
+        ax.set_ylabel("Multiplicative-baseline interaction (%)", fontsize=8)
+        ax.set_title("y pulled to 0 = sub-additivity was saturation;\n"
+                     "y still < 0 = genuine overlap", fontsize=8)
+
+        # P2: interaction restricted to cells with headroom.
+        ax = ax2[1]
+        if _hr_vals.size:
+            ax.hist(_hr_vals * 100, bins=25, color="steelblue",
+                    edgecolor="black", linewidth=0.3, alpha=0.8)
+            ax.axvline(0, color="grey", linestyle="--", linewidth=0.7)
+            ax.set_title(
+                f"{_hr_vals.size} (task, pair) cells with headroom\n"
+                f"mean={_hr_vals.mean() * 100:+.2f}%  |  "
+                f"{(_hr_vals < 0).mean() * 100:.0f}% sub-additive", fontsize=8)
+            ax.set_xlabel("Interaction (%)", fontsize=8)
+            ax.set_ylabel("# cells", fontsize=8)
+        else:
+            ax.text(0.5, 0.5, "no cells pass the headroom criterion",
+                    ha="center", va="center", fontsize=8,
+                    transform=ax.transAxes)
+            ax.set_title("Headroom-restricted cells", fontsize=8)
+
+        # P3: the most sub-additive pairs (additive ranking) — do they
+        # survive the multiplicative saturation control?
+        ax = ax2[2]
+        _k = min(10, I_avg.size)
+        _worst = np.argsort(I_avg, axis=None)[:_k]
+        _wi, _wj = np.unravel_index(_worst, I_avg.shape)
+        _pos = np.arange(_k)
+        ax.bar(_pos - 0.2, I_avg[_wi, _wj] * 100, width=0.4,
+               color="steelblue", label="additive")
+        ax.bar(_pos + 0.2, I_mult_avg[_wi, _wj] * 100, width=0.4,
+               color="tomato", label="multiplicative")
+        ax.axhline(0, color="grey", linewidth=0.6)
+        ax.set_xticks(_pos)
+        ax.set_xticklabels([f"i{i + 1}×h{j + 1}" for i, j in zip(_wi, _wj)],
+                           rotation=45, ha="right", fontsize=6)
+        ax.set_ylabel("Interaction (%)", fontsize=8)
+        ax.set_title("Top sub-additive pairs under both baselines", fontsize=8)
+        ax.legend(fontsize=6, frameon=False)
+
+        for ax in ax2:
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.tick_params(labelsize=7)
+        fig2.suptitle(f"Interaction saturation control [{vtag}]", fontsize=9)
+        fig2.tight_layout()
+        fig2.savefig(f"{save_dir}/lesion_interaction_saturation_{vtag}_{aname}.png",
+                     dpi=300)
+        plt.close(fig2)
+
+        with open(f"{save_dir}/lesion_interaction_{vtag}_{aname}.pkl", "wb") as _f:
+            pickle.dump({
+                "interaction_per_task": I_task, "interaction_avg": I_avg,
+                "single_input_effects": SI, "single_hidden_effects": SH,
+                "combined_effects": CE, "om_max": om_max, "om_regression": om_reg,
+                "tasks": list(all_tasks), "vtag": vtag,
+                # saturation control
+                "interaction_mult_per_task": I_mult_task,
+                "interaction_mult_avg": I_mult_avg,
+                "baseline_per_task": _base_t,
+                "floor_per_task": _floor_t,
+                "headroom_per_task": headroom,
+                "headroom_mask": _hr_mask,
+                "headroom_criterion":
+                    "both singles > 0 and their sum <= 0.5 * headroom",
+            }, _f)
+        _worst10 = np.argsort(I_avg, axis=None)[:min(10, I_avg.size)]
+        print(f"[interaction {vtag}] mean={I_avg.mean() * 100:+.2f}%, "
+              f"{(I_avg < 0).mean() * 100:.0f}% sub-additive"
+              + (f", OM r={om_reg['r']:.2f} (p={om_reg['p']:.1e})"
+                 if om_reg else ", OM unavailable"))
+        print(f"[interaction {vtag}] saturation control: top-{len(_worst10)} "
+              f"sub-additive pairs, additive mean="
+              f"{I_avg.flat[_worst10].mean() * 100:+.1f}% -> multiplicative "
+              f"mean={I_mult_avg.flat[_worst10].mean() * 100:+.1f}%; "
+              f"headroom cells n={_hr_vals.size}"
+              + (f", {(_hr_vals < 0).mean() * 100:.0f}% < 0"
+                 if _hr_vals.size else ""))
 
 
 if __name__ == "__main__":
