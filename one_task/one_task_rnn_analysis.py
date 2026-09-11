@@ -89,6 +89,7 @@ import networks as nets
 import mpn_tasks
 from fixed_point import (find_hidden_fixed_points,
                          characterize_hidden_fixed_point_stability)
+from fixed_point_pca import export_fixed_point_pca
 
 mpl.rcParams.update({
     "font.family": "sans-serif",
@@ -889,14 +890,13 @@ def solve_hidden_fixed_points(net, cfg, device,
     return results, angles, best_seed
 
 
-def plot_hidden_fixed_points(results, angles, aname, out_path):
+def plot_hidden_fixed_points(results, angles, aname, out_path, *, basis_record=None):
     """One panel per period: the solved hidden fixed points in a SHARED
     delay-period PCA, colored by stimulus.
 
-    The basis is fit on the delay period's fixed points and reused by every
-    panel, so PC1/PC2 mean the same axes across panels and the periods can be
-    compared point for point. Converged points are filled, over-threshold ones
-    hollow (the project's usual convention).
+    Main passes the exported delay-period basis, shared with paper_plot. Direct
+    analysis-side callers may omit it to fit a basis locally. Converged points
+    are filled, over-threshold ones hollow (the project's usual convention).
 
     DIAGONAL probes only — this is the quick local check that the solve worked.
     The off-diagonal probes (memory-, trajectory- and naive-seeded) are drawn by
@@ -906,12 +906,18 @@ def plot_hidden_fixed_points(results, angles, aname, out_path):
     if not periods:
         print("  [hidden-fp] nothing solved; no figure.")
         return
-    basis_key = "longdelay" if "longdelay" in results else periods[0]
-    pca = PCA(n_components=2, random_state=0).fit(
-        np.asarray(results[basis_key]["fixed_hidden"], dtype=float))
+    if basis_record is None:
+        basis_key = "longdelay" if "longdelay" in results else periods[0]
+        pca = PCA(n_components=2, random_state=0).fit(
+            np.asarray(results[basis_key]["fixed_hidden"], dtype=float))
+        mean, components = pca.mean_, pca.components_
+    else:
+        basis_key = basis_record["source_period"]
+        mean = np.asarray(basis_record["mean"], dtype=float)
+        components = np.asarray(basis_record["components"], dtype=float)
     pc_label = results[basis_key]["period_title"]
 
-    proj = {p: pca.transform(np.asarray(results[p]["fixed_hidden"], dtype=float))
+    proj = {p: (np.asarray(results[p]["fixed_hidden"], dtype=float) - mean) @ components.T
             for p in periods}
     lim = max(np.abs(np.vstack(list(proj.values()))).max() * 1.08, 1e-9)
     n_stim = len(angles)
@@ -1001,8 +1007,12 @@ def main(aname, n_interp=64, steps=20000, rel_tol=0.05, analyze_stability=True,
                      "results": results}, f)
     print(f"Saved hidden fixed-point data: {out_pkl}")
 
+    pca_path = export_fixed_point_pca(out_pkl)
+    with np.load(pca_path, allow_pickle=True) as saved:
+        basis_record = saved["artifact"].item()["bases"]["longdelay"]["fixed_hidden"]
     plot_hidden_fixed_points(results, angles, aname,
-                             save_dir / f"fixed_points_hidden_{aname}.png")
+                             save_dir / f"fixed_points_hidden_{aname}.png",
+                             basis_record=basis_record)
     print(f"All outputs saved to {save_dir}/")
 
 

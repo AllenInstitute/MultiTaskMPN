@@ -198,7 +198,10 @@ def _load_pkl_or_skip(pkl_path, hint="", use_name=False):
         print(f"  Skipped: {shown} not found.{(' ' + hint) if hint else ''}")
         return None
     with open(pkl_path, "rb") as f:
-        return pickle.load(f)
+        data = pickle.load(f)
+    if isinstance(data, dict) and pkl_path.name.startswith(("fixed_points_grad_", "fixed_points_hidden_")):
+        data["_fixed_point_source"] = str(pkl_path)
+    return data
 
 
 def _load_twotask_glob_or_skip(pattern):
@@ -210,8 +213,7 @@ def _load_twotask_glob_or_skip(pattern):
         print(f"  Skipped: no {pattern} in {run_dir}. "
               f"Run two_task_analysis.py first.")
         return None
-    with open(matches[0], "rb") as f:
-        return pickle.load(f)
+    return _load_pkl_or_skip(matches[0])
 
 
 # ─── Paths & run identifiers ──────────────────────────────────────────────────
@@ -1798,42 +1800,49 @@ def plot_lesion_heatmap():
                              (tasks × modulation clusters)
 
         Normalized effect = random_acc - cluster_acc (positive = cluster matters).
+        Reads the effect matrices exported by leison_plot.py, without deriving
+        effects again from raw accuracy. Task and cluster identities are retained.
         The colorbar is saved as its own figure so the panel layout stays compact.
     """
     _ensure_out_dir()
-    data = _load_lesion_results()
+    path = LESION_NORM_DIR / f"normalized_lesion_effects_{ANAME}.pkl"
+    data = _load_pkl_or_skip(path, "Run multiple_task/leison_plot.py first.")
     if data is None:
-        print("  Skipped: lesion results not found. Run leison.py first.")
         return
 
-    lu = data["leison_unnorm"]
-    ru = data["random_leison_unnorm"]
+    try:
+        if data["schema_version"] != 1 or data["aname"] != ANAME:
+            raise ValueError("normalized-effect cache version/run does not match")
+        hidden = data["entries"]["leison_unnorm"]
+        modulation = data["entries"]["modulation_all_var_weighted_unnormalized__freeze_M"]
+        for entry in (hidden, modulation):
+            if entry["definition"] != "random_minus_lesion" or entry["units"] != "fraction":
+                raise ValueError("unexpected effect definition or units")
+            if np.shape(entry["effect"]) != (len(entry["tasks"]), len(entry["conditions"])):
+                raise ValueError("effect axes do not match saved labels")
+            if (len(set(entry["tasks"])) != len(entry["tasks"])
+                    or len(set(entry["conditions"])) != len(entry["conditions"])):
+                raise ValueError("duplicate task or cluster labels")
+        all_tasks = hidden["tasks"]
+        if set(all_tasks) != set(modulation["tasks"]):
+            raise ValueError("hidden and modulation task sets differ")
+        post_idx = [index for index, name in enumerate(hidden["conditions"]) if name.startswith("post_c")]
+        mod_idx = [index for index, name in enumerate(modulation["conditions"]) if name.startswith("mod_c")]
+        if not post_idx or not mod_idx:
+            raise ValueError("no saved hidden or modulation cluster effects")
+        mod_rows = [modulation["tasks"].index(task) for task in all_tasks]
+        effect_post = np.asarray(hidden["effect"], dtype=float)[:, post_idx] * 100
+        effect_mod = np.asarray(modulation["effect"], dtype=float)[np.ix_(mod_rows, mod_idx)] * 100
+        if not np.isfinite(effect_post).all() or not np.isfinite(effect_mod).all():
+            raise ValueError("non-finite saved effect values")
+        post_labels = ["C" + hidden["conditions"][index].removeprefix("post_c") for index in post_idx]
+        mod_labels = ["C" + modulation["conditions"][index].removeprefix("mod_c") for index in mod_idx]
+    except (KeyError, TypeError, ValueError) as error:
+        print(f"  Skipped: incompatible {path.name} ({error}). Run multiple_task/leison_plot.py again.")
+        return
 
-    all_tasks = lu["all_tasks"]
-    all_tasks_display = [_TASK_DISPLAY.get(t, t) for t in all_tasks]
-    comb_names = lu["all_comb_names_leison"]
-    ihtask_accs = np.array(lu["ihtask_accs"])
-    random_accs = np.array(ru["ihrandomtask_accs"])
-
-    pre_idx = [i for i, n in enumerate(comb_names) if n.startswith("pre_c")]
-    post_idx = [i for i, n in enumerate(comb_names) if n.startswith("post_c")]
-
-    effect_pre = (random_accs[:, pre_idx] - ihtask_accs[:, pre_idx]) * 100
-    effect_post = (random_accs[:, post_idx] - ihtask_accs[:, post_idx]) * 100
-
-    pre_labels = [f"C{i+1}" for i in range(len(pre_idx))]
-    post_labels = [f"C{i+1}" for i in range(len(post_idx))]
-
-    # Modulation freeze_M lesion (var-weighted unnormalized)
-    mod_entry = data["mod_leison"]["modulation_all_var_weighted_unnormalized__freeze_M"]
-    mod_accs = np.array(mod_entry["modtask_accs"])
-    mod_random = np.array(mod_entry["modrandomtask_accs"])
-    mod_comb = mod_entry["all_comb_names_mod"]
-    mod_idx = [i for i, n in enumerate(mod_comb) if n.startswith("mod_c")]
-    effect_mod = (mod_random[:, mod_idx] - mod_accs[:, mod_idx]) * 100
-    mod_labels = [f"C{i+1}" for i in range(len(mod_idx))]
-
-    vmax = max(np.abs(effect_post).max(), np.abs(effect_mod).max())
+    all_tasks_display = [_TASK_DISPLAY.get(task, task) for task in all_tasks]
+    vmax = max(np.abs(effect_post).max(), np.abs(effect_mod).max(), 1e-6)
 
     fig, axes = plt.subplots(
         2, 1, figsize=(6, 5.5),
@@ -1949,114 +1958,72 @@ def plot_lesion_cluster_sizes():
 
 # ─── Figure: OM vs lesion ────────────────────────────────────────────────────
 
+def _load_om_lesion_scatter():
+    """Load the exact upstream freeze-M scatter and statistics, without refiltering."""
+    tag = "var-weighted-unnormalized"
+    candidates = ((f"om_vs_lesion_diff_{tag}_combined_unnorm_{ANAME}.pkl", True),
+                  (f"om_vs_lesion_diff_{tag}_freeze-M_unnorm_{ANAME}.pkl", False))
+    for filename, combined in candidates:
+        path = LESION_NORM_DIR / filename
+        if not path.exists():
+            continue
+        try:
+            with path.open("rb") as handle:
+                saved = pickle.load(handle)
+            base_key = saved["base_key"] if combined else saved["mod_type_key"]
+            if (base_key != "modulation_all_var_weighted_unnormalized"
+                    or saved["variant"] != "unnorm" or saved.get("aname", ANAME) != ANAME):
+                raise ValueError("OM cache belongs to a different run or variant")
+            if saved.get("y_definition") != "task-profile L1/T: mean_t |mod_effect(t) - combined_effect(t)|":
+                raise ValueError("OM cache does not describe task-profile L1/T distance")
+            if combined:
+                entry = saved["mode_data"]["freeze_M"]
+                p_perm, n_clusters, n_perm = entry["p_perm"], entry["n_clusters"], saved["n_perm"]
+            else:
+                if saved["mod_lesion_mode"] != "freeze_M":
+                    raise ValueError("OM cache uses a different lesion mode")
+                entry = saved
+                permutation = saved["permutation"]
+                p_perm, n_clusters, n_perm = permutation["p_perm"], permutation["n_clusters"], permutation["n_perm"]
+            om_vals = np.asarray(entry["om_vals"], dtype=float)
+            lesion_diffs = np.asarray(entry["lesion_diffs"], dtype=float)
+            if (om_vals.ndim != 1 or om_vals.shape != lesion_diffs.shape or om_vals.size < 2
+                    or not np.isfinite(om_vals).all() or not np.isfinite(lesion_diffs).all()):
+                raise ValueError("invalid saved OM scatter coordinates")
+            regression = {key: float(entry["regression"][key]) for key in ("slope", "intercept", "r", "p")}
+            min_expected = float(saved["min_expected"])
+            if not np.isfinite(min_expected) or min_expected < 0:
+                raise ValueError("invalid saved OM threshold")
+            return {"om_vals": om_vals, "lesion_diffs": lesion_diffs, "regression": regression,
+                    "p_perm": float(p_perm), "n_clusters": int(n_clusters), "n_perm": int(n_perm),
+                    "min_expected": min_expected, "path": path}
+        except (OSError, KeyError, TypeError, ValueError) as error:
+            print(f"  Note: incompatible {path.name}: {error}.")
+    print("  Skipped: no complete saved OM scatter/statistics. Run multiple_task/leison_plot.py again.")
+    return None
+
+
 def plot_om_vs_lesion():
-    """
-    Figure: Over-membership tracks functional similarity between modulation
-    and combined (input, hidden) lesions.
+    """Replot the saved var-weighted freeze-M OM/profile-L1 scatter and permutation p.
 
-    Single scatter: OM vs task-profile L1/T distance (mean over tasks of
-    |mod effect(t) − combined effect(t)|) for the freeze_M mode, one point per
-    (mod cluster, surviving block). Annotated with the cluster-permutation p
-    (footprint ownership shuffled; see _om_scatter_perm_test) — the parametric
-    regression p treats the replicated points as independent and is inflated.
-
-    Uses var-weighted-unnormalized modulation, fixed_k global assignment,
-    and combined_leison_unnorm.
+    The sample set and min_expected threshold come from leison_plot's cache.
+    No raw lesion/cluster data, profile matching, regression fitting, or new
+    permutation test is used here.
     """
     _ensure_out_dir()
-    results = _load_lesion_results()
-    if results is None:
-        print("  Skipped: lesion results not found.")
+    saved = _load_om_lesion_scatter()
+    if saved is None:
         return
-
-    cluster_info_mod = _load_cluster_info_mod()
-    if cluster_info_mod is None:
-        print("  Skipped: cluster_info_mod not found.")
-        return
-
-    base_key = "modulation_all_var_weighted_unnormalized"
-    variant = "unnorm"
-
-    if base_key not in cluster_info_mod:
-        print(f"  Skipped: {base_key} not in cluster_info_mod.")
-        return
-
-    mod_keys = cluster_info_mod[base_key]
-    fk_ga_keys = [k for k in mod_keys if k.startswith("global_assignment_fixed_k")]
-    ga = mod_keys[fk_ga_keys[0]] if fk_ga_keys else mod_keys.get("global_assignment")
-    if ga is None:
-        print("  Skipped: no global_assignment found.")
-        return
-
-    om_stack = ga["om_stack"]
-    all_choice_order = ga["all_choice_order"]
-    n_in = ga["n_in"]
-    n_hid = ga["n_hid"]
-    om_id_to_idx = {cid: idx for idx, cid in enumerate(all_choice_order)}
-
-    # Skip unresponsive clusters (last index in unnorm)
-    skip_input = {n_in - 1}
-    skip_hidden = {n_hid - 1}
-
-    ckey = f"combined_leison_{variant}"
-    if ckey not in results:
-        print(f"  Skipped: {ckey} not in results.")
-        return
-    cdata = results[ckey]
-    combined_effect = np.asarray(cdata["combined_random_accs"], dtype=float) - np.asarray(cdata["combined_accs"], dtype=float)
-
-    # --- OM vs lesion-profile distance, freeze_M ---
-    mod_result_key_fm = f"{base_key}__freeze_M"
-    mod_data_fm = results["mod_leison"][mod_result_key_fm]
-    modtask_accs_fm = np.asarray(mod_data_fm["modtask_accs"], dtype=float)
-    modrandom_fm = np.asarray(mod_data_fm["modrandomtask_accs"], dtype=float)
-    all_comb_names_fm = mod_data_fm["all_comb_names_mod"]
-
-    mod_effects_fm = {}
-    for key_idx, key in enumerate(all_comb_names_fm):
-        if key == "mod_noleison":
-            continue
-        cid = int(key.replace("mod_c", ""))
-        mod_effects_fm[cid] = modrandom_fm[:, key_idx] - modtask_accs_fm[:, key_idx]
-
-    # Per-cluster (footprint) structure, so the permutation test can shuffle
-    # cluster -> footprint ownership. y per block = task-profile L1/T distance,
-    # matching leison_plot.py's revised derivation.
-    mod_profiles, row_om_list, row_cm_list = [], [], []
-    for cid in sorted(mod_effects_fm.keys()):
-        if cid not in om_id_to_idx:
-            continue
-        om_idx = om_id_to_idx[cid]
-        point_mask, _ = _om_point_mask(
-            ga, om_idx, skip_input=skip_input, skip_hidden=skip_hidden
-        )
-        if not np.any(point_mask):
-            continue
-        mod_profiles.append(np.asarray(mod_effects_fm[cid], float))
-        row_om_list.append(np.asarray(om_stack[om_idx][point_mask], float))
-        row_cm_list.append(combined_effect[:, point_mask].T)  # (B, T)
-
-    if not row_om_list:
-        print(f"  Skipped: OM scatter has no filtered points (expected >= {OM_MIN_EXPECTED:g}).")
-        return
-    mod_profiles = np.array(mod_profiles)
-    om_vals = np.concatenate(row_om_list)
-    lesion_diffs = np.concatenate([
-        np.mean(np.abs(cm - mp[None, :]), axis=1)
-        for mp, cm in zip(mod_profiles, row_cm_list)])
-    if om_vals.size < 2:
-        print(f"  Skipped: OM scatter has fewer than 2 filtered points (expected >= {OM_MIN_EXPECTED:g}).")
-        return
-
-    # --- Figure: OM vs task-profile L1 distance ---
-    from scipy.stats import linregress as _linregress
+    om_vals, lesion_diffs = saved["om_vals"], saved["lesion_diffs"]
+    regression = saved["regression"]
+    slope, intercept, r, p = (regression[key] for key in ("slope", "intercept", "r", "p"))
+    p_perm = saved["p_perm"]
     fig1, ax1 = plt.subplots(1, 1, figsize=(3, 2.8))
-    slope, intercept, r, p, _ = _linregress(om_vals, lesion_diffs)
-    _, p_perm, _ = _om_scatter_perm_test(mod_profiles, row_om_list, row_cm_list)
     ax1.scatter(om_vals, lesion_diffs, color="#3182ce", edgecolors="k",
                 linewidths=0.5, s=40, alpha=0.8, zorder=3)
     x_line = np.linspace(om_vals.min(), om_vals.max(), 100)
-    ax1.plot(x_line, slope * x_line + intercept, color="tomato", linewidth=1.2, zorder=4)
+    if np.isfinite(slope) and np.isfinite(intercept):
+        ax1.plot(x_line, slope * x_line + intercept, color="tomato", linewidth=1.2, zorder=4)
     _pp_str = (f"p = {p_perm:.3f}" if np.isfinite(p_perm) else "p = n/a")
     _legend(ax1, [f"r = {r:.2f}, {_pp_str}"], loc="upper right", fontsize=7, frameon=True)
     ax1.set_xlabel("Over-membership", fontsize=8)
@@ -2066,7 +2033,8 @@ def plot_om_vs_lesion():
     out_path1 = _multitask_out("om_vs_lesion_scatter.png")
     _save_fig(fig1, out_path1)
     print(f"  om_vs_lesion_scatter: r={r:.2f}, p_perm={p_perm:.3f} "
-          f"({OM_N_PERM} perms, {len(mod_profiles)} clusters, naive p={p:.1e})")
+            f"({saved['n_perm']} saved permutations, {saved['n_clusters']} clusters, "
+            f"min_expected={saved['min_expected']:g}, naive p={p:.1e}; {saved['path'].name})")
 
 
 # ─── Figure: Fixed-point PCA trajectories ────────────────────────────────────
@@ -2127,17 +2095,26 @@ def plot_input_weight_correlation():
 LESION_NORM_DIR = Path("multiple_tasks_norm") / ANAME
 
 
+def _draw_saved_lesion_regression(axis, values, regression):
+    """Draw a cached regression line and its original statistics without fitting."""
+    if regression is None:
+        return
+    positions = np.linspace(values.min(), values.max(), 100)
+    axis.plot(positions, regression["slope"] * positions + regression["intercept"],
+              color="tomato", linewidth=1.2, zorder=4)
+    label = f"r = {regression['r']:.2f}, p = {regression['p']:.3f}"
+    _legend(axis, [label], loc="upper left", fontsize=7, frameon=True)
+
+
 def plot_cluster_corr_vs_lesion():
     """
-    Figure: Scatter of cluster tuning cosine similarity vs lesion-effect
-    task-profile Pearson correlation (magnitude-free), annotated with the
-    Mantel permutation statistics computed by leison_plot.py.
+    Figure: saved cluster tuning cosine similarity vs lesion-effect L1 distance.
+    Use the exact coordinates and regression computed by leison_plot.py. This is
+    sum-over-tasks L1, not profile Pearson correlation or a Mantel test.
 
-    Produces separate figures for each variant (normalized, unnormalized).
-    Each figure has one subplot per cluster type (input, hidden).
+    Produces one scatter figure per variant (normalized, unnormalized) and
+    cluster type (input, hidden). Incomplete caches are skipped, never refitted.
     """
-    from scipy.stats import linregress as _linregress
-
     _ensure_out_dir()
     if not LESION_NORM_DIR.exists():
         print("  Skipped: multiple_tasks_norm dir not found. Run leison_plot.py first.")
@@ -2158,30 +2135,33 @@ def plot_cluster_corr_vs_lesion():
             scatter_data = pickle.load(f)
 
         for name, data in scatter_data.items():
-            if "lesion_profile_corr" not in data:
-                print(f"  Skipped {name}: old-format pkl (L1 distance) — "
-                      "re-run leison_plot.py for the profile-correlation data.")
+            try:
+                if (data.get("y_definition") != "sum_over_tasks_abs_effect_difference"
+                        or data.get("aname", ANAME) != ANAME):
+                    raise ValueError("saved metric or run does not match")
+                x = np.asarray(data["tuning_cos_sim"], dtype=float)
+                y = np.asarray(data["lesion_l1_dist"], dtype=float)
+                if (x.ndim != 1 or x.shape != y.shape or x.size == 0
+                        or not np.isfinite(x).all() or not np.isfinite(y).all()):
+                    raise ValueError("invalid saved scatter coordinates")
+                regression = data["regression"]
+                if regression is not None:
+                    regression = {key: float(regression[key])
+                                  for key in ("slope", "intercept", "r", "p")}
+                    if not all(np.isfinite(value) for value in regression.values()):
+                        raise ValueError("non-finite saved regression statistics")
+            except (KeyError, TypeError, ValueError) as error:
+                print(f"  Skipped {name}: incomplete or incompatible L1 cache ({error}); "
+                      "run multiple_task/leison_plot.py again.")
                 continue
             fig, ax = plt.subplots(1, 1, figsize=(3, 2.8))
-            x = np.array(data["tuning_cos_sim"])
-            y = np.array(data["lesion_profile_corr"])
 
             ax.scatter(x, y, color="#3182ce", edgecolors="k",
                        linewidths=0.5, s=40, alpha=0.8, zorder=3)
 
-            mantel = data.get("mantel", {})
-            r_m, p_m = mantel.get("r", np.nan), mantel.get("p", np.nan)
-            if np.std(x) > 1e-12 and np.std(y) > 1e-12:
-                slope, intercept, _r, _p, _ = _linregress(x, y)
-                x_line = np.linspace(x.min(), x.max(), 100)
-                ax.plot(x_line, slope * x_line + intercept, color="tomato",
-                        linewidth=1.2, zorder=4)
-                if np.isfinite(r_m):
-                    _legend(ax, [f"Mantel r = {r_m:.2f}, p = {p_m:.3f}"],
-                            loc="upper left", fontsize=7, frameon=True)
-
             ax.set_xlabel("Tuning cosine similarity", fontsize=8)
-            ax.set_ylabel("Lesion profile correlation", fontsize=8)
+            ax.set_ylabel("Lesion effect L1 distance", fontsize=8)
+            _draw_saved_lesion_regression(ax, x, regression)
             ax.spines[["top", "right"]].set_visible(False)
 
             fig.tight_layout()
@@ -4449,9 +4429,9 @@ def _render_grad_fixed_points(d, rep_key, out_path, basis=None):
     Each period's points (one per stimulus) are flattened and projected into a
     SHARED delay-period PCA; points are colored by stimulus.
 
-    `basis`: an OPTIONAL pre-fitted 2-component PCA to project into. When None
-    (the default, and the one-task behavior) the basis is fit on THIS pickle's
-    own delay-period fixed points. When supplied (e.g. by the two-task driver,
+    `basis`: an OPTIONAL stored 2-component PCA to project into. When None
+    (the default, and the one-task behavior), load THIS pickle's saved
+    delay-period basis. When supplied (e.g. by the two-task driver,
     which passes the delayanti delay-period basis), every panel is projected into
     that EXTERNAL basis instead — so figures from different pickles/rules share
     one x-y plane and become directly comparable point-for-point."""
@@ -4466,10 +4446,10 @@ def _render_grad_fixed_points(d, rep_key, out_path, basis=None):
               f"(re-run one_task_analysis.py to add it).")
         return
 
-    # Use the caller-supplied shared basis if given; otherwise fit on this
-    # pickle's own delay-period fixed points (one-task / standalone behavior).
     if basis is None:
-        basis = _fit_period_grad_fp_basis(d, rep_key)
+        basis = _load_period_grad_fp_basis(d, rep_key)
+    if basis is None:
+        return
 
     periods, overlay, proj, traj, angle0_pt, n_stim = _grad_fp_2d_project(
         d, rep_key, basis)
@@ -4788,22 +4768,42 @@ def _grad_fp_point_colors(entry, stim, n_stim):
     return cols, int((ring_dist <= _GRAD_FP_RING_TOL).sum())
 
 
-def _fit_period_grad_fp_basis(d, rep_key, period="longdelay"):
-    """Fit a 2-component PCA on ONE period's gradient fixed points of an
-    already-loaded pickle dict `d`, for representation `rep_key`. `period` selects
-    which trial epoch's fixed points define the basis (e.g. "longdelay" for the
-    memory ring, "longstimulus" for the stimulus ring). Returns the fitted PCA
-    (usable as the `basis` arg of the grad-fp renderers) or None if the pickle
-    lacks that representation. Falls back to the first available period when the
-    requested one is absent."""
-    from sklearn.decomposition import PCA as _PCA
-    results = d.get("results", {})
-    periods = list(results.keys())
-    if not periods or any(results[v].get(rep_key) is None for v in periods):
+def _load_fixed_point_pca_record(data, rep_key, period):
+    """Read a matching analysis-exported PCA record, never fitting a substitute."""
+    source_name = data.get("_fixed_point_source")
+    if source_name is None:
+        print("  Skipped: fixed-point PCA source path unavailable; load through _load_pkl_or_skip.")
         return None
-    basis_key = period if period in results else periods[0]
-    arr = np.asarray(results[basis_key][rep_key], dtype=float)
-    return _PCA(n_components=2, random_state=0).fit(arr.reshape(arr.shape[0], -1))
+    source = Path(source_name)
+    sidecar = source.with_suffix(".pca.npz")
+    try:
+        stat = source.stat()
+        signature = {"name": source.name, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+        artifact = data.get("_fixed_point_pca")
+        if artifact is None:
+            with np.load(sidecar, allow_pickle=True) as saved:
+                artifact = saved["artifact"].item()
+        if artifact.get("schema_version") != 1 or artifact.get("source") != signature:
+            raise ValueError("PCA sidecar is outdated or belongs to a different source")
+        record = artifact["bases"][period][rep_key]
+        values = data["results"][period][rep_key]
+        if (tuple(record["source_shape"]) != np.shape(values)
+                or record["source_period"] != period or record["representation"] != rep_key
+                or record["source_aname"] != data.get("aname")
+                or record["source_rule"] != data.get("rule")):
+            raise ValueError("PCA provenance does not match the requested fixed points")
+        data["_fixed_point_pca"] = artifact
+        return record
+    except (OSError, KeyError, ValueError, TypeError) as error:
+        print(f"  Skipped {period}/{rep_key}: missing or incompatible {sidecar} ({error}). "
+              f"Run: python core/fixed_point_pca.py '{source}' --force")
+        return None
+
+
+def _load_period_grad_fp_basis(data, rep_key, period="longdelay"):
+    """Load the requested period's two-PC basis from its fixed-point PCA sidecar."""
+    record = _load_fixed_point_pca_record(data, rep_key, period)
+    return _StoredPCABasis(record) if record is not None else None
 
 
 class _StoredPCABasis:
@@ -5173,9 +5173,9 @@ def _render_grad_fixed_points_3d(d, rep_key, out_path, basis=None):
     cos θ only in the Response panel — the ring lifts off the z=0 plane only
     there.
 
-    `basis`: an OPTIONAL pre-fitted 2-component PCA to project into. When None
-    (the default, and the one-task behavior) the basis is fit on THIS pickle's
-    own delay-period fixed points. When supplied (e.g. by the two-task driver,
+    `basis`: an OPTIONAL stored 2-component PCA to project into. When None
+    (the default, and the one-task behavior), load THIS pickle's saved
+    delay-period basis. When supplied (e.g. by the two-task driver,
     which passes the delayanti delay-period basis), every panel is projected into
     that EXTERNAL basis instead — so figures from different pickles/rules share
     one x-y plane and become directly comparable point-for-point."""
@@ -5190,19 +5190,12 @@ def _render_grad_fixed_points_3d(d, rep_key, out_path, basis=None):
               f"(re-run one_task_analysis.py to add it).")
         return
 
-    # Use the caller-supplied shared basis if given; otherwise fit on this
-    # pickle's own delay-period fixed points (one-task / standalone behavior).
-    # `pc_label` names the period the basis came from, so the axes read "Delay
-    # PC1" instead of a bare "PC1" that hides which epoch defined the plane —
-    # matching the 2D one-task figure, which already labels them that way. Taken
-    # from the period ACTUALLY used rather than hardcoded, because
-    # _fit_period_grad_fp_basis falls back to the first available period when the
-    # delay one is absent, and the axes must not still claim "Delay" then. A
-    # caller-supplied basis gets no label: only that caller knows what it is.
     pc_label = None
     if basis is None:
-        basis_period = "longdelay" if "longdelay" in results else periods[0]
-        basis = _fit_period_grad_fp_basis(d, rep_key, period=basis_period)
+        basis_period = "longdelay"
+        basis = _load_period_grad_fp_basis(d, rep_key, period=basis_period)
+        if basis is None:
+            return
         pc_label = _period_display(
             results[basis_period].get("period_title", basis_period))
 
@@ -5317,9 +5310,12 @@ def _render_interp_fixed_points(d, out_path, n_trained=ONETASK_N_STIM,
     rel_tol = float(e.get("rel_tol", d.get("rel_tol", 0.05)))
     good = _fixed_point_mask(e, n)
 
-    from sklearn.decomposition import PCA as _PCA
-    proj = _PCA(n_components=2, random_state=0).fit_transform(
-        fixed.reshape(n, -1))
+    record = _load_fixed_point_pca_record(d, "fixed_M", period)
+    if record is None:
+        return
+    proj = np.asarray(record["fit_projection"], dtype=float)
+    if proj.shape != (n, 2):
+        raise ValueError("Saved dense-angle PCA projection does not match the stimulus grid")
 
     # Color each angle by its position on the ring (continuous rainbow ramp).
     cols = [stim_color(k, n) for k in range(n)]
@@ -5556,15 +5552,14 @@ _TWOTASK_FP_ROW_ORDER = ["delaygo", "delayanti"]
 
 
 def _twotask_shared_fp_bases(paths, label, period="longdelay"):
-    """Fit ONE shared 2-PC PCA per representation from the reference rule's
-    (_TWOTASK_FP_BASIS_RULE) pickle, for the combined grad fixed-point figures.
+    """Load ONE shared 2-PC basis per representation from the reference rule's
+    (_TWOTASK_FP_BASIS_RULE) PCA sidecar, for the combined grad fixed-point figures.
     `period` selects which trial epoch's fixed points define the basis
     ("longdelay" or "longstimulus"). `paths` is a (rule, path) list; `label` tags
     the log line.
 
-    Returns a dict rep_key -> fitted PCA (usable as the renderers' `basis` arg).
-    An EMPTY dict means the reference pickle was missing or unreadable, in which
-    case each rule falls back to its own basis (the per-pickle default)."""
+    Returns rep_key -> stored PCA. Missing bases skip the corresponding figures;
+    no per-rule fallback is allowed, because that would change the comparison."""
     basis_rule = _TWOTASK_FP_BASIS_RULE
     ref_paths = [p for (r, p) in paths if r == basis_rule]
     shared = {}
@@ -5572,14 +5567,14 @@ def _twotask_shared_fp_bases(paths, label, period="longdelay"):
         d_ref = _load_pkl_or_skip(ref_paths[0], "Run two_task_analysis.py first.")
         if d_ref is not None:
             for rep_key in ("fixed_M", "fixed_WM", "fixed_hidden"):
-                b = _fit_period_grad_fp_basis(d_ref, rep_key, period=period)
+                b = _load_period_grad_fp_basis(d_ref, rep_key, period=period)
                 if b is not None:
                     shared[rep_key] = b
         print(f"  [{label}] shared x-y basis = '{basis_rule}' {period} "
               f"({len(shared)}/3 representations).")
     else:
         print(f"  [{label}] reference rule '{basis_rule}' pickle not "
-              f"found; each rule uses its own {period} basis.")
+              f"found; shared {period} figures will be skipped.")
     return shared
 
 
@@ -5677,7 +5672,7 @@ def _plot_two_task_grad_fp_combined(stem_prefix, log_label, render_fn,
     """Shared driver for the combined two-task grad fixed-point figures (2D and
     3D). Loads each rule's pickle once, then for every basis variant
     (`_TWOTASK_FP_BASIS_VARIANTS`) and every representation (raw M*, W⊙M*,
-    hidden) fits/reuses the shared delayanti basis and calls `render_fn` to draw
+    hidden) loads the shared delayanti basis and calls `render_fn` to draw
     all rules as stacked rows into ONE figure. Output:
       {stem_prefix}_{seed}_{infix}_{suffix}.png
 
@@ -5706,12 +5701,9 @@ def _plot_two_task_grad_fp_combined(stem_prefix, log_label, render_fn,
         for rep_key, suffix in (("fixed_M", "modulation"),
                                 ("fixed_WM", "emodulation"),
                                 ("fixed_hidden", "hidden")):
-            # Shared basis for this representation; fall back to the first rule's
-            # own basis for this period if the reference-rule pickle was absent.
-            basis = shared_bases.get(rep_key) or _fit_period_grad_fp_basis(
-                rule_data[0][1], rep_key, period=period)
+            basis = shared_bases.get(rep_key)
             if basis is None:
-                print(f"  Skipped '{rep_key}' ({period}): no basis could be fit.")
+                print(f"  Skipped '{rep_key}' ({period}): no saved reference-rule basis.")
                 continue
             out_path = OUT_DIR / f"{stem_prefix}_{tag}_{infix}_{suffix}.png"
             extra = {"pc_label": pc_label} if with_pc_label else {}

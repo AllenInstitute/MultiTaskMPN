@@ -53,6 +53,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CHECKPOINT_DIR = REPO_ROOT / "pretraining"
+DIAGNOSIS_DIR = REPO_ROOT / "pretraining_diagnosis"
+FIGURE_DIR = REPO_ROOT / "pretrain"
+
 GROUPS = {
     "fdanti_delaygo": ("Proper motif", ("fdanti", "delaygo", "delayanti")),
     "fdgo_delaygo": ("Improper motif", ("fdgo", "delaygo", "delayanti")),
@@ -1145,10 +1150,8 @@ EXPERIMENTS = ("accuracy", "memory_pca", "rule_cue", "m_intervention")
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input-dir", type=Path, default=Path("pretraining_diagnosis"),
-                        help="Evaluation JSON output directory; --plot-only reads its accuracy reports.")
-    parser.add_argument("--output-dir", type=Path, default=Path(__file__).resolve().parent,
-                        help="PNG output directory.")
+    parser.set_defaults(input_dir=DIAGNOSIS_DIR, output_dir=FIGURE_DIR,
+                        checkpoint_dir=CHECKPOINT_DIR)
     parser.add_argument("--feature", default="L21e3")
     parser.add_argument("--hidden", type=positive_int, default=200)
     modes = parser.add_mutually_exclusive_group()
@@ -1168,7 +1171,6 @@ def main(argv=None):
                         help="Evaluation batch size; memory PCA uses a fixed 8.")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto",
                         help="Device for accuracy, rule-cue, and M-intervention; memory PCA selects automatically.")
-    parser.add_argument("--checkpoint-dir", type=Path, default=Path("pretraining"))
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--test-seed", type=int, default=0)
     parser.add_argument("--ruleset", choices=tuple(GROUPS), default=None)

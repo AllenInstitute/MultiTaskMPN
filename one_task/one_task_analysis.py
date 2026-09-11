@@ -68,6 +68,7 @@ import mpn
 import networks as nets
 import mpn_tasks
 from grad_fixed_points import solve_period_modulation_fixed_points
+from fixed_point_pca import export_fixed_point_pca
 
 # Match the plotting style used in multiple_task_analysis.py
 mpl.rcParams.update({
@@ -323,7 +324,7 @@ def long_period_fixed_points(aname, save_dir, cfg,
     # This gradient solve is the slow part; skip it when run_fixed_points=False.
     if run_fixed_points:
         try:
-            solve_period_modulation_fixed_points(
+            fixed_point_path = solve_period_modulation_fixed_points(
                 aname, save_dir, net, cfg, device, layer_index=layer_index, W=W,
                 n_interp=64, n_seeds=fp_n_seeds,
                 # Multistability probes. cross_seed_probes: the FIXATION input
@@ -344,6 +345,7 @@ def long_period_fixed_points(aname, save_dir, cfg,
                 # trajectory passes through. One extra 64-point solve per distinct
                 # input, on the selected template seed only.
                 traj_seed_probes=True)
+            export_fixed_point_pca(fixed_point_path)
         except Exception as exc:
             print(f"  [grad-fp] failed: {exc}")
             import traceback

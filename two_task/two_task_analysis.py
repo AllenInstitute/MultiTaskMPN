@@ -75,6 +75,7 @@ import mpn
 from grad_fixed_points import (solve_period_modulation_fixed_points,
                                 derive_fixed_point_views, _PERIOD_TITLE)
 from fixed_point import find_modulation_fixed_points
+from fixed_point_pca import export_fixed_point_pca
 
 # ─── Plotting palette (notebook cell 2) ──────────────────────────────────────
 # 0 Red, 1 blue, 2 green, 3 purple, 4 orange, 5 teal, 6 gray, 7 pink, 8 yellow
@@ -2450,7 +2451,7 @@ def main(aname, fp_n_seeds=5, interp_n_alpha=10, run_fixed_points=True):
     if run_fixed_points:
         for _rule in task_params["rules"]:
             try:
-                solve_period_modulation_fixed_points(
+                fixed_point_path = solve_period_modulation_fixed_points(
                     aname, save_dir, net, cfg_fp, device,
                     rule=_rule, out_suffix=f"_{_rule}",
                     layer_index=layer_index, W=W_fp, n_interp=64,
@@ -2465,6 +2466,7 @@ def main(aname, fp_n_seeds=5, interp_n_alpha=10, run_fixed_points=True):
                     # grad_fixed_points._trajectory_M_seeds. Reaches fixed points
                     # off the recorded path, including the interior of a ring.
                     traj_seed_probes=True)
+                export_fixed_point_pca(fixed_point_path)
             except Exception as exc:
                 print(f"  [grad-fp/{_rule}] failed: {exc}")
                 import traceback

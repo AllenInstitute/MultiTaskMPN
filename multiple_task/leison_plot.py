@@ -192,6 +192,18 @@ def _om_pred_perm_test(pred, actual, n_perm=OM_N_PERM, seed=0):
     return r_obs, float(p_perm), null_r
 
 
+def _normalized_effect_record(effect, tasks, conditions):
+    """Package an already computed effect matrix with its exact axis identities."""
+    values = np.asarray(effect, dtype=float)
+    tasks, conditions = list(tasks), list(conditions)
+    if values.shape != (len(tasks), len(conditions)):
+        raise ValueError("Normalized effect matrix does not match its task/condition labels")
+    if len(set(tasks)) != len(tasks) or len(set(conditions)) != len(conditions):
+        raise ValueError("Normalized effect labels must be unique")
+    return {"effect": values, "tasks": tasks, "conditions": conditions,
+            "definition": "random_minus_lesion", "units": "fraction"}
+
+
 def main(seed, feature):
     aname = f"everything_seed{seed}_{feature}+hidden300+batch128+angle"
     print(f"aname: {aname}")
@@ -214,6 +226,7 @@ def main(seed, feature):
     # handle both old pickle names ("pre_cNone") and new ("pre_noleison") after rename fix
     baseline_keys = {"pre_cNone", "post_cNone", "pre_noleison", "post_noleison"}
     mod_leison_results = results.get("mod_leison", {})
+    normalized_effects = {"schema_version": 1, "aname": aname, "entries": {}}
 
     def compute_and_plot_normalized_lesion(leison_key, random_key, savename, xlabel_suffix=""):
         """Compute normalized lesion effect (random - cluster) and plot its heatmap.
@@ -234,6 +247,8 @@ def main(seed, feature):
                 props.append(ihrandom[:, key_idx] - ihtask[:, key_idx])
 
         props = np.array(props).T  # (n_tasks, n_clusters)
+        normalized_effects["entries"][leison_key] = _normalized_effect_record(
+            props, tasks, [key for key in all_comb_names if key not in baseline_keys])
         suffix = f" {xlabel_suffix}" if xlabel_suffix else ""
         print(f"[{savename}] select_props: {props.shape}")
 
@@ -913,6 +928,8 @@ def main(seed, feature):
                 mod_select_props.append(modrandomtask_accs[:, key_idx] - modtask_accs[:, key_idx])
 
         mod_select_props = np.array(mod_select_props).T
+        normalized_effects["entries"][mod_type_key] = _normalized_effect_record(
+            mod_select_props, mod_data.get("all_tasks", all_tasks), all_comb_names_mod_)
 
         if "__" in mod_type_key:
             base_key, mode = mod_type_key.rsplit("__", 1)
@@ -926,6 +943,9 @@ def main(seed, feature):
             "select_props": mod_select_props,
             "cluster_names": all_comb_names_mod_,
         }
+
+    with open(f"{save_dir}/normalized_lesion_effects_{aname}.pkl", "wb") as handle:
+        pickle.dump(normalized_effects, handle)
 
     # Combined violin plot for all modulation types (zero_W only), 4 vertical subpanels
     _mod_violin_order = [
@@ -1610,6 +1630,7 @@ def main(seed, feature):
             pickle.dump({
                 "om_vals": om_vals,
                 "lesion_diffs": lesion_diffs,
+                "aname": aname,
                 "labels": labels,
                 "regression": {"slope": slope, "intercept": intercept, "r": r, "p": p},
                 "permutation": {"p_perm": p_perm, "null_r": _null_r,
@@ -1777,12 +1798,14 @@ def main(seed, feature):
 
         fig, axes = plt.subplots(1, 3 if _has_pred else 2,
                                  figsize=(10.5 if _has_pred else 7, 3.2), dpi=300)
+        mode_regressions = {}
         for ax, mode in zip(axes[:2], ["zero_W", "freeze_M"]):
             if mode not in mode_data_all:
                 ax.set_visible(False)
                 continue
             om_vals, lesion_diffs, p_perm, n_clusters = mode_data_all[mode]
             slope, intercept, r, p, _ = linregress(om_vals, lesion_diffs)
+            mode_regressions[mode] = {"slope": slope, "intercept": intercept, "r": r, "p": p}
 
             ax.scatter(om_vals, lesion_diffs, alpha=0.4, s=12, edgecolors="none", color="steelblue")
             x_line = np.linspace(om_vals.min(), om_vals.max(), 100)
@@ -1844,16 +1867,18 @@ def main(seed, feature):
                  if np.isfinite(_pred_p_perm) else ""))
 
         # Save per-mode scatter data and the per-cluster prediction so the
-        # combined figure (and paper_plot's re-derivation of the same matching)
-        # can be reproduced directly from this pickle.
+        # combined figure and paper_plot can be reproduced directly from this
+        # pickle without rebuilding the matching or repeating the test.
         data_path = f"{save_dir}/om_vs_lesion_diff_{type_tag}_combined_{variant}_{aname}.pkl"
         with open(data_path, "wb") as _f:
             pickle.dump({
                 "mode_data": {
                     mode: {"om_vals": vals[0], "lesion_diffs": vals[1],
-                           "p_perm": vals[2], "n_clusters": vals[3]}
+                           "p_perm": vals[2], "n_clusters": vals[3],
+                           "regression": mode_regressions[mode]}
                     for mode, vals in mode_data_all.items()
                 },
+                "aname": aname,
                 "prediction": ({"predicted_pct": np.asarray(_pred_x),
                                 "actual_pct": np.asarray(_pred_y),
                                 "actual_own_damage_pct": np.asarray(_pred_y),
@@ -2205,8 +2230,10 @@ def main(seed, feature):
                 y = lesion_l1[tril_idx]
             ax2.scatter(x, y, alpha=0.6, s=30, edgecolors="none", color="steelblue")
 
+            regression = None
             if np.std(x) > 1e-12 and np.std(y) > 1e-12:
                 slope, intercept, r, p, _ = linregress(x, y)
+                regression = {"slope": slope, "intercept": intercept, "r": r, "p": p}
                 x_line = np.linspace(x.min(), x.max(), 100)
                 ax2.plot(x_line, slope * x_line + intercept, color="tomato", linewidth=1.2)
 
@@ -2224,6 +2251,10 @@ def main(seed, feature):
             scatter_save_data[name] = {
                 "tuning_cos_sim": x.tolist(),
                 "lesion_l1_dist": y.tolist(),
+                "regression": regression,
+                "y_definition": "sum_over_tasks_abs_effect_difference",
+                "exclude_last_cluster": exclude_last_cluster,
+                "aname": aname,
             }
 
         fig.tight_layout()
