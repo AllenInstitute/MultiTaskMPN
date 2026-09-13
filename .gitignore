@@ -40,7 +40,8 @@ twotasks/
 twotasks_data/
 pretraining/
 pretraining_analysis/
-pretraining_diagnosis/
+pretrain/fig/
+pretrain/fig_seed/
 pretrain/**/*.png
 state_space/
 mnist/

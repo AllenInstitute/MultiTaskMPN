@@ -67,6 +67,14 @@ Key data outputs: `multiple_tasks/` (checkpoints, curves),
 `multiple_tasks_perf/` and `multiple_tasks_norm/` (lesion results/plots),
 `onetask/`, `twotasks/`, `pretraining/`, `state_space/`, `paper_plot/`.
 
+Both `pretrain/pretraining_analysis.py` and `pretrain/pretraining_post.py` write
+analysis data to `pretraining_analysis/`, pooled figures to `pretrain/fig/`, and
+per-seed figures to `pretrain/fig_seed/`. The latter includes per-checkpoint
+PCA/sanity checks, single-checkpoint diagnostics, and seed-filtered accuracy plots.
+Existing outputs with matching filenames are overwritten. Training inputs and
+checkpoints remain in `pretraining/`; `paper_plot.py` reads the centralized
+analysis data and continues to save publication figures in `paper_plot/`.
+
 ## Naming convention
 
 Checkpoints and result files share an identifier string:

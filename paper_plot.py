@@ -2528,11 +2528,15 @@ def plot_transfer_speed():
 def plot_backbone_probe():
     """Random-rule backbone probe: seed-mean accuracy with adaptive y limits.
 
+    Reads the per-checkpoint JSONs in pretraining_analysis/ written by pretraining_post.py's
+    --backbone-probe experiment (accuracy_pct is already in percent).
     Points average random rule initializations within each seed; diamonds show
     the across-seed mean with population SD. This is not the exact stage-2 init.
     A two-sided independent-seed permutation test compares group means, assuming
     exchangeability under the null; random initializations are not replicates.
     """
+    import json
+    import re as _re
     from scipy.stats import permutation_test
 
     groups = {
@@ -2540,20 +2544,30 @@ def plot_backbone_probe():
         "fdanti_delaygo": ("Relevant\nmotif", "#e53e3e"),
     }
     values = {ruleset: [] for ruleset in groups}
-    for path in _pretraining_result_pkls():
-        ruleset = _pretraining_ruleset_from_result_name(path.name)
-        if ruleset not in groups:
+    pattern = _re.compile(
+        rf"backbone_probe_({'|'.join(map(_re.escape, groups))})_dmpn_seed\d+_"
+        rf"{_re.escape(PRETRAINING_ADDON_NAME)}\.json")
+    paths = sorted(PRETRAINING_ANALYSIS_DIR.glob(
+        f"backbone_probe_*_dmpn_seed*_{PRETRAINING_ADDON_NAME}.json"))
+    for path in paths:
+        match = pattern.fullmatch(path.name)
+        if match is None:
             continue
-        with path.open("rb") as handle:
-            probe = pickle.load(handle).get("backbone_probe", {})
-        samples = np.asarray(probe.get("acc", []), dtype=float)
+        ruleset = match.group(1)
+        with path.open() as handle:
+            run = json.load(handle)
+        if run.get("ruleset") != ruleset:
+            raise ValueError(f"{path.name}: ruleset metadata does not match filename")
+        samples = np.asarray(run.get("random_probe", {}).get("accuracy_pct", []),
+                             dtype=float)
         if samples.size == 0 or not np.isfinite(samples).all():
             print(f"  Note: {path.name}: missing or non-finite backbone probe acc; omitted.")
             continue
-        values[ruleset].append(float(samples.mean()) * 100.0)
+        values[ruleset].append(float(samples.mean()))
 
     if not any(values.values()):
-        print("  Skipped: no usable backbone probe results for the configured pretraining experiment.")
+        print("  Skipped: no usable backbone probe results; run "
+              "pretrain/pretraining_post.py --backbone-probe first.")
         return
 
     _ensure_out_dir()

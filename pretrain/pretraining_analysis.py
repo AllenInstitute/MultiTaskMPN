@@ -3,11 +3,13 @@ Post-hoc analysis of the pretraining → post-training transfer experiment.
 
 Compare novel-task variance in pretraining and novel-task PCA bases, without
 held-out cross-validation. Analyze hidden states, M, W*M, principal angles,
-rule vectors, learning curves, and random-rule backbone probes.
+rule vectors, and learning curves. For random-rule backbone probes and raw
+or norm-matched pretraining-span grids, use pretraining_post.py --backbone-probe.
 
 Configure rulesets_to_run, N, reg, and n_seeds_per_ruleset below, then run from
 the repository root. Reads ./pretraining/ and writes per-seed results and
-aggregate figures/data to ./pretraining_analysis/; matching outputs overwrite.
+aggregate data to ./pretraining_analysis/, aggregate figures to ./pretrain/fig/,
+and per-seed figures to ./pretrain/fig_seed/; matching outputs overwrite.
 """
 
 import numpy as np
@@ -15,7 +17,6 @@ import pickle
 import os
 import re
 import copy
-import json
 from functools import lru_cache, wraps
 from time import perf_counter
 
@@ -49,6 +50,8 @@ mpl.rcParams.update({
 # ─────────────────────────────────────────────────────────────────────────────
 basepath = "./pretraining"
 outpath = "./pretraining_analysis"
+figpath = "./pretrain/fig"
+seed_figpath = "./pretrain/fig_seed"
 TIMING_ENABLED = True
 
 
@@ -73,6 +76,8 @@ def _timed_analysis(function):
 # their filenames so different model variants (e.g. L2 strength, batch
 # size) coexist in the same folder.
 os.makedirs(outpath, exist_ok=True)
+os.makedirs(figpath, exist_ok=True)
+os.makedirs(seed_figpath, exist_ok=True)
 
 # Pretraining rulesets must match RULES_DICT in pretraining.py.
 # Each one is processed independently; their learning curves are then
@@ -97,6 +102,19 @@ def _stage1_tasks_for(rs):
 # Post-training task
 final_task = "delayanti"
 
+# Figure display names for the internal rule names (same mapping as
+# pretraining_post.py). "Delay-" tasks keep the stimulus on; "Memory-" tasks
+# turn it off — internal "delaygo"/"delayanti" are the MEMORY tasks. Only
+# figure text is converted; filenames, pickles, and console logs keep the
+# internal names.
+RULE_DISPLAY_NAMES = {"fdgo": "DelayPro", "fdanti": "DelayAnti",
+                      "delaygo": "MemoryPro", "delayanti": "MemoryAnti"}
+
+
+def display_rule(rule):
+    """Figure display name for an internal rule name."""
+    return RULE_DISPLAY_NAMES.get(rule, rule)
+
 # Per-ruleset plotting colors for the cross-ruleset combined figure.
 ruleset_colors = {
     "fdgo_delaygo": c_vals[1],
@@ -106,17 +124,15 @@ ruleset_colors = {
 chosen_network = "dmpn"
 N = 200
 # PCA component cap for modulation / modulation_weighted analyses.
-# Hidden uses N (the ambient dim). Modulation lives in N² = 40 000 dims, so a
-# larger cap is needed to see whether CVE eventually saturates. sklearn still
-# requires n_components ≤ min(n_samples, n_features); the call sites clamp to
-# that limit to stay safe.
+# Hidden requests N components. Modulation has bottleneck*proj features
+# (40 000 for the current N=200 square layer). Modulation call sites cap the
+# requested components by the available sample count; N_MOD_PCS must also
+# fit within the feature count when changing network dimensions.
 N_MOD_PCS = 1000
 
-# Top-k cap for principal-angle analysis. Subspace angles are computed
-# between the top-K PC bases of the pretraining and novel representations;
-# the returned spectrum has K ascending values. Keep it modest because the
-# cost scales like K³ and most of the interpretive content lies in the
-# first few angles (zero-angle directions = shared axes, π/2 = orthogonal).
+# Principal angles reuse the leading directions of the CVE PCA fits.
+# Return at most N_ANGLES values in ascending order, limited by the supported
+# ranks of both bases (zero = shared direction, pi/2 = orthogonal).
 N_ANGLES = 20
 
 # Naming components that form addon_name in pretraining.py:
@@ -146,21 +162,6 @@ def hist_path(seed):
 def ckpt_path(seed):
     """Network checkpoint path (see pretraining.py)."""
     return f"{basepath}/savednet_{ruleset}_{chosen_network}_seed{seed}_{addon_name}.pt"
-
-
-def config_path(seed):
-    """
-    Hyperparameter JSON path (see pretraining.py). Note: unlike the other
-    per-seed files, this one omits `chosen_network` from its filename.
-    """
-    return f"{basepath}/param_{ruleset}_seed{seed}_{addon_name}_param.json"
-
-
-def load_train_params(seed):
-    """Load the stage-1 train_params dict saved alongside the checkpoint."""
-    with open(config_path(seed)) as f:
-        cfg = json.load(f)
-    return cfg["train_params"]
 
 
 @lru_cache(maxsize=1)
@@ -202,7 +203,7 @@ def _rule_vector_stats(v_pre0, v_pre1, v_novel):
       - in_span_fraction: ‖P_{span(pre0, pre1)} v_novel‖ / ‖v_novel‖
         (1 → novel is a linear combination of pretrained rule vectors;
          0 → novel is orthogonal to the pretrained rule subspace)
-      - norm_pre0, norm_pre1, norm_novel: Frobenius norms for context
+    - norm_pre0, norm_pre1, norm_novel: Euclidean (L2) vector norms
     """
     v_pre0 = np.asarray(v_pre0)
     v_pre1 = np.asarray(v_pre1)
@@ -257,7 +258,8 @@ def _plot_input_output_panel(
         axs = axs[np.newaxis, :]
 
     for b in range(n_trials):
-        tname = task_names[int(test_task[b])] if task_names is not None else "?"
+        tname = (display_rule(task_names[int(test_task[b])])
+                 if task_names is not None else "?")
         # Output column: net (solid) vs ground truth (thick faded).
         for oi in range(test_output_np.shape[-1]):
             axs[b, 0].plot(net_out_np[b, :, oi], color=c_vals[oi], linewidth=1)
@@ -275,111 +277,6 @@ def _plot_input_output_panel(
     fig.tight_layout()
     fig.savefig(fig_path, dpi=120)
     plt.close(fig)
-
-
-@_timed_analysis
-def evaluate_backbone_on_delayanti(
-    seed, device, stage2_output, n_random_rule_inits=10, rng_seed=0,
-    n_batch=128,
-):
-    """
-    Measure delayanti competence with random rule vectors on the frozen backbone.
-
-    Protocol
-    ────────
-    Load the post-stage-2 checkpoint. Everything in that state_dict except
-    the last column of W_initial_linear is identical to the end-of-stage-1
-    network (stage 2 only trains that column via the gradient hook in
-    expand_and_freeze). Overwrite that column with fresh random initializations
-    and evaluate newly generated delayanti data. This probes the backbone under
-    random rule inputs, not the exact stage-2 starting state: training uses
-    expand_and_freeze(option=1), which preserves the existing column.
-
-    Loss and accuracy are computed via the network's own `compute_loss` /
-    `compute_acc` so the numbers are directly comparable to training-time
-    loss/accuracy. This requires the trial mask, which is not saved in the
-    npz, so a fresh batch is generated from the saved task_params.
-
-    Returns dict of per-sample numpy arrays (length n_random_rule_inits):
-        loss     — full training loss (output MSE + regularization)
-        loss_out — output-label-MSE component only
-        acc      — angle-based accuracy on the response period
-    """
-    import math
-    import mpn_tasks
-
-    # Load network and task config.
-    net = load_final_net(seed, device)
-
-    # compute_loss reads regularization attributes that are normally set by
-    # net.fit(train_params, ...) during training. load_state_dict doesn't
-    # restore those (they're not tensors), so we re-inject them from the
-    # saved JSON config to match the training-time loss computation.
-    train_params = load_train_params(seed)
-    net.weight_reg = train_params.get("weight_reg", None)
-    net.reg_lambda = train_params.get("reg_lambda", 0.0)
-    net.activity_reg = train_params.get("activity_reg", None)
-    net.reg_omit = train_params.get("reg_omit", [])
-    net.gradient_type = train_params.get("gradient_type", "backprop")
-
-    task_params = stage2_output["task_params"].item()
-
-    # Generate a fresh test batch for delayanti. pretraining_shift=2 pads
-    # the two stage-1 task-indicator slots with zeros so the input has the
-    # correct 9-channel layout the checkpoint expects.
-    task_params_test = copy.deepcopy(task_params)
-    task_params_test["long_response"] = "normal"
-    (test_input, test_output, test_mask), _ = mpn_tasks.generate_trials_wrap(
-        task_params_test, n_batch, device=device, rules=["delayanti"],
-        mode_input="random", pretraining_shift=2,
-    )
-
-    # Grab the trained rule-vector column so we can restore it afterward.
-    orig_col = net.W_initial_linear.weight.data[:, -1].detach().clone()
-
-    rng = np.random.default_rng(rng_seed + seed)
-    loss_full, loss_out_only, acc_vals = [], [], []
-    with torch.no_grad():
-        for _ in range(n_random_rule_inits):
-            # Random-rule probe initialization; not the preserved stage-2 column.
-            new_col = torch.empty_like(orig_col)
-            torch.manual_seed(int(rng.integers(0, 2**31)))
-            torch.nn.init.kaiming_uniform_(new_col.view(-1, 1).t(), a=math.sqrt(5))
-            net.W_initial_linear.weight.data[:, -1] = new_col
-
-            # Forward through the full batch at once; compute_loss/acc
-            # expect the whole batch, not mini-chunks.
-            net_out, hidden, _ = net.iterate_sequence_batch(
-                test_input, run_mode="minimal")
-
-            loss, loss_components, _ = net.compute_loss(
-                net_out, test_output, test_mask, hidden=hidden)
-            acc, _ = net.compute_acc(
-                net_out, test_output, test_mask, test_input,
-                isvalid=True, mode=net.acc_measure)
-
-            loss_full.append(float(loss.detach().cpu().item()))
-            # loss_components is (output_label_term, reg_term); keep the
-            # output-only term separately since reg_term is not meaningful
-            # for a random rule vector (it penalizes all weights equally
-            # regardless of the task-match).
-            loss_out_only.append(float(loss_components[0]))
-            acc_vals.append(float(acc.detach().cpu().item()))
-
-            # Clear per-layer state before the next init.
-            if hasattr(net, "reset_state"):
-                try:
-                    net.reset_state(B=1)
-                except Exception:
-                    pass
-
-    net.W_initial_linear.weight.data[:, -1] = orig_col
-
-    return {
-        "loss": np.array(loss_full),
-        "loss_out": np.array(loss_out_only),
-        "acc": np.array(acc_vals),
-    }
 
 
 @_timed_analysis
@@ -412,7 +309,7 @@ def run_final_net_sanity_check(
     tt2 = np.asarray(stage2_output["test_task"])[:n_trials]
 
     def _run_on(ti_np):
-        # Run in minibatches to mirror train_network's minibatch=8.
+        # Limit inference memory by processing at most eight trials at once.
         out_chunks = []
         bsz = 8
         with torch.no_grad():
@@ -428,11 +325,11 @@ def run_final_net_sanity_check(
 
     checkname = f"{ruleset}_{chosen_network}_seed{seed}_{addon_name}"
     _plot_input_output_panel(
-        f"{outpath}/{checkname}_finalnet_on_stage1.png",
+        f"{seed_figpath}/{checkname}_finalnet_on_stage1.png",
         ti1, to1, out1, task_params1["rules"], tt1, n_trials=n_trials,
     )
     _plot_input_output_panel(
-        f"{outpath}/{checkname}_finalnet_on_stage2.png",
+        f"{seed_figpath}/{checkname}_finalnet_on_stage2.png",
         ti2, to2, out2, task_params2["rules"], tt2, n_trials=n_trials,
     )
 
@@ -460,7 +357,7 @@ def _participation_ratio(cov_mat):
     Use trace(C)^2 / ||C||_F^2 without an eigendecomposition. Scale before
     float64 accumulation to avoid squaring large covariance values directly.
     Unlike clipping eigenvalues, this assumes PSD input, as produced by callers.
-    Returns 1 for a rank-1 matrix and d for isotropic d-dimensional variance.
+    Returns 0 for zero variance, 1 for rank 1, and d for isotropic d-dimensional variance.
     Higher PR → representations spread across more dimensions.
     """
     covariance = np.asarray(cov_mat, dtype=np.float64)
@@ -630,55 +527,14 @@ def _stage1_end_iteration(final_param, history=None):
     return int(legacy_stop) + 1
 
 
-def principal_angles(X, Y, k, datatype="hidden"):
-    """
-    Principal angles (radians) between X's and Y's top-k PC subspaces.
-
-    Complements CVE: CVE asks "what fraction of Y's variance lives in X's
-    subspace?" which is variance-weighted. Principal angles ask "how
-    aligned are the K dominant directions of X with the K dominant
-    directions of Y?" — a per-direction geometric readout. 0 rad means a
-    shared axis; π/2 means orthogonal. Reveals cases where CVE is low
-    because the top-1 directions disagree but secondary directions still
-    align (or vice versa).
-
-    X, Y reshape follows the same rules as `pca_cross_variance`:
-      "hidden"              — (batch×time, n_hidden)
-    "modulation"          — (batch×time, bottleneck*proj)
-      "modulation_weighted" — same flatten; caller pre-multiplies W⊙M.
-
-    Returns
-    -------
-    angles : ndarray of shape (k_eff,), sorted ASCENDING. scipy's native
-             order is descending (largest angle first, smallest last), so
-             the returned array is reversed to put the most-aligned
-             direction at index 0. k_eff = min(k, rank(X basis), rank(Y
-             basis)) so you get at most k values.
-    """
-    if datatype == "hidden":
-        X2d = X.reshape(-1, X.shape[-1])
-        Y2d = Y.reshape(-1, Y.shape[-1])
-    elif datatype in ("modulation", "modulation_weighted"):
-        X2d = X.reshape(-1, X.shape[-1] * X.shape[-2])
-        Y2d = Y.reshape(-1, Y.shape[-1] * Y.shape[-2])
-    else:
-        raise ValueError(f"Unknown datatype: {datatype}")
-
-    # Clamp k to what each PCA can support.
-    k_eff = min(k, min(X2d.shape) - 1, min(Y2d.shape) - 1)
-    if k_eff < 1:
-        return np.array([])
-
-    pca_X = PCA(n_components=k_eff, svd_solver="randomized", random_state=0)
-    pca_X.fit(X2d)
-    pca_Y = PCA(n_components=k_eff, svd_solver="randomized", random_state=0)
-    pca_Y.fit(Y2d)
-
-    return _angles_from_pca(pca_X, pca_Y, X2d.shape, Y2d.shape, k_eff)
-
-
 def _angles_from_pca(pca_X, pca_Y, shape_X, shape_Y, k):
-    """Compare the supported leading directions of two existing PCA fits."""
+    """Return ascending principal angles in radians from two existing PCA fits.
+
+    Use at most k leading components from each fit, discarding directions
+    below a dtype- and data-shape-dependent singular-value tolerance. The
+    result length is limited by the smaller supported rank; an empty basis
+    produces an empty array. Zero means shared, pi/2 means orthogonal.
+    """
     if k < 1:
         return np.array([])
     def supported_basis(pca, shape):
@@ -736,7 +592,8 @@ def pca_cross_variance(X, Y, n_components=None, center_on="X", datatype="hidden"
     Nature Neurosci. 2024, Fig. 6c/k captions).
 
     angle_k optionally reuses these PCA fits for principal angles; randomized
-    leading directions can differ from a separate lower-rank fit.
+    leading directions can differ from a separate lower-rank fit. The angles
+    field is in radians, ascending, with length capped by both supported ranks.
     compute_pr=False omits all three PR fields and their computation, leaving
     PCA, CVE, and requested angles unchanged. Used by direction_averaged_cve,
     whose saved output contains only CVE curves and the direction count.
@@ -906,7 +763,7 @@ if __name__ == "__main__":
                 # Sanity-check figure: load the post-stage-2 network and run
                 # it on both stages' test inputs (already correctly padded in
                 # each stage's npz). Lets us visually verify the saved model
-                # actually solves both tasks before trusting downstream PCA.
+                # performs on both stages before trusting downstream PCA.
                 try:
                     run_final_net_sanity_check(
                         seed, sanity_device, stage1_output, stage2_output,
@@ -917,18 +774,6 @@ if __name__ == "__main__":
                           f"continuing without it")
 
                 seed_result = {"seed": seed}
-
-                # Probe random rule vectors on the frozen backbone, not the
-                # exact stage-2 initialization used by training.
-                try:
-                    backbone_probe = evaluate_backbone_on_delayanti(
-                        seed, sanity_device, stage2_output,
-                        n_random_rule_inits=10,
-                    )
-                    seed_result["backbone_probe"] = backbone_probe
-                except (FileNotFoundError, KeyError, RuntimeError) as e:
-                    print(f"  WARNING: backbone-probe failed ({e}); "
-                          f"continuing without it")
 
                 loading_started = perf_counter()
                 test_task = stage1_output["test_task"]
@@ -1077,9 +922,9 @@ if __name__ == "__main__":
                     }
 
                     # W⊙M analysis: multiplicative contribution of plasticity to
-                    # W_eff. W is frozen across both stages, so the same elementwise
-                    # rescaling applies to stage-1 and stage-2 M alike. No extra
-                    # normalization is applied (per user request).
+                    # W_eff. Stage 1 learns W; stage 2 freezes it, so the final
+                    # checkpoint's W applies to both stages' saved M. No extra
+                    # normalization is applied.
                     try:
                         W = load_mpn_W(seed)  # (N, N)
                         # Broadcasting over (batch, time) axes.
@@ -1215,7 +1060,7 @@ if __name__ == "__main__":
                             aligned["frob_stage1_task0_vs_task1_go"],
                     }
                 elif chosen_network == "dmpn":
-                    print("  WARNING: Ms_orig is empty for this seed (vanilla fallback?)")
+                    print("  WARNING: saved modulation arrays are empty; skipping modulation analyses")
 
                 # Rule-input vector geometry: how does the learned stage-2
                 # rule vector relate to the two pretraining rule vectors?
@@ -1294,16 +1139,16 @@ if __name__ == "__main__":
                         axs[row, period_idx].plot(
                             xs, res["cev_Y_self"], '-o', markersize=2,
                             color="black",
-                            label=f"{final_task} in {final_task} PCs")
+                            label=f"{display_rule(final_task)} in {display_rule(final_task)} PCs")
                         axs[row, period_idx].plot(
                             xs[:len(res["cev_Y"])], res["cev_Y"], '-o',
                             markersize=2, color=c_vals[3],
-                            label=f"{final_task} in {period_to_stage1[period]} PCs")
+                            label=f"{display_rule(final_task)} in {display_rule(period_to_stage1[period])} PCs")
                         axs[row, period_idx].set_xlim(0, x_up)
                         axs[row, period_idx].set_ylim(0, 1.05)
                         axs[row, period_idx].set_xlabel("# PCs")
                         axs[row, period_idx].set_ylabel(
-                            f"{final_task} variance explained")
+                            f"{display_rule(final_task)} variance explained")
                         axs[row, period_idx].set_title(f"{dtype} — {period}")
                         axs[row, period_idx].legend(fontsize=8)
 
@@ -1315,8 +1160,8 @@ if __name__ == "__main__":
                     res_stim = seed_result[dtype]["stimulus"]
                     res_go = seed_result[dtype]["response"]
                     pr_labels = [
-                        "PR pre", f"PR {final_task}", f"PR {final_task}|pre",
-                        "PR pre", f"PR {final_task}", f"PR {final_task}|pre",
+                        "PR pre", f"PR {display_rule(final_task)}", f"PR {display_rule(final_task)}|pre",
+                        "PR pre", f"PR {display_rule(final_task)}", f"PR {display_rule(final_task)}|pre",
                     ]
                     pr_vals = [res_stim["PR_X"], res_stim["PR_Y"], res_stim["PR_Y_in_Xbasis"],
                                res_go["PR_X"], res_go["PR_Y"], res_go["PR_Y_in_Xbasis"]]
@@ -1341,7 +1186,7 @@ if __name__ == "__main__":
 
                 fig.suptitle(f"Seed {seed} | {ruleset} | {chosen_network}", fontsize=12)
                 fig.tight_layout()
-                fig.savefig(f"{outpath}/{checkname}_pca.png", dpi=300)
+                fig.savefig(f"{seed_figpath}/{checkname}_pca.png", dpi=300)
                 plt.close(fig)
         # ─────────────────────────────────────────────────────────────────────
         # Aggregate across seeds (per-ruleset figures)
@@ -1396,21 +1241,21 @@ if __name__ == "__main__":
                     xs_mean = np.arange(1, min_len + 1)
                     axs[row, col].plot(xs_mean, mean_self, color="black",
                                        linewidth=2.5,
-                                       label=f"{final_task} in {final_task} PCs (mean)")
+                                       label=f"{display_rule(final_task)} in {display_rule(final_task)} PCs (mean)")
                     axs[row, col].plot(xs_mean, mean_cross, color="gray",
                                        linewidth=2.5,
-                                       label=f"{final_task} in {period_to_stage1[period]} PCs (mean)")
+                                       label=f"{display_rule(final_task)} in {display_rule(period_to_stage1[period])} PCs (mean)")
 
                 axs[row, col].set_xlim(0, x_up)
                 axs[row, col].set_ylim(0, 1.05)
                 axs[row, col].set_xlabel("# PCs")
-                axs[row, col].set_ylabel(f"{final_task} variance explained")
+                axs[row, col].set_ylabel(f"{display_rule(final_task)} variance explained")
                 axs[row, col].set_title(f"{dtype} — {period}")
                 axs[row, col].legend(fontsize=6)
 
         fig.suptitle(f"{ruleset} | {chosen_network} | {len(all_seed_results)} seeds", fontsize=12)
         fig.tight_layout()
-        fig.savefig(f"{outpath}/{ruleset}_{chosen_network}_{addon_name}_aggregate.png", dpi=300)
+        fig.savefig(f"{figpath}/{ruleset}_{chosen_network}_{addon_name}_aggregate.png", dpi=300)
         plt.close(fig)
 
         # Save aggregate CVE data for paper_plot reuse
@@ -1478,16 +1323,16 @@ if __name__ == "__main__":
                     xs_mean = np.arange(1, min_len + 1)
                     axs_d[row, col].plot(
                         xs_mean, mean_self, color="black", linewidth=2.5,
-                        label=f"{final_task} in {final_task} PCs (mean)")
+                        label=f"{display_rule(final_task)} in {display_rule(final_task)} PCs (mean)")
                     pre_label = stage1_tasks[0] if period == "stimulus" else stage1_tasks[1]
                     axs_d[row, col].plot(
                         xs_mean, mean_cross, color="gray", linewidth=2.5,
-                        label=f"{final_task} in {pre_label} PCs (mean)")
+                        label=f"{display_rule(final_task)} in {display_rule(pre_label)} PCs (mean)")
 
                 axs_d[row, col].set_xlim(0, x_up)
                 axs_d[row, col].set_ylim(0, 1.05)
                 axs_d[row, col].set_xlabel("# PCs")
-                axs_d[row, col].set_ylabel(f"{final_task} variance explained")
+                axs_d[row, col].set_ylabel(f"{display_rule(final_task)} variance explained")
                 axs_d[row, col].set_title(
                     f"{dtype} — {period} (direction-averaged)")
                 axs_d[row, col].legend(fontsize=6)
@@ -1497,7 +1342,7 @@ if __name__ == "__main__":
             f"({len(all_seed_results)} seeds)", fontsize=12)
         fig_d.tight_layout()
         fig_d.savefig(
-            f"{outpath}/{ruleset}_{chosen_network}_{addon_name}_aggregate_stimaligned.png",
+            f"{figpath}/{ruleset}_{chosen_network}_{addon_name}_aggregate_stimaligned.png",
             dpi=300)
         plt.close(fig_d)
 
@@ -1545,10 +1390,10 @@ if __name__ == "__main__":
 
         figpa.suptitle(
             f"{ruleset} | {chosen_network} | principal angles "
-            f"(pretraining vs {final_task})", fontsize=11)
+            f"(pretraining vs {display_rule(final_task)})", fontsize=11)
         figpa.tight_layout()
         figpa.savefig(
-            f"{outpath}/{ruleset}_{chosen_network}_{addon_name}_principal_angles.png",
+            f"{figpath}/{ruleset}_{chosen_network}_{addon_name}_principal_angles.png",
             dpi=300)
         plt.close(figpa)
 
@@ -1590,7 +1435,7 @@ if __name__ == "__main__":
 
         figlc.suptitle(f"{ruleset} | {chosen_network} | Learning curves", fontsize=12)
         figlc.tight_layout()
-        figlc.savefig(f"{outpath}/{ruleset}_{chosen_network}_{addon_name}_learning.png", dpi=300)
+        figlc.savefig(f"{figpath}/{ruleset}_{chosen_network}_{addon_name}_learning.png", dpi=300)
         plt.close(figlc)
 
         if not any("loss" in sr for sr in all_seed_results):
@@ -1607,10 +1452,10 @@ if __name__ == "__main__":
         sim_seeds = [sr for sr in all_seed_results if "m_similarity" in sr]
         if sim_seeds:
             labels = [
-                f"final(stim) ↔ {stage1_tasks[0]}(stim)",
-                f"final(go) ↔ {stage1_tasks[1]}(go)",
-                f"{stage1_tasks[0]}(stim) ↔ {stage1_tasks[1]}(stim)",
-                f"{stage1_tasks[0]}(go) ↔ {stage1_tasks[1]}(go)",
+                f"{display_rule(final_task)}(stim) ↔ {display_rule(stage1_tasks[0])}(stim)",
+                f"{display_rule(final_task)}(go) ↔ {display_rule(stage1_tasks[1])}(go)",
+                f"{display_rule(stage1_tasks[0])}(stim) ↔ {display_rule(stage1_tasks[1])}(stim)",
+                f"{display_rule(stage1_tasks[0])}(go) ↔ {display_rule(stage1_tasks[1])}(go)",
             ]
             suffixes = [
                 "final_vs_stage1_task0_stim",
@@ -1660,7 +1505,7 @@ if __name__ == "__main__":
                                 fontsize=11)
                 figsim.tight_layout()
                 figsim.savefig(
-                    f"{outpath}/{ruleset}_{chosen_network}_{addon_name}_{file_tag}.png",
+                    f"{figpath}/{ruleset}_{chosen_network}_{addon_name}_{file_tag}.png",
                     dpi=300)
                 plt.close(figsim)
 
@@ -1774,7 +1619,7 @@ if __name__ == "__main__":
         combined_tag = "_".join(all_results_by_ruleset.keys())
         figcmp.suptitle(f"{chosen_network} | Learning curves by ruleset", fontsize=12)
         figcmp.tight_layout()
-        figcmp.savefig(f"{outpath}/{combined_tag}_{chosen_network}_{addon_name}_learning.png", dpi=300)
+        figcmp.savefig(f"{figpath}/{combined_tag}_{chosen_network}_{addon_name}_learning.png", dpi=300)
         plt.close(figcmp)
 
         # ─────────────────────────────────────────────────────────────────
@@ -1847,7 +1692,7 @@ if __name__ == "__main__":
                        fontsize=12)
         figts.tight_layout()
         figts.savefig(
-            f"{outpath}/{combined_tag}_{chosen_network}_{addon_name}_transfer_speed.png",
+            f"{figpath}/{combined_tag}_{chosen_network}_{addon_name}_transfer_speed.png",
             dpi=300)
         plt.close(figts)
 
@@ -1874,11 +1719,9 @@ if __name__ == "__main__":
 
         # ─────────────────────────────────────────────────────────────────
         # Rule-input vector geometry, compared across rulesets.
-        # The 200-dim vector learned in stage 2 is the only thing stage 2
-        # adjusts. Where it lives relative to the two pretrained rule
-        # vectors is the sharpest read on "does the novel task's rule
-        # input reuse the pretrained rule subspace (Driscoll) or carve
-        # out a new direction (MPN-distinctive)?"
+        # Stage 2 adjusts only the novel task's input column. Compare that
+        # vector with the pretrained columns to quantify its alignment with
+        # their span; the vector width follows the checkpoint's projection size.
         # ─────────────────────────────────────────────────────────────────
         have_rule_vecs = any(
             "rule_vectors" in sr for rs_srs in all_results_by_ruleset.values()
@@ -1922,9 +1765,9 @@ if __name__ == "__main__":
                 color = ruleset_colors.get(rs, c_vals[0])
                 s1_tasks = _stage1_tasks_for(rs)
                 cos_labels = [
-                    f"{final_task} ↔ {s1_tasks[0]}",
-                    f"{final_task} ↔ {s1_tasks[1]}",
-                    f"{s1_tasks[0]} ↔ {s1_tasks[1]}",
+                    f"{display_rule(final_task)} ↔ {display_rule(s1_tasks[0])}",
+                    f"{display_rule(final_task)} ↔ {display_rule(s1_tasks[1])}",
+                    f"{display_rule(s1_tasks[0])} ↔ {display_rule(s1_tasks[1])}",
                 ]
                 xs_group = rs_idx * group_step + np.arange(len(cos_keys))
                 means = np.array([_vals(rs, k).mean() for k in cos_keys])
@@ -1952,7 +1795,7 @@ if __name__ == "__main__":
                 fontsize=12)
             figrv.tight_layout()
             figrv.savefig(
-                f"{outpath}/{combined_tag}_{chosen_network}_{addon_name}_rule_vectors.png",
+                f"{figpath}/{combined_tag}_{chosen_network}_{addon_name}_rule_vectors.png",
                 dpi=300)
             plt.close(figrv)
 
@@ -1973,78 +1816,6 @@ if __name__ == "__main__":
                 pickle.dump(rule_vec_data, f)
             print(f"  Saved rule vector data: {rv_pkl_path}")
 
-        # ─────────────────────────────────────────────────────────────────
-        # Backbone-probe figure: delayanti performance under random rule inputs
-        # with the pretrained backbone fixed, not exact stage-2 starting states.
-        # ─────────────────────────────────────────────────────────────────
-        have_probe = any(
-            "backbone_probe" in sr
-            for rs_srs in all_results_by_ruleset.values() for sr in rs_srs)
-        if have_probe:
-            print(f"\n[Backbone probe — random-rule loss & "
-                  f"accuracy on {final_task}, per ruleset]")
-            # Collect per-seed stats: each seed's backbone_probe has
-            # per-random-init arrays; aggregate to a single scalar per seed
-            # (mean across random inits) so every seed contributes equally.
-            per_seed_loss = {}
-            per_seed_loss_out = {}
-            per_seed_acc = {}
-            for rs, seed_results in all_results_by_ruleset.items():
-                loss_list, loss_out_list, acc_list = [], [], []
-                for sr in seed_results:
-                    if "backbone_probe" not in sr:
-                        continue
-                    loss_list.append(float(np.mean(sr["backbone_probe"]["loss"])))
-                    loss_out_list.append(float(np.mean(sr["backbone_probe"]["loss_out"])))
-                    acc_list.append(float(np.mean(sr["backbone_probe"]["acc"])))
-                per_seed_loss[rs] = np.array(loss_list)
-                per_seed_loss_out[rs] = np.array(loss_out_list)
-                per_seed_acc[rs] = np.array(acc_list)
-                if loss_list:
-                    v_loss = np.array(loss_list)
-                    v_acc = np.array(acc_list)
-                    print(f"  {rs}  seeds={len(v_loss)}  "
-                          f"loss mean={v_loss.mean():.4f}±{v_loss.std():.4f}  "
-                          f"acc mean={v_acc.mean():.4f}±{v_acc.std():.4f}")
-
-            # Figure: three panels (full loss, output-only loss, accuracy).
-            # Each shows per-ruleset per-seed scatter + boxplot.
-            figbp, axbp = plt.subplots(1, 3, figsize=(12, 3.8))
-            panel_specs = [
-                ("Total loss (output + reg)", per_seed_loss, "loss"),
-                ("Output MSE (label only)", per_seed_loss_out, "output MSE"),
-                (f"{final_task} accuracy", per_seed_acc, "accuracy"),
-            ]
-            for panel_idx, (title, data_by_rs, ylabel) in enumerate(panel_specs):
-                ax = axbp[panel_idx]
-                rs_list_here = list(data_by_rs.keys())
-                positions = list(range(len(rs_list_here)))
-                box_data = [data_by_rs[rs] for rs in rs_list_here]
-                ax.boxplot(box_data, positions=positions, widths=0.5,
-                           showfliers=False, patch_artist=False)
-                for xpos, rs in enumerate(rs_list_here):
-                    color = ruleset_colors.get(rs, c_vals[0])
-                    vals = data_by_rs[rs]
-                    jitter = (np.arange(len(vals)) - (len(vals) - 1) / 2) * 0.04
-                    ax.plot(xpos + jitter, vals, "o", color=color,
-                            alpha=0.7, markersize=7)
-                ax.set_xticks(positions)
-                ax.set_xticklabels(rs_list_here, rotation=10)
-                ax.set_ylabel(ylabel)
-                ax.set_title(title)
-            # Accuracy panel: anchor to [0, 1] for readability.
-            axbp[2].set_ylim([-0.02, 1.02])
-
-            figbp.suptitle(
-                f"{chosen_network} | Backbone probe on {final_task} "
-                f"(random rule-vector init, compute_loss/compute_acc)",
-                fontsize=11)
-            figbp.tight_layout()
-            figbp.savefig(
-                f"{outpath}/{combined_tag}_{chosen_network}_{addon_name}_backbone_probe.png",
-                dpi=300)
-            plt.close(figbp)
-
-        print(f"\nDone. Results saved to {outpath}/")
+        print(f"\nDone. Data: {outpath}/; aggregate figures: {figpath}/; per-seed figures: {seed_figpath}/")
     else:
         print("\nNo rulesets produced results. Nothing to plot.")

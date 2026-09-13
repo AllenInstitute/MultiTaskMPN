@@ -10,16 +10,20 @@ N_TRIALS; otherwise each invocation selects distinct random seeds.
 Protocol
 --------
 Stage 1 (Pretraining)
-    Train a DeepMultiPlasticNet on a pair of tasks while reserving one extra
-    task-indicator column for the held-out post-training task.
+    Train a DeepMultiPlasticNet on the tasks of the chosen pretraining ruleset
+    (a pair for the Proper/Improper motifs, DelayAnti alone for "Proper
+    motif +") while reserving one extra task-indicator column for the held-out
+    post-training task.
 
 Stage 2 (Post-training)
     Reuse the pretrained network, freeze all parameters via
     expand_and_freeze(option=1), and continue training only the last input
     column on the held-out task.
 
-Outputs in ./pretraining/ include configuration, stage-specific test outputs,
-final recorded states, the final checkpoint, and both stages' histories.
+Outputs in ./pretraining/ include configuration, stage-specific test inputs,
+targets and task metadata, recorded M and hidden states, accuracy curves,
+the final checkpoint, and both stages' full histories. Unused predictions,
+bias/input traces, and duplicate result metadata are not saved.
 The feature argument labels files; it does not set the regularization strength.
 """
 
@@ -66,14 +70,25 @@ ACCEPT_RULES = (
     'delaydm1', 'delaydm2', 'dmsgo', 'dmcgo', 'contextdelaydm1',
     'contextdelaydm2', 'multidelaydm', 'dmsnogo', 'dmcnogo'
 )
+# Pretraining rulesets (keys are underscore-joined internal rule names and
+# prefix every output filename, so each mode saves to its own files):
+#   fdgo_delaygo   — Improper motif   (DelayPro + MemoryPro)
+#   fdanti_delaygo — Proper motif     (DelayAnti + MemoryPro)
+#   fdanti         — Proper motif +   (DelayAnti only; tests whether MemoryPro
+#                    pretraining is necessary for MemoryAnti transfer)
+#   delayanti      — the post-training task itself (MemoryAnti)
+# A single-rule pretraining reserves one held-out column as usual, so its
+# checkpoints have one fewer task-indicator channel than the two-rule motifs.
 RULES_DICT = {
     'fdgo_delaygo': ['fdgo', 'delaygo'],
     'fdanti_delaygo': ['fdanti', 'delaygo'],
+    'fdanti': ['fdanti'],
     'delayanti': ['delayanti'],
 }
 RULES_DICT_FREQUENCY = {
     'fdgo_delaygo': np.array([1, 1]),
     'fdanti_delaygo': np.array([1, 1]),
+    'fdanti': np.array([1]),
     'delayanti': np.array([1]),
 }
 OUT_DIR = Path("./pretraining")
@@ -83,6 +98,25 @@ SEED_LIST = None
 PRETRAIN_RULESET = "fdanti_delaygo"
 POSTTRAIN_RULESET = "delayanti"
 FEATURE = "L21e3"
+
+# Multiplicative modulation bounds (min, max) for M. The default (-1, 1)
+# keeps W_eff = W * (1 + M) within [0, 2W], so no synapse can flip the sign
+# of its weight; (-2, 2) gives 1 + M in [-1, 3] and allows per-synapse sign
+# inversion. Non-default bounds are appended to the feature label
+# automatically (e.g. L21e3 -> L21e3mb2), so their output files can never
+# overwrite or be confused with default-bound runs, and downstream analyses
+# select them explicitly via their feature string.
+M_BOUNDS = (-2.0, 2.0)
+
+
+def _feature_with_bounds(feature, m_bounds=None):
+    """Append a bounds tag to the feature label for non-default M bounds."""
+    m_bounds = tuple(M_BOUNDS if m_bounds is None else m_bounds)
+    if m_bounds == (-1.0, 1.0):
+        return feature
+    if m_bounds[0] == -m_bounds[1]:
+        return f"{feature}mb{m_bounds[1]:g}"
+    return f"{feature}mb{m_bounds[0]:g}to{m_bounds[1]:g}"
 
 reload(nets)
 reload(net_helpers)
@@ -196,6 +230,7 @@ def _current_basic_params(hyp_dict_input, *, train, n_hidden, mpn_depth):
             'm_time_scale': 4000,
             'lam_train': False,
             'W_freeze': False,
+            'm_bounds': M_BOUNDS,
         },
         'leaky': True,
         'alpha': 0.2,
@@ -247,27 +282,21 @@ def _find_task(task_params, test_input_np, shift_index):
 
 
 def _modulation_extraction(db_, max_seq_len_, layer_index, n_batch_all, *, half=False, nettype="dmpn"):
+    """Extract only the original modulation matrices and reshaped hidden states."""
     print(db_.keys())
     divider = 1 if not half else 2
     if nettype == "dmpn":
-        Ms = np.concatenate((
-            db_[f'M{layer_index}'].reshape(int(n_batch_all / divider), max_seq_len_, -1),
-        ), axis=-1)
         Ms_orig = np.concatenate((db_[f'M{layer_index}'],), axis=-1)
-        bs = np.concatenate((db_[f'b{layer_index}'],), axis=-1)
         hs = np.concatenate((
             db_[f'hidden{layer_index}'].reshape(int(n_batch_all / divider), max_seq_len_, -1),
         ), axis=-1)
-        xs = np.concatenate((
-            db_[f'input{layer_index}'].reshape(int(n_batch_all / divider), max_seq_len_, -1),
-        ), axis=-1)
-        return Ms, Ms_orig, hs, bs, xs
+        return Ms_orig, hs
 
     if nettype == "vanilla":
         hs = np.concatenate((
             db_['hidden'].reshape(int(n_batch_all / divider), max_seq_len_, -1),
         ), axis=-1)
-        return None, None, hs, None, None
+        return None, hs
 
     raise ValueError(f"Unsupported nettype: {nettype}")
 
@@ -317,6 +346,9 @@ def run_trial(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", pos
     mpn_depth = 1
     n_hidden = 200
     chosen_network = 'dmpn'
+    feature = _feature_with_bounds(feature)
+    print(f"Feature label (with M-bound tag if non-default): {feature}; "
+          f"m_bounds={M_BOUNDS}")
     hyp_dict_old, hyp_dict = _build_experiment_hyp_dicts(
         feature,
         pretrain_ruleset,
@@ -435,7 +467,7 @@ def run_trial(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", pos
     test_task2 = [idx - len(task_params["rules"]) for idx in test_task2]
 
     print("================================= Stage 1 =================================")
-    net_pretrain, _, (_, netout_stage1_lst, db_stage1_lst, _, _, _, _, marker_stage1_lst, _, _), pretrain_stop = net_helpers.train_network(
+    net_pretrain, _, (_, _, db_stage1_lst, _, _, _, _, _, _, _), pretrain_stop = net_helpers.train_network(
         params,
         device=device,
         verbose=verbose,
@@ -459,7 +491,7 @@ def run_trial(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", pos
         input_orig = None
 
     print("================================= Stage 2 =================================")
-    net, _, (_, netout_lst, db_lst, _, _, _, Wall_lst, marker_lst, _, _), _ = net_helpers.train_network(
+    net, _, (_, _, db_lst, _, _, _, Wall_lst, marker_lst, _, _), _ = net_helpers.train_network(
         params2,
         net=net_pretrain,
         device=device,
@@ -492,17 +524,13 @@ def run_trial(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", pos
     print('Done!')
 
     ind = len(marker_lst) - 1
-    ind_stage1 = len(marker_stage1_lst) - 1
     network_at_percent = (marker_lst[ind] + 1) / train_params2['n_datasets'] * 100
     print(f"Using network at {network_at_percent}%")
-    net_out_final = netout_lst[0][ind]
-    net_out_stage1_final = netout_stage1_lst[0][ind_stage1]
 
     stage1_output_path = OUT_DIR / f"output_{_build_file_tag(hyp_dict_old, hyp_dict, seed)}_stage1.npz"
     np.savez_compressed(
         stage1_output_path,
         test_input_np=test_input_np,
-        net_out_stage1_final=net_out_stage1_final,
         test_output_np=test_output_np,
         rules_epochs=rules_epochs,
         task_params=task_params,
@@ -510,14 +538,12 @@ def run_trial(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", pos
     )
 
     print(f"test_input_np: {test_input_np.shape}")
-    print(f"net_out_stage1_final: {net_out_stage1_final.shape}")
     print(f"test_output_np: {test_output_np.shape}")
 
     stage2_output_path = OUT_DIR / f"output_{_build_file_tag(hyp_dict_old, hyp_dict, seed)}_stage2.npz"
     np.savez_compressed(
         stage2_output_path,
         test_input_np=test_input2_np,
-        net_out_final=net_out_final,
         test_output_np=test_output2_np,
         rules_epochs2=rules_epochs2,
         task_params=task_params2,
@@ -531,16 +557,11 @@ def run_trial(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", pos
     print(f"rules_epochs: {rules_epochs}")
     print(f"rules_epochs2: {rules_epochs2}")
 
-    all_rules = np.array(task_params["rules"])
-    test_task = np.array(test_task)
-    print(f"all_rules: {all_rules}")
-    print(f"test_task: {test_task}")
-
-    _, Ms_orig_stage1, hs_stage1, bs_stage1, xs_stage1 = _modulation_extraction(
+    Ms_orig_stage1, hs_stage1 = _modulation_extraction(
         db_stage1_lst[0][-1], max_seq_len1, layer_index, n_batch_all,
         nettype=hyp_dict["chosen_network"],
     )
-    _, Ms_orig_stage2, hs_stage2, bs_stage2, xs_stage2 = _modulation_extraction(
+    Ms_orig_stage2, hs_stage2 = _modulation_extraction(
         db_lst[0][-1], max_seq_len2, layer_index, n_batch_all,
         half=True, nettype=hyp_dict["chosen_network"],
     )
@@ -552,19 +573,10 @@ def run_trial(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", pos
     result_path = OUT_DIR / f"param_{_build_file_tag(hyp_dict_old, hyp_dict, seed)}_result.npz"
     np.savez_compressed(
         result_path,
-        rules_epochs=rules_epochs,
-        rules_epochs2=rules_epochs2,
-        hyp_dict_old=hyp_dict_old,
-        hyp_dict=hyp_dict,
-        all_rules=all_rules,
         Ms_orig_stage1=Ms_orig_stage1,
         hs_stage1=hs_stage1,
-        bs_stage1=bs_stage1,
-        xs_stage1=xs_stage1,
         Ms_orig_stage2=Ms_orig_stage2,
         hs_stage2=hs_stage2,
-        bs_stage2=bs_stage2,
-        xs_stage2=xs_stage2,
         pretrain_stop=pretrain_stop,
         stage1_end_iter=stage1_end_iter,
         valid_acc_iter=net.hist['iters_monitor'][1:],
