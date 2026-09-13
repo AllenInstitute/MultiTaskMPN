@@ -36,15 +36,14 @@ class PretrainingSavingTests(unittest.TestCase):
             ["_stage1_end_iteration", "period_slice"], {"np": np})
 
     def test_extraction_preserves_values_layout_and_copies(self):
-        for half in (False, True):
+        for trials in (3, 6):
             for layer_index in (0, 1):
-                with self.subTest(half=half, layer_index=layer_index):
-                    trials = 3 if half else 6
+                with self.subTest(trials=trials, layer_index=layer_index):
                     modulation = np.arange(trials * 5 * 12, dtype=np.float32).reshape(trials, 5, 3, 4)
                     hidden = np.arange(trials * 5 * 3, dtype=np.float32).reshape(trials * 5, 3)
                     saved_modulation, saved_hidden = self.producer["_modulation_extraction"](
                         {f"M{layer_index}": modulation, f"hidden{layer_index}": hidden},
-                        5, layer_index, 6, half=half)
+                        5, layer_index, trials)
                     np.testing.assert_array_equal(saved_modulation, modulation)
                     np.testing.assert_array_equal(saved_hidden, hidden.reshape(trials, 5, 3))
                     self.assertEqual(saved_modulation.dtype, modulation.dtype)
@@ -53,11 +52,10 @@ class PretrainingSavingTests(unittest.TestCase):
                     self.assertFalse(np.shares_memory(saved_hidden, hidden))
 
     def test_vanilla_extraction_and_unsupported_type(self):
-        for half in (False, True):
-            trials = 3 if half else 6
+        for trials in (3, 6):
             hidden = np.arange(trials * 5 * 3, dtype=np.float32).reshape(trials * 5, 3)
             modulation, saved_hidden = self.producer["_modulation_extraction"](
-                {"hidden": hidden}, 5, 1, 6, half=half, nettype="vanilla")
+                {"hidden": hidden}, 5, 1, trials, nettype="vanilla")
             self.assertIsNone(modulation)
             np.testing.assert_array_equal(saved_hidden, hidden.reshape(trials, 5, 3))
         with self.assertRaisesRegex(ValueError, "Unsupported nettype"):

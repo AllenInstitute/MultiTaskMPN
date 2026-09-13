@@ -93,9 +93,9 @@ RULES_DICT_FREQUENCY = {
 }
 OUT_DIR = Path("./pretraining")
 
-N_TRIALS = 5
+N_TRIALS = 10
 SEED_LIST = None
-PRETRAIN_RULESET = "fdanti_delaygo"
+PRETRAIN_RULESET = "fdanti"
 POSTTRAIN_RULESET = "delayanti"
 FEATURE = "L21e3"
 
@@ -281,20 +281,21 @@ def _find_task(task_params, test_input_np, shift_index):
     return test_task
 
 
-def _modulation_extraction(db_, max_seq_len_, layer_index, n_batch_all, *, half=False, nettype="dmpn"):
-    """Extract only the original modulation matrices and reshaped hidden states."""
+def _modulation_extraction(db_, max_seq_len_, layer_index, n_batch, *, nettype="dmpn"):
+    """Extract modulation matrices and reshape hidden states for one stage."""
     print(db_.keys())
-    divider = 1 if not half else 2
     if nettype == "dmpn":
         Ms_orig = np.concatenate((db_[f'M{layer_index}'],), axis=-1)
+        hidden = db_[f'hidden{layer_index}']
         hs = np.concatenate((
-            db_[f'hidden{layer_index}'].reshape(int(n_batch_all / divider), max_seq_len_, -1),
+            hidden.reshape(n_batch, max_seq_len_, hidden.shape[-1]),
         ), axis=-1)
         return Ms_orig, hs
 
     if nettype == "vanilla":
+        hidden = db_['hidden']
         hs = np.concatenate((
-            db_['hidden'].reshape(int(n_batch_all / divider), max_seq_len_, -1),
+            hidden.reshape(n_batch, max_seq_len_, hidden.shape[-1]),
         ), axis=-1)
         return None, hs
 
@@ -461,7 +462,8 @@ def run_trial(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", pos
     test_input2_np = test_input2.detach().cpu().numpy()
     test_output2_np = test_output2.detach().cpu().numpy()
 
-    n_batch_all = test_input_np.shape[0]
+    n_batch_stage1 = test_input_np.shape[0]
+    n_batch_stage2 = test_input2_np.shape[0]
     test_task = _find_task(task_params, test_input_np, shift_index)
     test_task2 = _find_task(task_params2, test_input2_np, shift_index)
     test_task2 = [idx - len(task_params["rules"]) for idx in test_task2]
@@ -558,12 +560,12 @@ def run_trial(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", pos
     print(f"rules_epochs2: {rules_epochs2}")
 
     Ms_orig_stage1, hs_stage1 = _modulation_extraction(
-        db_stage1_lst[0][-1], max_seq_len1, layer_index, n_batch_all,
+        db_stage1_lst[0][-1], max_seq_len1, layer_index, n_batch_stage1,
         nettype=hyp_dict["chosen_network"],
     )
     Ms_orig_stage2, hs_stage2 = _modulation_extraction(
-        db_lst[0][-1], max_seq_len2, layer_index, n_batch_all,
-        half=True, nettype=hyp_dict["chosen_network"],
+        db_lst[0][-1], max_seq_len2, layer_index, n_batch_stage2,
+        nettype=hyp_dict["chosen_network"],
     )
 
     print(f"hs_stage1.shape:{hs_stage1.shape}")
