@@ -2721,8 +2721,8 @@ def plot_rule_vectors():
     """
     Figure: Pairwise cosine similarity between rule-input vectors.
 
-    Shows how the novel task's learned rule vector relates to the two
-    pretrained rule vectors, for each ruleset (relevant vs irrelevant motif).
+    Shows how the novel task's learned rule vector relates to every available
+    pretrained rule vector, including the one-parent Proper motif + condition.
     """
     _ensure_out_dir()
     if not PRETRAINING_ANALYSIS_DIR.exists():
@@ -2745,6 +2745,7 @@ def plot_rule_vectors():
         stage1_tasks_map = {
             "fdgo_delaygo": ["fdgo", "delaygo"],
             "fdanti_delaygo": ["fdanti", "delaygo"],
+            "fdanti": ["fdanti"],
         }
         final_task = "delayanti"
 
@@ -2755,16 +2756,33 @@ def plot_rule_vectors():
                 with open(p, "rb") as f:
                     data = pickle.load(f)
                 if "rule_vectors" in data:
-                    entry = by_ruleset.setdefault(rs, {
-                        "cos_novel_pre0": [], "cos_novel_pre1": [],
-                        "cos_pre0_pre1": [], "in_span_fraction": [],
-                        "stage1_tasks": stage1_tasks_map.get(rs, [rs]),
-                        "final_task": final_task,
-                    })
                     rv = data["rule_vectors"]
-                    entry["cos_novel_pre0"].append(rv["cos_novel_pre0"])
-                    entry["cos_novel_pre1"].append(rv["cos_novel_pre1"])
-                    entry["cos_pre0_pre1"].append(rv["cos_pre0_pre1"])
+                    stage1_tasks = list(rv.get(
+                        "pretrained_tasks", stage1_tasks_map.get(rs, [rs])))
+                    entry = by_ruleset.setdefault(rs, {
+                        "cos_novel_by_task": {task: [] for task in stage1_tasks},
+                        "cos_pretrained_pairs": {},
+                        "in_span_fraction": [],
+                        "stage1_tasks": stage1_tasks,
+                        "final_task": rv.get("novel_task", final_task),
+                    })
+                    if entry["stage1_tasks"] != stage1_tasks:
+                        raise ValueError(
+                            f"{p}: inconsistent Stage-1 task list for {rs}")
+                    named_novel = rv.get("cos_novel_by_task", {})
+                    for task_index, task in enumerate(stage1_tasks):
+                        value = named_novel.get(task, rv.get(f"cos_novel_pre{task_index}"))
+                        if value is None:
+                            raise KeyError(f"{p}: missing novel cosine for {task}")
+                        entry["cos_novel_by_task"][task].append(value)
+                    named_pairs = rv.get("cos_pretrained_pairs", {})
+                    for pair, value in named_pairs.items():
+                        entry["cos_pretrained_pairs"].setdefault(pair, []).append(value)
+                    if (not named_pairs and len(stage1_tasks) == 2
+                            and "cos_pre0_pre1" in rv):
+                        pair = f"{stage1_tasks[0]}__{stage1_tasks[1]}"
+                        entry["cos_pretrained_pairs"].setdefault(pair, []).append(
+                            rv["cos_pre0_pre1"])
                     entry["in_span_fraction"].append(rv["in_span_fraction"])
 
     if not by_ruleset:
@@ -2774,10 +2792,12 @@ def plot_rule_vectors():
     ruleset_colors = {
         "fdgo_delaygo": "#3182ce",
         "fdanti_delaygo": "#e53e3e",
+        "fdanti": "#dd6b20",
     }
     ruleset_labels = {
         "fdgo_delaygo": "Irrelevant motif",
         "fdanti_delaygo": "Relevant motif",
+        "fdanti": "Proper motif +",
     }
 
     task_display_names = {
@@ -2787,7 +2807,6 @@ def plot_rule_vectors():
         "delaygo": "MemoryPro",
     }
 
-    cos_keys = ["cos_novel_pre0", "cos_novel_pre1", "cos_pre0_pre1"]
     rs_list = sorted(by_ruleset.keys())
 
     # Drop the within-pretraining baseline (pre0 ↔ pre1) so each motif keeps
@@ -2808,36 +2827,61 @@ def plot_rule_vectors():
     group_gap = 0.0
 
     # Build the per-ruleset bar list first, then interleave columns across
-    # rulesets so the colors alternate (red1, blue1, red2, blue2, ...) instead
-    # of grouping all of one ruleset's bars together.
+    # rulesets instead of grouping all of one ruleset's bars together.
     per_rs_bars = {}  # rs -> list of (label, mean, std, vals)
     for rs in rs_list:
         s1_tasks = by_ruleset[rs].get("stage1_tasks", [rs])
         final_task = by_ruleset[rs].get("final_task", "novel")
 
         ft = task_display_names.get(final_task, final_task)
-        t0 = task_display_names.get(s1_tasks[0], s1_tasks[0])
-        t1 = task_display_names.get(s1_tasks[1], s1_tasks[1])
+        if not s1_tasks:
+            raise ValueError(f"{rs}: rule-vector data has no Stage-1 tasks")
 
-        # (key, label, underlying raw task pair) for the three comparisons.
-        bar_specs = [
-            ("cos_novel_pre0", f"{ft}\n↔ {t0}", (final_task, s1_tasks[0])),
-            ("cos_novel_pre1", f"{ft}\n↔ {t1}", (final_task, s1_tasks[1])),
-            ("cos_pre0_pre1", f"{t0}\n↔ {t1}", (s1_tasks[0], s1_tasks[1])),
-        ]
+        # (values, label, underlying raw task pair) for every comparison that
+        # exists. The named schema supports the one-parent Proper motif +;
+        # legacy flat keys remain a fallback for older two-parent pickles.
+        bar_specs = []
+        named_novel = by_ruleset[rs].get("cos_novel_by_task", {})
+        for task_index, task in enumerate(s1_tasks):
+            values = named_novel.get(
+                task, by_ruleset[rs].get(f"cos_novel_pre{task_index}"))
+            if values is None:
+                raise KeyError(f"{rs}: missing novel cosine for {task}")
+            task_label = task_display_names.get(task, task)
+            bar_specs.append((values, f"{ft}\n↔ {task_label}",
+                              (final_task, task)))
+
+        named_pairs = by_ruleset[rs].get("cos_pretrained_pairs", {})
+        for left_index, left_task in enumerate(s1_tasks):
+            for right_index in range(left_index + 1, len(s1_tasks)):
+                right_task = s1_tasks[right_index]
+                pair_key = f"{left_task}__{right_task}"
+                values = named_pairs.get(pair_key)
+                if values is None and left_index == 0 and right_index == 1:
+                    values = by_ruleset[rs].get("cos_pre0_pre1")
+                if values is None:
+                    raise KeyError(f"{rs}: missing pretrained cosine for {pair_key}")
+                left_label = task_display_names.get(left_task, left_task)
+                right_label = task_display_names.get(right_task, right_task)
+                bar_specs.append((values, f"{left_label}\n↔ {right_label}",
+                                  (left_task, right_task)))
         # Drop the excluded task pairs; keep remaining bars packed (no gaps).
         bar_specs = [
-            (k, lbl, pair) for (k, lbl, pair) in bar_specs
+            (values, label, pair) for values, label, pair in bar_specs
             if frozenset(pair) not in excluded_pairs
         ]
         per_rs_bars[rs] = [
-            (lbl, float(np.mean(by_ruleset[rs][k])),
-             float(np.std(by_ruleset[rs][k])), np.array(by_ruleset[rs][k]))
-            for (k, lbl, _) in bar_specs
+            (label, float(np.mean(values)), float(np.std(values)), np.asarray(values))
+            for values, label, _ in bar_specs
         ]
 
-    # Interleave: for each column index, emit one bar per ruleset (red then
-    # blue), so bars alternate color; a group_gap separates successive columns.
+    # The original two-ruleset figure had four bars. Proper motif + adds a
+    # fifth, so scale width with the actual count to keep multiline labels apart.
+    n_bars_total = sum(len(bars) for bars in per_rs_bars.values())
+    fig.set_size_inches(max(3.6, 1.05 * n_bars_total), 2.4 * 2 / 3)
+
+    # Interleave: for each column index, emit one bar per ruleset; a group_gap
+    # separates successive columns.
     all_x, all_labels = [], []
     labeled = set()  # ensure each ruleset appears once in the legend
     n_cols = max((len(bars) for bars in per_rs_bars.values()), default=0)
@@ -2952,9 +2996,12 @@ def _plot_aggregate_cve_panel(ax, by_ruleset, dtype, period, ruleset_colors,
     cross_alpha = 0.18
     cross_style = "-"
 
-    # Plot self (black) — same across rulesets, just use the first available
+    ruleset_order = ("fdanti", "fdanti_delaygo", "fdgo_delaygo")
+    self_ruleset_order = ("fdanti_delaygo", "fdgo_delaygo", "fdanti")
+
+    # Plot self (black) — use one available ruleset as the shared reference.
     self_plotted = False
-    for rs in ["fdanti_delaygo", "fdgo_delaygo"]:
+    for rs in self_ruleset_order:
         if rs not in by_ruleset:
             continue
         agg = by_ruleset[rs]
@@ -2972,7 +3019,7 @@ def _plot_aggregate_cve_panel(ax, by_ruleset, dtype, period, ruleset_colors,
             self_plotted = True
 
     # Plot cross (colored by ruleset)
-    for rs in ["fdanti_delaygo", "fdgo_delaygo"]:
+    for rs in ruleset_order:
         if rs not in by_ruleset:
             continue
         agg = by_ruleset[rs]
@@ -3037,10 +3084,12 @@ def _plot_aggregate_cve_period(period):
     ruleset_colors = {
         "fdgo_delaygo": "#3182ce",
         "fdanti_delaygo": "#e53e3e",
+        "fdanti": "#dd6b20",
     }
     ruleset_labels = {
         "fdgo_delaygo": "Irrelevant motif",
         "fdanti_delaygo": "Relevant motif",
+        "fdanti": "Proper motif +",
     }
 
     x_lim_map = {"hidden": 20, "modulation_weighted": 1000}
@@ -3058,7 +3107,7 @@ def _plot_aggregate_cve_period(period):
         _plot_aggregate_cve_panel(
             ax, by_ruleset, dtype, period, ruleset_colors, ruleset_labels,
             x_lim=x_lim_map[dtype], x_ticks=x_tick_map[dtype],
-            show_legend=False)
+            show_legend=(col == 0))
         ax.set_title(f"{dtype_titles[dtype]} — {period_title}",
                      fontsize=8, pad=4)
         if col > 0:
@@ -3075,8 +3124,7 @@ def _plot_aggregate_cve_period(period):
 def plot_aggregate_cve_stimulus():
     """
     Figure: stimulus-period-only CVE. Single row, two columns — hidden (left)
-    and effective modulation (right) — overlaying the relevant and irrelevant
-    motif rulesets.
+    and effective modulation (right) — overlaying all three motif conditions.
     """
     _plot_aggregate_cve_period("stimulus")
 
@@ -3091,6 +3139,7 @@ def plot_pretraining_principal_angles():
     groups = {
         "fdgo_delaygo": ("Irrelevant motif", "#3182ce"),
         "fdanti_delaygo": ("Relevant motif", "#e53e3e"),
+        "fdanti": ("Proper motif +", "#dd6b20"),
     }
     representations = [("hidden", "Hidden"), ("modulation_weighted", "Effective Modulation")]
     periods = ["stimulus", "response"]
@@ -3153,8 +3202,8 @@ def plot_pretraining_principal_angles():
 def plot_aggregate_cve_response():
     """
     Figure: response-period-only CVE. Single row, two columns — hidden (left)
-    and effective modulation (right) — overlaying the relevant and irrelevant
-    motif rulesets, same conventions as plot_aggregate_cve_stimulus.
+    and effective modulation (right) — overlaying all three motif conditions,
+    with the same conventions as plot_aggregate_cve_stimulus.
     """
     _plot_aggregate_cve_period("response")
 

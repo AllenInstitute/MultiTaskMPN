@@ -106,7 +106,7 @@ FEATURE = "L21e3"
 # automatically (e.g. L21e3 -> L21e3mb2), so their output files can never
 # overwrite or be confused with default-bound runs, and downstream analyses
 # select them explicitly via their feature string.
-M_BOUNDS = (-2.0, 2.0)
+M_BOUNDS = (-1.0, 1.0)
 
 
 def _feature_with_bounds(feature, m_bounds=None):

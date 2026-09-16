@@ -22,7 +22,8 @@ experiment. Rule-vector interventions, magnitude sweeps, and backbone probes
 require their explicit flags. --ruleset and --seed also filter default runs.
 For checkpoint-batch analyses, --total-seed K randomly selects K matching
 checkpoint seeds per motif; without it, every matching checkpoint is used.
-Batch checkpoint selection is reproducible from --test-seed. Memory-PCA
+Batch selection uses the same stable (test-seed, ruleset) mapping as
+pretraining_analysis.py. Memory-PCA
 checkpoint selection is independent of --test-seed; use --seed to fix it.
 Default runs continue after an experiment fails and report failures at the end.
 --accuracy generates fresh trials, saves accuracy JSON, then plots. Accuracy uses
@@ -31,7 +32,7 @@ the model's angle-based response-timepoint metric, not trial success counts.
 means, error bars population SD, and dots individual seeds. Reads per-run
 accuracy JSON files, excluding summary reports to avoid duplicate counts.
 Use --memory-pca to project stimulus and response trajectories into the MemoryAnti memory
-subspace, for hidden and effective modulation (W*M), in both motif groups. Saves
+subspace, for hidden and effective modulation (W*M), in all motif groups. Saves
 PNG figures only, selecting a random checkpoint per group unless filtered.
 Memory PCA uses 256 trials per task, batches of 8, and automatic device selection;
 --n-trials, --batch-size, and --device apply to the other experiments.
@@ -51,7 +52,7 @@ encodes task identity or separates additively from stimulus information.
 the plastic state at response onset (mean-|entry| L1 magnitudes/distance and
 per-trial Pearson correlations, per motif group).
 Use --rule-vector-intervention to replace the learned MemoryAnti rule-input
-vector with its projection into the two-rule pretraining span or its orthogonal
+vector with its projection into the available pretraining-rule span or its orthogonal
 residual. Raw and norm-matched versions separate direction from input strength;
 matched-norm random vectors provide a control. This analysis uses final
 checkpoints only, does not retrain the model, and saves separate accuracy and
@@ -65,15 +66,15 @@ Stage 2 trains only the last input column, so replacing that column turns the
 final checkpoint back into the end-of-stage-1 backbone under a counterfactual
 rule input. Two untrained probes are evaluated: random rule vectors (the
 negative control, reporting training-style loss and accuracy) and the
-pretraining-span combination grid
-a*v_pre0 + b*v_pre1 over an (a, b) coefficient grid from -4 to 4 on each axis
-with spacing 0.25, plus single cues, the cue sum, and the learned vector's
-least-squares projection into the span. A high-accuracy grid cell identifies
+pretraining-span coefficient sweep. This is a two-dimensional (a, b) grid for
+the two-parent motifs and a one-dimensional coefficient sweep for Proper motif+,
+plus the available single cues, their sum when applicable, and the learned
+vector's least-squares projection into the span. A high-accuracy grid cell identifies
 a rule-span solution on the evaluated trials without training a new vector.
 The grid maximum carries selection bias over the grid evaluations; named
 points are not selected by maximizing accuracy over the grid.
 A second, norm-matched span grid rescales nonzero combinations and the learned
-vector to the mean of that checkpoint's two pretrained cue norms. The origin
+vector to the mean of that checkpoint's pretrained cue norms. The origin
 retains the zero-vector accuracy. This controls input strength within each
 checkpoint; the target norm can differ across checkpoints. Accuracy is
 constant along positive coefficient rays, excluding the origin, by construction.
@@ -113,8 +114,11 @@ SEED_FIGURE_DIR = REPO_ROOT / "pretrain" / "fig_seed"
 GROUPS = {
     "fdanti_delaygo": ("Proper motif", ("fdanti", "delaygo", "delayanti")),
     "fdgo_delaygo": ("Improper motif", ("fdgo", "delaygo", "delayanti")),
+    "fdanti": ("Proper motif +", ("fdanti", "delayanti")),
 }
 COLORS = ("#3182ce", "#38a169", "#e53e3e")
+TASK_COLORS = {"fdgo": "#3182ce", "fdanti": "#3182ce",
+               "delaygo": "#38a169", "delayanti": "#e53e3e"}
 # Matches two_task_analysis.py's c_vals[stimulus_index] trajectory colors.
 STIMULUS_COLORS = ("#e53e3e", "#3182ce", "#38a169", "#805ad5",
                    "#dd6b20", "#319795", "#718096", "#d53f8c", "#d69e2e")
@@ -132,6 +136,56 @@ def _display_rule(rule):
     return RULE_DISPLAY_NAMES.get(rule, rule)
 
 
+def _validate_task_layout(stage1, stage2, run_ruleset, input_width=None):
+    """Validate saved tasks and return their dynamic final-network cue layout."""
+    expected_tasks = list(GROUPS[run_ruleset][1])
+    expected_stage1 = expected_tasks[:-1]
+    expected_stage2 = expected_tasks[-1:]
+    if list(stage1["rules"]) != expected_stage1 or list(stage2["rules"]) != expected_stage2:
+        raise ValueError(
+            f"{run_ruleset}: unexpected stage task configuration: "
+            f"stage1={stage1['rules']}, stage2={stage2['rules']}"
+        )
+    rule_start = int(stage1["hp"]["rule_start"])
+    if int(stage2["hp"]["rule_start"]) != rule_start:
+        raise ValueError(f"{run_ruleset}: inconsistent rule_start across stages")
+    n_pretraining = len(expected_stage1)
+    expected_width = rule_start + n_pretraining + len(expected_stage2)
+    if input_width is not None and int(input_width) != expected_width:
+        raise ValueError(
+            f"{run_ruleset}: checkpoint input width {input_width} != expected "
+            f"{expected_width} for {n_pretraining} pretraining rule(s)"
+        )
+    return {
+        "stage1_rules": expected_stage1,
+        "stage2_rules": expected_stage2,
+        "rule_start": rule_start,
+        "n_pretraining": n_pretraining,
+        "novel_rule_index": n_pretraining,
+        "novel_weight_column": rule_start + n_pretraining,
+        "pretraining_weight_slice": slice(rule_start, rule_start + n_pretraining),
+        "rule_input_slice": slice(rule_start, expected_width),
+        "input_width": expected_width,
+    }
+
+
+def _validate_generated_rule_cue(inputs, layout, expected_rule_index, rule):
+    """Check final-width inputs carry the requested cue in the dynamic rule slice."""
+    if inputs.shape[-1] != layout["input_width"]:
+        raise ValueError(
+            f"{rule}: input width {inputs.shape[-1]} != checkpoint "
+            f"{layout['input_width']}"
+        )
+    task_cues = inputs[:, 0, layout["rule_input_slice"]]
+    if task_cues.shape[-1] != layout["n_pretraining"] + 1:
+        raise ValueError(f"{rule}: incorrect number of task-cue columns")
+    if not np.all(task_cues.detach().cpu().numpy().argmax(axis=-1)
+                  == expected_rule_index):
+        raise ValueError(
+            f"{rule}: generated task cue is not in column {expected_rule_index}"
+        )
+
+
 def _figure_path(output_dir, filename, *, seed_specific=False):
     """Separate default figure destinations while honoring custom directories."""
     output_dir = Path(output_dir)
@@ -139,6 +193,12 @@ def _figure_path(output_dir, filename, *, seed_specific=False):
         output_dir = SEED_FIGURE_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir / filename
+
+
+def _selection_rng(test_seed, ruleset):
+    """Stable per-ruleset RNG shared conceptually with pretraining_analysis.py."""
+    entropy = [int(test_seed), *ruleset.encode("utf-8")]
+    return np.random.default_rng(np.random.SeedSequence(entropy))
 
 
 def discover_checkpoints(root, feature, hidden, ruleset=None, seed=None,
@@ -161,15 +221,16 @@ def discover_checkpoints(root, feature, hidden, ruleset=None, seed=None,
     if total_seed is None:
         return matches
 
-    rng = np.random.default_rng(selection_seed)
     selected = []
     active_rulesets = (ruleset,) if ruleset is not None else tuple(GROUPS)
     for group in active_rulesets:
         candidates = [item for item in matches if item[1] == group]
+        candidates.sort(key=lambda item: item[2])
         if len(candidates) < total_seed:
             raise ValueError(
                 f"Requested --total-seed {total_seed}, but only "
                 f"{len(candidates)} matching {group} checkpoint(s) exist")
+        rng = _selection_rng(selection_seed, group)
         indices = rng.choice(len(candidates), size=total_seed, replace=False)
         chosen = [candidates[int(index)] for index in indices]
         chosen.sort(key=lambda item: item[2])
@@ -194,7 +255,7 @@ CUE_CONDITIONS = {
 }
 
 
-def apply_rule_cue(inputs, epochs, rule_column, condition):
+def apply_rule_cue(inputs, epochs, rule_channel, condition):
     """Return a copy with only the active task cue gated at per-trial boundaries.
 
     off_* conditions keep the cue up to a period boundary; on_only_response is
@@ -226,8 +287,9 @@ def apply_rule_cue(inputs, epochs, rule_column, condition):
     keep = times < boundaries[:, None]
     if condition == "on_only_response":
         keep = ~keep
-    channel = inputs.shape[-1] - 3 + rule_column
-    altered[:, :, channel] *= keep
+    if not 0 <= rule_channel < inputs.shape[-1]:
+        raise ValueError(f"Rule channel {rule_channel} outside input width {inputs.shape[-1]}")
+    altered[:, :, rule_channel] *= keep
     return altered
 
 
@@ -346,8 +408,8 @@ def _evaluate_inputs(model, inputs, targets, masks, scoring_inputs, batch_size, 
 
 
 def evaluate_task(model, task_params, rule, rule_column, n_trials, batch_size,
-                  device, test_seed, *, pretraining_shift=0, pretraining_shift_pre=0,
-                  rule_cue=False):
+                  device, test_seed, *, layout, pretraining_shift=0,
+                  pretraining_shift_pre=0, rule_cue=False):
     import torch
     import _bootstrap  # noqa: F401
     import mpn_tasks
@@ -362,12 +424,7 @@ def evaluate_task(model, task_params, rule, rule_column, n_trials, batch_size,
         pretraining_shift=pretraining_shift,
         pretraining_shift_pre=pretraining_shift_pre,
     )
-    expected_inputs = model.W_initial_linear.in_features
-    if inputs.shape[-1] != expected_inputs:
-        raise ValueError(f"{rule}: input width {inputs.shape[-1]} != checkpoint {expected_inputs}")
-    rule_offset = expected_inputs - 3
-    if not torch.all(inputs[:, 0, rule_offset:].argmax(dim=-1) == rule_column):
-        raise ValueError(f"{rule}: generated task cue is not in column {rule_column}")
+    _validate_generated_rule_cue(inputs, layout, rule_column, rule)
     direction_report = {} if rule_cue and rule == "delayanti" else None
     value = _evaluate_inputs(model, inputs, targets, masks, inputs, batch_size, device,
                              direction_report=direction_report, n_directions=params["n_eachring"])
@@ -381,7 +438,8 @@ def evaluate_task(model, task_params, rule, rule_column, n_trials, batch_size,
         for condition in CUE_CONDITIONS:
             if condition == "intact":
                 continue
-            altered = apply_rule_cue(inputs, trials[0].epochs, rule_column, condition)
+            altered = apply_rule_cue(
+                inputs, trials[0].epochs, layout["rule_start"] + rule_column, condition)
             if altered is None:
                 conditions[condition] = {"accuracy_pct": None, "delta_accuracy_pp": None,
                                          "reason": "Task has no delay1 memory period"}
@@ -409,19 +467,20 @@ def evaluate_checkpoint(path, run_ruleset, seed, args, device):
     aname = path.stem.removeprefix("savednet_")
     stage1 = load_task_params(args.checkpoint_dir, aname, "stage1")
     stage2 = load_task_params(args.checkpoint_dir, aname, "stage2")
-    if stage1["rules"] != run_ruleset.split("_") or stage2["rules"] != ["delayanti"]:
-        raise ValueError(f"{aname}: unexpected stage task configuration")
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     model = mpn.DeepMultiPlasticNet(copy.deepcopy(checkpoint["net_params"])).to(device)
     model.load_state_dict(checkpoint["state_dict"], strict=True)
     model.eval()
+    layout = _validate_task_layout(
+        stage1, stage2, run_ruleset, model.W_initial_linear.in_features)
     tasks = []
     for column, rule in enumerate(stage1["rules"] + stage2["rules"]):
-        posttraining = column == 2
+        posttraining = column >= layout["n_pretraining"]
         result = evaluate_task(
             model, stage2 if posttraining else stage1, rule, column,
             args.n_trials, args.batch_size, device, args.test_seed + column,
-            pretraining_shift=2 if posttraining else 0,
+            layout=layout,
+            pretraining_shift=layout["n_pretraining"] if posttraining else 0,
             pretraining_shift_pre=0 if posttraining else 1,
             rule_cue=getattr(args, "rule_cue", False),
         )
@@ -527,17 +586,20 @@ def summarize_rule_cue(runs):
 
 
 def plot_rule_cue(runs, output_dir, feature, hidden):
-    """Plot MemoryAnti accuracy in two motif panels, retaining all tasks in reports."""
+    """Plot MemoryAnti accuracy by motif, retaining all tasks in reports."""
     if not runs:
         return None
     summary = summarize_rule_cue(runs)
-    fig, axes = plt.subplots(1, 2, figsize=(11, 3.5), sharex=True, sharey=True)
+    fig, axes = plt.subplots(1, len(GROUPS), figsize=(5.5 * len(GROUPS), 3.5),
+                             sharex=True, sharey=True)
+    axes = np.atleast_1d(axes)
     positions = np.arange(len(CUE_CONDITIONS))
     for column, (ruleset, (title, tasks)) in enumerate(GROUPS.items()):
         axis = axes[column]
-        for task, color in zip(tasks, COLORS):
+        for task in tasks:
             if task != "delayanti":
                 continue
+            color = TASK_COLORS[task]
             for run in runs:
                 if run["ruleset"] != ruleset:
                     continue
@@ -585,7 +647,9 @@ def plot_rule_cue_errors(runs, output_dir, feature, hidden):
     if not any(entries for conditions in reports.values() for entries in conditions.values()):
         print("Skipped error-direction plot: rerun --rule-cue to collect raw-output diagnostics")
         return None
-    fig, axes = plt.subplots(2, 2, figsize=(12, 7), sharey="row")
+    fig, axes = plt.subplots(2, len(GROUPS),
+                             figsize=(6 * len(GROUPS), 7), sharey="row",
+                             squeeze=False)
     condition_colors = ("#718096", "#805ad5", "#dd6b20", "#3182ce", "#38a169")
     for column, (ruleset, (title, _)) in enumerate(GROUPS.items()):
         for position, condition in enumerate(CUE_CONDITIONS):
@@ -732,29 +796,28 @@ def evaluate_m_intervention_checkpoint(path, run_ruleset, seed, args, device):
     import mpn_tasks
 
     aname = path.stem.removeprefix("savednet_")
+    stage1 = load_task_params(args.checkpoint_dir, aname, "stage1")
     stage2 = load_task_params(args.checkpoint_dir, aname, "stage2")
-    if stage2["rules"] != ["delayanti"]:
-        raise ValueError(f"{aname}: unexpected stage-2 task configuration")
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     model = mpn.DeepMultiPlasticNet(copy.deepcopy(checkpoint["net_params"])).to(device)
     model.load_state_dict(checkpoint["state_dict"], strict=True)
     model.eval()
+    layout = _validate_task_layout(
+        stage1, stage2, run_ruleset, model.W_initial_linear.in_features)
     if len(model.mp_layers) != 1:
         raise ValueError("M intervention assumes a single plastic layer")
 
     params = copy.deepcopy(stage2)
-    test_seed = args.test_seed + 2  # delayanti is rule column 2, matching evaluate_task
+    novel_index = layout["novel_rule_index"]
+    test_seed = args.test_seed + novel_index
     np.random.seed(test_seed)
     torch.manual_seed(test_seed)
     params["hp"]["rng"] = np.random.RandomState(test_seed)
     params["hp"]["batch_size_train"] = args.n_trials
     (inputs, targets, masks), (_, trials, _) = mpn_tasks.generate_trials_wrap(
         params, args.n_trials, rules=["delayanti"], mode_input="random_batch",
-        device="cpu", pretraining_shift=2, pretraining_shift_pre=0)
-    if inputs.shape[-1] != model.W_initial_linear.in_features:
-        raise ValueError(f"delayanti: input width {inputs.shape[-1]} != checkpoint")
-    if not torch.all(inputs[:, 0, -3:].argmax(dim=-1) == 2):
-        raise ValueError("delayanti: generated task cue is not in column 2")
+        device="cpu", pretraining_shift=novel_index, pretraining_shift_pre=0)
+    _validate_generated_rule_cue(inputs, layout, novel_index, "delayanti")
     epochs = trials[0].epochs
     if "delay1" not in epochs:
         raise ValueError("delayanti trials must have a delay1 memory period")
@@ -764,8 +827,9 @@ def evaluate_m_intervention_checkpoint(path, run_ruleset, seed, args, device):
     boundaries = boundaries.long()
 
     inputs_nocue = inputs.clone()
-    inputs_nocue[:, :, -1] = 0
-    inputs_resp_off = apply_rule_cue(inputs, epochs, 2, "off_after_memory")
+    inputs_nocue[:, :, layout["novel_weight_column"]] = 0
+    inputs_resp_off = apply_rule_cue(
+        inputs, epochs, layout["novel_weight_column"], "off_after_memory")
 
     outputs_intact, M_intact = _rollout_m_intervention(
         model, inputs, boundaries, device, args.batch_size, capture_m=True)
@@ -934,7 +998,9 @@ def plot_m_intervention(runs, output_dir, feature, hidden):
     if not runs:
         return None
     summary = summarize_m_intervention(runs)
-    fig, axes = plt.subplots(1, 2, figsize=(11, 3.5), sharex=True, sharey=True)
+    fig, axes = plt.subplots(1, len(GROUPS), figsize=(5.5 * len(GROUPS), 3.5),
+                             sharex=True, sharey=True)
+    axes = np.atleast_1d(axes)
     positions = np.arange(len(M_CONDITIONS))
     for column, (ruleset, (title, _)) in enumerate(GROUPS.items()):
         axis = axes[column]
@@ -1106,30 +1172,29 @@ def evaluate_pathway_gain_checkpoint(path, run_ruleset, seed, args, device):
     import mpn_tasks
 
     aname = path.stem.removeprefix("savednet_")
+    stage1 = load_task_params(args.checkpoint_dir, aname, "stage1")
     stage2 = load_task_params(args.checkpoint_dir, aname, "stage2")
-    if stage2["rules"] != ["delayanti"]:
-        raise ValueError(f"{aname}: unexpected stage-2 task configuration")
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     model = mpn.DeepMultiPlasticNet(copy.deepcopy(checkpoint["net_params"])).to(device)
     model.load_state_dict(checkpoint["state_dict"], strict=True)
     model.eval()
+    layout = _validate_task_layout(
+        stage1, stage2, run_ruleset, model.W_initial_linear.in_features)
     if len(model.mp_layers) != 1:
         raise ValueError("Pathway gain assumes a single plastic layer")
     layer = model.mp_layers[0]
 
     params = copy.deepcopy(stage2)
-    test_seed = args.test_seed + 2  # delayanti is rule column 2, matching evaluate_task
+    novel_index = layout["novel_rule_index"]
+    test_seed = args.test_seed + novel_index
     np.random.seed(test_seed)
     torch.manual_seed(test_seed)
     params["hp"]["rng"] = np.random.RandomState(test_seed)
     params["hp"]["batch_size_train"] = args.n_trials
     (inputs, targets, masks), (_, trials, _) = mpn_tasks.generate_trials_wrap(
         params, args.n_trials, rules=["delayanti"], mode_input="random_batch",
-        device="cpu", pretraining_shift=2, pretraining_shift_pre=0)
-    if inputs.shape[-1] != model.W_initial_linear.in_features:
-        raise ValueError(f"delayanti: input width {inputs.shape[-1]} != checkpoint")
-    if not torch.all(inputs[:, 0, -3:].argmax(dim=-1) == 2):
-        raise ValueError("delayanti: generated task cue is not in column 2")
+        device="cpu", pretraining_shift=novel_index, pretraining_shift_pre=0)
+    _validate_generated_rule_cue(inputs, layout, novel_index, "delayanti")
     epochs = trials[0].epochs
     if "delay1" not in epochs:
         raise ValueError("delayanti trials must have a delay1 memory period")
@@ -1139,8 +1204,9 @@ def evaluate_pathway_gain_checkpoint(path, run_ruleset, seed, args, device):
     boundaries = boundaries.long()
 
     inputs_nocue = inputs.clone()
-    inputs_nocue[:, :, -1] = 0
-    inputs_resp_off = apply_rule_cue(inputs, epochs, 2, "off_after_memory")
+    inputs_nocue[:, :, layout["novel_weight_column"]] = 0
+    inputs_resp_off = apply_rule_cue(
+        inputs, epochs, layout["novel_weight_column"], "off_after_memory")
 
     M_trace_onset, M_intact_end = _rollout_capture_M_states(
         model, inputs, boundaries, device, args.batch_size)
@@ -1340,7 +1406,9 @@ def plot_pathway_gain(runs, output_dir, feature, hidden):
     """
     if not runs:
         return None
-    fig, axes = plt.subplots(1, 2, figsize=(11, 3.6), sharey=True)
+    fig, axes = plt.subplots(1, len(GROUPS), figsize=(5.5 * len(GROUPS), 3.6),
+                             sharey=True)
+    axes = np.atleast_1d(axes)
     positions = np.arange(len(PATHWAY_GAIN_CONDITIONS))
     for axis, (ruleset, (title, _)) in zip(axes, GROUPS.items()):
         selected = [run for run in runs if run["ruleset"] == ruleset]
@@ -1391,7 +1459,9 @@ def plot_pathway_gain_m_stats(runs, output_dir, feature, hidden):
     positions = np.arange(len(m_conditions))
     styles = {"pro_driving": ("Pro-driving synapses", "#dd6b20"),
               "anti_driving": ("Anti-driving synapses", "#805ad5")}
-    fig, axes = plt.subplots(1, 2, figsize=(11, 3.6), sharey=True)
+    fig, axes = plt.subplots(1, len(GROUPS), figsize=(5.5 * len(GROUPS), 3.6),
+                             sharey=True)
+    axes = np.atleast_1d(axes)
     for axis, (ruleset, (title, _)) in zip(axes, GROUPS.items()):
         selected = [run for run in selected_all if run["ruleset"] == ruleset]
         for side, (label, color) in styles.items():
@@ -1507,31 +1577,28 @@ def evaluate_rule_vector_intervention_checkpoint(path, run_ruleset, seed, args, 
     aname = path.stem.removeprefix("savednet_")
     stage1 = load_task_params(args.checkpoint_dir, aname, "stage1")
     stage2 = load_task_params(args.checkpoint_dir, aname, "stage2")
-    if stage1["rules"] != run_ruleset.split("_") or stage2["rules"] != ["delayanti"]:
-        raise ValueError(f"{aname}: unexpected stage task configuration")
-
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     model = mpn.DeepMultiPlasticNet(copy.deepcopy(checkpoint["net_params"])).to(device)
     model.load_state_dict(checkpoint["state_dict"], strict=True)
     model.eval()
+    layout = _validate_task_layout(
+        stage1, stage2, run_ruleset, model.W_initial_linear.in_features)
 
     params = copy.deepcopy(stage2)
-    test_seed = args.test_seed + 2
+    novel_index = layout["novel_rule_index"]
+    test_seed = args.test_seed + novel_index
     np.random.seed(test_seed)
     torch.manual_seed(test_seed)
     params["hp"]["rng"] = np.random.RandomState(test_seed)
     params["hp"]["batch_size_train"] = args.n_trials
     (inputs, targets, masks), _ = mpn_tasks.generate_trials_wrap(
         params, args.n_trials, rules=["delayanti"], mode_input="random_batch",
-        device="cpu", pretraining_shift=2, pretraining_shift_pre=0)
-    if inputs.shape[-1] != model.W_initial_linear.in_features:
-        raise ValueError(f"delayanti: input width {inputs.shape[-1]} != checkpoint")
-    if not torch.all(inputs[:, 0, -3:].argmax(dim=-1) == 2):
-        raise ValueError("delayanti: generated task cue is not in column 2")
+        device="cpu", pretraining_shift=novel_index, pretraining_shift_pre=0)
+    _validate_generated_rule_cue(inputs, layout, novel_index, "delayanti")
 
     weight = model.W_initial_linear.weight
-    original = weight[:, -1].detach().cpu().clone()
-    pretrained = weight[:, -3:-1].detach().cpu().clone()
+    original = weight[:, layout["novel_weight_column"]].detach().cpu().clone()
+    pretrained = weight[:, layout["pretraining_weight_slice"]].detach().cpu().clone()
     components = _decompose_rule_vector(pretrained, original)
     vectors = {"original": original}
     vectors.update({condition: components[condition]
@@ -1540,7 +1607,8 @@ def evaluate_rule_vector_intervention_checkpoint(path, run_ruleset, seed, args, 
 
     def evaluate_vector(vector):
         with torch.no_grad():
-            weight[:, -1].copy_(vector.to(device=device, dtype=weight.dtype))
+            weight[:, layout["novel_weight_column"]].copy_(
+                vector.to(device=device, dtype=weight.dtype))
         return _evaluate_inputs(model, inputs, targets, masks, inputs,
                                 args.batch_size, device) * 100
 
@@ -1565,7 +1633,8 @@ def evaluate_rule_vector_intervention_checkpoint(path, run_ruleset, seed, args, 
         }
     finally:
         with torch.no_grad():
-            weight[:, -1].copy_(original.to(device=device, dtype=weight.dtype))
+            weight[:, layout["novel_weight_column"]].copy_(
+                original.to(device=device, dtype=weight.dtype))
 
     baseline = conditions["original"]["accuracy_pct"]
     for stats in conditions.values():
@@ -1631,7 +1700,9 @@ def plot_rule_vector_intervention(runs, output_dir, feature, hidden):
         return None
     summary = summarize_rule_vector_intervention(runs)
     positions = np.arange(len(RULE_VECTOR_CONDITIONS))
-    fig, axes = plt.subplots(1, 2, figsize=(11, 3.8), sharex=True, sharey=True)
+    fig, axes = plt.subplots(1, len(GROUPS), figsize=(5.5 * len(GROUPS), 3.8),
+                             sharex=True, sharey=True)
+    axes = np.atleast_1d(axes)
     for axis, (ruleset, (title, _)) in zip(axes, GROUPS.items()):
         selected = [run for run in runs if run["ruleset"] == ruleset]
         for run in selected:
@@ -1685,7 +1756,9 @@ def plot_rule_vector_norms(runs, output_dir, feature, hidden):
         for run in runs
         for key in norm_metrics
     )
-    fig, axes = plt.subplots(1, 2, figsize=(7, 3.4), sharex=True, sharey=True)
+    fig, axes = plt.subplots(1, len(GROUPS), figsize=(3.5 * len(GROUPS), 3.4),
+                             sharex=True, sharey=True)
+    axes = np.atleast_1d(axes)
     for axis, (ruleset, (title, _)) in zip(axes, GROUPS.items()):
         selected = [run for run in runs if run["ruleset"] == ruleset]
         for run in selected:
@@ -1784,31 +1857,28 @@ def evaluate_rule_vector_magnitude_sweep_checkpoint(path, run_ruleset, seed,
     aname = path.stem.removeprefix("savednet_")
     stage1 = load_task_params(args.checkpoint_dir, aname, "stage1")
     stage2 = load_task_params(args.checkpoint_dir, aname, "stage2")
-    if stage1["rules"] != run_ruleset.split("_") or stage2["rules"] != ["delayanti"]:
-        raise ValueError(f"{aname}: unexpected stage task configuration")
-
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     model = mpn.DeepMultiPlasticNet(copy.deepcopy(checkpoint["net_params"])).to(device)
     model.load_state_dict(checkpoint["state_dict"], strict=True)
     model.eval()
+    layout = _validate_task_layout(
+        stage1, stage2, run_ruleset, model.W_initial_linear.in_features)
 
     params = copy.deepcopy(stage2)
-    test_seed = args.test_seed + 2
+    novel_index = layout["novel_rule_index"]
+    test_seed = args.test_seed + novel_index
     np.random.seed(test_seed)
     torch.manual_seed(test_seed)
     params["hp"]["rng"] = np.random.RandomState(test_seed)
     params["hp"]["batch_size_train"] = args.n_trials
     (inputs, targets, masks), _ = mpn_tasks.generate_trials_wrap(
         params, args.n_trials, rules=["delayanti"], mode_input="random_batch",
-        device="cpu", pretraining_shift=2, pretraining_shift_pre=0)
-    if inputs.shape[-1] != model.W_initial_linear.in_features:
-        raise ValueError(f"delayanti: input width {inputs.shape[-1]} != checkpoint")
-    if not torch.all(inputs[:, 0, -3:].argmax(dim=-1) == 2):
-        raise ValueError("delayanti: generated task cue is not in column 2")
+        device="cpu", pretraining_shift=novel_index, pretraining_shift_pre=0)
+    _validate_generated_rule_cue(inputs, layout, novel_index, "delayanti")
 
     weight = model.W_initial_linear.weight
-    original = weight[:, -1].detach().cpu().clone()
-    pretrained = weight[:, -3:-1].detach().cpu().clone()
+    original = weight[:, layout["novel_weight_column"]].detach().cpu().clone()
+    pretrained = weight[:, layout["pretraining_weight_slice"]].detach().cpu().clone()
     components = _decompose_rule_vector(pretrained, original)
     original_norm = original.norm()
     directions = {
@@ -1826,7 +1896,8 @@ def evaluate_rule_vector_magnitude_sweep_checkpoint(path, run_ruleset, seed,
 
     def evaluate_vector(vector):
         with torch.no_grad():
-            weight[:, -1].copy_(vector.to(device=device, dtype=weight.dtype))
+            weight[:, layout["novel_weight_column"]].copy_(
+                vector.to(device=device, dtype=weight.dtype))
         return _evaluate_inputs(model, inputs, targets, masks, inputs,
                                 args.batch_size, device) * 100
 
@@ -1860,7 +1931,8 @@ def evaluate_rule_vector_magnitude_sweep_checkpoint(path, run_ruleset, seed,
         }
     finally:
         with torch.no_grad():
-            weight[:, -1].copy_(original.to(device=device, dtype=weight.dtype))
+            weight[:, layout["novel_weight_column"]].copy_(
+                original.to(device=device, dtype=weight.dtype))
 
     geometry = {key: value for key, value in components.items()
                 if not hasattr(value, "shape")}
@@ -1932,7 +2004,9 @@ def plot_rule_vector_magnitude_sweep(runs, output_dir, feature, hidden):
         "perpendicular": ("Orthogonal direction", "#dd6b20"),
         "random": ("Random directions", "#718096"),
     }
-    fig, axes = plt.subplots(1, 2, figsize=(8, 3.5), sharex=True, sharey=True)
+    fig, axes = plt.subplots(1, len(GROUPS), figsize=(4 * len(GROUPS), 3.5),
+                             sharex=True, sharey=True)
+    axes = np.atleast_1d(axes)
     for axis, (ruleset, (title, _)) in zip(axes, GROUPS.items()):
         selected = [run for run in runs if run["ruleset"] == ruleset]
         if selected:
@@ -2031,12 +2105,18 @@ def run_rule_vector_magnitude_sweep(args):
 
 N_BACKBONE_RANDOM_VECTORS = 10
 BACKBONE_GRID_COEFFS = tuple(np.round(np.linspace(-2.0, 2.0, 17), 4).tolist())
-BACKBONE_NAMED_POINTS = {
-    "zero": (0.0, 0.0),
-    "pre0_cue": (1.0, 0.0),
-    "pre1_cue": (0.0, 1.0),
-    "cue_sum": (1.0, 1.0),
-}
+
+
+def _backbone_named_coefficients(n_pretraining):
+    """Interpretable coefficient vectors for a one- or two-rule span."""
+    named = {"zero": (0.0,) * n_pretraining}
+    for index in range(n_pretraining):
+        values = [0.0] * n_pretraining
+        values[index] = 1.0
+        named[f"pre{index}_cue"] = tuple(values)
+    if n_pretraining > 1:
+        named["cue_sum"] = (1.0,) * n_pretraining
+    return named
 
 
 def load_stage1_train_params(checkpoint_dir, run_ruleset, seed, hidden, feature):
@@ -2054,13 +2134,14 @@ def evaluate_backbone_probe_checkpoint(path, run_ruleset, seed, args, device):
     end-of-stage-1 backbone under a counterfactual rule input, since stage 2
     trains only that column. Random Kaiming-initialized rule vectors provide
     the negative control; training-style loss uses the saved regularization
-    settings. The span grid tests whether a combination a*v_pre0 + b*v_pre1
-    of the two pretrained rule vectors solves MemoryAnti without additional
-    training. Named points identify interpretable
-    combinations (single cues, cue sum, the learned vector's least-squares
-    projection into the span). Nonzero coefficient pairs are also evaluated
-    at the mean of the two pretrained cue norms for that checkpoint; positive
-    coefficient rays share cached evaluations. The origin reuses the raw
+    settings. The span sweep tests whether a combination of the available
+    pretrained rule vectors solves MemoryAnti without additional training.
+    It is one-dimensional for Proper motif+ and two-dimensional otherwise.
+    Named points identify interpretable combinations (single cues, cue sum
+    when available, and the learned vector's least-squares projection into the
+    span). Nonzero coefficient vectors are also evaluated at the mean pretrained
+    cue norm for that checkpoint; positive coefficient rays share cached
+    evaluations. The origin reuses the raw
     zero-vector accuracy. The learned vector is separately rescaled to the
     same target norm. All conditions share one fresh trial batch and
     the angle accuracy scoring used by the other experiments.
@@ -2074,13 +2155,12 @@ def evaluate_backbone_probe_checkpoint(path, run_ruleset, seed, args, device):
     aname = path.stem.removeprefix("savednet_")
     stage1 = load_task_params(args.checkpoint_dir, aname, "stage1")
     stage2 = load_task_params(args.checkpoint_dir, aname, "stage2")
-    if stage1["rules"] != run_ruleset.split("_") or stage2["rules"] != ["delayanti"]:
-        raise ValueError(f"{aname}: unexpected stage task configuration")
-
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     model = mpn.DeepMultiPlasticNet(copy.deepcopy(checkpoint["net_params"])).to(device)
     model.load_state_dict(checkpoint["state_dict"], strict=True)
     model.eval()
+    layout = _validate_task_layout(
+        stage1, stage2, run_ruleset, model.W_initial_linear.in_features)
 
     # compute_loss reads regularization attributes normally set by net.fit;
     # load_state_dict does not restore them, so re-inject from the stage-1
@@ -2094,52 +2174,70 @@ def evaluate_backbone_probe_checkpoint(path, run_ruleset, seed, args, device):
     model.gradient_type = train_params.get("gradient_type", "backprop")
 
     params = copy.deepcopy(stage2)
-    test_seed = args.test_seed + 2  # delayanti is rule column 2, matching evaluate_task
+    novel_index = layout["novel_rule_index"]
+    test_seed = args.test_seed + novel_index
     np.random.seed(test_seed)
     torch.manual_seed(test_seed)
     params["hp"]["rng"] = np.random.RandomState(test_seed)
     params["hp"]["batch_size_train"] = args.n_trials
     (inputs, targets, masks), _ = mpn_tasks.generate_trials_wrap(
         params, args.n_trials, rules=["delayanti"], mode_input="random_batch",
-        device="cpu", pretraining_shift=2, pretraining_shift_pre=0)
-    if inputs.shape[-1] != model.W_initial_linear.in_features:
-        raise ValueError(f"delayanti: input width {inputs.shape[-1]} != checkpoint")
-    if not torch.all(inputs[:, 0, -3:].argmax(dim=-1) == 2):
-        raise ValueError("delayanti: generated task cue is not in column 2")
+        device="cpu", pretraining_shift=novel_index, pretraining_shift_pre=0)
+    _validate_generated_rule_cue(inputs, layout, novel_index, "delayanti")
 
     weight = model.W_initial_linear.weight
-    original = weight[:, -1].detach().cpu().clone()
-    v_pre0 = weight[:, -3].detach().cpu().clone()
-    v_pre1 = weight[:, -2].detach().cpu().clone()
-
-    basis = torch.stack([v_pre0, v_pre1], dim=1)
+    original = weight[:, layout["novel_weight_column"]].detach().cpu().clone()
+    basis = weight[:, layout["pretraining_weight_slice"]].detach().cpu().clone()
     coefficients = torch.linalg.lstsq(basis, original.unsqueeze(1)).solution.squeeze(1)
     projection = basis @ coefficients
     original_norm = float(original.norm())
     if original_norm == 0:
         raise ValueError("Learned MemoryAnti rule vector has zero norm")
     geometry = {
-        "learned_coeff_pre0": float(coefficients[0]),
-        "learned_coeff_pre1": float(coefficients[1]),
+        "learned_coefficients": [float(value) for value in coefficients],
         "in_span_fraction": float(projection.norm()) / original_norm,
-        "norm_pre0": float(v_pre0.norm()),
-        "norm_pre1": float(v_pre1.norm()),
+        "pretrained_norms": [float(basis[:, index].norm())
+                             for index in range(layout["n_pretraining"])],
         "norm_original": original_norm,
-        "cos_pre0_pre1": float(
-            torch.dot(v_pre0, v_pre1)
-            / (v_pre0.norm() * v_pre1.norm()).clamp(min=1e-12)),
     }
+    for index, value in enumerate(coefficients):
+        geometry[f"learned_coeff_pre{index}"] = float(value)
+        geometry[f"norm_pre{index}"] = float(basis[:, index].norm())
+    if layout["n_pretraining"] == 2:
+        geometry["cos_pre0_pre1"] = float(
+            torch.dot(basis[:, 0], basis[:, 1])
+            / (basis[:, 0].norm() * basis[:, 1].norm()).clamp(min=1e-12))
+
+    def combine(values):
+        values = torch.as_tensor(values, dtype=basis.dtype)
+        if values.shape != (layout["n_pretraining"],):
+            raise ValueError("Coefficient vector has the wrong pretraining dimension")
+        return basis @ values
+
+    def coefficient_fields(values):
+        """Store generic coefficients and keep legacy a/b fields for 2-D spans."""
+        if values is None:
+            return {"coefficients": None, "a": None, "b": None}
+        values = [float(value) for value in values]
+        fields = {"coefficients": values}
+        if values:
+            fields["a"] = values[0]
+        if len(values) > 1:
+            fields["b"] = values[1]
+        return fields
 
     def evaluate_vector(vector):
         with torch.no_grad():
-            weight[:, -1].copy_(vector.to(device=device, dtype=weight.dtype))
+            weight[:, layout["novel_weight_column"]].copy_(
+                vector.to(device=device, dtype=weight.dtype))
         return _evaluate_inputs(model, inputs, targets, masks, inputs,
                                 args.batch_size, device) * 100
 
     def evaluate_loss_and_accuracy(vector):
         """Full-batch forward for training-style loss plus the shared accuracy."""
         with torch.no_grad():
-            weight[:, -1].copy_(vector.to(device=device, dtype=weight.dtype))
+            weight[:, layout["novel_weight_column"]].copy_(
+                vector.to(device=device, dtype=weight.dtype))
             outputs, hidden, _ = model.iterate_sequence_batch(
                 inputs.to(device), run_mode="minimal")
             loss, loss_components, _ = model.compute_loss(
@@ -2167,57 +2265,69 @@ def evaluate_backbone_probe_checkpoint(path, run_ruleset, seed, args, device):
             random_probe["loss_out"].append(loss_out)
             random_probe["accuracy_pct"].append(accuracy)
 
-        named_points = {"original": {"a": None, "b": None,
-                                     "accuracy_pct": original_accuracy}}
-        named_coefficients = dict(BACKBONE_NAMED_POINTS)
-        named_coefficients["learned_projection"] = (
-            geometry["learned_coeff_pre0"], geometry["learned_coeff_pre1"])
-        for name, (a, b) in named_coefficients.items():
+        named_points = {"original": {
+            **coefficient_fields(None), "accuracy_pct": original_accuracy}}
+        named_coefficients = _backbone_named_coefficients(layout["n_pretraining"])
+        named_coefficients["learned_projection"] = tuple(
+            geometry["learned_coefficients"])
+        for name, values in named_coefficients.items():
             named_points[name] = {
-                "a": a, "b": b,
-                "accuracy_pct": evaluate_vector(a * v_pre0 + b * v_pre1)}
+                **coefficient_fields(values),
+                "accuracy_pct": evaluate_vector(combine(values))}
 
-        grid = [[evaluate_vector(a * v_pre0 + b * v_pre1)
-                 for b in BACKBONE_GRID_COEFFS]
-                for a in BACKBONE_GRID_COEFFS]
+        if layout["n_pretraining"] == 1:
+            grid = [evaluate_vector(combine((coefficient,)))
+                    for coefficient in BACKBONE_GRID_COEFFS]
+        else:
+            grid = [[evaluate_vector(combine((a, b)))
+                     for b in BACKBONE_GRID_COEFFS]
+                    for a in BACKBONE_GRID_COEFFS]
 
         # Match input strength within this checkpoint using its mean pretrained
         # cue norm. Positive coefficient rays share one rescaled vector and
         # cached accuracy; the origin retains the raw zero-vector result.
-        target_norm = float((v_pre0.norm() + v_pre1.norm()) / 2)
+        target_norm = float(torch.linalg.vector_norm(basis, dim=0).mean())
         direction_cache = {}
 
-        def evaluate_direction(a, b):
-            scale = math.hypot(a, b)
+        def evaluate_direction(values):
+            values = tuple(float(value) for value in values)
+            scale = math.sqrt(sum(value ** 2 for value in values))
             if scale < 1e-12:
                 return named_points["zero"]["accuracy_pct"]
-            key = (round(a / scale, 9), round(b / scale, 9))
+            key = tuple(round(value / scale, 9) for value in values)
             if key not in direction_cache:
-                vector = a * v_pre0 + b * v_pre1
+                vector = combine(values)
                 direction_cache[key] = evaluate_vector(
                     vector * (target_norm / float(vector.norm())))
             return direction_cache[key]
 
         named_points_norm_matched = {
-            name: {"a": a, "b": b, "accuracy_pct": evaluate_direction(a, b)}
-            for name, (a, b) in named_coefficients.items() if (a, b) != (0.0, 0.0)}
+            name: {**coefficient_fields(values),
+                   "accuracy_pct": evaluate_direction(values)}
+            for name, values in named_coefficients.items()
+            if any(value != 0.0 for value in values)}
         named_points_norm_matched["learned_direction"] = {
-            "a": None, "b": None,
+            **coefficient_fields(None),
             "accuracy_pct": evaluate_vector(original * (target_norm / original.norm()))}
 
-        grid_norm_matched = [[evaluate_direction(a, b)
-                              for b in BACKBONE_GRID_COEFFS]
-                             for a in BACKBONE_GRID_COEFFS]
+        if layout["n_pretraining"] == 1:
+            grid_norm_matched = [evaluate_direction((coefficient,))
+                                 for coefficient in BACKBONE_GRID_COEFFS]
+        else:
+            grid_norm_matched = [[evaluate_direction((a, b))
+                                  for b in BACKBONE_GRID_COEFFS]
+                                 for a in BACKBONE_GRID_COEFFS]
     finally:
         with torch.no_grad():
-            weight[:, -1].copy_(original.to(device=device, dtype=weight.dtype))
+            weight[:, layout["novel_weight_column"]].copy_(
+                original.to(device=device, dtype=weight.dtype))
 
     def _grid_summary(values):
         array = np.asarray(values, dtype=float)
         best = np.unravel_index(int(array.argmax()), array.shape)
+        best_coefficients = [float(BACKBONE_GRID_COEFFS[index]) for index in best]
         return array, {"accuracy_pct": float(array.max()),
-                       "a": float(BACKBONE_GRID_COEFFS[best[0]]),
-                       "b": float(BACKBONE_GRID_COEFFS[best[1]])}
+                       **coefficient_fields(best_coefficients)}
 
     grid_array, grid_max = _grid_summary(grid)
     grid_nm_array, grid_max_norm_matched = _grid_summary(grid_norm_matched)
@@ -2226,7 +2336,7 @@ def evaluate_backbone_probe_checkpoint(path, run_ruleset, seed, args, device):
     print(f"  original: accuracy={original_accuracy:.2f}")
     for name in (*named_coefficients, "grid max"):
         stats = grid_max if name == "grid max" else named_points[name]
-        print(f"  {name} (a={stats['a']:+.2f}, b={stats['b']:+.2f}): "
+        print(f"  {name} (coefficients={stats['coefficients']}): "
               f"accuracy={stats['accuracy_pct']:.2f}")
     print(f"  random mean: accuracy="
           f"{np.mean(random_probe['accuracy_pct']):.2f}")
@@ -2246,10 +2356,12 @@ def evaluate_backbone_probe_checkpoint(path, run_ruleset, seed, args, device):
         "random_probe": random_probe,
         "named_points": named_points,
         "span_grid": {"coefficients": list(BACKBONE_GRID_COEFFS),
+                      "n_pretraining": layout["n_pretraining"],
                       "accuracy_pct": grid_array.tolist()},
         "grid_max": grid_max,
         "named_points_norm_matched": named_points_norm_matched,
         "span_grid_norm_matched": {"coefficients": list(BACKBONE_GRID_COEFFS),
+                                   "n_pretraining": layout["n_pretraining"],
                                    "target_norm": target_norm,
                                    "accuracy_pct": grid_nm_array.tolist()},
         "grid_max_norm_matched": grid_max_norm_matched,
@@ -2277,14 +2389,17 @@ def summarize_backbone_probe(runs):
         if not selected:
             continue
         entry = {"n_seeds": len(selected)}
-        for key in ("original", *BACKBONE_NAMED_POINTS, "learned_projection",
-                    "grid_max", "random"):
+        named_keys = tuple(selected[0]["named_points"])
+        for key in (*named_keys, "grid_max", "random"):
             entry[f"{key}_accuracy_pct"] = stats(
                 [_backbone_condition_value(run, key) for run in selected])
         for key in ("loss", "loss_out"):
             entry[f"random_{key}"] = stats(
                 [np.mean(run["random_probe"][key]) for run in selected])
-        for key in ("in_span_fraction", "learned_coeff_pre0", "learned_coeff_pre1"):
+        geometry_keys = ["in_span_fraction"] + [
+            f"learned_coeff_pre{index}"
+            for index in range(len(selected[0]["geometry"]["learned_coefficients"]))]
+        for key in geometry_keys:
             entry[key] = stats([run["geometry"][key] for run in selected])
         # Norm-matched fields exist only in results produced after they were
         # added; older JSONs are summarized without them.
@@ -2393,10 +2508,9 @@ def plot_backbone_probe_random(runs, output_dir, feature, hidden):
 def plot_backbone_span_grid(runs, output_dir, feature, hidden, norm_matched=False):
     """Seed-mean zero-shot accuracy over the pretraining rule span, per motif.
 
-    Heatmap axes are the coefficients (a, b) of a*v_pre0 + b*v_pre1 replacing
-    the MemoryAnti rule vector with no stage-2 training. Overlaid markers show
-    the single cues, the cue sum, and each seed's learned-vector projection
-    into the span (reported to the console when it falls outside the grid).
+    Two-parent motifs use a heatmap over a*v_pre0 + b*v_pre1; Proper motif+
+    uses a one-dimensional coefficient curve. Both replace the MemoryAnti rule
+    vector with no stage-2 training and mark each seed's learned projection.
     With norm_matched=True, nonzero combinations use each checkpoint's mean
     pretrained cue norm; the origin remains a zero-vector control. Positive
     coefficient rays share accuracy, excluding the origin. Input strength is
@@ -2414,13 +2528,15 @@ def plot_backbone_span_grid(runs, output_dir, feature, hidden, norm_matched=Fals
     half_step = (coefficients[1] - coefficients[0]) / 2
     extent = (coefficients[0] - half_step, coefficients[-1] + half_step,
               coefficients[0] - half_step, coefficients[-1] + half_step)
-    fig, axes = plt.subplots(1, 2, figsize=(8.6, 3.9), sharex=True, sharey=True,
+    fig, axes = plt.subplots(1, len(GROUPS),
+                             figsize=(4.3 * len(GROUPS), 3.9),
                              constrained_layout=True)
+    axes = np.atleast_1d(axes)
+    image_axes = []
     image = None
     for axis, (ruleset, (title, tasks)) in zip(axes, GROUPS.items()):
         selected = [run for run in runs if run["ruleset"] == ruleset]
         axis.set_title(f"{title} (n={len(selected)})", fontsize=9)
-        axis.set_xlabel(f"a ({_display_rule(tasks[0])} rule vector)")
         if not selected:
             continue
         for run in selected:
@@ -2428,33 +2544,53 @@ def plot_backbone_span_grid(runs, output_dir, feature, hidden, norm_matched=Fals
                 raise ValueError(f"{run['aname']}: inconsistent span-grid coefficients")
         grids = np.asarray([run[grid_key]["accuracy_pct"] for run in selected],
                            dtype=float)
-        # Row index is a, column index is b; transpose puts a on the x axis.
-        image = axis.imshow(grids.mean(axis=0).T, origin="lower", extent=extent,
-                            vmin=0, vmax=100, cmap="viridis", aspect="equal")
-        first_panel = axis is axes[0]
-        for name, marker in (("pre0_cue", "^"), ("pre1_cue", "s"), ("cue_sum", "P")):
-            point = selected[0]["named_points"][name]
-            axis.scatter(point["a"], point["b"], marker=marker, s=45,
-                         facecolors="white", edgecolors="black", linewidths=0.8,
-                         label=name if first_panel else None, zorder=3)
-        projections = np.asarray(
-            [[run["named_points"]["learned_projection"]["a"],
-              run["named_points"]["learned_projection"]["b"]] for run in selected],
-            dtype=float)
-        outside = np.abs(projections) > extent[1]
-        if outside.any():
-            print(f"  Note: {ruleset}: {int(outside.any(axis=1).sum())} learned "
-                  f"projection(s) fall outside the plotted grid; see the JSONs.")
-        axis.scatter(projections[:, 0], projections[:, 1], marker="o", s=22,
-                     facecolors="#e53e3e", edgecolors="white", linewidths=0.6,
-                     label="learned projection" if first_panel else None, zorder=3)
-        axis.set_xlim(extent[0], extent[1])
-        axis.set_ylim(extent[2], extent[3])
-    axes[0].set_ylabel(
-        f"b ({_display_rule(GROUPS['fdanti_delaygo'][1][1])} rule vector)")
-    axes[0].legend(fontsize=6, loc="upper left", frameon=True, framealpha=0.85)
+        if grids.ndim == 2:
+            mean = grids.mean(axis=0)
+            std = grids.std(axis=0)
+            axis.plot(coefficients, mean, "o-", color="#805ad5", markersize=3)
+            axis.fill_between(coefficients, mean - std, mean + std,
+                              color="#805ad5", alpha=0.15)
+            projections = np.asarray([
+                run["named_points"]["learned_projection"]["coefficients"][0]
+                for run in selected], dtype=float)
+            projection_acc = np.asarray([
+                run["named_points"]["learned_projection"]["accuracy_pct"]
+                for run in selected], dtype=float)
+            axis.scatter(projections, projection_acc, marker="o", s=22,
+                         color="#e53e3e", label="learned projection", zorder=3)
+            axis.set_xlabel(f"coefficient ({_display_rule(tasks[0])} rule vector)")
+            axis.set_ylabel("Zero-shot MemoryAnti accuracy (%)")
+            axis.set_ylim(-5, 105)
+        elif grids.ndim == 3:
+            # Row index is a, column index is b; transpose puts a on the x axis.
+            image = axis.imshow(grids.mean(axis=0).T, origin="lower", extent=extent,
+                                vmin=0, vmax=100, cmap="viridis", aspect="equal")
+            image_axes.append(axis)
+            for name, marker in (("pre0_cue", "^"), ("pre1_cue", "s"),
+                                 ("cue_sum", "P")):
+                point = selected[0]["named_points"][name]["coefficients"]
+                axis.scatter(point[0], point[1], marker=marker, s=45,
+                             facecolors="white", edgecolors="black", linewidths=0.8,
+                             label=name, zorder=3)
+            projections = np.asarray([
+                run["named_points"]["learned_projection"]["coefficients"]
+                for run in selected], dtype=float)
+            outside = np.abs(projections) > extent[1]
+            if outside.any():
+                print(f"  Note: {ruleset}: {int(outside.any(axis=1).sum())} learned "
+                      f"projection(s) fall outside the plotted grid; see the JSONs.")
+            axis.scatter(projections[:, 0], projections[:, 1], marker="o", s=22,
+                         facecolors="#e53e3e", edgecolors="white", linewidths=0.6,
+                         label="learned projection", zorder=3)
+            axis.set_xlabel(f"a ({_display_rule(tasks[0])} rule vector)")
+            axis.set_ylabel(f"b ({_display_rule(tasks[1])} rule vector)")
+            axis.set_xlim(extent[0], extent[1])
+            axis.set_ylim(extent[2], extent[3])
+        else:
+            raise ValueError(f"{ruleset}: unexpected span-grid shape {grids.shape}")
+        axis.legend(fontsize=6, loc="best", frameon=True, framealpha=0.85)
     if image is not None:
-        fig.colorbar(image, ax=axes, shrink=0.85,
+        fig.colorbar(image, ax=image_axes, shrink=0.85,
                      label="Zero-shot MemoryAnti accuracy (%)")
     variant = ("norm matched to mean pretrained cue norm" if norm_matched
                else "raw combinations")
@@ -2479,19 +2615,28 @@ def plot_backbone_conditions(runs, output_dir, feature, hidden):
     """
     if not runs:
         return None
-    fig, axes = plt.subplots(1, 2, figsize=(11, 3.6), sharey=True)
+    fig, axes = plt.subplots(1, len(GROUPS), figsize=(5.5 * len(GROUPS), 3.6),
+                             sharey=True)
+    axes = np.atleast_1d(axes)
     for axis, (ruleset, (title, tasks)) in zip(axes, GROUPS.items()):
         selected = [run for run in runs if run["ruleset"] == ruleset]
-        conditions = (
+        pretraining_tasks = tasks[:-1]
+        conditions = [
             ("original", "Learned\nvector"),
             ("learned_projection", "Learned\nprojection"),
             ("grid_max", "Best grid\ncombination"),
-            ("cue_sum", f"{_display_rule(tasks[0])} +\n{_display_rule(tasks[1])}"),
-            ("pre0_cue", f"{_display_rule(tasks[0])}\nonly"),
-            ("pre1_cue", f"{_display_rule(tasks[1])}\nonly"),
+        ]
+        if len(pretraining_tasks) > 1:
+            conditions.append((
+                "cue_sum", " +\n".join(_display_rule(task)
+                                       for task in pretraining_tasks)))
+        conditions.extend(
+            (f"pre{index}_cue", f"{_display_rule(task)}\nonly")
+            for index, task in enumerate(pretraining_tasks))
+        conditions.extend([
             ("zero", "Zero\nvector"),
             ("random", "Random\n(mean)"),
-        )
+        ])
         positions = np.arange(len(conditions))
         for run in selected:
             values = [_backbone_condition_value(run, key) for key, _ in conditions]
@@ -2559,10 +2704,13 @@ def plot_accuracies(grouped, output_dir, feature, hidden, *, seed=None, ruleset=
         return None
     plt.rcParams.update({"font.family": "sans-serif", "font.size": 8,
                          "pdf.fonttype": 42, "ps.fonttype": 42})
-    fig, axes = plt.subplots(1, 2, figsize=(6, 3), sharey=True)
+    fig, axes = plt.subplots(1, len(GROUPS), figsize=(3 * len(GROUPS), 3),
+                             sharey=True)
+    axes = np.atleast_1d(axes)
     for axis, (group_ruleset, (title, tasks)) in zip(axes, GROUPS.items()):
         labels = []
-        for index, (task, color) in enumerate(zip(tasks, COLORS)):
+        for index, task in enumerate(tasks):
+            color = TASK_COLORS[task]
             values = np.asarray(grouped[group_ruleset][task], dtype=float)
             labels.append(f"{_display_rule(task)}\nn={values.size}")
             if values.size:
@@ -2575,9 +2723,9 @@ def plot_accuracies(grouped, output_dir, feature, hidden, *, seed=None, ruleset=
             else:
                 print(f"Missing accuracy: {group_ruleset}/{task}")
         axis.set_title(title, fontsize=10)
-        axis.set_xticks(range(3))
+        axis.set_xticks(range(len(tasks)))
         axis.set_xticklabels(labels)
-        axis.set_xlim(-0.5, 2.5)
+        axis.set_xlim(-0.5, len(tasks) - 0.5)
         axis.set_ylim(0, 110)
         axis.set_yticks([0, 20, 40, 60, 80, 100])
         axis.spines[["top", "right"]].set_visible(False)
@@ -2646,7 +2794,7 @@ def _plot_memory_representation(recorded, representation, first_rule, motif_titl
         if pca.singular_values_[1] <= np.finfo(basis_data.dtype).eps * max(basis_data.shape) * pca.singular_values_[0]:
             raise ValueError(f"MemoryAnti {representation} memory states do not support two nonzero PCs")
     fig, axes = plt.subplots(1, 2, figsize=(7, 3.5), sharex=True, sharey=True)
-    if period == "response":
+    if period == "response" and "delaygo" in recorded:
         first_rule = "delaygo"
     first_title = _display_rule(first_rule)
     period_key = "stim1" if period == "stimulus" else "go1"
@@ -2712,31 +2860,35 @@ def plot_memory_pca(checkpoint_dir, output_dir, feature, hidden, seed=None, test
     recorded = {}
     motif_title, tasks = GROUPS[ruleset]
     first_rule = tasks[0]
-    for rule, stage, column in [(first_rule, "stage1", 0), ("delaygo", "stage1", 1), ("delayanti", "stage2", 2)]:
-        params = load_task_params(checkpoint_dir, aname, stage)
+    stage1 = load_task_params(checkpoint_dir, aname, "stage1")
+    stage2 = load_task_params(checkpoint_dir, aname, "stage2")
+    layout = _validate_task_layout(
+        stage1, stage2, ruleset, model.W_initial_linear.in_features)
+    response_rule = "delaygo" if "delaygo" in layout["stage1_rules"] else first_rule
+    for column, rule in enumerate(layout["stage1_rules"] + layout["stage2_rules"]):
+        posttraining = column >= layout["n_pretraining"]
+        params = copy.deepcopy(stage2 if posttraining else stage1)
         np.random.seed(test_seed)
         torch.manual_seed(test_seed)
         params["hp"]["rng"] = np.random.RandomState(test_seed)
         params["hp"]["batch_size_train"] = 256
         (inputs, _, _), (_, trials, _) = mpn_tasks.generate_trials_wrap(
             params, 256, rules=[rule], mode_input="random", device="cpu",
-            pretraining_shift=2 if column == 2 else 0,
-            pretraining_shift_pre=1 if column < 2 else 0,
+            pretraining_shift=layout["n_pretraining"] if posttraining else 0,
+            pretraining_shift_pre=0 if posttraining else 1,
         )
-        if inputs.shape[-1] != model.W_initial_linear.in_features:
-            raise ValueError(f"{rule}: checkpoint input width mismatch")
-        if not torch.all(inputs[:, 0, -3:].argmax(dim=-1) == column):
-            raise ValueError(f"{rule}: incorrect rule cue")
+        _validate_generated_rule_cue(inputs, layout, column, rule)
         recorded[rule] = {
             "states": _record_pca_periods(model, inputs, trials[0].epochs, device,
-                                          column == 2, include_response=column > 0),
+                                          posttraining,
+                                          include_response=rule in (response_rule, "delayanti")),
             "directions": np.asarray(trials[0].meta["stim1"]).reshape(-1),
             "epochs": trials[0].epochs, "dt": params["dt"],
             "n_directions": params["n_eachring"],
         }
         start, end = recorded[rule]["epochs"]["stim1"]
         print(f"{rule}: stimulus duration {(end - start) * params['dt']} ms", flush=True)
-        if column > 0:
+        if rule in (response_rule, "delayanti"):
             start, end = recorded[rule]["epochs"]["go1"]
             print(f"{rule}: response duration {(end - start) * params['dt']} ms", flush=True)
     return [_plot_memory_representation(recorded, representation, first_rule,
@@ -2773,7 +2925,7 @@ def main(argv=None):
                        help="Sweep MemoryAnti replacement-vector norm along fixed directions.")
     modes.add_argument("--backbone-probe", action="store_true",
                        help="Zero-shot MemoryAnti probes: random rule vectors and "
-                           "raw and norm-matched pretraining-span (a, b) grids.")
+                           "raw and norm-matched pretraining-span coefficient sweeps.")
     modes.add_argument("--pathway-gain", action="store_true",
                        help="Sign of the stimulus-to-readout gain through W_eff "
                             "under cue/trace conditions, plus 1+M statistics "
@@ -2787,7 +2939,9 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--total-seed", type=positive_int, default=None,
                         help="Randomly select K matching checkpoint seeds per motif.")
-    parser.add_argument("--test-seed", type=int, default=0)
+    parser.add_argument("--test-seed", type=int, default=0,
+                        help="Random seed for trial generation and reproducible "
+                             "per-ruleset --total-seed selection (default: 0).")
     parser.add_argument("--ruleset", choices=tuple(GROUPS), default=None)
     args = parser.parse_args(argv)
     if not 0 <= args.test_seed <= 2**32 - 3:

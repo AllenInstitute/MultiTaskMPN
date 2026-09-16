@@ -6,12 +6,19 @@ held-out cross-validation. Analyze hidden states, M, W*M, principal angles,
 rule vectors, and learning curves. For random-rule backbone probes and raw
 or norm-matched pretraining-span grids, use pretraining_post.py --backbone-probe.
 
-Configure rulesets_to_run, N, reg, and n_seeds_per_ruleset below, then run from
-the repository root. Reads ./pretraining/ and writes per-seed results and
-aggregate data to ./pretraining_analysis/, aggregate figures to ./pretrain/fig/,
-and per-seed figures to ./pretrain/fig_seed/; matching outputs overwrite.
+Configure rulesets_to_run, N, and reg below, then run from the repository root:
+    python pretrain/pretraining_analysis.py
+    python pretrain/pretraining_analysis.py --total-seed 3
+
+Without --total-seed, every matching seed is analyzed. With --total-seed K,
+K seeds are randomly selected from each ruleset using the same stable
+(test-seed, ruleset) mapping as pretraining_post.py. Reads ./pretraining/ and
+writes per-seed results and aggregate data
+to ./pretraining_analysis/, aggregate figures to ./pretrain/fig/, and per-seed
+figures to ./pretrain/fig_seed/; matching outputs overwrite.
 """
 
+import argparse
 import numpy as np
 import pickle
 import os
@@ -25,6 +32,7 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 from sklearn.decomposition import PCA
 from scipy.linalg import subspace_angles
+from scipy.stats import beta as beta_distribution
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import mpn
@@ -65,8 +73,6 @@ def _timed_analysis(function):
         finally:
             if TIMING_ENABLED:
                 detail = kwargs.get("datatype", "")
-                if function.__name__ == "pca_cross_variance":
-                    detail += f" compute_pr={kwargs.get('compute_pr', True)}"
                 print(f"  [timing] {function.__name__} {detail}: "
                       f"{perf_counter() - started:.3f} s", flush=True)
     return measured
@@ -79,14 +85,31 @@ os.makedirs(outpath, exist_ok=True)
 os.makedirs(figpath, exist_ok=True)
 os.makedirs(seed_figpath, exist_ok=True)
 
-# Pretraining rulesets must match RULES_DICT in pretraining.py.
-# Each one is processed independently; their learning curves are then
-# combined into a single cross-ruleset figure.
-rulesets_to_run = ["fdgo_delaygo", "fdanti_delaygo"]
+# This is the analysis-side scientific specification. The actual task lists are
+# read from each saved stage-1/stage-2 npz and validated against this table before
+# any analysis is performed. In particular, fdanti is a one-parent ablation, not
+# a two-task motif with an implicit/missing MemoryPro task.
+RULESET_SPECS = {
+    "fdgo_delaygo": {
+        "label": "Improper motif",
+        "stage1_tasks": ("fdgo", "delaygo"),
+        "basis_by_period": {"stimulus": "fdgo", "response": "delaygo"},
+    },
+    "fdanti_delaygo": {
+        "label": "Proper motif",
+        "stage1_tasks": ("fdanti", "delaygo"),
+        "basis_by_period": {"stimulus": "fdanti", "response": "delaygo"},
+    },
+    "fdanti": {
+        "label": "Proper motif +",
+        "stage1_tasks": ("fdanti",),
+        "basis_by_period": {"stimulus": "fdanti", "response": "fdanti"},
+    },
+}
 
-# None analyzes all seeds; capped sampling also depends on Python's ruleset hash.
-n_seeds_per_ruleset = None
-seed_sample_rng_seed = 0
+# Each ruleset is processed independently; learning/transfer curves are then
+# combined into cross-ruleset figures.
+rulesets_to_run = list(RULESET_SPECS)
 
 # Active ruleset / stage-1 tasks are (re)assigned at the top of each
 # iteration of the main loop below. Functions that build file paths
@@ -96,7 +119,18 @@ stage1_tasks = None
 
 
 def _stage1_tasks_for(rs):
-    return ["fdanti", "delaygo"] if rs == "fdanti_delaygo" else ["fdgo", "delaygo"]
+    try:
+        return list(RULESET_SPECS[rs]["stage1_tasks"])
+    except KeyError as exc:
+        raise ValueError(f"Unknown pretraining ruleset: {rs!r}") from exc
+
+
+def _basis_tasks_for(rs):
+    """Stage-1 task whose activity defines each period's comparison basis."""
+    try:
+        return dict(RULESET_SPECS[rs]["basis_by_period"])
+    except KeyError as exc:
+        raise ValueError(f"Unknown pretraining ruleset: {rs!r}") from exc
 
 
 # Post-training task
@@ -115,10 +149,57 @@ def display_rule(rule):
     """Figure display name for an internal rule name."""
     return RULE_DISPLAY_NAMES.get(rule, rule)
 
+
+def positive_int(value):
+    """argparse type shared with pretraining_post.py."""
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be positive")
+    return number
+
+
+def _parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--total-seed", type=positive_int, default=None,
+        help=("Randomly select K matching seeds from each ruleset; "
+              "default: analyze every matching seed."),
+    )
+    parser.add_argument(
+        "--test-seed", type=int, default=0,
+        help="Random seed for reproducible --total-seed selection (default: 0).",
+    )
+    args = parser.parse_args(argv)
+    if not 0 <= args.test_seed <= 2**32 - 3:
+        parser.error("--test-seed must be between 0 and 2**32 - 3")
+    return args
+
+
+def _selection_rng(test_seed, active_ruleset):
+    """Stable per-ruleset RNG shared conceptually with pretraining_post.py."""
+    entropy = [int(test_seed), *active_ruleset.encode("utf-8")]
+    return np.random.default_rng(np.random.SeedSequence(entropy))
+
+
+def _select_seeds(seeds, total_seed, test_seed, active_ruleset):
+    """Select seeds reproducibly, independent of ruleset traversal order."""
+    seeds = sorted(int(seed) for seed in seeds)
+    if total_seed is None:
+        return seeds
+    if len(seeds) < total_seed:
+        raise ValueError(
+            f"Requested --total-seed {total_seed}, but only {len(seeds)} "
+            f"matching {active_ruleset} seed(s) exist"
+        )
+    rng = _selection_rng(test_seed, active_ruleset)
+    indices = rng.choice(len(seeds), size=total_seed, replace=False)
+    return sorted(seeds[int(index)] for index in indices)
+
 # Per-ruleset plotting colors for the cross-ruleset combined figure.
 ruleset_colors = {
     "fdgo_delaygo": c_vals[1],
     "fdanti_delaygo": c_vals[2],
+    "fdanti": c_vals[4],
 }
 
 chosen_network = "dmpn"
@@ -176,56 +257,183 @@ def load_mpn_W(seed):
     return ckpt["state_dict"]["mp_layer1.W"].numpy()
 
 
-def load_rule_vectors(seed):
+def _validate_saved_task_layout(seed, stage1_output, stage2_output):
     """
-    Extract the 3 rule-input column vectors from the checkpoint.
+    Read the authoritative saved task metadata and validate the padded layout.
 
-    W_initial_linear.weight has shape (proj, n_input); its last 3
-    columns correspond to task-indicator channels in the input layout:
-        [fix1, fix2, r1cos, r1sin, r2cos, r2sin, task1, task2, task3]
-    Column 6 (task1)  = pretraining task 0 (e.g. fdgo / fdanti)
-    Column 7 (task2)  = pretraining task 1 (delaygo)
-    Column 8 (task3)  = post-training task (delayanti), trained in stage 2
-
-    Returns (v_pre0, v_pre1, v_novel) as three (proj,) numpy arrays.
+    pretraining.py saves both stages after padding them to the final network
+    input width. That width is sensory columns through ``rule_start``, followed
+    by every stage-1 rule cue and then the held-out stage-2 rule cue. It is 9
+    for the two-parent motifs and 8 for the one-parent fdanti ablation.
     """
-    ckpt = _load_checkpoint(ckpt_path(seed))
-    W_in = ckpt["state_dict"]["W_initial_linear.weight"].numpy()
-    return W_in[:, -3], W_in[:, -2], W_in[:, -1]
+    task_params1 = stage1_output["task_params"].item()
+    task_params2 = stage2_output["task_params"].item()
+    saved_stage1_tasks = list(task_params1["rules"])
+    saved_stage2_tasks = list(task_params2["rules"])
+    expected_stage1_tasks = _stage1_tasks_for(ruleset)
 
+    if saved_stage1_tasks != expected_stage1_tasks:
+        raise ValueError(
+            f"seed {seed}: saved stage-1 rules {saved_stage1_tasks} do not "
+            f"match ruleset {ruleset!r} ({expected_stage1_tasks})"
+        )
+    if saved_stage2_tasks != [final_task]:
+        raise ValueError(
+            f"seed {seed}: saved stage-2 rules {saved_stage2_tasks} do not "
+            f"match expected {[final_task]}"
+        )
 
-def _rule_vector_stats(v_pre0, v_pre1, v_novel):
-    """
-    Per-seed scalar summaries of the rule-input vector geometry.
+    rule_start = int(task_params1["hp"]["rule_start"])
+    expected_input_dim = (
+        rule_start + len(saved_stage1_tasks) + len(saved_stage2_tasks)
+    )
+    stage1_input = np.asarray(stage1_output["test_input_np"])
+    stage2_input = np.asarray(stage2_output["test_input_np"])
+    input_dims = (stage1_input.shape[-1], stage2_input.shape[-1])
+    if input_dims != (expected_input_dim, expected_input_dim):
+        raise ValueError(
+            f"seed {seed}: padded input widths are {input_dims}, expected "
+            f"{expected_input_dim} from rule_start={rule_start}, "
+            f"{len(saved_stage1_tasks)} stage-1 rule(s), and "
+            f"{len(saved_stage2_tasks)} stage-2 rule(s)"
+        )
 
-    Returns a dict with:
-      - cos_pre0_pre1, cos_novel_pre0, cos_novel_pre1: pairwise cosines
-      - in_span_fraction: ‖P_{span(pre0, pre1)} v_novel‖ / ‖v_novel‖
-        (1 → novel is a linear combination of pretrained rule vectors;
-         0 → novel is orthogonal to the pretrained rule subspace)
-    - norm_pre0, norm_pre1, norm_novel: Euclidean (L2) vector norms
-    """
-    v_pre0 = np.asarray(v_pre0)
-    v_pre1 = np.asarray(v_pre1)
-    v_novel = np.asarray(v_novel)
+    test_task = np.asarray(stage1_output["test_task"], dtype=int)
+    task_masks = {
+        task: test_task == task_idx
+        for task_idx, task in enumerate(saved_stage1_tasks)
+    }
+    empty_tasks = [task for task, mask in task_masks.items() if not np.any(mask)]
+    if empty_tasks:
+        raise ValueError(f"seed {seed}: no saved test trials for {empty_tasks}")
 
-    # Project v_novel onto span(v_pre0, v_pre1) via least-squares:
-    # minimize ‖v_novel - (a·v_pre0 + b·v_pre1)‖ → coefficients from lstsq.
-    basis = np.stack([v_pre0, v_pre1], axis=1)  # (proj, 2)
-    coeffs, _, _, _ = np.linalg.lstsq(basis, v_novel, rcond=None)
-    v_proj = basis @ coeffs
-    norm_novel = np.linalg.norm(v_novel)
-    in_span = float(np.linalg.norm(v_proj) / norm_novel) if norm_novel > 0 else float("nan")
+    basis_by_period = _basis_tasks_for(ruleset)
+    missing_basis = set(basis_by_period.values()) - set(saved_stage1_tasks)
+    if missing_basis:
+        raise ValueError(
+            f"seed {seed}: analysis basis task(s) {sorted(missing_basis)} are "
+            f"not present in saved stage-1 tasks {saved_stage1_tasks}"
+        )
 
     return {
-        "cos_pre0_pre1": _cosine_sim(v_pre0, v_pre1),
-        "cos_novel_pre0": _cosine_sim(v_novel, v_pre0),
-        "cos_novel_pre1": _cosine_sim(v_novel, v_pre1),
+        "stage1_tasks": saved_stage1_tasks,
+        "stage2_tasks": saved_stage2_tasks,
+        "basis_by_period": basis_by_period,
+        "task_masks": task_masks,
+        "rule_start": rule_start,
+        "input_dim": expected_input_dim,
+    }
+
+
+def load_rule_vectors(seed, stage1_task_names, novel_task_name, rule_start,
+                      expected_input_dim):
+    """Extract named rule-cue columns using the saved, validated input layout."""
+    ckpt = _load_checkpoint(ckpt_path(seed))
+    W_in = ckpt["state_dict"]["W_initial_linear.weight"].numpy()
+    if W_in.shape[1] != expected_input_dim:
+        raise ValueError(
+            f"seed {seed}: checkpoint input width {W_in.shape[1]} does not "
+            f"match saved padded input width {expected_input_dim}"
+        )
+
+    pretrained = {
+        task: W_in[:, rule_start + task_idx].copy()
+        for task_idx, task in enumerate(stage1_task_names)
+    }
+    novel_col = rule_start + len(stage1_task_names)
+    return pretrained, W_in[:, novel_col].copy(), novel_task_name
+
+
+def _rule_vector_stats(pretrained_vectors, v_novel, novel_task):
+    """
+    Per-seed scalar summaries for any number of pretrained rule vectors.
+
+    ``in_span_fraction`` is retained as the raw geometric quantity. Because its
+    chance level grows with span rank, ``in_span_excess_over_random`` compares
+    squared projection to the exact isotropic random-subspace expectation r/d.
+    This permits a one-dimensional Proper-motif+ span and two-dimensional motif
+    spans to be compared without treating their different ranks as equivalent.
+    """
+    if not pretrained_vectors:
+        raise ValueError("At least one pretrained rule vector is required")
+
+    task_names = list(pretrained_vectors)
+    vectors = [np.asarray(pretrained_vectors[task]) for task in task_names]
+    v_novel = np.asarray(v_novel)
+    if any(vector.shape != v_novel.shape for vector in vectors):
+        raise ValueError("All pretrained and novel rule vectors must have the same shape")
+
+    basis = np.stack(vectors, axis=1)
+    span_rank = int(np.linalg.matrix_rank(basis))
+    if span_rank:
+        U, _, _ = np.linalg.svd(basis, full_matrices=False)
+        orthonormal_basis = U[:, :span_rank]
+        v_proj = orthonormal_basis @ (orthonormal_basis.T @ v_novel)
+    else:
+        v_proj = np.zeros_like(v_novel)
+
+    norm_novel = np.linalg.norm(v_novel)
+    in_span = float(np.linalg.norm(v_proj) / norm_novel) if norm_novel > 0 else float("nan")
+    in_span_squared = in_span ** 2
+    ambient_dim = int(v_novel.size)
+    random_expected_squared = span_rank / ambient_dim
+    if span_rank == 0 or span_rank >= ambient_dim or not np.isfinite(in_span):
+        random_percentile = float("nan")
+        excess_over_random = float("nan")
+    else:
+        # For a fixed vector and a uniformly random rank-r subspace in R^d,
+        # squared projection follows Beta(r/2, (d-r)/2).
+        random_percentile = float(beta_distribution.cdf(
+            np.clip(in_span_squared, 0.0, 1.0),
+            span_rank / 2,
+            (ambient_dim - span_rank) / 2,
+        ))
+        excess_over_random = float(
+            (in_span_squared - random_expected_squared)
+            / (1.0 - random_expected_squared)
+        )
+
+    cos_novel_by_task = {
+        task: _cosine_sim(v_novel, vector)
+        for task, vector in zip(task_names, vectors)
+    }
+    cos_pretrained_pairs = {}
+    for left_idx, left_task in enumerate(task_names):
+        for right_idx in range(left_idx + 1, len(task_names)):
+            right_task = task_names[right_idx]
+            cos_pretrained_pairs[f"{left_task}__{right_task}"] = _cosine_sim(
+                vectors[left_idx], vectors[right_idx]
+            )
+
+    result = {
+        "pretrained_tasks": task_names,
+        "novel_task": novel_task,
+        "cos_novel_by_task": cos_novel_by_task,
+        "cos_pretrained_pairs": cos_pretrained_pairs,
         "in_span_fraction": in_span,
-        "norm_pre0": float(np.linalg.norm(v_pre0)),
-        "norm_pre1": float(np.linalg.norm(v_pre1)),
+        "in_span_squared": in_span_squared,
+        "span_rank": span_rank,
+        "ambient_dim": ambient_dim,
+        "random_span_expected_squared": random_expected_squared,
+        "random_span_percentile": random_percentile,
+        "in_span_excess_over_random": excess_over_random,
+        "norm_pretrained": {
+            task: float(np.linalg.norm(vector))
+            for task, vector in zip(task_names, vectors)
+        },
         "norm_novel": float(norm_novel),
     }
+
+    # Preserve legacy scalar keys for existing two-parent paper code while the
+    # named schema above remains authoritative and supports one-parent runs.
+    for task_idx, task in enumerate(task_names):
+        result[f"cos_novel_pre{task_idx}"] = cos_novel_by_task[task]
+        result[f"norm_pre{task_idx}"] = result["norm_pretrained"][task]
+    if len(task_names) == 2:
+        pair_key = f"{task_names[0]}__{task_names[1]}"
+        result["cos_pre0_pre1"] = cos_pretrained_pairs[pair_key]
+
+    return result
 
 
 def load_final_net(seed, device):
@@ -375,134 +583,6 @@ def _mean_M_over_period(Ms_period):
     return Ms_period.mean(axis=(0, 1))
 
 
-def _stim_direction_indices(test_input_np, epochs, task_name, mask=None, n_dirs=8):
-    """
-    Return a per-trial integer stimulus-direction index in [0, n_dirs).
-
-    Reads the r1cos (channel 2) and r1sin (channel 3) inputs at the midpoint
-    of the task's stim1 period (where the stimulus is on), computes
-    θ = atan2(sin, cos), and bins to the nearest of n_dirs evenly-spaced
-    angles. Assumes sigma_x = 0 (noise-free inputs), which is the case in
-    pretraining.py.
-    """
-    if mask is not None:
-        test_input_np = test_input_np[mask]
-    start, end = epochs[task_name]["stim1"]
-    t_mid = (start + end) // 2
-    r1cos = test_input_np[:, t_mid, 2]
-    r1sin = test_input_np[:, t_mid, 3]
-    thetas = np.arctan2(r1sin, r1cos)
-    bin_size = 2 * np.pi / n_dirs
-    return (np.round(thetas / bin_size).astype(int)) % n_dirs
-
-
-@_timed_analysis
-def direction_averaged_cve(
-    X_period, Y_period, dir_idxs_X, dir_idxs_Y,
-    n_components, datatype, n_dirs=8,
-):
-    """
-    Per-stimulus-direction CVE averaged across directions.
-
-    Variance-decomposition diagnostic: the pooled CVE marginalizes over
-    all stimulus directions before fitting PCA. If the two tasks share
-    a per-direction subspace structure (e.g. a ring attractor whose axial
-    geometry is identical at every θ but rotated), pooling washes that
-    out. Running the full CVE analysis within each direction bin and
-    averaging at the end reveals a shared structure that would otherwise
-    be hidden.
-
-    For each direction with trials on both sides, subset both period
-    slices to those trials and call `pca_cross_variance`. Average the
-    resulting `cev_Y` and `cev_Y_self` curves across directions. Returns
-    length-min_len arrays truncated to the shortest achievable curve
-    (a direction with few samples produces a shorter PCA spectrum).
-
-    Note: alignment is by *stimulus* direction, not response direction —
-    so for the go-period comparison a pro-task trial at stimulus θ is
-    paired with a delayanti trial at stimulus θ (which responds toward
-    θ+π). This tests whether the computational trajectories under the
-    same input differ, regardless of target response.
-
-    Returns
-    -------
-    dict with:
-      cev_Y_mean       : (k,) direction-averaged novel-in-pretraining CVE
-      cev_Y_self_mean  : (k,) direction-averaged novel-self CVE
-      n_dirs_used      : int, how many direction bins contributed
-    """
-    cev_Y_list = []
-    cev_Y_self_list = []
-    for d in range(n_dirs):
-        mask_X = (dir_idxs_X == d)
-        mask_Y = (dir_idxs_Y == d)
-        if not mask_X.any() or not mask_Y.any():
-            continue
-        X_d = X_period[mask_X]
-        Y_d = Y_period[mask_Y]
-        # Cap n_components to what this direction's subset can support
-        # (some bins have only a handful of trials × timesteps).
-        nX = X_d.shape[0] * X_d.shape[1]
-        nY = Y_d.shape[0] * Y_d.shape[1]
-        k_d = min(n_components, nX - 1, nY - 1)
-        if k_d < 1:
-            continue
-        res_d = pca_cross_variance(
-            X_d, Y_d, n_components=k_d, datatype=datatype, compute_pr=False)
-        cev_Y_list.append(res_d["cev_Y"])
-        cev_Y_self_list.append(res_d["cev_Y_self"])
-
-    if not cev_Y_list:
-        return {
-            "cev_Y_mean": np.array([]),
-            "cev_Y_self_mean": np.array([]),
-            "n_dirs_used": 0,
-        }
-    min_len = min(len(c) for c in cev_Y_list)
-    cev_Y_trunc = np.stack([c[:min_len] for c in cev_Y_list], axis=0)
-    cev_self_trunc = np.stack([c[:min_len] for c in cev_Y_self_list], axis=0)
-    return {
-        "cev_Y_mean": cev_Y_trunc.mean(axis=0),
-        "cev_Y_self_mean": cev_self_trunc.mean(axis=0),
-        "n_dirs_used": len(cev_Y_list),
-    }
-
-
-def _mean_M_by_direction(M_period, dir_idxs, n_dirs=8):
-    """
-    Per-direction mean of M over batch and time.
-
-    Returns a (n_dirs, N, N) array; bins with no trials produce NaNs.
-    """
-    N = M_period.shape[-1]
-    out = np.full((n_dirs, N, N), np.nan, dtype=M_period.dtype)
-    for d in range(n_dirs):
-        trials = (dir_idxs == d)
-        if trials.any():
-            out[d] = M_period[trials].mean(axis=(0, 1))
-    return out
-
-
-def _stim_aligned_scalars(M_A_by_dir, M_B_by_dir):
-    """
-    Stimulus-aligned (direction-matched) cosine and Frobenius-difference.
-
-    For each direction that has data on both sides, compute cos(M_A_θ, M_B_θ)
-    and ‖M_A_θ − M_B_θ‖. Return the mean over directions for each.
-    """
-    n_dirs = M_A_by_dir.shape[0]
-    cos_vals, frob_vals = [], []
-    for d in range(n_dirs):
-        A, B = M_A_by_dir[d], M_B_by_dir[d]
-        if np.isnan(A).any() or np.isnan(B).any():
-            continue
-        cos_vals.append(_cosine_sim(A, B))
-        frob_vals.append(float(np.linalg.norm(A - B)))
-    if not cos_vals:
-        return float("nan"), float("nan")
-    return float(np.mean(cos_vals)), float(np.mean(frob_vals))
-
-
 def _cosine_sim(A, B):
     """Cosine similarity between two tensors, flattened."""
     a, b = np.asarray(A).ravel(), np.asarray(B).ravel()
@@ -585,8 +665,9 @@ def period_slice(op, epochs, task_name, key, *, shift_percentage=0, mask=None):
 
 
 @_timed_analysis
-def pca_cross_variance(X, Y, n_components=None, center_on="X", datatype="hidden", *, angle_k=None,
-                       compute_pr=True):
+def pca_cross_variance(
+    X, Y, n_components=None, center_on="X", datatype="hidden", *, angle_k=None,
+):
     """
     Driscoll-style subspace-overlap analysis (see Driscoll et al.,
     Nature Neurosci. 2024, Fig. 6c/k captions).
@@ -594,10 +675,6 @@ def pca_cross_variance(X, Y, n_components=None, center_on="X", datatype="hidden"
     angle_k optionally reuses these PCA fits for principal angles; randomized
     leading directions can differ from a separate lower-rank fit. The angles
     field is in radians, ascending, with length capped by both supported ranks.
-    compute_pr=False omits all three PR fields and their computation, leaving
-    PCA, CVE, and requested angles unchanged. Used by direction_averaged_cve,
-    whose saved output contains only CVE curves and the direction count.
-
     Basis convention:
       X = basis data   — the task whose top-k PCs define the reference
                          subspace (typically a pretraining task).
@@ -678,14 +755,13 @@ def pca_cross_variance(X, Y, n_components=None, center_on="X", datatype="hidden"
         "evr_Y_self": evr_Y_self, "cev_Y_self": cev_Y_self,
         "evr_Y": evr_Y, "cev_Y": cev_Y,
     }
-    if compute_pr:
-        X_c = X2d - X2d.mean(axis=0, keepdims=True)
-        result["PR_X"] = _pr_from_data(X_c)
-        Y_c = Y2d - Y2d.mean(axis=0, keepdims=True)
-        result["PR_Y"] = _pr_from_data(Y_c)
-        Y_proj_c = Y_proj - Y_proj.mean(axis=0, keepdims=True)
-        cov_Yp = (Y_proj_c.T @ Y_proj_c) / Y_proj_c.shape[0]
-        result["PR_Y_in_Xbasis"] = _participation_ratio(cov_Yp)
+    X_c = X2d - X2d.mean(axis=0, keepdims=True)
+    result["PR_X"] = _pr_from_data(X_c)
+    Y_c = Y2d - Y2d.mean(axis=0, keepdims=True)
+    result["PR_Y"] = _pr_from_data(Y_c)
+    Y_proj_c = Y_proj - Y_proj.mean(axis=0, keepdims=True)
+    cov_Yp = (Y_proj_c.T @ Y_proj_c) / Y_proj_c.shape[0]
+    result["PR_Y_in_Xbasis"] = _participation_ratio(cov_Yp)
     if angle_k is not None:
         result["angles"] = _angles_from_pca(
             pca_X, pca_Y, X2d.shape, Y2d.shape,
@@ -698,6 +774,11 @@ def pca_cross_variance(X, Y, n_components=None, center_on="X", datatype="hidden"
 # Main analysis
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    args = _parse_args()
+    output_addon_name = (
+        addon_name if args.total_seed is None
+        else f"{addon_name}_n{args.total_seed}"
+    )
     period_shift_percentage = 1 / 4
 
     # Device for the sanity-check re-runs of the final (post-stage-2) net.
@@ -734,12 +815,11 @@ if __name__ == "__main__":
             continue
         print(f"Found {len(seeds)} seeds: {seeds}")
 
-        # Python hash randomization can change capped seed selections between processes.
-        if n_seeds_per_ruleset is not None and len(seeds) > n_seeds_per_ruleset:
-            rng = np.random.default_rng(seed_sample_rng_seed + hash(ruleset) % (2**31))
-            seeds = sorted(rng.choice(seeds, size=n_seeds_per_ruleset,
-                                      replace=False).tolist())
-            print(f"Subsampled to {len(seeds)} seeds: {seeds}")
+        if args.total_seed is not None:
+            seeds = _select_seeds(
+                seeds, args.total_seed, args.test_seed, ruleset
+            )
+            print(f"Selected {ruleset} seeds: {seeds}", flush=True)
 
         all_seed_results = []
 
@@ -760,6 +840,20 @@ if __name__ == "__main__":
                 stage2_output = np.load(paths["stage2_output"], allow_pickle=True)
                 final_param = np.load(paths["param_result"], allow_pickle=True)
 
+                # The saved npzs, not the filename, are authoritative for task
+                # count and cue-column layout. This is essential for the
+                # one-parent Proper motif + condition.
+                layout = _validate_saved_task_layout(
+                    seed, stage1_output, stage2_output
+                )
+                stage1_tasks = layout["stage1_tasks"]
+                basis_by_period = layout["basis_by_period"]
+                task_masks = layout["task_masks"]
+                stimulus_basis_task = basis_by_period["stimulus"]
+                response_basis_task = basis_by_period["response"]
+                stimulus_basis_mask = task_masks[stimulus_basis_task]
+                response_basis_mask = task_masks[response_basis_task]
+
                 # Sanity-check figure: load the post-stage-2 network and run
                 # it on both stages' test inputs (already correctly padded in
                 # each stage's npz). Lets us visually verify the saved model
@@ -773,10 +867,20 @@ if __name__ == "__main__":
                     print(f"  WARNING: final-net sanity check failed ({e}); "
                           f"continuing without it")
 
-                seed_result = {"seed": seed}
+                seed_result = {
+                    "seed": seed,
+                    "stage1_tasks": list(stage1_tasks),
+                    "final_task": final_task,
+                    "basis_by_period": dict(basis_by_period),
+                    "input_layout": {
+                        "rule_start": layout["rule_start"],
+                        "input_dim": layout["input_dim"],
+                        "n_stage1_rules": len(stage1_tasks),
+                        "n_stage2_rules": len(layout["stage2_tasks"]),
+                    },
+                }
 
                 loading_started = perf_counter()
-                test_task = stage1_output["test_task"]
                 stage1_hs = final_param["hs_stage1"]
                 stage2_hs = final_param["hs_stage2"]
                 stage1_ms = final_param["Ms_orig_stage1"]
@@ -804,46 +908,28 @@ if __name__ == "__main__":
                 acc_iter_pre = acc_iter[pre_mask]
                 acc_pre = acc[pre_mask]
 
-                # Trial masks for stage 1 tasks
-                mask0 = (test_task == 0)
-                mask1 = (test_task == 1)
-
                 # ---- Extract periods ----
                 # period_shift_percentage skips the onset transient of each epoch
                 # so the PCA captures steady-state geometry; applied consistently
                 # to both stim and go periods.
 
-                # Stimulus period: compare stage1_tasks[0] vs final_task
+                # Each period uses the scientifically specified Stage-1 basis.
+                # For Proper motif +, fdanti is the basis for both periods.
                 stage1_stim = period_slice(
-                    stage1_hs, stage1_rules_epochs, stage1_tasks[0], "stim1",
-                    shift_percentage=period_shift_percentage, mask=mask0)
+                    stage1_hs, stage1_rules_epochs, stimulus_basis_task, "stim1",
+                    shift_percentage=period_shift_percentage,
+                    mask=stimulus_basis_mask)
                 final_stim = period_slice(
                     stage2_hs, stage2_rules_epochs, final_task, "stim1",
                     shift_percentage=period_shift_percentage)
 
-                # Go period: compare stage1_tasks[1] vs final_task
                 stage1_go = period_slice(
-                    stage1_hs, stage1_rules_epochs, stage1_tasks[1], "go1",
-                    shift_percentage=period_shift_percentage, mask=mask1)
+                    stage1_hs, stage1_rules_epochs, response_basis_task, "go1",
+                    shift_percentage=period_shift_percentage,
+                    mask=response_basis_mask)
                 final_go = period_slice(
                     stage2_hs, stage2_rules_epochs, final_task, "go1",
                     shift_percentage=period_shift_percentage)
-
-                # Per-trial stimulus-direction index for each task, used
-                # by the direction-averaged (stimulus-aligned) CVE below.
-                # Alignment is by input stimulus direction, so a pro-task
-                # trial at θ gets paired with a delayanti trial at θ even
-                # though delayanti responds toward θ+π.
-                stage1_test_input = np.asarray(stage1_output["test_input_np"])
-                stage2_test_input = np.asarray(stage2_output["test_input_np"])
-                dir_task0 = _stim_direction_indices(
-                    stage1_test_input, stage1_rules_epochs,
-                    stage1_tasks[0], mask=mask0)
-                dir_task1 = _stim_direction_indices(
-                    stage1_test_input, stage1_rules_epochs,
-                    stage1_tasks[1], mask=mask1)
-                dir_final = _stim_direction_indices(
-                    stage2_test_input, stage2_rules_epochs, final_task)
 
                 # Hidden state analysis.
                 # Driscoll convention: X = pretraining (basis), Y = novel
@@ -854,20 +940,9 @@ if __name__ == "__main__":
                     stage1_stim, final_stim, n_components=N, datatype="hidden", angle_k=N_ANGLES)
                 res_h_go = pca_cross_variance(
                     stage1_go, final_go, n_components=N, datatype="hidden", angle_k=N_ANGLES)
-                # Direction-averaged variant: run CVE within each stimulus
-                # bin separately, then average. Diagnoses whether pooling
-                # over direction is what makes the pooled CVE look low.
-                dir_h_stim = direction_averaged_cve(
-                    stage1_stim, final_stim, dir_task0, dir_final,
-                    n_components=N, datatype="hidden")
-                dir_h_go = direction_averaged_cve(
-                    stage1_go, final_go, dir_task1, dir_final,
-                    n_components=N, datatype="hidden")
                 seed_result["hidden"] = {
                     "stimulus": res_h_stim,
                     "response": res_h_go,
-                    "stimulus_dir_avg": dir_h_stim,
-                    "response_dir_avg": dir_h_go,
                     "angles_stimulus": res_h_stim.pop("angles"),
                     "angles_response": res_h_go.pop("angles"),
                 }
@@ -875,14 +950,16 @@ if __name__ == "__main__":
                 # Modulation analysis (dmpn only)
                 if chosen_network == "dmpn" and stage1_ms.size > 0 and stage2_ms.size > 0:
                     stage1_stim_m = period_slice(
-                        stage1_ms, stage1_rules_epochs, stage1_tasks[0], "stim1",
-                        shift_percentage=period_shift_percentage, mask=mask0)
+                        stage1_ms, stage1_rules_epochs, stimulus_basis_task, "stim1",
+                        shift_percentage=period_shift_percentage,
+                        mask=stimulus_basis_mask)
                     final_stim_m = period_slice(
                         stage2_ms, stage2_rules_epochs, final_task, "stim1",
                         shift_percentage=period_shift_percentage)
                     stage1_go_m = period_slice(
-                        stage1_ms, stage1_rules_epochs, stage1_tasks[1], "go1",
-                        shift_percentage=period_shift_percentage, mask=mask1)
+                        stage1_ms, stage1_rules_epochs, response_basis_task, "go1",
+                        shift_percentage=period_shift_percentage,
+                        mask=response_basis_mask)
                     final_go_m = period_slice(
                         stage2_ms, stage2_rules_epochs, final_task, "go1",
                         shift_percentage=period_shift_percentage)
@@ -906,17 +983,9 @@ if __name__ == "__main__":
                     res_m_go = pca_cross_variance(
                         stage1_go_m, final_go_m,
                         n_components=n_comp_go, datatype="modulation", angle_k=N_ANGLES)
-                    dir_m_stim = direction_averaged_cve(
-                        stage1_stim_m, final_stim_m, dir_task0, dir_final,
-                        n_components=n_comp_stim, datatype="modulation")
-                    dir_m_go = direction_averaged_cve(
-                        stage1_go_m, final_go_m, dir_task1, dir_final,
-                        n_components=n_comp_go, datatype="modulation")
                     seed_result["modulation"] = {
                         "stimulus": res_m_stim,
                         "response": res_m_go,
-                        "stimulus_dir_avg": dir_m_stim,
-                        "response_dir_avg": dir_m_go,
                         "angles_stimulus": res_m_stim.pop("angles"),
                         "angles_response": res_m_go.pop("angles"),
                     }
@@ -941,21 +1010,9 @@ if __name__ == "__main__":
                             stage1_go_wm, final_go_wm,
                             n_components=n_comp_go,
                             datatype="modulation_weighted", angle_k=N_ANGLES)
-                        dir_wm_stim = direction_averaged_cve(
-                            stage1_stim_wm, final_stim_wm,
-                            dir_task0, dir_final,
-                            n_components=n_comp_stim,
-                            datatype="modulation_weighted")
-                        dir_wm_go = direction_averaged_cve(
-                            stage1_go_wm, final_go_wm,
-                            dir_task1, dir_final,
-                            n_components=n_comp_go,
-                            datatype="modulation_weighted")
                         seed_result["modulation_weighted"] = {
                             "stimulus": res_wm_stim,
                             "response": res_wm_go,
-                            "stimulus_dir_avg": dir_wm_stim,
-                            "response_dir_avg": dir_wm_go,
                             "angles_stimulus": res_wm_stim.pop("angles"),
                             "angles_response": res_wm_go.pop("angles"),
                         }
@@ -963,115 +1020,82 @@ if __name__ == "__main__":
                         print(f"  WARNING: could not load W from checkpoint "
                               f"({e}); skipping modulation_weighted for this seed")
 
-                    # ─── Period-matched M similarity across stages ────────
-                    # Always compare M on the SAME period on both sides of
-                    # each cosine (apples-to-apples), so all four numbers
-                    # are measured in comparable windows.
-                    # The two cross-stage comparisons match the PCA pairing
-                    # (task-0 vs delayanti on stim; task-1 vs delayanti on
-                    # go). The two within-stage-1 baselines measure how
-                    # different the two pretraining tasks are from each
-                    # other, separately on stim and on go.
-                    stage1_task0_go_m = period_slice(
-                        stage1_ms, stage1_rules_epochs, stage1_tasks[0], "go1",
-                        shift_percentage=period_shift_percentage, mask=mask0)
-                    stage1_task1_stim_m = period_slice(
-                        stage1_ms, stage1_rules_epochs, stage1_tasks[1], "stim1",
-                        shift_percentage=period_shift_percentage, mask=mask1)
+                    # ─── Period-matched M similarity ──────────────────────
+                    # Every ruleset gets the two cross-stage comparisons that
+                    # match its PCA bases. A within-stage-1 task-pair baseline
+                    # exists only for genuine two-parent motifs; Proper motif +
+                    # must not acquire a trivial fdanti-vs-itself baseline.
+                    m_comparisons = []
 
-                    M_final_stim = _mean_M_over_period(final_stim_m)
-                    M_task0_stim = _mean_M_over_period(stage1_stim_m)
-                    M_final_go = _mean_M_over_period(final_go_m)
-                    M_task1_go = _mean_M_over_period(stage1_go_m)
-                    M_task0_go = _mean_M_over_period(stage1_task0_go_m)
-                    M_task1_stim = _mean_M_over_period(stage1_task1_stim_m)
+                    def _append_m_comparison(
+                        comparison_id, left_task, right_task, period,
+                        comparison_type, left_period, right_period,
+                    ):
+                        left_mean = _mean_M_over_period(left_period)
+                        right_mean = _mean_M_over_period(right_period)
+                        m_comparisons.append({
+                            "id": comparison_id,
+                            "left_task": left_task,
+                            "right_task": right_task,
+                            "period": period,
+                            "comparison_type": comparison_type,
+                            "cos": _cosine_sim(left_mean, right_mean),
+                            "frob": float(np.linalg.norm(left_mean - right_mean)),
+                        })
 
-                    # Frobenius norm of the M-difference, period-matched.
-                    # Complements cosine: cosine is direction-only
-                    # (scale-invariant), ‖ΔM‖ captures how much the actual
-                    # magnitude of the change is in absolute units of M.
-                    frob_diff = lambda A, B: float(np.linalg.norm(A - B))
+                    _append_m_comparison(
+                        "final_vs_stage1_stimulus_basis",
+                        final_task, stimulus_basis_task, "stimulus",
+                        "cross_stage", final_stim_m, stage1_stim_m,
+                    )
+                    _append_m_comparison(
+                        "final_vs_stage1_response_basis",
+                        final_task, response_basis_task, "response",
+                        "cross_stage", final_go_m, stage1_go_m,
+                    )
 
-                    # Stimulus-aligned variant: group trials by stimulus
-                    # direction (8 bins), compute mean M per direction per
-                    # (task, period), then take cosine and Frobenius of the
-                    # difference per direction, and average those 8 values.
-                    # Direction indices dir_task0/dir_task1/dir_final are
-                    # already computed earlier in the per-seed block (used
-                    # there by the direction-averaged CVE).
-
-                    M_final_stim_d = _mean_M_by_direction(final_stim_m, dir_final)
-                    M_task0_stim_d = _mean_M_by_direction(stage1_stim_m, dir_task0)
-                    M_final_go_d = _mean_M_by_direction(final_go_m, dir_final)
-                    M_task1_go_d = _mean_M_by_direction(stage1_go_m, dir_task1)
-                    M_task0_go_d = _mean_M_by_direction(stage1_task0_go_m, dir_task0)
-                    M_task1_stim_d = _mean_M_by_direction(stage1_task1_stim_m, dir_task1)
-
-                    aligned = {}
-                    (aligned["cos_final_vs_stage1_task0_stim"],
-                     aligned["frob_final_vs_stage1_task0_stim"]) = \
-                        _stim_aligned_scalars(M_final_stim_d, M_task0_stim_d)
-                    (aligned["cos_final_vs_stage1_task1_go"],
-                     aligned["frob_final_vs_stage1_task1_go"]) = \
-                        _stim_aligned_scalars(M_final_go_d, M_task1_go_d)
-                    (aligned["cos_stage1_task0_vs_task1_stim"],
-                     aligned["frob_stage1_task0_vs_task1_stim"]) = \
-                        _stim_aligned_scalars(M_task0_stim_d, M_task1_stim_d)
-                    (aligned["cos_stage1_task0_vs_task1_go"],
-                     aligned["frob_stage1_task0_vs_task1_go"]) = \
-                        _stim_aligned_scalars(M_task0_go_d, M_task1_go_d)
+                    if len(stage1_tasks) >= 2:
+                        task0, task1 = stage1_tasks[:2]
+                        for period, epoch_key in (
+                            ("stimulus", "stim1"), ("response", "go1")
+                        ):
+                            task0_period = period_slice(
+                                stage1_ms, stage1_rules_epochs, task0, epoch_key,
+                                shift_percentage=period_shift_percentage,
+                                mask=task_masks[task0],
+                            )
+                            task1_period = period_slice(
+                                stage1_ms, stage1_rules_epochs, task1, epoch_key,
+                                shift_percentage=period_shift_percentage,
+                                mask=task_masks[task1],
+                            )
+                            _append_m_comparison(
+                                f"stage1_{task0}_vs_{task1}_{period}",
+                                task0, task1, period, "within_stage1",
+                                task0_period, task1_period,
+                            )
 
                     seed_result["m_similarity"] = {
-                        # Cross-stage, period-matched (direction-marginalized).
-                        "cos_final_vs_stage1_task0_stim":
-                            _cosine_sim(M_final_stim, M_task0_stim),
-                        "cos_final_vs_stage1_task1_go":
-                            _cosine_sim(M_final_go, M_task1_go),
-                        # Within-stage-1 baselines, also period-matched.
-                        "cos_stage1_task0_vs_task1_stim":
-                            _cosine_sim(M_task0_stim, M_task1_stim),
-                        "cos_stage1_task0_vs_task1_go":
-                            _cosine_sim(M_task0_go, M_task1_go),
-                        # Matching Frobenius-norm differences.
-                        "frob_final_vs_stage1_task0_stim":
-                            frob_diff(M_final_stim, M_task0_stim),
-                        "frob_final_vs_stage1_task1_go":
-                            frob_diff(M_final_go, M_task1_go),
-                        "frob_stage1_task0_vs_task1_stim":
-                            frob_diff(M_task0_stim, M_task1_stim),
-                        "frob_stage1_task0_vs_task1_go":
-                            frob_diff(M_task0_go, M_task1_go),
-                        # Stimulus-aligned (per-direction then averaged).
-                        "cos_aligned_final_vs_stage1_task0_stim":
-                            aligned["cos_final_vs_stage1_task0_stim"],
-                        "cos_aligned_final_vs_stage1_task1_go":
-                            aligned["cos_final_vs_stage1_task1_go"],
-                        "cos_aligned_stage1_task0_vs_task1_stim":
-                            aligned["cos_stage1_task0_vs_task1_stim"],
-                        "cos_aligned_stage1_task0_vs_task1_go":
-                            aligned["cos_stage1_task0_vs_task1_go"],
-                        "frob_aligned_final_vs_stage1_task0_stim":
-                            aligned["frob_final_vs_stage1_task0_stim"],
-                        "frob_aligned_final_vs_stage1_task1_go":
-                            aligned["frob_final_vs_stage1_task1_go"],
-                        "frob_aligned_stage1_task0_vs_task1_stim":
-                            aligned["frob_stage1_task0_vs_task1_stim"],
-                        "frob_aligned_stage1_task0_vs_task1_go":
-                            aligned["frob_stage1_task0_vs_task1_go"],
+                        "comparisons": m_comparisons,
                     }
                 elif chosen_network == "dmpn":
                     print("  WARNING: saved modulation arrays are empty; skipping modulation analyses")
 
-                # Rule-input vector geometry: how does the learned stage-2
-                # rule vector relate to the two pretraining rule vectors?
-                # Cheap to compute (load checkpoint, slice 3 columns) and
-                # interpretive — a Driscoll-style "reuse" story would
-                # predict high in_span_fraction.
+                # Rule-input vector geometry. Cue columns are located from the
+                # validated saved layout, so one- and two-parent conditions do
+                # not silently slice different semantic channels.
                 try:
-                    v_pre0, v_pre1, v_novel = load_rule_vectors(seed)
+                    pretrained_vectors, v_novel, novel_task = load_rule_vectors(
+                        seed,
+                        stage1_tasks,
+                        final_task,
+                        layout["rule_start"],
+                        layout["input_dim"],
+                    )
                     seed_result["rule_vectors"] = _rule_vector_stats(
-                        v_pre0, v_pre1, v_novel)
-                except (FileNotFoundError, KeyError) as e:
+                        pretrained_vectors, v_novel, novel_task
+                    )
+                except (FileNotFoundError, KeyError, ValueError) as e:
                     print(f"  WARNING: could not extract rule vectors "
                           f"({e}); skipping rule-vector analysis for this seed")
 
@@ -1120,10 +1144,7 @@ if __name__ == "__main__":
                 if n_plots == 1:
                     axs = axs[np.newaxis, :]
 
-                period_to_stage1 = {
-                    "stimulus": stage1_tasks[0],
-                    "response": stage1_tasks[1],
-                }
+                period_to_stage1 = dict(basis_by_period)
 
                 for row, dtype in enumerate(analysis_types):
                     if dtype not in seed_result:
@@ -1206,10 +1227,7 @@ if __name__ == "__main__":
         if n_plots == 1:
             axs = axs[np.newaxis, :]
 
-        period_to_stage1 = {
-            "stimulus": stage1_tasks[0],
-            "response": stage1_tasks[1],
-        }
+        period_to_stage1 = _basis_tasks_for(ruleset)
 
         for row, dtype in enumerate(analysis_types):
             x_up = 20 if dtype == "hidden" else N_MOD_PCS
@@ -1255,13 +1273,18 @@ if __name__ == "__main__":
 
         fig.suptitle(f"{ruleset} | {chosen_network} | {len(all_seed_results)} seeds", fontsize=12)
         fig.tight_layout()
-        fig.savefig(f"{figpath}/{ruleset}_{chosen_network}_{addon_name}_aggregate.png", dpi=300)
+        fig.savefig(
+            f"{figpath}/{ruleset}_{chosen_network}_{output_addon_name}_aggregate.png",
+            dpi=300,
+        )
         plt.close(fig)
 
         # Save aggregate CVE data for paper_plot reuse
         aggregate_data = {"ruleset": ruleset, "analysis_types": analysis_types,
                           "periods": ["stimulus", "response"],
-                          "final_task": final_task, "stage1_tasks": list(stage1_tasks)}
+                          "final_task": final_task,
+                          "stage1_tasks": list(stage1_tasks),
+                          "basis_by_period": dict(period_to_stage1)}
         for dtype in analysis_types:
             for period in ["stimulus", "response"]:
                 all_self, all_cross = [], []
@@ -1276,75 +1299,13 @@ if __name__ == "__main__":
                                   min(len(c) for c in all_cross))
                     aggregate_data[f"{dtype}_{period}_self"] = [c[:min_len] for c in all_self]
                     aggregate_data[f"{dtype}_{period}_cross"] = [c[:min_len] for c in all_cross]
-        agg_pkl_path = f"{outpath}/{ruleset}_{chosen_network}_{addon_name}_aggregate.pkl"
+        agg_pkl_path = (
+            f"{outpath}/{ruleset}_{chosen_network}_"
+            f"{output_addon_name}_aggregate.pkl"
+        )
         with open(agg_pkl_path, "wb") as f:
             pickle.dump(aggregate_data, f)
         print(f"  Saved aggregate data: {agg_pkl_path}")
-
-        # ─── Stimulus-aligned (direction-averaged) CVE summary ─────────────
-        # Same layout as the pooled CVE aggregate above (no PR column).
-        # Each curve is already a per-seed direction-average across the 8
-        # stimulus bins — alignment is by input stimulus direction, not
-        # response direction.
-        fig_d, axs_d = plt.subplots(n_plots, 2, figsize=(4 * 2, 4 * n_plots))
-        if n_plots == 1:
-            axs_d = axs_d[np.newaxis, :]
-
-        for row, dtype in enumerate(analysis_types):
-            x_up = 20 if dtype == "hidden" else N_MOD_PCS
-            for col, period in enumerate(["stimulus", "response"]):
-                key = f"{period}_dir_avg"
-                all_self = []
-                all_cross = []
-                for sr_idx, sr in enumerate(all_seed_results):
-                    if dtype not in sr or key not in sr[dtype]:
-                        continue
-                    entry = sr[dtype][key]
-                    self_curve = np.asarray(entry.get("cev_Y_self_mean", []))
-                    cross_curve = np.asarray(entry.get("cev_Y_mean", []))
-                    if self_curve.size == 0 or cross_curve.size == 0:
-                        continue
-                    all_self.append(self_curve)
-                    all_cross.append(cross_curve)
-
-                    xs_self = np.arange(1, len(self_curve) + 1)
-                    xs_cross = np.arange(1, len(cross_curve) + 1)
-                    axs_d[row, col].plot(xs_self, self_curve,
-                                         color="black", alpha=0.2)
-                    axs_d[row, col].plot(xs_cross, cross_curve,
-                                         color=c_vals[1 + sr_idx],
-                                         alpha=0.6, label=f"seed {sr['seed']}")
-
-                if all_self:
-                    min_len = min(min(len(c) for c in all_self),
-                                  min(len(c) for c in all_cross))
-                    mean_self = np.mean([c[:min_len] for c in all_self], axis=0)
-                    mean_cross = np.mean([c[:min_len] for c in all_cross], axis=0)
-                    xs_mean = np.arange(1, min_len + 1)
-                    axs_d[row, col].plot(
-                        xs_mean, mean_self, color="black", linewidth=2.5,
-                        label=f"{display_rule(final_task)} in {display_rule(final_task)} PCs (mean)")
-                    pre_label = stage1_tasks[0] if period == "stimulus" else stage1_tasks[1]
-                    axs_d[row, col].plot(
-                        xs_mean, mean_cross, color="gray", linewidth=2.5,
-                        label=f"{display_rule(final_task)} in {display_rule(pre_label)} PCs (mean)")
-
-                axs_d[row, col].set_xlim(0, x_up)
-                axs_d[row, col].set_ylim(0, 1.05)
-                axs_d[row, col].set_xlabel("# PCs")
-                axs_d[row, col].set_ylabel(f"{display_rule(final_task)} variance explained")
-                axs_d[row, col].set_title(
-                    f"{dtype} — {period} (direction-averaged)")
-                axs_d[row, col].legend(fontsize=6)
-
-        fig_d.suptitle(
-            f"{ruleset} | {chosen_network} | stimulus-aligned CVE "
-            f"({len(all_seed_results)} seeds)", fontsize=12)
-        fig_d.tight_layout()
-        fig_d.savefig(
-            f"{figpath}/{ruleset}_{chosen_network}_{addon_name}_aggregate_stimaligned.png",
-            dpi=300)
-        plt.close(fig_d)
 
         # ─── Principal-angle spectra summary ───────────────────────────────
         # For each (datatype, period) pair, plot the top-k principal angles
@@ -1393,7 +1354,8 @@ if __name__ == "__main__":
             f"(pretraining vs {display_rule(final_task)})", fontsize=11)
         figpa.tight_layout()
         figpa.savefig(
-            f"{figpath}/{ruleset}_{chosen_network}_{addon_name}_principal_angles.png",
+            f"{figpath}/{ruleset}_{chosen_network}_"
+            f"{output_addon_name}_principal_angles.png",
             dpi=300)
         plt.close(figpa)
 
@@ -1435,60 +1397,97 @@ if __name__ == "__main__":
 
         figlc.suptitle(f"{ruleset} | {chosen_network} | Learning curves", fontsize=12)
         figlc.tight_layout()
-        figlc.savefig(f"{figpath}/{ruleset}_{chosen_network}_{addon_name}_learning.png", dpi=300)
+        figlc.savefig(
+            f"{figpath}/{ruleset}_{chosen_network}_{output_addon_name}_learning.png",
+            dpi=300,
+        )
         plt.close(figlc)
 
         if not any("loss" in sr for sr in all_seed_results):
             print("No training-history pickles found; loss column in "
                   "learning figure will be empty.")
 
-        # ─── Period-matched M cosine similarity summary (per ruleset) ──────
-        # Each comparison uses the same period slice that feeds the PCA:
-        #   final vs task-0  → stimulus period
-        #   final vs task-1  → response/go period
-        #   task-0 vs task-1: same-period comparisons for both stimulus and response.
-        # Low cross-stage cosine means stage-2 M is pointing somewhere
-        # different from its pretraining counterpart in that period.
+        # ─── Period-matched M similarity summary (per ruleset) ─────────────
+        # Comparison records are dynamic: one-parent runs contain only the two
+        # scientifically valid cross-stage comparisons, while two-parent runs
+        # additionally contain the two within-stage-1 baselines.
         sim_seeds = [sr for sr in all_seed_results if "m_similarity" in sr]
         if sim_seeds:
-            labels = [
-                f"{display_rule(final_task)}(stim) ↔ {display_rule(stage1_tasks[0])}(stim)",
-                f"{display_rule(final_task)}(go) ↔ {display_rule(stage1_tasks[1])}(go)",
-                f"{display_rule(stage1_tasks[0])}(stim) ↔ {display_rule(stage1_tasks[1])}(stim)",
-                f"{display_rule(stage1_tasks[0])}(go) ↔ {display_rule(stage1_tasks[1])}(go)",
+            comparison_specs = sim_seeds[0]["m_similarity"]["comparisons"]
+            comparison_ids = [entry["id"] for entry in comparison_specs]
+            records_by_seed = {
+                sr["seed"]: {
+                    entry["id"]: entry
+                    for entry in sr["m_similarity"]["comparisons"]
+                }
+                for sr in sim_seeds
+            }
+            sim_seeds = [
+                sr for sr in sim_seeds
+                if all(cid in records_by_seed[sr["seed"]]
+                       for cid in comparison_ids)
             ]
-            suffixes = [
-                "final_vs_stage1_task0_stim",
-                "final_vs_stage1_task1_go",
-                "stage1_task0_vs_task1_stim",
-                "stage1_task0_vs_task1_go",
+            labels = [
+                f"{display_rule(entry['left_task'])}"
+                f"({entry['period']}) ↔ "
+                f"{display_rule(entry['right_task'])}"
+                f"({entry['period']})"
+                for entry in comparison_specs
             ]
 
-            def _render_msim_figure(prefix_cos, prefix_frob, title_tag, file_tag):
-                """Build the 1×2 (cosine | Frobenius diff) figure for either
-                the direction-marginalized or the stimulus-aligned keys."""
-                cos_keys = [f"{prefix_cos}_{s}" for s in suffixes]
-                frob_keys = [f"{prefix_frob}_{s}" for s in suffixes]
-                stacked = {k: np.array([sr["m_similarity"][k] for sr in sim_seeds])
-                           for k in cos_keys + frob_keys}
+            def _render_msim_figure(cos_metric, frob_metric,
+                                    title_tag, file_tag):
+                """Build the 1×2 cosine/Frobenius-difference figure."""
+                cos_values = {
+                    cid: np.asarray([
+                        records_by_seed[sr["seed"]][cid][cos_metric]
+                        for sr in sim_seeds
+                    ], dtype=float)
+                    for cid in comparison_ids
+                }
+                frob_values = {
+                    cid: np.asarray([
+                        records_by_seed[sr["seed"]][cid][frob_metric]
+                        for sr in sim_seeds
+                    ], dtype=float)
+                    for cid in comparison_ids
+                }
 
                 print(f"\n[{title_tag} {ruleset}, {len(sim_seeds)} seeds]")
-                for k, v in stacked.items():
-                    print(f"  {k:52s}  mean={v.mean():.4f}  std={v.std():.4f}  "
-                          f"min={v.min():.4f}  max={v.max():.4f}")
+                for cid in comparison_ids:
+                    for metric, values in (
+                        (cos_metric, cos_values[cid]),
+                        (frob_metric, frob_values[cid]),
+                    ):
+                        print(
+                            f"  {metric + '_' + cid:52s}  "
+                            f"mean={values.mean():.4f}  "
+                            f"std={values.std():.4f}  "
+                            f"min={values.min():.4f}  "
+                            f"max={values.max():.4f}"
+                        )
 
                 xs = np.arange(len(labels))
                 figsim, axsim = plt.subplots(1, 2, figsize=(10, 3.5))
                 for sr_idx, sr in enumerate(sim_seeds):
-                    axsim[0].plot(xs, [sr["m_similarity"][k] for k in cos_keys],
+                    seed_records = records_by_seed[sr["seed"]]
+                    axsim[0].plot(xs,
+                                  [seed_records[cid][cos_metric]
+                                   for cid in comparison_ids],
                                   "o-", color=c_vals[1 + sr_idx], alpha=0.7,
                                   label=f"seed {sr['seed']}")
-                    axsim[1].plot(xs, [sr["m_similarity"][k] for k in frob_keys],
+                    axsim[1].plot(xs,
+                                  [seed_records[cid][frob_metric]
+                                   for cid in comparison_ids],
                                   "o-", color=c_vals[1 + sr_idx], alpha=0.7,
                                   label=f"seed {sr['seed']}")
-                axsim[0].plot(xs, [stacked[k].mean() for k in cos_keys], "ks-",
+                axsim[0].plot(xs,
+                              [cos_values[cid].mean()
+                               for cid in comparison_ids], "ks-",
                               linewidth=2, markersize=8, label="mean")
-                axsim[1].plot(xs, [stacked[k].mean() for k in frob_keys], "ks-",
+                axsim[1].plot(xs,
+                              [frob_values[cid].mean()
+                               for cid in comparison_ids], "ks-",
                               linewidth=2, markersize=8, label="mean")
                 for ax in axsim:
                     ax.set_xticks(xs)
@@ -1505,26 +1504,21 @@ if __name__ == "__main__":
                                 fontsize=11)
                 figsim.tight_layout()
                 figsim.savefig(
-                    f"{figpath}/{ruleset}_{chosen_network}_{addon_name}_{file_tag}.png",
+                    f"{figpath}/{ruleset}_{chosen_network}_"
+                    f"{output_addon_name}_{file_tag}.png",
                     dpi=300)
                 plt.close(figsim)
 
             _render_msim_figure(
-                prefix_cos="cos", prefix_frob="frob",
+                cos_metric="cos", frob_metric="frob",
                 title_tag="period-matched M similarity",
                 file_tag="m_similarity",
-            )
-            # Match stimulus direction before averaging across directions.
-            _render_msim_figure(
-                prefix_cos="cos_aligned", prefix_frob="frob_aligned",
-                title_tag="stimulus-aligned M similarity",
-                file_tag="m_similarity_stimaligned",
             )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Cross-ruleset combined accuracy + loss figure
     # Same 2×2 layout as the per-ruleset figure, but all seeds of each ruleset
-    # share one color so the two rulesets are visually separable.
+    # share one color so the rulesets are visually separable.
     # ─────────────────────────────────────────────────────────────────────────
     def _mean_across_seeds(x_list, y_list, n_grid=200):
         """
@@ -1619,14 +1613,18 @@ if __name__ == "__main__":
         combined_tag = "_".join(all_results_by_ruleset.keys())
         figcmp.suptitle(f"{chosen_network} | Learning curves by ruleset", fontsize=12)
         figcmp.tight_layout()
-        figcmp.savefig(f"{figpath}/{combined_tag}_{chosen_network}_{addon_name}_learning.png", dpi=300)
+        figcmp.savefig(
+            f"{figpath}/{combined_tag}_{chosen_network}_"
+            f"{output_addon_name}_learning.png",
+            dpi=300,
+        )
         plt.close(figcmp)
 
         # ─────────────────────────────────────────────────────────────────
         # Transfer-speed summary: iterations to first reach each accuracy
         # threshold during post-training. Lower = faster transfer. Per
         # seed + ruleset-mean, plotted as a function of threshold so you
-        # can see where (if anywhere) the two rulesets separate.
+        # can see where (if anywhere) the rulesets separate.
         # ─────────────────────────────────────────────────────────────────
         def _first_iter_to(iters, acc, threshold):
             """First iteration at which acc >= threshold (0-1 scale)."""
@@ -1692,7 +1690,8 @@ if __name__ == "__main__":
                        fontsize=12)
         figts.tight_layout()
         figts.savefig(
-            f"{figpath}/{combined_tag}_{chosen_network}_{addon_name}_transfer_speed.png",
+            f"{figpath}/{combined_tag}_{chosen_network}_"
+            f"{output_addon_name}_transfer_speed.png",
             dpi=300)
         plt.close(figts)
 
@@ -1712,7 +1711,10 @@ if __name__ == "__main__":
                 "per_seed_iters": per_seed_mat,
                 "n_seeds": len(seed_results),
             }
-        ts_pkl_path = f"{outpath}/{combined_tag}_{chosen_network}_{addon_name}_transfer_speed.pkl"
+        ts_pkl_path = (
+            f"{outpath}/{combined_tag}_{chosen_network}_"
+            f"{output_addon_name}_transfer_speed.pkl"
+        )
         with open(ts_pkl_path, "wb") as f:
             pickle.dump(transfer_speed_data, f)
         print(f"  Saved transfer speed data: {ts_pkl_path}")
@@ -1727,12 +1729,49 @@ if __name__ == "__main__":
             "rule_vectors" in sr for rs_srs in all_results_by_ruleset.values()
             for sr in rs_srs)
         if have_rule_vecs:
-            rs_list = list(all_results_by_ruleset.keys())
-            # Per-ruleset lists of scalars we care about.
+            rs_list = [
+                rs for rs, seed_results in all_results_by_ruleset.items()
+                if any("rule_vectors" in sr for sr in seed_results)
+            ]
+
+            def _rule_vector_entries(rs):
+                return [sr["rule_vectors"]
+                        for sr in all_results_by_ruleset[rs]
+                        if "rule_vectors" in sr]
+
             def _vals(rs, key):
-                return np.array([sr["rule_vectors"][key]
-                                 for sr in all_results_by_ruleset[rs]
-                                 if "rule_vectors" in sr], dtype=float)
+                return np.asarray(
+                    [entry[key] for entry in _rule_vector_entries(rs)],
+                    dtype=float,
+                )
+
+            def _cosine_specs(rs):
+                """(label, source-dict, source-key) for all valid pairs."""
+                tasks = _stage1_tasks_for(rs)
+                specs = [
+                    (
+                        f"{display_rule(final_task)} ↔ {display_rule(task)}",
+                        "cos_novel_by_task",
+                        task,
+                    )
+                    for task in tasks
+                ]
+                for left_idx, left_task in enumerate(tasks):
+                    for right_task in tasks[left_idx + 1:]:
+                        specs.append((
+                            f"{display_rule(left_task)} ↔ "
+                            f"{display_rule(right_task)}",
+                            "cos_pretrained_pairs",
+                            f"{left_task}__{right_task}",
+                        ))
+                return specs
+
+            def _nested_vals(rs, source, key):
+                return np.asarray(
+                    [entry[source][key]
+                     for entry in _rule_vector_entries(rs)],
+                    dtype=float,
+                )
 
             # Console summary.
             print("\n[Rule-input vector geometry (stage-2 column vs "
@@ -1742,46 +1781,55 @@ if __name__ == "__main__":
                 if n_ok == 0:
                     continue
                 print(f"  {rs} ({n_ok} seeds)")
-                for k in ("cos_pre0_pre1", "cos_novel_pre0",
-                         "cos_novel_pre1", "in_span_fraction"):
-                    v = _vals(rs, k)
-                    print(f"    {k:22s}  mean={v.mean():.4f}  std={v.std():.4f}")
+                for label, source, key in _cosine_specs(rs):
+                    values = _nested_vals(rs, source, key)
+                    print(
+                        f"    cosine {label:28s}  "
+                        f"mean={values.mean():.4f}  std={values.std():.4f}"
+                    )
+                for key in (
+                    "in_span_fraction",
+                    "in_span_excess_over_random",
+                    "random_span_percentile",
+                ):
+                    values = _vals(rs, key)
+                    print(
+                        f"    {key:31s}  mean={values.mean():.4f}  "
+                        f"std={values.std():.4f}"
+                    )
+                span_ranks = _vals(rs, "span_rank")
+                print(f"    span_rank                       "
+                      f"values={span_ranks.astype(int).tolist()}")
 
-            # Figure: pairwise cosine bars grouped by ruleset. Each
-            # ruleset gets its own trio of bars, x-tick-labeled with that
-            # ruleset's actual stage-1 task names. Error bars = std across
-            # seeds; overlaid black dots = per-seed values.
+            # Figure: all valid pairwise cosine bars grouped by ruleset.
+            # Proper motif + has one bar; two-parent motifs have three.
+            # Error bars = std across seeds; black dots = per-seed values.
             figrv, axrv_cos = plt.subplots(1, 1, figsize=(7, 3.8))
 
-            cos_keys = ["cos_novel_pre0", "cos_novel_pre1", "cos_pre0_pre1"]
-            trio_width = 0.8
-            bar_width = trio_width / len(cos_keys)
-            # 4-unit separation between ruleset groups so the trios don't
-            # overlap when there are multiple rulesets.
-            group_step = len(cos_keys) + 1
+            bar_width = 0.7
             all_x, all_labels = [], []
+            cursor = 0
 
-            for rs_idx, rs in enumerate(rs_list):
+            for rs in rs_list:
                 color = ruleset_colors.get(rs, c_vals[0])
-                s1_tasks = _stage1_tasks_for(rs)
-                cos_labels = [
-                    f"{display_rule(final_task)} ↔ {display_rule(s1_tasks[0])}",
-                    f"{display_rule(final_task)} ↔ {display_rule(s1_tasks[1])}",
-                    f"{display_rule(s1_tasks[0])} ↔ {display_rule(s1_tasks[1])}",
+                specs = _cosine_specs(rs)
+                xs_group = cursor + np.arange(len(specs))
+                values_by_pair = [
+                    _nested_vals(rs, source, key)
+                    for _, source, key in specs
                 ]
-                xs_group = rs_idx * group_step + np.arange(len(cos_keys))
-                means = np.array([_vals(rs, k).mean() for k in cos_keys])
-                stds = np.array([_vals(rs, k).std() for k in cos_keys])
-                axrv_cos.bar(xs_group, means, bar_width * 2.5,
+                means = np.asarray([values.mean() for values in values_by_pair])
+                stds = np.asarray([values.std() for values in values_by_pair])
+                axrv_cos.bar(xs_group, means, bar_width,
                              yerr=stds, capsize=3, color=color,
-                             alpha=0.8, label=rs)
-                for k_idx, k in enumerate(cos_keys):
-                    vals = _vals(rs, k)
+                             alpha=0.8, label=RULESET_SPECS[rs]["label"])
+                for pair_idx, values in enumerate(values_by_pair):
                     axrv_cos.plot(
-                        np.full_like(vals, xs_group[k_idx]), vals,
+                        np.full(values.shape, xs_group[pair_idx]), values,
                         "k.", markersize=3, alpha=0.6)
                 all_x.extend(xs_group.tolist())
-                all_labels.extend(cos_labels)
+                all_labels.extend([label for label, _, _ in specs])
+                cursor = int(xs_group[-1]) + 2
 
             axrv_cos.set_xticks(all_x)
             axrv_cos.set_xticklabels(all_labels, rotation=25, ha="right")
@@ -1795,23 +1843,69 @@ if __name__ == "__main__":
                 fontsize=12)
             figrv.tight_layout()
             figrv.savefig(
-                f"{figpath}/{combined_tag}_{chosen_network}_{addon_name}_rule_vectors.png",
+                f"{figpath}/{combined_tag}_{chosen_network}_"
+                f"{output_addon_name}_rule_vectors.png",
                 dpi=300)
             plt.close(figrv)
 
-            # Save rule vector data for paper_plot reuse
-            rule_vec_data = {"by_ruleset": {}}
+            # Save a named schema that supports any number of Stage-1 rules.
+            # Legacy flat keys remain present for two-parent paper code.
+            rule_vec_data = {"schema_version": 2, "by_ruleset": {}}
             for rs in rs_list:
                 s1_tasks = _stage1_tasks_for(rs)
-                rule_vec_data["by_ruleset"][rs] = {
-                    "cos_novel_pre0": _vals(rs, "cos_novel_pre0").tolist(),
-                    "cos_novel_pre1": _vals(rs, "cos_novel_pre1").tolist(),
-                    "cos_pre0_pre1": _vals(rs, "cos_pre0_pre1").tolist(),
+                entries = _rule_vector_entries(rs)
+                rs_data = {
+                    "cos_novel_by_task": {
+                        task: _nested_vals(
+                            rs, "cos_novel_by_task", task
+                        ).tolist()
+                        for task in s1_tasks
+                    },
+                    "cos_pretrained_pairs": {
+                        key: _nested_vals(
+                            rs, "cos_pretrained_pairs", key
+                        ).tolist()
+                        for key in entries[0]["cos_pretrained_pairs"]
+                    },
                     "in_span_fraction": _vals(rs, "in_span_fraction").tolist(),
+                    "in_span_squared": _vals(rs, "in_span_squared").tolist(),
+                    "in_span_excess_over_random": _vals(
+                        rs, "in_span_excess_over_random"
+                    ).tolist(),
+                    "random_span_expected_squared": _vals(
+                        rs, "random_span_expected_squared"
+                    ).tolist(),
+                    "random_span_percentile": _vals(
+                        rs, "random_span_percentile"
+                    ).tolist(),
+                    "span_rank": _vals(rs, "span_rank").astype(int).tolist(),
+                    "ambient_dim": _vals(rs, "ambient_dim").astype(int).tolist(),
+                    "norm_pretrained": {
+                        task: _nested_vals(
+                            rs, "norm_pretrained", task
+                        ).tolist()
+                        for task in s1_tasks
+                    },
+                    "norm_novel": _vals(rs, "norm_novel").tolist(),
                     "stage1_tasks": s1_tasks,
                     "final_task": final_task,
                 }
-            rv_pkl_path = f"{outpath}/{combined_tag}_{chosen_network}_{addon_name}_rule_vectors.pkl"
+                for task_idx in range(len(s1_tasks)):
+                    rs_data[f"cos_novel_pre{task_idx}"] = _vals(
+                        rs, f"cos_novel_pre{task_idx}"
+                    ).tolist()
+                    rs_data[f"norm_pre{task_idx}"] = _vals(
+                        rs, f"norm_pre{task_idx}"
+                    ).tolist()
+                if len(s1_tasks) == 2:
+                    rs_data["cos_pre0_pre1"] = _vals(
+                        rs, "cos_pre0_pre1"
+                    ).tolist()
+                rule_vec_data["by_ruleset"][rs] = rs_data
+            rv_pkl_path = (
+                f"{outpath}/{combined_tag}_{chosen_network}_"
+                f"{output_addon_name}_rule_vectors.pkl"
+            )
             with open(rv_pkl_path, "wb") as f:
                 pickle.dump(rule_vec_data, f)
             print(f"  Saved rule vector data: {rv_pkl_path}")
