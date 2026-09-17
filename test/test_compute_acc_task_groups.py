@@ -1,4 +1,4 @@
-"""Run: python -m unittest discover -s multiple_task -p test_compute_acc_task_groups.py."""
+"""Run: python -m unittest discover -s test -p test_compute_acc_task_groups.py."""
 
 from types import SimpleNamespace
 import unittest

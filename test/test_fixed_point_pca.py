@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 from sklearn.decomposition import PCA
 
+import _bootstrap  # noqa: F401
 from core import fixed_point_pca as export
 import paper_plot as paper
 

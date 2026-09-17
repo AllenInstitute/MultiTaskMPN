@@ -3,12 +3,14 @@ Post-hoc analysis of the pretraining → post-training transfer experiment.
 
 Compare novel-task variance in pretraining and novel-task PCA bases, without
 held-out cross-validation. Analyze hidden states, M, W*M, principal angles,
-rule vectors, and learning curves. For random-rule backbone probes and raw
-or norm-matched pretraining-span grids, use pretraining_post.py --backbone-probe.
+rule vectors, and learning curves. For random-rule backbone probes, raw
+pretraining-span grids, and norm-matched span-direction sweeps, use
+pretraining_post.py --backbone-probe.
 
-Configure rulesets_to_run, N, and reg below, then run from the repository root:
+Run from the repository root (defaults: --hidden 200 --feature L21e3):
     python pretrain/pretraining_analysis.py
     python pretrain/pretraining_analysis.py --total-seed 3
+    python pretrain/pretraining_analysis.py --hidden 100 --feature L21e4
 
 Without --total-seed, every matching seed is analyzed. With --total-seed K,
 K seeds are randomly selected from each ruleset using the same stable
@@ -34,8 +36,36 @@ from sklearn.decomposition import PCA
 from scipy.linalg import subspace_angles
 from scipy.stats import beta as beta_distribution
 
-import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
+if __package__:
+    from . import _bootstrap
+else:
+    import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import mpn
+
+if __package__:
+    from .pretraining_utils import (
+        FINAL_TASK,
+        RULESET_SPECS,
+        build_task_layout,
+        display_rule,
+        positive_int,
+        run_name,
+        select_seeds as _select_seeds,
+        stage1_tasks_for,
+        variant_addon,
+    )
+else:
+    from pretraining_utils import (
+        FINAL_TASK,
+        RULESET_SPECS,
+        build_task_layout,
+        display_rule,
+        positive_int,
+        run_name,
+        select_seeds as _select_seeds,
+        stage1_tasks_for,
+        variant_addon,
+    )
 
 c_vals = ['#e53e3e', '#3182ce', '#38a169', '#805ad5', '#dd6b20',
           '#319795', '#718096', '#d53f8c', '#d69e2e'] * 10
@@ -85,31 +115,24 @@ os.makedirs(outpath, exist_ok=True)
 os.makedirs(figpath, exist_ok=True)
 os.makedirs(seed_figpath, exist_ok=True)
 
-# This is the analysis-side scientific specification. The actual task lists are
-# read from each saved stage-1/stage-2 npz and validated against this table before
-# any analysis is performed. In particular, fdanti is a one-parent ablation, not
-# a two-task motif with an implicit/missing MemoryPro task.
-RULESET_SPECS = {
+# Period-basis choices are specific to this analysis. Shared task composition
+# and display labels live in pretraining_utils.py.
+BASIS_TASKS_BY_RULESET = {
     "fdgo_delaygo": {
-        "label": "Improper motif",
-        "stage1_tasks": ("fdgo", "delaygo"),
-        "basis_by_period": {"stimulus": "fdgo", "response": "delaygo"},
+        "stimulus": "fdgo", "response": "delaygo",
     },
     "fdanti_delaygo": {
-        "label": "Proper motif",
-        "stage1_tasks": ("fdanti", "delaygo"),
-        "basis_by_period": {"stimulus": "fdanti", "response": "delaygo"},
+        "stimulus": "fdanti", "response": "delaygo",
     },
     "fdanti": {
-        "label": "Proper motif +",
-        "stage1_tasks": ("fdanti",),
-        "basis_by_period": {"stimulus": "fdanti", "response": "fdanti"},
+        "stimulus": "fdanti", "response": "fdanti",
     },
 }
 
 # Each ruleset is processed independently; learning/transfer curves are then
-# combined into cross-ruleset figures.
-rulesets_to_run = list(RULESET_SPECS)
+# combined into cross-ruleset figures. Keep this explicit order independent of
+# the shared metadata catalog so refactors cannot silently reorder panels.
+ANALYSIS_RULESET_ORDER = ("fdgo_delaygo", "fdanti_delaygo", "fdanti")
 
 # Active ruleset / stage-1 tasks are (re)assigned at the top of each
 # iteration of the main loop below. Functions that build file paths
@@ -118,48 +141,22 @@ ruleset = None
 stage1_tasks = None
 
 
-def _stage1_tasks_for(rs):
-    try:
-        return list(RULESET_SPECS[rs]["stage1_tasks"])
-    except KeyError as exc:
-        raise ValueError(f"Unknown pretraining ruleset: {rs!r}") from exc
-
-
 def _basis_tasks_for(rs):
     """Stage-1 task whose activity defines each period's comparison basis."""
     try:
-        return dict(RULESET_SPECS[rs]["basis_by_period"])
+        return dict(BASIS_TASKS_BY_RULESET[rs])
     except KeyError as exc:
         raise ValueError(f"Unknown pretraining ruleset: {rs!r}") from exc
 
 
 # Post-training task
-final_task = "delayanti"
-
-# Figure display names for the internal rule names (same mapping as
-# pretraining_post.py). "Delay-" tasks keep the stimulus on; "Memory-" tasks
-# turn it off — internal "delaygo"/"delayanti" are the MEMORY tasks. Only
-# figure text is converted; filenames, pickles, and console logs keep the
-# internal names.
-RULE_DISPLAY_NAMES = {"fdgo": "DelayPro", "fdanti": "DelayAnti",
-                      "delaygo": "MemoryPro", "delayanti": "MemoryAnti"}
-
-
-def display_rule(rule):
-    """Figure display name for an internal rule name."""
-    return RULE_DISPLAY_NAMES.get(rule, rule)
-
-
-def positive_int(value):
-    """argparse type shared with pretraining_post.py."""
-    number = int(value)
-    if number < 1:
-        raise argparse.ArgumentTypeError("must be positive")
-    return number
+final_task = FINAL_TASK
 
 
 def _parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--feature", default="L21e3")
+    parser.add_argument("--hidden", type=positive_int, default=200)
     parser.add_argument(
         "--total-seed", type=positive_int, default=None,
         help=("Randomly select K matching seeds from each ruleset; "
@@ -175,26 +172,6 @@ def _parse_args(argv=None):
     return args
 
 
-def _selection_rng(test_seed, active_ruleset):
-    """Stable per-ruleset RNG shared conceptually with pretraining_post.py."""
-    entropy = [int(test_seed), *active_ruleset.encode("utf-8")]
-    return np.random.default_rng(np.random.SeedSequence(entropy))
-
-
-def _select_seeds(seeds, total_seed, test_seed, active_ruleset):
-    """Select seeds reproducibly, independent of ruleset traversal order."""
-    seeds = sorted(int(seed) for seed in seeds)
-    if total_seed is None:
-        return seeds
-    if len(seeds) < total_seed:
-        raise ValueError(
-            f"Requested --total-seed {total_seed}, but only {len(seeds)} "
-            f"matching {active_ruleset} seed(s) exist"
-        )
-    rng = _selection_rng(test_seed, active_ruleset)
-    indices = rng.choice(len(seeds), size=total_seed, replace=False)
-    return sorted(seeds[int(index)] for index in indices)
-
 # Per-ruleset plotting colors for the cross-ruleset combined figure.
 ruleset_colors = {
     "fdgo_delaygo": c_vals[1],
@@ -205,10 +182,8 @@ ruleset_colors = {
 chosen_network = "dmpn"
 N = 200
 # PCA component cap for modulation / modulation_weighted analyses.
-# Hidden requests N components. Modulation has bottleneck*proj features
-# (40 000 for the current N=200 square layer). Modulation call sites cap the
-# requested components by the available sample count; N_MOD_PCS must also
-# fit within the feature count when changing network dimensions.
+# Hidden requests up to N components. Modulation has bottleneck*proj features;
+# call sites cap the requested components by both sample and feature counts.
 N_MOD_PCS = 1000
 
 # Principal angles reuse the leading directions of the CVE PCA fits.
@@ -217,17 +192,23 @@ N_MOD_PCS = 1000
 N_ANGLES = 20
 
 # Naming components that form addon_name in pretraining.py:
-#   addon_name = f"+hidden{N}+{reg}+batch{batch}+{metric}"
+#   addon_name = f"+hidden{N}+{feature}+batch{batch}+{metric}"
 metric = "angle"
-reg = "L21e3"
-addon_name = f"+hidden{N}+{reg}+batch128+{metric}"
+feature = "L21e3"
+addon_name = variant_addon(N, feature, metric=metric)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Path construction (matches pretraining.py naming convention)
 # ─────────────────────────────────────────────────────────────────────────────
+def _run_name(seed):
+    """Canonical run name for the active ruleset and model variant."""
+    return run_name(
+        ruleset, chosen_network, seed, N, feature, batch=128, metric=metric)
+
+
 def build_paths(seed):
     """Build file paths for a given seed, matching pretraining.py output naming."""
-    base = f"{ruleset}_{chosen_network}_seed{seed}_{addon_name}"
+    base = _run_name(seed)
     return {
         "stage1_output": f"{basepath}/output_{base}_stage1.npz",
         "stage2_output": f"{basepath}/output_{base}_stage2.npz",
@@ -237,12 +218,12 @@ def build_paths(seed):
 
 def hist_path(seed):
     """Full training-history pickle path (see pretraining.py)."""
-    return f"{basepath}/hist_{ruleset}_{chosen_network}_seed{seed}_{addon_name}.pkl"
+    return f"{basepath}/hist_{_run_name(seed)}.pkl"
 
 
 def ckpt_path(seed):
     """Network checkpoint path (see pretraining.py)."""
-    return f"{basepath}/savednet_{ruleset}_{chosen_network}_seed{seed}_{addon_name}.pt"
+    return f"{basepath}/savednet_{_run_name(seed)}.pt"
 
 
 @lru_cache(maxsize=1)
@@ -252,7 +233,7 @@ def _load_checkpoint(path):
 
 
 def load_mpn_W(seed):
-    """Load frozen W (bottleneck, proj); the current setup has both widths N."""
+    """Load frozen plastic-layer weights with their saved dimensions."""
     ckpt = _load_checkpoint(ckpt_path(seed))
     return ckpt["state_dict"]["mp_layer1.W"].numpy()
 
@@ -268,25 +249,12 @@ def _validate_saved_task_layout(seed, stage1_output, stage2_output):
     """
     task_params1 = stage1_output["task_params"].item()
     task_params2 = stage2_output["task_params"].item()
-    saved_stage1_tasks = list(task_params1["rules"])
-    saved_stage2_tasks = list(task_params2["rules"])
-    expected_stage1_tasks = _stage1_tasks_for(ruleset)
-
-    if saved_stage1_tasks != expected_stage1_tasks:
-        raise ValueError(
-            f"seed {seed}: saved stage-1 rules {saved_stage1_tasks} do not "
-            f"match ruleset {ruleset!r} ({expected_stage1_tasks})"
-        )
-    if saved_stage2_tasks != [final_task]:
-        raise ValueError(
-            f"seed {seed}: saved stage-2 rules {saved_stage2_tasks} do not "
-            f"match expected {[final_task]}"
-        )
-
-    rule_start = int(task_params1["hp"]["rule_start"])
-    expected_input_dim = (
-        rule_start + len(saved_stage1_tasks) + len(saved_stage2_tasks)
-    )
+    shared_layout = build_task_layout(
+        task_params1, task_params2, ruleset, context=f"seed {seed}")
+    saved_stage1_tasks = shared_layout["stage1_rules"]
+    saved_stage2_tasks = shared_layout["stage2_rules"]
+    rule_start = shared_layout["rule_start"]
+    expected_input_dim = shared_layout["input_width"]
     stage1_input = np.asarray(stage1_output["test_input_np"])
     stage2_input = np.asarray(stage2_output["test_input_np"])
     input_dims = (stage1_input.shape[-1], stage2_input.shape[-1])
@@ -351,7 +319,7 @@ def _rule_vector_stats(pretrained_vectors, v_novel, novel_task):
     ``in_span_fraction`` is retained as the raw geometric quantity. Because its
     chance level grows with span rank, ``in_span_excess_over_random`` compares
     squared projection to the exact isotropic random-subspace expectation r/d.
-    This permits a one-dimensional Proper-motif+ span and two-dimensional motif
+    This permits a one-dimensional DelayAnti span and two-dimensional motif
     spans to be compared without treating their different ranks as equivalent.
     """
     if not pretrained_vectors:
@@ -531,7 +499,7 @@ def run_final_net_sanity_check(
     out1 = _run_on(ti1)
     out2 = _run_on(ti2)
 
-    checkname = f"{ruleset}_{chosen_network}_seed{seed}_{addon_name}"
+    checkname = _run_name(seed)
     _plot_input_output_panel(
         f"{seed_figpath}/{checkname}_finalnet_on_stage1.png",
         ti1, to1, out1, task_params1["rules"], tt1, n_trials=n_trials,
@@ -775,6 +743,9 @@ def pca_cross_variance(
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     args = _parse_args()
+    N = args.hidden
+    feature = args.feature
+    addon_name = variant_addon(N, feature, metric=metric)
     output_addon_name = (
         addon_name if args.total_seed is None
         else f"{addon_name}_n{args.total_seed}"
@@ -794,12 +765,12 @@ if __name__ == "__main__":
     # Accumulate per-ruleset seed results for the cross-ruleset combined figure.
     all_results_by_ruleset = {}
 
-    for active_ruleset in rulesets_to_run:
+    for active_ruleset in ANALYSIS_RULESET_ORDER:
         # Rebind module-level ruleset/stage1_tasks so the helper functions
         # (build_paths, ckpt_path, hist_path, discover_seeds) see the right
         # names for this iteration.
         ruleset = active_ruleset
-        stage1_tasks = _stage1_tasks_for(active_ruleset)
+        stage1_tasks = stage1_tasks_for(active_ruleset)
 
         print(f"\n{'#'*60}")
         print(f"  Ruleset: {ruleset}")
@@ -842,7 +813,7 @@ if __name__ == "__main__":
 
                 # The saved npzs, not the filename, are authoritative for task
                 # count and cue-column layout. This is essential for the
-                # one-parent Proper motif + condition.
+                # one-parent DelayAnti condition.
                 layout = _validate_saved_task_layout(
                     seed, stage1_output, stage2_output
                 )
@@ -885,6 +856,13 @@ if __name__ == "__main__":
                 stage2_hs = final_param["hs_stage2"]
                 stage1_ms = final_param["Ms_orig_stage1"]
                 stage2_ms = final_param["Ms_orig_stage2"]
+                saved_hidden = {int(stage1_hs.shape[-1]),
+                                int(stage2_hs.shape[-1])}
+                if saved_hidden != {N}:
+                    raise ValueError(
+                        f"seed {seed}: saved hidden widths {sorted(saved_hidden)} "
+                        f"do not match --hidden {N}"
+                    )
 
                 stage1_rules_epochs = stage1_output["rules_epochs"].item()
                 stage2_rules_epochs = stage2_output["rules_epochs2"].item()
@@ -914,7 +892,7 @@ if __name__ == "__main__":
                 # to both stim and go periods.
 
                 # Each period uses the scientifically specified Stage-1 basis.
-                # For Proper motif +, fdanti is the basis for both periods.
+                # For the DelayAnti condition, fdanti is the basis for both periods.
                 stage1_stim = period_slice(
                     stage1_hs, stage1_rules_epochs, stimulus_basis_task, "stim1",
                     shift_percentage=period_shift_percentage,
@@ -974,8 +952,12 @@ if __name__ == "__main__":
                     n_go_samples = min(
                         final_go_m.shape[0] * final_go_m.shape[1],
                         stage1_go_m.shape[0] * stage1_go_m.shape[1])
-                    n_comp_stim = min(N_MOD_PCS, n_stim_samples)
-                    n_comp_go = min(N_MOD_PCS, n_go_samples)
+                    n_stim_features = int(np.prod(stage1_stim_m.shape[-2:]))
+                    n_go_features = int(np.prod(stage1_go_m.shape[-2:]))
+                    n_comp_stim = min(
+                        N_MOD_PCS, n_stim_samples, n_stim_features)
+                    n_comp_go = min(
+                        N_MOD_PCS, n_go_samples, n_go_features)
 
                     res_m_stim = pca_cross_variance(
                         stage1_stim_m, final_stim_m,
@@ -995,7 +977,7 @@ if __name__ == "__main__":
                     # checkpoint's W applies to both stages' saved M. No extra
                     # normalization is applied.
                     try:
-                        W = load_mpn_W(seed)  # (N, N)
+                        W = load_mpn_W(seed)
                         # Broadcasting over (batch, time) axes.
                         stage1_stim_wm = stage1_stim_m * W
                         final_stim_wm = final_stim_m * W
@@ -1023,7 +1005,7 @@ if __name__ == "__main__":
                     # ─── Period-matched M similarity ──────────────────────
                     # Every ruleset gets the two cross-stage comparisons that
                     # match its PCA bases. A within-stage-1 task-pair baseline
-                    # exists only for genuine two-parent motifs; Proper motif +
+                    # exists only for genuine two-parent motifs; DelayAnti
                     # must not acquire a trivial fdanti-vs-itself baseline.
                     m_comparisons = []
 
@@ -1133,7 +1115,7 @@ if __name__ == "__main__":
                 all_seed_results.append(seed_result)
 
                 # Save individual seed result
-                checkname = f"{ruleset}_{chosen_network}_seed{seed}_{addon_name}"
+                checkname = _run_name(seed)
                 with open(f"{outpath}/{checkname}_result.pkl", "wb") as f:
                     pickle.dump(seed_result, f)
                 print(f"  Saved: {checkname}_result.pkl")
@@ -1747,7 +1729,7 @@ if __name__ == "__main__":
 
             def _cosine_specs(rs):
                 """(label, source-dict, source-key) for all valid pairs."""
-                tasks = _stage1_tasks_for(rs)
+                tasks = stage1_tasks_for(rs)
                 specs = [
                     (
                         f"{display_rule(final_task)} ↔ {display_rule(task)}",
@@ -1802,7 +1784,7 @@ if __name__ == "__main__":
                       f"values={span_ranks.astype(int).tolist()}")
 
             # Figure: all valid pairwise cosine bars grouped by ruleset.
-            # Proper motif + has one bar; two-parent motifs have three.
+            # DelayAnti has one bar; two-parent motifs have three.
             # Error bars = std across seeds; black dots = per-seed values.
             figrv, axrv_cos = plt.subplots(1, 1, figsize=(7, 3.8))
 
@@ -1852,7 +1834,7 @@ if __name__ == "__main__":
             # Legacy flat keys remain present for two-parent paper code.
             rule_vec_data = {"schema_version": 2, "by_ruleset": {}}
             for rs in rs_list:
-                s1_tasks = _stage1_tasks_for(rs)
+                s1_tasks = stage1_tasks_for(rs)
                 entries = _rule_vector_entries(rs)
                 rs_data = {
                     "cos_novel_by_task": {

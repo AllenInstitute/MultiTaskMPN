@@ -10,7 +10,7 @@ import unittest
 import numpy as np
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_functions(path, names, namespace):
@@ -29,7 +29,7 @@ class PretrainingSavingTests(unittest.TestCase):
         cls.producer = load_functions(
             "pretrain/pretraining.py", ["_modulation_extraction"], {"np": np})
         cls.post = load_functions(
-            "pretrain/pretraining_post.py", ["load_task_params"],
+            "pretrain/pretraining_utils.py", ["load_task_params"],
             {"np": np, "copy": copy})
         cls.analysis = load_functions(
             "pretrain/pretraining_analysis.py",

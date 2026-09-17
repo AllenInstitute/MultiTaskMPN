@@ -8,6 +8,8 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+
+import _bootstrap  # noqa: F401
 import paper_plot
 
 

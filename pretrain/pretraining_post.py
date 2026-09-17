@@ -10,32 +10,32 @@ Run from the repository root:
     python pretrain/pretraining_post.py --rule-vector-magnitude-sweep
     python pretrain/pretraining_post.py --backbone-probe
     python pretrain/pretraining_post.py --pathway-gain
-    python pretrain/pretraining_post.py --plot-only
 
-Reads checkpoints from pretraining/, saves and reloads analysis data in
+Reads checkpoints from pretraining/, saves analysis data in
 pretraining_analysis/, saves pooled figures in pretrain/fig/, and saves
 per-checkpoint figures and seed-filtered accuracy plots in pretrain/fig_seed/.
 
-Default (no experiment flag): run accuracy, memory PCA, rule-cue, and
-M-intervention sequentially. An explicit experiment flag runs only that
-experiment. Rule-vector interventions, magnitude sweeps, and backbone probes
-require their explicit flags. --ruleset and --seed also filter default runs.
+Default (no experiment flag): run every analysis sequentially. An explicit
+experiment flag runs only that experiment. --ruleset and --seed also filter
+default runs.
 For checkpoint-batch analyses, --total-seed K randomly selects K matching
 checkpoint seeds per motif; without it, every matching checkpoint is used.
-Batch selection uses the same stable (test-seed, ruleset) mapping as
-pretraining_analysis.py. Memory-PCA
-checkpoint selection is independent of --test-seed; use --seed to fix it.
+Memory PCA instead uses one random checkpoint per motif by default, the exact
+checkpoint selected by --seed, or K checkpoints per motif with --total-seed K.
+Total-seed selection uses the same stable (test-seed, ruleset) mapping as
+pretraining_analysis.py.
 Default runs continue after an experiment fails and report failures at the end.
 --accuracy generates fresh trials, saves accuracy JSON, then plots. Accuracy uses
 the model's angle-based response-timepoint metric, not trial success counts.
---plot-only reads existing accuracy JSON without loading models. Accuracy bars show seed
-means, error bars population SD, and dots individual seeds. Reads per-run
-accuracy JSON files, excluding summary reports to avoid duplicate counts.
+Accuracy bars show seed means, error bars population SD, and dots individual
+seeds.
 Use --memory-pca to project stimulus and response trajectories into the MemoryAnti memory
 subspace, for hidden and effective modulation (W*M), in all motif groups. Saves
-PNG figures only, selecting a random checkpoint per group unless filtered.
-Memory PCA uses 256 trials per task, batches of 8, and automatic device selection;
---n-trials, --batch-size, and --device apply to the other experiments.
+PNG figures only, selecting a random checkpoint per group unless --seed or
+--total-seed is specified.
+All analyses automatically use CUDA when available and otherwise use CPU.
+Memory PCA uses 256 trials per task and batches of 8; --n-trials and
+--batch-size apply to the other experiments.
 Use --rule-cue to compare intact cues, removal after context, stimulus,
 or memory, and a cue present only during the response period, on paired
 fresh trials. This tests cue dependence, not causal storage in M;
@@ -67,17 +67,19 @@ final checkpoint back into the end-of-stage-1 backbone under a counterfactual
 rule input. Two untrained probes are evaluated: random rule vectors (the
 negative control, reporting training-style loss and accuracy) and the
 pretraining-span coefficient sweep. This is a two-dimensional (a, b) grid for
-the two-parent motifs and a one-dimensional coefficient sweep for Proper motif+,
+the two-parent motifs and a one-dimensional coefficient sweep for DelayAnti,
 plus the available single cues, their sum when applicable, and the learned
 vector's least-squares projection into the span. A high-accuracy grid cell identifies
 a rule-span solution on the evaluated trials without training a new vector.
 The grid maximum carries selection bias over the grid evaluations; named
-points are not selected by maximizing accuracy over the grid.
-A second, norm-matched span grid rescales nonzero combinations and the learned
-vector to the mean of that checkpoint's pretrained cue norms. The origin
-retains the zero-vector accuracy. This controls input strength within each
-checkpoint; the target norm can differ across checkpoints. Accuracy is
-constant along positive coefficient rays, excluding the origin, by construction.
+points are not selected by maximizing accuracy over the grid. The best
+norm-matched direction is likewise selected over the tested angles.
+A second, norm-matched direction sweep rescales span directions and the learned
+vector to the mean of that checkpoint's pretrained cue norms. Two-rule motifs
+scan coefficient angles; DelayAnti tests only the negative, zero, and positive
+directions. This controls input strength within each checkpoint without
+storing or plotting duplicate points along the same coefficient ray; the target norm
+can differ across checkpoints.
 Use --pathway-gain for a linear probe of the stimulus-to-readout pathway: per
 trial, the embedded stimulus direction is pushed through W_eff = W + W*M and
 projected onto the readout loading of the pro direction (the negated anti
@@ -104,6 +106,27 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
+if __package__:
+    from .pretraining_utils import (
+        RULESET_SPECS,
+        build_task_layout,
+        display_rule as _display_rule,
+        load_task_params,
+        positive_int,
+        select_seeds,
+        variant_addon,
+    )
+else:
+    from pretraining_utils import (
+        RULESET_SPECS,
+        build_task_layout,
+        display_rule as _display_rule,
+        load_task_params,
+        positive_int,
+        select_seeds,
+        variant_addon,
+    )
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECKPOINT_DIR = REPO_ROOT / "pretraining"
@@ -111,10 +134,14 @@ ANALYSIS_DIR = REPO_ROOT / "pretraining_analysis"
 FIGURE_DIR = REPO_ROOT / "pretrain" / "fig"
 SEED_FIGURE_DIR = REPO_ROOT / "pretrain" / "fig_seed"
 
+POST_RULESET_ORDER = ("fdanti_delaygo", "fdgo_delaygo", "fdanti")
 GROUPS = {
-    "fdanti_delaygo": ("Proper motif", ("fdanti", "delaygo", "delayanti")),
-    "fdgo_delaygo": ("Improper motif", ("fdgo", "delaygo", "delayanti")),
-    "fdanti": ("Proper motif +", ("fdanti", "delayanti")),
+    ruleset: (
+        RULESET_SPECS[ruleset]["label"],
+        (RULESET_SPECS[ruleset]["stage1_tasks"]
+         + RULESET_SPECS[ruleset]["stage2_tasks"]),
+    )
+    for ruleset in POST_RULESET_ORDER
 }
 COLORS = ("#3182ce", "#38a169", "#e53e3e")
 TASK_COLORS = {"fdgo": "#3182ce", "fdanti": "#3182ce",
@@ -123,50 +150,10 @@ TASK_COLORS = {"fdgo": "#3182ce", "fdanti": "#3182ce",
 STIMULUS_COLORS = ("#e53e3e", "#3182ce", "#38a169", "#805ad5",
                    "#dd6b20", "#319795", "#718096", "#d53f8c", "#d69e2e")
 
-# Figure display names for the internal rule names. "Delay-" tasks keep the
-# stimulus on (no memory demand); "Memory-" tasks turn it off. Note the trap:
-# internal "delaygo"/"delayanti" are the MEMORY tasks. Filenames, JSON keys,
-# and console logs keep the internal names; only figure text is converted.
-RULE_DISPLAY_NAMES = {"fdgo": "DelayPro", "fdanti": "DelayAnti",
-                      "delaygo": "MemoryPro", "delayanti": "MemoryAnti"}
-
-
-def _display_rule(rule):
-    """Figure display name for an internal rule name."""
-    return RULE_DISPLAY_NAMES.get(rule, rule)
-
-
 def _validate_task_layout(stage1, stage2, run_ruleset, input_width=None):
     """Validate saved tasks and return their dynamic final-network cue layout."""
-    expected_tasks = list(GROUPS[run_ruleset][1])
-    expected_stage1 = expected_tasks[:-1]
-    expected_stage2 = expected_tasks[-1:]
-    if list(stage1["rules"]) != expected_stage1 or list(stage2["rules"]) != expected_stage2:
-        raise ValueError(
-            f"{run_ruleset}: unexpected stage task configuration: "
-            f"stage1={stage1['rules']}, stage2={stage2['rules']}"
-        )
-    rule_start = int(stage1["hp"]["rule_start"])
-    if int(stage2["hp"]["rule_start"]) != rule_start:
-        raise ValueError(f"{run_ruleset}: inconsistent rule_start across stages")
-    n_pretraining = len(expected_stage1)
-    expected_width = rule_start + n_pretraining + len(expected_stage2)
-    if input_width is not None and int(input_width) != expected_width:
-        raise ValueError(
-            f"{run_ruleset}: checkpoint input width {input_width} != expected "
-            f"{expected_width} for {n_pretraining} pretraining rule(s)"
-        )
-    return {
-        "stage1_rules": expected_stage1,
-        "stage2_rules": expected_stage2,
-        "rule_start": rule_start,
-        "n_pretraining": n_pretraining,
-        "novel_rule_index": n_pretraining,
-        "novel_weight_column": rule_start + n_pretraining,
-        "pretraining_weight_slice": slice(rule_start, rule_start + n_pretraining),
-        "rule_input_slice": slice(rule_start, expected_width),
-        "input_width": expected_width,
-    }
+    return build_task_layout(
+        stage1, stage2, run_ruleset, input_width=input_width)
 
 
 def _validate_generated_rule_cue(inputs, layout, expected_rule_index, rule):
@@ -195,17 +182,12 @@ def _figure_path(output_dir, filename, *, seed_specific=False):
     return output_dir / filename
 
 
-def _selection_rng(test_seed, ruleset):
-    """Stable per-ruleset RNG shared conceptually with pretraining_analysis.py."""
-    entropy = [int(test_seed), *ruleset.encode("utf-8")]
-    return np.random.default_rng(np.random.SeedSequence(entropy))
-
-
 def discover_checkpoints(root, feature, hidden, ruleset=None, seed=None,
                          total_seed=None, selection_seed=0):
+    addon = re.escape(variant_addon(hidden, feature))
     pattern = re.compile(
         rf"savednet_({'|'.join(GROUPS)})_dmpn_seed(\d+)_"
-        rf"\+hidden{hidden}\+{re.escape(feature)}\+batch128\+angle\.pt"
+        rf"{addon}\.pt"
     )
     matches = []
     for path in sorted(root.glob("savednet_*.pt")):
@@ -226,25 +208,14 @@ def discover_checkpoints(root, feature, hidden, ruleset=None, seed=None,
     for group in active_rulesets:
         candidates = [item for item in matches if item[1] == group]
         candidates.sort(key=lambda item: item[2])
-        if len(candidates) < total_seed:
-            raise ValueError(
-                f"Requested --total-seed {total_seed}, but only "
-                f"{len(candidates)} matching {group} checkpoint(s) exist")
-        rng = _selection_rng(selection_seed, group)
-        indices = rng.choice(len(candidates), size=total_seed, replace=False)
-        chosen = [candidates[int(index)] for index in indices]
-        chosen.sort(key=lambda item: item[2])
+        chosen_seeds = set(select_seeds(
+            [item[2] for item in candidates], total_seed, selection_seed, group))
+        chosen = [item for item in candidates if item[2] in chosen_seeds]
         print(f"Selected {group} seeds: {[item[2] for item in chosen]}",
               flush=True)
         selected.extend(chosen)
     matches = selected
     return matches
-
-
-def load_task_params(root, aname, stage):
-    with np.load(root / f"output_{aname}_{stage}.npz", allow_pickle=True) as data:
-        return copy.deepcopy(data["task_params"].item())
-
 
 CUE_CONDITIONS = {
     "intact": "Intact",
@@ -358,7 +329,7 @@ def response_direction_diagnostics(output, targets, masks, n_directions=8,
     histogram, _ = np.histogram(np.degrees(directional_errors), bins=edges)
     resultant = np.mean(np.exp(1j * directional_errors)) if directional_errors.size else None
     return {
-        "n_timepoints": int(len(magnitudes)),
+        "n_timepoints": len(magnitudes),
         "n_directional_timepoints": int(directional_errors.size),
         "target_pct": float(target_match.mean() * 100),
         "low_amplitude_pct": float(low.mean() * 100),
@@ -510,16 +481,12 @@ def summarize(runs):
             for ruleset, tasks in _group_runs(runs).items() if any(tasks.values())}
 
 
-def run_evaluation(args):
-    import torch
-
+def run_evaluation(args, device):
     matches = discover_checkpoints(
         args.checkpoint_dir, args.feature, args.hidden, args.ruleset, args.seed,
         args.total_seed, args.test_seed)
     if not matches:
         raise ValueError("No checkpoints match the requested configuration")
-    device = torch.device(("cuda" if torch.cuda.is_available() else "cpu")
-                          if args.device == "auto" else args.device)
     args.input_dir.mkdir(parents=True, exist_ok=True)
     runs, failures = [], []
     rule_cue = getattr(args, "rule_cue", False)
@@ -955,16 +922,12 @@ def summarize_m_intervention(runs):
     return summary
 
 
-def run_m_intervention(args):
-    import torch
-
+def run_m_intervention(args, device):
     matches = discover_checkpoints(
         args.checkpoint_dir, args.feature, args.hidden, args.ruleset, args.seed,
         args.total_seed, args.test_seed)
     if not matches:
         raise ValueError("No checkpoints match the requested configuration")
-    device = torch.device(("cuda" if torch.cuda.is_available() else "cpu")
-                          if args.device == "auto" else args.device)
     args.input_dir.mkdir(parents=True, exist_ok=True)
     runs, failures = [], []
     for path, ruleset, seed in matches:
@@ -1191,7 +1154,7 @@ def evaluate_pathway_gain_checkpoint(path, run_ruleset, seed, args, device):
     torch.manual_seed(test_seed)
     params["hp"]["rng"] = np.random.RandomState(test_seed)
     params["hp"]["batch_size_train"] = args.n_trials
-    (inputs, targets, masks), (_, trials, _) = mpn_tasks.generate_trials_wrap(
+    (inputs, targets, _masks), (_, trials, _) = mpn_tasks.generate_trials_wrap(
         params, args.n_trials, rules=["delayanti"], mode_input="random_batch",
         device="cpu", pretraining_shift=novel_index, pretraining_shift_pre=0)
     _validate_generated_rule_cue(inputs, layout, novel_index, "delayanti")
@@ -1357,17 +1320,13 @@ def summarize_pathway_gain(runs):
     return summary
 
 
-def run_pathway_gain(args):
+def run_pathway_gain(args, device):
     """Run the pathway-gain probe on every matching final checkpoint."""
-    import torch
-
     matches = discover_checkpoints(
         args.checkpoint_dir, args.feature, args.hidden, args.ruleset, args.seed,
         args.total_seed, args.test_seed)
     if not matches:
         raise ValueError("No checkpoints match the requested configuration")
-    device = torch.device(("cuda" if torch.cuda.is_available() else "cpu")
-                          if args.device == "auto" else args.device)
     args.input_dir.mkdir(parents=True, exist_ok=True)
     runs, failures = [], []
     for path, ruleset, seed in matches:
@@ -1498,13 +1457,6 @@ def plot_pathway_gain_m_stats(runs, output_dir, feature, hidden):
     plt.close(fig)
     print(f"Saved: {path}")
     return path
-
-
-def positive_int(value):
-    number = int(value)
-    if number < 1:
-        raise argparse.ArgumentTypeError("must be positive")
-    return number
 
 
 RULE_VECTOR_CONDITIONS = {
@@ -1795,17 +1747,13 @@ def plot_rule_vector_norms(runs, output_dir, feature, hidden):
     return path
 
 
-def run_rule_vector_intervention(args):
+def run_rule_vector_intervention(args, device):
     """Run final-checkpoint rule-vector decomposition and counterfactual tests."""
-    import torch
-
     matches = discover_checkpoints(
         args.checkpoint_dir, args.feature, args.hidden, args.ruleset, args.seed,
         args.total_seed, args.test_seed)
     if not matches:
         raise ValueError("No checkpoints match the requested configuration")
-    device = torch.device(("cuda" if torch.cuda.is_available() else "cpu")
-                          if args.device == "auto" else args.device)
     args.input_dir.mkdir(parents=True, exist_ok=True)
     runs, failures = [], []
     for path, ruleset, seed in matches:
@@ -2051,17 +1999,13 @@ def plot_rule_vector_magnitude_sweep(runs, output_dir, feature, hidden):
     return path
 
 
-def run_rule_vector_magnitude_sweep(args):
+def run_rule_vector_magnitude_sweep(args, device):
     """Run final-checkpoint rule-vector magnitude sweeps."""
-    import torch
-
     matches = discover_checkpoints(
         args.checkpoint_dir, args.feature, args.hidden, args.ruleset, args.seed,
         args.total_seed, args.test_seed)
     if not matches:
         raise ValueError("No checkpoints match the requested configuration")
-    device = torch.device(("cuda" if torch.cuda.is_available() else "cpu")
-                          if args.device == "auto" else args.device)
     args.input_dir.mkdir(parents=True, exist_ok=True)
     runs, failures = [], []
     for path, ruleset, seed in matches:
@@ -2105,6 +2049,7 @@ def run_rule_vector_magnitude_sweep(args):
 
 N_BACKBONE_RANDOM_VECTORS = 10
 BACKBONE_GRID_COEFFS = tuple(np.round(np.linspace(-2.0, 2.0, 17), 4).tolist())
+BACKBONE_DIRECTION_ANGLES_DEG = tuple(np.arange(0.0, 360.0, 5.0).tolist())
 
 
 def _backbone_named_coefficients(n_pretraining):
@@ -2117,6 +2062,19 @@ def _backbone_named_coefficients(n_pretraining):
     if n_pretraining > 1:
         named["cue_sum"] = (1.0,) * n_pretraining
     return named
+
+
+def _backbone_direction_coefficients(n_pretraining):
+    """Unique coefficient directions for a one- or two-rule span."""
+    if n_pretraining == 1:
+        return ((-1.0,), (0.0,), (1.0,))
+    if n_pretraining == 2:
+        return tuple(
+            (float(np.cos(np.deg2rad(angle))),
+             float(np.sin(np.deg2rad(angle))))
+            for angle in BACKBONE_DIRECTION_ANGLES_DEG
+        )
+    raise ValueError("Backbone direction sweep supports one or two pretraining rules")
 
 
 def load_stage1_train_params(checkpoint_dir, run_ruleset, seed, hidden, feature):
@@ -2136,15 +2094,16 @@ def evaluate_backbone_probe_checkpoint(path, run_ruleset, seed, args, device):
     the negative control; training-style loss uses the saved regularization
     settings. The span sweep tests whether a combination of the available
     pretrained rule vectors solves MemoryAnti without additional training.
-    It is one-dimensional for Proper motif+ and two-dimensional otherwise.
+    It is one-dimensional for DelayAnti and two-dimensional otherwise.
     Named points identify interpretable combinations (single cues, cue sum
     when available, and the learned vector's least-squares projection into the
-    span). Nonzero coefficient vectors are also evaluated at the mean pretrained
-    cue norm for that checkpoint; positive coefficient rays share cached
-    evaluations. The origin reuses the raw
-    zero-vector accuracy. The learned vector is separately rescaled to the
-    same target norm. All conditions share one fresh trial batch and
-    the angle accuracy scoring used by the other experiments.
+    span). A separate direction sweep evaluates unique coefficient directions
+    at the mean pretrained cue norm for that checkpoint: 72 angles for a
+    two-rule span, or the negative, zero, and positive directions for a
+    one-rule span. The origin reuses the raw zero-vector accuracy. The learned
+    vector is separately rescaled to the same target norm. All conditions share
+    one fresh trial batch and the angle accuracy scoring used by the other
+    experiments.
     """
     import math
     import torch
@@ -2215,16 +2174,9 @@ def evaluate_backbone_probe_checkpoint(path, run_ruleset, seed, args, device):
         return basis @ values
 
     def coefficient_fields(values):
-        """Store generic coefficients and keep legacy a/b fields for 2-D spans."""
-        if values is None:
-            return {"coefficients": None, "a": None, "b": None}
-        values = [float(value) for value in values]
-        fields = {"coefficients": values}
-        if values:
-            fields["a"] = values[0]
-        if len(values) > 1:
-            fields["b"] = values[1]
-        return fields
+        """Store coefficients for pretraining spans of any dimension."""
+        return {"coefficients": (None if values is None else
+                                 [float(value) for value in values])}
 
     def evaluate_vector(vector):
         with torch.no_grad():
@@ -2284,9 +2236,11 @@ def evaluate_backbone_probe_checkpoint(path, run_ruleset, seed, args, device):
                     for a in BACKBONE_GRID_COEFFS]
 
         # Match input strength within this checkpoint using its mean pretrained
-        # cue norm. Positive coefficient rays share one rescaled vector and
-        # cached accuracy; the origin retains the raw zero-vector result.
+        # cue norm. Equivalent coefficient directions share cached evaluations;
+        # the origin retains the raw zero-vector result.
         target_norm = float(torch.linalg.vector_norm(basis, dim=0).mean())
+        if target_norm <= 0 or not np.isfinite(target_norm):
+            raise ValueError("Pretrained rule vectors have invalid mean norm")
         direction_cache = {}
 
         def evaluate_direction(values):
@@ -2297,26 +2251,26 @@ def evaluate_backbone_probe_checkpoint(path, run_ruleset, seed, args, device):
             key = tuple(round(value / scale, 9) for value in values)
             if key not in direction_cache:
                 vector = combine(values)
+                vector_norm = float(vector.norm())
+                if vector_norm <= 1e-12 or not np.isfinite(vector_norm):
+                    raise ValueError("Coefficient direction maps to a zero rule vector")
                 direction_cache[key] = evaluate_vector(
-                    vector * (target_norm / float(vector.norm())))
+                    vector * (target_norm / vector_norm))
             return direction_cache[key]
 
         named_points_norm_matched = {
             name: {**coefficient_fields(values),
                    "accuracy_pct": evaluate_direction(values)}
             for name, values in named_coefficients.items()
-            if any(value != 0.0 for value in values)}
+        }
         named_points_norm_matched["learned_direction"] = {
             **coefficient_fields(None),
             "accuracy_pct": evaluate_vector(original * (target_norm / original.norm()))}
 
-        if layout["n_pretraining"] == 1:
-            grid_norm_matched = [evaluate_direction((coefficient,))
-                                 for coefficient in BACKBONE_GRID_COEFFS]
-        else:
-            grid_norm_matched = [[evaluate_direction((a, b))
-                                  for b in BACKBONE_GRID_COEFFS]
-                                 for a in BACKBONE_GRID_COEFFS]
+        direction_coefficients = _backbone_direction_coefficients(
+            layout["n_pretraining"])
+        direction_accuracies = [evaluate_direction(values)
+                                for values in direction_coefficients]
     finally:
         with torch.no_grad():
             weight[:, layout["novel_weight_column"]].copy_(
@@ -2330,7 +2284,18 @@ def evaluate_backbone_probe_checkpoint(path, run_ruleset, seed, args, device):
                        **coefficient_fields(best_coefficients)}
 
     grid_array, grid_max = _grid_summary(grid)
-    grid_nm_array, grid_max_norm_matched = _grid_summary(grid_norm_matched)
+    direction_array = np.asarray(direction_accuracies, dtype=float)
+    best_direction_index = int(direction_array.argmax())
+    direction_max_norm_matched = {
+        "accuracy_pct": float(direction_array[best_direction_index]),
+        **coefficient_fields(direction_coefficients[best_direction_index]),
+    }
+    if layout["n_pretraining"] == 2:
+        direction_max_norm_matched["angle_deg"] = float(
+            BACKBONE_DIRECTION_ANGLES_DEG[best_direction_index])
+    else:
+        direction_max_norm_matched["direction"] = (
+            "negative", "zero", "positive")[best_direction_index]
 
     print(f"seed={seed} {run_ruleset} backbone probe (delayanti):")
     print(f"  original: accuracy={original_accuracy:.2f}")
@@ -2343,7 +2308,7 @@ def evaluate_backbone_probe_checkpoint(path, run_ruleset, seed, args, device):
     print(f"  norm matched to {target_norm:.3f}: "
           + ", ".join(f"{name}={stats['accuracy_pct']:.2f}"
                       for name, stats in named_points_norm_matched.items())
-          + f", grid max={grid_max_norm_matched['accuracy_pct']:.2f}")
+          + f", direction max={direction_max_norm_matched['accuracy_pct']:.2f}")
     return {
         "aname": aname,
         "ruleset": run_ruleset,
@@ -2360,11 +2325,18 @@ def evaluate_backbone_probe_checkpoint(path, run_ruleset, seed, args, device):
                       "accuracy_pct": grid_array.tolist()},
         "grid_max": grid_max,
         "named_points_norm_matched": named_points_norm_matched,
-        "span_grid_norm_matched": {"coefficients": list(BACKBONE_GRID_COEFFS),
-                                   "n_pretraining": layout["n_pretraining"],
-                                   "target_norm": target_norm,
-                                   "accuracy_pct": grid_nm_array.tolist()},
-        "grid_max_norm_matched": grid_max_norm_matched,
+        "span_direction_sweep_norm_matched": {
+            "n_pretraining": layout["n_pretraining"],
+            "target_norm": target_norm,
+            "angles_deg": (list(BACKBONE_DIRECTION_ANGLES_DEG)
+                           if layout["n_pretraining"] == 2 else None),
+            "direction_labels": (["negative", "zero", "positive"]
+                                 if layout["n_pretraining"] == 1 else None),
+            "coefficient_directions": [list(values)
+                                       for values in direction_coefficients],
+            "accuracy_pct": direction_array.tolist(),
+        },
+        "direction_max_norm_matched": direction_max_norm_matched,
     }
 
 
@@ -2401,32 +2373,25 @@ def summarize_backbone_probe(runs):
             for index in range(len(selected[0]["geometry"]["learned_coefficients"]))]
         for key in geometry_keys:
             entry[key] = stats([run["geometry"][key] for run in selected])
-        # Norm-matched fields exist only in results produced after they were
-        # added; older JSONs are summarized without them.
-        matched = [run for run in selected if "named_points_norm_matched" in run]
-        if matched:
-            entry["n_seeds_norm_matched"] = len(matched)
-            for name in matched[0]["named_points_norm_matched"]:
-                entry[f"{name}_norm_matched_accuracy_pct"] = stats(
-                    [run["named_points_norm_matched"][name]["accuracy_pct"]
-                     for run in matched])
-            entry["grid_max_norm_matched_accuracy_pct"] = stats(
-                [run["grid_max_norm_matched"]["accuracy_pct"] for run in matched])
+        entry["n_seeds_norm_matched"] = len(selected)
+        for name in selected[0]["named_points_norm_matched"]:
+            entry[f"{name}_norm_matched_accuracy_pct"] = stats(
+                [run["named_points_norm_matched"][name]["accuracy_pct"]
+                 for run in selected])
+        entry["direction_max_norm_matched_accuracy_pct"] = stats(
+            [run["direction_max_norm_matched"]["accuracy_pct"]
+             for run in selected])
         summary[ruleset] = entry
     return summary
 
 
-def run_backbone_probe(args):
+def run_backbone_probe(args, device):
     """Run the zero-shot backbone probes on every matching final checkpoint."""
-    import torch
-
     matches = discover_checkpoints(
         args.checkpoint_dir, args.feature, args.hidden, args.ruleset, args.seed,
         args.total_seed, args.test_seed)
     if not matches:
         raise ValueError("No checkpoints match the requested configuration")
-    device = torch.device(("cuda" if torch.cuda.is_available() else "cpu")
-                          if args.device == "auto" else args.device)
     args.input_dir.mkdir(parents=True, exist_ok=True)
     runs, failures = [], []
     for path, ruleset, seed in matches:
@@ -2505,24 +2470,17 @@ def plot_backbone_probe_random(runs, output_dir, feature, hidden):
     return path
 
 
-def plot_backbone_span_grid(runs, output_dir, feature, hidden, norm_matched=False):
-    """Seed-mean zero-shot accuracy over the pretraining rule span, per motif.
+def plot_backbone_span_grid(runs, output_dir, feature, hidden):
+    """Seed-mean raw zero-shot accuracy over the pretraining rule span.
 
-    Two-parent motifs use a heatmap over a*v_pre0 + b*v_pre1; Proper motif+
-    uses a one-dimensional coefficient curve. Both replace the MemoryAnti rule
-    vector with no stage-2 training and mark each seed's learned projection.
-    With norm_matched=True, nonzero combinations use each checkpoint's mean
-    pretrained cue norm; the origin remains a zero-vector control. Positive
-    coefficient rays share accuracy, excluding the origin. Input strength is
-    matched within checkpoints, not necessarily across them. Saved grids must
-    match BACKBONE_GRID_COEFFS; rerun --backbone-probe after changing the grid.
+    Two-parent motifs use a heatmap over a*v_pre0 + b*v_pre1; DelayAnti uses a
+    one-dimensional coefficient curve. Both replace the MemoryAnti rule vector
+    with no stage-2 training and mark each seed's learned projection. Saved
+    grids must match BACKBONE_GRID_COEFFS; rerun --backbone-probe after changing
+    the grid.
     """
-    grid_key = "span_grid_norm_matched" if norm_matched else "span_grid"
-    runs = [run for run in runs if grid_key in run]
+    runs = [run for run in runs if "span_grid" in run]
     if not runs:
-        if norm_matched:
-            print("Skipped norm-matched span-grid plot: rerun --backbone-probe "
-                  "to collect norm-matched grids")
         return None
     coefficients = np.asarray(BACKBONE_GRID_COEFFS, dtype=float)
     half_step = (coefficients[1] - coefficients[0]) / 2
@@ -2540,9 +2498,9 @@ def plot_backbone_span_grid(runs, output_dir, feature, hidden, norm_matched=Fals
         if not selected:
             continue
         for run in selected:
-            if not np.allclose(run[grid_key]["coefficients"], coefficients):
+            if not np.allclose(run["span_grid"]["coefficients"], coefficients):
                 raise ValueError(f"{run['aname']}: inconsistent span-grid coefficients")
-        grids = np.asarray([run[grid_key]["accuracy_pct"] for run in selected],
+        grids = np.asarray([run["span_grid"]["accuracy_pct"] for run in selected],
                            dtype=float)
         if grids.ndim == 2:
             mean = grids.mean(axis=0)
@@ -2592,14 +2550,111 @@ def plot_backbone_span_grid(runs, output_dir, feature, hidden, norm_matched=Fals
     if image is not None:
         fig.colorbar(image, ax=image_axes, shrink=0.85,
                      label="Zero-shot MemoryAnti accuracy (%)")
-    variant = ("norm matched to mean pretrained cue norm" if norm_matched
-               else "raw combinations")
-    fig.suptitle(f"Pretraining-span rule combinations ({variant}), "
+    fig.suptitle("Pretraining-span rule combinations (raw), "
                  f"no stage-2 training | hidden{hidden} | {feature}")
     tag = _backbone_figure_tag(runs, summarize_backbone_probe(runs), hidden, feature)
-    prefix = ("backbone_span_grid_norm_matched" if norm_matched
-              else "backbone_span_grid")
-    path = _figure_path(output_dir, f"{prefix}_{tag}.png", seed_specific=len(runs) == 1)
+    path = _figure_path(output_dir, f"backbone_span_grid_{tag}.png",
+                        seed_specific=len(runs) == 1)
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {path}")
+    return path
+
+
+def plot_backbone_direction_sweep(runs, output_dir, feature, hidden):
+    """Fixed-norm zero-shot accuracy across unique pretraining-span directions."""
+    sweep_key = "span_direction_sweep_norm_matched"
+    runs = [run for run in runs if sweep_key in run]
+    if not runs:
+        return None
+    fig, axes = plt.subplots(1, len(GROUPS), figsize=(4.5 * len(GROUPS), 3.6),
+                             sharey=True)
+    axes = np.atleast_1d(axes)
+    for axis, (ruleset, (title, tasks)) in zip(axes, GROUPS.items()):
+        selected = [run for run in runs if run["ruleset"] == ruleset]
+        axis.set_title(f"{title} (n={len(selected)})", fontsize=9)
+        if not selected:
+            continue
+        n_pretraining = selected[0][sweep_key]["n_pretraining"]
+        if any(run[sweep_key]["n_pretraining"] != n_pretraining
+               for run in selected):
+            raise ValueError(f"{ruleset}: inconsistent direction-sweep dimension")
+        accuracies = np.asarray(
+            [run[sweep_key]["accuracy_pct"] for run in selected], dtype=float)
+        mean, std = accuracies.mean(axis=0), accuracies.std(axis=0)
+
+        if n_pretraining == 1:
+            expected = np.asarray(((-1.0,), (0.0,), (1.0,)))
+            for run in selected:
+                if not np.allclose(run[sweep_key]["coefficient_directions"], expected):
+                    raise ValueError(f"{run['aname']}: inconsistent 1-D directions")
+            positions = np.arange(3)
+            for values in accuracies:
+                axis.plot(positions, values, color="#805ad5", linewidth=0.7,
+                          alpha=0.18)
+            axis.errorbar(positions, mean, yerr=std, fmt="o-", color="#805ad5",
+                          linewidth=1.5, markersize=4, capsize=2)
+            rule = _display_rule(tasks[0])
+            axis.set_xticks(positions)
+            axis.set_xticklabels([f"−{rule}", "Zero", f"+{rule}"], fontsize=8)
+            axis.set_xlabel("Rule-vector direction")
+        elif n_pretraining == 2:
+            angles = np.asarray(BACKBONE_DIRECTION_ANGLES_DEG, dtype=float)
+            for run in selected:
+                if not np.allclose(run[sweep_key]["angles_deg"], angles):
+                    raise ValueError(f"{run['aname']}: inconsistent direction angles")
+            closed_angles = np.append(angles, 360.0)
+            closed_accuracy = np.concatenate((accuracies, accuracies[:, :1]), axis=1)
+            closed_mean = np.append(mean, mean[0])
+            closed_std = np.append(std, std[0])
+            for values in closed_accuracy:
+                axis.plot(closed_angles, values, color="#805ad5", linewidth=0.6,
+                          alpha=0.12)
+            axis.plot(closed_angles, closed_mean, color="#805ad5", linewidth=1.5)
+            axis.fill_between(closed_angles, closed_mean - closed_std,
+                              closed_mean + closed_std, color="#805ad5", alpha=0.15)
+
+            named_directions = [
+                (0.0, "^", _display_rule(tasks[0])),
+                (90.0, "s", _display_rule(tasks[1])),
+                (45.0, "P", "Cue sum"),
+            ]
+            for angle, marker, label in named_directions:
+                index = int(np.where(np.isclose(angles, angle))[0][0])
+                axis.scatter(angle, mean[index], marker=marker, s=42,
+                             facecolors="white", edgecolors="black", linewidths=0.8,
+                             label=label, zorder=3)
+            for run in selected:
+                coefficients = np.asarray(
+                    run["named_points"]["learned_projection"]["coefficients"],
+                    dtype=float)
+                projection = run["named_points_norm_matched"].get(
+                    "learned_projection")
+                if projection is None or np.linalg.norm(coefficients) < 1e-12:
+                    continue
+                angle = float(np.degrees(np.arctan2(
+                    coefficients[1], coefficients[0])) % 360.0)
+                axis.scatter(angle, projection["accuracy_pct"], marker="o", s=20,
+                             color="#e53e3e", zorder=3)
+            axis.scatter([], [], marker="o", s=20, color="#e53e3e",
+                         label="Learned projection")
+            axis.set_xlim(0, 360)
+            axis.set_xticks(np.arange(0, 361, 60))
+            axis.set_xlabel("Coefficient direction angle θ (deg)")
+            axis.legend(fontsize=6, loc="best", frameon=True, framealpha=0.85)
+        else:
+            raise ValueError(f"{ruleset}: unsupported direction-sweep dimension "
+                             f"{n_pretraining}")
+        axis.set_ylim(-5, 105)
+        axis.spines[["top", "right"]].set_visible(False)
+    axes[0].set_ylabel("Zero-shot MemoryAnti accuracy (%)")
+    fig.suptitle("Pretraining-span directions (norm matched within checkpoint), "
+                 f"no stage-2 training | hidden{hidden} | {feature}")
+    fig.tight_layout()
+    tag = _backbone_figure_tag(runs, summarize_backbone_probe(runs), hidden, feature)
+    path = _figure_path(
+        output_dir, f"backbone_span_direction_norm_matched_{tag}.png",
+        seed_specific=len(runs) == 1)
     fig.savefig(path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {path}")
@@ -2611,7 +2666,7 @@ def plot_backbone_conditions(runs, output_dir, feature, hidden):
 
     Best-grid accuracy is a maximum over the grid evaluations and therefore
     carries selection bias; named combinations are not chosen by that maximum.
-    Norm-matched results are shown in the separate norm-matched span-grid plot.
+    Norm-matched results are shown in the separate span-direction plot.
     """
     if not runs:
         return None
@@ -2664,39 +2719,6 @@ def plot_backbone_conditions(runs, output_dir, feature, hidden):
     plt.close(fig)
     print(f"Saved: {path}")
     return path
-
-
-def load_accuracies(input_dir, feature, hidden, ruleset=None, seed=None):
-    pattern = re.compile(
-        rf"accuracy_({'|'.join(GROUPS)})_dmpn_seed(\d+)_"
-        rf"\+hidden{hidden}\+{re.escape(feature)}\+batch128\+angle\.json"
-    )
-    grouped = {ruleset: {task: [] for task in tasks}
-               for ruleset, (_, tasks) in GROUPS.items()}
-    for path in sorted(input_dir.glob("accuracy_*.json")):
-        match = pattern.fullmatch(path.name)
-        if match is None:
-            continue
-        if ruleset is not None and match.group(1) != ruleset:
-            continue
-        if seed is not None and int(match.group(2)) != seed:
-            continue
-        run_ruleset = match.group(1)
-        with path.open() as handle:
-            result = json.load(handle)
-        if result["ruleset"] != run_ruleset or result["seed"] != int(match.group(2)):
-            raise ValueError(f"{path}: metadata does not match filename")
-        seen = set()
-        for entry in result["tasks"]:
-            task = entry["task"]
-            if task not in grouped[run_ruleset] or task in seen:
-                raise ValueError(f"{path}: unexpected or duplicate task {task}")
-            seen.add(task)
-            value = float(entry["accuracy_pct"])
-            if not np.isfinite(value) or not 0 <= value <= 100:
-                raise ValueError(f"{path}: invalid accuracy {value}")
-            grouped[run_ruleset][task].append(value)
-    return grouped
 
 
 def plot_accuracies(grouped, output_dir, feature, hidden, *, seed=None, ruleset=None):
@@ -2832,13 +2854,14 @@ def _plot_memory_representation(recorded, representation, first_rule, motif_titl
 
 
 def plot_memory_pca(checkpoint_dir, output_dir, feature, hidden, seed=None, test_seed=0,
-                    ruleset="fdgo_delaygo"):
-    """Project stimulus and MemoryPro/MemoryAnti response paths in delay1 PCA.
+                    ruleset="fdgo_delaygo", *, device):
+    """Plot one checkpoint's trajectories in the MemoryAnti delay1 PCA space.
 
     Fit two PCs to flattened trial/time samples from MemoryAnti's memory
     period, without feature scaling; transform direction-averaged trajectories
     using the fitted mean. Unless seed is supplied, select a checkpoint with
-    SystemRandom; test_seed controls trial generation, not checkpoint selection.
+    SystemRandom. The caller expands --total-seed into individual seed calls;
+    test_seed controls trial generation within this function.
     """
     import random
     import torch
@@ -2852,7 +2875,6 @@ def plot_memory_pca(checkpoint_dir, output_dir, feature, hidden, seed=None, test
     path, _, seed = random.SystemRandom().choice(matches)
     aname = path.stem.removeprefix("savednet_")
     print(f"Selected checkpoint: {aname}", flush=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     model = mpn.DeepMultiPlasticNet(copy.deepcopy(checkpoint["net_params"])).to(device)
     model.load_state_dict(checkpoint["state_dict"], strict=True)
@@ -2896,10 +2918,16 @@ def plot_memory_pca(checkpoint_dir, output_dir, feature, hidden, seed=None, test
             for representation in ("hidden", "effective_modulation")]
 
 
-EXPERIMENTS = ("accuracy", "memory_pca", "rule_cue", "m_intervention")
-EXPLICIT_ONLY_EXPERIMENTS = ("rule_vector_intervention",
-                             "rule_vector_magnitude_sweep", "backbone_probe",
-                             "pathway_gain", "plot_only")
+EXPERIMENTS = (
+    "accuracy",
+    "memory_pca",
+    "rule_cue",
+    "m_intervention",
+    "rule_vector_intervention",
+    "rule_vector_magnitude_sweep",
+    "backbone_probe",
+    "pathway_gain",
+)
 
 
 def main(argv=None):
@@ -2913,8 +2941,6 @@ def main(argv=None):
                        help="Evaluate fresh checkpoint accuracy only and plot it.")
     modes.add_argument("--memory-pca", action="store_true",
                        help="Run memory-PCA trajectory analysis only.")
-    modes.add_argument("--plot-only", action="store_true",
-                       help="Only plot cached accuracy JSON; do not run experiments.")
     modes.add_argument("--rule-cue", action="store_true",
                        help="Evaluate paired cue timing, including response-only cues, and plot accuracy/errors.")
     modes.add_argument("--m-intervention", action="store_true",
@@ -2925,7 +2951,7 @@ def main(argv=None):
                        help="Sweep MemoryAnti replacement-vector norm along fixed directions.")
     modes.add_argument("--backbone-probe", action="store_true",
                        help="Zero-shot MemoryAnti probes: random rule vectors and "
-                           "raw and norm-matched pretraining-span coefficient sweeps.")
+                           "raw span combinations plus a norm-matched direction sweep.")
     modes.add_argument("--pathway-gain", action="store_true",
                        help="Sign of the stimulus-to-readout gain through W_eff "
                             "under cue/trace conditions, plus 1+M statistics "
@@ -2934,34 +2960,32 @@ def main(argv=None):
                         help="Trials per task for evaluations; memory PCA uses a fixed 256.")
     parser.add_argument("--batch-size", type=positive_int, default=8,
                         help="Evaluation batch size; memory PCA uses a fixed 8.")
-    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto",
-                        help="Device for model evaluations; memory PCA selects automatically.")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--total-seed", type=positive_int, default=None,
-                        help="Randomly select K matching checkpoint seeds per motif.")
+                        help="Randomly select K matching checkpoint seeds per motif, "
+                             "including for memory PCA.")
     parser.add_argument("--test-seed", type=int, default=0,
                         help="Random seed for trial generation and reproducible "
                              "per-ruleset --total-seed selection (default: 0).")
     parser.add_argument("--ruleset", choices=tuple(GROUPS), default=None)
     args = parser.parse_args(argv)
+    import torch
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}", flush=True)
     if not 0 <= args.test_seed <= 2**32 - 3:
         parser.error("--test-seed must be between 0 and 2**32 - 3")
     if args.seed is not None and args.total_seed is not None:
         parser.error("--seed and --total-seed cannot be used together")
-    if args.total_seed is not None and (args.memory_pca or args.plot_only):
-        parser.error("--total-seed applies to checkpoint-batch analyses, not "
-                     "--memory-pca or --plot-only")
-    selected = [name for name in (*EXPERIMENTS, *EXPLICIT_ONLY_EXPERIMENTS)
-                if getattr(args, name)]
+    selected = [name for name in EXPERIMENTS if getattr(args, name)]
     experiments = selected or EXPERIMENTS
     errors = []
     for experiment in experiments:
         experiment_args = copy.copy(args)
-        for name in (*EXPERIMENTS, *EXPLICIT_ONLY_EXPERIMENTS):
+        for name in EXPERIMENTS:
             setattr(experiment_args, name, name == experiment)
         print(f"Running: --{experiment.replace('_', '-')}", flush=True)
         try:
-            _run_analysis(experiment_args)
+            _run_analysis(experiment_args, device)
         except (Exception, SystemExit) as error:
             if selected:
                 raise
@@ -2971,10 +2995,10 @@ def main(argv=None):
         raise SystemExit("Analysis failures:\n" + "\n".join(errors))
 
 
-def _run_analysis(args):
+def _run_analysis(args, device):
     """Run one selected analysis with its existing evaluation and plot pipeline."""
     if args.rule_vector_magnitude_sweep:
-        runs, failures = run_rule_vector_magnitude_sweep(args)
+        runs, failures = run_rule_vector_magnitude_sweep(args, device)
         plot_rule_vector_magnitude_sweep(
             runs, args.output_dir, args.feature, args.hidden)
         if failures:
@@ -2982,24 +3006,24 @@ def _run_analysis(args):
                 f"{len(failures)} checkpoint(s) failed; see magnitude-sweep summary.")
         return
     if args.rule_vector_intervention:
-        runs, failures = run_rule_vector_intervention(args)
+        runs, failures = run_rule_vector_intervention(args, device)
         plot_rule_vector_intervention(runs, args.output_dir, args.feature, args.hidden)
         plot_rule_vector_norms(runs, args.output_dir, args.feature, args.hidden)
         if failures:
             raise SystemExit(f"{len(failures)} checkpoint(s) failed; see rule-vector summary.")
         return
     if args.backbone_probe:
-        runs, failures = run_backbone_probe(args)
+        runs, failures = run_backbone_probe(args, device)
         plot_backbone_probe_random(runs, args.output_dir, args.feature, args.hidden)
         plot_backbone_span_grid(runs, args.output_dir, args.feature, args.hidden)
-        plot_backbone_span_grid(runs, args.output_dir, args.feature, args.hidden,
-                                norm_matched=True)
+        plot_backbone_direction_sweep(
+            runs, args.output_dir, args.feature, args.hidden)
         plot_backbone_conditions(runs, args.output_dir, args.feature, args.hidden)
         if failures:
             raise SystemExit(f"{len(failures)} checkpoint(s) failed; see backbone-probe summary.")
         return
     if args.pathway_gain:
-        runs, failures = run_pathway_gain(args)
+        runs, failures = run_pathway_gain(args, device)
         plot_pathway_gain(runs, args.output_dir, args.feature, args.hidden)
         plot_pathway_gain_m_stats(runs, args.output_dir, args.feature, args.hidden)
         if failures:
@@ -3007,32 +3031,36 @@ def _run_analysis(args):
         return
     if args.memory_pca:
         for ruleset in ([args.ruleset] if args.ruleset else GROUPS):
-            plot_memory_pca(args.checkpoint_dir, args.output_dir, args.feature,
-                            args.hidden, args.seed, args.test_seed, ruleset)
+            seeds = [args.seed]
+            if args.total_seed is not None:
+                matches = discover_checkpoints(
+                    args.checkpoint_dir, args.feature, args.hidden, ruleset,
+                    total_seed=args.total_seed, selection_seed=args.test_seed)
+                seeds = [seed for _, _, seed in matches]
+            for seed in seeds:
+                plot_memory_pca(args.checkpoint_dir, args.output_dir, args.feature,
+                                args.hidden, seed, args.test_seed, ruleset,
+                                device=device)
         return
-    failures = []
     if args.m_intervention:
-        runs, failures = run_m_intervention(args)
+        runs, failures = run_m_intervention(args, device)
         plot_m_intervention(runs, args.output_dir, args.feature, args.hidden)
         plot_m_trace_similarity(runs, args.output_dir, args.feature, args.hidden)
         if failures:
             raise SystemExit(f"{len(failures)} checkpoint(s) failed; see M-intervention summary.")
         return
     if args.rule_cue:
-        runs, failures = run_evaluation(args)
+        runs, failures = run_evaluation(args, device)
         plot_rule_cue(runs, args.output_dir, args.feature, args.hidden)
         plot_rule_cue_errors(runs, args.output_dir, args.feature, args.hidden)
         if failures:
             raise SystemExit(f"{len(failures)} checkpoint(s) failed; see rule-cue summary.")
         return
     accuracy_seed, accuracy_ruleset = args.seed, args.ruleset
-    if args.plot_only:
-        grouped = load_accuracies(args.input_dir, args.feature, args.hidden, args.ruleset, args.seed)
-    else:
-        runs, failures = run_evaluation(args)
-        grouped = _group_runs(runs)
-        if len(runs) == 1:
-            accuracy_seed, accuracy_ruleset = runs[0]["seed"], runs[0]["ruleset"]
+    runs, failures = run_evaluation(args, device)
+    grouped = _group_runs(runs)
+    if len(runs) == 1:
+        accuracy_seed, accuracy_ruleset = runs[0]["seed"], runs[0]["ruleset"]
     if not plot_accuracies(grouped, args.output_dir, args.feature, args.hidden,
                            seed=accuracy_seed, ruleset=accuracy_ruleset):
         raise SystemExit("No matching successful accuracies; run --accuracy to evaluate checkpoints.")

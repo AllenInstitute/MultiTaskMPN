@@ -6,6 +6,7 @@ import unittest
 
 import torch
 
+import _bootstrap  # noqa: F401
 from multiple_task_performance import task_specific_accuracy
 from net_helpers import BaseNetwork
 

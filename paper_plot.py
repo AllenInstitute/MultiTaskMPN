@@ -2722,7 +2722,7 @@ def plot_rule_vectors():
     Figure: Pairwise cosine similarity between rule-input vectors.
 
     Shows how the novel task's learned rule vector relates to every available
-    pretrained rule vector, including the one-parent Proper motif + condition.
+    pretrained rule vector, including the one-parent DelayAnti condition.
     """
     _ensure_out_dir()
     if not PRETRAINING_ANALYSIS_DIR.exists():
@@ -2797,7 +2797,7 @@ def plot_rule_vectors():
     ruleset_labels = {
         "fdgo_delaygo": "Irrelevant motif",
         "fdanti_delaygo": "Relevant motif",
-        "fdanti": "Proper motif +",
+        "fdanti": "DelayAnti",
     }
 
     task_display_names = {
@@ -2838,7 +2838,7 @@ def plot_rule_vectors():
             raise ValueError(f"{rs}: rule-vector data has no Stage-1 tasks")
 
         # (values, label, underlying raw task pair) for every comparison that
-        # exists. The named schema supports the one-parent Proper motif +;
+        # exists. The named schema supports the one-parent DelayAnti condition;
         # legacy flat keys remain a fallback for older two-parent pickles.
         bar_specs = []
         named_novel = by_ruleset[rs].get("cos_novel_by_task", {})
@@ -2875,7 +2875,7 @@ def plot_rule_vectors():
             for values, label, _ in bar_specs
         ]
 
-    # The original two-ruleset figure had four bars. Proper motif + adds a
+    # The original two-ruleset figure had four bars. DelayAnti adds a
     # fifth, so scale width with the actual count to keep multiline labels apart.
     n_bars_total = sum(len(bars) for bars in per_rs_bars.values())
     fig.set_size_inches(max(3.6, 1.05 * n_bars_total), 2.4 * 2 / 3)
@@ -3089,7 +3089,7 @@ def _plot_aggregate_cve_period(period):
     ruleset_labels = {
         "fdgo_delaygo": "Irrelevant motif",
         "fdanti_delaygo": "Relevant motif",
-        "fdanti": "Proper motif +",
+        "fdanti": "DelayAnti",
     }
 
     x_lim_map = {"hidden": 20, "modulation_weighted": 1000}
@@ -3139,7 +3139,7 @@ def plot_pretraining_principal_angles():
     groups = {
         "fdgo_delaygo": ("Irrelevant motif", "#3182ce"),
         "fdanti_delaygo": ("Relevant motif", "#e53e3e"),
-        "fdanti": ("Proper motif +", "#dd6b20"),
+        "fdanti": ("DelayAnti", "#dd6b20"),
     }
     representations = [("hidden", "Hidden"), ("modulation_weighted", "Effective Modulation")]
     periods = ["stimulus", "response"]

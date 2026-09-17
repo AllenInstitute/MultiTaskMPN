@@ -11,9 +11,9 @@ Protocol
 --------
 Stage 1 (Pretraining)
     Train a DeepMultiPlasticNet on the tasks of the chosen pretraining ruleset
-    (a pair for the Proper/Improper motifs, DelayAnti alone for "Proper
-    motif +") while reserving one extra task-indicator column for the held-out
-    post-training task.
+    (a pair for the Proper/Improper motifs, or one of the single-task
+    DelayAnti/DelayPro controls) while reserving one extra task-indicator
+    column for the held-out post-training task.
 
 Stage 2 (Post-training)
     Reuse the pretrained network, freeze all parameters via
@@ -74,8 +74,10 @@ ACCEPT_RULES = (
 # prefix every output filename, so each mode saves to its own files):
 #   fdgo_delaygo   — Improper motif   (DelayPro + MemoryPro)
 #   fdanti_delaygo — Proper motif     (DelayAnti + MemoryPro)
-#   fdanti         — Proper motif +   (DelayAnti only; tests whether MemoryPro
+#   fdanti         — DelayAnti       (DelayAnti only; tests whether MemoryPro
 #                    pretraining is necessary for MemoryAnti transfer)
+#   fdgo           — Improper motif + (DelayPro only; single-task control
+#                    matched to the DelayAnti-only condition)
 #   delayanti      — the post-training task itself (MemoryAnti)
 # A single-rule pretraining reserves one held-out column as usual, so its
 # checkpoints have one fewer task-indicator channel than the two-rule motifs.
@@ -83,19 +85,21 @@ RULES_DICT = {
     'fdgo_delaygo': ['fdgo', 'delaygo'],
     'fdanti_delaygo': ['fdanti', 'delaygo'],
     'fdanti': ['fdanti'],
+    'fdgo': ['fdgo'],
     'delayanti': ['delayanti'],
 }
 RULES_DICT_FREQUENCY = {
     'fdgo_delaygo': np.array([1, 1]),
     'fdanti_delaygo': np.array([1, 1]),
     'fdanti': np.array([1]),
+    'fdgo': np.array([1]),
     'delayanti': np.array([1]),
 }
 OUT_DIR = Path("./pretraining")
 
 N_TRIALS = 10
 SEED_LIST = None
-PRETRAIN_RULESET = "fdanti"
+PRETRAIN_RULESET = "fdgo"
 POSTTRAIN_RULESET = "delayanti"
 FEATURE = "L21e3"
 

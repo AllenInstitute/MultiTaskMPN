@@ -4,6 +4,8 @@ import unittest
 from unittest.mock import patch, mock_open
 
 import numpy as np
+
+import _bootstrap  # noqa: F401
 import paper_plot as paper
 
 
