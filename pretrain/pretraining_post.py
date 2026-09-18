@@ -19,9 +19,10 @@ Default (no experiment flag): run every analysis sequentially. An explicit
 experiment flag runs only that experiment. --ruleset and --seed also filter
 default runs.
 For checkpoint-batch analyses, --total-seed K randomly selects K matching
-checkpoint seeds per motif; without it, every matching checkpoint is used.
-Memory PCA instead uses one random checkpoint per motif by default, the exact
-checkpoint selected by --seed, or K checkpoints per motif with --total-seed K.
+checkpoint seeds per pretraining group; without it, every matching checkpoint
+is used. Memory PCA instead uses one random checkpoint per pretraining group by
+default, the exact checkpoint selected by --seed, or K checkpoints per group
+with --total-seed K.
 Total-seed selection uses the same stable (test-seed, ruleset) mapping as
 pretraining_analysis.py.
 Default runs continue after an experiment fails and report failures at the end.
@@ -30,7 +31,7 @@ the model's angle-based response-timepoint metric, not trial success counts.
 Accuracy bars show seed means, error bars population SD, and dots individual
 seeds.
 Use --memory-pca to project stimulus and response trajectories into the MemoryAnti memory
-subspace, for hidden and effective modulation (W*M), in all motif groups. Saves
+subspace, for hidden and effective modulation (W*M), in all pretraining groups. Saves
 PNG figures only, selecting a random checkpoint per group unless --seed or
 --total-seed is specified.
 All analyses automatically use CUDA when available and otherwise use CPU.
@@ -50,7 +51,7 @@ normally. These interventions do not by themselves establish that the trace
 encodes task identity or separates additively from stimulus information.
 --m-intervention also saves a trace-vs-M figure comparing the cue trace with
 the plastic state at response onset (mean-|entry| L1 magnitudes/distance and
-per-trial Pearson correlations, per motif group).
+per-trial Pearson correlations, per pretraining group).
 Use --rule-vector-intervention to replace the learned MemoryAnti rule-input
 vector with its projection into the available pretraining-rule span or its orthogonal
 residual. Raw and norm-matched versions separate direction from input strength;
@@ -67,7 +68,8 @@ final checkpoint back into the end-of-stage-1 backbone under a counterfactual
 rule input. Two untrained probes are evaluated: random rule vectors (the
 negative control, reporting training-style loss and accuracy) and the
 pretraining-span coefficient sweep. This is a two-dimensional (a, b) grid for
-the two-parent motifs and a one-dimensional coefficient sweep for DelayAnti,
+the two-parent motifs and a one-dimensional coefficient sweep for each
+single-task control,
 plus the available single cues, their sum when applicable, and the learned
 vector's least-squares projection into the span. A high-accuracy grid cell identifies
 a rule-span solution on the evaluated trials without training a new vector.
@@ -76,8 +78,8 @@ points are not selected by maximizing accuracy over the grid. The best
 norm-matched direction is likewise selected over the tested angles.
 A second, norm-matched direction sweep rescales span directions and the learned
 vector to the mean of that checkpoint's pretrained cue norms. Two-rule motifs
-scan coefficient angles; DelayAnti tests only the negative, zero, and positive
-directions. This controls input strength within each checkpoint without
+scan coefficient angles; single-task controls test only the negative, zero,
+and positive directions. This controls input strength within each checkpoint without
 storing or plotting duplicate points along the same coefficient ray; the target norm
 can differ across checkpoints.
 Use --pathway-gain for a linear probe of the stimulus-to-readout pathway: per
@@ -134,7 +136,9 @@ ANALYSIS_DIR = REPO_ROOT / "pretraining_analysis"
 FIGURE_DIR = REPO_ROOT / "pretrain" / "fig"
 SEED_FIGURE_DIR = REPO_ROOT / "pretrain" / "fig_seed"
 
-POST_RULESET_ORDER = ("fdanti_delaygo", "fdgo_delaygo", "fdanti")
+POST_RULESET_ORDER = (
+    "fdanti_delaygo", "fdgo_delaygo", "fdanti", "fdgo",
+)
 GROUPS = {
     ruleset: (
         RULESET_SPECS[ruleset]["label"],
@@ -143,7 +147,7 @@ GROUPS = {
     )
     for ruleset in POST_RULESET_ORDER
 }
-COLORS = ("#3182ce", "#38a169", "#e53e3e")
+COLORS = ("#3182ce", "#38a169", "#e53e3e", "#805ad5")
 TASK_COLORS = {"fdgo": "#3182ce", "fdanti": "#3182ce",
                "delaygo": "#38a169", "delayanti": "#e53e3e"}
 # Matches two_task_analysis.py's c_vals[stimulus_index] trajectory colors.
@@ -957,7 +961,7 @@ def run_m_intervention(args, device):
 
 
 def plot_m_intervention(runs, output_dir, feature, hidden):
-    """MemoryAnti accuracy under plastic-trace interventions, per motif panel."""
+    """MemoryAnti accuracy under plastic-trace interventions, one panel per group."""
     if not runs:
         return None
     summary = summarize_m_intervention(runs)
@@ -1004,7 +1008,7 @@ def plot_m_intervention(runs, output_dir, feature, hidden):
 
 
 def plot_m_trace_similarity(runs, output_dir, feature, hidden):
-    """Compare the cue-attributable trace with M at response onset, per motif.
+    """Compare the cue-attributable trace with M at response onset, per group.
 
     Left: mean absolute entry of the trace, the intact M, and their elementwise
     L1 distance (identically the no-cue M, since trace = M_intact - M_nocue).
@@ -1357,7 +1361,7 @@ def run_pathway_gain(args, device):
 
 
 def plot_pathway_gain(runs, output_dir, feature, hidden):
-    """Normalized pathway gain per condition, one panel per motif.
+    """Normalized pathway gain per condition, one panel per pretraining group.
 
     Gains are divided by each seed's mean |frozen-W gain|, so seeds share a
     scale; the zero line separates a pro-driving (positive) from an
@@ -1402,7 +1406,7 @@ def plot_pathway_gain(runs, output_dir, feature, hidden):
 
 
 def plot_pathway_gain_m_stats(runs, output_dir, feature, hidden):
-    """Mean 1 + M on top pro- vs anti-driving synapses, per motif and condition.
+    """Mean 1 + M on top pro- vs anti-driving synapses, per group and condition.
 
     1.0 means no modulation; toward 0 = depressed to the multiplicative bound;
     toward 2 = enhanced to the bound. Since 1 + M cannot go negative, a sign
@@ -2094,7 +2098,8 @@ def evaluate_backbone_probe_checkpoint(path, run_ruleset, seed, args, device):
     the negative control; training-style loss uses the saved regularization
     settings. The span sweep tests whether a combination of the available
     pretrained rule vectors solves MemoryAnti without additional training.
-    It is one-dimensional for DelayAnti and two-dimensional otherwise.
+    It is one-dimensional for either single-task control and two-dimensional
+    for the two-task motifs.
     Named points identify interpretable combinations (single cues, cue sum
     when available, and the learned vector's least-squares projection into the
     span). A separate direction sweep evaluates unique coefficient directions
@@ -2427,9 +2432,9 @@ def _backbone_figure_tag(runs, summary, hidden, feature):
 
 
 def plot_backbone_probe_random(runs, output_dir, feature, hidden):
-    """Random-rule probe loss/accuracy per motif, seed-mean over random inits.
+    """Random-rule probe metrics per pretraining group and random initialization.
 
-    Show total loss, output-only MSE, and accuracy as one boxplot per motif
+    Show total loss, output-only MSE, and accuracy as one boxplot per group
     with per-seed dots. The output-only panel separates prediction error from
     the regularization contribution included in total loss.
     """
@@ -2473,8 +2478,8 @@ def plot_backbone_probe_random(runs, output_dir, feature, hidden):
 def plot_backbone_span_grid(runs, output_dir, feature, hidden):
     """Seed-mean raw zero-shot accuracy over the pretraining rule span.
 
-    Two-parent motifs use a heatmap over a*v_pre0 + b*v_pre1; DelayAnti uses a
-    one-dimensional coefficient curve. Both replace the MemoryAnti rule vector
+    Two-parent motifs use a heatmap over a*v_pre0 + b*v_pre1; single-task
+    controls use a one-dimensional coefficient curve. Both replace the MemoryAnti rule vector
     with no stage-2 training and mark each seed's learned projection. Saved
     grids must match BACKBONE_GRID_COEFFS; rerun --backbone-probe after changing
     the grid.
@@ -2662,7 +2667,7 @@ def plot_backbone_direction_sweep(runs, output_dir, feature, hidden):
 
 
 def plot_backbone_conditions(runs, output_dir, feature, hidden):
-    """Raw zero-shot MemoryAnti probe accuracies, one panel per motif.
+    """Raw zero-shot MemoryAnti probe accuracies, one panel per group.
 
     Best-grid accuracy is a maximum over the grid evaluations and therefore
     carries selection bias; named combinations are not chosen by that maximum.
@@ -2958,11 +2963,11 @@ def main(argv=None):
                             "on the top pathway synapses.")
     parser.add_argument("--n-trials", type=positive_int, default=200,
                         help="Trials per task for evaluations; memory PCA uses a fixed 256.")
-    parser.add_argument("--batch-size", type=positive_int, default=8,
+    parser.add_argument("--batch-size", type=positive_int, default=64,
                         help="Evaluation batch size; memory PCA uses a fixed 8.")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--total-seed", type=positive_int, default=None,
-                        help="Randomly select K matching checkpoint seeds per motif, "
+                        help="Randomly select K matching checkpoint seeds per pretraining group, "
                              "including for memory PCA.")
     parser.add_argument("--test-seed", type=int, default=0,
                         help="Random seed for trial generation and reproducible "

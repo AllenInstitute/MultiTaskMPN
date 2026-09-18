@@ -9,7 +9,7 @@ class PretrainingUtilsTests(unittest.TestCase):
     def test_current_ruleset_contract(self):
         self.assertEqual(
             set(pretraining_utils.RULESET_SPECS),
-            {"fdanti_delaygo", "fdgo_delaygo", "fdanti"},
+            {"fdanti_delaygo", "fdgo_delaygo", "fdanti", "fdgo"},
         )
         self.assertEqual(
             pretraining_utils.stage1_tasks_for("fdanti_delaygo"),
@@ -21,6 +21,8 @@ class PretrainingUtilsTests(unittest.TestCase):
         )
         self.assertEqual(
             pretraining_utils.stage1_tasks_for("fdanti"), ["fdanti"])
+        self.assertEqual(
+            pretraining_utils.stage1_tasks_for("fdgo"), ["fdgo"])
         for ruleset in pretraining_utils.RULESET_SPECS:
             self.assertEqual(
                 pretraining_utils.stage2_tasks_for(ruleset), ["delayanti"])
@@ -53,6 +55,7 @@ class PretrainingUtilsTests(unittest.TestCase):
             "fdgo_delaygo": [10, 11, 17],
             "fdanti_delaygo": [14, 17, 19],
             "fdanti": [11, 17, 18],
+            "fdgo": [16, 18, 19],
         }
         for ruleset, chosen in expected.items():
             self.assertEqual(
@@ -72,6 +75,7 @@ class PretrainingUtilsTests(unittest.TestCase):
             ("fdanti_delaygo", ["fdanti", "delaygo"], 9),
             ("fdgo_delaygo", ["fdgo", "delaygo"], 9),
             ("fdanti", ["fdanti"], 8),
+            ("fdgo", ["fdgo"], 8),
         ):
             stage1 = {"rules": stage1_rules, "hp": {"rule_start": 6}}
             stage2 = {"rules": ["delayanti"], "hp": {"rule_start": 6}}

@@ -17,10 +17,10 @@ SOURCE = ROOT / "pretrain" / "pretraining_post.py"
 
 
 class PretrainingPostCLITests(unittest.TestCase):
-    def test_ruleset_order_and_groups_are_unchanged(self):
+    def test_ruleset_order_and_groups_include_delaypro(self):
         self.assertEqual(
             pretraining_post.POST_RULESET_ORDER,
-            ("fdanti_delaygo", "fdgo_delaygo", "fdanti"),
+            ("fdanti_delaygo", "fdgo_delaygo", "fdanti", "fdgo"),
         )
         self.assertEqual(
             pretraining_post.GROUPS,
@@ -30,8 +30,11 @@ class PretrainingPostCLITests(unittest.TestCase):
                 "fdgo_delaygo": (
                     "Improper motif", ("fdgo", "delaygo", "delayanti")),
                 "fdanti": ("DelayAnti", ("fdanti", "delayanti")),
+                "fdgo": ("DelayPro", ("fdgo", "delayanti")),
             },
         )
+        self.assertGreaterEqual(
+            len(pretraining_post.COLORS), len(pretraining_post.GROUPS))
 
     def test_checkpoint_discovery_preserves_stable_seed_selection(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -57,6 +60,7 @@ class PretrainingPostCLITests(unittest.TestCase):
             "fdanti_delaygo": [14, 17, 19],
             "fdgo_delaygo": [10, 11, 17],
             "fdanti": [11, 17, 18],
+            "fdgo": [16, 18, 19],
         })
 
     def test_backbone_direction_sweep_has_no_duplicate_rays(self):
@@ -117,6 +121,27 @@ class PretrainingPostCLITests(unittest.TestCase):
             self.assertTrue(path.is_file())
             self.assertTrue(path.name.startswith(
                 "backbone_span_direction_norm_matched_"))
+
+    def test_backbone_random_plot_supports_every_group_color(self):
+        runs = [{
+            "aname": f"synthetic_{ruleset}",
+            "ruleset": ruleset,
+            "random_probe": {
+                "loss": [1.0],
+                "loss_out": [0.5],
+                "accuracy_pct": [25.0],
+            },
+        } for ruleset in pretraining_post.GROUPS]
+
+        with (tempfile.TemporaryDirectory() as directory,
+              mock.patch.object(
+                  pretraining_post, "summarize_backbone_probe",
+                  return_value={ruleset: {}
+                                for ruleset in pretraining_post.GROUPS})):
+            path = pretraining_post.plot_backbone_probe_random(
+                runs, Path(directory), "L21e3", 200)
+
+        self.assertTrue(path.name.startswith("backbone_probe_random_"))
 
     def test_default_experiment_list_contains_every_analysis_flag(self):
         tree = ast.parse(SOURCE.read_text())

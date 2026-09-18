@@ -127,12 +127,17 @@ BASIS_TASKS_BY_RULESET = {
     "fdanti": {
         "stimulus": "fdanti", "response": "fdanti",
     },
+    "fdgo": {
+        "stimulus": "fdgo", "response": "fdgo",
+    },
 }
 
 # Each ruleset is processed independently; learning/transfer curves are then
 # combined into cross-ruleset figures. Keep this explicit order independent of
 # the shared metadata catalog so refactors cannot silently reorder panels.
-ANALYSIS_RULESET_ORDER = ("fdgo_delaygo", "fdanti_delaygo", "fdanti")
+ANALYSIS_RULESET_ORDER = (
+    "fdgo_delaygo", "fdanti_delaygo", "fdanti", "fdgo",
+)
 
 # Active ruleset / stage-1 tasks are (re)assigned at the top of each
 # iteration of the main loop below. Functions that build file paths
@@ -177,6 +182,7 @@ ruleset_colors = {
     "fdgo_delaygo": c_vals[1],
     "fdanti_delaygo": c_vals[2],
     "fdanti": c_vals[4],
+    "fdgo": c_vals[5],
 }
 
 chosen_network = "dmpn"
@@ -245,7 +251,7 @@ def _validate_saved_task_layout(seed, stage1_output, stage2_output):
     pretraining.py saves both stages after padding them to the final network
     input width. That width is sensory columns through ``rule_start``, followed
     by every stage-1 rule cue and then the held-out stage-2 rule cue. It is 9
-    for the two-parent motifs and 8 for the one-parent fdanti ablation.
+    for the two-parent motifs and 8 for either one-parent control.
     """
     task_params1 = stage1_output["task_params"].item()
     task_params2 = stage2_output["task_params"].item()
@@ -319,8 +325,9 @@ def _rule_vector_stats(pretrained_vectors, v_novel, novel_task):
     ``in_span_fraction`` is retained as the raw geometric quantity. Because its
     chance level grows with span rank, ``in_span_excess_over_random`` compares
     squared projection to the exact isotropic random-subspace expectation r/d.
-    This permits a one-dimensional DelayAnti span and two-dimensional motif
-    spans to be compared without treating their different ranks as equivalent.
+    This permits one-dimensional single-task-control spans and two-dimensional
+    motif spans to be compared without treating their different ranks as
+    equivalent.
     """
     if not pretrained_vectors:
         raise ValueError("At least one pretrained rule vector is required")
@@ -813,7 +820,7 @@ if __name__ == "__main__":
 
                 # The saved npzs, not the filename, are authoritative for task
                 # count and cue-column layout. This is essential for the
-                # one-parent DelayAnti condition.
+                # one-parent DelayAnti and DelayPro controls.
                 layout = _validate_saved_task_layout(
                     seed, stage1_output, stage2_output
                 )
@@ -892,7 +899,8 @@ if __name__ == "__main__":
                 # to both stim and go periods.
 
                 # Each period uses the scientifically specified Stage-1 basis.
-                # For the DelayAnti condition, fdanti is the basis for both periods.
+                # For a single-task control, its sole Stage-1 task is the basis
+                # for both periods.
                 stage1_stim = period_slice(
                     stage1_hs, stage1_rules_epochs, stimulus_basis_task, "stim1",
                     shift_percentage=period_shift_percentage,
@@ -1005,8 +1013,8 @@ if __name__ == "__main__":
                     # ─── Period-matched M similarity ──────────────────────
                     # Every ruleset gets the two cross-stage comparisons that
                     # match its PCA bases. A within-stage-1 task-pair baseline
-                    # exists only for genuine two-parent motifs; DelayAnti
-                    # must not acquire a trivial fdanti-vs-itself baseline.
+                    # exists only for genuine two-parent motifs; single-task
+                    # controls must not acquire a trivial self-comparison.
                     m_comparisons = []
 
                     def _append_m_comparison(
@@ -1784,7 +1792,7 @@ if __name__ == "__main__":
                       f"values={span_ranks.astype(int).tolist()}")
 
             # Figure: all valid pairwise cosine bars grouped by ruleset.
-            # DelayAnti has one bar; two-parent motifs have three.
+            # Single-task controls have one bar; two-parent motifs have three.
             # Error bars = std across seeds; black dots = per-seed values.
             figrv, axrv_cos = plt.subplots(1, 1, figsize=(7, 3.8))
 

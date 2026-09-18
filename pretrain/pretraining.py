@@ -76,7 +76,7 @@ ACCEPT_RULES = (
 #   fdanti_delaygo — Proper motif     (DelayAnti + MemoryPro)
 #   fdanti         — DelayAnti       (DelayAnti only; tests whether MemoryPro
 #                    pretraining is necessary for MemoryAnti transfer)
-#   fdgo           — Improper motif + (DelayPro only; single-task control
+#   fdgo           — DelayPro       (DelayPro only; single-task control
 #                    matched to the DelayAnti-only condition)
 #   delayanti      — the post-training task itself (MemoryAnti)
 # A single-rule pretraining reserves one held-out column as usual, so its
@@ -110,7 +110,7 @@ FEATURE = "L21e3"
 # automatically (e.g. L21e3 -> L21e3mb2), so their output files can never
 # overwrite or be confused with default-bound runs, and downstream analyses
 # select them explicitly via their feature string.
-M_BOUNDS = (-1.0, 1.0)
+M_BOUNDS = (-2.0, 2.0)
 
 
 def _feature_with_bounds(feature, m_bounds=None):

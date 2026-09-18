@@ -43,7 +43,7 @@ class PretrainingAnalysisCLITests(unittest.TestCase):
             "+hidden200+L21e3+batch128+angle",
         )
 
-    def test_ruleset_order_is_explicit_and_unchanged(self):
+    def test_ruleset_order_includes_both_single_task_controls(self):
         tree = ast.parse(SOURCE.read_text())
         assignment = next(
             node for node in tree.body
@@ -54,7 +54,7 @@ class PretrainingAnalysisCLITests(unittest.TestCase):
         )
         self.assertEqual(
             ast.literal_eval(assignment.value),
-            ("fdgo_delaygo", "fdanti_delaygo", "fdanti"),
+            ("fdgo_delaygo", "fdanti_delaygo", "fdanti", "fdgo"),
         )
 
     def test_custom_hidden_and_feature(self):

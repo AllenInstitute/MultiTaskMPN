@@ -32,6 +32,11 @@ RULESET_SPECS = {
         "stage1_tasks": ("fdanti",),
         "stage2_tasks": (FINAL_TASK,),
     },
+    "fdgo": {
+        "label": "DelayPro",
+        "stage1_tasks": ("fdgo",),
+        "stage2_tasks": (FINAL_TASK,),
+    },
 }
 
 RULE_DISPLAY_NAMES = {

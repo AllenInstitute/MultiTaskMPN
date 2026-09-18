@@ -13,13 +13,15 @@ Run on the compute node with the project environment::
     conda activate mpn
     python biology.py
 
-The default output is ``cartoon_plot/biology_connectivity_network.png``.
+The default outputs are ``cartoon_plot/biology_connectivity_network.png`` and
+``cartoon_plot/biology_connectivity_network_legend.png``.
 """
 import argparse
 import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from matplotlib.patches import FancyArrowPatch
 import numpy as np
 
@@ -47,6 +49,26 @@ plt.rcParams.update({
     "savefig.dpi": 300,
     "savefig.bbox": "tight",
 })
+
+
+def _save_connectivity_legend(out_dir):
+    """Save the neuron/connectivity key as a standalone transparent figure."""
+    handles = [
+        Line2D([], [], marker="o", linestyle="none", markersize=7,
+               markerfacecolor=_NODE_COLOR, markeredgecolor="white",
+               markeredgewidth=0.25, label="Neuron"),
+        Line2D([], [], color=_EDGE_COLOR, linewidth=1.5,
+               label="Connectivity"),
+    ]
+    fig = plt.figure(figsize=(2.2, 1.2))
+    fig.legend(handles=handles, loc="center", ncol=1, frameon=False,
+               fontsize=11, handlelength=1.6, handletextpad=0.65,
+               labelspacing=0.5)
+    legend_path = Path(out_dir) / "biology_connectivity_network_legend.png"
+    fig.savefig(legend_path, dpi=600, bbox_inches="tight",
+                pad_inches=0.02, transparent=True)
+    plt.close(fig)
+    return legend_path
 
 
 def _connectivity_core_indices(W, syn_count, n_nodes, min_synapses=1):
@@ -208,13 +230,16 @@ def plot_bc_connectivity_network(out_dir=OUT_DIR, n_nodes=DEFAULT_N_NODES,
     out_path = out_dir / "biology_connectivity_network.png"
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
+    legend_path = _save_connectivity_legend(out_dir)
 
     edges = int(visible.sum())
     print(f"Saved: {out_path}  ({len(keep)} of {full_W.shape[0]} fully "
           f"proofread BC neurons; {edges} directed BC→BC connections with >= "
           f"{min_synapses} synapse(s); layout seed {layout_seed})")
+    print(f"Saved: {legend_path}")
     return {
         "path": out_path,
+        "legend_path": legend_path,
         "indices": keep,
         "root_ids": np.asarray(result["ids"])[keep],
         "positions": positions,
