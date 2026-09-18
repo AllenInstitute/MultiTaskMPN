@@ -229,7 +229,7 @@ DATA_DIR = Path("multiple_tasks_analysis") / ANAME
 # ANAME — set independently so the probe figure can come from a different
 # seed/regularization than the clustering/lesion figures.
 DELAYDM_ANAME = "everything_seed921_L21e4+hidden300+batch128+angle"
-# Produced by multiple_task_analysis.py's shared_run, which writes into
+# Produced by multiple_task/sibling_delay_analysis.py, which writes into
 # multiple_tasks_analysis/{aname}/ the two pickles the delayDM geometry figure reads:
 #     fixed_points_grad_{aname}_{rule}.pkl   one per delayDM rule
 #     delaydm1_delay_pc_projections_{aname}.pkl
@@ -5930,8 +5930,9 @@ _DELAYDM_PAPER_PC_PLANES = {
     "hidden": (1, 2),
     "e_modulation": (1, 2),
 }
-_MULTITASK_FP_HINT = ("Run multiple_task_analysis.py shared_run first to create "
-                      "the DelayDM fixed points and joint delay-trajectory PCA.")
+_MULTITASK_FP_HINT = (
+    "Run: python multiple_task/sibling_delay_analysis.py --seed 921 "
+    "--feature L21e4 --families delaydm1")
 _MULTITASK_RULE_MARKERS = ("s", "^")
 
 
@@ -6632,7 +6633,7 @@ def plot_two_task_alpha_colorscheme():
         col = _alpha_ramp_color(ramp_t)
         col = tuple(0.78 * c for c in col[:3]) if ramp_t else col[:3]
         ax.text(x, 0.5 + 2.1 * half, lab, color=col, ha=ha, va="bottom",
-                fontsize=8.5)
+                fontsize=9.5)
 
     # Endpoint values tucked under the band's ends, and the quantity itself centered
     # below — the only text that is not doing a second job.
@@ -6640,11 +6641,12 @@ def plot_two_task_alpha_colorscheme():
     # conventional axis annotation, and crowding them against the ramp made the band
     # look like it was underlining them.
     below = 0.5 - 3.6 * half
-    ax.text(0.0, below, f"{alphas.min():g}", ha="center", va="top", fontsize=7.5,
+    ax.text(0.0, below, f"{alphas.min():g}", ha="center", va="top", fontsize=9.5,
             color="0.25")
-    ax.text(1.0, below, f"{alphas.max():g}", ha="center", va="top", fontsize=7.5,
+    ax.text(1.0, below, f"{alphas.max():g}", ha="center", va="top", fontsize=9.5,
             color="0.25")
-    ax.text(0.5, below, r"Rule input $\alpha$", ha="center", va="top", fontsize=8.5)
+    ax.text(0.5, below, r"Rule interpolation $\alpha$", ha="center", va="top",
+            fontsize=9.5)
 
     ax.set_xlim(-0.06, 1.06)
     ax.set_ylim(0.0, 1.0)
@@ -7487,8 +7489,8 @@ FIGURES_BY_MODE = {
     },
     "two_in_multiple": {
         # DelayDM task-translation geometry inside the multi-task network, read
-        # off TRUE gradient fixed points (solved by multiple_task_analysis.py's
-        # shared_run with the same solver one_task and two_task use).
+        # off TRUE gradient fixed points (solved by sibling_delay_analysis.py
+        # with the same solver one_task and two_task use).
         "delaydm_fixed_point_geometry":
             plot_multitask_delaydm_fixed_point_geometry,
     },

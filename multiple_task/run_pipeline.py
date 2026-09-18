@@ -1,8 +1,9 @@
 """
 Run the full analysis pipeline for each experiment:
-  1. multiple_task_analysis  — stage 2 clustering always runs (produces the
-     cluster_info pickles steps 2-3 need); stage 1 sibling-task fixed points
-     (dmcgo/delaydm families) are skipped by default, opt in with --families
+  optional: sibling_delay_analysis — DelayDM/DMC fixed-point geometry, selected
+            explicitly with --families
+  1. multiple_task_analysis  — weight structure and clustering (produces the
+     cluster_info pickles steps 2-3 need)
   2. leison                  — lesion & pruning experiments
   3. leison_plot             — normalized lesion effect plots
 """
@@ -13,6 +14,7 @@ from pathlib import Path
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 from run_logging import tee_output
 import multiple_task_analysis
+import sibling_delay_analysis
 import leison
 import leison_plot
 
@@ -25,13 +27,13 @@ def run_pipeline(seed, feature, families=()):
 
     t0 = time.time()
 
+    if families:
+        print("\n--- Optional: sibling_delay_analysis ---")
+        sibling_delay_analysis.run_sibling_analysis(seed, feature, families)
+
     print("\n--- Step 1/3: multiple_task_analysis ---")
     t1 = time.time()
-    if not families:
-        print("    Sibling-family (shared_run) analysis skipped; running clustering only")
-    # families=() skips shared_run but stage 2 (clustering) still runs and
-    # writes the cluster_info pickles steps 2-3 consume.
-    multiple_task_analysis.main(seed, feature, clean=False, families=families)
+    multiple_task_analysis.main(seed, feature, clean=False)
     print(f"    done ({time.time() - t1:.1f}s)")
 
     cluster_path = Path(f"./multiple_tasks_analysis/{aname}/cluster_info_{aname}.pkl")
@@ -62,10 +64,10 @@ def main():
                         help="Only run the model with this seed (e.g. 749). "
                              "Combine with --feature to disambiguate.")
     parser.add_argument("--families", nargs="+", default=[],
-                        choices=list(multiple_task_analysis.SHARED_RUN_FAMILIES),
-                        help="Sibling-task families to solve in step 1 "
-                             "(dmcgo/delaydm fixed points). Default: none — "
-                             "shared_run is skipped, clustering still runs.")
+                        choices=list(sibling_delay_analysis.SIBLING_FAMILIES),
+                        help="Optional sibling-task families to analyze before "
+                             "clustering. Default: none. For sibling analysis "
+                             "only, run sibling_delay_analysis.py directly.")
     args = parser.parse_args()
 
     saved_nets = sorted(Path("multiple_tasks").glob("savednet_everything_seed*+angle.pt"))

@@ -46,9 +46,13 @@ regularization `feature`) are set inside each training script.
 ```bash
 # multi-task: train, analyze (clustering), lesion, lesion plots
 python multiple_task/multiple_task.py
-python multiple_task/multiple_task_analysis.py
-python multiple_task/leison.py
-python multiple_task/leison_plot.py
+python multiple_task/run_pipeline.py --seed 749 --feature L21e4
+
+# optional sibling-task geometry only (does not rerun clustering or lesions)
+python multiple_task/sibling_delay_analysis.py \
+  --seed 921 --feature L21e4 --families delaydm1
+
+# additional state-space analysis
 python multiple_task/state_space_shift.py
 
 # single- / two-task (train + analyze chained by the pipeline)

@@ -759,7 +759,8 @@ def _rebuild_net(net_params):
     return net
 
 
-def main(aname, fp_n_seeds=5, interp_n_alpha=10, run_fixed_points=True):
+def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
+         run_fixed_points=True):
     # two_task.py saves each trial in a self-contained subfolder twotasks/{aname}/.
     # Fall back to the flat layout (files directly under twotasks/) for older runs.
     run_dir = OUT_DIR / aname
@@ -2455,7 +2456,7 @@ def main(aname, fp_n_seeds=5, interp_n_alpha=10, run_fixed_points=True):
                     aname, save_dir, net, cfg_fp, device,
                     rule=_rule, out_suffix=f"_{_rule}",
                     layer_index=layer_index, W=W_fp, n_interp=64,
-                    n_seeds=fp_n_seeds,
+                    n_seeds=fp_n_seeds, steps=fp_steps,
                     # Multistability probes: the FIXATION input solved from a
                     # memory-carrying state (end of delay), plus stimulus-free
                     # random seeds under every distinct period input — see
@@ -2619,6 +2620,10 @@ if __name__ == "__main__":
                         help="Number of random trial templates to try when solving "
                              "gradient fixed points (per rule); the best-converging "
                              "one is kept (default 5).")
+    parser.add_argument("--fp-steps", type=int, default=500_000,
+                        help="Maximum Adam steps for each gradient fixed-point "
+                             "optimization (default 500000; early stopping still "
+                             "applies when the loss reaches 1e-8).")
     parser.add_argument("--interp-n-alpha", type=int, default=10,
                         help="Number of pro<->anti interpolation intervals for the "
                              "task-interpolation fixed points; yields n+1 alpha steps "
@@ -2637,7 +2642,7 @@ if __name__ == "__main__":
     for a in anames:
         print(f"\n── Analyzing: {a} ──")
         try:
-            main(a, fp_n_seeds=args.fp_n_seeds,
+            main(a, fp_n_seeds=args.fp_n_seeds, fp_steps=args.fp_steps,
                  interp_n_alpha=args.interp_n_alpha,
                  run_fixed_points=args.run_fixed_points)
         except Exception as exc:

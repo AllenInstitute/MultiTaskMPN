@@ -1,26 +1,12 @@
 """
-Post-training analysis of a multi-task MPN.
+Post-training weight-structure and clustering analysis of a multi-task MPN.
 
-Loads a trained DeepMultiPlasticNet checkpoint and its recorded hidden states,
-modulation matrices (M), and input activations, then characterizes how the
-network organizes task-specific computation.
+Loads a trained DeepMultiPlasticNet checkpoint and run metadata, regenerates its
+hidden states, modulation matrices (M), and input activations with a fresh
+forward pass, then characterizes how the network organizes task-specific
+computation.
 
-The file has TWO STAGES, both run by `main`: stage 1 (`shared_run`) probes the
-sibling families selected by `families` (skipped entirely when `families` is
-empty), then stage 2 (weight structure and clustering) always follows.
-
-Stage 1 — sibling-task memory geometry (`shared_run`):
-  * accuracy on normal-delay trials, overall and per sibling task, plus an
-    input/output sanity figure;
-  * shared Delay-PC bases fit on complete `delay1` trajectories: joint and
-    first-task-only reference bases for every sibling family;
-  * TRUE gradient fixed points of the delay period for each sibling rule, solved
-    by the shared solver in core/grad_fixed_points.py;
-  * projection of those points into all six PCs of both the joint and
-    first-task-only delay-trajectory bases; paper_plot.py explicitly chooses the
-    PC pair for both delayDM and DMC.
-
-Stage 2 — weight structure and clustering (always runs):
+This module owns the following analyses:
   1. Weight-structure heatmaps of W_initial_linear, W (recurrent) and W_output,
      plus the end-to-end pathway W_out @ W_mod @ W_in and its SVD spectrum.
   2. Task-conditioned VARIANCE — per-rule, per-period variance of the input,
@@ -39,19 +25,13 @@ run's saved hyp_dict. For the runs in hand `addon_name` already carries the
 files by aname — but the two are computed from different sources and would
 diverge for a run saved with a shorter addon_name:
   - figures (every savefig prints its path)
-  - {addtask}_delay_trajectory_pca_{aname}.pkl — joint Delay-PC basis
-  - {addtask}_delay_trajectory_pca_{addtask}_only_{aname}.pkl
-                                                — first-task reference basis
-  - fixed_points_grad_{aname}_{rule}.pkl        — solved fixed points per rule
-  - {addtask}_delay_pc_projections[_{addtask}_only]_{aname}.pkl
-                                                — complete six-PC projections
-  - {addtask}_delay_pc_gallery[_{addtask}_only]_{representation}_{aname}.png
-                                                — all 15 PC-pair views
   - cluster_info_{savefigure_name_base}.pkl     — neuron cluster assignments,
     consumed by the lesion experiments
   - cluster_info_mod_{savefigure_name_base}.pkl — modulation synapse clusters
 
-No CLI entry point: `main(seed, feature, ...)` is invoked by run_pipeline.py.
+Sibling-task DelayDM/DMC fixed-point geometry is intentionally separate in
+``sibling_delay_analysis.py``, which has its own CLI. No CLI entry point here:
+``main(seed, feature, ...)`` is invoked by ``run_pipeline.py``.
 """
 # %%
 import os
@@ -60,7 +40,6 @@ import numpy as np
 from pathlib import Path
 import json
 import psutil
-import copy
 import pickle
 
 import matplotlib as mpl
@@ -93,18 +72,11 @@ from torch.serialization import add_safe_globals
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import helper
 import clustering
-from grad_fixed_points import solve_period_modulation_fixed_points
 import clustering_metric
 import color_func
 import mpn
 import mpn_tasks
-from sibling_delay_analysis import (
-    DELAY_PCA_SCOPES,
-    SIBLING_FIXED_POINT_N_SEEDS,
-    SIBLING_FIXED_POINT_STEPS,
-    fit_delay_trajectory_pca,
-    save_sibling_fixed_point_pc_projections,
-)
+from sibling_delay_analysis import is_sibling_artifact
 
 # Log every saved figure path (like paper_plot.py). Wrap Figure.savefig once so
 # all call sites — including multi-line ones — print their destination without
@@ -164,71 +136,6 @@ c_vals_l = [
 cs = "coolwarm"
 
 
-# The sibling-task families `shared_run` can probe, keyed by the `addtask` name it
-# takes. Each entry is (rules solved, the paper_plot.py run identifier whose
-# figures read the result). A family is named after its FIRST rule, which is also
-# the prefix of its output files.
-#
-# Both are solved in one `main` call by default (--families) — they are
-# independent solves over the same checkpoint, so doing them together costs one
-# load of the network and the recorded activity instead of two.
-#
-# NB paper_plot.py reads each family from its OWN identifier (DMC_ANAME,
-# DELAYDM_ANAME), and those may name different seeds. Solving both families for
-# one seed therefore updates only the paper figure whose identifier points at that
-# seed; run the other seed too (or repoint the constant) to refresh both.
-SHARED_RUN_FAMILIES = {
-    "dmcgo":    (["dmcgo", "dmcnogo"],       "DMC_ANAME"),
-    "delaydm1": (["delaydm1", "delaydm2"],   "DELAYDM_ANAME"),
-}
-
-# Match the task generator's native eight stimulus directions. This sibling
-# analysis deliberately does not solve additional between-direction inputs.
-SIBLING_FP_N_STIM = 8
-# Both delayDM sibling rules probe whether different in-distribution stimulus
-# magnitudes at the same angle relax to the same or different delay fixed points.
-# The training generator's marginal stimulus-strength support is approximately
-# [0.48, 1.52]; use five interior levels, including the historical magnitude 1.
-DELAYDM_FP_STIM_MAGNITUDES = (0.6, 0.8, 1.0, 1.2, 1.4)
-
-
-def _clean_stale_sibling_artifacts(save_dir, families):
-    """Delete old outputs for the sibling families about to be recomputed.
-
-    Matching is restricted to ordinary files directly inside this run's output
-    directory. Each selected family's two rule names are used as tokens, so the
-    cleanup catches both prefix-style products (for example
-    ``delaydm1_delay_pc_projections_...``) and solver products whose rule is a suffix
-    (for example ``fixed_points_grad_..._delaydm2.pkl``). Checkpoints, parameter
-    files, subdirectories, and outputs from unselected families are untouched.
-    """
-    save_dir = Path(save_dir)
-    families = tuple(families)
-    unknown = set(families) - set(SHARED_RUN_FAMILIES)
-    if unknown:
-        raise ValueError(f"unknown sibling families: {sorted(unknown)}")
-
-    tokens = {
-        rule
-        for family in families
-        for rule in SHARED_RUN_FAMILIES[family][0]
-    }
-    stale = sorted(
-        path for path in save_dir.iterdir()
-        if path.is_file() and any(token in path.name for token in tokens)
-    )
-    for path in stale:
-        path.unlink()
-
-    if stale:
-        print(f"  [cleanup] removed {len(stale)} stale sibling-analysis "
-              f"artifact(s) from {save_dir}:")
-        for path in stale:
-            print(f"    - {path.name}")
-    else:
-        print(f"  [cleanup] no stale sibling-analysis artifacts in {save_dir}")
-
-
 # ─── Clustering helpers shared by the neuron and modulation analyses ──────────
 # Module level, not nested inside main's branches: both are needed by the
 # input/hidden pass AND by the modulation pass, and a closure defined in one
@@ -259,23 +166,17 @@ def _gap_curve(Z, k_vals):
 _fixed_k_col_clusters = clustering.fixed_k_col_clusters
 
 
-def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
+def main(seed, feature, clean=True):
     """Run the analysis for ONE trained network, identified by `seed`/`feature`.
 
     Rebuilds `aname` from the naming convention, loads that run's recorded
     activity (param_{aname}_result.npz), hyperparameters (…_param.json) and
-    checkpoint (savednet_{aname}.pt), then runs the two stages described in the
-    module docstring — stage 1 (`shared_run` for every family in `families`)
-    followed by stage 2 (weight structure and clustering).
-
-    `families` selects which sibling-task families stage 1 probes; the default is
-    ALL of `SHARED_RUN_FAMILIES`, i.e. dmcgo/dmcnogo and delaydm1/delaydm2 in one
-    run. Pass an empty tuple to skip stage 1 entirely and go straight to stage 2.
-    Before computation, artifacts belonging to every selected family are
-    removed from this run's output directory. `clean=True` additionally empties
-    all other files in that directory.
+    checkpoint (savednet_{aname}.pt), then runs the weight-structure and
+    clustering analyses described in the module docstring. ``clean=True``
+    removes earlier clustering-owned outputs while preserving artifacts owned
+    by ``sibling_delay_analysis.py``. Sibling-task DelayDM/DMC geometry is run
+    independently by that module.
     """
-    families = tuple(families)
     mem = psutil.virtual_memory()
     print(f"Total: {mem.total / 1e9:.2f} GB")
     print(f"Available: {mem.available / 1e9:.2f} GB")
@@ -290,8 +191,8 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
     aname = f"{task}_seed{seed}_{feature}+hidden{hidden}+batch{batch}{accfeature}"
     out_path_name = "multiple_tasks/" + f"param_{aname}_result.npz"
     out_path = Path(out_path_name)
-    # Always True: the npz is read only for metadata (rules_epochs, hyp_dict, ...);
-    # activity (xs/hs/Ms_orig) is regenerated by a fresh forward pass in stage 2.
+    # The npz is read only for metadata (rules_epochs, hyp_dict, ...); activity
+    # (xs/hs/Ms_orig) is regenerated below by a fresh forward pass.
     reevaluate = True
 
     size_bytes = out_path.stat().st_size  
@@ -318,16 +219,15 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
     task_params, train_params, net_params = raw_cfg_param["task_params"], raw_cfg_param["train_params"], raw_cfg_param["net_params"]
 
     savefigure_name = f"{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}"
-    savefigure_name_base = copy.deepcopy(savefigure_name)
+    savefigure_name_base = savefigure_name
 
     # all outputs for this experiment go into their own subfolder
     save_dir = f"./multiple_tasks_analysis/{savefigure_name_base}"
     os.makedirs(save_dir, exist_ok=True)
     if clean:
         for _old_file in Path(save_dir).iterdir():
-            if _old_file.is_file():
+            if _old_file.is_file() and not is_sibling_artifact(_old_file):
                 _old_file.unlink()
-    _clean_stale_sibling_artifacts(save_dir, families)
 
     # %%
     # 2025-11-19: make sure the bias is only cell-dependent but not time- or trail-dependent
@@ -361,260 +261,9 @@ def main(seed, feature, clean=True, families=tuple(SHARED_RUN_FAMILIES)):
     model.to(device)
     print(f"Running on: {device}")
 
-    task_params_c, train_params_c, net_params_c = mpn_tasks.convert_and_init_multitask_params(
+    task_params_c, _, _ = mpn_tasks.convert_and_init_multitask_params(
         (task_params, train_params, net_params)
     )
-
-    def shared_run(addtask):
-        """
-        Probe the delay-period memory geometry of two related tasks.
-
-        The idea: take a pair of sibling tasks that share the same stimulus
-        set but demand different computations —
-            addtask="dmcgo"    → ["dmcgo", "dmcnogo"]      (match vs non-match)
-            addtask="delaydm1" → ["delaydm1", "delaydm2"]  (modality 1 vs 2)
-        The measurement is made on solved fixed points of the delay period, not
-        on raw delay activity. DMC additionally saves category labels alongside
-        its complete trajectory-PC projection.
-
-        Procedure
-        ---------
-        1. Report accuracy on normal-delay trials, overall and per sibling task,
-           emit a sanity figure of example input/output traces, and fit two
-           Delay-PC bases: concatenate BOTH tasks' complete delay1 trajectories
-           for the joint basis, and use the first task alone for a reference
-           basis (dmcgo-only or delaydm1-only). The compact bases are saved for
-           paper_plot.py.
-        2. Solve TRUE gradient fixed points per sibling rule with the shared
-           solver (`core/grad_fixed_points.py`, also used by one_task_analysis.py
-           and two_task_analysis.py): M* = F(M*; x) relaxed under the DELAY-1
-           period's held-constant input, seeded from that period's end state, over
-           the task's eight native trained stimulus directions, without
-           between-direction interpolation. One pickle per rule, carrying M*,
-           its W⊙M* / hidden / cos-output views and the convergence metric
-           rel_step. Linear-stability and off-diagonal multistability analyses
-           are intentionally off here.
-        3. Project each family's fixed points into two six-PC bases fit only on
-           delay trajectories: joint sibling-task trajectories and first-task-only
-           trajectories. Save all six coordinates (plus DMC category labels as
-           metadata). Also save a 15-panel PC-pair gallery for each basis and
-           representation so the plane can be inspected visually; the gallery
-           computes no score and selects nothing. paper_plot.py explicitly
-           specifies the displayed plane. No PCA is fit on fixed points.
-
-        Representations analyzed downstream are the hidden state and the EFFECTIVE
-        modulation (W ⊙ M). Raw M is deliberately excluded: the effective
-        modulation is built from it, so its map is near-duplicate, and at
-        (n_hidden x n_input) per point it is the most expensive one to handle.
-
-        Results are written under `save_dir`:
-            {addtask}_{savefigure_name}.png                      — IO traces
-            {addtask}_delay_trajectory_pca_{aname}.pkl           — joint Delay PCs
-            {addtask}_delay_trajectory_pca_{addtask}_only_{aname}.pkl
-                                                               — reference PCs
-            fixed_points_grad_{aname}_{rule}.pkl                 — solved M* per rule
-            delaydm1_delay_pc_projections_{aname}.pkl            — joint six PCs
-            delaydm1_delay_pc_projections_delaydm1_only_{aname}.pkl
-                                                               — reference six PCs
-            dmcgo_delay_pc_projections_{aname}.pkl              — joint six PCs
-            dmcgo_delay_pc_projections_dmcgo_only_{aname}.pkl   — reference six PCs
-            {addtask}_delay_pc_gallery[_{addtask}_only]_
-                {hidden|e_modulation}_{aname}.png               — all 15 pairs
-        """
-        if addtask not in SHARED_RUN_FAMILIES:
-            raise ValueError(f"unknown family {addtask!r}; choose from "
-                             f"{list(SHARED_RUN_FAMILIES)}")
-
-        task_params_family = copy.deepcopy(task_params_c)
-        task_params_family["rules"] = list(SHARED_RUN_FAMILIES[addtask][0])
-        task_params_family['hp']['batch_size_train'] = 30
-
-        def _gen(long_delay, test_n_batch):
-            tp = copy.deepcopy(task_params_family)
-            tp["long_delay"] = long_delay
-            # align_periods resets the shared RNG before each rule so the two
-            # sibling tasks (e.g. dmcgo/dmcnogo) draw IDENTICAL epoch timing
-            # (stim1_ons/offs, delay length, ...). Without it, mode='random'
-            # draws an independent timeline per rule, so the delay window would
-            # differ between tasks and the single shared delay_period used below
-            # (from test_trials[0]) would be wrong for the second task — making
-            # the cross-task memory-geometry comparison invalid.
-            data, extra = mpn_tasks.generate_trials_wrap(
-                tp, test_n_batch, rules=tp["rules"],
-                mode_input="random", device="cpu", verbose=True,
-                align_periods=True)
-            return data, extra
-
-        # ── Normal-delay dataset: accuracy report + IO visualization ──────────
-        # Accuracy is reported on the in-distribution (normal) delay the network
-        # was trained on. This is the only dataset this function generates: the
-        # fixed-point solver below builds its own trial template internally (with
-        # every period set to "normal"), so `_gen`'s long_delay knob is only here
-        # for a caller that wants to stress-test the memory geometry by hand.
-        norm_data, norm_extra = _gen("normal", 100)
-        norm_input, norm_output, norm_mask = norm_data
-        norm_task = helper.find_task(task_params_family, norm_input.detach().cpu().numpy(), 0)
-        norm_task = [int(t - min(norm_task)) for t in norm_task]
-
-        norm_out, _, norm_db = model.iterate_sequence_batch(
-            norm_input.to(device), run_mode='track_states',
-            save_to_cpu=True, detach_saved=True)
-
-        # Accuracy on the normal-delay trials, overall and per sibling task.
-        norm_out_dev = norm_out.to(device)
-        norm_output_dev = norm_output.to(device)
-        norm_input_dev = norm_input.to(device)
-        norm_mask_dev = norm_mask.to(device)
-        acc_all, _ = model.compute_acc(norm_out_dev, norm_output_dev, norm_mask_dev,
-                                       norm_input_dev, isvalid=True, mode=model.acc_measure)
-        print(f"  [acc] {addtask} (normal delay, both tasks): {float(acc_all):.3f}")
-        norm_task_arr = np.asarray(norm_task)
-        per_task_acc = {}  # task_name -> accuracy on normal-delay trials
-        for task_i, task_name in enumerate(task_params_family["rules"]):
-            sel = np.flatnonzero(norm_task_arr == task_i)
-            if sel.size == 0:
-                print(f"  [acc] {task_name}: no trials")
-                continue
-            sel_t = torch.as_tensor(sel, device=device)
-            acc_i, _ = model.compute_acc(
-                norm_out_dev.index_select(0, sel_t),
-                norm_output_dev.index_select(0, sel_t),
-                norm_mask_dev.index_select(0, sel_t),
-                norm_input_dev.index_select(0, sel_t),
-                isvalid=True, mode=model.acc_measure)
-            per_task_acc[task_name] = float(acc_i)
-            print(f"  [acc] {task_name} (normal delay): {float(acc_i):.3f}  (n={sel.size})")
-
-        # IO visualization on the normal-delay trials. Title carries the per-task
-        # test accuracy so the figure is self-describing.
-        acc_str = ", ".join(f"{name} acc={per_task_acc[name]:.3f}"
-                            for name in task_params_family["rules"] if name in per_task_acc)
-        fig, axs = plt.subplots(5,2,figsize=(5*2,5*2))
-        for i in range(5):
-            for inp in range(norm_input.shape[2]):
-                axs[i,0].plot(norm_input[i,:,inp].detach().cpu().numpy(), color=c_vals[inp], alpha=0.5)
-            for inp in range(norm_out.shape[2]):
-                axs[i,1].plot(norm_out[i,:,inp].detach().cpu().numpy(), color=c_vals[inp], alpha=0.5)
-            for outp in range(norm_output.shape[2]):
-                axs[i,1].plot(norm_output[i,:,outp].detach().cpu().numpy(), color=c_vals[outp],
-                            alpha=0.5, linestyle="--")
-        fig.suptitle(f"{addtask} (normal delay)  |  {acc_str}", fontsize=12)
-        fig.tight_layout()
-        fig.savefig(f"{save_dir}/{addtask}_{savefigure_name}.png", dpi=300)
-
-        # Two trajectory-defined Delay-PC coordinate systems per sibling family:
-        # joint (both rules) and a first-rule-only reference. Neither is fit on
-        # fixed points. Only compact PCA parameters are saved; the large tracked
-        # tensors can be released before fixed-point solving starts.
-        W_fp = state_dict["mp_layer1.W"].detach().cpu().numpy()
-        _, norm_trials, _ = norm_extra
-        for _basis_scope in DELAY_PCA_SCOPES:
-            fit_delay_trajectory_pca(
-                aname, save_dir, addtask, task_params_family["rules"], norm_db,
-                norm_trials, norm_task_arr, W_fp, layer_index=1,
-                n_components=6,
-                basis_scope=_basis_scope)
-        del norm_db, norm_extra
-        del norm_out, norm_out_dev, norm_output_dev, norm_input_dev, norm_mask_dev
-
-        # ── TRUE gradient fixed points, one solve per sibling rule ────────────
-        # The shared solver (core/grad_fixed_points.py — the same one
-        # one_task_analysis.py and two_task_analysis.py use) relaxes M* = F(M*; x)
-        # under each period's held-constant input, so every saved point is an
-        # actual fixed point carrying its own convergence metric (rel_step) and an
-        # is_fixed mask. This focused sibling analysis does not compute the
-        # solver's optional multistability or linear-stability diagnostics.
-        #
-        # Scope: the DELAY period only, for both sibling rules — that is where the
-        # memory this analysis is about lives, and solving the other three periods
-        # would cost 4x for nothing here. "longdelay" is the FIRST delay epoch
-        # (delay1) in both families, which is the one that holds the remembered
-        # stimulus in dmc (before stim2 arrives) and in delaydm.
-        #
-        # Use exactly the task generator's eight trained directions
-        # (n_eachring=8). Unlike the one/two-task interpolation analyses, this
-        # sibling comparison does not probe the 56 between-direction inputs.
-        # For both delaydm1 and delaydm2, cross those angles with five
-        # in-distribution magnitude levels. Both DMC rules retain the historical
-        # unit-magnitude sweep.
-        # Try the deterministic task-template seeds configured in
-        # sibling_delay_analysis.py and save only the lowest-rel_step result.
-        #
-        # Writes {save_dir}/fixed_points_grad_{aname}_{rule}.pkl per rule.
-        cfg_fp = {"task_params": task_params, "train_params": train_params,
-                  "net_params": net_params}
-        solved_rules = []
-        for _rule in task_params_family["rules"]:
-            try:
-                solve_period_modulation_fixed_points(
-                    aname, Path(save_dir), model, cfg_fp, device,
-                    rule=_rule, out_suffix=f"_{_rule}",
-                    layer_index=1, W=W_fp,
-                    periods=("longdelay",), n_interp=SIBLING_FP_N_STIM,
-                    stim_magnitudes=(DELAYDM_FP_STIM_MAGNITUDES
-                                     if _rule in ("delaydm1", "delaydm2")
-                                     else None),
-                    n_seeds=SIBLING_FIXED_POINT_N_SEEDS,
-                    # Use the sibling-analysis Adam cap configured beside its
-                    # seed count. one_task/two_task keep the solver default. This
-                    # is an upper bound: Adam stops when the speed loss reaches
-                    # loss_tol (1e-8), so already-converged points stop early.
-                    steps=SIBLING_FIXED_POINT_STEPS,
-                    # No per-stimulus delay paths: all retained downstream figures
-                    # use the solved endpoints only.
-                    save_all_trajectories=False,
-                    # Jacobian eigenvalues, spectral radius, stable/marginal
-                    # labels, and the decay-normalized spectrum are not consumed
-                    # by the retained sibling analyses or paper figures.
-                    analyze_stability=False,
-                    # Diagonal probe only — the delay input solved from the delay's
-                    # own end state. The memory-seed probe is a FIXATION-input solve
-                    # (out of scope for a delay-only run), and the naive rank-one
-                    # probe is off too: one/two-task keep it as the control for
-                    # "was the ring transplanted with the seed", but here it doubles
-                    # the solves for a question this analysis is not asking.
-                    cross_seed_probes=False, naive_seed_probes=False,
-                    # Off for the same reason: it is one more eight-point solve per
-                    # rule, and this analysis asks only where the delay ring is,
-                    # not what else the delay input could settle to.
-                    traj_seed_probes=False)
-                solved_rules.append(_rule)
-            except Exception as exc:
-                print(f"  [grad-fp/{_rule}] failed: {exc}")
-                import traceback
-                traceback.print_exc()
-
-        # ── Fixed points in all six PCs of both trajectory bases ────────
-        if len(solved_rules) == len(task_params_family["rules"]):
-            try:
-                for _basis_scope in DELAY_PCA_SCOPES:
-                    save_sibling_fixed_point_pc_projections(
-                        aname, save_dir, addtask, solved_rules,
-                        basis_scope=_basis_scope)
-            except Exception as exc:
-                print(f"  [{addtask}/pc-projection] failed: {exc}")
-                import traceback
-                traceback.print_exc()
-        else:
-            print(f"  [{addtask}/pc-projection] skipped: only "
-                  f"{len(solved_rules)}/{len(task_params_family['rules'])} "
-                  "rules solved.")
-
-    # Probe every requested sibling family (both, by default) in this one run: the
-    # solves are independent, so doing them here shares the checkpoint load and the
-    # recorded-activity load between them. Each family is guarded on its own, so a
-    # failure in one still leaves the other's pickles and figures on disk.
-    for _addtask in families:
-        _rules, _paper_ident = SHARED_RUN_FAMILIES[_addtask]
-        print(f"\n{'=' * 70}\n[shared_run] family {_addtask} "
-              f"({' + '.join(_rules)}) — feeds paper_plot's {_paper_ident}"
-              f"\n{'=' * 70}", flush=True)
-        try:
-            shared_run(_addtask)
-        except Exception as exc:
-            print(f"  [{_addtask}] family failed: {exc}")
-            import traceback
-            traceback.print_exc()    
 
     # analyze the fitted weight matrices; we focus on the first layer of modulation and the output layer, since they are more interpretable than the hidden layer
     output_W = state_dict["W_output"].cpu().numpy()
