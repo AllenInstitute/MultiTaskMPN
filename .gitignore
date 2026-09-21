@@ -47,6 +47,7 @@ state_space/
 mnist/
 flextask/
 data/
+two_in_multiples/
 
 # Logs & temp
 log/
