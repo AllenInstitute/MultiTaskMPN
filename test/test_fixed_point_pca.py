@@ -153,11 +153,12 @@ class FixedPointPCATests(unittest.TestCase):
                     patch.object(PCA, "fit_transform", side_effect=AssertionError("paper refit")):
                 renderer = Mock()
                 paper._plot_two_task_grad_fp_combined("test", "test", renderer, with_pc_label=True)
-                self.assertEqual(renderer.call_count, 6)
+                self.assertEqual(renderer.call_count, 3)
                 for call in renderer.call_args_list:
                     representation, basis = call.args[1], call.args[3]
-                    period = "longdelay" if call.kwargs["pc_label"] == "Delay" else "longstimulus"
-                    raw = self.data["results"][period][representation]
+                    self.assertEqual(call.kwargs["pc_label"], "Stimulus")
+                    self.assertIn("_stimpc_", call.args[2].name)
+                    raw = self.data["results"]["longstimulus"][representation]
                     np.testing.assert_allclose(basis.mean_, raw.reshape(len(raw), -1).mean(axis=0))
                 renderer.reset_mock()
                 paper._plot_two_task_interp_alpha_fp(renderer, "alpha", "test")
@@ -165,6 +166,56 @@ class FixedPointPCATests(unittest.TestCase):
                 for call in renderer.call_args_list:
                     raw = self.data["results"]["longdelay"][call.args[1]]
                     np.testing.assert_allclose(call.args[3].mean_, raw.reshape(len(raw), -1).mean(axis=0))
+
+    def test_two_task_3d_can_show_all_candidates_solid(self):
+        entry = {
+            "stim": np.array([0, 1]),
+            "is_fixed_strict": np.array([True, False]),
+            "period_title": "Stimulus",
+            "is_diagonal": True,
+        }
+        results = {"longstimulus": entry}
+        projection = {"longstimulus": np.array([[0.0, 0.0], [1.0, 1.0]])}
+        z_values = {"longstimulus": np.zeros(2)}
+        fig = paper.plt.figure()
+        try:
+            with patch.object(paper, "_scatter_grad_fp") as scatter:
+                paper._draw_grad_fp_3d_row(
+                    fig, results, ["longstimulus"], projection, z_values, {},
+                    n_stim=2, lim=1.1, zmax=1.0, n_rows=1, row_idx=0,
+                    n_col=1, solid_candidates=True)
+            np.testing.assert_array_equal(scatter.call_args.args[4], [True, True])
+        finally:
+            paper.plt.close(fig)
+
+    def test_interp_plot_distinguishes_strict_approximate_and_failed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "fixed_points_grad_synthetic.pkl"
+            data = copy.deepcopy(self.data)
+            entry = data["results"]["longdelay"]
+            entry["rel_step_undamped"] = np.array(
+                [0.005, 0.010, 0.011, 0.030, 0.050, 0.051, 0.2, np.nan])
+            entry["rel_tol_undamped"] = 0.01
+            entry["approx_rel_tol_undamped"] = 0.05
+            source.write_bytes(pickle.dumps(data))
+            export.export_fixed_point_pca(source)
+            loaded = paper._load_pkl_or_skip(source)
+            with patch.object(paper, "_ensure_out_dir"), \
+                    patch.object(paper, "_save_fig") as save:
+                paper._render_interp_fixed_points(
+                    loaded, Path(directory) / "interp.png", n_trained=8)
+
+        figure = save.call_args.args[0]
+        try:
+            self.assertIn("2 strict / 3 approximate / 3 failed",
+                          figure.axes[0].get_title())
+            threshold_lines = [
+                line.get_label() for line in figure.axes[1].lines
+                if "threshold" in line.get_label()
+            ]
+            self.assertEqual(len(threshold_lines), 2)
+        finally:
+            paper.plt.close(figure)
 
     def test_paper_contains_no_estimator_refits(self):
         tree = ast.parse(inspect.getsource(paper))

@@ -19,7 +19,7 @@ import leison
 import leison_plot
 
 
-def run_pipeline(seed, feature, families=()):
+def run_pipeline(seed, feature, families=(), sibling_method=None):
     aname = f"everything_seed{seed}_{feature}+hidden300+batch128+angle"
     print(f"\n{'='*60}")
     print(f"  Pipeline start: {aname}")
@@ -29,7 +29,8 @@ def run_pipeline(seed, feature, families=()):
 
     if families:
         print("\n--- Optional: sibling_delay_analysis ---")
-        sibling_delay_analysis.run_sibling_analysis(seed, feature, families)
+        sibling_delay_analysis.run_sibling_analysis(
+            seed, feature, families, sibling_method)
 
     print("\n--- Step 1/3: multiple_task_analysis ---")
     t1 = time.time()
@@ -68,7 +69,15 @@ def main():
                         help="Optional sibling-task families to analyze before "
                              "clustering. Default: none. For sibling analysis "
                              "only, run sibling_delay_analysis.py directly.")
+    parser.add_argument(
+        "--sibling-method", choices=sibling_delay_analysis.SIBLING_METHODS,
+        help=("Fixed-point method for --families. Required when sibling "
+              "families are selected."))
     args = parser.parse_args()
+    if args.families and args.sibling_method is None:
+        parser.error("--sibling-method is required when --families is used")
+    if args.sibling_method is not None and not args.families:
+        parser.error("--sibling-method requires --families")
 
     saved_nets = sorted(Path("multiple_tasks").glob("savednet_everything_seed*+angle.pt"))
     param_lst = []
@@ -88,7 +97,8 @@ def main():
     print(f"Running {len(param_lst)} models: {param_lst}")
 
     for seed, feature in param_lst:
-        run_pipeline(seed, feature, families=tuple(args.families))
+        run_pipeline(seed, feature, families=tuple(args.families),
+                     sibling_method=args.sibling_method)
 
 
 if __name__ == "__main__":

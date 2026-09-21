@@ -50,7 +50,12 @@ python multiple_task/run_pipeline.py --seed 749 --feature L21e4
 
 # optional sibling-task geometry only (does not rerun clustering or lesions)
 python multiple_task/sibling_delay_analysis.py \
-  --seed 921 --feature L21e4 --families delaydm1
+  --seed 921 --feature L21e4 --families delaydm1 --method gradient
+
+# alternatively, use the end of a generated very-long delay
+python multiple_task/sibling_delay_analysis.py \
+  --seed 921 --feature L21e4 --families delaydm1 \
+  --method long_delay_endpoint
 
 # additional state-space analysis
 python multiple_task/state_space_shift.py
@@ -68,6 +73,7 @@ python paper_plot.py
 
 Key data outputs: `multiple_tasks/` (checkpoints, curves),
 `multiple_tasks_analysis/` (per-run analysis figures, cluster info),
+`two_in_multiples/` (sibling-task delay/fixed-point analysis),
 `multiple_tasks_perf/` and `multiple_tasks_norm/` (lesion results/plots),
 `onetask/`, `twotasks/`, `pretraining/`, `state_space/`, `paper_plot/`.
 

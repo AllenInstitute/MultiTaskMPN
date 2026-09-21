@@ -1318,9 +1318,9 @@ class BaseNetwork(BaseNetworkFunctions):
         batch_labels=None,
         batch_masks=None,
         run_mode="minimal",
-        save_to_cpu: bool = False,     # NEW: store outputs/logs on CPU
-        detach_saved: bool = False,     # NEW: detach before saving (recommended)
-        non_blocking: bool = True,     # NEW: async GPU->CPU copy when possible
+        save_to_cpu: bool = False,     # store outputs/logs on CPU
+        detach_saved: bool = False,     # detach before saving (recommended)
+        non_blocking: bool = False,    # async GPU->CPU copy (synchronized before use)
     ):
         """
         Iterates through a batch sequence.
@@ -1329,6 +1329,15 @@ class BaseNetwork(BaseNetworkFunctions):
         - batch_output and batch_hidden are stored on CPU (not CUDA)
         - db_seq (tracked tensors) are stored on CPU
         - values are copied step-by-step from compute device to CPU to avoid GPU accumulation
+
+        ``non_blocking`` defaults to False.  A non-blocking GPU->CPU copy returns
+        before the data has landed in the (pinned) CPU tensor, and this method
+        reads that tensor immediately to write it into the per-sequence buffers.
+        With ``non_blocking=True`` that read used to race the copy and silently
+        stored stale data (zeros, or a previous step's values), which corrupted
+        every saved hidden/M trajectory.  If ``non_blocking=True`` is requested
+        anyway, the compute stream is synchronized once per step before the
+        CPU-side writes so the stored values are always correct.
 
         Note: this does NOT move the model itself; forward still runs on batch_inputs.device.
         """
@@ -1366,6 +1375,22 @@ class BaseNetwork(BaseNetworkFunctions):
                 out_to_store = out_to_store.to("cpu", non_blocking=non_blocking)
                 hid_to_store = hid_to_store.to("cpu", non_blocking=non_blocking)
 
+            db_to_store = {}
+            if track:
+                for key, val in db.items():
+                    v = val
+                    if torch.is_tensor(v):
+                        if detach_saved:
+                            v = v.detach()
+                        if save_to_cpu:
+                            v = v.to("cpu", non_blocking=non_blocking)
+                    db_to_store[key] = v
+
+            # Every pending GPU->CPU copy of this step must finish before the
+            # CPU reads its destination below; see the docstring.
+            if save_to_cpu and non_blocking and compute_dev.type == "cuda":
+                torch.cuda.synchronize(compute_dev)
+
             batch_output[:, seq_idx, :] = out_to_store
             batch_hidden[:, seq_idx, :] = hid_to_store
 
@@ -1382,17 +1407,12 @@ class BaseNetwork(BaseNetworkFunctions):
                         else:
                             db_seq[key] = [None] * T
 
-                # Store per-step db
-                for key, val in db.items():
-                    if torch.is_tensor(val):
-                        v = val
-                        if detach_saved:
-                            v = v.detach()
-                        if save_to_cpu:
-                            v = v.to("cpu", non_blocking=non_blocking)
+                # Store per-step db (already detached / moved above)
+                for key, v in db_to_store.items():
+                    if torch.is_tensor(v):
                         db_seq[key][:, seq_idx] = v
                     else:
-                        db_seq[key][seq_idx] = val
+                        db_seq[key][seq_idx] = v
 
         return batch_output, batch_hidden, db_seq
 

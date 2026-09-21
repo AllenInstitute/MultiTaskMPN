@@ -21,7 +21,16 @@ Analyses:
 These analyses are run on three representations: hidden states, raw modulation
 M, and effective modulation (W ⊙ M).
 
+For this analysis only, every task's first stimulus is aligned to the same
+requested 500-ms fixation duration.  The shared task generator retains its
+original variable-timing behavior unless this script explicitly opts in.
+
 Outputs saved to ./state_space/.
+
+By default, the batch entry point analyzes only the paper cohorts with tanh
+activation, a 300-dimensional input projection, a 300-dimensional plastic
+hidden layer, and L2 regularization 1e-5, 1e-4, 1e-3, or 1e-2 (feature tags
+``L21e5``, ``L21e4``, ``L21e3``, and ``L21e2`` respectively).
 """
 from pathlib import Path
 import json
@@ -65,22 +74,115 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 
+# Default paper cohort.  ``linear_embed`` is the input width of the plastic
+# layer (called the projection dimension elsewhere in the repository), while
+# n_neurons[1] is its output/hidden width.
+TARGET_ACTIVATION = "tanh"
+TARGET_PROJECTION_DIM = 300
+TARGET_HIDDEN_DIM = 300
+FIXED_FIXATION_MS = 500
+TARGET_FEATURE_REG_LAMBDAS = {
+    "L21e5": 1e-5,
+    "L21e4": 1e-4,
+    "L21e3": 1e-3,
+    "L21e2": 1e-2,
+}
+STATE_SPACE_DIR = Path("state_space")
+
+
+def _checkpoint_aname(checkpoint_path):
+    """Return the run identifier encoded by a savednet checkpoint path."""
+    stem = Path(checkpoint_path).stem
+    prefix = "savednet_"
+    if not stem.startswith(prefix):
+        raise ValueError(f"Expected a {prefix}*.pt checkpoint, got {checkpoint_path}")
+    return stem[len(prefix):]
+
+
+def _raw_config_path(checkpoint_path):
+    checkpoint_path = Path(checkpoint_path)
+    aname = _checkpoint_aname(checkpoint_path)
+    return checkpoint_path.with_name(f"param_{aname}_param.json")
+
+
+def _matches_target_cohort(checkpoint_path):
+    """Whether a checkpoint belongs to the default state-space cohort.
+
+    Dimensions and activation are read from the saved parameter JSON rather
+    than inferred from the filename.  The exact feature tag is checked as an
+    additional guard against silently mixing regularization cohorts.
+    """
+    config_path = _raw_config_path(checkpoint_path)
+    if not config_path.exists():
+        return False
+
+    try:
+        feature = mpf.parse_feature(str(checkpoint_path))
+    except ValueError:
+        return False
+
+    with config_path.open() as f:
+        config = json.load(f)
+
+    net_params = config.get("net_params", {})
+    train_params = config.get("train_params", {})
+    n_neurons = net_params.get("n_neurons", [])
+    if len(n_neurons) != 3:
+        return False
+
+    target_reg_lambda = TARGET_FEATURE_REG_LAMBDAS.get(feature)
+    return (
+        target_reg_lambda is not None
+        and str(net_params.get("activation", "")).casefold() == TARGET_ACTIVATION
+        and net_params.get("input_layer_add") is True
+        and int(net_params.get("linear_embed", -1)) == TARGET_PROJECTION_DIM
+        and int(n_neurons[1]) == TARGET_HIDDEN_DIM
+        and train_params.get("weight_reg") == "L2"
+        and np.isclose(float(train_params.get("reg_lambda", np.nan)),
+                       target_reg_lambda)
+    )
+
+
+def _select_target_checkpoints(checkpoint_paths):
+    """Filter checkpoint paths to the default cohort, preserving input order."""
+    return [path for path in checkpoint_paths if _matches_target_cohort(path)]
+
+
+def _clean_state_space_results(output_dir=STATE_SPACE_DIR):
+    """Remove existing result files before regenerating the selected cohort.
+
+    Subdirectories are deliberately preserved: the state-space pipeline owns
+    the files at the top level of its output directory, but should not recurse
+    into a directory another workflow may have placed there.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    removed = []
+    for path in output_dir.iterdir():
+        if path.is_file() or path.is_symlink():
+            path.unlink()
+            removed.append(path.name)
+    print(f"Cleared {len(removed)} existing file(s) from {output_dir}/")
+    return removed
+
+
 def eval_one(netpathname):
     """
     """
     hidden_size, l2_info = mpf.parse_hidden_and_l2(netpathname)
-    
-    aname = netpathname[24:-3]
-    
-    out_param_path = Path("multiple_tasks/" + f"param_{aname}_param.json")   
+
+    netpathname = Path(netpathname)
+    aname = _checkpoint_aname(netpathname)
+    out_param_path = _raw_config_path(netpathname)
     
     with out_param_path.open() as f: 
         raw_cfg_param = json.load(f)
     
     task_params, train_params, net_params = raw_cfg_param["task_params"], raw_cfg_param["train_params"], raw_cfg_param["net_params"]
     
-    netpathname = "multiple_tasks/" + f"savednet_{aname}.pt"
-    checkpoint = torch.load(netpathname, map_location=device)
+    # Keep the checkpoint copy on CPU; only the live model needs to occupy GPU
+    # memory.  This also makes the frozen W used below immediately NumPy-safe.
+    checkpoint = torch.load(netpathname, map_location="cpu", weights_only=False)
 
     state_dict = checkpoint["state_dict"]
     print(state_dict.keys())
@@ -108,6 +210,8 @@ def eval_one(netpathname):
     # setup the evaluation dataset generator
     test_n_batch = 50
     task_params_c['hp']['batch_size_train'] = test_n_batch
+    dt_ms = task_params_c['hp']['dt']
+    fixed_fixation_steps = max(1, int(FIXED_FIXATION_MS / dt_ms))
     
     test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(
         task_params_c, 
@@ -115,30 +219,68 @@ def eval_one(netpathname):
         rules=all_tasks,
         mode_input="random", 
         device="cpu", 
-        verbose=False
+        verbose=False,
+        fixed_fixation_steps=fixed_fixation_steps,
     )
     test_input, test_output, test_mask = test_data
     _, test_trials, test_rule_idxs = test_trials_extra
+
+    fixation_endpoints = {
+        int(trial.epochs['fix1'][1]) for trial in test_trials
+    }
+    if fixation_endpoints != {fixed_fixation_steps}:
+        raise RuntimeError(
+            "State-space trials were not aligned to one fixation endpoint: "
+            f"{sorted(fixation_endpoints)}"
+        )
+    print(
+        f"Fixed fixation across tasks: {fixed_fixation_steps} steps "
+        f"({fixed_fixation_steps * dt_ms:g} ms; requested "
+        f"{FIXED_FIXATION_MS} ms)"
+    )
 
     test_input = test_input.to(device)
     test_output = test_output.to(device)
     test_mask = test_mask.to(device)
 
     with torch.no_grad():
-        net_out, _, db_test = model.iterate_sequence_batch(test_input, run_mode='track_states')
+        # Accuracy needs only the outputs, so compute it without retaining the
+        # enormous M trajectory on CUDA.
+        net_out, _, _ = model.iterate_sequence_batch(test_input, run_mode="minimal")
         acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input, isvalid=True, mode=model.acc_measure)
-        
+        del net_out
+
+        # A 750 x ~118 x 300 x 300 float32 M trace is about 30 GiB.  Save each
+        # time step directly to CPU so the selected 300x300 cohort can run on a
+        # conventional GPU.  detach_saved is explicit even under no_grad so the
+        # storage contract remains clear if this block is later refactored.
+        tracked_out, tracked_hidden, db_test = model.iterate_sequence_batch(
+            test_input,
+            run_mode="track_states",
+            save_to_cpu=True,
+            detach_saved=True,
+        )
+        del tracked_out, tracked_hidden
+
     print(f"acc: {acc:.2f}")
-        
-    Ms_orig = db_test["M1"].cpu().numpy()
-    modulation_W = state_dict["mp_layer1.W"].cpu().numpy()
+
+    # db_test is already on CPU.  NumPy views avoid another full copy of M.
+    Ms_orig = db_test["M1"].numpy()
+    modulation_W = state_dict["mp_layer1.W"].numpy()
     eff_Ms_orig = Ms_orig * modulation_W
         
     Ms = Ms_orig.reshape(Ms_orig.shape[0], Ms_orig.shape[1], -1) 
     eff_Ms = eff_Ms_orig.reshape(eff_Ms_orig.shape[0], eff_Ms_orig.shape[1], -1)
-    xs = db_test["input1"].cpu().numpy()
-    hs = db_test["hidden1"].cpu().numpy()
-    print(f"Ms_orig.shape: {Ms_orig.shape}; Ms.shape: {Ms.shape}; xs.shape: {xs.shape}; hs.shape: {hs.shape}")
+    hs = db_test["hidden1"].numpy()
+    print(f"Ms_orig.shape: {Ms_orig.shape}; Ms.shape: {Ms.shape}; hs.shape: {hs.shape}")
+
+    # All remaining work is NumPy/scikit-learn.  Release CUDA storage before
+    # the comparatively long PCA and pairwise geometry calculations.
+    del model, checkpoint, state_dict, db_test
+    del test_input, test_output, test_mask, test_data
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
     _, labels_stim1, _, rules_epochs = helper.generate_response_stimulus(task_params_c, test_trials)
     
@@ -265,20 +407,22 @@ def eval_one(netpathname):
 
         fig.tight_layout()
         fig.savefig(
-            f"./state_space/state_space_shift_{aname}_{data_name}_noise{noise_level}.png",
+            STATE_SPACE_DIR / f"state_space_shift_{aname}_{data_name}_noise{noise_level}.png",
             dpi=300,
             bbox_inches="tight",
         )
         plt.close(fig)
 
     # Save PCA data for paper_plot reuse
-    pca_save_path = f"./state_space/state_space_pca_{aname}_noise{noise_level}.pkl"
+    pca_save_path = STATE_SPACE_DIR / f"state_space_pca_{aname}_noise{noise_level}.pkl"
     with open(pca_save_path, "wb") as f:
         pickle.dump({
             "pca_results": pca_results,
             "all_rules": list(all_rules),
             "rule_motif_mapping": rule_motif_mapping,
             "noise_level": noise_level,
+            "fixed_fixation_steps": fixed_fixation_steps,
+            "fixed_fixation_ms": fixed_fixation_steps * dt_ms,
             "aname": aname,
         }, f)
     print(f"Saved PCA data to {pca_save_path}")
@@ -368,38 +512,64 @@ def eval_one(netpathname):
             axs[idx].legend(frameon=True, loc='best', fontsize=6)
             
         fig.tight_layout()
-        fig.savefig(f"./state_space/initial_condition_distance_vs_angle_{aname}_{shift_time+1}_noise{noise_level}.png", dpi=300)
+        fig.savefig(
+            STATE_SPACE_DIR
+            / f"initial_condition_distance_vs_angle_{aname}_{shift_time+1}_noise{noise_level}.png",
+            dpi=300,
+        )
         plt.close(fig)
 
         return rval_dict, scatter_dict
 
     rval_dict, scatter_dict = fig4c(shift_time=0)
 
-    # Cleanup to prevent GPU/CPU memory compounding across experiments
-    del model, checkpoint, state_dict, net_out, db_test
-    del test_input, test_output, test_mask, test_data, test_trials_extra
-    del Ms_orig, eff_Ms_orig, Ms, eff_Ms, xs, hs
+    # Cleanup to prevent CPU memory compounding across experiments.
+    del test_trials_extra
+    del Ms_orig, eff_Ms_orig, Ms, eff_Ms, hs
     del embed_data
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
-    return aname, hidden_size, l2_info, rval_dict, scatter_dict
+    return (aname, hidden_size, l2_info, rval_dict, scatter_dict,
+            fixed_fixation_steps, fixed_fixation_steps * dt_ms)
 
 def run_all():
-    pt_paths = mpf.list_pt_files("./multiple_tasks", recursive=False)
+    all_pt_paths = mpf.list_pt_files("./multiple_tasks", recursive=False)
+    pt_paths = _select_target_checkpoints(all_pt_paths)
+    target_features = ",".join(TARGET_FEATURE_REG_LAMBDAS)
+    if not pt_paths:
+        raise FileNotFoundError(
+            "No state-space checkpoints matched "
+            f"activation={TARGET_ACTIVATION}, projection={TARGET_PROJECTION_DIM}, "
+            f"hidden={TARGET_HIDDEN_DIM}, features={target_features}."
+        )
+
+    print(
+        f"Selected {len(pt_paths)}/{len(all_pt_paths)} state-space checkpoints: "
+        f"activation={TARGET_ACTIVATION}, projection={TARGET_PROJECTION_DIM}, "
+        f"hidden={TARGET_HIDDEN_DIM}, features={target_features}"
+    )
+    for path in pt_paths:
+        print(f"  {_checkpoint_aname(path)}")
+
+    # This script is the sole producer of top-level state_space result files.
+    # The user requested a clean regeneration, so remove every previous file
+    # only after confirming that the target cohort is nonempty.
+    _clean_state_space_results()
 
     result_dict = {}
     for netpathname in pt_paths:
-        aname, hidden_size, l2_info, rval_dict, scatter_dict = eval_one(netpathname)
+        (aname, hidden_size, l2_info, rval_dict, scatter_dict,
+         fixed_fixation_steps, fixed_fixation_ms) = eval_one(netpathname)
         result_dict[aname] = {"hidden_size": hidden_size, "l2_info": l2_info,
-                              "rval_dict": rval_dict, "scatter": scatter_dict}
+                              "rval_dict": rval_dict, "scatter": scatter_dict,
+                              "fixed_fixation_steps": fixed_fixation_steps,
+                              "fixed_fixation_ms": fixed_fixation_ms}
         
-    with open("./state_space/initial_condition_distance_vs_angle_results.pkl", "wb") as f:
+    with (STATE_SPACE_DIR / "initial_condition_distance_vs_angle_results.pkl").open("wb") as f:
         pickle.dump(result_dict, f)
         
 def summarize():
-    with open("./state_space/initial_condition_distance_vs_angle_results.pkl", "rb") as f:
+    with (STATE_SPACE_DIR / "initial_condition_distance_vs_angle_results.pkl").open("rb") as f:
         result_dict = pickle.load(f)
     
     # Organize r-values by data type
@@ -458,9 +628,9 @@ def summarize():
     ax.grid(axis='y', alpha=0.3)
     
     fig.tight_layout()
-    fig.savefig('./state_space/summary_r_values.png', dpi=300)
+    fig.savefig(STATE_SPACE_DIR / "summary_r_values.png", dpi=300)
     plt.close(fig)
-    print("\nSaved summary plot to ./state_space/summary_r_values.png")
+    print(f"\nSaved summary plot to {STATE_SPACE_DIR / 'summary_r_values.png'}")
 
 if __name__ == "__main__":    
     run_all()

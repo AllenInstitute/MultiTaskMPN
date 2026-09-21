@@ -62,7 +62,7 @@ SEED_LIST = None
 RULESET = 'delaygofamily'      # go/anti pair, e.g. [delaygo, delayanti]
 CHOSEN_NETWORK = "dmpn"
 N_HIDDEN = 200
-ADDON_NAME = "reg1e2"   # +hidden{N_HIDDEN} appended automatically below
+ADDON_NAME = "reg1e3"   # +hidden{N_HIDDEN} appended automatically below
 train = True
 verbose = True
 
@@ -146,7 +146,7 @@ def current_basic_params(hyp_dict):
         'n_epochs_per_set': 1,
         'weight_reg': 'L2',
         'activity_reg': 'L2',
-        'reg_lambda': 1e-2,
+        'reg_lambda': 1e-3,
 
         'scheduler': {
             'type': 'ReduceLROnPlateau',

@@ -1895,6 +1895,88 @@ def insert_zeros_after_channel(x, K, after=5):
 
     return np.concatenate([first, zeros, second], axis=2)
 
+def _set_trial_fixation_steps(trial, fixed_fixation_steps):
+    """Shift one scalar-timing trial to a fixed first-stimulus onset.
+
+    This helper is opt-in through ``generate_trials_wrap``.  The normal data
+    generation path never calls it.  It shifts the actual input, target, cost
+    mask, response-location, sequence-length, and epoch data together so the
+    epoch metadata cannot drift away from the tensors consumed by a model.
+
+    The caller generates the trial without input noise; noise is added after
+    this transformation so any newly inserted fixation samples receive fresh,
+    independent noise rather than copies of one noisy time point.
+    """
+    fixed_fixation_steps = int(fixed_fixation_steps)
+    if fixed_fixation_steps <= 0:
+        raise ValueError("fixed_fixation_steps must be a positive integer")
+
+    try:
+        old_fixation_steps = trial.epochs["fix1"][1]
+    except (AttributeError, KeyError, TypeError) as exc:
+        raise ValueError("Trial has no scalar fix1 endpoint") from exc
+    if np.ndim(old_fixation_steps) != 0 or np.ndim(trial.tdim) != 0:
+        raise ValueError(
+            "fixed_fixation_steps currently requires scalar timing; "
+            "use mode_input='random'"
+        )
+
+    old_fixation_steps = int(old_fixation_steps)
+    delta = fixed_fixation_steps - old_fixation_steps
+    if delta == 0:
+        return trial
+
+    old_tdim = int(trial.tdim_max)
+    new_tdim = old_tdim + delta
+    if new_tdim <= fixed_fixation_steps:
+        raise ValueError("Fixed fixation would leave no post-fixation samples")
+
+    def shift_time_axis(values):
+        if delta > 0:
+            prefix = np.repeat(values[:1], delta, axis=0)
+            return np.concatenate((prefix, values), axis=0)
+        return values[-delta:]
+
+    trial.x = shift_time_axis(trial.x)
+    trial.y = shift_time_axis(trial.y)
+    trial.y_loc = shift_time_axis(trial.y_loc)
+
+    if hasattr(trial, "c_mask"):
+        mask_was_flat = trial.c_mask.ndim == 1
+        c_mask = (trial.c_mask.reshape(old_tdim, trial.batch_size)
+                  if mask_was_flat else trial.c_mask)
+        c_mask = shift_time_axis(c_mask)
+
+        # Cost masks conventionally ignore the first 100 ms.  Cropping or
+        # prepending must move that ignored window with the new trial start.
+        pre_on = min(int(100 / trial.dt), fixed_fixation_steps)
+        c_mask[:pre_on] = 0
+        if delta > 0 and fixed_fixation_steps > pre_on:
+            c_mask[pre_on:fixed_fixation_steps] = c_mask[fixed_fixation_steps]
+
+        if mask_was_flat:
+            c_mask = c_mask.reshape(-1)
+            mean = c_mask.mean()
+            if mean > 0:
+                c_mask /= mean
+        trial.c_mask = c_mask
+
+    def shift_boundary(boundary):
+        if boundary is None:
+            return None
+        if np.ndim(boundary) != 0:
+            raise ValueError("Fixed fixation requires scalar epoch boundaries")
+        return int(boundary) + delta
+
+    trial.epochs = {
+        name: (shift_boundary(start), shift_boundary(end))
+        for name, (start, end) in trial.epochs.items()
+    }
+    trial.tdim = new_tdim
+    trial.tdim_max = new_tdim
+    return trial
+
+
 def generate_trials_wrap(task_params, 
                          n_batches, 
                          device='cuda', 
@@ -1904,7 +1986,8 @@ def generate_trials_wrap(task_params,
                          pretraining_shift=0,
                          pretraining_shift_pre=0,
                          long_all=False,
-                         align_periods=False):
+                         align_periods=False,
+                         fixed_fixation_steps=None):
     """
     Wrapper to generate the raw datasets, including the inputs, labels, and masks.
 
@@ -1922,6 +2005,9 @@ def generate_trials_wrap(task_params,
         n_batches: Size of batch dimension, for multiple rules each rule has
             a batch of this size.
         rule: See above
+        fixed_fixation_steps: Optional common ``fix1`` endpoint.  It is only
+            applied when explicitly provided; the default data-generation path
+            is unchanged.  Scalar timing (``mode_input='random'``) is required.
     """
     if rules is None: # Draw a rule randomly, create tuple with single rule in it
         task_params['rules_probs'] = normalize_to_one(task_params['rules_probs'])
@@ -1995,6 +2081,7 @@ def generate_trials_wrap(task_params,
         trial = generate_trials(rule,
                                 task_params['hp'], 
                                 mode_input, 
+                                noise_on=fixed_fixation_steps is None,
                                 batch_size=n_batches, 
                                 separate_input=task_params['modality_diff'], 
                                 label_strength=task_params['label_strength'], 
@@ -2003,6 +2090,10 @@ def generate_trials_wrap(task_params,
                                 long_stimulus=task_params['long_stimulus'], 
                                 long_fixation=task_params['long_fixation'],
                                 long_all=long_all)
+
+        if fixed_fixation_steps is not None:
+            trial = _set_trial_fixation_steps(trial, fixed_fixation_steps)
+            trial.add_x_noise()
 
         trial.x = trial.x[:,:,:-1] if not task_params["task_info"] else trial.x # ***
         

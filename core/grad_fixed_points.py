@@ -15,9 +15,9 @@ For each trial period (fixation / stimulus / delay / response) it:
   2. runs that batch once through the trained network to record M(t);
   3. seeds the optimizer at the end-of-period M and relaxes it while holding the
      period-midpoint input fixed, giving a TRUE fixed point M*;
-  4. saves M*, its derived views (W⊙M*, hidden(M*), cos-output at M*), the
-     scale-free convergence metric rel_step = ||F(M*)-M*|| / ||M*||, and an
-     `is_fixed` mask (rel_step <= rel_tol).
+  4. saves M*, its derived views (W⊙M*, hidden(M*), cos-output at M*), both the
+     raw and leak-normalized scale-free residuals, and an `is_fixed` mask based
+     on the normalized residual so slow decay cannot manufacture convergence.
 
 The battery above is the DIAGONAL of a more general design: the constant input a
 fixed point is solved under and the state the optimizer starts from are two
@@ -65,6 +65,85 @@ import torch
 import mpn_tasks  # resolved via each experiment's _bootstrap (core/ on sys.path)
 from fixed_point import (find_modulation_fixed_points,
                          characterize_fixed_point_stability)
+
+
+# Numerical tolerances are defined on the leak-normalized modulation map.  The
+# raw one-step residual and eigenvalue displacement are smaller by
+# ``leak = 1-lambda``; using fixed raw tolerances made lambda=0.99 runs appear
+# converged/marginal roughly 100x too easily.
+DEFAULT_REL_TOL_UNDAMPED = 1e-2
+DEFAULT_APPROX_REL_TOL_UNDAMPED = 5e-2
+DEFAULT_MARGINAL_TOL_UNDAMPED = 5e-2
+
+
+def raw_tolerance(undamped_tolerance, leak):
+    """Convert a leak-normalized tolerance to the raw one-step map scale."""
+    return float(undamped_tolerance) * max(float(leak), 1e-12)
+
+
+def convergence_from_rel_step(rel_step, leak,
+                              rel_tol_undamped=DEFAULT_REL_TOL_UNDAMPED):
+    """Return normalized residual, strict mask, and the equivalent raw limit."""
+    rel_step = np.asarray(rel_step, dtype=float)
+    leak = max(float(leak), 1e-12)
+    rel_step_undamped = rel_step / leak
+    return (rel_step_undamped,
+            rel_step_undamped <= float(rel_tol_undamped),
+            raw_tolerance(rel_tol_undamped, leak))
+
+
+def convergence_quality_masks(
+        rel_step_undamped,
+        rel_tol_undamped=DEFAULT_REL_TOL_UNDAMPED,
+        approx_rel_tol_undamped=DEFAULT_APPROX_REL_TOL_UNDAMPED):
+    """Split normalized residuals into strict, approximate, and failed solves.
+
+    ``approximate`` deliberately does not mean a fixed point: it identifies a
+    finite, relatively slow candidate just outside the strict residual cutoff,
+    so plots can distinguish it from a clearly unconverged optimization. The
+    three returned masks are mutually exclusive and exhaustive; NaNs belong to
+    ``unconverged``.
+    """
+    strict_tol = float(rel_tol_undamped)
+    approx_tol = float(approx_rel_tol_undamped)
+    if approx_tol < strict_tol:
+        raise ValueError("approximate residual tolerance must be >= strict tolerance")
+    residual = np.asarray(rel_step_undamped, dtype=float)
+    finite = np.isfinite(residual)
+    is_fixed = finite & (residual <= strict_tol)
+    is_approximate = finite & (residual > strict_tol) & (residual <= approx_tol)
+    is_unconverged = ~(is_fixed | is_approximate)
+    return is_fixed, is_approximate, is_unconverged
+
+
+def classify_spectral_radius(radius, marginal_tol):
+    """Class codes for a discrete map: stable=0, marginal=1, unstable=2.
+
+    NaN radii remain -1. ``marginal_tol`` must already be expressed on the raw
+    Jacobian scale; modulation callers obtain it with :func:`raw_tolerance`.
+    """
+    radius = np.asarray(radius, dtype=float)
+    code = np.full(radius.shape, -1, dtype=int)
+    finite = np.isfinite(radius)
+    code[finite & (radius < 1.0 - marginal_tol)] = 0
+    code[finite & (np.abs(radius - 1.0) <= marginal_tol)] = 1
+    code[finite & (radius > 1.0 + marginal_tol)] = 2
+    return code
+
+
+def spectral_radius_timescale(radius, dt_ms):
+    """Return signed growth rate (s^-1) and absolute e-folding time (ms)."""
+    radius = np.asarray(radius, dtype=float)
+    dt_ms = float(dt_ms)
+    if not np.isfinite(dt_ms) or dt_ms <= 0:
+        raise ValueError(f"dt_ms must be finite and positive, got {dt_ms}")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        log_radius = np.log(radius)
+        growth_rate = log_radius / (dt_ms / 1000.0)
+        timescale_ms = dt_ms / np.abs(log_radius)
+    invalid = (~np.isfinite(radius)) | (radius <= 0)
+    return (np.where(invalid, np.nan, growth_rate),
+            np.where(invalid, np.nan, timescale_ms))
 
 
 # Long-period variant -> display title (shared with the plotting scripts).
@@ -328,13 +407,11 @@ def _decay_factor(mp):
         F(M) - M = -(1 - lam)M + eta*h*x' = (1 - lam)[M_target(M) - M]
         J = lam*I + (1 - lam) * d M_target / d M   =>   lam_J = lam + (1 - lam)mu
 
-    With the default m_time_scale = 400 ms and dt = 40 ms, lam = 0.9, so the
-    factor is 0.1: a residual reads TEN times more converged than the underlying
-    map warrants, and the marginal band |lam_J - 1| <= tol is really
-    |mu - 1| <= 10*tol. The RNN counterpart has 1 - alpha = 0.2, a different
-    factor, so rel_step is NOT comparable between the two models. Nothing here
-    changes a threshold; the normalized twins are recorded beside the raw ones so
-    the looseness is visible instead of implicit."""
+    For example, m_time_scale = 400 ms and dt = 40 ms gives lam = 0.9 and a
+    factor of 0.1; the configured two-task run uses lam = 0.99 and a factor of
+    0.01. The solver therefore defines convergence and marginal tolerances on the
+    normalized map and multiplies them by this factor when applying them to raw
+    residuals/eigenvalues. Raw and normalized diagnostics are both saved."""
     lam = mp.build_M_parameter(mp.lam, mp.lam_type).detach().cpu().numpy()
     lam_med = float(np.median(np.atleast_1d(lam)))
     return lam_med, max(1.0 - lam_med, 1e-12)
@@ -393,8 +470,9 @@ def _annotate_ring_distance(results, probe_name, ref_names):
     e["ring_angle_idx"] = e["ref_nearest"][ringiest]
 
 
-def derive_fixed_point_views(net, fixed_M, const_input, final_speeds, W, device,
-                             rel_tol=0.05):
+def derive_fixed_point_views(
+        net, fixed_M, const_input, final_speeds, W, device,
+        rel_tol_undamped=DEFAULT_REL_TOL_UNDAMPED):
     """Derive the standard views/metrics of solved modulation fixed points M*.
 
     Given the solver output `fixed_M` (B, post, pre), the constant input it was
@@ -402,8 +480,9 @@ def derive_fixed_point_views(net, fixed_M, const_input, final_speeds, W, device,
       fixed_WM      : effective modulation W⊙M* (or None if W is None)
       fixed_hidden  : hidden state produced by M* under const_input (B, hidden)
       fixed_out_cos : cos-output readout at M* (B,) — channel 1 (~0 except response)
-      rel_step      : scale-free ||F(M*)-M*|| / ||M*|| (B,); speeds q = ½||F-M||²
-      is_fixed      : rel_step <= rel_tol (B,)
+      rel_step      : raw scale-free ||F(M*)-M*|| / ||M*|| (B,)
+      rel_step_undamped : rel_step / (1-lambda), comparable across time constants
+      is_fixed      : rel_step_undamped <= rel_tol_undamped (B,)
     Shared by the per-period dense-angle solver and the task-interpolation sweep
     so both compute these identically. `net`'s stored modulation is restored
     after the forward pass, so this is side-effect free."""
@@ -430,12 +509,21 @@ def derive_fixed_point_views(net, fixed_M, const_input, final_speeds, W, device,
     step_norm = np.sqrt(2.0 * np.asarray(final_speeds, dtype=float))
     m_norm = np.maximum(np.linalg.norm(fm, axis=1), 1e-12)
     rel_step = step_norm / m_norm
+    _, decay_leak = _decay_factor(net.mp_layers[0])
+    rel_step_undamped, is_fixed, rel_tol = convergence_from_rel_step(
+        rel_step, decay_leak, rel_tol_undamped)
     return {
         "fixed_WM": fixed_WM,
         "fixed_hidden": fixed_hidden,
         "fixed_out_cos": fixed_out_cos,
         "rel_step": rel_step,
-        "is_fixed": rel_step <= rel_tol,
+        "rel_step_undamped": rel_step_undamped,
+        "is_fixed": is_fixed,
+        "is_fixed_strict": is_fixed,
+        # Keep rel_tol on the raw scale for older plotting code; the normalized
+        # threshold is the authoritative value for new analyses.
+        "rel_tol": rel_tol,
+        "rel_tol_undamped": float(rel_tol_undamped),
     }
 
 
@@ -445,12 +533,15 @@ def solve_period_modulation_fixed_points(
         layer_index=1, W=None,
         n_interp=64, stim_magnitudes=None,
         steps=200000, learningRate=1e-3,
-        loss_tol=1e-8, lbfgs_steps=2000, rel_tol=0.05,
+        loss_tol=1e-8, lbfgs_steps=2000,
+        rel_tol_undamped=DEFAULT_REL_TOL_UNDAMPED,
         stim_channels=None, periods=None, save_all_trajectories=False,
         n_seeds=5, seed_base=0,
         analyze_stability=True, n_eigs=16,
+        marginal_tol_undamped=DEFAULT_MARGINAL_TOL_UNDAMPED,
         cross_seed_probes=True, naive_seed_probes=True,
-        traj_seed_probes=True, traj_noise_frac=0.25, naive_rng_seed=0):
+        traj_seed_probes=True, traj_noise_frac=0.25, naive_rng_seed=0,
+        rescue_lbfgs_steps=0):
     """
     Solve TRUE gradient fixed points of the modulation matrix M per trial period.
 
@@ -477,7 +568,15 @@ def solve_period_modulation_fixed_points(
     steps / learningRate / loss_tol / lbfgs_steps : optimizer settings passed to
                   find_modulation_fixed_points (Adam until loss<=loss_tol capped at
                   `steps`, then L-BFGS polishing).
-    rel_tol     : a point counts as a fixed point when rel_step <= rel_tol.
+    rel_tol_undamped : a point counts as a fixed point when
+                  rel_step/(1-lambda) <= this threshold. The equivalent raw
+                  one-step threshold is saved as ``rel_tol`` for compatibility.
+    rescue_lbfgs_steps : after the best task-template seed and all extra probes
+                  have been selected, independently L-BFGS-polish every candidate
+                  still above ``rel_tol_undamped`` for at most this many steps.
+                  Each proposal is retained only if it lowers that candidate's
+                  normalized residual. Disabled by default; the two-task analysis
+                  explicitly enables 200 steps.
     periods     : restrict the solve to these period keys (a subset of
                   longfixation / longstimulus / longdelay / longresponse), in
                   canonical order regardless of the order given. None (default)
@@ -506,19 +605,23 @@ def solve_period_modulation_fixed_points(
                   variability. We instead solve the whole per-period battery for
                   `n_seeds` DETERMINISTIC seeds (seed_base .. seed_base+n_seeds-1)
                   and keep the single seed whose fixed points converge best —
-                  judged by the median rel_step over the STIMULUS + RESPONSE
-                  periods only (the parts most sensitive to the template). This
-                  makes the result both reproducible and the best of several
-                  candidates. Set n_seeds=1 to solve a single deterministic seed.
+                  judged by the median leak-normalized rel_step over the STIMULUS
+                  + RESPONSE periods only (the parts most sensitive to the
+                  template). This makes the result both reproducible and the best
+                  of several candidates. Set n_seeds=1 for one deterministic seed.
     seed_base   : first task-RNG seed to try.
     analyze_stability : if True, linearize F about each M* and record the leading
                   Jacobian eigenvalues (see fixed_point.characterize_fixed_point_
                   stability). Adds spectral_radius / n_unstable / n_marginal /
-                  is_stable / eigenvalues per period. A lone marginal (|λ|≈1)
-                  direction with the rest contracting is the ring-attractor
-                  signature. Only the SELECTED seed is analyzed (cheap: ~O(n_eigs)
-                  backward passes per point).
+                  is_strict_stable / is_nonunstable / eigenvalues per period. A
+                  lone mode near λ=+1 with the rest contracting is a necessary
+                  ring candidate, not proof without tangent alignment. Only the
+                  SELECTED seed is analyzed (cheap: ~O(n_eigs) backward passes
+                  per point).
     n_eigs      : number of leading eigenvalues per fixed point.
+    marginal_tol_undamped : neutral-eigenvalue half-width on the normalized map;
+                  the raw Jacobian tolerance passed to the eigenspectrum
+                  classifier is (1-lambda) times this value.
     cross_seed_probes : add the "longfixation_memseed" probe — the FIXATION input
                   solved from the end-of-DELAY state. Same input as the plain
                   fixation probe, different basin, so a ring here means the
@@ -556,6 +659,9 @@ def solve_period_modulation_fixed_points(
     # numbers. Stated once, up front, because every rel_step and every |lam_J - 1|
     # below is damped by it.
     decay_lam, decay_leak = _decay_factor(net.mp_layers[0])
+    rel_tol = raw_tolerance(rel_tol_undamped, decay_leak)
+    marginal_tol = raw_tolerance(marginal_tol_undamped, decay_leak)
+    dt_ms = float(cfg.get("task_params", {}).get("dt", 40.0))
     if stim_magnitudes is None:
         stimulus_magnitude_levels = np.array([1.0], dtype=float)
     else:
@@ -568,10 +674,9 @@ def solve_period_modulation_fixed_points(
     tag_pre = f"[grad-fp/{rule}]" if rule else "[grad-fp]"
     print(f"  {tag_pre} decay: lam={decay_lam:.3f}, 1-lam={decay_leak:.3f} — both "
           f"the residual and the eigenvalue band are compressed by that factor, "
-          f"so rel_tol={rel_tol:g} is {rel_tol / decay_leak:.3g} on the undamped "
-          f"map and every threshold below reads {1.0 / decay_leak:.1f}x tighter "
-          f"than it is. Undamped twins are printed and saved beside the damped "
-          f"numbers.")
+          f"normalized rel_tol={rel_tol_undamped:g} -> raw {rel_tol:g}; "
+          f"normalized marginal_tol={marginal_tol_undamped:g} -> raw "
+          f"{marginal_tol:g}. Raw and normalized diagnostics are both saved.")
 
     def _hidden_from_M(M_np, x_np):
         """Hidden state and cos-output readout produced by setting the layer's
@@ -828,19 +933,17 @@ def solve_period_modulation_fixed_points(
             step_norm = np.sqrt(2.0 * np.asarray(final_speeds, dtype=float))
             m_norm = np.maximum(np.linalg.norm(fm, axis=1), 1e-12)
             rel_step = step_norm / m_norm
-            is_fixed = rel_step <= rel_tol
-            # Decay-normalized twin (see _decay_factor): the measured residual is
-            # damped by (1 - lam), so with lam = 0.9 every point reads ten times
-            # more converged than the underlying map warrants. rel_tol is
-            # deliberately NOT changed — it keeps one meaning across this
-            # codebase and across the saved pickles — but the normalized number
-            # is recorded and printed beside it.
-            rel_step_undamped = rel_step / decay_leak
+            # Judge convergence on the leak-normalized map. Fixed points are the
+            # same zeros for either map, but this criterion does not become 100x
+            # more permissive merely because lambda changes from 0 to 0.99.
+            rel_step_undamped, is_fixed, _ = convergence_from_rel_step(
+                rel_step, decay_leak, rel_tol_undamped)
             print(f"  {tag} seed={task_seed} {name}: {int(is_fixed.sum())}/{is_fixed.size} "
-                  f"converged (rel_step<= {rel_tol:g}); "
-                  f"median {np.median(rel_step):.2e} max {rel_step.max():.2e}"
-                  f" | undamped median {np.median(rel_step_undamped):.2e} "
-                  f"max {rel_step_undamped.max():.2e}")
+                  f"converged (normalized rel_step <= {rel_tol_undamped:g}; "
+                  f"raw <= {rel_tol:g}); raw median {np.median(rel_step):.2e} "
+                  f"max {rel_step.max():.2e} | normalized median "
+                  f"{np.median(rel_step_undamped):.2e} max "
+                  f"{rel_step_undamped.max():.2e}")
 
             results[name] = {
                 "period_title": title,
@@ -871,7 +974,9 @@ def solve_period_modulation_fixed_points(
                 "lam": float(decay_lam),
                 "leak": float(decay_leak),
                 "is_fixed": np.asarray(is_fixed, dtype=bool),
+                "is_fixed_strict": np.asarray(is_fixed, dtype=bool),
                 "rel_tol": float(rel_tol),
+                "rel_tol_undamped": float(rel_tol_undamped),
                 "loss_hist": np.asarray(loss_hist, dtype=float),
                 "stim": np.asarray(stim),
                 "stimulus_angle": np.asarray(point_angles, dtype=float),
@@ -903,14 +1008,21 @@ def solve_period_modulation_fixed_points(
         return results, angles, input_info
 
     def _selection_score(results):
-        """Lower = better. Median rel_step over the STIMULUS + RESPONSE periods
-        only (the parts most sensitive to the random template). Missing periods
-        contribute nothing; if neither is present, fall back to all periods."""
+        """Lower = better. Median normalized residual over STIMULUS + RESPONSE.
+
+        Missing periods contribute nothing; if neither is present, fall back to
+        all periods. New results always contain ``rel_step_undamped``; the raw
+        field is retained as a compatibility fallback.
+        """
         keys = [k for k in ("longstimulus", "longresponse") if k in results]
         if not keys:
             keys = list(results.keys())
-        vals = np.concatenate([np.asarray(results[k]["rel_step"], float)
-                               for k in keys]) if keys else np.array([np.inf])
+        vals = np.concatenate([
+            np.asarray(results[k]["rel_step_undamped"]
+                       if "rel_step_undamped" in results[k]
+                       else results[k]["rel_step"], float)
+            for k in keys
+        ]) if keys else np.array([np.inf])
         return float(np.median(vals)), keys
 
     # ── Try n_seeds deterministic templates; keep the best-converging one ────
@@ -926,7 +1038,7 @@ def solve_period_modulation_fixed_points(
         score, score_periods = _selection_score(results)
         score_label = "+".join(score_periods) if score_periods else "none"
         print(f"  {tag} seed={s}: selection score ({score_label} median "
-              f"rel_step) = {score:.3e}")
+              f"normalized rel_step) = {score:.3e}")
         if best is None or score < best[0]:
             best = (score, s, results, angles, input_info, score_periods)
 
@@ -955,39 +1067,82 @@ def solve_period_modulation_fixed_points(
         try:
             extra_results, _, _ = _solve_one_seed(best_seed, probes=extra)
             results.update(extra_results)
-            # Naive seeds carry no stimulus label, so instead of a label record
-            # WHERE they landed: distance to every diagonal probe solved under
-            # the same input (for the fixation input that is both the single
-            # fixation point and the delay ring — different questions, both worth
-            # asking).
-            for p in extra:
-                if p[2] not in _SYNTH_SEEDS or p[0] not in results:
-                    continue
-                grp = next((g for g in groups if p[1] in g), [p[1]])
-                refs = [v for v in grp
-                        if v in results and results[v].get("is_diagonal")]
-                _annotate_ring_distance(results, p[0], refs)
-                e = results[p[0]]
-                for ref, rd in e.get("ref_dist", {}).items():
-                    rd = np.asarray(rd, dtype=float)
-                    kind = ("ring" if e["ref_spread"][ref] > 1e-3 else "point")
-                    print(f"  {tag} {p[0]}: landing distance to {ref} "
-                          f"({kind}, spread {e['ref_spread'][ref]:.3e}) — median "
-                          f"{np.median(rd):.3f}, min {rd.min():.3f}, "
-                          f"{int((rd <= 0.1).sum())}/{rd.size} within 10%")
         except Exception as exc:
             print(f"  {tag} multistability probes failed: {exc}")
             import traceback
             traceback.print_exc()
 
+    # ── Per-candidate rescue on the selected result only ────────────────────
+    # The expensive n_seeds sweep above deliberately remains unchanged. Rescue
+    # runs once, after selection, so difficult candidates get an independent
+    # line search without multiplying its cost by n_seeds.
+    for v, e in results.items():
+        before = np.asarray(e["rel_step_undamped"], dtype=float)
+        needs_rescue = np.isfinite(before) & (before > rel_tol_undamped)
+        attempted = np.zeros(before.shape, dtype=bool)
+        accepted = np.zeros(before.shape, dtype=bool)
+        after = before.copy()
+        if rescue_lbfgs_steps > 0 and np.any(needs_rescue):
+            try:
+                rescued_M, _, rescued_speeds, rescue = find_modulation_fixed_points(
+                    net, e["fixed_M"], e["const_input"], steps=0,
+                    learningRate=learningRate, printPeriod=1, loss_tol=0,
+                    lbfgs_steps=0, device=device,
+                    rescue_rel_tol_undamped=rel_tol_undamped,
+                    rescue_lbfgs_steps=rescue_lbfgs_steps,
+                    return_diagnostics=True)
+                attempted = np.asarray(rescue["attempted"], dtype=bool)
+                accepted = np.asarray(rescue["accepted"], dtype=bool)
+                after = np.asarray(
+                    rescue["rel_step_undamped_after"], dtype=float)
+                views = derive_fixed_point_views(
+                    net, rescued_M, e["const_input"], rescued_speeds, W, device,
+                    rel_tol_undamped=rel_tol_undamped)
+                e.update(views)
+                e["fixed_M"] = np.asarray(rescued_M, dtype=np.float32)
+                e["final_speeds"] = np.asarray(rescued_speeds, dtype=float)
+                e["across_angle_spread"] = _relative_spread(rescued_M)
+            except Exception as exc:
+                print(f"  {tag} {v}: individual rescue failed: {exc}")
+        e.update({
+            "rescue_attempted": attempted,
+            "rescue_accepted": accepted,
+            "rescue_rel_step_undamped_before": before,
+            "rescue_rel_step_undamped_after": after,
+            "rescue_lbfgs_steps": int(rescue_lbfgs_steps),
+            "approx_rel_tol_undamped": float(
+                DEFAULT_APPROX_REL_TOL_UNDAMPED),
+        })
+
+    # Synthesized seeds carry no stimulus label, so record WHERE they landed
+    # only after rescue has finalized both the probes and their diagonal
+    # references. This keeps ring distances consistent with the saved points.
+    for p in extra:
+        if p[2] not in _SYNTH_SEEDS or p[0] not in results:
+            continue
+        grp = next((g for g in groups if p[1] in g), [p[1]])
+        refs = [v for v in grp
+                if v in results and results[v].get("is_diagonal")]
+        _annotate_ring_distance(results, p[0], refs)
+        e = results[p[0]]
+        for ref, rd in e.get("ref_dist", {}).items():
+            rd = np.asarray(rd, dtype=float)
+            kind = ("ring" if e["ref_spread"][ref] > 1e-3 else "point")
+            print(f"  {tag} {p[0]}: landing distance to {ref} "
+                  f"({kind}, spread {e['ref_spread'][ref]:.3e}) — median "
+                  f"{np.median(rd):.3f}, min {rd.min():.3f}, "
+                  f"{int((rd <= 0.1).sum())}/{rd.size} within 10%")
+
     # ── Linear-stability analysis on the SELECTED seed's fixed points ────────
     # Linearize F about each M* and record the leading Jacobian eigenvalues, so
-    # the fixed points can be classified stable / marginal (ring) / unstable.
+    # the fixed points can be classified stable / marginal / unstable. A lone
+    # marginal mode is only a ring candidate until tangent alignment is checked.
     if analyze_stability:
         for v, e in results.items():
             try:
                 stab = characterize_fixed_point_stability(
-                    net, e["fixed_M"], e["const_input"], k=n_eigs, device=device)
+                    net, e["fixed_M"], e["const_input"], k=n_eigs,
+                    marginal_tol=marginal_tol, device=device)
             except Exception as exc:
                 print(f"  {tag} {v}: stability analysis failed: {exc}")
                 continue
@@ -996,37 +1151,53 @@ def solve_period_modulation_fixed_points(
                 "spectral_radius": stab["spectral_radius"],
                 "n_unstable": stab["n_unstable"],
                 "n_marginal": stab["n_marginal"],
+                "stab_is_strict_stable": stab["is_strict_stable"],
+                "stab_is_nonunstable": stab["is_nonunstable"],
+                # Legacy alias retained so old readers do not break.
                 "stab_is_stable": stab["is_stable"],
                 "marginal_tol": stab["marginal_tol"],
+                "marginal_tol_undamped": float(marginal_tol_undamped),
             })
-            # Decay-normalized spectrum. lam_J = lam + (1 - lam)mu, so
-            # |lam_J - 1| = (1 - lam)|mu - 1| and the marginal band is ten times
-            # wider than it reads at lam = 0.9. Two consequences worth having as
-            # numbers: `n_marginal_leak_only` counts directions that are marginal
-            # ONLY because of the decay (|mu - 1| is outside the band), and mu
-            # exposes that the M-dynamics' BULK spectrum sits at lam by
-            # construction — every direction that does not move h has mu = 0 and
-            # lam_J = lam — so "spectral radius < 1" is far weaker evidence here
-            # than the same sentence about a vanilla RNN.
+            # Decay-normalized spectrum. lam_J = lam + (1 - lam)mu, hence
+            # |lam_J - 1| = (1 - lam)|mu - 1|. The raw marginal tolerance above
+            # is scaled by the same leak, so the raw and normalized verdicts now
+            # agree in the scalar-lambda case. Keep the normalized spectrum (and
+            # the legacy `n_marginal_leak_only` diagnostic) because bounds or a
+            # nonuniform lambda can break that simple affine relationship. It
+            # also makes clear that the M-dynamics' bulk spectrum sits at lam by
+            # construction rather than representing meaningful neutral modes.
             ev = np.asarray(stab["eigenvalues"])
             mtol = float(stab["marginal_tol"])
             mu = (ev - decay_lam) / decay_leak
-            leak_only = (np.abs(ev - 1.0) <= mtol) & (np.abs(mu - 1.0) > mtol)
+            leak_only = ((np.abs(ev - 1.0) <= mtol)
+                         & (np.abs(mu - 1.0) > marginal_tol_undamped))
             e.update({
                 "eigenvalues_undamped": mu,
                 "spectral_radius_undamped": np.abs(mu).max(axis=-1),
                 "n_marginal_leak_only": leak_only.sum(axis=-1),
             })
             rad = stab["spectral_radius"]
+            growth_rate, timescale_ms = spectral_radius_timescale(rad, dt_ms)
+            e.update({
+                "dt_ms": dt_ms,
+                "leading_growth_rate_per_s": growth_rate,
+                "leading_timescale_ms": timescale_ms,
+            })
             print(f"  {tag} {v}: spectral radius median {np.nanmedian(rad):.3f} "
                   f"(max {np.nanmax(rad):.3f}); "
-                  f"{int(stab['is_stable'].sum())}/{stab['is_stable'].size} stable, "
+                  f"{int(stab['is_nonunstable'].sum())}/"
+                  f"{stab['is_nonunstable'].size} "
+                  f"non-unstable (stable + marginal), "
                   f"marginal-dir median {int(np.median(stab['n_marginal']))}")
+            print(f"  {tag} {v}: leading growth rate median "
+                  f"{np.nanmedian(growth_rate):.3g} s^-1; e-folding time median "
+                  f"{np.nanmedian(timescale_ms):.3g} ms")
             print(f"  {tag} {v}: undamped spectral radius median "
                   f"{np.nanmedian(e['spectral_radius_undamped']):.3f}; of the "
                   f"marginal directions, a median of "
                   f"{int(np.median(e['n_marginal_leak_only']))} are marginal ONLY "
-                  f"because of the decay (|mu-1| > {mtol:g})")
+                  f"because of the decay "
+                  f"(|mu-1| > {marginal_tol_undamped:g})")
 
     out_pkl = save_dir / f"fixed_points_grad_{aname}{out_suffix}.pkl"
     with open(out_pkl, "wb") as _f:
@@ -1036,11 +1207,19 @@ def solve_period_modulation_fixed_points(
                      "n_stimulus_points": int(
                          n_interp * stimulus_magnitude_levels.size),
                      "rel_tol": float(rel_tol),
+                     "rel_tol_undamped": float(rel_tol_undamped),
+                     "approx_rel_tol_undamped": float(
+                         DEFAULT_APPROX_REL_TOL_UNDAMPED),
+                     "rescue_lbfgs_steps": int(rescue_lbfgs_steps),
+                     "marginal_tol": float(marginal_tol),
+                     "marginal_tol_undamped": float(marginal_tol_undamped),
+                     "dt_ms": dt_ms,
                      # Modulation decay, so a reader can undo the damping of
                      # rel_step and of the eigenvalue band (see _decay_factor).
                      "lam": float(decay_lam), "leak": float(decay_leak),
                      "n_seeds": int(n_seeds), "selected_seed": int(best_seed),
                      "selection_score": float(best_score),
+                     "selection_score_metric": "median_rel_step_undamped",
                      "selection_periods": list(score_periods),
                      "angles": np.asarray(angles, dtype=float),
                      # Provenance of every entry in `results`: which input it was

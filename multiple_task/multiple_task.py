@@ -10,10 +10,12 @@ The plastic weight and per-trial modulation matrices have shape
 (bottleneck, proj), not necessarily (hidden, hidden).
 
 Set linear_embed and N_HIDDEN to change dimensions; ADDON_NAME is only a
-label. For example, L21e4proj300bottleneck100 labels proj=300, bottleneck=100
-with L2=1e-4. The existing L21e4bottleneck100 label omits the default proj300.
-run_trial appends +hidden{N_HIDDEN}+batch{n_batches}+{acc_measure}; keep this
-legacy hidden suffix for readers, with hidden meaning bottleneck, not proj.
+base label. For example, L21e4proj300bottleneck100 labels proj=300,
+bottleneck=100 with L2=1e-4. Non-default modulation bounds are appended to
+this base label automatically (for example, ``mb2`` for ``(-2, 2)``). The
+existing L21e4bottleneck100 label omits the default proj300. run_trial appends
++hidden{N_HIDDEN}+batch{n_batches}+{acc_measure}; keep this legacy hidden
+suffix for readers, with hidden meaning bottleneck, not proj.
 Input/output endpoints in n_neurons start as placeholders and are filled by
 convert_and_init_multitask_params from the task encoding and ruleset.
 """
@@ -100,10 +102,45 @@ SEED_LIST = None
 
 RULESET = 'everything'          # low_dim, all, test, everything, ...
 CHOSEN_NETWORK = "dmpn"         # mpn1, dmpn, vanilla, gru
-N_HIDDEN = 400
-ADDON_NAME = "L21e4proj300bottleneck400"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appended below
+N_HIDDEN = 300
+ADDON_NAME = "L21e4"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appended below
+# Multiplicative modulation bounds (min, max) for M. The historical default is
+# (-1, 1); this experiment uses (-2, 2). Non-default values are encoded in the
+# effective ADDON_NAME automatically, so this run remains distinct from the
+# existing (-1, 1) runs.
+M_BOUNDS = (-2.0, 2.0)
 train = True                    # whether or not to train the network
 verbose = True
+
+
+def _normalize_m_bounds(m_bounds):
+    """Return validated finite ``(min, max)`` modulation bounds."""
+    try:
+        bounds = tuple(float(value) for value in m_bounds)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"M_BOUNDS must contain exactly two numeric values; got {m_bounds!r}."
+        ) from exc
+
+    if len(bounds) != 2 or not np.all(np.isfinite(bounds)):
+        raise ValueError(
+            f"M_BOUNDS must contain exactly two finite values; got {m_bounds!r}."
+        )
+    if bounds[0] >= bounds[1]:
+        raise ValueError(
+            f"M_BOUNDS minimum must be smaller than its maximum; got {bounds!r}."
+        )
+    return bounds
+
+
+def _addon_name_with_bounds(addon_name, m_bounds=None):
+    """Append the pretraining-style M-bound tag for non-default bounds."""
+    bounds = _normalize_m_bounds(M_BOUNDS if m_bounds is None else m_bounds)
+    if bounds == (-1.0, 1.0):
+        return addon_name
+    if bounds[0] == -bounds[1]:
+        return f"{addon_name}mb{bounds[1]:g}"
+    return f"{addon_name}mb{bounds[0]:g}to{bounds[1]:g}"
 
 
 def validate_reg_lambda_addon_name(reg_lambda, addon_name, weight_reg="L2"):
@@ -243,7 +280,7 @@ def current_basic_params(hyp_dict):
     }
 
     validate_reg_lambda_addon_name(
-        train_params['reg_lambda'], ADDON_NAME, train_params['weight_reg']
+        train_params['reg_lambda'], hyp_dict['addon_name'], train_params['weight_reg']
     )
 
     print(f"valid_n_batch: {train_params['valid_n_batch']}")
@@ -280,6 +317,7 @@ def current_basic_params(hyp_dict):
             'm_time_scale': 4000, # ms, sets lambda
             'lam_train': False,
             'W_freeze': False, # different combination with [input_layer_add_trainable]
+            'm_bounds': _normalize_m_bounds(M_BOUNDS),
         },
 
         # Vanilla RNN params
@@ -314,13 +352,17 @@ def run_trial(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
+    run_addon_name = _addon_name_with_bounds(ADDON_NAME)
+    print(f"Modulation bounds: {_normalize_m_bounds(M_BOUNDS)}; "
+          f"effective ADDON_NAME: {run_addon_name}")
+
     hyp_dict = {
         'task_type': 'multitask',          # int, NeuroGym, multitask
         'mode_for_all': "random_batch",
         'ruleset': RULESET,
         'run_mode': 'minimal',             # minimal, debug
         'chosen_network': CHOSEN_NETWORK,
-        'addon_name': ADDON_NAME + f"+hidden{N_HIDDEN}",
+        'addon_name': run_addon_name + f"+hidden{N_HIDDEN}",
     }
 
     task_params, train_params, net_params = current_basic_params(hyp_dict)
@@ -638,8 +680,6 @@ def main():
 if __name__ == "__main__":
     with tee_output("multiple_task"):
         main()
-
-
 
 
 

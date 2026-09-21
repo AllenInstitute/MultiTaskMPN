@@ -67,7 +67,17 @@ import torch
 import mpn
 import networks as nets
 import mpn_tasks
-from grad_fixed_points import solve_period_modulation_fixed_points
+from grad_fixed_points import (
+    solve_period_modulation_fixed_points,
+    classify_spectral_radius,
+    convergence_from_rel_step,
+    convergence_quality_masks,
+    raw_tolerance,
+    spectral_radius_timescale,
+    DEFAULT_REL_TOL_UNDAMPED,
+    DEFAULT_APPROX_REL_TOL_UNDAMPED,
+    DEFAULT_MARGINAL_TOL_UNDAMPED,
+)
 from fixed_point_pca import export_fixed_point_pca
 
 # Match the plotting style used in multiple_task_analysis.py
@@ -127,7 +137,8 @@ def _rebuild_net(net_params):
 
 
 def long_period_fixed_points(aname, save_dir, cfg,
-                             fp_n_seeds=5, run_fixed_points=True):
+                             fp_n_seeds=5, fp_steps=500_000,
+                             run_fixed_points=True):
     """Take the trained single-task network, generate test data with each trial
     period extended in turn (long fixation / stimulus / delay / response), fit a
     top-2 PCA on the pooled DELAY-period states, and scatter each variant's
@@ -326,7 +337,7 @@ def long_period_fixed_points(aname, save_dir, cfg,
         try:
             fixed_point_path = solve_period_modulation_fixed_points(
                 aname, save_dir, net, cfg, device, layer_index=layer_index, W=W,
-                n_interp=64, n_seeds=fp_n_seeds,
+                n_interp=64, n_seeds=fp_n_seeds, steps=fp_steps,
                 # Multistability probes. cross_seed_probes: the FIXATION input
                 # solved from a memory-carrying state (end of delay) — the
                 # fixation and delay inputs are the same vector, so this shows
@@ -344,7 +355,7 @@ def long_period_fixed_points(aname, save_dir, cfg,
                 # — and it is the only probe that can reach a fixed point no
                 # trajectory passes through. One extra 64-point solve per distinct
                 # input, on the selected template seed only.
-                traj_seed_probes=True)
+                traj_seed_probes=True, rescue_lbfgs_steps=200)
             export_fixed_point_pca(fixed_point_path)
         except Exception as exc:
             print(f"  [grad-fp] failed: {exc}")
@@ -630,23 +641,19 @@ def classify_fixed_point_stability(aname, save_dir):
     unstable from the linear-stability spectrum already saved by
     solve_period_modulation_fixed_points (in fixed_points_grad_{aname}.pkl).
 
-    No recomputation — this re-packages the per-point spectral radius ρ = max|λ|
-    and the marginal tolerance into an explicit 3-way class, per trial period:
+    No eigenspectrum recomputation — this re-packages the saved spectral radius
+    ρ = max|λ| into an explicit 3-way class, per trial period:
       unstable  ρ > 1 + tol      (an expanding direction)
-      marginal  |ρ − 1| ≤ tol    (a neutral direction)
+      marginal  |ρ − 1| ≤ tol    (near-unit dynamics; not by itself proof
+                                      of a ring attractor)
       stable    ρ < 1 − tol      (all directions contracting)
-    Only converged fixed points (is_fixed) are classified; non-converged points
-    are reported separately so they don't masquerade as stable.
-
-    Read "marginal" carefully here: it is NOT by itself the ring-attractor
-    signature. The modulation Jacobian is λI + (1−λ)·∂M_target/∂M, so with the
-    default λ = 0.9 every direction that does not move the hidden state already
-    sits at ρ = λ, the band |ρ − 1| ≤ tol is really |μ − 1| ≤ 10·tol on the
-    undamped map, and a plainly expanding μ = 1.4 lands inside it. The solver
-    saves `spectral_radius_undamped` and `n_marginal_leak_only` (see
-    grad_fixed_points._decay_factor) precisely so that can be checked rather than
-    assumed; this classifier deliberately keeps the raw ρ so its classes stay
-    comparable with older pickles.
+    Both convergence and marginal tolerances are defined on the leak-normalized
+    map, then converted to the raw one-step scale using ``1-lambda``. Only points
+    passing the strict normalized residual criterion are classified. Candidates
+    between the strict and approximate cutoffs are labeled ``approximate`` rather
+    than being merged with unconverged points, matching the two-task analysis.
+    Older pickles are reinterpreted from their saved normalized residual or raw
+    residual plus leak.
 
     Writes fixed_point_classification_{aname}.pkl (arrays for paper_plot) and a
     human-readable .csv (one row per period × fixed point). Skips gracefully if
@@ -664,22 +671,14 @@ def classify_fixed_point_stability(aname, save_dir):
     results = d.get("results", {})
     angles = np.asarray(d.get("angles", []), dtype=float)
     periods = list(results.keys())
-    if not periods or any(results[v].get("spectral_radius") is None for v in periods):
+    if not periods or any(
+            results[v].get("spectral_radius") is None
+            or results[v].get("eigenvalues") is None for v in periods):
         print("  [fp-classify] stability spectrum ('spectral_radius') not in "
               "pickle; re-run the analysis with the stability pass. Skipping.")
         return
 
     CLASS_NAMES = ["stable", "marginal", "unstable"]
-
-    def _classify(rad, tol):
-        """3-way class code per point: 0 stable, 1 marginal, 2 unstable; -1 if ρ
-        is NaN (eigensolve failed for that point)."""
-        code = np.full(rad.shape, -1, dtype=int)
-        finite = np.isfinite(rad)
-        code[finite & (rad > 1.0 + tol)] = 2
-        code[finite & (np.abs(rad - 1.0) <= tol)] = 1
-        code[finite & (rad < 1.0 - tol)] = 0
-        return code
 
     per_period = {}
     csv_rows = []
@@ -687,41 +686,98 @@ def classify_fixed_point_stability(aname, save_dir):
         e = results[v]
         rad = np.asarray(e["spectral_radius"], dtype=float)
         stim = np.asarray(e["stim"], dtype=int)
-        tol = float(e.get("marginal_tol", 0.05))
-        # Only classify converged fixed points; the rest are "unconverged".
-        is_fixed = np.asarray(e.get("is_fixed", np.ones(rad.shape, bool)), dtype=bool)
-        code = _classify(rad, tol)
-        code[~is_fixed] = -1                     # unconverged -> excluded class
+        leak = float(e.get("leak", d.get("leak", 1.0)))
+        tol_undamped = float(e.get(
+            "marginal_tol_undamped",
+            d.get("marginal_tol_undamped", DEFAULT_MARGINAL_TOL_UNDAMPED)))
+        tol = raw_tolerance(tol_undamped, leak)
+        eig = np.asarray(e["eigenvalues"])
+        n_unstable = np.sum(np.abs(eig) > 1.0 + tol, axis=1)
+        n_neutral = np.sum(np.abs(eig - 1.0) <= tol, axis=1)
+        rel_tol_undamped = float(e.get(
+            "rel_tol_undamped",
+            d.get("rel_tol_undamped", DEFAULT_REL_TOL_UNDAMPED)))
+        approx_rel_tol_undamped = float(e.get(
+            "approx_rel_tol_undamped",
+            d.get("approx_rel_tol_undamped",
+                  DEFAULT_APPROX_REL_TOL_UNDAMPED)))
+        is_fixed = np.asarray(
+            e.get("is_fixed", np.ones(rad.shape, bool)), dtype=bool)
+        is_approximate = np.zeros(rad.shape, dtype=bool)
+        is_unconverged = ~is_fixed
+        if e.get("rel_step_undamped") is not None:
+            rel_step_undamped = np.asarray(e["rel_step_undamped"], dtype=float)
+        elif e.get("rel_step") is not None:
+            rel_step_undamped, _, _ = convergence_from_rel_step(
+                e["rel_step"], leak, rel_tol_undamped)
+        else:
+            rel_step_undamped = np.full(rad.shape, np.nan)
+        if np.isfinite(rel_step_undamped).any():
+            is_fixed, is_approximate, is_unconverged = convergence_quality_masks(
+                rel_step_undamped, rel_tol_undamped,
+                approx_rel_tol_undamped)
+        code = classify_spectral_radius(rad, tol)
+        code[~is_fixed] = -1
+        ring_spectrum_candidate = (
+            is_fixed & (n_unstable == 0) & (n_neutral == 1))
+        dt_ms = float(e.get("dt_ms", d.get("dt_ms", 40.0)))
+        growth_rate, timescale_ms = spectral_radius_timescale(rad, dt_ms)
         counts = {name: int(np.sum(code == i)) for i, name in enumerate(CLASS_NAMES)}
-        counts["unconverged"] = int(np.sum(~is_fixed))
+        counts["approximate"] = int(np.sum(is_approximate))
+        counts["unconverged"] = int(np.sum(is_unconverged))
         n_conv = int(is_fixed.sum())
         frac_stable = (counts["stable"] / n_conv) if n_conv else float("nan")
         per_period[v] = {
             "period_title": e.get("period_title", v),
             "stim": stim,
             "spectral_radius": rad,
-            "class_code": code,                  # -1 unconverged, 0/1/2 as CLASS_NAMES
+            "class_code": code,
             "is_fixed": is_fixed,
+            "is_approximate": is_approximate,
+            "is_unconverged": is_unconverged,
             "marginal_tol": tol,
+            "marginal_tol_undamped": tol_undamped,
+            "rel_step_undamped": rel_step_undamped,
+            "rel_tol_undamped": rel_tol_undamped,
+            "approx_rel_tol_undamped": approx_rel_tol_undamped,
+            "leading_growth_rate_per_s": growth_rate,
+            "leading_timescale_ms": timescale_ms,
+            "n_unstable_strict": n_unstable,
+            "n_neutral_strict": n_neutral,
+            "ring_spectrum_candidate": ring_spectrum_candidate,
             "counts": counts,
             "n_converged": n_conv,
             "frac_stable": frac_stable,
         }
         print(f"  [fp-classify] {v}: {counts['stable']} stable / "
               f"{counts['marginal']} marginal / {counts['unstable']} unstable "
-              f"(+{counts['unconverged']} unconverged) of {rad.size}")
+              f"/ {counts['approximate']} approximate / "
+              f"{counts['unconverged']} unconverged of {rad.size}; "
+              f"{int(ring_spectrum_candidate.sum())} ring-spectrum candidate(s)")
         for i in range(rad.size):
             ang = float(angles[stim[i]]) if angles.size and stim[i] < angles.size else float("nan")
             cc = code[i]
-            cname = CLASS_NAMES[cc] if cc >= 0 else "unconverged"
+            if cc >= 0:
+                cname = CLASS_NAMES[cc]
+            elif is_approximate[i]:
+                cname = "approximate"
+            else:
+                cname = "unconverged"
             csv_rows.append({
                 "period": v,
                 "period_title": e.get("period_title", v),
                 "stim_index": int(stim[i]),
                 "stim_angle_rad": ang,
                 "spectral_radius": float(rad[i]) if np.isfinite(rad[i]) else "",
-                "n_unstable": int(np.asarray(e["n_unstable"])[i])
-                              if e.get("n_unstable") is not None else "",
+                "rel_step_undamped": (float(rel_step_undamped[i])
+                                       if np.isfinite(rel_step_undamped[i]) else ""),
+                "growth_rate_per_s": (float(growth_rate[i])
+                                        if np.isfinite(growth_rate[i]) else ""),
+                "timescale_ms": (float(timescale_ms[i])
+                                  if np.isfinite(timescale_ms[i]) else ""),
+                "n_unstable": int(n_unstable[i]),
+                "n_neutral": int(n_neutral[i]),
+                "ring_spectrum_candidate": bool(ring_spectrum_candidate[i]),
                 "class": cname,
             })
 
@@ -739,13 +795,15 @@ def classify_fixed_point_stability(aname, save_dir):
     with open(out_csv, "w", newline="") as f:
         writer = _csv.DictWriter(f, fieldnames=[
             "period", "period_title", "stim_index", "stim_angle_rad",
-            "spectral_radius", "n_unstable", "class"])
+            "spectral_radius", "rel_step_undamped", "growth_rate_per_s",
+            "timescale_ms", "n_unstable", "n_neutral",
+            "ring_spectrum_candidate", "class"])
         writer.writeheader()
         writer.writerows(csv_rows)
     print(f"  Saved fixed-point classification table: {out_csv}")
 
 
-def main(aname, fp_n_seeds=5, run_fixed_points=True):
+def main(aname, fp_n_seeds=5, fp_steps=500_000, run_fixed_points=True):
     """Run every analysis for ONE trained single-task run, in the order the
     module docstring lists them.
 
@@ -757,7 +815,8 @@ def main(aname, fp_n_seeds=5, run_fixed_points=True):
     `run_fixed_points=False` (--no-fixed-points) skips the slow gradient solve —
     and then the output directory is NOT wiped first, so fixed_points_* files
     from an earlier full run survive for paper_plot to read. `fp_n_seeds` is how
-    many trial templates that solve tries before keeping the best-converging one.
+    many trial templates that solve tries before keeping the best-converging one;
+    `fp_steps` is the maximum Adam iteration count before L-BFGS polishing.
     """
     result_path = ONETASK_DIR / f"param_{aname}_result.npz"
     param_path = ONETASK_DIR / f"param_{aname}_param.json"
@@ -1584,6 +1643,7 @@ def main(aname, fp_n_seeds=5, run_fixed_points=True):
     try:
         long_period_fixed_points(aname, save_dir, cfg,
                                  fp_n_seeds=fp_n_seeds,
+                                 fp_steps=fp_steps,
                                  run_fixed_points=run_fixed_points)
     except Exception as exc:
         print(f"  [long-fp] failed: {exc}")
@@ -1704,6 +1764,10 @@ if __name__ == "__main__":
                         help="Number of random trial templates to try when solving "
                              "gradient fixed points; the best-converging one is kept "
                              "(default 5).")
+    parser.add_argument("--fp-steps", type=int, default=500_000,
+                        help="Maximum Adam steps for gradient fixed-point "
+                             "optimization (default 500000, matching two-task; "
+                             "early stopping still applies).")
     parser.add_argument("--no-fixed-points", dest="run_fixed_points",
                         action="store_false",
                         help="Skip the time-consuming gradient fixed-point solver "
@@ -1717,6 +1781,7 @@ if __name__ == "__main__":
         print(f"\n── Analyzing: {a} ──")
         try:
             main(a, fp_n_seeds=args.fp_n_seeds,
+                 fp_steps=args.fp_steps,
                  run_fixed_points=args.run_fixed_points)
         except Exception as exc:
             print(f"  FAILED {a}: {exc}")

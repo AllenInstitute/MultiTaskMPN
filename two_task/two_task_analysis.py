@@ -4,11 +4,12 @@
 Post-training analysis of a two-task MPN.
 
 Reloads the trained network + full training bundle saved by two_task.py and
-reproduces ALL of the analyses that previously lived in the monolithic
-`two_task_analysis.ipynb` (cells 13-106): cross-task / cross-period PCA,
-attractor / cosine-similarity-over-learning, dPCA, fixon/task cancellation,
-weight-structure heatmaps, magnitude pruning, and the interpolation /
-fixed-point ring analyses.
+runs the retained analyses migrated from the monolithic
+`two_task_analysis.ipynb`: cross-task / cross-period PCA, attractor and
+cosine-similarity-over-learning summaries, dPCA, fixon/task cancellation,
+weight-structure heatmaps, magnitude pruning, and gradient fixed-point
+analyses. Notebook-only calculations with no saved or downstream output are
+intentionally omitted.
 
 Unlike one_task_analysis.py — which is purely trace-driven — the two-task
 analysis repeatedly needs the LIVE trained network (it runs the net on freshly
@@ -17,24 +18,20 @@ script rebuilds the network from the checkpoint and runs it; the per-stage
 training traces are reloaded from the bundle and are aligned to exactly the
 test trials two_task.py saved.
 
-Matplotlib figures are written into ./twotasks/{aname}/ with the same filenames
-as the notebook. Interactive Plotly figures (which the notebook displayed with
-fig.show()) are saved as standalone .html files in the same directory.
-Cross-run pickle summaries go to ./twotasks_data/.
+Analysis arrays and the remaining diagnostic Matplotlib figures are written to
+./twotasks/{aname}/. Cross-run pickle summaries go to ./twotasks_data/;
+publication figures are rendered separately by paper_plot.py from the saved
+analysis arrays.
 
 Usage:
     python two_task_analysis.py                 # all runs in ./twotasks/
     python two_task_analysis.py --aname <name>  # a specific run
 """
-import os
 import gc
 import copy
-import glob
-import json
 import pickle
 import argparse
 from pathlib import Path
-from itertools import chain
 
 import numpy as np
 import torch
@@ -64,16 +61,20 @@ mpl.rcParams.update({
     "ps.fonttype": 42,
 })
 
-import plotly.graph_objects as go
-
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import networks as nets
-import net_helpers
-import mpn_tasks
 import helper
 import mpn
 from grad_fixed_points import (solve_period_modulation_fixed_points,
-                                derive_fixed_point_views, _PERIOD_TITLE)
+                                derive_fixed_point_views, _PERIOD_TITLE,
+                                classify_spectral_radius,
+                                convergence_from_rel_step,
+                                convergence_quality_masks,
+                                raw_tolerance,
+                                spectral_radius_timescale,
+                                DEFAULT_REL_TOL_UNDAMPED,
+                                DEFAULT_APPROX_REL_TOL_UNDAMPED,
+                                DEFAULT_MARGINAL_TOL_UNDAMPED)
 from fixed_point import find_modulation_fixed_points
 from fixed_point_pca import export_fixed_point_pca
 
@@ -81,8 +82,6 @@ from fixed_point_pca import export_fixed_point_pca
 # 0 Red, 1 blue, 2 green, 3 purple, 4 orange, 5 teal, 6 gray, 7 pink, 8 yellow
 c_vals = ['#e53e3e', '#3182ce', '#38a169', '#805ad5', '#dd6b20', '#319795', '#718096', '#d53f8c', '#d69e2e'] * 10
 c_vals_l = ['#feb2b2', '#90cdf4', '#9ae6b4', '#d6bcfa', '#fbd38d', '#81e6d9', '#e2e8f0', '#fbb6ce', '#faf089'] * 10
-c_vals_d = ['#9b2c2c', '#2c5282', '#276749', '#553c9a', '#9c4221', '#285e61', '#2d3748', '#97266d', '#975a16'] * 10
-l_vals = ['solid', 'dashed', 'dotted', 'dashdot', '-', '--', '-.', ':', (0, (3, 1, 1, 1)), (0, (5, 10))]
 markers_vals = ['o', 'v', '*', 'x', '>', '1', '2', '3', '4', 's', 'p', '*', 'h', 'H', '+', 'x', 'D', 'd', '|', '_']
 linestyles = ["-", "--", "-."]
 
@@ -91,16 +90,15 @@ DATA_DIR = Path("twotasks_data")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Pure helper functions (notebook cells 19, 23, 25, 26, 34, 35, 39, 42, 59,
-# 65, 81, 84, 89, 95, 96). These do not reference notebook globals; anything
-# they need is passed explicitly.
+# Pure helper functions retained from the notebook. These do not reference
+# notebook globals; anything they need is passed explicitly.
 # ═══════════════════════════════════════════════════════════════════════════
 def dimensionality_measure(W, n_hidden):
     """Participation-ratio dimensionality (Recanatesi et al., 2019, Eq. 3).
     Returns a value in (0, 1]. (Notebook cell 19.)"""
     covW = np.cov(W)
     assert covW.shape[0] == n_hidden
-    eigenvalues, eigenvectors = np.linalg.eig(covW)
+    eigenvalues = np.linalg.eigvals(covW)
     numerator = np.sum(eigenvalues) ** 2
     denominator = np.sum(eigenvalues ** 2)
     return (numerator / denominator) / W.shape[0]
@@ -181,7 +179,6 @@ def modulation_magnitude_by_component(save_dir, aname, Ms_orig, W_input,
     # then L2 norm over hidden units → per-trial magnitude per channel.
     proj = np.einsum("bthe,er->bthr", Ms_orig, W_input)
     mag = np.linalg.norm(proj, axis=2)                 # (batch, T, n_raw)
-    n_batch = mag.shape[0]
 
     def _mean_std(series_bt):
         return series_bt.mean(axis=0), series_bt.std(axis=0)
@@ -374,15 +371,6 @@ def analyze_similarity(Ms_orig, hs, net, net_params, label_task_comb, checktime,
     return result, modulation_save_time, hidden_save_time
 
 
-def input_change(U, X):
-    """Global RMS gain from a 3-channel input U to its embedding X. (Cell 34.)"""
-    eps = 1e-12
-    u2 = np.sum(U ** 2, axis=-1)
-    x2 = np.sum(X ** 2, axis=-1)
-    g_rms = np.sqrt(x2.mean()) / (np.sqrt(u2.mean()) + eps)
-    return g_rms
-
-
 def cosine_sim(a, b):
     return 1.0 - cosine(a, b)
 
@@ -402,9 +390,16 @@ def vec_angle_deg(u, v, sign_invariant=False, eps=1e-12):
     return np.degrees(np.arccos(c))
 
 
-def figure2A_pca_fve(H, task_id, periods, k=2, max_pcs=10, center="global",
+def figure2A_pca_fve(H, task_id, periods, k=2, max_pcs=10, center="condition",
                      flatten="trial_time", dtype=np.float64, return_cross_task=True):
-    """Cross-period (and optional cross-task) PCA explained-variance. (Cell 42.)"""
+    """Cross-period (and optional cross-task) PCA explained variance.
+
+    ``center="none"`` performs the uncentered state-subspace analysis used by
+    the one- and two-task d_combine figures. Any other value preserves the
+    legacy behavior of centering each task/period matrix independently. The
+    mode comparison is case-insensitive so ``"None"`` cannot silently request
+    the opposite operation. (Notebook cell 42.)
+    """
     if hasattr(H, "detach"):
         H_np = H.detach().cpu().numpy()
     else:
@@ -412,7 +407,7 @@ def figure2A_pca_fve(H, task_id, periods, k=2, max_pcs=10, center="global",
     H_np = H_np.astype(dtype, copy=False)
 
     task_id = np.asarray(task_id)
-    B, T, N = H_np.shape
+    _, T, N = H_np.shape
 
     def _get_period_matrix(H_task, t0, t1):
         X = H_task[:, t0:t1, :]
@@ -422,8 +417,10 @@ def figure2A_pca_fve(H, task_id, periods, k=2, max_pcs=10, center="global",
             raise ValueError(f"Unsupported flatten mode: {flatten}")
         return X
 
+    center_mode = str(center).casefold()
+
     def _center(X, mean=None):
-        if center == "none":
+        if center_mode == "none":
             mu = np.zeros((X.shape[1],), dtype=X.dtype) if mean is None else mean
             return X, mu
         if mean is None:
@@ -431,7 +428,7 @@ def figure2A_pca_fve(H, task_id, periods, k=2, max_pcs=10, center="global",
         return X - mu, mu
 
     def _pca_svd(X, r):
-        U, S, Vt = np.linalg.svd(X, full_matrices=False)
+        _, S, Vt = np.linalg.svd(X, full_matrices=False)
         r_eff = min(r, Vt.shape[0])
         V = Vt[:r_eff, :].T
         S = S[:r_eff]
@@ -514,6 +511,32 @@ def figure2A_pca_fve(H, task_id, periods, k=2, max_pcs=10, center="global",
     return results
 
 
+def _cross_task_period_pca_series(H, M_raw, W_eff, task_id, periods, top_k=2,
+                                  max_pcs=10, center="none"):
+    """Build matching PCA/FVE results for hidden, raw M, and effective W⊙M.
+
+    Keeping the three representations in one helper guarantees that they use
+    the same trials, epoch bounds, component count, and centering convention.
+    """
+    M_raw = np.asarray(M_raw)
+    W_eff = np.asarray(W_eff)
+    if M_raw.ndim != 4:
+        raise ValueError(f"M_raw must have shape (batch, time, post, pre), got "
+                         f"{M_raw.shape}")
+    if W_eff.shape != M_raw.shape[-2:]:
+        raise ValueError(f"W_eff shape {W_eff.shape} does not match modulation "
+                         f"shape {M_raw.shape[-2:]}")
+
+    M = M_raw.reshape(M_raw.shape[0], M_raw.shape[1], -1)
+    WM = (M_raw * W_eff[None, None, :, :]).reshape(M.shape)
+    kwargs = dict(k=top_k, max_pcs=max_pcs, center=center)
+    return [
+        ("hidden", figure2A_pca_fve(H, task_id, periods, **kwargs)),
+        ("modulation", figure2A_pca_fve(M, task_id, periods, **kwargs)),
+        ("w_modulation", figure2A_pca_fve(WM, task_id, periods, **kwargs)),
+    ]
+
+
 def principal_angle_cosines(W_proj, stim_idx, control_idx, eps=1e-12):
     """Principal-angle cosines between two column subspaces. (Cell 59.)"""
     S = W_proj[:, stim_idx]
@@ -562,7 +585,7 @@ def bin_by_sorted_x(x, y, nbins=100, drop_nonfinite=True, return_counts=False):
     return x_mean, y_mean
 
 
-def input_interpolation(test_input_long, test_output_long, label_task_comb_long,
+def input_interpolation(test_input_long, label_task_comb_long,
                         expand_stimulus=True, n_alpha=20):
     """Build alpha-interpolations between pro and anti task inputs. (Cell 81.)
 
@@ -572,17 +595,14 @@ def input_interpolation(test_input_long, test_output_long, label_task_comb_long,
     steps; pass 10 for the coarse 0.0, 0.1, ... 1.0 grid)."""
     assert test_input_long.shape[0] == label_task_comb_long.shape[0]
     pro_task, anti_task = {}, {}
-    pro_task_answer, anti_task_answer = {}, {}
     for k in range(8):
         ind1 = [i for i, lst in enumerate(label_task_comb_long) if np.array_equal(lst, [k, 0])]
         ind1_sample = ind1[0]
         pro_task[k] = test_input_long[ind1_sample, :, :]
-        pro_task_answer[k] = test_output_long[ind1_sample, :, :]
 
         ind2 = [i for i, lst in enumerate(label_task_comb_long) if np.array_equal(lst, [k, 1])]
         ind2_sample = ind2[0]
         anti_task[k] = test_input_long[ind2_sample, :, :]
-        anti_task_answer[k] = test_output_long[ind2_sample, :, :]
 
     if expand_stimulus:
         base_len = len(pro_task)
@@ -590,48 +610,20 @@ def input_interpolation(test_input_long, test_output_long, label_task_comb_long,
             i1, i2 = i % 8, (i + 1) % 8
             pro_task[base_len + i] = (pro_task[i1] + pro_task[i2]) / 2
             anti_task[base_len + i] = (anti_task[i1] + anti_task[i2]) / 2
-            pro_task_answer[base_len + i] = (pro_task_answer[i1] + pro_task_answer[i2]) / 2
-            anti_task_answer[base_len + i] = (anti_task_answer[i1] + anti_task_answer[i2]) / 2
 
         interleaved_keys = [k for pair in zip(range(base_len), range(base_len, 2 * base_len)) for k in pair]
         pro_task = {k: pro_task[k] for k in interleaved_keys}
         anti_task = {k: anti_task[k] for k in interleaved_keys}
-        pro_task_answer = {k: pro_task_answer[k] for k in interleaved_keys}
-        anti_task_answer = {k: anti_task_answer[k] for k in interleaved_keys}
 
     n = n_alpha
     alpha_lst = [i / n for i in range(n + 1)]
 
     stacked_pro = torch.stack([pro_task[k] for k in sorted(pro_task)])
     stacked_anti = torch.stack([anti_task[k] for k in sorted(anti_task)])
-    stacked_pro_answer = torch.stack([pro_task_answer[k] for k in sorted(pro_task_answer)])
-    stacked_anti_answer = torch.stack([anti_task_answer[k] for k in sorted(anti_task_answer)])
 
     stacked_interpolation = [alpha_lst[i] * stacked_pro + (1 - alpha_lst[i]) * stacked_anti
                              for i in range(len(alpha_lst))]
-    stacked_interpolation_ans = [alpha_lst[i] * stacked_pro_answer + (1 - alpha_lst[i]) * stacked_anti_answer
-                                 for i in range(len(alpha_lst))]
-
-    return alpha_lst, stacked_interpolation, stacked_interpolation_ans
-
-
-def ring_length(pts):
-    """Closed-loop perimeter of an ordered point set. (Cell 89.)"""
-    diffs = np.diff(pts, axis=0, append=pts[:1])
-    return np.linalg.norm(diffs, axis=1).sum()
-
-
-def normalize_lst(lst, value=None):
-    """Normalize a list by its first (or a given) value. (Cell 92.)
-
-    If the divisor is zero or non-finite (e.g. a ring perimeter that collapses to
-    0 at the base alpha), the ratio is undefined — return NaNs instead of dividing
-    (which would emit an "invalid value in scalar divide" RuntimeWarning)."""
-    if value is None:
-        value = lst[0]
-    if not np.isfinite(value) or value == 0:
-        return [np.nan for _ in lst]
-    return [val_ / value for val_ in lst]
+    return alpha_lst, stacked_interpolation
 
 
 def classify_fixed_point_stability(aname, save_dir, rules):
@@ -642,9 +634,16 @@ def classify_fixed_point_stability(aname, save_dir, rules):
     classifier — no recomputation, just re-packaging the per-point spectral radius
     ρ = max|λ| and the marginal tolerance into an explicit 3-way class per period:
       unstable  ρ > 1 + tol      (an expanding direction)
-      marginal  |ρ − 1| ≤ tol    (neutral direction — the ring-attractor signature)
+      marginal  |ρ − 1| ≤ tol    (near-unit dynamics; not by itself proof
+                                      of a ring attractor)
       stable    ρ < 1 − tol      (all directions contracting)
-    Only converged fixed points (is_fixed) are classified.
+    Tolerances are defined on the leak-normalized map and converted to the raw
+    one-step scale using ``1-lambda``. Only points passing the strict normalized
+    residual criterion are assigned a stability class. Candidates between the
+    strict cutoff (0.01 by default) and the approximate cutoff (0.05) are kept
+    as a separate ``approximate`` category, never called stable or unstable.
+    This also reclassifies older pickles correctly when they contain
+    ``rel_step_undamped`` / ``leak``.
 
     Writes ONE combined fixed_point_classification_{aname}.pkl (keyed by rule) and
     a human-readable .csv (one row per rule × period × fixed point). Skips a rule
@@ -652,14 +651,6 @@ def classify_fixed_point_stability(aname, save_dir, rules):
     """
     import csv as _csv
     CLASS_NAMES = ["stable", "marginal", "unstable"]
-
-    def _classify(rad, tol):
-        code = np.full(rad.shape, -1, dtype=int)   # -1 = unconverged / NaN
-        finite = np.isfinite(rad)
-        code[finite & (rad > 1.0 + tol)] = 2
-        code[finite & (np.abs(rad - 1.0) <= tol)] = 1
-        code[finite & (rad < 1.0 - tol)] = 0
-        return code
 
     by_rule = {}
     csv_rows = []
@@ -673,7 +664,9 @@ def classify_fixed_point_stability(aname, save_dir, rules):
         results = d.get("results", {})
         angles = np.asarray(d.get("angles", []), dtype=float)
         periods = list(results.keys())
-        if not periods or any(results[v].get("spectral_radius") is None for v in periods):
+        if not periods or any(
+                results[v].get("spectral_radius") is None
+                or results[v].get("eigenvalues") is None for v in periods):
             print(f"  [fp-classify/{rule}] stability spectrum not in pickle "
                   f"(re-run the stability pass); skipping.")
             continue
@@ -683,12 +676,49 @@ def classify_fixed_point_stability(aname, save_dir, rules):
             e = results[v]
             rad = np.asarray(e["spectral_radius"], dtype=float)
             stim = np.asarray(e["stim"], dtype=int)
-            tol = float(e.get("marginal_tol", 0.05))
-            is_fixed = np.asarray(e.get("is_fixed", np.ones(rad.shape, bool)), dtype=bool)
-            code = _classify(rad, tol)
+            leak = float(e.get("leak", d.get("leak", 1.0)))
+            tol_undamped = float(e.get(
+                "marginal_tol_undamped",
+                d.get("marginal_tol_undamped", DEFAULT_MARGINAL_TOL_UNDAMPED)))
+            tol = raw_tolerance(tol_undamped, leak)
+            eig = np.asarray(e["eigenvalues"])
+            n_unstable = np.sum(np.abs(eig) > 1.0 + tol, axis=1)
+            n_neutral = np.sum(np.abs(eig - 1.0) <= tol, axis=1)
+            rel_tol_undamped = float(e.get(
+                "rel_tol_undamped",
+                d.get("rel_tol_undamped", DEFAULT_REL_TOL_UNDAMPED)))
+            approx_rel_tol_undamped = float(e.get(
+                "approx_rel_tol_undamped",
+                d.get("approx_rel_tol_undamped",
+                      DEFAULT_APPROX_REL_TOL_UNDAMPED)))
+            if e.get("rel_step_undamped") is not None:
+                rel_step_undamped = np.asarray(e["rel_step_undamped"], dtype=float)
+            elif e.get("rel_step") is not None:
+                rel_step_undamped, _, _ = convergence_from_rel_step(
+                    e["rel_step"], leak, rel_tol_undamped)
+            else:
+                rel_step_undamped = np.full(rad.shape, np.nan)
+                is_fixed = np.asarray(
+                    e.get("is_fixed", np.ones(rad.shape, bool)), dtype=bool)
+                is_approximate = np.zeros(rad.shape, dtype=bool)
+                is_unconverged = ~is_fixed
+            if np.isfinite(rel_step_undamped).any():
+                is_fixed, is_approximate, is_unconverged = convergence_quality_masks(
+                    rel_step_undamped, rel_tol_undamped,
+                    approx_rel_tol_undamped)
+            code = classify_spectral_radius(rad, tol)
             code[~is_fixed] = -1
+            # Necessary spectral condition for a continuous ring: exactly one
+            # near-+1 mode and no expanding mode. This is deliberately named a
+            # candidate because tangent/eigenvector alignment is not in the
+            # current pickle and must be checked separately.
+            ring_spectrum_candidate = (
+                is_fixed & (n_unstable == 0) & (n_neutral == 1))
+            dt_ms = float(e.get("dt_ms", d.get("dt_ms", 40.0)))
+            growth_rate, timescale_ms = spectral_radius_timescale(rad, dt_ms)
             counts = {name: int(np.sum(code == i)) for i, name in enumerate(CLASS_NAMES)}
-            counts["unconverged"] = int(np.sum(~is_fixed))
+            counts["approximate"] = int(np.sum(is_approximate))
+            counts["unconverged"] = int(np.sum(is_unconverged))
             n_conv = int(is_fixed.sum())
             per_period[v] = {
                 "period_title": e.get("period_title", v),
@@ -696,18 +726,36 @@ def classify_fixed_point_stability(aname, save_dir, rules):
                 "spectral_radius": rad,
                 "class_code": code,
                 "is_fixed": is_fixed,
+                "is_approximate": is_approximate,
+                "is_unconverged": is_unconverged,
                 "marginal_tol": tol,
+                "marginal_tol_undamped": tol_undamped,
+                "rel_step_undamped": rel_step_undamped,
+                "rel_tol_undamped": rel_tol_undamped,
+                "approx_rel_tol_undamped": approx_rel_tol_undamped,
+                "leading_growth_rate_per_s": growth_rate,
+                "leading_timescale_ms": timescale_ms,
+                "n_unstable_strict": n_unstable,
+                "n_neutral_strict": n_neutral,
+                "ring_spectrum_candidate": ring_spectrum_candidate,
                 "counts": counts,
                 "n_converged": n_conv,
                 "frac_stable": (counts["stable"] / n_conv) if n_conv else float("nan"),
             }
             print(f"  [fp-classify/{rule}] {v}: {counts['stable']} stable / "
                   f"{counts['marginal']} marginal / {counts['unstable']} unstable "
-                  f"(+{counts['unconverged']} unconverged) of {rad.size}")
+                  f"/ {counts['approximate']} approximate / "
+                  f"{counts['unconverged']} unconverged of {rad.size}; "
+                  f"{int(ring_spectrum_candidate.sum())} ring-spectrum candidate(s)")
             for i in range(rad.size):
                 ang = float(angles[stim[i]]) if angles.size and stim[i] < angles.size else float("nan")
                 cc = code[i]
-                cname = CLASS_NAMES[cc] if cc >= 0 else "unconverged"
+                if cc >= 0:
+                    cname = CLASS_NAMES[cc]
+                elif is_approximate[i]:
+                    cname = "approximate"
+                else:
+                    cname = "unconverged"
                 csv_rows.append({
                     "rule": rule,
                     "period": v,
@@ -715,8 +763,15 @@ def classify_fixed_point_stability(aname, save_dir, rules):
                     "stim_index": int(stim[i]),
                     "stim_angle_rad": ang,
                     "spectral_radius": float(rad[i]) if np.isfinite(rad[i]) else "",
-                    "n_unstable": int(np.asarray(e["n_unstable"])[i])
-                                  if e.get("n_unstable") is not None else "",
+                    "rel_step_undamped": (float(rel_step_undamped[i])
+                                           if np.isfinite(rel_step_undamped[i]) else ""),
+                    "growth_rate_per_s": (float(growth_rate[i])
+                                            if np.isfinite(growth_rate[i]) else ""),
+                    "timescale_ms": (float(timescale_ms[i])
+                                      if np.isfinite(timescale_ms[i]) else ""),
+                    "n_unstable": int(n_unstable[i]),
+                    "n_neutral": int(n_neutral[i]),
+                    "ring_spectrum_candidate": bool(ring_spectrum_candidate[i]),
                     "class": cname,
                 })
         by_rule[rule] = {"angles": angles, "per_period": per_period}
@@ -735,7 +790,9 @@ def classify_fixed_point_stability(aname, save_dir, rules):
     with open(out_csv, "w", newline="") as f:
         writer = _csv.DictWriter(f, fieldnames=[
             "rule", "period", "period_title", "stim_index", "stim_angle_rad",
-            "spectral_radius", "n_unstable", "class"])
+            "spectral_radius", "rel_step_undamped", "growth_rate_per_s",
+            "timescale_ms", "n_unstable", "n_neutral",
+            "ring_spectrum_candidate", "class"])
         writer.writeheader()
         writer.writerows(csv_rows)
     print(f"  Saved fixed-point classification table: {out_csv}")
@@ -795,19 +852,12 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
 
     seed = b["seed"]
     shift_index = b["shift_index"]
-    color_by = b["color_by"]
     n_hidden = net_params["n_neurons"][1]
 
     counter_lst = b["counter_lst"]
     netout_lst = b["netout_lst"]
     db_lst = b["db_lst"]
     Winput_lst = b["Winput_lst"]
-    Winputbias_lst = b["Winputbias_lst"]
-    Woutput_lst = b["Woutput_lst"]
-    Wall_lst = b["Wall_lst"]
-    marker_lst = b["marker_lst"]
-    loss_lst = b["loss_lst"]
-    acc_lst = b["acc_lst"]
 
     def _t(np_arr):
         return torch.as_tensor(np_arr, dtype=torch.float, device=device)
@@ -827,9 +877,6 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
     test_input_longresponse = _t(b["test_input_longresponse_np"])
     test_output_longresponse = _t(b["test_output_longresponse_np"])
 
-    labels = b["labels"]
-    labels_stim = b["labels_stim"]
-    labels_resp = b["labels_resp"]
     test_task = b["test_task"]
     test_task_longfixation = b["test_task_longfixation"]
     test_task_longstimulus = b["test_task_longstimulus"]
@@ -840,8 +887,6 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
     label_task_comb_longstimulus = b["label_task_comb_longstimulus"]
     label_task_comb_longdelay = b["label_task_comb_longdelay"]
     label_task_comb_longresponse = b["label_task_comb_longresponse"]
-
-    n_batch_all = test_input_np.shape[0]
 
     # Figures and analysis outputs live in the same per-run subfolder as the
     # training INPUTS (checkpoint / bundle / param). Clear previously-generated
@@ -1326,10 +1371,6 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
             if np.sum(np.abs(M_all[j, :, :, :] - mod2_stim1)) <= 1e-3:
                 mod2_j = j
 
-        all_input = db_lst[0][-1][f"input{layer_index}"]
-        input_orig = test_input_np
-        shrink = input_change(input_orig, all_input)
-
         if net_params["input_layer_add"]:
             W = net.mp_layer1.W.data.detach().cpu().numpy()
             W_out = net.W_output.data.detach().cpu().numpy()
@@ -1363,7 +1404,7 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
                     x_fix_on_all.append(null)
                     x_fix_off_all.append(x_fix_off)
 
-            Y_resp_cos, Y_resp_sin = W_out[1, :].reshape(1, -1), W_out[2, :].reshape(1, -1)
+            Y_resp_cos = W_out[1, :].reshape(1, -1)
 
             fixon_proj1 = np.stack([Y_resp_cos @ (W + W * mod1_stim1[Tt]) @ (W_in @ x_fix_on_all[Tt]) for Tt in range(mod1_stim1.shape[0])], axis=0)
             fixon_proj2 = np.stack([Y_resp_cos @ (W + W * mod2_stim1[Tt]) @ (W_in @ x_fix_on_all[Tt]) for Tt in range(mod1_stim1.shape[0])], axis=0)
@@ -1528,12 +1569,12 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
     # Cells 43-47: cross-task / cross-period PCA (figure2A_pca_fve)
     # ═════════════════════════════════════════════════════════════════════════
     H = db[f"hidden{layer_index}"]
-    # Effective modulation W⊙M (the actual weight change applied to the recurrent
-    # connections), flattened over (hidden, embed). W matches M's last two axes.
+    # Raw modulation M and effective modulation W⊙M are compared with identical
+    # trials, epoch bounds, PCA rank, and centering in
+    # _cross_task_period_pca_series. W matches M's last two axes.
     M_raw = np.asarray(db[f"M{layer_index}"])            # (batch, T, hidden, embed)
     W_eff = (net.mp_layer1.W.data.detach().cpu().numpy() if net_params["input_layer_add"]
              else net.mp_layer0.W.data.detach().cpu().numpy())
-    WM = (M_raw * W_eff[None, None, :, :]).reshape(M_raw.shape[0], M_raw.shape[1], -1)
     task_id = test_task
     periods = time_stamp_extract(test_input, time_stamps_usual)
     periods_ = {
@@ -1547,11 +1588,10 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
             "resp": (periods["delay_end"], periods["trial_end"])},
     }
 
-    top_k = 4
-    res_H = figure2A_pca_fve(H, task_id, periods_, k=top_k, max_pcs=10, center="None")
-    res_WM = figure2A_pca_fve(WM, task_id, periods_, k=top_k, max_pcs=10, center="None")
-
-    data_all = [["hidden", res_H], ["w_modulation", res_WM]]
+    top_k = 2
+    data_all = _cross_task_period_pca_series(
+        H, M_raw, W_eff, task_id, periods_, top_k=top_k, max_pcs=10,
+        center="none")
     pcs = {}
     name = "hidden"
     for name, res in data_all:  # cell 45
@@ -1579,8 +1619,9 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
         for task_index in range(2):
             fve_k = res[task_index]["fve_k"]
             sns.heatmap(fve_k, ax=axs46[task_index],
-                        xticklabels=res_H[task_index]["period_names"],
-                        yticklabels=res_H[task_index]["period_names"], annot=True, fmt=".2f")
+                        xticklabels=res[task_index]["period_names"],
+                        yticklabels=res[task_index]["period_names"], annot=True,
+                        fmt=".2f")
         axs46[0].set_title(f"Go Task, k={top_k}", fontsize=15)
         axs46[1].set_title(f"Anti Task, k={top_k}", fontsize=15)
         fig46.tight_layout()
@@ -1617,7 +1658,8 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
         plt.close(fig47)
 
     # Save the d_combine matrices next to the figures so paper_plot can replot
-    # them. Keyed by name ("hidden" / "modulation").
+    # them. Keyed by representation ("hidden", raw "modulation", and effective
+    # "w_modulation").
     d_combine_path = save_dir / f"d_combine_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.pkl"
     with open(d_combine_path, "wb") as f:
         pickle.dump(d_combine_data, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -1724,7 +1766,6 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
         ["w_modulation", "Win", r"$(W \odot M)\,W_{\mathrm{in}}$"],
     ]
     cl = len(compare_values)
-    hidden_over_time_save = None
     stages = [[0, "Before Training", "beforetraining"], [-1, "Post Training", "posttraining"]]
 
     compare_value = "w_modulation"
@@ -1740,13 +1781,11 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
             result_attractor_end_all = {}
             all_keys = ["fixation_half", "fixation_end", "stimulus_half", "stimulus_end",
                         "delay_half", "delay_end", "response_half", "trial_end"]
-            for key_idx, key in enumerate(all_keys):
-                result_attractor, _, hidden_over_time = analyze_similarity(
+            for key in all_keys:
+                result_attractor, _, _ = analyze_similarity(
                     M_end, h_end, net, net_params, label_task_comb,
                     checktime=time_stamps_usual_copy[key], compare=compare_value, moddim=moddim)
                 result_attractor_end_all[key] = result_attractor
-                if key_idx == 0 and idx == 0:
-                    hidden_over_time_save = hidden_over_time
 
             mean_all = []
             for i in range(len(result_attractor_end_all["trial_end"])):
@@ -1996,7 +2035,8 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
                 w_flat = w_np.ravel()
                 w_flat[idx] = 0.0
             Wp.copy_(torch.from_numpy(w_np).to(Wp.device))
-            net_out_redo, _, db_redo = net.iterate_sequence_batch(test_input, run_mode='track_states')
+            net_out_redo, _, _ = net.iterate_sequence_batch(
+                test_input, run_mode='track_states')
             acc_K_lst.append(net.compute_acc(net_out_redo, test_output, test_mask, test_input, isvalid=False, mode="stimulus")[0].item())
             Wp.copy_(torch.as_tensor(W_orig, device=Wp.device, dtype=Wp.dtype))
     fig76, ax76 = plt.subplots(1, 1, figsize=(4, 2))
@@ -2111,18 +2151,6 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
     print("cos(W_in@resp1, W_in@resp2):", cosine_sim((W_in @ resp1).ravel(), (W_in @ resp2).ravel()))
     print("cos(W@W_in@resp1, W@W_in@resp2):", cosine_sim((W @ (W_in @ resp1)).ravel(), (W @ (W_in @ resp2)).ravel()))
 
-    # ═════════════════════════════════════════════════════════════════════════
-    # Cell 81: alpha-interpolations between pro/anti inputs (uses test tensors)
-    # ═════════════════════════════════════════════════════════════════════════
-    alpha_lst, stacked_interpolation_ld, stacked_interpolation_answer_ld = input_interpolation(
-        test_input_longdelay, test_output_longdelay, label_task_comb_longdelay, expand_stimulus=False)
-    _, stacked_interpolation_lr, stacked_interpolation_answer_lr = input_interpolation(
-        test_input_longresponse, test_output_longresponse, label_task_comb_longresponse, expand_stimulus=False)
-    _, stacked_interpolation_ls, stacked_interpolation_answer_ls = input_interpolation(
-        test_input_longstimulus, test_output_longstimulus, label_task_comb_longstimulus, expand_stimulus=False)
-    _, stacked_interpolation_lf, stacked_interpolation_answer_lf = input_interpolation(
-        test_input_longfixation, test_output_longfixation, label_task_comb_longfixation, expand_stimulus=False)
-
     # Cell 83: time-stamp / input map
     time_stamp_input_map = [
         [time_stamps_usual, test_input, "normal", 0, "delay_end", label_task_comb],
@@ -2151,7 +2179,8 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
         for name in names:
             fighs, axshs = plt.subplots(1, 3, figsize=(5 * 3, 5 * 1))
             PCA_downsample = 3
-            Ms, Ms_orig, hs, bs = modulation_extraction(test_input_long, db_lst[db_index][-1], layer_index)
+            Ms, Ms_orig, hs, _ = modulation_extraction(
+                test_input_long, db_lst[db_index][-1], layer_index)
             batch_num = Ms_orig.shape[0]
             if name == "modulation":
                 data = Ms
@@ -2241,200 +2270,13 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
                 }
 
     # Save the "normal" m_pca trajectory data next to the figures so paper_plot
-    # can replot them. Keyed by name ("hidden" / "modulation").
+    # can replot them. Keyed by representation: hidden, raw modulation, and
+    # effective modulation W⊙M.
     if m_pca_normal_data:
         m_pca_path = save_dir / f"m_pca_normal_seed{seed}_{hyp_dict['addon_name']}.pkl"
         with open(m_pca_path, "wb") as f:
             pickle.dump(m_pca_normal_data, f, protocol=pickle.HIGHEST_PROTOCOL)
         print("  Saved data: " + str(m_pca_path))
-
-    # ═════════════════════════════════════════════════════════════════════════
-    # Cell 91: interpolation fixed-point ring analysis (uses the LIVE network)
-    # ═════════════════════════════════════════════════════════════════════════
-    stacked_interpolation_lst = [stacked_interpolation_ld, stacked_interpolation_lr, stacked_interpolation_ls, stacked_interpolation_lf]
-    time_stamps_lst = [time_stamps, time_stamps_longresponse, time_stamps_longstimulus, time_stamps_longfixation]
-    stacked_interpolation_name_lst = ["longdelay", "longresponse", "longstimulus", "longfixation"]
-    desire_period = [[time_stamps["delay_start"], time_stamps["delay_end"]],
-                     [time_stamps_longresponse["delay_end"], time_stamps_longresponse["trial_end"]],
-                     [time_stamps_longstimulus["stimulus_start"], time_stamps_longstimulus["stimulus_end"]],
-                     [time_stamps_longfixation["fixation_start"], time_stamps_longfixation["fixation_end"]]]
-
-    int_input_all = []
-    raw_data_ring_all, raw_data_ring_magnitude_all, projected_data_ring_all = [], [], []
-    PCA_downsample = 3
-    int_index = 0
-    name = "hidden"
-    # self-contained data to replot the m_pca_attractor_cycle figures, keyed by
-    # (sname, name) -> dict. Holds the per-alpha fixed-point PCA projections.
-    attractor_cycle_data = {}
-
-    for siindex, stacked_interpolation_ in enumerate(stacked_interpolation_lst):
-        sname = stacked_interpolation_name_lst[siindex]
-        print(f"sname: {sname}")
-        names = ["hidden", "modulation", "w_modulation"]
-        raw_data_ring = [[], [], []]
-        raw_data_ring_magnitude = [[], [], []]
-        projected_data_ring = [[], [], []]
-
-        # The forward pass per alpha step is INDEPENDENT of the representation
-        # ("hidden"/"modulation"/"w_modulation") — all three are derived from the
-        # same tracked db. Run it ONCE per alpha here (rather than 3x inside the
-        # name loop below) and cache the per-representation activity, so this cell
-        # does n_alpha forward passes instead of 3*n_alpha.
-        Wlocal = net.mp_layer1.W.data.detach().cpu().numpy()
-        alpha_activity = []   # per alpha: {name -> (batch, T, n_activity)}
-        for int_index, int_input in enumerate(stacked_interpolation_):
-            if int_index == 0:
-                int_input_all.append(int_input)   # alpha=0 input per period (Cell 91 downstream)
-            _, _, db_intp = net.iterate_sequence_batch(
-                int_input, run_mode='track_states', save_to_cpu=True, detach_saved=True)
-            Ms, Ms_orig, hs, _ = modulation_extraction(int_input, db_intp, layer_index)
-            alpha_activity.append({
-                "hidden": hs,
-                "modulation": Ms,
-                "w_modulation": (Ms_orig * Wlocal[None, None, :, :]).reshape(
-                    Ms.shape[0], Ms.shape[1], -1),
-            })
-
-        for nindex, name in enumerate(names):
-            fighsadd, axshsadd = plt.subplots(1, 3, figsize=(5 * 3, 5 * 1))
-            fig3dfix = go.Figure()
-            combination = [[0, 1], [0, 2], [1, 2]]
-            interpolation_label = [i for i in range(len(stacked_interpolation_[0]))]
-            projected_data_fix_all = []
-            pca_delay = None
-
-            for int_index in range(len(stacked_interpolation_)):
-                data = alpha_activity[int_index][name]   # cached; no forward pass
-                n_activity = data.shape[-1]
-                as_flat_wantperiod_ = data[:, desire_period[siindex][0]:desire_period[siindex][1], :]
-                as_flat_wantperiod = as_flat_wantperiod_.reshape((-1, n_activity))
-                as_flat_fixedpoint_raw = data[:, desire_period[siindex][1], :]
-
-                raw_data_ring[names.index(name)].append(ring_length(as_flat_fixedpoint_raw))
-                fixpt_norm = np.linalg.norm(as_flat_fixedpoint_raw, axis=1)
-                raw_data_ring_magnitude[names.index(name)].append(fixpt_norm.mean())
-
-                as_flat = data.reshape((-1, n_activity))
-                if int_index == 0:
-                    pca_delay = PCA(n_components=PCA_downsample, random_state=42)
-                    activity_zero = np.zeros((1, n_activity))
-                    pca_delay.fit(as_flat_wantperiod)
-                as_pca = pca_delay.transform(as_flat)
-                projected_data = as_pca.reshape((data.shape[0], data.shape[1], -1))
-                projected_data_fix = projected_data[:, desire_period[siindex][1], :]
-                projected_data_ring[names.index(name)].append(ring_length(projected_data_fix))
-                projected_data_fix_all.append(projected_data_fix)
-
-            for index, comb in enumerate(combination):
-                select1 = [pa[:, comb[0]] for pa in projected_data_fix_all]
-                min_select1 = min(arr.min() for arr in select1)
-                select2 = [pa[:, comb[1]] for pa in projected_data_fix_all]
-                min_select2 = min(arr.min() for arr in select2)
-                epsilon = 1 if name == "hidden" else 10
-                min_select1 -= epsilon
-                min_select2 -= epsilon
-                indices_lst = [0, 10, -1]
-                for it_idx, it in enumerate(indices_lst):
-                    xy = projected_data_fix_all[it][:, [comb[0], comb[1]]]
-                    num_xy = xy.shape[0]
-                    for xy_index in range(num_xy):
-                        axshsadd[index].plot([xy[xy_index % num_xy, 0], xy[(xy_index + 1) % num_xy, 0]],
-                                             [xy[xy_index % num_xy, 1], xy[(xy_index + 1) % num_xy, 1]],
-                                             linestyle="--", linewidth=3, color=c_vals_l[it_idx])
-                for i in range(len(interpolation_label)):
-                    fixed_points = np.array([pdf[i, :] for pdf in projected_data_fix_all])
-                    axshsadd[index].plot(fixed_points[:, comb[0]], fixed_points[:, comb[1]], "-o", c=c_vals[interpolation_label[i]])
-                    axshsadd[index].set_xlabel(f"PCA {comb[0]+1}", fontsize=15)
-                    axshsadd[index].set_ylabel(f"PCA {comb[1]+1}", fontsize=15)
-                    if index == 0:
-                        fig3dfix.add_trace(go.Scatter3d(
-                            x=np.array(alpha_lst), y=fixed_points[:, 0], z=fixed_points[:, 1],
-                            mode="lines+markers", line=dict(width=6, color=c_vals[interpolation_label[i]]),
-                            marker=dict(size=5, color=c_vals[interpolation_label[i]], symbol="circle"),
-                            opacity=0.5, name=f"Stimulus {i}", showlegend=True))
-
-            fighsadd.suptitle(f"name: {name}; sname: {sname}", fontsize=20)
-            fighsadd.tight_layout()
-            fighsadd.savefig(fp(f"m_pca_attractor_cycle_{name}_seed{seed}_{hyp_dict['addon_name']}_{int_index}_{sname}.png"), dpi=300)
-            print("  Saved figure: " + str(fp(f"m_pca_attractor_cycle_{name}_seed{seed}_{hyp_dict['addon_name']}_{int_index}_{sname}.png")))
-            plt.close(fighsadd)
-
-            # Stash everything paper_plot needs to redraw the attractor_cycle
-            # panels for this (sname, name). projected_data_fix is the per-alpha
-            # fixed-point PCA projection, shape (n_alpha, batch_num, 3) — all 3
-            # PCs are kept so any panel (incl. PC2) can be replotted. The cycle
-            # figure connects, per stimulus i, fixed_points across alpha steps,
-            # and overlays dashed rings for alpha indices [0, 10, -1].
-            attractor_cycle_data[(sname, name)] = {
-                "projected_data_fix_all": np.asarray(projected_data_fix_all),
-                "alpha_lst": np.asarray(alpha_lst),
-                "interpolation_label": list(interpolation_label),
-                "combination": [list(c) for c in combination],
-                "ring_indices": [0, 10, -1],
-            }
-            fig3dfix.update_layout(
-                title=dict(text=f"name: {name}; sname: {sname}", x=0.5, xanchor="center", y=0.95, font=dict(size=14)),
-                scene=dict(domain=dict(x=[0.05, 0.95], y=[0.05, 0.95]),
-                           xaxis=dict(title="Alpha", tickfont=dict(size=12)),
-                           yaxis=dict(title=f"PCA 1; Anti {sname}", tickfont=dict(size=12)),
-                           zaxis=dict(title=f"PCA 2; Anti {sname}", tickfont=dict(size=12)),
-                           aspectratio=dict(x=1, y=1, z=0.8)),
-                width=650, height=650, margin=dict(l=10, r=10, t=35, b=10), showlegend=True)
-
-        raw_data_ring_all.append(raw_data_ring)
-        raw_data_ring_magnitude_all.append(raw_data_ring_magnitude)
-        projected_data_ring_all.append(projected_data_ring)
-
-    # Save the attractor_cycle fixed-point data next to the figures so paper_plot
-    # can replot them. Keys are stringified "{sname}|{name}" (sname in
-    # {longdelay, longresponse, longstimulus, longfixation}).
-    if attractor_cycle_data:
-        ac_save = {f"{sn}|{nm}": v for (sn, nm), v in attractor_cycle_data.items()}
-        ac_path = save_dir / f"m_pca_attractor_cycle_seed{seed}_{hyp_dict['addon_name']}.pkl"
-        with open(ac_path, "wb") as f:
-            pickle.dump(ac_save, f, protocol=pickle.HIGHEST_PROTOCOL)
-        print("  Saved data: " + str(ac_path))
-
-    # Cell 93: ring perimeter vs alpha
-    fig93, axs93 = plt.subplots(2, 2, figsize=(4 * 2, 4 * 2), sharex=True)
-    ax_hd_hid, ax_hd_mod = axs93[0, 0], axs93[0, 1]
-    ax_3d_hid, ax_3d_mod = axs93[1, 0], axs93[1, 1]
-    for i, sname in enumerate(stacked_interpolation_name_lst):
-        y_hd_hidden = normalize_lst(raw_data_ring_all[i][0])
-        y_hd_mod = normalize_lst(raw_data_ring_all[i][1])
-        y_3d_hidden = normalize_lst(projected_data_ring_all[i][0])
-        y_3d_mod = normalize_lst(projected_data_ring_all[i][1])
-        ax_hd_hid.plot(alpha_lst, y_hd_hidden, "-o", color=c_vals[i], alpha=0.9, label=sname)
-        ax_hd_mod.plot(alpha_lst, y_hd_mod, "-o", color=c_vals[i], alpha=0.9, label=sname)
-        ax_3d_hid.plot(alpha_lst, y_3d_hidden, "-o", color=c_vals[i], alpha=0.9, label=sname)
-        ax_3d_mod.plot(alpha_lst, y_3d_mod, "-o", color=c_vals[i], alpha=0.9, label=sname)
-    ax_hd_hid.set_title("High-D Ring Perimeter (Hidden)", fontsize=14)
-    ax_hd_mod.set_title("High-D Ring Perimeter (Modulation)", fontsize=14)
-    ax_3d_hid.set_title("3-D Ring Perimeter (Hidden)", fontsize=14)
-    ax_3d_mod.set_title("3-D Ring Perimeter (Modulation)", fontsize=14)
-    ax_hd_hid.set_ylabel("Normalized Ring Perimeter", fontsize=13)
-    ax_3d_hid.set_ylabel("Normalized Ring Perimeter", fontsize=13)
-    ax_3d_hid.set_xlabel("Alpha", fontsize=13)
-    ax_3d_mod.set_xlabel("Alpha", fontsize=13)
-    for ax in axs93.ravel():
-        ax.set_yscale("log")
-        ax.set_ylim([5e-2, 1e0 + 2e-1])
-        ax.tick_params(axis="y", labelsize=11)
-        ax.tick_params(axis="x", labelsize=11)
-        ax.legend(frameon=True, fontsize=12)
-    fig93.tight_layout()
-    fig93.savefig(fp(f"m_pca_ring_ALL_{name}_seed{seed}_{hyp_dict['addon_name']}_{int_index}.png"), dpi=300)
-    print("  Saved figure: " + str(fp(f"m_pca_ring_ALL_{name}_seed{seed}_{hyp_dict['addon_name']}_{int_index}.png")))
-    plt.close(fig93)
-
-    # ═════════════════════════════════════════════════════════════════════════
-    # (Removed) Cells 98-105: stimulus-PCA + readout response trajectories and
-    # endpoint-plane hulls (Plotly). These built in-memory go.Figure() objects
-    # but never saved them (no write_html/write_image), so they produced no
-    # output files — only console prints, including degenerate-fixation Qhull
-    # warnings. Deleted as dead analysis.
-    # ═════════════════════════════════════════════════════════════════════════
 
     # ── Gradient-based TRUE fixed points of the modulation matrix (per rule) ──
     # Mirror the one-task analysis: for each of the two rules, solve genuine fixed
@@ -2466,7 +2308,9 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
                     # Plus the trajectory-seeded probe per distinct input — see
                     # grad_fixed_points._trajectory_M_seeds. Reaches fixed points
                     # off the recorded path, including the interior of a ring.
-                    traj_seed_probes=True)
+                    # After seed selection, candidates above the strict residual
+                    # cutoff receive an independent 200-step L-BFGS rescue pass.
+                    traj_seed_probes=True, rescue_lbfgs_steps=200)
                 export_fixed_point_pca(fixed_point_path)
             except Exception as exc:
                 print(f"  [grad-fp/{_rule}] failed: {exc}")
@@ -2477,9 +2321,9 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
 
     # ── Fixed-point stability classification (post-analysis) ─────────────────
     # Re-package the linear-stability spectrum saved in the per-rule
-    # fixed_points_grad_*.pkl into an explicit stable / marginal / unstable class
-    # per fixed point (no recomputation). Runs whenever those pickles exist (they
-    # are produced above unless --no-fixed-points).
+    # fixed_points_grad_*.pkl into stable / marginal / unstable classes for
+    # strict fixed points, with approximate and unconverged candidates kept
+    # separate (no spectrum recomputation). Runs whenever those pickles exist.
     try:
         classify_fixed_point_stability(aname, save_dir, task_params["rules"])
     except Exception as exc:
@@ -2490,7 +2334,7 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
     # ═════════════════════════════════════════════════════════════════════════
     # Task-interpolation fixed points: for each stimulus, linearly mix the pro
     # (task 0) and anti (task 1) INPUT while holding the stimulus IDENTICAL, at
-    # alpha = 0.0, 0.1, ... 1.0, and solve the TRUE gradient fixed point
+    # evenly spaced alpha values from 0 to 1, and solve the TRUE gradient fixed point
     # M* = F(M*; x) per trial period at each alpha. Unlike the dense-angle
     # per-rule sweep above (which varies the stimulus within one rule), this
     # sweeps the CONTINUOUS pro<->anti axis at fixed stimuli, so it probes how the
@@ -2506,32 +2350,39 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
         print("  [interp-fp] skipped (--no-fixed-points).")
     else:
         try:
-            _interp_alphas, _interp_ld, _ = input_interpolation(
-                test_input_longdelay, test_output_longdelay,
+            _interp_alphas, _interp_ld = input_interpolation(
+                test_input_longdelay,
                 label_task_comb_longdelay, expand_stimulus=False, n_alpha=interp_n_alpha)
-            _, _interp_lr, _ = input_interpolation(
-                test_input_longresponse, test_output_longresponse,
+            _, _interp_lr = input_interpolation(
+                test_input_longresponse,
                 label_task_comb_longresponse, expand_stimulus=False, n_alpha=interp_n_alpha)
-            _, _interp_ls, _ = input_interpolation(
-                test_input_longstimulus, test_output_longstimulus,
+            _, _interp_ls = input_interpolation(
+                test_input_longstimulus,
                 label_task_comb_longstimulus, expand_stimulus=False, n_alpha=interp_n_alpha)
-            _, _interp_lf, _ = input_interpolation(
-                test_input_longfixation, test_output_longfixation,
+            _, _interp_lf = input_interpolation(
+                test_input_longfixation,
                 label_task_comb_longfixation, expand_stimulus=False, n_alpha=interp_n_alpha)
 
             # (period name, per-alpha stacked inputs, (start, end) window in that
-            # variant's timebase). Windows reuse the Cell-91 desire_period bounds.
+            # variant's timebase).
             _interp_variants = [
-                ("longdelay",     _interp_ld, desire_period[0]),
-                ("longresponse",  _interp_lr, desire_period[1]),
-                ("longstimulus",  _interp_ls, desire_period[2]),
-                ("longfixation",  _interp_lf, desire_period[3]),
+                ("longdelay", _interp_ld,
+                 (time_stamps["delay_start"], time_stamps["delay_end"])),
+                ("longresponse", _interp_lr,
+                 (time_stamps_longresponse["delay_end"],
+                  time_stamps_longresponse["trial_end"])),
+                ("longstimulus", _interp_ls,
+                 (time_stamps_longstimulus["stimulus_start"],
+                  time_stamps_longstimulus["stimulus_end"])),
+                ("longfixation", _interp_lf,
+                 (time_stamps_longfixation["fixation_start"],
+                  time_stamps_longfixation["fixation_end"])),
             ]
-            _REL_TOL = 0.05
+            _REL_TOL_UNDAMPED = DEFAULT_REL_TOL_UNDAMPED
             interp_fp_data = {
                 "alphas": np.asarray(_interp_alphas, dtype=float),
                 "n_stim": int(_interp_ld[0].shape[0]),
-                "rel_tol": _REL_TOL,
+                "rel_tol_undamped": _REL_TOL_UNDAMPED,
                 "results": {},   # period -> per-alpha arrays
             }
             for sname, stacked, (ps, pe) in _interp_variants:
@@ -2540,7 +2391,7 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
                 # accumulating the raw M*/W⊙M* matrices plus the compact
                 # hidden/cos-out/rel_step views.
                 fixed_M_a, fixed_WM_a, fixed_hidden_a, fixed_out_cos_a = [], [], [], []
-                rel_step_a, is_fixed_a = [], []
+                rel_step_a, rel_step_undamped_a, is_fixed_a = [], [], []
                 for ai, x_stack in enumerate(stacked):
                     # x_stack is already a device tensor (n_stim, T, n_input).
                     _, _, db_i = net.iterate_sequence_batch(
@@ -2559,17 +2410,20 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
                     # Shared derivation of W⊙M*, hidden(M*), cos-out, and rel_step.
                     views = derive_fixed_point_views(net, fixed_M, const_input,
                                                      final_speeds, W_fp, device,
-                                                     rel_tol=_REL_TOL)
+                                                     rel_tol_undamped=
+                                                     _REL_TOL_UNDAMPED)
 
                     fixed_M_a.append(fixed_M.astype(np.float32))
                     fixed_WM_a.append(views["fixed_WM"].astype(np.float32))
                     fixed_hidden_a.append(views["fixed_hidden"].astype(np.float32))
                     fixed_out_cos_a.append(views["fixed_out_cos"].astype(np.float32))
                     rel_step_a.append(views["rel_step"])
+                    rel_step_undamped_a.append(views["rel_step_undamped"])
                     is_fixed_a.append(views["is_fixed"])
                     print(f"  [interp-fp/{sname}] alpha={_interp_alphas[ai]:.1f}: "
                           f"{int(views['is_fixed'].sum())}/{n_stim} converged "
-                          f"(median rel_step {np.median(views['rel_step']):.2e})")
+                          f"(median normalized rel_step "
+                          f"{np.median(views['rel_step_undamped']):.2e})")
 
                 interp_fp_data["results"][sname] = {
                     "period_title": _PERIOD_TITLE.get(sname, sname),
@@ -2579,7 +2433,11 @@ def main(aname, fp_n_seeds=5, fp_steps=500_000, interp_n_alpha=10,
                     "fixed_hidden": np.stack(fixed_hidden_a),  # (n_alpha, n_stim, hidden)
                     "fixed_out_cos": np.stack(fixed_out_cos_a),  # (n_alpha, n_stim)
                     "rel_step": np.stack(rel_step_a),          # (n_alpha, n_stim)
+                    "rel_step_undamped": np.stack(rel_step_undamped_a),
+                    "rel_tol": float(views["rel_tol"]),
+                    "rel_tol_undamped": _REL_TOL_UNDAMPED,
                     "is_fixed": np.stack(is_fixed_a),
+                    "is_fixed_strict": np.stack(is_fixed_a),
                 }
 
             interp_fp_path = save_dir / f"interp_fixed_points_{aname}.pkl"
@@ -2621,9 +2479,10 @@ if __name__ == "__main__":
                              "gradient fixed points (per rule); the best-converging "
                              "one is kept (default 5).")
     parser.add_argument("--fp-steps", type=int, default=500_000,
-                        help="Maximum Adam steps for each gradient fixed-point "
+                        help="Maximum Adam steps for each per-rule gradient "
+                             "fixed-point "
                              "optimization (default 500000; early stopping still "
-                             "applies when the loss reaches 1e-8).")
+                             "applies when the normalized loss reaches 1e-8).")
     parser.add_argument("--interp-n-alpha", type=int, default=10,
                         help="Number of pro<->anti interpolation intervals for the "
                              "task-interpolation fixed points; yields n+1 alpha steps "
