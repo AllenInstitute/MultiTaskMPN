@@ -177,17 +177,23 @@ class PaperPlotModeTests(unittest.TestCase):
         points[:, 2:4] = centers[labels] + offsets
         entry = {"proj": points, "stim_idx": labels}
 
-        pair, score, criterion = paper_plot._best_sibling_endpoint_pc_pair(
+        pair, score, metric = paper_plot._best_sibling_endpoint_pc_pair(
             entry, "delaydm1")
 
         self.assertEqual(pair, (3, 4))
         self.assertGreater(score, 0.9)
-        self.assertEqual(criterion, "stimulus direction")
+        self.assertEqual(
+            metric, "direction separation / within-direction dispersion")
 
-        dmc_entry = {"proj": points, "group_labels": labels % 2}
-        _, _, dmc_criterion = paper_plot._best_sibling_endpoint_pc_pair(
+        dmc_entry = {
+            "proj": points,
+            "group_labels": labels % 2,
+            "task_idx": np.tile([0, 1], labels.size // 2),
+        }
+        _, _, dmc_metric = paper_plot._best_sibling_endpoint_pc_pair(
             dmc_entry, "dmcgo")
-        self.assertEqual(dmc_criterion, "task-adjusted category")
+        self.assertEqual(
+            dmc_metric, "cross-task category balanced accuracy")
 
     def test_long_delay_endpoint_figure_has_default_and_best_pc_panels(self):
         labels = np.repeat(np.arange(4), 4)
@@ -223,14 +229,46 @@ class PaperPlotModeTests(unittest.TestCase):
         self.assertTrue(figure.axes[1].get_xlabel().startswith("Joint Delay PC3"))
         self.assertTrue(figure.axes[1].get_ylabel().startswith("Joint Delay PC4"))
         self.assertIn("Default PC1-PC2", figure.axes[0].get_title())
-        self.assertIn("Best stimulus direction", figure.axes[1].get_title())
+        self.assertIn("Best task-specific projection", figure.axes[1].get_title())
         # The first trajectory sample is ~400 units away, but axes are framed
-        # around the ~4-unit endpoints with a modest margin.
+        # automatically around the ~4-unit endpoints with the expanded
+        # DelayDM effective-modulation margin.
+        expected_xlim, expected_ylim = paper_plot._adaptive_pc_limits(
+            points, 2, 3,
+            padding=paper_plot._MULTITASK_DELAYDM_EMODULATION_LIMIT_PADDING)
+        np.testing.assert_allclose(figure.axes[1].get_xlim(), expected_xlim)
+        np.testing.assert_allclose(figure.axes[1].get_ylim(), expected_ylim)
         self.assertLess(figure.axes[1].get_xlim()[1], 10.0)
         self.assertLess(figure.axes[1].get_ylim()[1], 10.0)
 
-    def test_dmcgo_long_delay_endpoint_keeps_full_trajectory_limits(self):
-        group_labels = np.repeat([0, 1], 8)
+    def test_dmcgo_emodulation_zooms_to_endpoint_limits(self):
+        group_labels = np.tile(np.repeat([0, 1], 4), 2)
+        points = np.zeros((group_labels.size, 6), dtype=float)
+        points[:, 3] = np.where(group_labels == 0, -4.0, 4.0)
+        points[:, 3] += np.tile([-0.05, 0.05], group_labels.size // 2)
+        trajectories = np.stack(
+            [100.0 * points, 10.0 * points, points], axis=1)
+        data = {"representations": {"e_modulation": {
+            "proj": points,
+            "trajectory_proj": trajectories,
+            "task_idx": np.repeat([0, 1], group_labels.size // 2),
+            "stim_idx": np.tile(np.arange(8), 2),
+            "group_labels": group_labels,
+            "task_names": ["dmcgo", "dmcnogo"],
+        }}}
+
+        with patch.object(paper_plot, "_save_fig") as save_fig:
+            rendered = paper_plot._plot_multitask_long_delay_endpoint_representation(
+                data, "dmcgo", ("dmcgo", "dmcnogo"),
+                "e_modulation", "emodulation")
+
+        self.assertTrue(rendered)
+        figure = save_fig.call_args.args[0]
+        self.addCleanup(paper_plot.plt.close, figure)
+        self.assertLess(figure.axes[1].get_ylim()[1], 10.0)
+
+    def test_dmcgo_hidden_zooms_to_endpoint_limits(self):
+        group_labels = np.tile(np.repeat([0, 1], 4), 2)
         points = np.zeros((group_labels.size, 6), dtype=float)
         points[:, 3] = np.where(group_labels == 0, -4.0, 4.0)
         points[:, 3] += np.tile([-0.05, 0.05], group_labels.size // 2)
@@ -252,13 +290,7 @@ class PaperPlotModeTests(unittest.TestCase):
         self.assertTrue(rendered)
         figure = save_fig.call_args.args[0]
         self.addCleanup(paper_plot.plt.close, figure)
-        displayed_extent = max(
-            abs(limit)
-            for axis in figure.axes
-            for limits in (axis.get_xlim(), axis.get_ylim())
-            for limit in limits
-        )
-        self.assertGreater(displayed_extent, 100.0)
+        self.assertLess(figure.axes[1].get_ylim()[1], 10.0)
 
     def test_missing_long_delay_endpoint_does_not_skip_gradient_plots(self):
         loaded = {"representations": {}}

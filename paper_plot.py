@@ -35,6 +35,7 @@ import seaborn as sns
 from pathlib import Path
 from scipy.cluster.hierarchy import fcluster
 from sklearn.metrics import silhouette_samples
+from core.sibling_geometry import best_task_specific_pc_pair
 
 # ─── Global style ────────────────────────────────────────────────────────────
 mpl.rcParams.update({
@@ -238,7 +239,7 @@ DATA_DIR = Path("multiple_tasks_analysis") / ANAME
 # DelayDM and DMCGo sibling-task probes (two_in_multiple mode). May differ from
 # ANAME — set independently so these figures can come from a different
 # seed/regularization than the clustering/lesion figures.
-DELAYDM_ANAME = "everything_seed86_L21e3+hidden300+batch128+angle"
+DELAYDM_ANAME = "everything_seed921_L21e4+hidden300+batch128+angle"
 # Produced by multiple_task/sibling_delay_analysis.py, which writes into
 # two_in_multiples/{aname}/ the artifacts the sibling geometry figures read:
 #     fixed_points_grad_{aname}_{rule}.pkl   one per delayDM rule
@@ -6368,6 +6369,8 @@ _MULTITASK_SIBLING_PC_PLANES = {
 }
 _MULTITASK_SIBLING_ENDPOINT_DEFAULT_PC_PLANE = (1, 2)
 _MULTITASK_RULE_MARKERS = ("s", "^")
+_MULTITASK_ENDPOINT_LIMIT_PADDING = 0.13
+_MULTITASK_DELAYDM_EMODULATION_LIMIT_PADDING = 0.18
 
 
 def _multitask_sibling_hint(family, method="gradient"):
@@ -6650,7 +6653,7 @@ def _plot_multitask_sibling_fixed_point_geometry_representation(
 
 
 def _sibling_endpoint_cluster_labels(family, entry):
-    """Return the paper criterion used to score long-delay PC projections."""
+    """Return endpoint labels used for color in sibling-family plots."""
     if family == "delaydm1":
         if "stim_idx" not in entry:
             raise KeyError("DelayDM endpoint projection has no stim_idx labels")
@@ -6663,46 +6666,13 @@ def _sibling_endpoint_cluster_labels(family, entry):
 
 
 def _best_sibling_endpoint_pc_pair(entry, family):
-    """Select the six-PC pair with the best task-specific clustering.
-
-    Silhouettes are averaged within each criterion group and then across groups,
-    giving every stimulus direction/category equal weight even when random trial
-    generation produces unequal group counts. Ties follow lexicographic PC-pair
-    order and are therefore deterministic.
-    """
+    """Select the six-PC pair with the best family-specific endpoint score."""
     projection = np.asarray(entry["proj"], dtype=float)
-    labels, criterion_name = _sibling_endpoint_cluster_labels(family, entry)
-    if projection.ndim != 2 or projection.shape[1] < 2:
-        raise ValueError(f"invalid endpoint projection shape {projection.shape}")
-    if labels.shape != (projection.shape[0],):
-        raise ValueError("endpoint projection and clustering labels disagree")
-
-    candidates = []
-    for pc_x in range(projection.shape[1]):
-        for pc_y in range(pc_x + 1, projection.shape[1]):
-            points = projection[:, [pc_x, pc_y]]
-            finite = np.isfinite(points).all(axis=1)
-            shown_points = points[finite]
-            shown_labels = labels[finite]
-            groups, counts = np.unique(shown_labels, return_counts=True)
-            if (groups.size < 2 or shown_points.shape[0] <= groups.size
-                    or np.any(counts < 2)):
-                continue
-            point_scores = silhouette_samples(
-                shown_points, shown_labels, metric="euclidean")
-            group_scores = [
-                np.mean(point_scores[shown_labels == group]) for group in groups
-            ]
-            score = float(np.mean(group_scores))
-            if np.isfinite(score):
-                candidates.append((score, pc_x, pc_y))
-    if not candidates:
-        raise ValueError(f"cannot score any PC pair by {criterion_name}")
-    # max() would prefer the largest pair on a score tie; explicit ordering
-    # keeps the earliest PC pair instead.
-    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
-    score, pc_x, pc_y = candidates[0]
-    return (pc_x + 1, pc_y + 1), score, criterion_name
+    return best_task_specific_pc_pair(
+        projection, family,
+        stim_idx=entry.get("stim_idx"),
+        group_labels=entry.get("group_labels"),
+        task_idx=entry.get("task_idx"))
 
 
 def _plot_multitask_long_delay_endpoint_representation(
@@ -6719,7 +6689,7 @@ def _plot_multitask_long_delay_endpoint_representation(
               f"{_multitask_sibling_hint(family, 'long_delay_endpoint')}")
         return False
     try:
-        pair, score, criterion_name = _best_sibling_endpoint_pc_pair(
+        pair, score, metric_name = _best_sibling_endpoint_pc_pair(
             entry, family)
     except (KeyError, ValueError) as exc:
         print(f"  Skipped {family} long-delay {plot_name}: {exc}")
@@ -6759,8 +6729,8 @@ def _plot_multitask_long_delay_endpoint_representation(
         (axs[0, 0], default_pc_x, default_pc_y, default_bx, default_by,
          "Long-delay endpoint\nDefault PC1-PC2"),
         (axs[0, 1], best_pc_x, best_pc_y, best_bx, best_by,
-         f"Long-delay endpoint\nBest {criterion_name} clustering "
-         f"($s$ = {score:.2f})"),
+         f"Long-delay endpoint\nBest task-specific projection "
+         f"(score = {score:.2f})"),
     )
     for ax, pc_x, pc_y, bx, by, title in panel_specs:
         for trial_index in range(projection.shape[0]):
@@ -6797,15 +6767,16 @@ def _plot_multitask_long_delay_endpoint_representation(
         ax.set_xlabel(f"Joint Delay PC{pc_x}{x_var}")
         ax.set_ylabel(f"Joint Delay PC{pc_y}{y_var}")
         ax.set_title(title, fontsize=9.5)
-        # Zoom the DelayDM panels around their settled endpoints. DMCGo retains
-        # the original full-trajectory framing so its temporal path remains
-        # visible from beginning to end.
-        limit_points = (
-            projection if family == "delaydm1"
-            else trajectories.reshape(-1, trajectories.shape[-1])
-        )
+        # Frame every long-delay panel around its settled endpoints. Early
+        # trajectory samples remain plotted but may be clipped by this zoom.
+        limit_points = projection
+        limit_padding = _MULTITASK_ENDPOINT_LIMIT_PADDING
+        if family == "delaydm1" and plot_name == "e_modulation":
+            # Keep the endpoint-based automatic zoom, with slightly more room
+            # around DelayDM effective-modulation endpoints and trajectories.
+            limit_padding = _MULTITASK_DELAYDM_EMODULATION_LIMIT_PADDING
         xlim, ylim = _adaptive_pc_limits(
-            limit_points, bx, by, padding=0.13)
+            limit_points, bx, by, padding=limit_padding)
         ax.set_xlim(*xlim)
         ax.set_ylim(*ylim)
         ax.tick_params(length=2.5)
@@ -6835,8 +6806,7 @@ def _plot_multitask_long_delay_endpoint_representation(
             f"{_MULTITASK_SIBLING_OUTPUT_NAMES[family]}_long_delay_endpoint_"
             f"{output_suffix}.png"),
         extra=(f"  (default PC1-PC2; best PC{best_pc_x}-PC{best_pc_y}; "
-               f"criterion={criterion_name}; "
-               f"macro silhouette={score:.3f})"))
+               f"metric={metric_name}; score={score:.3f})"))
     return True
 
 

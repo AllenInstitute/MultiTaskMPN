@@ -860,6 +860,20 @@ def fdgo(config, mode, separate_input, label_strength, long_delay, long_response
 def fdanti(config, mode, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
     return fdgo_(config, mode, True, long_response, long_stimulus, long_fixation, long_all, **kwargs)
 
+def _balanced_stimulus_locations(rng, batch_size, n_directions):
+    """Return a shuffled, exactly balanced set of preferred directions."""
+    batch_size = int(batch_size)
+    n_directions = int(n_directions)
+    if n_directions <= 0 or batch_size % n_directions:
+        raise ValueError(
+            f"balanced directions require batch_size ({batch_size}) to be "
+            f"divisible by n_directions ({n_directions})")
+    direction_idx = np.tile(
+        np.arange(n_directions, dtype=int), batch_size // n_directions)
+    rng.shuffle(direction_idx)
+    return 2 * np.pi * direction_idx / n_directions
+
+
 def delaydm_(config, mode, stim_mod, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
     ''' 
     Fixate whenever fixation point is shown.
@@ -880,12 +894,17 @@ def delaydm_(config, mode, stim_mod, separate_input, label_strength, long_delay,
     '''
     dt = config['dt']
     rng = config['rng']
+    balanced_stim1 = bool(kwargs.pop('balanced_stim1', False))
     if mode == 'random': # Randomly generate parameters
         batch_size = kwargs['batch_size']
 
         # A list of locations of stimuluss (they are always on)
         stim_dist = rng.uniform(0.5*np.pi, 1.5*np.pi,(batch_size,))*rng.choice([-1,1],(batch_size,))
-        stim1_locs = rng.uniform(0, 2*np.pi, (batch_size,))
+        if balanced_stim1:
+            stim1_locs = _balanced_stimulus_locations(
+                rng, batch_size, config['n_eachring'])
+        else:
+            stim1_locs = rng.uniform(0, 2*np.pi, (batch_size,))
         stim2_locs = (stim1_locs+stim_dist)%(2*np.pi)
 
         stims_mean = rng.uniform(0.8,1.2,(batch_size,))
@@ -1987,7 +2006,8 @@ def generate_trials_wrap(task_params,
                          pretraining_shift_pre=0,
                          long_all=False,
                          align_periods=False,
-                         fixed_fixation_steps=None):
+                         fixed_fixation_steps=None,
+                         balanced_stimulus_directions=False):
     """
     Wrapper to generate the raw datasets, including the inputs, labels, and masks.
 
@@ -2008,6 +2028,8 @@ def generate_trials_wrap(task_params,
         fixed_fixation_steps: Optional common ``fix1`` endpoint.  It is only
             applied when explicitly provided; the default data-generation path
             is unchanged.  Scalar timing (``mode_input='random'``) is required.
+        balanced_stimulus_directions: Opt-in DelayDM setting that assigns the
+            same number of trials to every preferred ``stim1`` direction.
     """
     if rules is None: # Draw a rule randomly, create tuple with single rule in it
         task_params['rules_probs'] = normalize_to_one(task_params['rules_probs'])
@@ -2075,9 +2097,23 @@ def generate_trials_wrap(task_params,
         _align_rng = task_params['hp']['rng']
         _align_rng_state = _align_rng.get_state()
 
+    if balanced_stimulus_directions:
+        if mode_input != "random":
+            raise ValueError(
+                "balanced stimulus directions require mode_input='random'")
+        unsupported = set(rules) - {"delaydm1", "delaydm2"}
+        if unsupported:
+            raise ValueError(
+                "balanced stimulus directions are implemented only for "
+                f"DelayDM rules, not {sorted(unsupported)}")
+
     for rule, rule_idx in zip(rules, rule_idxs):
         if align_periods:
             _align_rng.set_state(_align_rng_state)
+        balanced_kwargs = (
+            {"balanced_stim1": True}
+            if balanced_stimulus_directions else {}
+        )
         trial = generate_trials(rule,
                                 task_params['hp'], 
                                 mode_input, 
@@ -2089,7 +2125,8 @@ def generate_trials_wrap(task_params,
                                 long_response=task_params['long_response'], 
                                 long_stimulus=task_params['long_stimulus'], 
                                 long_fixation=task_params['long_fixation'],
-                                long_all=long_all)
+                                long_all=long_all,
+                                **balanced_kwargs)
 
         if fixed_fixation_steps is not None:
             trial = _set_trial_fixation_steps(trial, fixed_fixation_steps)

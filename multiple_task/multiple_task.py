@@ -103,7 +103,7 @@ SEED_LIST = None
 RULESET = 'everything'          # low_dim, all, test, everything, ...
 CHOSEN_NETWORK = "dmpn"         # mpn1, dmpn, vanilla, gru
 N_HIDDEN = 300
-ADDON_NAME = "L21e4"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appended below
+ADDON_NAME = "L21e5"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appended below
 # Multiplicative modulation bounds (min, max) for M. The historical default is
 # (-1, 1); this experiment uses (-2, 2). Non-default values are encoded in the
 # effective ADDON_NAME automatically, so this run remains distinct from the
@@ -266,7 +266,7 @@ def current_basic_params(hyp_dict):
         'n_epochs_per_set': 1, 
         'weight_reg': 'L2',
         'activity_reg': 'L2', 
-        'reg_lambda': 1e-4,
+        'reg_lambda': 1e-5,
         
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'

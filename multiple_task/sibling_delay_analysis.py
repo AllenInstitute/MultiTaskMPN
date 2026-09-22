@@ -4,8 +4,10 @@ The supported families are DelayDM1/DelayDM2 and DMCGo/DMCNoGo inside a trained
 ``everything`` multi-task network. This module loads the run, generates aligned
 sibling trials, and fits shared delay-trajectory PCA bases. ``--method`` then
 selects either gradient fixed-point solving or very-long-delay settling
-endpoints; both methods export into the same six-PC coordinate systems. All
-outputs are isolated under ``two_in_multiples/{aname}/``.
+endpoints. Gradient analysis uses IncrementalPCA, while long-delay analysis
+selects among randomized-PCA candidates with family-specific endpoint metrics;
+their method-specific bases are stored separately. All outputs are isolated
+under ``two_in_multiples/{aname}/``.
 
 Run one or both families without rerunning clustering or lesion analysis::
 
@@ -26,7 +28,6 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.decomposition import IncrementalPCA, PCA
-from sklearn.metrics import silhouette_samples
 import torch
 from torch.serialization import add_safe_globals
 
@@ -35,6 +36,7 @@ import helper
 import mpn
 import mpn_tasks
 from grad_fixed_points import solve_period_modulation_fixed_points
+from sibling_geometry import best_task_specific_pc_pair
 
 __all__ = [
     "SIBLING_FAMILIES",
@@ -84,13 +86,15 @@ SIBLING_FIXED_POINT_STEPS = 200000
 # CPU and only this many are transferred to the GPU at once.
 SIBLING_NORMAL_TRIALS_PER_RULE = 100
 SIBLING_NORMAL_GPU_BATCH_SIZE = 200
-# Natural long-delay trials generated per sibling rule for the settling-endpoint
-# fixed-point proxy. The two rules use aligned RNG state, so local trial index
-# identifies a matched condition across the sibling pair.
-SIBLING_LONG_DELAY_TRIALS_PER_RULE = 30
+# Balanced long-delay trials for the settling-endpoint proxy. Each sibling rule
+# receives four amplitude/coherence realizations at each of eight directions.
+# Aligned RNG state makes every local trial a matched cross-task condition.
+SIBLING_LONG_DELAY_TRIALS_PER_DIRECTION = 4
+SIBLING_LONG_DELAY_TRIALS_PER_RULE = (
+    SIBLING_FP_N_STIM * SIBLING_LONG_DELAY_TRIALS_PER_DIRECTION)
 SIBLING_LONG_DELAY_TRAJECTORY_SAMPLES = 51
 # Long-delay analysis uses conventional sklearn PCA with randomized SVD so
-# distinct reproducible seeds can be compared by endpoint clustering.
+# reproducible seeds can be compared by the family's task-specific metric.
 SIBLING_LONG_DELAY_PCA_SEEDS = tuple(range(10))
 
 # Match the multi-task plotting palette in the input/output sanity figure.
@@ -130,9 +134,22 @@ def is_sibling_artifact(path, families=None):
 
 def _artifact_method(path):
     """Classify a sibling artifact as method-specific or shared preprocessing."""
-    name = Path(path).name
+    path = Path(path)
+    name = path.name
     if "long_delay_endpoint" in name:
         return "long_delay_endpoint"
+    if "_delay_trajectory_pca" in name:
+        # Before PCA filenames became method-specific, randomized long-delay
+        # candidates used the gradient filename. Inspect that legacy artifact
+        # so method-scoped cleanup can still assign it to the correct owner.
+        try:
+            with path.open("rb") as stream:
+                artifact = pickle.load(stream)
+        except (OSError, EOFError, pickle.PickleError, TypeError, ValueError):
+            return "gradient"
+        if artifact.get("pca_strategy") == "randomized_candidates":
+            return "long_delay_endpoint"
+        return "gradient"
     if (name.startswith("fixed_points_grad_")
             or "_delay_pc_projections" in name
             or "_delay_pc_gallery" in name):
@@ -379,6 +396,22 @@ def _delay_pca_scope_spec(rules, basis_scope):
         }
     raise ValueError(f"unknown basis_scope {basis_scope!r}; choose from "
                      f"{DELAY_PCA_SCOPES}")
+
+
+def _delay_pca_path(save_dir, aname, addtask, rules, basis_scope, method):
+    """Return the method-specific PCA artifact path for one family/scope."""
+    scope = _delay_pca_scope_spec(rules, basis_scope)
+    if method == "gradient":
+        # Preserve the historical gradient filename for compatibility.
+        method_suffix = ""
+    elif method == "long_delay_endpoint":
+        method_suffix = "_long_delay_endpoint"
+    else:
+        raise ValueError(f"unknown sibling method {method!r}; choose from "
+                         f"{SIBLING_METHODS}")
+    return (Path(save_dir)
+            / f"{addtask}{method_suffix}_delay_trajectory_pca"
+              f"{scope['artifact_suffix']}_{aname}.pkl")
 
 
 def _tracked_numpy(value):
@@ -707,7 +740,7 @@ def stream_normal_delay_analysis(
             fit_summary = (
                 f"PCA candidates={len(SIBLING_LONG_DELAY_PCA_SEEDS)}")
         artifact = {
-            "version": 5 if pca_candidates is not None else 4,
+            "version": 6 if pca_candidates is not None else 4,
             "aname": aname,
             "family": addtask,
             "rules": list(rules),
@@ -726,9 +759,10 @@ def stream_normal_delay_analysis(
         }
         if pca_candidates is not None:
             artifact["pca_candidates"] = pca_candidates
-        out_path = (save_dir
-                    / f"{addtask}_delay_trajectory_pca"
-                      f"{scope['artifact_suffix']}_{aname}.pkl")
+        method = ("gradient" if pca_strategy == "incremental"
+                  else "long_delay_endpoint")
+        out_path = _delay_pca_path(
+            save_dir, aname, addtask, rules, basis_scope, method)
         with out_path.open("wb") as stream:
             pickle.dump(artifact, stream)
         print(f"  [{addtask}/delay-pca/{basis_scope}] trials="
@@ -860,48 +894,15 @@ def _run_long_delay_projected_trajectory(
     return endpoint_M, endpoint_hidden, projected, sample_indices
 
 
-def _macro_silhouette_best_pair(projection, labels):
-    """Return the highest macro-group silhouette over all two-PC views."""
-    projection = np.asarray(projection, dtype=float)
-    labels = np.asarray(labels)
-    candidates = []
-    for pc_x in range(projection.shape[1]):
-        for pc_y in range(pc_x + 1, projection.shape[1]):
-            points = projection[:, [pc_x, pc_y]]
-            finite = np.isfinite(points).all(axis=1)
-            shown_points = points[finite]
-            shown_labels = labels[finite]
-            groups, counts = np.unique(shown_labels, return_counts=True)
-            if (groups.size < 2 or shown_points.shape[0] <= groups.size
-                    or np.any(counts < 2)):
-                continue
-            point_scores = silhouette_samples(
-                shown_points, shown_labels, metric="euclidean")
-            score = float(np.mean([
-                np.mean(point_scores[shown_labels == group])
-                for group in groups
-            ]))
-            if np.isfinite(score):
-                candidates.append((score, pc_x, pc_y))
-    if not candidates:
-        raise ValueError("cannot score any two-PC candidate")
-    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
-    score, pc_x, pc_y = candidates[0]
-    return score, (pc_x + 1, pc_y + 1)
-
-
 def _select_endpoint_pca_candidates(
-        aname, save_dir, addtask, rules, endpoint_values, labels,
-        criterion_name):
-    """Select and activate the PCA seed with best endpoint silhouette."""
+        aname, save_dir, addtask, rules, endpoint_values, *, stim_idx,
+        task_idx, group_labels=None):
+    """Select and activate the PCA seed with the best task-specific score."""
     selected_bases = {}
     for basis_scope in DELAY_PCA_SCOPES:
-        scope = _delay_pca_scope_spec(rules, basis_scope)
-        basis_path = (
-            Path(save_dir)
-            / f"{addtask}_delay_trajectory_pca"
-              f"{scope['artifact_suffix']}_{aname}.pkl"
-        )
+        basis_path = _delay_pca_path(
+            save_dir, aname, addtask, rules, basis_scope,
+            "long_delay_endpoint")
         with basis_path.open("rb") as stream:
             basis = pickle.load(stream)
         all_candidates = basis.get("pca_candidates")
@@ -925,7 +926,9 @@ def _select_endpoint_pca_candidates(
                 mean = np.asarray(candidate["mean"], dtype=float)
                 components = np.asarray(candidate["components"], dtype=float)
                 projection = (flattened - mean) @ components.T
-                score, pair = _macro_silhouette_best_pair(projection, labels)
+                pair, score, metric_name = best_task_specific_pc_pair(
+                    projection, addtask, stim_idx=stim_idx,
+                    group_labels=group_labels, task_idx=task_idx)
                 scored.append((score, int(candidate["random_seed"]), pair,
                                candidate))
             scored.sort(key=lambda item: (-item[0], item[1]))
@@ -934,14 +937,14 @@ def _select_endpoint_pca_candidates(
             selection[representation] = {
                 "random_seed": seed,
                 "best_pc_pair": pair,
-                "macro_silhouette": score,
+                "task_specific_score": score,
             }
             print(f"  [{addtask}/delay-pca/{basis_scope}/{representation}] "
                   f"selected seed={seed}, PC{pair[0]}-PC{pair[1]}, "
-                  f"{criterion_name} macro silhouette={score:.4f}")
+                  f"{metric_name}={score:.4f}")
         basis["candidate_selection"] = {
-            "strategy": "maximum endpoint macro silhouette",
-            "criterion": criterion_name,
+            "strategy": "maximum endpoint task-specific score",
+            "metric": metric_name,
             "n_seeds": n_seed_candidates,
             "representations": selection,
         }
@@ -970,7 +973,8 @@ def extract_long_delay_endpoints(
     tp["hp"]["batch_size_train"] = int(n_trials_per_rule)
     data, extra = mpn_tasks.generate_trials_wrap(
         tp, int(n_trials_per_rule), rules=rules, mode_input="random",
-        device="cpu", verbose=True, align_periods=True)
+        device="cpu", verbose=True, align_periods=True,
+        balanced_stimulus_directions=(addtask == "delaydm1"))
     long_input = data[0]
     _, trials, _ = extra
     delay_start, delay_stop = _aligned_delay1_window(rules, trials)
@@ -998,6 +1002,18 @@ def extract_long_delay_endpoints(
     if not (stim_idx.size == stimulus_magnitude.size == task_idx.size):
         raise ValueError(
             f"{addtask}: endpoint metadata length does not match trial count")
+    direction_counts = None
+    if addtask == "delaydm1":
+        direction_counts = {}
+        expected_per_direction = int(n_trials_per_rule) // SIBLING_FP_N_STIM
+        for task_i, rule in enumerate(rules):
+            counts = np.bincount(
+                stim_idx[task_idx == task_i], minlength=SIBLING_FP_N_STIM)
+            if (counts.size != SIBLING_FP_N_STIM
+                    or not np.all(counts == expected_per_direction)):
+                raise ValueError(
+                    f"{rule}: unbalanced long-delay directions {counts.tolist()}")
+            direction_counts[rule] = counts.tolist()
 
     W = np.asarray(W, dtype=np.float32)
     long_input_device = long_input.to(device)
@@ -1014,22 +1030,20 @@ def extract_long_delay_endpoints(
                          f"{M.shape[-2:]} vs {W.shape}")
     effective_M = (M * W[None, :, :]).astype(np.float32, copy=False)
 
-    if addtask == "delaydm1":
-        cluster_labels = stim_idx
-        criterion_name = "stimulus direction"
-    elif addtask == "dmcgo":
-        cluster_labels = _dmc_category_labels(
+    group_labels = None
+    if addtask == "dmcgo":
+        group_labels = _dmc_category_labels(
             task_idx, stim_idx, int(stim_idx.max()) + 1)
-        criterion_name = "task-adjusted category"
-    else:
-        raise ValueError(f"no endpoint PCA criterion for {addtask!r}")
+    elif addtask != "delaydm1":
+        raise ValueError(
+            f"no endpoint PCA task-specific metric for {addtask!r}")
     selected_bases = _select_endpoint_pca_candidates(
         aname, save_dir, addtask, rules,
         {"fixed_hidden": hidden, "fixed_WM": effective_M},
-        cluster_labels, criterion_name)
+        stim_idx=stim_idx, task_idx=task_idx, group_labels=group_labels)
     trajectory_basis = selected_bases["joint"]
-    basis_path = (Path(save_dir)
-                  / f"{addtask}_delay_trajectory_pca_{aname}.pkl")
+    basis_path = _delay_pca_path(
+        save_dir, aname, addtask, rules, "joint", "long_delay_endpoint")
     # Replay exactly the same stochastic forward pass now that the winning PCA
     # basis is known. This keeps the saved endpoint and projected trajectory on
     # the same realization even when the network injects recurrent noise.
@@ -1067,6 +1081,7 @@ def extract_long_delay_endpoints(
         "condition_idx": condition_idx,
         "stim_idx": stim_idx,
         "stimulus_magnitude": stimulus_magnitude,
+        "balanced_stimulus_directions": addtask == "delaydm1",
         "representations": {
             "fixed_M": M,
             "fixed_WM": effective_M,
@@ -1074,8 +1089,10 @@ def extract_long_delay_endpoints(
         },
         "projected_trajectories": projected_trajectories,
     }
+    if direction_counts is not None:
+        artifact["direction_counts"] = direction_counts
     if addtask == "dmcgo":
-        artifact["group_labels"] = cluster_labels
+        artifact["group_labels"] = group_labels
 
     out_path = (Path(save_dir)
                 / f"{addtask}_long_delay_endpoints_{aname}.pkl")
@@ -1105,8 +1122,9 @@ def save_long_delay_endpoint_pc_projections(
     save_dir = Path(save_dir)
     scope = _delay_pca_scope_spec(rules, basis_scope)
     artifact_suffix = scope["artifact_suffix"]
-    basis_path = (save_dir
-                  / f"{addtask}_delay_trajectory_pca{artifact_suffix}_{aname}.pkl")
+    basis_path = _delay_pca_path(
+        save_dir, aname, addtask, rules, basis_scope,
+        "long_delay_endpoint")
     with open(basis_path, "rb") as f:
         basis = pickle.load(f)
     with open(endpoint_path, "rb") as f:
@@ -1118,13 +1136,14 @@ def save_long_delay_endpoint_pc_projections(
                          f"{endpoints.get('task_names')}")
 
     out = {
-        "version": 2,
+        "version": 3,
         "method": "long_delay_endpoint",
         "aname": aname,
         "family": addtask,
         "task_names": list(rules),
         "basis_scope": basis_scope,
         "pca_source": str(basis_path),
+        "pca_selection": basis.get("candidate_selection"),
         "endpoint_source": str(endpoint_path),
         "delay_window": tuple(endpoints["delay_window"]),
         "delay_steps": int(endpoints["delay_steps"]),
@@ -1314,8 +1333,8 @@ def save_sibling_fixed_point_pc_projections(
     save_dir = Path(save_dir)
     scope = _delay_pca_scope_spec(rules, basis_scope)
     artifact_suffix = scope["artifact_suffix"]
-    basis_path = (save_dir
-                  / f"{addtask}_delay_trajectory_pca{artifact_suffix}_{aname}.pkl")
+    basis_path = _delay_pca_path(
+        save_dir, aname, addtask, rules, basis_scope, "gradient")
     with open(basis_path, "rb") as f:
         basis_artifact = pickle.load(f)
     if basis_artifact.get("basis_scope") != basis_scope:

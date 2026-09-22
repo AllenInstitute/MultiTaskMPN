@@ -56,16 +56,29 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
     def test_method_cleanup_preserves_the_other_fixed_point_method(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            shared = root / "delaydm1_delay_trajectory_pca_run.pkl"
+            gradient_basis = root / "delaydm1_delay_trajectory_pca_run.pkl"
             gradient = root / "delaydm1_delay_pc_projections_run.pkl"
+            endpoint_basis = (
+                root
+                / "delaydm1_long_delay_endpoint_delay_trajectory_pca_run.pkl"
+            )
+            legacy_endpoint_basis = (
+                root / "delaydm1_delay_trajectory_pca_delaydm1_only_run.pkl"
+            )
             endpoint = root / "delaydm1_long_delay_endpoints_run.pkl"
-            for path in (shared, gradient, endpoint):
+            for path in (gradient_basis, gradient, endpoint_basis, endpoint):
                 path.touch()
+            with legacy_endpoint_basis.open("wb") as stream:
+                pickle.dump(
+                    {"pca_strategy": "randomized_candidates"}, stream)
 
             removed = sibling._clean_stale_sibling_artifacts(
                 root, ("delaydm1",), method="long_delay_endpoint")
 
-            self.assertEqual(set(removed), {shared, endpoint})
+            self.assertEqual(
+                set(removed),
+                {endpoint_basis, legacy_endpoint_basis, endpoint})
+            self.assertTrue(gradient_basis.exists())
             self.assertTrue(gradient.exists())
 
     def test_artifact_ownership_covers_both_families(self):
@@ -259,8 +272,10 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
                 pca_strategy="randomized_candidates")
 
             with (Path(directory)
-                  / "delaydm1_delay_trajectory_pca_run.pkl").open("rb") as stream:
+                  / "delaydm1_long_delay_endpoint_delay_trajectory_pca_run.pkl"
+                  ).open("rb") as stream:
                 artifact = pickle.load(stream)
+            self.assertEqual(artifact["version"], 6)
             self.assertEqual(artifact["pca_strategy"], "randomized_candidates")
             self.assertEqual(
                 [record["random_seed"]
@@ -270,7 +285,7 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
             self.assertEqual(
                 len(artifact["pca_candidates"]["fixed_WM"]), 10)
 
-    def test_endpoint_silhouette_selects_and_activates_best_pca_seed(self):
+    def test_task_specific_score_selects_and_activates_best_pca_seed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             identity = np.eye(6, dtype=np.float32)
@@ -292,20 +307,24 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
                         "fixed_WM": candidates,
                     },
                 }
-                with (root / f"delaydm1_delay_trajectory_pca{suffix}_run.pkl").open(
-                        "wb") as stream:
+                with (
+                    root
+                    / ("delaydm1_long_delay_endpoint_delay_trajectory_pca"
+                       f"{suffix}_run.pkl")
+                ).open("wb") as stream:
                     pickle.dump(artifact, stream)
 
             values = np.tile(np.arange(1, 7, dtype=np.float32), (8, 1))
-            scorer = lambda projection, labels: (
-                float(projection[0, 0]), (1, 2))
+            scorer = lambda projection, family, **labels: (
+                (1, 2), float(projection[0, 0]), "task-specific test metric")
             with patch.object(
-                    sibling, "_macro_silhouette_best_pair",
+                    sibling, "best_task_specific_pc_pair",
                     side_effect=scorer):
                 selected = sibling._select_endpoint_pca_candidates(
                     "run", root, "delaydm1", ("delaydm1", "delaydm2"),
                     {"fixed_hidden": values, "fixed_WM": values},
-                    np.repeat([0, 1], 4), "stimulus direction")
+                    stim_idx=np.repeat([0, 1], 4),
+                    task_idx=np.tile([0, 1], 4))
 
             for basis in selected.values():
                 self.assertEqual(
@@ -315,6 +334,9 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
                     ["fixed_hidden"]["random_seed"], 1)
                 self.assertEqual(
                     basis["representations"]["fixed_WM"]["random_seed"], 1)
+                self.assertEqual(
+                    basis["candidate_selection"]["metric"],
+                    "task-specific test metric")
 
     def test_aligned_delay_window_validation(self):
         trials = [SimpleNamespace(epochs={"delay1": (4, 12)}),
@@ -344,7 +366,10 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
                     for key in ("fixed_hidden", "fixed_WM")
                 }
             }
-            basis_path = root / f"{family}_delay_trajectory_pca_{aname}.pkl"
+            basis_path = (
+                root
+                / f"{family}_long_delay_endpoint_delay_trajectory_pca_{aname}.pkl"
+            )
             with basis_path.open("wb") as stream:
                 pickle.dump(basis, stream)
 
@@ -386,6 +411,7 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
             with output_path.open("rb") as stream:
                 projected = pickle.load(stream)
             self.assertEqual(projected["method"], "long_delay_endpoint")
+            self.assertEqual(projected["version"], 3)
             self.assertEqual(projected["delay_ms"], 4000)
             np.testing.assert_array_equal(
                 projected["representations"]["hidden"]["proj"], hidden)
