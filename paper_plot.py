@@ -1124,6 +1124,14 @@ def plot_multitask_heatmap_colorbar():
 # ─── Figure: L2 vs Accuracy ──────────────────────────────────────────────────
 
 PERF_RESULT_PATH = Path("multiple_tasks_perf") / "performance_results.json"
+ACTIVATION_DIAGNOSIS_PATH = (
+    Path("multiple_task") / "activation_function_diagnosis_results.json"
+)
+MODULATION_BOUND_L2_STRENGTHS = (1e-5, 1e-4, 1e-3, 1e-2)
+_MODULATION_BOUND_SPECS = (
+    ("mb1", (-1.0, 1.0), r"$M \in [-1, 1]$ (mb1)", "#0072B2"),
+    ("mb2", (-2.0, 2.0), r"$M \in [-2, 2]$ (mb2)", "#D55E00"),
+)
 
 
 def _performance_feature_tag(model_name, result):
@@ -1198,6 +1206,189 @@ def plot_l2_vs_accuracy():
     fig.tight_layout()
     out_path = _multitask_out("l2_vs_accuracy.png")
     _save_fig(fig, out_path, extra=f" (Tanh n={len(tanh_results)})")
+
+
+def _modulation_bound_accuracy_groups(
+        result_dict, config_dir=Path("multiple_tasks")):
+    """Collect matched regular-run overall accuracies by L2 and M bound.
+
+    A regular run has the unadorned ``L21eX`` feature (historical mb1) or only
+    the ``mb2`` suffix, one 300-unit hidden layer, a 300-dimensional learned
+    input projection, Tanh activation, and the standard batch-128 setup. Older
+    mb1 configs omit ``m_bounds`` because ``(-1, 1)`` is the model default.
+    """
+    import json as _json
+    import re as _re
+
+    groups = {
+        strength: {
+            bound_name: []
+            for bound_name, _, _, _ in _MODULATION_BOUND_SPECS
+        }
+        for strength in MODULATION_BOUND_L2_STRENGTHS
+    }
+    bounds_to_name = {
+        bounds: bound_name
+        for bound_name, bounds, _, _ in _MODULATION_BOUND_SPECS
+    }
+
+    for model_name, result in result_dict.items():
+        feature = _performance_feature_tag(model_name, result) or ""
+        match = _re.fullmatch(r"L21e([2345])(mb2)?", feature)
+        if match is None:
+            continue
+        config_path = config_dir / f"param_{model_name}_param.json"
+        try:
+            with config_path.open() as handle:
+                config = _json.load(handle)
+            task_params = config["task_params"]
+            train_params = config["train_params"]
+            net_params = config["net_params"]
+            hidden_dims = net_params["n_neurons"][1:-1]
+            if (task_params.get("ruleset") != "everything"
+                    or len(hidden_dims) != 1 or hidden_dims[0] != 300
+                    or net_params.get("linear_embed", 300) != 300
+                    or net_params.get("activation") != "tanh"
+                    or net_params.get("net_type") != "dmpn"
+                    or not net_params.get("input_layer_add", False)
+                    or train_params.get("weight_reg") != "L2"
+                    or train_params.get("batch_size") != 128
+                    or train_params.get("n_batches") != 128):
+                continue
+
+            l2_value = float(train_params["reg_lambda"])
+            matched_l2 = next(
+                (strength for strength in MODULATION_BOUND_L2_STRENGTHS
+                 if np.isclose(l2_value, strength, rtol=1e-9, atol=0)),
+                None,
+            )
+            if matched_l2 is None:
+                continue
+            raw_bounds = net_params.get("ml_params", {}).get(
+                "m_bounds", (-1.0, 1.0))
+            bounds = tuple(float(value) for value in raw_bounds)
+            bound_name = bounds_to_name.get(bounds)
+            expected_bound_name = "mb2" if match.group(2) else "mb1"
+            if bound_name is None or bound_name != expected_bound_name:
+                raise ValueError(
+                    f"feature {feature!r} disagrees with m_bounds={bounds}")
+
+            accuracy = float(result["acc"])
+            if not np.isfinite(accuracy) or not 0 <= accuracy <= 1:
+                raise ValueError(f"invalid overall accuracy: {accuracy!r}")
+            groups[matched_l2][bound_name].append(accuracy * 100.0)
+        except (OSError, KeyError, TypeError, ValueError) as error:
+            print(f"  Note: skipped {model_name}: invalid or missing matched "
+                  f"mb1/mb2 metadata/result ({error}).")
+    return groups
+
+
+def plot_modulation_bound_accuracy():
+    """Four vertical L2 panels comparing matched mb1/mb2 overall accuracy."""
+    import json as _json
+
+    _ensure_out_dir()
+    if not PERF_RESULT_PATH.exists():
+        print(f"  Skipped: {PERF_RESULT_PATH} not found. Run "
+              "multiple_task_performance.py first.")
+        return
+    with PERF_RESULT_PATH.open() as handle:
+        result_dict = _json.load(handle)
+    groups = _modulation_bound_accuracy_groups(result_dict)
+    if not any(
+            values
+            for l2_groups in groups.values()
+            for values in l2_groups.values()):
+        print("  Skipped: no metadata-matched regular mb1/mb2 accuracies.")
+        return
+
+    x_positions = np.arange(len(_MODULATION_BOUND_SPECS), dtype=float)
+    fig, axes = plt.subplots(
+        len(MODULATION_BOUND_L2_STRENGTHS), 1,
+        figsize=(3.5, 8.2), sharex=True)
+
+    missing_features = []
+    count_summary = []
+    for panel_index, (ax, strength) in enumerate(
+            zip(axes, MODULATION_BOUND_L2_STRENGTHS)):
+        exponent = int(round(-np.log10(strength)))
+        ax.set_title(
+            f"{chr(ord('a') + panel_index)}   L2 = $10^{{-{exponent}}}$",
+            loc="left", fontsize=9.5, pad=3)
+        missing_labels = []
+        panel_values = []
+        means = []
+        for position, (bound_name, _, _, _) in zip(
+                x_positions, _MODULATION_BOUND_SPECS):
+            values = np.asarray(groups[strength][bound_name], dtype=float)
+            count_summary.append(
+                f"L21e{exponent}{'mb2' if bound_name == 'mb2' else ''} "
+                f"n={values.size}")
+            if values.size == 0:
+                means.append(np.nan)
+                missing_labels.append(bound_name)
+                missing_features.append(
+                    f"L21e{exponent}{'mb2' if bound_name == 'mb2' else ''}")
+                continue
+            means.append(float(values.mean()))
+            panel_values.extend(values.tolist())
+            jitter = (np.linspace(-0.06, 0.06, values.size)
+                      if values.size > 1 else np.zeros(1))
+            ax.scatter(
+                position + jitter, values, color="#3182ce",
+                edgecolors="k", linewidths=0.5, s=40,
+                alpha=0.8, zorder=3)
+        means = np.asarray(means, dtype=float)
+        finite_means = np.isfinite(means)
+        ax.plot(
+            x_positions[finite_means], means[finite_means], color="k",
+            linewidth=1.2, marker="D", markerfacecolor="white",
+            markeredgecolor="k", markeredgewidth=0.8,
+            markersize=4, zorder=4)
+        if missing_labels:
+            ax.text(
+                0.98, 0.08,
+                "No " + "/".join(missing_labels) + " performance data",
+                transform=ax.transAxes, ha="right", va="bottom",
+                fontsize=6.5, color="0.42")
+        if panel_values:
+            lo, hi = min(panel_values), max(panel_values)
+            pad = max((hi - lo) * 0.08, 2.0)
+            ax.set_ylim(
+                np.floor(max(0.0, lo - pad) / 5.0) * 5.0,
+                np.ceil(min(100.0, hi + pad) / 5.0) * 5.0)
+            ax.yaxis.set_major_locator(mpl.ticker.MultipleLocator(5))
+        else:
+            ax.set_ylim(0, 100)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.yaxis.grid(True, linestyle=":", linewidth=0.5,
+                      color="0.82", zorder=0)
+        ax.tick_params(axis="both", length=2.5)
+
+    axes[-1].set_xticks(x_positions)
+    axes[-1].set_xticklabels([
+        "$[-1, 1]$\n(mb1)", "$[-2, 2]$\n(mb2)"])
+    axes[-1].set_xlabel("Modulation bound")
+    fig.supylabel("Overall test accuracy (%)", x=0.015, fontsize=9)
+    fig.subplots_adjust(left=0.19, right=0.98, top=0.985,
+                        bottom=0.085, hspace=0.32)
+
+    if missing_features:
+        missing_features = list(dict.fromkeys(missing_features))
+        mb2_missing = [feature for feature in missing_features
+                       if feature.endswith("mb2")]
+        print("  Note: missing matched performance data for "
+              + ", ".join(missing_features) + ".")
+        if mb2_missing:
+            feature_args = " ".join(
+                f"--feature {feature}" for feature in mb2_missing)
+            print("  Evaluate available mb2 checkpoints with: python "
+                  "multiple_task/multiple_task_performance.py --merge "
+                  f"{feature_args}")
+
+    _save_fig(
+        fig, _multitask_out("modulation_bound_accuracy.png"),
+        extra=" (" + ", ".join(count_summary) + ")")
 
 
 # ─── Figure: L2=1e-4 activation comparison ──────────────────────────────────
@@ -1284,6 +1475,213 @@ def plot_l2e4_activation_accuracy():
         for feature, label, _ in group_specs
     )
     _save_fig(fig, out_path, extra=f" ({counts})")
+
+
+# ─── Figures: L2=1e-4 activation-function diagnosis ─────────────────────────
+
+# Same order and colors as plot_l2e4_activation_accuracy, so the diagnosis
+# panels read as companions of the accuracy panel. ReLU and Linear are the
+# controls: ReLU is positive-only and mostly zero-derivative yet trains best,
+# so the panels below isolate the embedding offset and its effect on M rather
+# than sign or saturation.
+_ACTIVATION_DIAGNOSIS_SPECS = (
+    ("linear", "Linear", c_vals[2]),
+    ("relu", "ReLU", c_vals[6]),
+    ("softplus", "Softplus", c_vals[3]),
+    ("sigmoid", "Sigmoid", c_vals[9]),
+    ("tanh", "Tanh", c_vals[1]),
+)
+
+
+def _load_activation_diagnosis_records():
+    """Load per-checkpoint records produced by activation_function_diagnosis."""
+    import json as _json
+
+    if not ACTIVATION_DIAGNOSIS_PATH.exists():
+        print(
+            f"  Skipped: {ACTIVATION_DIAGNOSIS_PATH} not found. Run: python "
+            "multiple_task/activation_function_diagnosis.py"
+        )
+        return None
+    with ACTIVATION_DIAGNOSIS_PATH.open() as stream:
+        data = _json.load(stream)
+    records = data.get("records", [])
+    if not records:
+        print(f"  Skipped: no model records in {ACTIVATION_DIAGNOSIS_PATH}.")
+        return None
+    return records
+
+
+def _diagnosis_record_value(record, path):
+    """Read a dot-separated scalar metric from one diagnosis record."""
+    value = record
+    for key in path.split("."):
+        value = value[key]
+    return float(value)
+
+
+def _plot_activation_diagnosis_metric(metric_path, ylabel, filename,
+                                      percentage=True):
+    """Draw a seed-level activation comparison for one diagnosis metric.
+
+    ``percentage=True`` scales a fractional metric to percent and keeps the
+    axis inside [0, 100]; otherwise the raw value is plotted from zero.
+    """
+    _ensure_out_dir()
+    records = _load_activation_diagnosis_records()
+    if records is None:
+        return
+
+    scale = 100.0 if percentage else 1.0
+    # Same per-column width as plot_l2e4_activation_accuracy.
+    fig, ax = plt.subplots(
+        1, 1, figsize=(0.575 * len(_ACTIVATION_DIAGNOSIS_SPECS) + 0.3, 2.35))
+    plotted = []
+    for x, (activation, label, color) in enumerate(
+            _ACTIVATION_DIAGNOSIS_SPECS):
+        values = np.asarray([
+            scale * _diagnosis_record_value(record, metric_path)
+            for record in records
+            if record.get("activation") == activation
+        ], dtype=float)
+        values = values[np.isfinite(values)]
+        if values.size == 0:
+            continue
+        plotted.append((x, label, values))
+        jitter = (np.linspace(-0.10, 0.10, values.size)
+                  if values.size > 1 else np.zeros(1))
+        ax.scatter(
+            x + jitter, values, color=color, edgecolors="k", linewidths=0.5,
+            s=38, alpha=0.8, zorder=3,
+        )
+        ax.errorbar(
+            x, values.mean(), yerr=values.std(), fmt="D", color="k",
+            markerfacecolor="white", markeredgewidth=0.8, markersize=4,
+            capsize=3, linewidth=1.0, zorder=4,
+        )
+
+    if not plotted:
+        plt.close(fig)
+        print(f"  Skipped: metric {metric_path!r} has no finite values.")
+        return
+    ax.set_xticks([entry[0] for entry in plotted])
+    ax.set_xticklabels([entry[1] for entry in plotted], rotation=45, ha="right")
+    ax.set_xlabel("Activation function")
+    ax.set_ylabel(ylabel)
+    all_values = np.concatenate([entry[2] for entry in plotted])
+    if percentage:
+        value_span = max(float(np.ptp(all_values)), 1.0)
+        padding = max(2.5, 0.03 * value_span)
+        # Keep zero inside the panel with a small negative margin, so the
+        # near-zero Tanh points and their error bars are not clipped against
+        # the bottom spine.
+        lower = min(-2.5, float(all_values.min()) - padding)
+        upper = min(100.0, float(all_values.max()) + padding)
+        ax.set_ylim(lower, upper)
+        ax.yaxis.set_major_locator(mticker.MultipleLocator(25))
+    else:
+        padding = max(0.05 * float(all_values.max()), 0.5)
+        ax.set_ylim(0.0, float(all_values.max()) + padding)
+        ax.yaxis.set_major_locator(mticker.MaxNLocator(5, integer=True))
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
+    fig.tight_layout()
+    counts = ", ".join(
+        f"{label} n={values.size}" for _, label, values in plotted)
+    _save_fig(fig, _multitask_out(filename), extra=f" ({counts})")
+
+
+def plot_l2e4_activation_embedding_offset():
+    """Figure B: constant background (offset) energy in the plastic layer's
+    presynaptic embedding. Softplus and sigmoid output ln 2 and 0.5 at zero
+    input, so their embedding is mostly a constant vector; ReLU, linear and
+    tanh output zero at zero input and sit near 0 %."""
+    _plot_activation_diagnosis_metric(
+        "embedding.offset_energy_fraction",
+        "Input embedding\noffset energy (%)",
+        "l2e4_activation_embedding_offset.png",
+    )
+
+
+def plot_l2e4_activation_modulation_dimension():
+    """Figure C: trial-specific capacity of the final modulation M.
+
+    Participation ratio of the end-of-trial M across trials. A constant
+    presynaptic background makes the Hebbian outer product grow in one shared
+    direction on every trial, so softplus / sigmoid collapse to a few
+    dimensions while ReLU, linear and tanh keep an order of magnitude more.
+    This replaces an earlier hidden-saturation panel: ReLU is as
+    zero-derivative as sigmoid yet trains best, so saturation is not the
+    explanatory variable.
+    """
+    _plot_activation_diagnosis_metric(
+        "final_modulation.trial_effective_dimension",
+        "Trial-specific dimension\nof final modulation",
+        "l2e4_activation_modulation_dimension.png",
+        percentage=False,
+    )
+
+
+def plot_l2e4_activation_modulation_common_accuracy():
+    """Figure D: accuracy versus common-across-trial modulation energy."""
+    _ensure_out_dir()
+    records = _load_activation_diagnosis_records()
+    if records is None:
+        return
+
+    fig, ax = plt.subplots(1, 1, figsize=(2.65, 2.35))
+    all_x, all_y = [], []
+    counts = []
+    for activation, label, color in _ACTIVATION_DIAGNOSIS_SPECS:
+        selected = [
+            record for record in records
+            if record.get("activation") == activation
+        ]
+        x = np.asarray([
+            100.0 * _diagnosis_record_value(
+                record,
+                "final_modulation.common_across_trials_energy_fraction",
+            )
+            for record in selected
+        ], dtype=float)
+        y = np.asarray([
+            100.0 * _diagnosis_record_value(record, "database_accuracy")
+            for record in selected
+        ], dtype=float)
+        finite = np.isfinite(x) & np.isfinite(y)
+        x, y = x[finite], y[finite]
+        if x.size == 0:
+            continue
+        ax.scatter(
+            x, y, color=color, edgecolors="k", linewidths=0.5, s=38,
+            alpha=0.8, label=f"{label} (n={x.size})", zorder=3,
+        )
+        all_x.extend(x.tolist())
+        all_y.extend(y.tolist())
+        counts.append(f"{label} n={x.size}")
+
+    all_x = np.asarray(all_x, dtype=float)
+    all_y = np.asarray(all_y, dtype=float)
+    if all_x.size == 0:
+        plt.close(fig)
+        print("  Skipped: no finite modulation/accuracy pairs.")
+        return
+
+    ax.set_xlabel("Common-across-trial\nmodulation energy (%)")
+    ax.set_ylabel("Mean accuracy\nacross tasks (%)")
+    ax.set_xlim(0.0, 105.0)
+    y_pad = max(2.0, 0.08 * (all_y.max() - all_y.min()))
+    ax.set_ylim(max(0.0, all_y.min() - y_pad),
+                min(100.0, all_y.max() + y_pad))
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.grid(True, linestyle=":", linewidth=0.5, color="0.85", zorder=0)
+    _legend(ax, frameon=False, fontsize=6, loc="lower left")
+    fig.tight_layout()
+    _save_fig(
+        fig,
+        _multitask_out("l2e4_activation_modulation_common_accuracy.png"),
+        extra=" (" + ", ".join(counts) + ")",
+    )
 
 
 # ─── Figure: L2=1e-4 projection-dimension comparison ─────────────────────────
@@ -8092,7 +8490,14 @@ FIGURES_BY_MODE = {
     },
     "acc_plot": {
         "l2_accuracy": plot_l2_vs_accuracy,
+        "modulation_bound_accuracy": plot_modulation_bound_accuracy,
         "l2e4_activation_accuracy": plot_l2e4_activation_accuracy,
+        "l2e4_activation_embedding_offset":
+            plot_l2e4_activation_embedding_offset,
+        "l2e4_activation_modulation_dimension":
+            plot_l2e4_activation_modulation_dimension,
+        "l2e4_activation_modulation_common_accuracy":
+            plot_l2e4_activation_modulation_common_accuracy,
         "projection_dim_accuracy": plot_projection_dim_accuracy,
         "hidden_dim_accuracy": plot_hidden_dim_accuracy,
         "projection_dim_task_accuracy": plot_projection_dim_task_accuracy,

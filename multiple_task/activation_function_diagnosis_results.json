@@ -1,0 +1,3662 @@
+{
+  "environment": {
+    "hostname": "n277",
+    "cuda_device": "Tesla V100-SXM2-32GB",
+    "torch_version": "2.5.1",
+    "seed": 20260921,
+    "trials_per_rule": 2,
+    "intervention_trials_per_rule": 8
+  },
+  "model_counts": {
+    "linear": 5,
+    "relu": 5,
+    "softplus": 5,
+    "sigmoid": 5,
+    "tanh": 7
+  },
+  "records": [
+    {
+      "model_name": "everything_seed286_L21e4linear+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed286_L21e4linear+hidden300+batch128+angle.pt",
+      "activation": "linear",
+      "database_accuracy": 0.9239481091499329,
+      "database_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 0.9422572255134583,
+        "delaygo": 0.9597989916801453,
+        "delayanti": 1.0,
+        "delaydm1": 0.948369562625885,
+        "delaydm2": 0.9049999713897705,
+        "contextdelaydm1": 0.9587474465370178,
+        "contextdelaydm2": 0.824592113494873,
+        "multidelaydm": 0.9039715528488159,
+        "dmsgo": 0.7690288424491882,
+        "dmsnogo": 0.8299492001533508,
+        "dmcgo": 0.9593495726585388,
+        "dmcnogo": 0.914990246295929
+      },
+      "evaluation_accuracy": 0.9392265677452087,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 1.0,
+        "delaydm2": 0.5555555820465088,
+        "contextdelaydm1": 1.0,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 0.9047619104385376,
+        "dmsnogo": 0.5,
+        "dmcgo": 0.9285714626312256,
+        "dmcnogo": 0.8928571939468384
+      },
+      "embedding": {
+        "preactivation_mean": 0.03505948326064007,
+        "preactivation_std": 0.1793412261079998,
+        "activation_mean": 0.03505948326064007,
+        "activation_std": 0.1793412261079998,
+        "activation_p01": -0.43340104818344116,
+        "activation_median": 0.0,
+        "activation_p99": 0.6880797743797302,
+        "negative_activation_fraction": 0.2202880341880342,
+        "derivative_mean": 1.0,
+        "derivative_median": 1.0,
+        "derivative_p10": 1.0,
+        "derivative_fraction_lt_0.05": 0.0,
+        "derivative_fraction_lt_0p1": 0.0,
+        "offset_energy_fraction": 0.03680974691679663,
+        "effective_dimension": 4.7735341098033715
+      },
+      "hidden": {
+        "preactivation_mean": -0.022141480137270773,
+        "preactivation_std": 0.18892411351281044,
+        "activation_mean": -0.022141480137270773,
+        "activation_std": 0.18892411351281044,
+        "activation_p01": -0.7725904536247253,
+        "activation_median": -0.0018652828293852508,
+        "activation_p99": 0.5190489065647128,
+        "negative_activation_fraction": 0.5964512820512821,
+        "derivative_mean": 1.0,
+        "derivative_median": 1.0,
+        "derivative_p10": 1.0,
+        "derivative_fraction_lt_0.05": 0.0,
+        "derivative_fraction_lt_0p1": 0.0,
+        "offset_energy_fraction": 0.013549208899484652,
+        "effective_dimension": 6.769042442503023,
+        "response_task_separation_ratio": 2.9368284106005937
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.0031286491272057813,
+        "negative_outer_product_fraction": 0.48441735001710745
+      },
+      "final_modulation": {
+        "mean": -0.028194967657327652,
+        "std": 0.2751796543598175,
+        "mean_absolute": 0.1598135381937027,
+        "common_across_trials_energy_fraction": 0.32907605171203613,
+        "trial_effective_dimension": 15.344655355972545,
+        "upper_bound_fraction": 0.0012837037037037038,
+        "lower_bound_fraction": 0.0017674074074074074
+      },
+      "parameters": {
+        "eta": 1.2431657314300537,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 8.88249397277832,
+        "plastic_weight_frobenius": 10.95647144317627,
+        "output_weight_frobenius": 2.5105979442596436,
+        "plastic_bias_mean": 0.0023972506169229746,
+        "plastic_bias_std": 0.050651732832193375
+      }
+    },
+    {
+      "model_name": "everything_seed3_L21e4linear+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed3_L21e4linear+hidden300+batch128+angle.pt",
+      "activation": "linear",
+      "database_accuracy": 0.9023475646972656,
+      "database_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 0.9775561690330505,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 0.9849246144294739,
+        "delayanti": 0.9234693646430969,
+        "delaydm1": 0.883152186870575,
+        "delaydm2": 0.8799999952316284,
+        "contextdelaydm1": 0.8101391196250916,
+        "contextdelaydm2": 0.8449883460998535,
+        "multidelaydm": 0.9093064665794373,
+        "dmsgo": 0.7847769260406494,
+        "dmsnogo": 0.8705583810806274,
+        "dmcgo": 0.9437147974967957,
+        "dmcnogo": 0.907852053642273
+      },
+      "evaluation_accuracy": 0.911602258682251,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 0.8461538553237915,
+        "delaydm2": 1.0,
+        "contextdelaydm1": 0.472222238779068,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 1.0,
+        "dmsnogo": 0.75,
+        "dmcgo": 0.9047619104385376,
+        "dmcnogo": 0.8571429252624512
+      },
+      "embedding": {
+        "preactivation_mean": -0.0035174679027295433,
+        "preactivation_std": 0.17834504835373918,
+        "activation_mean": -0.0035174679027295433,
+        "activation_std": 0.17834504835373918,
+        "activation_p01": -0.5783065557479858,
+        "activation_median": 0.0,
+        "activation_p99": 0.5604014992713928,
+        "negative_activation_fraction": 0.3314623931623932,
+        "derivative_mean": 1.0,
+        "derivative_median": 1.0,
+        "derivative_p10": 1.0,
+        "derivative_fraction_lt_0.05": 0.0,
+        "derivative_fraction_lt_0p1": 0.0,
+        "offset_energy_fraction": 0.0003888385108306729,
+        "effective_dimension": 4.994156413273334
+      },
+      "hidden": {
+        "preactivation_mean": 0.006669723998239091,
+        "preactivation_std": 0.22925580745068122,
+        "activation_mean": 0.006669723998239091,
+        "activation_std": 0.22925580745068122,
+        "activation_p01": -0.8011028879880905,
+        "activation_median": -0.0002049785980489105,
+        "activation_p99": 0.8729499775171281,
+        "negative_activation_fraction": 0.5192273504273505,
+        "derivative_mean": 1.0,
+        "derivative_median": 1.0,
+        "derivative_p10": 1.0,
+        "derivative_fraction_lt_0.05": 0.0,
+        "derivative_fraction_lt_0p1": 0.0,
+        "offset_energy_fraction": 0.0008456830041045812,
+        "effective_dimension": 6.17477516492391,
+        "response_task_separation_ratio": 3.614828459660928
+      },
+      "hebbian": {
+        "dc_energy_fraction": 4.337329286431012e-06,
+        "negative_outer_product_fraction": 0.5865792870521546
+      },
+      "final_modulation": {
+        "mean": -0.001150196185335517,
+        "std": 0.29708412289619446,
+        "mean_absolute": 0.17760148644447327,
+        "common_across_trials_energy_fraction": 0.28677088022232056,
+        "trial_effective_dimension": 15.916579177827394,
+        "upper_bound_fraction": 0.0020266666666666666,
+        "lower_bound_fraction": 0.0020033333333333335
+      },
+      "parameters": {
+        "eta": 1.2792093753814697,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 8.944424629211426,
+        "plastic_weight_frobenius": 11.80208683013916,
+        "output_weight_frobenius": 2.5997116565704346,
+        "plastic_bias_mean": 0.0018537541618570685,
+        "plastic_bias_std": 0.0485658124089241
+      }
+    },
+    {
+      "model_name": "everything_seed420_L21e4linear+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed420_L21e4linear+hidden300+batch128+angle.pt",
+      "activation": "linear",
+      "database_accuracy": 0.8940223455429077,
+      "database_accuracy_per_task": {
+        "fdgo": 0.9589743614196777,
+        "fdanti": 1.0,
+        "reactgo": 0.9674888253211975,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 0.9362244606018066,
+        "delaydm1": 0.85597825050354,
+        "delaydm2": 0.7724999785423279,
+        "contextdelaydm1": 0.8180913925170898,
+        "contextdelaydm2": 0.808857798576355,
+        "multidelaydm": 0.8980438709259033,
+        "dmsgo": 0.7716535329818726,
+        "dmsnogo": 0.8426395654678345,
+        "dmcgo": 0.9624764919281006,
+        "dmcnogo": 0.9195327758789062
+      },
+      "evaluation_accuracy": 0.8895028233528137,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 0.4117647111415863,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 0.8461538553237915,
+        "delaydm2": 1.0,
+        "contextdelaydm1": 0.8888888955116272,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 1.0,
+        "dmsnogo": 1.0,
+        "dmcgo": 0.9047619104385376,
+        "dmcnogo": 1.0
+      },
+      "embedding": {
+        "preactivation_mean": 0.016281954452466607,
+        "preactivation_std": 0.17746501850901877,
+        "activation_mean": 0.016281954452466607,
+        "activation_std": 0.17746501850901877,
+        "activation_p01": -0.5069647431373596,
+        "activation_median": 0.0,
+        "activation_p99": 0.6033185124397278,
+        "negative_activation_fraction": 0.277382905982906,
+        "derivative_mean": 1.0,
+        "derivative_median": 1.0,
+        "derivative_p10": 1.0,
+        "derivative_fraction_lt_0.05": 0.0,
+        "derivative_fraction_lt_0p1": 0.0,
+        "offset_energy_fraction": 0.008347321538579542,
+        "effective_dimension": 5.1275898815537415
+      },
+      "hidden": {
+        "preactivation_mean": -0.01679871585440207,
+        "preactivation_std": 0.25478075084910795,
+        "activation_mean": -0.01679871585440207,
+        "activation_std": 0.25478075084910795,
+        "activation_p01": -0.9477913767099381,
+        "activation_median": -0.000502983428305015,
+        "activation_p99": 0.8072140669822694,
+        "negative_activation_fraction": 0.5374188034188034,
+        "derivative_mean": 1.0,
+        "derivative_median": 1.0,
+        "derivative_p10": 1.0,
+        "derivative_fraction_lt_0.05": 0.0,
+        "derivative_fraction_lt_0p1": 0.0,
+        "offset_energy_fraction": 0.004328476146722255,
+        "effective_dimension": 5.468728370825962,
+        "response_task_separation_ratio": 2.8790877270402633
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.00023160859175627244,
+        "negative_outer_product_fraction": 0.4464634698170882
+      },
+      "final_modulation": {
+        "mean": -0.00827140174806118,
+        "std": 0.31859955191612244,
+        "mean_absolute": 0.1965804398059845,
+        "common_across_trials_energy_fraction": 0.27822551131248474,
+        "trial_effective_dimension": 15.598375839070139,
+        "upper_bound_fraction": 0.002274074074074074,
+        "lower_bound_fraction": 0.0023037037037037036
+      },
+      "parameters": {
+        "eta": 1.291784644126892,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 8.947513580322266,
+        "plastic_weight_frobenius": 11.638910293579102,
+        "output_weight_frobenius": 2.3507683277130127,
+        "plastic_bias_mean": -0.0027928929775953293,
+        "plastic_bias_std": 0.057224974036216736
+      }
+    },
+    {
+      "model_name": "everything_seed772_L21e4linear+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed772_L21e4linear+hidden300+batch128+angle.pt",
+      "activation": "linear",
+      "database_accuracy": 0.9033975601196289,
+      "database_accuracy_per_task": {
+        "fdgo": 0.9794871807098389,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 0.9897959232330322,
+        "delaydm1": 0.8777174353599548,
+        "delaydm2": 0.8974999785423279,
+        "contextdelaydm1": 0.8359840512275696,
+        "contextdelaydm2": 0.883449912071228,
+        "multidelaydm": 0.8547717928886414,
+        "dmsgo": 0.7454068064689636,
+        "dmsnogo": 0.8350253701210022,
+        "dmcgo": 0.9580987691879272,
+        "dmcnogo": 0.8792991638183594
+      },
+      "evaluation_accuracy": 0.9060773849487305,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 0.7692307829856873,
+        "delaydm2": 0.6666666865348816,
+        "contextdelaydm1": 0.75,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 1.0,
+        "dmsnogo": 0.6666666865348816,
+        "dmcgo": 0.9523809552192688,
+        "dmcnogo": 0.6428571939468384
+      },
+      "embedding": {
+        "preactivation_mean": -0.004401549419346596,
+        "preactivation_std": 0.17001905623209831,
+        "activation_mean": -0.004401549419346596,
+        "activation_std": 0.17001905623209831,
+        "activation_p01": -0.5440378189086914,
+        "activation_median": 0.0,
+        "activation_p99": 0.5158872604370117,
+        "negative_activation_fraction": 0.33194444444444443,
+        "derivative_mean": 1.0,
+        "derivative_median": 1.0,
+        "derivative_p10": 1.0,
+        "derivative_fraction_lt_0.05": 0.0,
+        "derivative_fraction_lt_0p1": 0.0,
+        "offset_energy_fraction": 0.0006697689160979026,
+        "effective_dimension": 5.130770274855702
+      },
+      "hidden": {
+        "preactivation_mean": 0.00112328578090009,
+        "preactivation_std": 0.23830860893024228,
+        "activation_mean": 0.00112328578090009,
+        "activation_std": 0.23830860893024228,
+        "activation_p01": -0.8194212591648102,
+        "activation_median": 0.00040850679215509444,
+        "activation_p99": 0.8574578273296358,
+        "negative_activation_fraction": 0.38145384615384614,
+        "derivative_mean": 1.0,
+        "derivative_median": 1.0,
+        "derivative_p10": 1.0,
+        "derivative_fraction_lt_0.05": 0.0,
+        "derivative_fraction_lt_0p1": 0.0,
+        "offset_energy_fraction": 2.2217306720006172e-05,
+        "effective_dimension": 5.6179376953651206,
+        "response_task_separation_ratio": 3.0543706167353344
+      },
+      "hebbian": {
+        "dc_energy_fraction": 8.82868659922965e-06,
+        "negative_outer_product_fraction": 0.43139388675873097
+      },
+      "final_modulation": {
+        "mean": -0.0008309316472150385,
+        "std": 0.31002527475357056,
+        "mean_absolute": 0.18630273640155792,
+        "common_across_trials_energy_fraction": 0.25950828194618225,
+        "trial_effective_dimension": 16.065141070362507,
+        "upper_bound_fraction": 0.002395185185185185,
+        "lower_bound_fraction": 0.002396296296296296
+      },
+      "parameters": {
+        "eta": 1.391214370727539,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 8.592120170593262,
+        "plastic_weight_frobenius": 11.751570701599121,
+        "output_weight_frobenius": 2.5374488830566406,
+        "plastic_bias_mean": 0.0009023660677485168,
+        "plastic_bias_std": 0.052673887461423874
+      }
+    },
+    {
+      "model_name": "everything_seed784_L21e4linear+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed784_L21e4linear+hidden300+batch128+angle.pt",
+      "activation": "linear",
+      "database_accuracy": 0.9059476256370544,
+      "database_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 0.9974874258041382,
+        "delayanti": 0.964285671710968,
+        "delaydm1": 0.8695652484893799,
+        "delaydm2": 0.8849999904632568,
+        "contextdelaydm1": 0.8737574219703674,
+        "contextdelaydm2": 0.8426573872566223,
+        "multidelaydm": 0.881446361541748,
+        "dmsgo": 0.8110235929489136,
+        "dmsnogo": 0.7766497135162354,
+        "dmcgo": 0.9399624466896057,
+        "dmcnogo": 0.8929266929626465
+      },
+      "evaluation_accuracy": 0.911602258682251,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 1.0,
+        "delaydm2": 1.0,
+        "contextdelaydm1": 1.0,
+        "contextdelaydm2": 0.523809552192688,
+        "multidelaydm": 1.0,
+        "dmsgo": 0.6666666865348816,
+        "dmsnogo": 0.75,
+        "dmcgo": 1.0,
+        "dmcnogo": 0.5714285969734192
+      },
+      "embedding": {
+        "preactivation_mean": 0.009357093749010378,
+        "preactivation_std": 0.17338124204535826,
+        "activation_mean": 0.009357093749010378,
+        "activation_std": 0.17338124204535826,
+        "activation_p01": -0.5283637642860413,
+        "activation_median": 0.0,
+        "activation_p99": 0.5683771371841431,
+        "negative_activation_fraction": 0.2823820512820513,
+        "derivative_mean": 1.0,
+        "derivative_median": 1.0,
+        "derivative_p10": 1.0,
+        "derivative_fraction_lt_0.05": 0.0,
+        "derivative_fraction_lt_0p1": 0.0,
+        "offset_energy_fraction": 0.0029041207062731013,
+        "effective_dimension": 5.066425072097001
+      },
+      "hidden": {
+        "preactivation_mean": -0.011489060601359293,
+        "preactivation_std": 0.2373886702058618,
+        "activation_mean": -0.011489060601359293,
+        "activation_std": 0.2373886702058618,
+        "activation_p01": -0.8842857414484024,
+        "activation_median": -0.0005512815550900996,
+        "activation_p99": 0.7887220042943954,
+        "negative_activation_fraction": 0.632617094017094,
+        "derivative_mean": 1.0,
+        "derivative_median": 1.0,
+        "derivative_p10": 1.0,
+        "derivative_fraction_lt_0.05": 0.0,
+        "derivative_fraction_lt_0p1": 0.0,
+        "offset_energy_fraction": 0.0023368615957128176,
+        "effective_dimension": 5.189250601441295,
+        "response_task_separation_ratio": 3.448807881216666
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.00011929490694282226,
+        "negative_outer_product_fraction": 0.5729221137670371
+      },
+      "final_modulation": {
+        "mean": -0.004310959484428167,
+        "std": 0.295160710811615,
+        "mean_absolute": 0.1703352928161621,
+        "common_across_trials_energy_fraction": 0.2735208570957184,
+        "trial_effective_dimension": 15.353122434347505,
+        "upper_bound_fraction": 0.0019948148148148147,
+        "lower_bound_fraction": 0.002055925925925926
+      },
+      "parameters": {
+        "eta": 1.2873566150665283,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 8.722935676574707,
+        "plastic_weight_frobenius": 11.450723648071289,
+        "output_weight_frobenius": 2.4574551582336426,
+        "plastic_bias_mean": 0.0005041878903284669,
+        "plastic_bias_std": 0.05612887069582939
+      }
+    },
+    {
+      "model_name": "everything_seed247_L21e4relu+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed247_L21e4relu+hidden300+batch128+angle.pt",
+      "activation": "relu",
+      "database_accuracy": 0.9502737522125244,
+      "database_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 0.9750655889511108,
+        "delaygo": 0.9874371886253357,
+        "delayanti": 1.0,
+        "delaydm1": 0.970108687877655,
+        "delaydm2": 0.8824999928474426,
+        "contextdelaydm1": 0.9333995580673218,
+        "contextdelaydm2": 0.9155011773109436,
+        "multidelaydm": 0.9413160085678101,
+        "dmsgo": 0.8635170459747314,
+        "dmsnogo": 0.9086294174194336,
+        "dmcgo": 0.9543464183807373,
+        "dmcnogo": 0.9727450013160706
+      },
+      "evaluation_accuracy": 0.9696133136749268,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 1.0,
+        "delaydm2": 1.0,
+        "contextdelaydm1": 1.0,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 0.7142857313156128,
+        "dmsnogo": 0.6666666865348816,
+        "dmcgo": 0.9761905074119568,
+        "dmcnogo": 1.0
+      },
+      "embedding": {
+        "preactivation_mean": -0.05561511370314108,
+        "preactivation_std": 0.17096438221312382,
+        "activation_mean": 0.02118714643378765,
+        "activation_std": 0.0755543633536992,
+        "activation_p01": 0.0,
+        "activation_median": 0.0,
+        "activation_p99": 0.41731950640678406,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.17327008547008546,
+        "derivative_median": 0.0,
+        "derivative_p10": 0.0,
+        "derivative_fraction_lt_0.05": 0.8267299145299145,
+        "derivative_fraction_lt_0p1": 0.8267299145299145,
+        "offset_energy_fraction": 0.07290387325498882,
+        "effective_dimension": 7.605804576679328
+      },
+      "hidden": {
+        "preactivation_mean": -0.1175495091200053,
+        "preactivation_std": 0.1722929764043156,
+        "activation_mean": 0.010419448448292429,
+        "activation_std": 0.08049837296817845,
+        "activation_p01": 0.0,
+        "activation_median": 0.0,
+        "activation_p99": 0.3974392035603535,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.033843589743589746,
+        "derivative_median": 0.0,
+        "derivative_p10": 0.0,
+        "derivative_fraction_lt_0.05": 0.9661564102564103,
+        "derivative_fraction_lt_0p1": 0.9661564102564103,
+        "offset_energy_fraction": 0.01647780729449445,
+        "effective_dimension": 2.691038603980449,
+        "response_task_separation_ratio": 1.8882483162868244
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.0021943877193664847,
+        "negative_outer_product_fraction": 0.0
+      },
+      "final_modulation": {
+        "mean": 0.012862097471952438,
+        "std": 0.08021130412817001,
+        "mean_absolute": 0.012862097471952438,
+        "common_across_trials_energy_fraction": 0.3424469530582428,
+        "trial_effective_dimension": 12.481428872806287,
+        "upper_bound_fraction": 0.0002725925925925926,
+        "lower_bound_fraction": 0.0
+      },
+      "parameters": {
+        "eta": 6.117868900299072,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 9.031696319580078,
+        "plastic_weight_frobenius": 10.14730167388916,
+        "output_weight_frobenius": 5.5938215255737305,
+        "plastic_bias_mean": -0.11596303433179855,
+        "plastic_bias_std": 0.13694536685943604
+      }
+    },
+    {
+      "model_name": "everything_seed25_L21e4relu+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed25_L21e4relu+hidden300+batch128+angle.pt",
+      "activation": "relu",
+      "database_accuracy": 0.9406734704971313,
+      "database_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 0.9673366546630859,
+        "delayanti": 0.9974489808082581,
+        "delaydm1": 0.91847825050354,
+        "delaydm2": 0.9449999928474426,
+        "contextdelaydm1": 0.9204770922660828,
+        "contextdelaydm2": 0.8904429078102112,
+        "multidelaydm": 0.9158269762992859,
+        "dmsgo": 0.808398962020874,
+        "dmsnogo": 0.8908629417419434,
+        "dmcgo": 0.9831144213676453,
+        "dmcnogo": 0.9402984976768494
+      },
+      "evaluation_accuracy": 0.9530386924743652,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 0.692307710647583,
+        "delaydm2": 0.6666666865348816,
+        "contextdelaydm1": 1.0,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 1.0,
+        "dmsnogo": 1.0,
+        "dmcgo": 0.8333333730697632,
+        "dmcnogo": 1.0
+      },
+      "embedding": {
+        "preactivation_mean": -0.05665788950583343,
+        "preactivation_std": 0.16609718342436186,
+        "activation_mean": 0.019484062308909866,
+        "activation_std": 0.07333497197253841,
+        "activation_p01": 0.0,
+        "activation_median": 0.0,
+        "activation_p99": 0.3913332223892212,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.1511034188034188,
+        "derivative_median": 0.0,
+        "derivative_p10": 0.0,
+        "derivative_fraction_lt_0.05": 0.8488965811965812,
+        "derivative_fraction_lt_0p1": 0.8488965811965812,
+        "offset_energy_fraction": 0.06593469473874598,
+        "effective_dimension": 6.866840775404628
+      },
+      "hidden": {
+        "preactivation_mean": -0.11668092069950006,
+        "preactivation_std": 0.1769023196190688,
+        "activation_mean": 0.011133464450331835,
+        "activation_std": 0.0853082484831099,
+        "activation_p01": 0.0,
+        "activation_median": 0.0,
+        "activation_p99": 0.40872958302497864,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.03759401709401709,
+        "derivative_median": 0.0,
+        "derivative_p10": 0.0,
+        "derivative_fraction_lt_0.05": 0.9624059829059829,
+        "derivative_fraction_lt_0p1": 0.9624059829059829,
+        "offset_energy_fraction": 0.016747260207679502,
+        "effective_dimension": 2.891395920789216,
+        "response_task_separation_ratio": 1.71219902135553
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.001845764618841573,
+        "negative_outer_product_fraction": 0.0
+      },
+      "final_modulation": {
+        "mean": 0.012229977175593376,
+        "std": 0.08028862625360489,
+        "mean_absolute": 0.012229977175593376,
+        "common_across_trials_energy_fraction": 0.34468743205070496,
+        "trial_effective_dimension": 10.473832273477521,
+        "upper_bound_fraction": 0.0004907407407407407,
+        "lower_bound_fraction": 0.0
+      },
+      "parameters": {
+        "eta": 6.6927266120910645,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 8.885927200317383,
+        "plastic_weight_frobenius": 9.475716590881348,
+        "output_weight_frobenius": 5.3349738121032715,
+        "plastic_bias_mean": -0.11723573505878448,
+        "plastic_bias_std": 0.14273640513420105
+      }
+    },
+    {
+      "model_name": "everything_seed352_L21e4relu+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed352_L21e4relu+hidden300+batch128+angle.pt",
+      "activation": "relu",
+      "database_accuracy": 0.9437485933303833,
+      "database_accuracy_per_task": {
+        "fdgo": 0.9974359273910522,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 0.9824120402336121,
+        "delayanti": 0.8724489808082581,
+        "delaydm1": 1.0,
+        "delaydm2": 0.9574999809265137,
+        "contextdelaydm1": 0.8881709575653076,
+        "contextdelaydm2": 0.8356643319129944,
+        "multidelaydm": 0.9673978090286255,
+        "dmsgo": 0.9186351895332336,
+        "dmsnogo": 0.9314720630645752,
+        "dmcgo": 0.9831144213676453,
+        "dmcnogo": 0.9818300008773804
+      },
+      "evaluation_accuracy": 0.9447514414787292,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 1.0,
+        "delaydm2": 1.0,
+        "contextdelaydm1": 1.0,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 1.0,
+        "dmsnogo": 0.5,
+        "dmcgo": 0.785714328289032,
+        "dmcnogo": 0.8214285969734192
+      },
+      "embedding": {
+        "preactivation_mean": -0.04490784051546674,
+        "preactivation_std": 0.1668564036696195,
+        "activation_mean": 0.023782447228941326,
+        "activation_std": 0.08188360484211518,
+        "activation_p01": 0.0,
+        "activation_median": 0.0,
+        "activation_p99": 0.40446070909500326,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.1816,
+        "derivative_median": 0.0,
+        "derivative_p10": 0.0,
+        "derivative_fraction_lt_0.05": 0.8184,
+        "derivative_fraction_lt_0p1": 0.8184,
+        "offset_energy_fraction": 0.07779416798054932,
+        "effective_dimension": 6.471722394379697
+      },
+      "hidden": {
+        "preactivation_mean": -0.11494606988043962,
+        "preactivation_std": 0.17560399506437577,
+        "activation_mean": 0.012627184097502285,
+        "activation_std": 0.08899258450188588,
+        "activation_p01": 0.0,
+        "activation_median": 0.0,
+        "activation_p99": 0.46385493844747544,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.04648034188034188,
+        "derivative_median": 0.0,
+        "derivative_p10": 0.0,
+        "derivative_fraction_lt_0.05": 0.9535196581196581,
+        "derivative_fraction_lt_0p1": 0.9535196581196581,
+        "offset_energy_fraction": 0.0197355234598257,
+        "effective_dimension": 3.3940493612832663,
+        "response_task_separation_ratio": 1.7267017177741693
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.00263525560540774,
+        "negative_outer_product_fraction": 0.0
+      },
+      "final_modulation": {
+        "mean": 0.01559040043503046,
+        "std": 0.09003840386867523,
+        "mean_absolute": 0.01559040043503046,
+        "common_across_trials_energy_fraction": 0.39502406120300293,
+        "trial_effective_dimension": 11.348395156114591,
+        "upper_bound_fraction": 0.00042666666666666667,
+        "lower_bound_fraction": 0.0
+      },
+      "parameters": {
+        "eta": 5.888956546783447,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 8.635870933532715,
+        "plastic_weight_frobenius": 9.898900032043457,
+        "output_weight_frobenius": 4.902616024017334,
+        "plastic_bias_mean": -0.11733347922563553,
+        "plastic_bias_std": 0.1425621509552002
+      }
+    },
+    {
+      "model_name": "everything_seed398_L21e4relu+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed398_L21e4relu+hidden300+batch128+angle.pt",
+      "activation": "relu",
+      "database_accuracy": 0.9438985586166382,
+      "database_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 0.9974874258041382,
+        "delayanti": 0.8188775181770325,
+        "delaydm1": 1.0,
+        "delaydm2": 0.9674999713897705,
+        "contextdelaydm1": 0.9552683234214783,
+        "contextdelaydm2": 0.9149184226989746,
+        "multidelaydm": 0.9241257309913635,
+        "dmsgo": 0.8215222954750061,
+        "dmsnogo": 0.8045685291290283,
+        "dmcgo": 0.9524702429771423,
+        "dmcnogo": 0.9493834972381592
+      },
+      "evaluation_accuracy": 0.941989004611969,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 1.0,
+        "delaydm2": 0.6666666865348816,
+        "contextdelaydm1": 1.0,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 1.0,
+        "dmsnogo": 0.5,
+        "dmcgo": 0.785714328289032,
+        "dmcnogo": 1.0
+      },
+      "embedding": {
+        "preactivation_mean": -0.04976059140143082,
+        "preactivation_std": 0.16652075515547593,
+        "activation_mean": 0.024019284651931486,
+        "activation_std": 0.08019042048218947,
+        "activation_p01": 0.0,
+        "activation_median": 0.0,
+        "activation_p99": 0.4297555088996887,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.16895555555555555,
+        "derivative_median": 0.0,
+        "derivative_p10": 0.0,
+        "derivative_fraction_lt_0.05": 0.8310444444444445,
+        "derivative_fraction_lt_0p1": 0.8310444444444445,
+        "offset_energy_fraction": 0.08233062198313043,
+        "effective_dimension": 6.6339211666588875
+      },
+      "hidden": {
+        "preactivation_mean": -0.11105829215060457,
+        "preactivation_std": 0.17482566043599918,
+        "activation_mean": 0.01307719507942804,
+        "activation_std": 0.08714295232445583,
+        "activation_p01": 0.0,
+        "activation_median": 0.0,
+        "activation_p99": 0.45637935757637027,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.049012820512820514,
+        "derivative_median": 0.0,
+        "derivative_p10": 0.0,
+        "derivative_fraction_lt_0.05": 0.9509871794871795,
+        "derivative_fraction_lt_0p1": 0.9509871794871795,
+        "offset_energy_fraction": 0.02202383459068477,
+        "effective_dimension": 2.7020603419589686,
+        "response_task_separation_ratio": 1.9076649093933822
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.003141247099847533,
+        "negative_outer_product_fraction": 0.0
+      },
+      "final_modulation": {
+        "mean": 0.018524078652262688,
+        "std": 0.09864310175180435,
+        "mean_absolute": 0.018524078652262688,
+        "common_across_trials_energy_fraction": 0.3905024826526642,
+        "trial_effective_dimension": 9.240915592934648,
+        "upper_bound_fraction": 0.0005892592592592592,
+        "lower_bound_fraction": 0.0
+      },
+      "parameters": {
+        "eta": 6.56197452545166,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 8.70024585723877,
+        "plastic_weight_frobenius": 10.272041320800781,
+        "output_weight_frobenius": 4.921023368835449,
+        "plastic_bias_mean": -0.10980039089918137,
+        "plastic_bias_std": 0.1314314752817154
+      }
+    },
+    {
+      "model_name": "everything_seed571_L21e4relu+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed571_L21e4relu+hidden300+batch128+angle.pt",
+      "activation": "relu",
+      "database_accuracy": 0.9257481098175049,
+      "database_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 0.9950125217437744,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 0.9849246144294739,
+        "delayanti": 1.0,
+        "delaydm1": 0.948369562625885,
+        "delaydm2": 0.8899999856948853,
+        "contextdelaydm1": 0.8891649842262268,
+        "contextdelaydm2": 0.8630536198616028,
+        "multidelaydm": 0.8938944935798645,
+        "dmsgo": 0.8556430339813232,
+        "dmsnogo": 0.9467005133628845,
+        "dmcgo": 0.904315173625946,
+        "dmcnogo": 0.9656067490577698
+      },
+      "evaluation_accuracy": 0.950276255607605,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 1.0,
+        "delaydm2": 1.0,
+        "contextdelaydm1": 1.0,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 1.0,
+        "dmsnogo": 0.5833333730697632,
+        "dmcgo": 0.785714328289032,
+        "dmcnogo": 0.8571429252624512
+      },
+      "embedding": {
+        "preactivation_mean": -0.05804155702745648,
+        "preactivation_std": 0.1706420593578521,
+        "activation_mean": 0.01958620088307037,
+        "activation_std": 0.07380209673063379,
+        "activation_p01": 0.0,
+        "activation_median": 0.0,
+        "activation_p99": 0.38939642906188965,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.14607094017094016,
+        "derivative_median": 0.0,
+        "derivative_p10": 0.0,
+        "derivative_fraction_lt_0.05": 0.8539290598290599,
+        "derivative_fraction_lt_0p1": 0.8539290598290599,
+        "offset_energy_fraction": 0.06579674145618022,
+        "effective_dimension": 6.986526091040562
+      },
+      "hidden": {
+        "preactivation_mean": -0.1264513009243178,
+        "preactivation_std": 0.17840747724504147,
+        "activation_mean": 0.011850846183608868,
+        "activation_std": 0.08237900024920045,
+        "activation_p01": 0.0,
+        "activation_median": 0.0,
+        "activation_p99": 0.35414245307445535,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.04707777777777778,
+        "derivative_median": 0.0,
+        "derivative_p10": 0.0,
+        "derivative_fraction_lt_0.05": 0.9529222222222222,
+        "derivative_fraction_lt_0p1": 0.9529222222222222,
+        "offset_energy_fraction": 0.020275412373622122,
+        "effective_dimension": 2.531918271757344,
+        "response_task_separation_ratio": 1.7354448857870304
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.0021481113815053294,
+        "negative_outer_product_fraction": 0.0
+      },
+      "final_modulation": {
+        "mean": 0.01301529910415411,
+        "std": 0.08133310079574585,
+        "mean_absolute": 0.01301529910415411,
+        "common_across_trials_energy_fraction": 0.36516863107681274,
+        "trial_effective_dimension": 12.342653314592658,
+        "upper_bound_fraction": 0.0003174074074074074,
+        "lower_bound_fraction": 0.0
+      },
+      "parameters": {
+        "eta": 7.085859775543213,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 8.997136116027832,
+        "plastic_weight_frobenius": 9.86514663696289,
+        "output_weight_frobenius": 5.375649929046631,
+        "plastic_bias_mean": -0.12668737769126892,
+        "plastic_bias_std": 0.15019817650318146
+      }
+    },
+    {
+      "model_name": "everything_seed530_L21e4softplus+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed530_L21e4softplus+hidden300+batch128+angle.pt",
+      "activation": "softplus",
+      "database_accuracy": 0.744843602180481,
+      "database_accuracy_per_task": {
+        "fdgo": 0.9692307710647583,
+        "fdanti": 0.9875311851501465,
+        "reactgo": 0.9977579116821289,
+        "reactanti": 0.9396325349807739,
+        "delaygo": 0.947236180305481,
+        "delayanti": 0.9311224222183228,
+        "delaydm1": 0.73097825050354,
+        "delaydm2": 0.7299999594688416,
+        "contextdelaydm1": 0.845924437046051,
+        "contextdelaydm2": 0.6783217191696167,
+        "multidelaydm": 0.8002371191978455,
+        "dmsgo": 0.7086614370346069,
+        "dmsnogo": 0.7335025072097778,
+        "dmcgo": 0.5178236365318298,
+        "dmcnogo": 0.41855937242507935
+      },
+      "evaluation_accuracy": 0.8729282021522522,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 0.875,
+        "delayanti": 1.0,
+        "delaydm1": 0.692307710647583,
+        "delaydm2": 1.0,
+        "contextdelaydm1": 0.75,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 0.5714285969734192,
+        "dmsnogo": 0.5,
+        "dmcgo": 0.785714328289032,
+        "dmcnogo": 0.7500000596046448
+      },
+      "embedding": {
+        "preactivation_mean": -0.01533286200614077,
+        "preactivation_std": 0.4163219479893885,
+        "activation_mean": 0.7047410340994087,
+        "activation_std": 0.2449404947312386,
+        "activation_p01": 0.2629139721393585,
+        "activation_median": 0.6931471824645996,
+        "activation_p99": 1.8262042999267578,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.49498667561095744,
+        "derivative_median": 0.5,
+        "derivative_p10": 0.42145445852471286,
+        "derivative_fraction_lt_0.05": 0.0004068376068376068,
+        "derivative_fraction_lt_0p1": 0.0016726495726495727,
+        "offset_energy_fraction": 0.8922209216652196,
+        "effective_dimension": 4.830984004582723
+      },
+      "hidden": {
+        "preactivation_mean": -6.108349095852705,
+        "preactivation_std": 2.3075216162262664,
+        "activation_mean": 0.08944582748525647,
+        "activation_std": 0.8795049734143323,
+        "activation_p01": 0.00016164977569133043,
+        "activation_median": 0.0011930519831366837,
+        "activation_p99": 1.1206702589988724,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.026488920661434313,
+        "derivative_median": 0.0011923405681311706,
+        "derivative_p10": 0.0003323199632707268,
+        "derivative_fraction_lt_0.05": 0.9102880341880342,
+        "derivative_fraction_lt_0p1": 0.9455153846153846,
+        "offset_energy_fraction": 0.010237048631556802,
+        "effective_dimension": 1.1383839305885435,
+        "response_task_separation_ratio": 6.462442318081914
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.02981787955101866,
+        "negative_outer_product_fraction": 0.0
+      },
+      "final_modulation": {
+        "mean": 0.06918538361787796,
+        "std": 0.18523812294006348,
+        "mean_absolute": 0.06918538361787796,
+        "common_across_trials_energy_fraction": 0.8862760663032532,
+        "trial_effective_dimension": 2.5046683334146733,
+        "upper_bound_fraction": 0.01915,
+        "lower_bound_fraction": 0.0
+      },
+      "parameters": {
+        "eta": 0.058385930955410004,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 18.7980899810791,
+        "plastic_weight_frobenius": 13.34478759765625,
+        "output_weight_frobenius": 5.38607120513916,
+        "plastic_bias_mean": -5.554106712341309,
+        "plastic_bias_std": 2.8969264030456543
+      }
+    },
+    {
+      "model_name": "everything_seed557_L21e4softplus+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed557_L21e4softplus+hidden300+batch128+angle.pt",
+      "activation": "softplus",
+      "database_accuracy": 0.723918080329895,
+      "database_accuracy_per_task": {
+        "fdgo": 0.9487179517745972,
+        "fdanti": 0.9476309418678284,
+        "reactgo": 0.9831839203834534,
+        "reactanti": 0.9251968264579773,
+        "delaygo": 0.8969849348068237,
+        "delayanti": 0.8571428656578064,
+        "delaydm1": 0.7989130616188049,
+        "delaydm2": 0.625,
+        "contextdelaydm1": 0.7758448719978333,
+        "contextdelaydm2": 0.6264569163322449,
+        "multidelaydm": 0.7925311326980591,
+        "dmsgo": 0.7139107584953308,
+        "dmsnogo": 0.7588832378387451,
+        "dmcgo": 0.544715404510498,
+        "dmcnogo": 0.4334847629070282
+      },
+      "evaluation_accuracy": 0.8729282021522522,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 0.9090909361839294,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 0.9375,
+        "delayanti": 1.0,
+        "delaydm1": 0.692307710647583,
+        "delaydm2": 1.0,
+        "contextdelaydm1": 0.75,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 0.5714285969734192,
+        "dmsnogo": 0.5,
+        "dmcgo": 0.785714328289032,
+        "dmcnogo": 0.7500000596046448
+      },
+      "embedding": {
+        "preactivation_mean": -0.0306650639465416,
+        "preactivation_std": 0.4030601105822829,
+        "activation_mean": 0.695707175455529,
+        "activation_std": 0.2467100706932943,
+        "activation_p01": 0.2900577485561371,
+        "activation_median": 0.6931471824645996,
+        "activation_p99": 1.854373574256897,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.4907729254415797,
+        "derivative_median": 0.5,
+        "derivative_p10": 0.4343794892135681,
+        "derivative_fraction_lt_0.05": 0.0004264957264957265,
+        "derivative_fraction_lt_0p1": 0.0015068376068376069,
+        "offset_energy_fraction": 0.8882937673891909,
+        "effective_dimension": 4.316079628229579
+      },
+      "hidden": {
+        "preactivation_mean": -6.873181068589443,
+        "preactivation_std": 2.2346212259810514,
+        "activation_mean": 0.08261230948869708,
+        "activation_std": 0.8227879126818475,
+        "activation_p01": 0.0001416655140928924,
+        "activation_median": 0.0005415953928604722,
+        "activation_p99": 1.428384780883789,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.022992754541375046,
+        "derivative_median": 0.0005414487842277879,
+        "derivative_p10": 0.00023471024729714165,
+        "derivative_fraction_lt_0.05": 0.9435683760683761,
+        "derivative_fraction_lt_0p1": 0.9565615384615385,
+        "offset_energy_fraction": 0.009980617639136382,
+        "effective_dimension": 1.2029271691581804,
+        "response_task_separation_ratio": 5.488204399012559
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.017573076472259485,
+        "negative_outer_product_fraction": 0.0
+      },
+      "final_modulation": {
+        "mean": 0.061344947665929794,
+        "std": 0.19850687682628632,
+        "mean_absolute": 0.061344947665929794,
+        "common_across_trials_energy_fraction": 0.9115982055664062,
+        "trial_effective_dimension": 2.5621096150333247,
+        "upper_bound_fraction": 0.030175555555555556,
+        "lower_bound_fraction": 0.0
+      },
+      "parameters": {
+        "eta": 0.07569947093725204,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 17.727338790893555,
+        "plastic_weight_frobenius": 12.644312858581543,
+        "output_weight_frobenius": 5.078489303588867,
+        "plastic_bias_mean": -6.481253147125244,
+        "plastic_bias_std": 2.7637155055999756
+      }
+    },
+    {
+      "model_name": "everything_seed665_L21e4softplus+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed665_L21e4softplus+hidden300+batch128+angle.pt",
+      "activation": "softplus",
+      "database_accuracy": 0.6934673190116882,
+      "database_accuracy_per_task": {
+        "fdgo": 0.9769231081008911,
+        "fdanti": 0.8927680850028992,
+        "reactgo": 0.9730942249298096,
+        "reactanti": 0.9986876845359802,
+        "delaygo": 0.8743718266487122,
+        "delayanti": 0.4158163070678711,
+        "delaydm1": 0.77173912525177,
+        "delaydm2": 0.6299999952316284,
+        "contextdelaydm1": 0.6804174780845642,
+        "contextdelaydm2": 0.558275043964386,
+        "multidelaydm": 0.755779504776001,
+        "dmsgo": 0.6955380439758301,
+        "dmsnogo": 0.7461928725242615,
+        "dmcgo": 0.6297686100006104,
+        "dmcnogo": 0.43024009466171265
+      },
+      "evaluation_accuracy": 0.7734807133674622,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 0.4285714626312256,
+        "delaydm1": 0.692307710647583,
+        "delaydm2": 0.5555555820465088,
+        "contextdelaydm1": 0.1388888955116272,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 0.5714285969734192,
+        "dmsnogo": 0.5,
+        "dmcgo": 0.785714328289032,
+        "dmcnogo": 0.7500000596046448
+      },
+      "embedding": {
+        "preactivation_mean": -0.027432967252255334,
+        "preactivation_std": 0.41967117455031705,
+        "activation_mean": 0.6991909775827924,
+        "activation_std": 0.23896143660977823,
+        "activation_p01": 0.24623100459575653,
+        "activation_median": 0.6931471824645996,
+        "activation_p99": 1.81480073928833,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.49232236699101156,
+        "derivative_median": 0.5,
+        "derivative_p10": 0.43179259336228726,
+        "derivative_fraction_lt_0.05": 0.0005162393162393162,
+        "derivative_fraction_lt_0p1": 0.002277777777777778,
+        "offset_energy_fraction": 0.8954109083997124,
+        "effective_dimension": 4.561144878594929
+      },
+      "hidden": {
+        "preactivation_mean": -6.9170908334567285,
+        "preactivation_std": 2.835459456770033,
+        "activation_mean": 0.15161771353587236,
+        "activation_std": 1.4605142631044827,
+        "activation_p01": 8.620708831585944e-05,
+        "activation_median": 0.0004896870814263821,
+        "activation_p99": 2.3457741737365723,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.023021919020550046,
+        "derivative_median": 0.0004895672361186121,
+        "derivative_p10": 0.00014735320316741063,
+        "derivative_fraction_lt_0.05": 0.94928547008547,
+        "derivative_fraction_lt_0p1": 0.9619017094017094,
+        "offset_energy_fraction": 0.010661861389524923,
+        "effective_dimension": 1.1179359666127195,
+        "response_task_separation_ratio": 5.022155393403626
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.017666555360819285,
+        "negative_outer_product_fraction": 0.0
+      },
+      "final_modulation": {
+        "mean": 0.05510794743895531,
+        "std": 0.18441759049892426,
+        "mean_absolute": 0.05510794743895531,
+        "common_across_trials_energy_fraction": 0.9328920841217041,
+        "trial_effective_dimension": 3.001894837596398,
+        "upper_bound_fraction": 0.025672592592592594,
+        "lower_bound_fraction": 0.0
+      },
+      "parameters": {
+        "eta": 0.07601689547300339,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 17.85804557800293,
+        "plastic_weight_frobenius": 12.770956993103027,
+        "output_weight_frobenius": 4.9203033447265625,
+        "plastic_bias_mean": -6.585710525512695,
+        "plastic_bias_std": 2.83620023727417
+      }
+    },
+    {
+      "model_name": "everything_seed731_L21e4softplus+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed731_L21e4softplus+hidden300+batch128+angle.pt",
+      "activation": "softplus",
+      "database_accuracy": 0.6606165170669556,
+      "database_accuracy_per_task": {
+        "fdgo": 0.9871795177459717,
+        "fdanti": 0.9825436472892761,
+        "reactgo": 0.9753363728523254,
+        "reactanti": 0.9986876845359802,
+        "delaygo": 0.8718593120574951,
+        "delayanti": 0.5663264989852905,
+        "delaydm1": 0.758152186870575,
+        "delaydm2": 0.5674999952316284,
+        "contextdelaydm1": 0.5805168747901917,
+        "contextdelaydm2": 0.4842657446861267,
+        "multidelaydm": 0.8328393697738647,
+        "dmsgo": 0.6981627345085144,
+        "dmsnogo": 0.6370558142662048,
+        "dmcgo": 0.49718573689460754,
+        "dmcnogo": 0.393900066614151
+      },
+      "evaluation_accuracy": 0.7513812184333801,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 0.8125,
+        "delayanti": 0.8571429252624512,
+        "delaydm1": 0.692307710647583,
+        "delaydm2": 0.8888888955116272,
+        "contextdelaydm1": 0.0,
+        "contextdelaydm2": 0.523809552192688,
+        "multidelaydm": 1.0,
+        "dmsgo": 0.5714285969734192,
+        "dmsnogo": 0.5,
+        "dmcgo": 0.738095223903656,
+        "dmcnogo": 0.7500000596046448
+      },
+      "embedding": {
+        "preactivation_mean": -0.01873876704891495,
+        "preactivation_std": 0.4501135132185394,
+        "activation_mean": 0.7071954304314879,
+        "activation_std": 0.22595652747659387,
+        "activation_p01": 0.19061428308486938,
+        "activation_median": 0.6931471824645996,
+        "activation_p99": 1.4919533729553223,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.49586104540188675,
+        "derivative_median": 0.5,
+        "derivative_p10": 0.4157130803608259,
+        "derivative_fraction_lt_0.05": 0.0006931623931623931,
+        "derivative_fraction_lt_0p1": 0.0027333333333333333,
+        "offset_energy_fraction": 0.9073692947158435,
+        "effective_dimension": 4.363024533895534
+      },
+      "hidden": {
+        "preactivation_mean": -4.624539522837885,
+        "preactivation_std": 2.4074260735017523,
+        "activation_mean": 0.1518435107469138,
+        "activation_std": 1.4233869075999652,
+        "activation_p01": 0.0003976051599602215,
+        "activation_median": 0.009561441838741302,
+        "activation_p99": 1.4506922960281372,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.033279398618185345,
+        "derivative_median": 0.009515876711125578,
+        "derivative_p10": 0.0009656362910337904,
+        "derivative_fraction_lt_0.05": 0.8782401709401709,
+        "derivative_fraction_lt_0p1": 0.9578401709401709,
+        "offset_energy_fraction": 0.01125206234584001,
+        "effective_dimension": 1.112255004085871,
+        "response_task_separation_ratio": 1.7035144682673644
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.03741623326562918,
+        "negative_outer_product_fraction": 0.0
+      },
+      "final_modulation": {
+        "mean": 0.10071544349193573,
+        "std": 0.18323588371276855,
+        "mean_absolute": 0.10071544349193573,
+        "common_across_trials_energy_fraction": 0.9500803351402283,
+        "trial_effective_dimension": 3.5337724166879063,
+        "upper_bound_fraction": 0.023868888888888887,
+        "lower_bound_fraction": 0.0
+      },
+      "parameters": {
+        "eta": 0.07371683418750763,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 17.90798568725586,
+        "plastic_weight_frobenius": 12.450287818908691,
+        "output_weight_frobenius": 4.730206489562988,
+        "plastic_bias_mean": -4.067037582397461,
+        "plastic_bias_std": 2.199406623840332
+      }
+    },
+    {
+      "model_name": "everything_seed757_L21e4softplus+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed757_L21e4softplus+hidden300+batch128+angle.pt",
+      "activation": "softplus",
+      "database_accuracy": 0.690167248249054,
+      "database_accuracy_per_task": {
+        "fdgo": 0.9948718547821045,
+        "fdanti": 0.9451372027397156,
+        "reactgo": 1.0,
+        "reactanti": 0.9566929340362549,
+        "delaygo": 0.9572864174842834,
+        "delayanti": 0.9081632494926453,
+        "delaydm1": 0.72826087474823,
+        "delaydm2": 0.6524999737739563,
+        "contextdelaydm1": 0.7296222448348999,
+        "contextdelaydm2": 0.5576923489570618,
+        "multidelaydm": 0.755779504776001,
+        "dmsgo": 0.6062992215156555,
+        "dmsnogo": 0.7639593482017517,
+        "dmcgo": 0.45028141140937805,
+        "dmcnogo": 0.3867618441581726
+      },
+      "evaluation_accuracy": 0.7513812184333801,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 0.692307710647583,
+        "delaydm2": 0.8333333134651184,
+        "contextdelaydm1": 0.0,
+        "contextdelaydm2": 0.523809552192688,
+        "multidelaydm": 1.0,
+        "dmsgo": 0.5714285969734192,
+        "dmsnogo": 0.5,
+        "dmcgo": 0.785714328289032,
+        "dmcnogo": 0.535714328289032
+      },
+      "embedding": {
+        "preactivation_mean": -0.009850945784816316,
+        "preactivation_std": 0.4266959254476744,
+        "activation_mean": 0.7086572430404396,
+        "activation_std": 0.2420341576866992,
+        "activation_p01": 0.24422849714756012,
+        "activation_median": 0.6931471824645996,
+        "activation_p99": 1.7090404033660889,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.4966922739265183,
+        "derivative_median": 0.5,
+        "derivative_p10": 0.4361366868772968,
+        "derivative_fraction_lt_0.05": 0.0005717948717948718,
+        "derivative_fraction_lt_0p1": 0.0020034188034188036,
+        "offset_energy_fraction": 0.8955365903391337,
+        "effective_dimension": 4.611677272221207
+      },
+      "hidden": {
+        "preactivation_mean": -5.448616826979797,
+        "preactivation_std": 2.698716514283927,
+        "activation_mean": 0.14149319782841052,
+        "activation_std": 1.369126993175876,
+        "activation_p01": 0.00013255384692456573,
+        "activation_median": 0.004066434223204851,
+        "activation_p99": 1.9523385715484627,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.030878734116429142,
+        "derivative_median": 0.004058177110616222,
+        "derivative_p10": 0.00025941485146865033,
+        "derivative_fraction_lt_0.05": 0.9176427350427351,
+        "derivative_fraction_lt_0p1": 0.9427547008547008,
+        "offset_energy_fraction": 0.010567441574902265,
+        "effective_dimension": 1.1304090058008864,
+        "response_task_separation_ratio": 3.7656475791162576
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.021572351555984755,
+        "negative_outer_product_fraction": 0.0
+      },
+      "final_modulation": {
+        "mean": 0.07989857345819473,
+        "std": 0.19729653000831604,
+        "mean_absolute": 0.07989857345819473,
+        "common_across_trials_energy_fraction": 0.9381965398788452,
+        "trial_effective_dimension": 3.3872387455441784,
+        "upper_bound_fraction": 0.027011851851851853,
+        "lower_bound_fraction": 0.0
+      },
+      "parameters": {
+        "eta": 0.060084860771894455,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 18.079559326171875,
+        "plastic_weight_frobenius": 13.206931114196777,
+        "output_weight_frobenius": 5.212303638458252,
+        "plastic_bias_mean": -4.931695461273193,
+        "plastic_bias_std": 2.7814524173736572
+      }
+    },
+    {
+      "model_name": "everything_seed527_L21e4sigmoid+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed527_L21e4sigmoid+hidden300+batch128+angle.pt",
+      "activation": "sigmoid",
+      "database_accuracy": 0.6504162549972534,
+      "database_accuracy_per_task": {
+        "fdgo": 0.9410256743431091,
+        "fdanti": 0.9576060175895691,
+        "reactgo": 0.8912556767463684,
+        "reactanti": 0.9868766069412231,
+        "delaygo": 0.8994974493980408,
+        "delayanti": 0.7882652878761292,
+        "delaydm1": 0.7445652484893799,
+        "delaydm2": 0.5999999642372131,
+        "contextdelaydm1": 0.544234573841095,
+        "contextdelaydm2": 0.469696968793869,
+        "multidelaydm": 0.7522228956222534,
+        "dmsgo": 0.6850393414497375,
+        "dmsnogo": 0.7284263968467712,
+        "dmcgo": 0.5297060608863831,
+        "dmcnogo": 0.4075275957584381
+      },
+      "evaluation_accuracy": 0.7292817831039429,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 0.8181818723678589,
+        "fdanti": 1.0,
+        "reactgo": 0.7254902124404907,
+        "reactanti": 1.0,
+        "delaygo": 0.6875,
+        "delayanti": 1.0,
+        "delaydm1": 0.8461538553237915,
+        "delaydm2": 0.6666666865348816,
+        "contextdelaydm1": 0.0,
+        "contextdelaydm2": 0.9523809552192688,
+        "multidelaydm": 1.0,
+        "dmsgo": 0.5714285969734192,
+        "dmsnogo": 0.5,
+        "dmcgo": 0.761904776096344,
+        "dmcnogo": 0.7500000596046448
+      },
+      "embedding": {
+        "preactivation_mean": -0.08168150169542676,
+        "preactivation_std": 0.5431969195951516,
+        "activation_mean": 0.4818625916578003,
+        "activation_std": 0.11996251126216072,
+        "activation_p01": 0.14980481564998627,
+        "activation_median": 0.5,
+        "activation_p99": 0.7958016395568848,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.23528003021354627,
+        "derivative_median": 0.24824487518019914,
+        "derivative_p10": 0.20195353493096094,
+        "derivative_fraction_lt_0.05": 0.0005299145299145299,
+        "derivative_fraction_lt_0p1": 0.004848717948717949,
+        "offset_energy_fraction": 0.9416381919723689,
+        "effective_dimension": 3.081049394770175
+      },
+      "hidden": {
+        "preactivation_mean": -2.881601145809982,
+        "preactivation_std": 6.1176866007845705,
+        "activation_mean": 0.37729710725284527,
+        "activation_std": 0.46192817846067835,
+        "activation_p01": 4.542164973827286e-05,
+        "activation_median": 0.03174385242164135,
+        "activation_p99": 0.9999104738235474,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.021566358366371788,
+        "derivative_median": 0.010010715413672563,
+        "derivative_p10": 6.535750303240294e-05,
+        "derivative_fraction_lt_0.05": 0.9047581196581197,
+        "derivative_fraction_lt_0p1": 0.9519384615384615,
+        "offset_energy_fraction": 0.40017093676202065,
+        "effective_dimension": 1.67876939919336,
+        "response_task_separation_ratio": 10.569051731587164
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.3787869847737826,
+        "negative_outer_product_fraction": 0.0
+      },
+      "final_modulation": {
+        "mean": 0.5559132695198059,
+        "std": 0.4873066246509552,
+        "mean_absolute": 0.5559132695198059,
+        "common_across_trials_energy_fraction": 0.9983534216880798,
+        "trial_effective_dimension": 1.3977902168049552,
+        "upper_bound_fraction": 0.5367925925925926,
+        "lower_bound_fraction": 0.0
+      },
+      "parameters": {
+        "eta": 1.0353516340255737,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 20.360933303833008,
+        "plastic_weight_frobenius": 15.238604545593262,
+        "output_weight_frobenius": 5.103630542755127,
+        "plastic_bias_mean": -3.4429774284362793,
+        "plastic_bias_std": 5.06962251663208
+      }
+    },
+    {
+      "model_name": "everything_seed539_L21e4sigmoid+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed539_L21e4sigmoid+hidden300+batch128+angle.pt",
+      "activation": "sigmoid",
+      "database_accuracy": 0.6798169612884521,
+      "database_accuracy_per_task": {
+        "fdgo": 0.9871795177459717,
+        "fdanti": 0.9501247406005859,
+        "reactgo": 0.9966368079185486,
+        "reactanti": 0.9921259880065918,
+        "delaygo": 0.8994974493980408,
+        "delayanti": 0.8979591727256775,
+        "delaydm1": 0.7771739363670349,
+        "delaydm2": 0.6474999785423279,
+        "contextdelaydm1": 0.5939363837242126,
+        "contextdelaydm2": 0.5495337843894958,
+        "multidelaydm": 0.7528156638145447,
+        "dmsgo": 0.6561679840087891,
+        "dmsnogo": 0.5837563276290894,
+        "dmcgo": 0.5534709095954895,
+        "dmcnogo": 0.4055807888507843
+      },
+      "evaluation_accuracy": 0.7486188411712646,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 0.6315789222717285,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 0.692307710647583,
+        "delaydm2": 0.4444444477558136,
+        "contextdelaydm1": 0.1944444477558136,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 0.5714285969734192,
+        "dmsnogo": 0.0,
+        "dmcgo": 0.785714328289032,
+        "dmcnogo": 0.6071428656578064
+      },
+      "embedding": {
+        "preactivation_mean": -0.10226261930789561,
+        "preactivation_std": 0.5520350647495996,
+        "activation_mean": 0.47790768829617075,
+        "activation_std": 0.11939615443190581,
+        "activation_p01": 0.12586272969841958,
+        "activation_median": 0.5,
+        "activation_p99": 0.7903802990913391,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.23525648799474355,
+        "derivative_median": 0.2483706542132677,
+        "derivative_p10": 0.20170109712691983,
+        "derivative_fraction_lt_0.05": 0.0010948717948717948,
+        "derivative_fraction_lt_0p1": 0.00811111111111111,
+        "offset_energy_fraction": 0.9412513036001185,
+        "effective_dimension": 3.1615956185960328
+      },
+      "hidden": {
+        "preactivation_mean": -2.581400207594661,
+        "preactivation_std": 6.312052051532684,
+        "activation_mean": 0.4140407075681999,
+        "activation_std": 0.4710180201815617,
+        "activation_p01": 2.8643833502428606e-05,
+        "activation_median": 0.026388829573988914,
+        "activation_p99": 0.9999972581863403,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.02075302461476106,
+        "derivative_median": 0.011609037592714947,
+        "derivative_p10": 3.6716017912795113e-05,
+        "derivative_fraction_lt_0.05": 0.9240632478632479,
+        "derivative_fraction_lt_0p1": 0.9545632478632479,
+        "offset_energy_fraction": 0.4358888289539707,
+        "effective_dimension": 1.4867694504059012,
+        "response_task_separation_ratio": 6.250636024044129
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.41260820375039026,
+        "negative_outer_product_fraction": 0.0
+      },
+      "final_modulation": {
+        "mean": 0.6209882497787476,
+        "std": 0.4745239019393921,
+        "mean_absolute": 0.6209882497787476,
+        "common_across_trials_energy_fraction": 0.9980838298797607,
+        "trial_effective_dimension": 2.2195284731518012,
+        "upper_bound_fraction": 0.5639855555555555,
+        "lower_bound_fraction": 0.0
+      },
+      "parameters": {
+        "eta": 1.2582513093948364,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 20.771509170532227,
+        "plastic_weight_frobenius": 16.072813034057617,
+        "output_weight_frobenius": 4.347222805023193,
+        "plastic_bias_mean": -3.0037500858306885,
+        "plastic_bias_std": 5.3474884033203125
+      }
+    },
+    {
+      "model_name": "everything_seed737_L21e4sigmoid+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed737_L21e4sigmoid+hidden300+batch128+angle.pt",
+      "activation": "sigmoid",
+      "database_accuracy": 0.6967673897743225,
+      "database_accuracy_per_task": {
+        "fdgo": 0.9461538791656494,
+        "fdanti": 0.975062370300293,
+        "reactgo": 1.0,
+        "reactanti": 0.9803149700164795,
+        "delaygo": 0.9447236061096191,
+        "delayanti": 0.9387754797935486,
+        "delaydm1": 0.760869562625885,
+        "delaydm2": 0.5849999785423279,
+        "contextdelaydm1": 0.6689860820770264,
+        "contextdelaydm2": 0.5565268397331238,
+        "multidelaydm": 0.7777119278907776,
+        "dmsgo": 0.7086614370346069,
+        "dmsnogo": 0.6116751432418823,
+        "dmcgo": 0.5422138571739197,
+        "dmcnogo": 0.4166125953197479
+      },
+      "evaluation_accuracy": 0.6795580387115479,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 0.9090909361839294,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 0.785714328289032,
+        "delaydm1": 0.692307710647583,
+        "delaydm2": 0.8888888955116272,
+        "contextdelaydm1": 0.0,
+        "contextdelaydm2": 0.4761904776096344,
+        "multidelaydm": 0.375,
+        "dmsgo": 0.4761904776096344,
+        "dmsnogo": 0.0,
+        "dmcgo": 0.6666666865348816,
+        "dmcnogo": 0.7500000596046448
+      },
+      "embedding": {
+        "preactivation_mean": -0.08959678845885886,
+        "preactivation_std": 0.5508306581449683,
+        "activation_mean": 0.48094950439578127,
+        "activation_std": 0.12026957485827867,
+        "activation_p01": 0.1296757161617279,
+        "activation_median": 0.5,
+        "activation_p99": 0.785151481628418,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.2351723078787194,
+        "derivative_median": 0.24856275914088366,
+        "derivative_p10": 0.2006130795898021,
+        "derivative_fraction_lt_0.05": 0.0007692307692307692,
+        "derivative_fraction_lt_0p1": 0.006908547008547009,
+        "offset_energy_fraction": 0.9411468157031173,
+        "effective_dimension": 3.049494529674956
+      },
+      "hidden": {
+        "preactivation_mean": -2.3299896801178814,
+        "preactivation_std": 5.8049269297666966,
+        "activation_mean": 0.4037753668084721,
+        "activation_std": 0.46845305236286916,
+        "activation_p01": 5.874523048987612e-05,
+        "activation_median": 0.026506321504712105,
+        "activation_p99": 0.9997422099113464,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.02129255783095371,
+        "derivative_median": 0.014522007640419587,
+        "derivative_p10": 8.391797935998967e-05,
+        "derivative_fraction_lt_0.05": 0.9348427350427351,
+        "derivative_fraction_lt_0p1": 0.9637905982905983,
+        "offset_energy_fraction": 0.4262532667048098,
+        "effective_dimension": 1.5543452153220623,
+        "response_task_separation_ratio": 6.404028340037795
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.4031852749677805,
+        "negative_outer_product_fraction": 0.0
+      },
+      "final_modulation": {
+        "mean": 0.643926203250885,
+        "std": 0.4676458537578583,
+        "mean_absolute": 0.643926203250885,
+        "common_across_trials_energy_fraction": 0.9976659417152405,
+        "trial_effective_dimension": 1.9626452816148798,
+        "upper_bound_fraction": 0.5822911111111111,
+        "lower_bound_fraction": 0.0
+      },
+      "parameters": {
+        "eta": 1.2091742753982544,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 20.57048797607422,
+        "plastic_weight_frobenius": 15.025633811950684,
+        "output_weight_frobenius": 4.972744464874268,
+        "plastic_bias_mean": -2.7566170692443848,
+        "plastic_bias_std": 4.75079345703125
+      }
+    },
+    {
+      "model_name": "everything_seed77_L21e4sigmoid+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed77_L21e4sigmoid+hidden300+batch128+angle.pt",
+      "activation": "sigmoid",
+      "database_accuracy": 0.6740418076515198,
+      "database_accuracy_per_task": {
+        "fdgo": 0.8897436261177063,
+        "fdanti": 0.9775561690330505,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 0.8969849348068237,
+        "delayanti": 0.8826530575752258,
+        "delaydm1": 0.6929348111152649,
+        "delaydm2": 0.5674999952316284,
+        "contextdelaydm1": 0.6346918344497681,
+        "contextdelaydm2": 0.48076924681663513,
+        "multidelaydm": 0.7866034507751465,
+        "dmsgo": 0.6771653294563293,
+        "dmsnogo": 0.6802030205726624,
+        "dmcgo": 0.5284552574157715,
+        "dmcnogo": 0.39519792795181274
+      },
+      "evaluation_accuracy": 0.7845304012298584,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 0.75,
+        "delayanti": 0.785714328289032,
+        "delaydm1": 0.692307710647583,
+        "delaydm2": 0.7222222089767456,
+        "contextdelaydm1": 0.0,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 0.9047619104385376,
+        "dmsnogo": 0.5,
+        "dmcgo": 0.738095223903656,
+        "dmcnogo": 0.7500000596046448
+      },
+      "embedding": {
+        "preactivation_mean": -0.08641643908831856,
+        "preactivation_std": 0.5366040906753455,
+        "activation_mean": 0.4813792409978202,
+        "activation_std": 0.11703264757724263,
+        "activation_p01": 0.13105182349681854,
+        "activation_median": 0.5,
+        "activation_p99": 0.7851456999778748,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.23595662663163797,
+        "derivative_median": 0.24842858191165734,
+        "derivative_p10": 0.20465326405238837,
+        "derivative_fraction_lt_0.05": 0.00087008547008547,
+        "derivative_fraction_lt_0p1": 0.007167521367521367,
+        "offset_energy_fraction": 0.9441916115183874,
+        "effective_dimension": 3.1643215513535257
+      },
+      "hidden": {
+        "preactivation_mean": -3.503609468339269,
+        "preactivation_std": 5.946527967795779,
+        "activation_mean": 0.32048681747229196,
+        "activation_std": 0.44521499244003176,
+        "activation_p01": 3.7642977986251935e-05,
+        "activation_median": 0.02285175211727619,
+        "activation_p99": 0.9999908208847046,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.01955862717312234,
+        "derivative_median": 0.009782435927370057,
+        "derivative_p10": 5.1942482672889645e-05,
+        "derivative_fraction_lt_0.05": 0.9193179487179487,
+        "derivative_fraction_lt_0p1": 0.9582598290598291,
+        "offset_energy_fraction": 0.3413166453007018,
+        "effective_dimension": 1.4624223447291647,
+        "response_task_separation_ratio": 6.585380090916469
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.3241707907273219,
+        "negative_outer_product_fraction": 0.0
+      },
+      "final_modulation": {
+        "mean": 0.5631489157676697,
+        "std": 0.4843275845050812,
+        "mean_absolute": 0.5631489157676697,
+        "common_across_trials_energy_fraction": 0.9979230165481567,
+        "trial_effective_dimension": 1.9128955057375185,
+        "upper_bound_fraction": 0.5202988888888889,
+        "lower_bound_fraction": 0.0
+      },
+      "parameters": {
+        "eta": 1.2341970205307007,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 20.28316307067871,
+        "plastic_weight_frobenius": 15.299710273742676,
+        "output_weight_frobenius": 4.264043807983398,
+        "plastic_bias_mean": -3.7898311614990234,
+        "plastic_bias_std": 5.044586658477783
+      }
+    },
+    {
+      "model_name": "everything_seed795_L21e4sigmoid+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed795_L21e4sigmoid+hidden300+batch128+angle.pt",
+      "activation": "sigmoid",
+      "database_accuracy": 0.678991973400116,
+      "database_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 0.9501247406005859,
+        "reactgo": 0.9742152690887451,
+        "reactanti": 0.9934383034706116,
+        "delaygo": 0.947236180305481,
+        "delayanti": 0.9897959232330322,
+        "delaydm1": 0.7663043737411499,
+        "delaydm2": 0.625,
+        "contextdelaydm1": 0.627236545085907,
+        "contextdelaydm2": 0.4889277517795563,
+        "multidelaydm": 0.7658565640449524,
+        "dmsgo": 0.7060367465019226,
+        "dmsnogo": 0.6497461795806885,
+        "dmcgo": 0.4878048598766327,
+        "dmcnogo": 0.4289422631263733
+      },
+      "evaluation_accuracy": 0.7403315305709839,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 0.9375,
+        "delayanti": 1.0,
+        "delaydm1": 0.692307710647583,
+        "delaydm2": 0.7777777910232544,
+        "contextdelaydm1": 0.0,
+        "contextdelaydm2": 0.523809552192688,
+        "multidelaydm": 0.75,
+        "dmsgo": 0.5714285969734192,
+        "dmsnogo": 0.5,
+        "dmcgo": 0.738095223903656,
+        "dmcnogo": 0.7500000596046448
+      },
+      "embedding": {
+        "preactivation_mean": -0.08632186788576934,
+        "preactivation_std": 0.5321118599485936,
+        "activation_mean": 0.48145675135050126,
+        "activation_std": 0.11605320141766519,
+        "activation_p01": 0.13079755008220673,
+        "activation_median": 0.5,
+        "activation_p99": 0.7806643843650818,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.23618780225568584,
+        "derivative_median": 0.24838461214764931,
+        "derivative_p10": 0.2055158170459771,
+        "derivative_fraction_lt_0.05": 0.0007641025641025641,
+        "derivative_fraction_lt_0p1": 0.0074512820512820516,
+        "offset_energy_fraction": 0.9450874412954221,
+        "effective_dimension": 3.2527280276300274
+      },
+      "hidden": {
+        "preactivation_mean": -2.2261461679257835,
+        "preactivation_std": 6.006838560130099,
+        "activation_mean": 0.4340719828240379,
+        "activation_std": 0.47382117518639355,
+        "activation_p01": 4.911846190225333e-05,
+        "activation_median": 0.0335809700191021,
+        "activation_p99": 0.9993165731430054,
+        "negative_activation_fraction": 0.0,
+        "derivative_mean": 0.0211469895477215,
+        "derivative_median": 0.011753933037964171,
+        "derivative_p10": 6.341000666918401e-05,
+        "derivative_fraction_lt_0.05": 0.9159615384615385,
+        "derivative_fraction_lt_0p1": 0.9562555555555555,
+        "offset_energy_fraction": 0.4563019671214594,
+        "effective_dimension": 1.511882572377008,
+        "response_task_separation_ratio": 6.259675158420856
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.4333905928410017,
+        "negative_outer_product_fraction": 0.0
+      },
+      "final_modulation": {
+        "mean": 0.6058508157730103,
+        "std": 0.47293806076049805,
+        "mean_absolute": 0.6058508157730103,
+        "common_across_trials_energy_fraction": 0.998268723487854,
+        "trial_effective_dimension": 2.1670214622881825,
+        "upper_bound_fraction": 0.5409759259259259,
+        "lower_bound_fraction": 0.0
+      },
+      "parameters": {
+        "eta": 1.126334309577942,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 20.385560989379883,
+        "plastic_weight_frobenius": 15.067785263061523,
+        "output_weight_frobenius": 4.675315856933594,
+        "plastic_bias_mean": -2.819775342941284,
+        "plastic_bias_std": 4.939320087432861
+      }
+    },
+    {
+      "model_name": "everything_seed408_L21e4+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed408_L21e4+hidden300+batch128+angle.pt",
+      "activation": "tanh",
+      "database_accuracy": 0.9188479781150818,
+      "database_accuracy_per_task": {
+        "fdgo": 0.9897436499595642,
+        "fdanti": 0.9476309418678284,
+        "reactgo": 1.0,
+        "reactanti": 0.9895012974739075,
+        "delaygo": 0.9974874258041382,
+        "delayanti": 1.0,
+        "delaydm1": 1.0,
+        "delaydm2": 0.887499988079071,
+        "contextdelaydm1": 0.761928379535675,
+        "contextdelaydm2": 0.9580419659614563,
+        "multidelaydm": 0.9430943131446838,
+        "dmsgo": 0.8372703194618225,
+        "dmsnogo": 0.8071065545082092,
+        "dmcgo": 0.9380862712860107,
+        "dmcnogo": 0.9227774143218994
+      },
+      "evaluation_accuracy": 0.9696133136749268,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 1.0,
+        "delaydm2": 1.0,
+        "contextdelaydm1": 1.0,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 1.0,
+        "dmsnogo": 0.6666666865348816,
+        "dmcgo": 1.0,
+        "dmcnogo": 0.7500000596046448
+      },
+      "embedding": {
+        "preactivation_mean": -0.0017408578704214703,
+        "preactivation_std": 0.1777964294625973,
+        "activation_mean": -0.0013248062284793112,
+        "activation_std": 0.15980562201657975,
+        "activation_p01": -0.518054723739624,
+        "activation_median": 0.0,
+        "activation_p99": 0.5018312931060791,
+        "negative_activation_fraction": 0.31982307692307693,
+        "derivative_mean": 0.9744604076589105,
+        "derivative_median": 0.9994546190726966,
+        "derivative_p10": 0.9295836662468056,
+        "derivative_fraction_lt_0.05": 4.2735042735042735e-05,
+        "derivative_fraction_lt_0p1": 8.717948717948718e-05,
+        "offset_energy_fraction": 6.872120538045287e-05,
+        "effective_dimension": 5.261816006812892
+      },
+      "hidden": {
+        "preactivation_mean": 0.007913330082959738,
+        "preactivation_std": 0.2715677029894033,
+        "activation_mean": 0.004770849335056665,
+        "activation_std": 0.2077001231419714,
+        "activation_p01": -0.714237123131752,
+        "activation_median": -0.0013393741101026535,
+        "activation_p99": 0.7713151109218598,
+        "negative_activation_fraction": 0.6070529914529914,
+        "derivative_mean": 0.9568378976445259,
+        "derivative_median": 0.999837582137368,
+        "derivative_p10": 0.8826953343725873,
+        "derivative_fraction_lt_0.05": 0.0007700854700854701,
+        "derivative_fraction_lt_0p1": 0.0016905982905982906,
+        "offset_energy_fraction": 0.0005273376930355821,
+        "effective_dimension": 3.3915050028004115,
+        "response_task_separation_ratio": 3.863582225497376
+      },
+      "hebbian": {
+        "dc_energy_fraction": 4.85262513752087e-06,
+        "negative_outer_product_fraction": 0.5662629751058725
+      },
+      "final_modulation": {
+        "mean": 0.0003300067619420588,
+        "std": 0.3486582040786743,
+        "mean_absolute": 0.23489879071712494,
+        "common_across_trials_energy_fraction": 0.3048320412635803,
+        "trial_effective_dimension": 13.792731671286527,
+        "upper_bound_fraction": 0.004278518518518518,
+        "lower_bound_fraction": 0.0039855555555555556
+      },
+      "parameters": {
+        "eta": 2.1926610469818115,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 8.897146224975586,
+        "plastic_weight_frobenius": 10.187881469726562,
+        "output_weight_frobenius": 3.0773861408233643,
+        "plastic_bias_mean": -0.005415365565568209,
+        "plastic_bias_std": 0.0633556917309761
+      }
+    },
+    {
+      "model_name": "everything_seed664_L21e4+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed664_L21e4+hidden300+batch128+angle.pt",
+      "activation": "tanh",
+      "database_accuracy": 0.9188479781150818,
+      "database_accuracy_per_task": {
+        "fdgo": 0.9743589758872986,
+        "fdanti": 0.9975062608718872,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 0.85326087474823,
+        "delaydm2": 0.8499999642372131,
+        "contextdelaydm1": 0.9627236127853394,
+        "contextdelaydm2": 0.8962703943252563,
+        "multidelaydm": 0.8423236608505249,
+        "dmsgo": 0.721784770488739,
+        "dmsnogo": 0.8527918457984924,
+        "dmcgo": 0.9549718499183655,
+        "dmcnogo": 0.8689162731170654
+      },
+      "evaluation_accuracy": 0.9171271324157715,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 1.0,
+        "delaydm2": 0.6666666865348816,
+        "contextdelaydm1": 1.0,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 0.761904776096344,
+        "dmsnogo": 0.5,
+        "dmcgo": 0.9047619104385376,
+        "dmcnogo": 0.6785714626312256
+      },
+      "embedding": {
+        "preactivation_mean": 0.004485338500747631,
+        "preactivation_std": 0.18499214377300072,
+        "activation_mean": 0.004020873806043976,
+        "activation_std": 0.16595182133053354,
+        "activation_p01": -0.5121127963066101,
+        "activation_median": 0.0,
+        "activation_p99": 0.5466349124908447,
+        "negative_activation_fraction": 0.30756666666666665,
+        "derivative_mean": 0.9724438251898353,
+        "derivative_median": 0.9992694110433984,
+        "derivative_p10": 0.9241815678182315,
+        "derivative_fraction_lt_0.05": 0.0,
+        "derivative_fraction_lt_0p1": 3.076923076923077e-05,
+        "offset_energy_fraction": 0.0005867079338511475,
+        "effective_dimension": 5.055298916260063
+      },
+      "hidden": {
+        "preactivation_mean": -0.007228292990638626,
+        "preactivation_std": 0.3092792273488907,
+        "activation_mean": -0.006116016049607474,
+        "activation_std": 0.23738646142569184,
+        "activation_p01": -0.7992404472827911,
+        "activation_median": -0.0022815570700913668,
+        "activation_p99": 0.7698705273866655,
+        "negative_activation_fraction": 0.6207444444444444,
+        "derivative_mean": 0.9436102620123329,
+        "derivative_median": 0.9996759301671748,
+        "derivative_p10": 0.8109136027103006,
+        "derivative_fraction_lt_0.05": 0.0009017094017094017,
+        "derivative_fraction_lt_0p1": 0.002117094017094017,
+        "offset_energy_fraction": 0.0006633414843041105,
+        "effective_dimension": 4.117465533719045,
+        "response_task_separation_ratio": 3.153450815663885
+      },
+      "hebbian": {
+        "dc_energy_fraction": 3.098156732466333e-05,
+        "negative_outer_product_fraction": 0.5606337345563448
+      },
+      "final_modulation": {
+        "mean": -0.003742428496479988,
+        "std": 0.3731657564640045,
+        "mean_absolute": 0.25870561599731445,
+        "common_across_trials_energy_fraction": 0.2846373915672302,
+        "trial_effective_dimension": 14.219661651307918,
+        "upper_bound_fraction": 0.005578518518518518,
+        "lower_bound_fraction": 0.005381851851851852
+      },
+      "parameters": {
+        "eta": 1.784775972366333,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 9.128373146057129,
+        "plastic_weight_frobenius": 11.158830642700195,
+        "output_weight_frobenius": 2.710036039352417,
+        "plastic_bias_mean": -0.0005354336462914944,
+        "plastic_bias_std": 0.0785781741142273
+      }
+    },
+    {
+      "model_name": "everything_seed692_L21e4+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed692_L21e4+hidden300+batch128+angle.pt",
+      "activation": "tanh",
+      "database_accuracy": 0.9387984275817871,
+      "database_accuracy_per_task": {
+        "fdgo": 0.9897436499595642,
+        "fdanti": 1.0,
+        "reactgo": 0.9775785207748413,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 0.9211956858634949,
+        "delaydm2": 0.9049999713897705,
+        "contextdelaydm1": 0.9483100771903992,
+        "contextdelaydm2": 0.88228440284729,
+        "multidelaydm": 0.9733254909515381,
+        "dmsgo": 0.787401556968689,
+        "dmsnogo": 0.8045685291290283,
+        "dmcgo": 0.933083176612854,
+        "dmcnogo": 0.9292666912078857
+      },
+      "evaluation_accuracy": 0.9281768202781677,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 1.0,
+        "delaydm2": 1.0,
+        "contextdelaydm1": 1.0,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 1.0,
+        "dmsnogo": 0.5,
+        "dmcgo": 0.785714328289032,
+        "dmcnogo": 0.6071428656578064
+      },
+      "embedding": {
+        "preactivation_mean": 0.014750832555322833,
+        "preactivation_std": 0.18240635043471362,
+        "activation_mean": 0.013292334599064124,
+        "activation_std": 0.1628813891789724,
+        "activation_p01": -0.47222569584846497,
+        "activation_median": 0.0,
+        "activation_p99": 0.5621336698532104,
+        "negative_activation_fraction": 0.2867128205128205,
+        "derivative_mean": 0.9732929665039116,
+        "derivative_median": 0.9993199406031922,
+        "derivative_p10": 0.9266897552986245,
+        "derivative_fraction_lt_0.05": 0.0,
+        "derivative_fraction_lt_0p1": 8.717948717948718e-05,
+        "offset_energy_fraction": 0.00661571648307526,
+        "effective_dimension": 5.199064988339828
+      },
+      "hidden": {
+        "preactivation_mean": -0.011312227880494997,
+        "preactivation_std": 0.2540685957301238,
+        "activation_mean": -0.010845015384346216,
+        "activation_std": 0.19420193352570372,
+        "activation_p01": -0.7143062382936478,
+        "activation_median": -0.0001874716253951192,
+        "activation_p99": 0.7092922449111939,
+        "negative_activation_fraction": 0.5197846153846154,
+        "derivative_mean": 0.9621679943341511,
+        "derivative_median": 0.9999877474425862,
+        "derivative_p10": 0.9053907767693297,
+        "derivative_fraction_lt_0.05": 0.0007213675213675214,
+        "derivative_fraction_lt_0p1": 0.0016555555555555555,
+        "offset_energy_fraction": 0.0031088586929995912,
+        "effective_dimension": 4.8916968429742855,
+        "response_task_separation_ratio": 3.412142116828131
+      },
+      "hebbian": {
+        "dc_energy_fraction": 6.706708328727893e-05,
+        "negative_outer_product_fraction": 0.4396339918558414
+      },
+      "final_modulation": {
+        "mean": -0.005900105461478233,
+        "std": 0.3294154107570648,
+        "mean_absolute": 0.20124532282352448,
+        "common_across_trials_energy_fraction": 0.26168039441108704,
+        "trial_effective_dimension": 15.45723795021084,
+        "upper_bound_fraction": 0.00335,
+        "lower_bound_fraction": 0.0038355555555555556
+      },
+      "parameters": {
+        "eta": 1.8973644971847534,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 9.137621879577637,
+        "plastic_weight_frobenius": 10.823572158813477,
+        "output_weight_frobenius": 2.9844415187835693,
+        "plastic_bias_mean": -0.0030473454389721155,
+        "plastic_bias_std": 0.06496995687484741
+      }
+    },
+    {
+      "model_name": "everything_seed738_L21e4+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed738_L21e4+hidden300+batch128+angle.pt",
+      "activation": "tanh",
+      "database_accuracy": 0.9243230819702148,
+      "database_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 0.9925187230110168,
+        "reactgo": 0.995515763759613,
+        "reactanti": 0.9986876845359802,
+        "delaygo": 1.0,
+        "delayanti": 0.9744897484779358,
+        "delaydm1": 0.9375,
+        "delaydm2": 0.8224999904632568,
+        "contextdelaydm1": 0.9040755033493042,
+        "contextdelaydm2": 0.9358974695205688,
+        "multidelaydm": 0.9347955584526062,
+        "dmsgo": 0.7559055089950562,
+        "dmsnogo": 0.8502537608146667,
+        "dmcgo": 0.8974358439445496,
+        "dmcnogo": 0.8909798860549927
+      },
+      "evaluation_accuracy": 0.9281768202781677,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 1.0,
+        "delaydm2": 1.0,
+        "contextdelaydm1": 1.0,
+        "contextdelaydm2": 0.523809552192688,
+        "multidelaydm": 1.0,
+        "dmsgo": 0.6190476417541504,
+        "dmsnogo": 0.5833333730697632,
+        "dmcgo": 0.9523809552192688,
+        "dmcnogo": 0.9642857313156128
+      },
+      "embedding": {
+        "preactivation_mean": -0.0025161289471519873,
+        "preactivation_std": 0.18311792455704204,
+        "activation_mean": -0.0025071277611658977,
+        "activation_std": 0.16321793202259297,
+        "activation_p01": -0.543734610080719,
+        "activation_median": 0.0,
+        "activation_p99": 0.5353785157203674,
+        "negative_activation_fraction": 0.32232393162393164,
+        "derivative_mean": 0.9733536205947093,
+        "derivative_median": 0.999480733249592,
+        "derivative_p10": 0.9277739372887319,
+        "derivative_fraction_lt_0.05": 2.564102564102564e-05,
+        "derivative_fraction_lt_0p1": 8.717948717948718e-05,
+        "offset_energy_fraction": 0.00023589282451106676,
+        "effective_dimension": 5.425657275171964
+      },
+      "hidden": {
+        "preactivation_mean": -0.004918727860725997,
+        "preactivation_std": 0.2942288403667018,
+        "activation_mean": -0.005806582085463854,
+        "activation_std": 0.22030292639616067,
+        "activation_p01": -0.7527831530570984,
+        "activation_median": -0.0017692948458716273,
+        "activation_p99": 0.7780975860357285,
+        "negative_activation_fraction": 0.5674632478632479,
+        "derivative_mean": 0.9514329040203615,
+        "derivative_median": 0.9998974125818454,
+        "derivative_p10": 0.851516252523276,
+        "derivative_fraction_lt_0.05": 0.0012025641025641025,
+        "derivative_fraction_lt_0p1": 0.00287008547008547,
+        "offset_energy_fraction": 0.0006942230120566877,
+        "effective_dimension": 4.293470788160452,
+        "response_task_separation_ratio": 3.072894612936881
+      },
+      "hebbian": {
+        "dc_energy_fraction": 4.1791607620430465e-05,
+        "negative_outer_product_fraction": 0.5903168036387517
+      },
+      "final_modulation": {
+        "mean": -0.004362325184047222,
+        "std": 0.3412171006202698,
+        "mean_absolute": 0.22023890912532806,
+        "common_across_trials_energy_fraction": 0.28117984533309937,
+        "trial_effective_dimension": 14.602920157881224,
+        "upper_bound_fraction": 0.004423333333333333,
+        "lower_bound_fraction": 0.004584444444444445
+      },
+      "parameters": {
+        "eta": 1.753953218460083,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 9.277053833007812,
+        "plastic_weight_frobenius": 10.885147094726562,
+        "output_weight_frobenius": 2.6564879417419434,
+        "plastic_bias_mean": -0.008485322818160057,
+        "plastic_bias_std": 0.0786222442984581
+      }
+    },
+    {
+      "model_name": "everything_seed749_L21e4+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed749_L21e4+hidden300+batch128+angle.pt",
+      "activation": "tanh",
+      "database_accuracy": 0.9160729050636292,
+      "database_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 0.9975062608718872,
+        "reactgo": 1.0,
+        "reactanti": 0.9868766069412231,
+        "delaygo": 0.9597989916801453,
+        "delayanti": 1.0,
+        "delaydm1": 0.95923912525177,
+        "delaydm2": 0.9399999976158142,
+        "contextdelaydm1": 0.8802186250686646,
+        "contextdelaydm2": 0.8939394354820251,
+        "multidelaydm": 0.9733254909515381,
+        "dmsgo": 0.7979002594947815,
+        "dmsnogo": 0.8730964064598083,
+        "dmcgo": 0.9155722260475159,
+        "dmcnogo": 0.7903958559036255
+      },
+      "evaluation_accuracy": 0.9337016940116882,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 1.0,
+        "delaydm2": 0.944444477558136,
+        "contextdelaydm1": 1.0,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 1.0,
+        "dmsnogo": 1.0,
+        "dmcgo": 0.8095238208770752,
+        "dmcnogo": 0.4642857313156128
+      },
+      "embedding": {
+        "preactivation_mean": 0.019948274220196998,
+        "preactivation_std": 0.17880146750946735,
+        "activation_mean": 0.01876242170524067,
+        "activation_std": 0.16012457040076494,
+        "activation_p01": -0.4896707236766815,
+        "activation_median": 0.0,
+        "activation_p99": 0.5432615280151367,
+        "negative_activation_fraction": 0.2583076923076923,
+        "derivative_mean": 0.9740080930339676,
+        "derivative_median": 0.9994726155833736,
+        "derivative_p10": 0.927894378867836,
+        "derivative_fraction_lt_0.05": 0.0,
+        "derivative_fraction_lt_0p1": 2.564102564102564e-05,
+        "offset_energy_fraction": 0.013543772483636468,
+        "effective_dimension": 5.397556237978413
+      },
+      "hidden": {
+        "preactivation_mean": -0.027050826699606827,
+        "preactivation_std": 0.22884765796788695,
+        "activation_mean": -0.023309552565917057,
+        "activation_std": 0.17848215540162013,
+        "activation_p01": -0.7291626787185669,
+        "activation_median": -0.0011923821875825524,
+        "activation_p99": 0.6061811929941178,
+        "negative_activation_fraction": 0.6321641025641026,
+        "derivative_mean": 0.9676007846487604,
+        "derivative_median": 0.9999815572226447,
+        "derivative_p10": 0.9238552657738757,
+        "derivative_fraction_lt_0.05": 0.0004965811965811966,
+        "derivative_fraction_lt_0p1": 0.0011299145299145299,
+        "offset_energy_fraction": 0.016770012489258548,
+        "effective_dimension": 4.501885824365566,
+        "response_task_separation_ratio": 3.7205621001565463
+      },
+      "hebbian": {
+        "dc_energy_fraction": 0.0004949346705521189,
+        "negative_outer_product_fraction": 0.5614288696875939
+      },
+      "final_modulation": {
+        "mean": -0.014699673280119896,
+        "std": 0.3139784038066864,
+        "mean_absolute": 0.18834136426448822,
+        "common_across_trials_energy_fraction": 0.26999709010124207,
+        "trial_effective_dimension": 15.26231164811187,
+        "upper_bound_fraction": 0.002926666666666667,
+        "lower_bound_fraction": 0.003681851851851852
+      },
+      "parameters": {
+        "eta": 2.1549320220947266,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 9.179669380187988,
+        "plastic_weight_frobenius": 9.655675888061523,
+        "output_weight_frobenius": 2.5368497371673584,
+        "plastic_bias_mean": -0.015340784564614296,
+        "plastic_bias_std": 0.062468547374010086
+      }
+    },
+    {
+      "model_name": "everything_seed842_L21e4+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed842_L21e4+hidden300+batch128+angle.pt",
+      "activation": "tanh",
+      "database_accuracy": 0.9112727642059326,
+      "database_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 0.9875311851501465,
+        "reactgo": 0.9865471124649048,
+        "reactanti": 1.0,
+        "delaygo": 0.9748743772506714,
+        "delayanti": 0.9693877100944519,
+        "delaydm1": 0.9021739363670349,
+        "delaydm2": 0.9174999594688416,
+        "contextdelaydm1": 0.9617295861244202,
+        "contextdelaydm2": 0.8980186581611633,
+        "multidelaydm": 0.84943687915802,
+        "dmsgo": 0.847769021987915,
+        "dmsnogo": 0.89593905210495,
+        "dmcgo": 0.8968104720115662,
+        "dmcnogo": 0.8020765781402588
+      },
+      "evaluation_accuracy": 0.9751381874084473,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 0.8461538553237915,
+        "delaydm2": 1.0,
+        "contextdelaydm1": 1.0,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 1.0,
+        "dmsnogo": 0.9166666865348816,
+        "dmcgo": 0.9761905074119568,
+        "dmcnogo": 0.8214285969734192
+      },
+      "embedding": {
+        "preactivation_mean": 0.001109910200577867,
+        "preactivation_std": 0.1793890132591131,
+        "activation_mean": 0.001184316026517185,
+        "activation_std": 0.16007774625857674,
+        "activation_p01": -0.5237836837768555,
+        "activation_median": 0.0,
+        "activation_p99": 0.5034457445144653,
+        "negative_activation_fraction": 0.3091957264957265,
+        "derivative_mean": 0.9743737120279021,
+        "derivative_median": 0.9994198348536819,
+        "derivative_p10": 0.9293898709545485,
+        "derivative_fraction_lt_0.05": 3.076923076923077e-05,
+        "derivative_fraction_lt_0p1": 0.00012307692307692307,
+        "offset_energy_fraction": 5.47330335426221e-05,
+        "effective_dimension": 5.445385613730752
+      },
+      "hidden": {
+        "preactivation_mean": 0.008716627963201485,
+        "preactivation_std": 0.2675811835804368,
+        "activation_mean": 0.006531746878402579,
+        "activation_std": 0.20116428330927627,
+        "activation_p01": -0.711662745475769,
+        "activation_median": 0.0010108069982379675,
+        "activation_p99": 0.7527317482233048,
+        "negative_activation_fraction": 0.3137051282051282,
+        "derivative_mean": 0.9594902671531448,
+        "derivative_median": 0.9999911669563532,
+        "derivative_p10": 0.8972813610014444,
+        "derivative_fraction_lt_0.05": 0.0009059829059829059,
+        "derivative_fraction_lt_0p1": 0.002425641025641026,
+        "offset_energy_fraction": 0.0010531720292590461,
+        "effective_dimension": 4.610930375162836,
+        "response_task_separation_ratio": 2.899794916715815
+      },
+      "hebbian": {
+        "dc_energy_fraction": 2.6456949759807895e-05,
+        "negative_outer_product_fraction": 0.4209425126130764
+      },
+      "final_modulation": {
+        "mean": -0.0005458888481371105,
+        "std": 0.33274656534194946,
+        "mean_absolute": 0.20386865735054016,
+        "common_across_trials_energy_fraction": 0.25886407494544983,
+        "trial_effective_dimension": 15.639391091335602,
+        "upper_bound_fraction": 0.0038337037037037038,
+        "lower_bound_fraction": 0.0038262962962962964
+      },
+      "parameters": {
+        "eta": 1.9261295795440674,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 9.0433931350708,
+        "plastic_weight_frobenius": 11.260778427124023,
+        "output_weight_frobenius": 2.7016501426696777,
+        "plastic_bias_mean": 0.0017519196262583137,
+        "plastic_bias_std": 0.0561545230448246
+      }
+    },
+    {
+      "model_name": "everything_seed921_L21e4+hidden300+batch128+angle",
+      "checkpoint": "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/MultiTaskMPN/multiple_tasks/savednet_everything_seed921_L21e4+hidden300+batch128+angle.pt",
+      "activation": "tanh",
+      "database_accuracy": 0.9509487748146057,
+      "database_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 0.9986876845359802,
+        "delaygo": 0.9899497628211975,
+        "delayanti": 1.0,
+        "delaydm1": 0.967391312122345,
+        "delaydm2": 0.9424999952316284,
+        "contextdelaydm1": 0.9811132550239563,
+        "contextdelaydm2": 0.999417245388031,
+        "multidelaydm": 0.8577356338500977,
+        "dmsgo": 0.7926509380340576,
+        "dmsnogo": 0.9086294174194336,
+        "dmcgo": 0.9756097197532654,
+        "dmcnogo": 0.8825438022613525
+      },
+      "evaluation_accuracy": 0.9779005646705627,
+      "evaluation_accuracy_per_task": {
+        "fdgo": 1.0,
+        "fdanti": 1.0,
+        "reactgo": 1.0,
+        "reactanti": 1.0,
+        "delaygo": 1.0,
+        "delayanti": 1.0,
+        "delaydm1": 1.0,
+        "delaydm2": 0.6666666865348816,
+        "contextdelaydm1": 1.0,
+        "contextdelaydm2": 1.0,
+        "multidelaydm": 1.0,
+        "dmsgo": 1.0,
+        "dmsnogo": 1.0,
+        "dmcgo": 1.0,
+        "dmcnogo": 0.9285714626312256
+      },
+      "embedding": {
+        "preactivation_mean": 0.009269277508630847,
+        "preactivation_std": 0.1816346447262356,
+        "activation_mean": 0.008649707178157056,
+        "activation_std": 0.16036140404441346,
+        "activation_p01": -0.5129997134208679,
+        "activation_median": 0.0,
+        "activation_p99": 0.5500224828720093,
+        "negative_activation_fraction": 0.2883974358974359,
+        "derivative_mean": 0.9742094023253898,
+        "derivative_median": 0.9998291306469971,
+        "derivative_p10": 0.93164028209676,
+        "derivative_fraction_lt_0.05": 7.435897435897436e-05,
+        "derivative_fraction_lt_0p1": 0.00014615384615384615,
+        "offset_energy_fraction": 0.002900957790065142,
+        "effective_dimension": 5.3647143406370965
+      },
+      "hidden": {
+        "preactivation_mean": -0.007948802383900475,
+        "preactivation_std": 0.2327957778885065,
+        "activation_mean": -0.007399642396985406,
+        "activation_std": 0.1758630521115714,
+        "activation_p01": -0.7215265822410584,
+        "activation_median": -0.0013509441632777452,
+        "activation_p99": 0.7003466218709948,
+        "negative_activation_fraction": 0.7297794871794872,
+        "derivative_mean": 0.9690174319165776,
+        "derivative_median": 0.9999942854149958,
+        "derivative_p10": 0.951953248715882,
+        "derivative_fraction_lt_0.05": 0.0004435897435897436,
+        "derivative_fraction_lt_0p1": 0.0013923076923076923,
+        "offset_energy_fraction": 0.0017672746799691078,
+        "effective_dimension": 3.486878900095731,
+        "response_task_separation_ratio": 2.941126798728848
+      },
+      "hebbian": {
+        "dc_energy_fraction": 3.929230464467974e-05,
+        "negative_outer_product_fraction": 0.6164528548717498
+      },
+      "final_modulation": {
+        "mean": -0.0018800018588081002,
+        "std": 0.27975621819496155,
+        "mean_absolute": 0.14841850101947784,
+        "common_across_trials_energy_fraction": 0.2760292589664459,
+        "trial_effective_dimension": 14.772818774670256,
+        "upper_bound_fraction": 0.002777777777777778,
+        "lower_bound_fraction": 0.0028662962962962965
+      },
+      "parameters": {
+        "eta": 2.33917236328125,
+        "lambda": 0.9900000095367432,
+        "input_weight_frobenius": 8.924945831298828,
+        "plastic_weight_frobenius": 8.8569974899292,
+        "output_weight_frobenius": 2.7444417476654053,
+        "plastic_bias_mean": -0.005668861325830221,
+        "plastic_bias_std": 0.06411387026309967
+      }
+    }
+  ],
+  "group_summary": {
+    "linear": {
+      "n_models": 5,
+      "metrics": {
+        "database_accuracy": {
+          "mean": 0.9059326410293579,
+          "std": 0.009855880095072959
+        },
+        "evaluation_accuracy": {
+          "mean": 0.911602258682251,
+          "std": 0.016012568331514685
+        },
+        "embedding.activation_mean": {
+          "mean": 0.010555902828008184,
+          "std": 0.014535717429071017
+        },
+        "embedding.activation_std": {
+          "mean": 0.17571031824964284,
+          "std": 0.003493403123467815
+        },
+        "embedding.derivative_mean": {
+          "mean": 1.0,
+          "std": 0.0
+        },
+        "embedding.derivative_fraction_lt_0p1": {
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "embedding.offset_energy_fraction": {
+          "mean": 0.009823959317715568,
+          "std": 0.013792157658839897
+        },
+        "embedding.effective_dimension": {
+          "mean": 5.01849515031663,
+          "std": 0.13221416479790293
+        },
+        "hidden.activation_mean": {
+          "mean": -0.008527249362778589,
+          "std": 0.010831598138880719
+        },
+        "hidden.activation_std": {
+          "mean": 0.2297315901897407,
+          "std": 0.02202331989750856
+        },
+        "hidden.derivative_mean": {
+          "mean": 1.0,
+          "std": 0.0
+        },
+        "hidden.derivative_fraction_lt_0p1": {
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "hidden.offset_energy_fraction": {
+          "mean": 0.004216489390548863,
+          "std": 0.0048907964406879325
+        },
+        "hidden.effective_dimension": {
+          "mean": 5.843946855011862,
+          "std": 0.5631599155112524
+        },
+        "hidden.response_task_separation_ratio": {
+          "mean": 3.186784619050757,
+          "std": 0.2920844641213421
+        },
+        "hebbian.dc_energy_fraction": {
+          "mean": 0.0006985437283581074,
+          "std": 0.0012179161901997605
+        },
+        "hebbian.negative_outer_product_fraction": {
+          "mean": 0.5043552214824236,
+          "std": 0.06408517093758313
+        },
+        "final_modulation.mean": {
+          "mean": -0.00855169134447351,
+          "std": 0.010181482545910012
+        },
+        "final_modulation.std": {
+          "mean": 0.299209862947464,
+          "std": 0.01477361499016138
+        },
+        "final_modulation.common_across_trials_energy_fraction": {
+          "mean": 0.2854203164577484,
+          "std": 0.02354758216798552
+        },
+        "final_modulation.trial_effective_dimension": {
+          "mean": 15.655574775516019,
+          "std": 0.2923312745356901
+        },
+        "final_modulation.upper_bound_fraction": {
+          "mean": 0.001994888888888889,
+          "std": 0.0003859988841252696
+        },
+        "final_modulation.lower_bound_fraction": {
+          "mean": 0.002105333333333333,
+          "std": 0.00022407555555065803
+        }
+      },
+      "task_accuracy_mean": {
+        "fdgo": 0.9876923084259033,
+        "fdanti": 0.9955112338066101,
+        "reactgo": 0.9934977650642395,
+        "reactanti": 0.9884514451026917,
+        "delaygo": 0.9884422063827515,
+        "delayanti": 0.9627550840377808,
+        "delaydm1": 0.886956536769867,
+        "delaydm2": 0.8679999828338623,
+        "contextdelaydm1": 0.8593438863754272,
+        "contextdelaydm2": 0.8409091114997864,
+        "multidelaydm": 0.8895080089569092,
+        "dmsgo": 0.7763779401779175,
+        "dmsnogo": 0.8309644460678101,
+        "dmcgo": 0.9527204155921936,
+        "dmcnogo": 0.9029201865196228
+      }
+    },
+    "relu": {
+      "n_models": 5,
+      "metrics": {
+        "database_accuracy": {
+          "mean": 0.9408684968948364,
+          "std": 0.008180454727837723
+        },
+        "evaluation_accuracy": {
+          "mean": 0.951933741569519,
+          "std": 0.00966456076389811
+        },
+        "embedding.activation_mean": {
+          "mean": 0.021611828301328136,
+          "std": 0.0019656216245086465
+        },
+        "embedding.activation_std": {
+          "mean": 0.07695309147623522,
+          "std": 0.0034573474842580086
+        },
+        "embedding.derivative_mean": {
+          "mean": 0.16419999999999998,
+          "std": 0.01347460580797009
+        },
+        "embedding.derivative_fraction_lt_0p1": {
+          "mean": 0.8358000000000001,
+          "std": 0.013474605807970089
+        },
+        "embedding.offset_energy_fraction": {
+          "mean": 0.07295201988271896,
+          "std": 0.006509189737508846
+        },
+        "embedding.effective_dimension": {
+          "mean": 6.912963000832621,
+          "std": 0.3899040536191197
+        },
+        "hidden.activation_mean": {
+          "mean": 0.011821627651832691,
+          "std": 0.0009660123793966722
+        },
+        "hidden.activation_std": {
+          "mean": 0.0848642317053661,
+          "std": 0.0030877212722364806
+        },
+        "hidden.derivative_mean": {
+          "mean": 0.042801709401709395,
+          "std": 0.005962599531832021
+        },
+        "hidden.derivative_fraction_lt_0p1": {
+          "mean": 0.9571982905982905,
+          "std": 0.005962599531832035
+        },
+        "hidden.offset_energy_fraction": {
+          "mean": 0.019051967585261308,
+          "std": 0.0021323243927969435
+        },
+        "hidden.effective_dimension": {
+          "mean": 2.842092499953849,
+          "std": 0.2985704408254221
+        },
+        "hidden.response_task_separation_ratio": {
+          "mean": 1.7940517701193872,
+          "std": 0.08538337501857757
+        },
+        "hebbian.dc_energy_fraction": {
+          "mean": 0.002392953284993732,
+          "std": 0.000451097622638058
+        },
+        "hebbian.negative_outer_product_fraction": {
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "final_modulation.mean": {
+          "mean": 0.014444370567798615,
+          "std": 0.0023412293353925356
+        },
+        "final_modulation.std": {
+          "mean": 0.08610290735960006,
+          "std": 0.007266533096875441
+        },
+        "final_modulation.common_across_trials_energy_fraction": {
+          "mean": 0.36756591200828553,
+          "std": 0.022091492162783766
+        },
+        "final_modulation.trial_effective_dimension": {
+          "mean": 11.177445041985141,
+          "std": 1.2109934208048878
+        },
+        "final_modulation.upper_bound_fraction": {
+          "mean": 0.00041933333333333335,
+          "std": 0.00011484716390160193
+        },
+        "final_modulation.lower_bound_fraction": {
+          "mean": 0.0,
+          "std": 0.0
+        }
+      },
+      "task_accuracy_mean": {
+        "fdgo": 0.9994871854782105,
+        "fdanti": 0.9990025043487549,
+        "reactgo": 1.0,
+        "reactanti": 0.9950131177902222,
+        "delaygo": 0.9839195847511292,
+        "delayanti": 0.9377550959587098,
+        "delaydm1": 0.9673913002014161,
+        "delaydm2": 0.928499984741211,
+        "contextdelaydm1": 0.9172961831092834,
+        "contextdelaydm2": 0.8839160919189453,
+        "multidelaydm": 0.9285122036933899,
+        "dmsgo": 0.8535433053970337,
+        "dmsnogo": 0.896446692943573,
+        "dmcgo": 0.9554721355438233,
+        "dmcnogo": 0.9619727492332458
+      }
+    },
+    "softplus": {
+      "n_models": 5,
+      "metrics": {
+        "database_accuracy": {
+          "mean": 0.7026025533676148,
+          "std": 0.029118978206181336
+        },
+        "evaluation_accuracy": {
+          "mean": 0.8044199109077453,
+          "std": 0.056515859157764886
+        },
+        "embedding.activation_mean": {
+          "mean": 0.7030983721219315,
+          "std": 0.004904748541948395
+        },
+        "embedding.activation_std": {
+          "mean": 0.23972053743952082,
+          "std": 0.007368562576383332
+        },
+        "embedding.derivative_mean": {
+          "mean": 0.4941270574743908,
+          "std": 0.002228591589053988
+        },
+        "embedding.derivative_fraction_lt_0p1": {
+          "mean": 0.0020388034188034187,
+          "std": 0.00043767313867400026
+        },
+        "embedding.offset_energy_fraction": {
+          "mean": 0.8957662965018199,
+          "std": 0.006375217757065516
+        },
+        "embedding.effective_dimension": {
+          "mean": 4.536582063504794,
+          "std": 0.18528824313168682
+        },
+        "hidden.activation_mean": {
+          "mean": 0.12340251181703006,
+          "std": 0.030819337972516625
+        },
+        "hidden.activation_std": {
+          "mean": 1.1910642099953006,
+          "std": 0.27963551661356784
+        },
+        "hidden.derivative_mean": {
+          "mean": 0.027332345391594775,
+          "std": 0.004148915631595525
+        },
+        "hidden.derivative_fraction_lt_0p1": {
+          "mean": 0.9529147008547009,
+          "std": 0.007433726972749529
+        },
+        "hidden.offset_energy_fraction": {
+          "mean": 0.010539806316192077,
+          "std": 0.0004306562416529252
+        },
+        "hidden.effective_dimension": {
+          "mean": 1.14038221524924,
+          "std": 0.032589272447965556
+        },
+        "hidden.response_task_separation_ratio": {
+          "mean": 4.488392831576344,
+          "std": 1.6406891976447386
+        },
+        "hebbian.dc_energy_fraction": {
+          "mean": 0.024809219241142273,
+          "std": 0.007718551711344336
+        },
+        "hebbian.negative_outer_product_fraction": {
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "final_modulation.mean": {
+          "mean": 0.0732504591345787,
+          "std": 0.016037079302180787
+        },
+        "final_modulation.std": {
+          "mean": 0.18973900079727174,
+          "std": 0.00670608289092194
+        },
+        "final_modulation.common_across_trials_energy_fraction": {
+          "mean": 0.9238086462020874,
+          "std": 0.022527811180563104
+        },
+        "final_modulation.trial_effective_dimension": {
+          "mean": 2.997936789655296,
+          "std": 0.4176004296599374
+        },
+        "final_modulation.upper_bound_fraction": {
+          "mean": 0.025175777777777776,
+          "std": 0.0036505815204684496
+        },
+        "final_modulation.lower_bound_fraction": {
+          "mean": 0.0,
+          "std": 0.0
+        }
+      },
+      "task_accuracy_mean": {
+        "fdgo": 0.9753846406936646,
+        "fdanti": 0.9511222124099732,
+        "reactgo": 0.9858744859695434,
+        "reactanti": 0.9637795329093933,
+        "delaygo": 0.9095477342605591,
+        "delayanti": 0.7357142686843872,
+        "delaydm1": 0.757608699798584,
+        "delaydm2": 0.6409999847412109,
+        "contextdelaydm1": 0.722465181350708,
+        "contextdelaydm2": 0.5810023546218872,
+        "multidelaydm": 0.7874333262443542,
+        "dmsgo": 0.6845144391059875,
+        "dmsnogo": 0.7279187560081481,
+        "dmcgo": 0.5279549598693848,
+        "dmcnogo": 0.41258922815322874
+      }
+    },
+    "sigmoid": {
+      "n_models": 5,
+      "metrics": {
+        "database_accuracy": {
+          "mean": 0.6760068774223328,
+          "std": 0.014920910598805263
+        },
+        "evaluation_accuracy": {
+          "mean": 0.7364641189575195,
+          "std": 0.033949814589891256
+        },
+        "embedding.activation_mean": {
+          "mean": 0.4807111553396147,
+          "std": 0.001431383609605652
+        },
+        "embedding.activation_std": {
+          "mean": 0.1185428179094506,
+          "std": 0.001685479558171045
+        },
+        "embedding.derivative_mean": {
+          "mean": 0.2355706509948666,
+          "std": 0.00041753776793848304
+        },
+        "embedding.derivative_fraction_lt_0p1": {
+          "mean": 0.006897435897435897,
+          "std": 0.0011000061761426837
+        },
+        "embedding.offset_energy_fraction": {
+          "mean": 0.9426630728178829,
+          "std": 0.0016466026711767145
+        },
+        "embedding.effective_dimension": {
+          "mean": 3.141837824404943,
+          "std": 0.07129522121313153
+        },
+        "hidden.activation_mean": {
+          "mean": 0.38993439638516947,
+          "std": 0.039251701953507
+        },
+        "hidden.activation_std": {
+          "mean": 0.4640870837263069,
+          "std": 0.010224175275287661
+        },
+        "hidden.derivative_mean": {
+          "mean": 0.02086351150658608,
+          "std": 0.0007033298989171778
+        },
+        "hidden.derivative_fraction_lt_0p1": {
+          "mean": 0.9569615384615385,
+          "std": 0.003995075169731511
+        },
+        "hidden.offset_energy_fraction": {
+          "mean": 0.41198632896859244,
+          "std": 0.03968011715086232
+        },
+        "hidden.effective_dimension": {
+          "mean": 1.5388377964054993,
+          "std": 0.07628676361295146
+        },
+        "hidden.response_task_separation_ratio": {
+          "mean": 7.213754269001282,
+          "std": 1.6820460726846984
+        },
+        "hebbian.dc_energy_fraction": {
+          "mean": 0.39042836941205533,
+          "std": 0.03748606381590959
+        },
+        "hebbian.negative_outer_product_fraction": {
+          "mean": 0.0,
+          "std": 0.0
+        },
+        "final_modulation.mean": {
+          "mean": 0.5979654908180236,
+          "std": 0.033720012104080606
+        },
+        "final_modulation.std": {
+          "mean": 0.47734840512275695,
+          "std": 0.007340892856287889
+        },
+        "final_modulation.common_across_trials_energy_fraction": {
+          "mean": 0.9980589866638183,
+          "std": 0.0002466864034365889
+        },
+        "final_modulation.trial_effective_dimension": {
+          "mean": 1.9319761879194677,
+          "std": 0.29140758920164833
+        },
+        "final_modulation.upper_bound_fraction": {
+          "mean": 0.5488688148148148,
+          "std": 0.021771262002584623
+        },
+        "final_modulation.lower_bound_fraction": {
+          "mean": 0.0,
+          "std": 0.0
+        }
+      },
+      "task_accuracy_mean": {
+        "fdgo": 0.9528205394744873,
+        "fdanti": 0.9620948076248169,
+        "reactgo": 0.9724215507507324,
+        "reactanti": 0.9905511736869812,
+        "delaygo": 0.9175879240036011,
+        "delayanti": 0.8994897842407227,
+        "delaydm1": 0.7483695864677429,
+        "delaydm2": 0.6049999833106995,
+        "contextdelaydm1": 0.6138170838356019,
+        "contextdelaydm2": 0.509090918302536,
+        "multidelaydm": 0.7670421004295349,
+        "dmsgo": 0.686614167690277,
+        "dmsnogo": 0.6507614135742188,
+        "dmcgo": 0.5283301889896392,
+        "dmcnogo": 0.4107722342014313
+      }
+    },
+    "tanh": {
+      "n_models": 7,
+      "metrics": {
+        "database_accuracy": {
+          "mean": 0.9255874156951904,
+          "std": 0.01312360528006812
+        },
+        "evaluation_accuracy": {
+          "mean": 0.9471192189625331,
+          "std": 0.024011075719254413
+        },
+        "embedding.activation_mean": {
+          "mean": 0.006011102760768257,
+          "std": 0.007331043568002318
+        },
+        "embedding.activation_std": {
+          "mean": 0.16177435503606197,
+          "std": 0.002145868943027829
+        },
+        "embedding.derivative_mean": {
+          "mean": 0.973734575333518,
+          "std": 0.0006805230853842452
+        },
+        "embedding.derivative_fraction_lt_0p1": {
+          "mean": 8.388278388278387e-05,
+          "std": 4.081250233664959e-05
+        },
+        "embedding.offset_energy_fraction": {
+          "mean": 0.0034295002505803085,
+          "std": 0.004685758361017202
+        },
+        "embedding.effective_dimension": {
+          "mean": 5.307070482704431,
+          "std": 0.1319125604083691
+        },
+        "hidden.activation_mean": {
+          "mean": -0.006024887466980109,
+          "std": 0.009243964769980009
+        },
+        "hidden.activation_std": {
+          "mean": 0.20215727647314222,
+          "std": 0.0204144708552765
+        },
+        "hidden.derivative_mean": {
+          "mean": 0.9585939345328364,
+          "std": 0.008299952048954253
+        },
+        "hidden.derivative_fraction_lt_0p1": {
+          "mean": 0.0018973137973137975,
+          "std": 0.000563005821134411
+        },
+        "hidden.offset_energy_fraction": {
+          "mean": 0.0035120314401260963,
+          "std": 0.0054770984378243424
+        },
+        "hidden.effective_dimension": {
+          "mean": 4.184833323896904,
+          "std": 0.5229842582042136
+        },
+        "hidden.response_task_separation_ratio": {
+          "mean": 3.294793369503926,
+          "std": 0.3523170446960018
+        },
+        "hebbian.dc_energy_fraction": {
+          "mean": 0.0001007681154752143,
+          "std": 0.00016184323519434992
+        },
+        "hebbian.negative_outer_product_fraction": {
+          "mean": 0.5365245346184615,
+          "std": 0.069810948734069
+        },
+        "final_modulation.mean": {
+          "mean": -0.004400059481018356,
+          "std": 0.004665143285083955
+        },
+        "final_modulation.std": {
+          "mean": 0.33127680846623014,
+          "std": 0.02703129746443363
+        },
+        "final_modulation.common_across_trials_energy_fraction": {
+          "mean": 0.27674572808401926,
+          "std": 0.01445957901281626
+        },
+        "final_modulation.trial_effective_dimension": {
+          "mean": 14.821010420686319,
+          "std": 0.6254304222031868
+        },
+        "final_modulation.upper_bound_fraction": {
+          "mean": 0.003881216931216931,
+          "std": 0.0009059931039368766
+        },
+        "final_modulation.lower_bound_fraction": {
+          "mean": 0.004023121693121694,
+          "std": 0.0007261713184508575
+        }
+      },
+      "task_accuracy_mean": {
+        "fdgo": 0.9934066108294896,
+        "fdanti": 0.988956195967538,
+        "reactgo": 0.9942344852856227,
+        "reactanti": 0.996250467641013,
+        "delaygo": 0.988872936793736,
+        "delayanti": 0.9919824940817696,
+        "delaydm1": 0.9343944191932678,
+        "delaydm2": 0.8949999809265137,
+        "contextdelaydm1": 0.9142998627253941,
+        "contextdelaydm2": 0.9234099388122559,
+        "multidelaydm": 0.9105767181941441,
+        "dmsgo": 0.7915260536330087,
+        "dmsnogo": 0.8560550808906555,
+        "dmcgo": 0.9302242227963039,
+        "dmcnogo": 0.8695652144295829
+      }
+    }
+  },
+  "metric_accuracy_correlations": {
+    "embedding.activation_mean": -0.9370703079684222,
+    "embedding.activation_std": -0.33728232069417086,
+    "embedding.derivative_mean": 0.4560683962394928,
+    "embedding.derivative_fraction_lt_0p1": 0.42152362817562306,
+    "embedding.offset_energy_fraction": -0.9791655937497472,
+    "embedding.effective_dimension": 0.8083829219876628,
+    "hidden.activation_mean": -0.8552158291282623,
+    "hidden.activation_std": -0.7624919587993626,
+    "hidden.derivative_mean": 0.6296664260509699,
+    "hidden.derivative_fraction_lt_0p1": -0.6195960237924748,
+    "hidden.offset_energy_fraction": -0.6608061173134877,
+    "hidden.effective_dimension": 0.7520639752623665,
+    "hidden.response_task_separation_ratio": -0.7327093763492024,
+    "hebbian.dc_energy_fraction": -0.7026631325059424,
+    "hebbian.negative_outer_product_fraction": 0.6158048741301864,
+    "final_modulation.mean": -0.7437076812863266,
+    "final_modulation.std": -0.4046726973158963,
+    "final_modulation.common_across_trials_energy_fraction": -0.9745944004819089,
+    "final_modulation.trial_effective_dimension": 0.9225803346870216,
+    "final_modulation.upper_bound_fraction": -0.6931985654694942,
+    "final_modulation.lower_bound_fraction": 0.5759052608031529
+  },
+  "largest_task_deficits_vs_tanh": {
+    "linear": [
+      {
+        "task": "contextdelaydm2",
+        "accuracy": 0.8409091114997864,
+        "tanh_accuracy": 0.9234099388122559,
+        "deficit_vs_tanh": -0.08250082731246944
+      },
+      {
+        "task": "contextdelaydm1",
+        "accuracy": 0.8593438863754272,
+        "tanh_accuracy": 0.9142998627253941,
+        "deficit_vs_tanh": -0.05495597634996685
+      },
+      {
+        "task": "delaydm1",
+        "accuracy": 0.886956536769867,
+        "tanh_accuracy": 0.9343944191932678,
+        "deficit_vs_tanh": -0.04743788242340086
+      },
+      {
+        "task": "delayanti",
+        "accuracy": 0.9627550840377808,
+        "tanh_accuracy": 0.9919824940817696,
+        "deficit_vs_tanh": -0.029227410043988877
+      },
+      {
+        "task": "delaydm2",
+        "accuracy": 0.8679999828338623,
+        "tanh_accuracy": 0.8949999809265137,
+        "deficit_vs_tanh": -0.02699999809265141
+      },
+      {
+        "task": "dmsnogo",
+        "accuracy": 0.8309644460678101,
+        "tanh_accuracy": 0.8560550808906555,
+        "deficit_vs_tanh": -0.02509063482284546
+      },
+      {
+        "task": "multidelaydm",
+        "accuracy": 0.8895080089569092,
+        "tanh_accuracy": 0.9105767181941441,
+        "deficit_vs_tanh": -0.021068709237234917
+      },
+      {
+        "task": "dmsgo",
+        "accuracy": 0.7763779401779175,
+        "tanh_accuracy": 0.7915260536330087,
+        "deficit_vs_tanh": -0.01514811345509115
+      },
+      {
+        "task": "reactanti",
+        "accuracy": 0.9884514451026917,
+        "tanh_accuracy": 0.996250467641013,
+        "deficit_vs_tanh": -0.007799022538321321
+      },
+      {
+        "task": "fdgo",
+        "accuracy": 0.9876923084259033,
+        "tanh_accuracy": 0.9934066108294896,
+        "deficit_vs_tanh": -0.00571430240358628
+      },
+      {
+        "task": "reactgo",
+        "accuracy": 0.9934977650642395,
+        "tanh_accuracy": 0.9942344852856227,
+        "deficit_vs_tanh": -0.0007367202213832691
+      },
+      {
+        "task": "delaygo",
+        "accuracy": 0.9884422063827515,
+        "tanh_accuracy": 0.988872936793736,
+        "deficit_vs_tanh": -0.0004307304109845145
+      },
+      {
+        "task": "fdanti",
+        "accuracy": 0.9955112338066101,
+        "tanh_accuracy": 0.988956195967538,
+        "deficit_vs_tanh": 0.006555037839072075
+      },
+      {
+        "task": "dmcgo",
+        "accuracy": 0.9527204155921936,
+        "tanh_accuracy": 0.9302242227963039,
+        "deficit_vs_tanh": 0.022496192795889658
+      },
+      {
+        "task": "dmcnogo",
+        "accuracy": 0.9029201865196228,
+        "tanh_accuracy": 0.8695652144295829,
+        "deficit_vs_tanh": 0.0333549720900399
+      }
+    ],
+    "relu": [
+      {
+        "task": "delayanti",
+        "accuracy": 0.9377550959587098,
+        "tanh_accuracy": 0.9919824940817696,
+        "deficit_vs_tanh": -0.05422739812305988
+      },
+      {
+        "task": "contextdelaydm2",
+        "accuracy": 0.8839160919189453,
+        "tanh_accuracy": 0.9234099388122559,
+        "deficit_vs_tanh": -0.03949384689331059
+      },
+      {
+        "task": "delaygo",
+        "accuracy": 0.9839195847511292,
+        "tanh_accuracy": 0.988872936793736,
+        "deficit_vs_tanh": -0.004953352042606829
+      },
+      {
+        "task": "reactanti",
+        "accuracy": 0.9950131177902222,
+        "tanh_accuracy": 0.996250467641013,
+        "deficit_vs_tanh": -0.0012373498507908254
+      },
+      {
+        "task": "contextdelaydm1",
+        "accuracy": 0.9172961831092834,
+        "tanh_accuracy": 0.9142998627253941,
+        "deficit_vs_tanh": 0.002996320383889306
+      },
+      {
+        "task": "reactgo",
+        "accuracy": 1.0,
+        "tanh_accuracy": 0.9942344852856227,
+        "deficit_vs_tanh": 0.005765514714377251
+      },
+      {
+        "task": "fdgo",
+        "accuracy": 0.9994871854782105,
+        "tanh_accuracy": 0.9934066108294896,
+        "deficit_vs_tanh": 0.006080574648720916
+      },
+      {
+        "task": "fdanti",
+        "accuracy": 0.9990025043487549,
+        "tanh_accuracy": 0.988956195967538,
+        "deficit_vs_tanh": 0.010046308381216895
+      },
+      {
+        "task": "multidelaydm",
+        "accuracy": 0.9285122036933899,
+        "tanh_accuracy": 0.9105767181941441,
+        "deficit_vs_tanh": 0.01793548549924584
+      },
+      {
+        "task": "dmcgo",
+        "accuracy": 0.9554721355438233,
+        "tanh_accuracy": 0.9302242227963039,
+        "deficit_vs_tanh": 0.025247912747519363
+      },
+      {
+        "task": "delaydm1",
+        "accuracy": 0.9673913002014161,
+        "tanh_accuracy": 0.9343944191932678,
+        "deficit_vs_tanh": 0.03299688100814824
+      },
+      {
+        "task": "delaydm2",
+        "accuracy": 0.928499984741211,
+        "tanh_accuracy": 0.8949999809265137,
+        "deficit_vs_tanh": 0.03350000381469731
+      },
+      {
+        "task": "dmsnogo",
+        "accuracy": 0.896446692943573,
+        "tanh_accuracy": 0.8560550808906555,
+        "deficit_vs_tanh": 0.040391612052917525
+      },
+      {
+        "task": "dmsgo",
+        "accuracy": 0.8535433053970337,
+        "tanh_accuracy": 0.7915260536330087,
+        "deficit_vs_tanh": 0.06201725176402506
+      },
+      {
+        "task": "dmcnogo",
+        "accuracy": 0.9619727492332458,
+        "tanh_accuracy": 0.8695652144295829,
+        "deficit_vs_tanh": 0.09240753480366293
+      }
+    ],
+    "softplus": [
+      {
+        "task": "dmcnogo",
+        "accuracy": 0.41258922815322874,
+        "tanh_accuracy": 0.8695652144295829,
+        "deficit_vs_tanh": -0.45697598627635416
+      },
+      {
+        "task": "dmcgo",
+        "accuracy": 0.5279549598693848,
+        "tanh_accuracy": 0.9302242227963039,
+        "deficit_vs_tanh": -0.4022692629269191
+      },
+      {
+        "task": "contextdelaydm2",
+        "accuracy": 0.5810023546218872,
+        "tanh_accuracy": 0.9234099388122559,
+        "deficit_vs_tanh": -0.34240758419036865
+      },
+      {
+        "task": "delayanti",
+        "accuracy": 0.7357142686843872,
+        "tanh_accuracy": 0.9919824940817696,
+        "deficit_vs_tanh": -0.2562682253973825
+      },
+      {
+        "task": "delaydm2",
+        "accuracy": 0.6409999847412109,
+        "tanh_accuracy": 0.8949999809265137,
+        "deficit_vs_tanh": -0.2539999961853028
+      },
+      {
+        "task": "contextdelaydm1",
+        "accuracy": 0.722465181350708,
+        "tanh_accuracy": 0.9142998627253941,
+        "deficit_vs_tanh": -0.19183468137468607
+      },
+      {
+        "task": "delaydm1",
+        "accuracy": 0.757608699798584,
+        "tanh_accuracy": 0.9343944191932678,
+        "deficit_vs_tanh": -0.1767857193946838
+      },
+      {
+        "task": "dmsnogo",
+        "accuracy": 0.7279187560081481,
+        "tanh_accuracy": 0.8560550808906555,
+        "deficit_vs_tanh": -0.12813632488250737
+      },
+      {
+        "task": "multidelaydm",
+        "accuracy": 0.7874333262443542,
+        "tanh_accuracy": 0.9105767181941441,
+        "deficit_vs_tanh": -0.12314339194978985
+      },
+      {
+        "task": "dmsgo",
+        "accuracy": 0.6845144391059875,
+        "tanh_accuracy": 0.7915260536330087,
+        "deficit_vs_tanh": -0.10701161452702113
+      },
+      {
+        "task": "delaygo",
+        "accuracy": 0.9095477342605591,
+        "tanh_accuracy": 0.988872936793736,
+        "deficit_vs_tanh": -0.07932520253317688
+      },
+      {
+        "task": "fdanti",
+        "accuracy": 0.9511222124099732,
+        "tanh_accuracy": 0.988956195967538,
+        "deficit_vs_tanh": -0.03783398355756484
+      },
+      {
+        "task": "reactanti",
+        "accuracy": 0.9637795329093933,
+        "tanh_accuracy": 0.996250467641013,
+        "deficit_vs_tanh": -0.03247093473161966
+      },
+      {
+        "task": "fdgo",
+        "accuracy": 0.9753846406936646,
+        "tanh_accuracy": 0.9934066108294896,
+        "deficit_vs_tanh": -0.01802197013582496
+      },
+      {
+        "task": "reactgo",
+        "accuracy": 0.9858744859695434,
+        "tanh_accuracy": 0.9942344852856227,
+        "deficit_vs_tanh": -0.008359999316079336
+      }
+    ],
+    "sigmoid": [
+      {
+        "task": "dmcnogo",
+        "accuracy": 0.4107722342014313,
+        "tanh_accuracy": 0.8695652144295829,
+        "deficit_vs_tanh": -0.4587929802281516
+      },
+      {
+        "task": "contextdelaydm2",
+        "accuracy": 0.509090918302536,
+        "tanh_accuracy": 0.9234099388122559,
+        "deficit_vs_tanh": -0.4143190205097198
+      },
+      {
+        "task": "dmcgo",
+        "accuracy": 0.5283301889896392,
+        "tanh_accuracy": 0.9302242227963039,
+        "deficit_vs_tanh": -0.40189403380666466
+      },
+      {
+        "task": "contextdelaydm1",
+        "accuracy": 0.6138170838356019,
+        "tanh_accuracy": 0.9142998627253941,
+        "deficit_vs_tanh": -0.30048277888979225
+      },
+      {
+        "task": "delaydm2",
+        "accuracy": 0.6049999833106995,
+        "tanh_accuracy": 0.8949999809265137,
+        "deficit_vs_tanh": -0.2899999976158142
+      },
+      {
+        "task": "dmsnogo",
+        "accuracy": 0.6507614135742188,
+        "tanh_accuracy": 0.8560550808906555,
+        "deficit_vs_tanh": -0.20529366731643672
+      },
+      {
+        "task": "delaydm1",
+        "accuracy": 0.7483695864677429,
+        "tanh_accuracy": 0.9343944191932678,
+        "deficit_vs_tanh": -0.18602483272552495
+      },
+      {
+        "task": "multidelaydm",
+        "accuracy": 0.7670421004295349,
+        "tanh_accuracy": 0.9105767181941441,
+        "deficit_vs_tanh": -0.14353461776460918
+      },
+      {
+        "task": "dmsgo",
+        "accuracy": 0.686614167690277,
+        "tanh_accuracy": 0.7915260536330087,
+        "deficit_vs_tanh": -0.1049118859427316
+      },
+      {
+        "task": "delayanti",
+        "accuracy": 0.8994897842407227,
+        "tanh_accuracy": 0.9919824940817696,
+        "deficit_vs_tanh": -0.09249270984104696
+      },
+      {
+        "task": "delaygo",
+        "accuracy": 0.9175879240036011,
+        "tanh_accuracy": 0.988872936793736,
+        "deficit_vs_tanh": -0.07128501279013488
+      },
+      {
+        "task": "fdgo",
+        "accuracy": 0.9528205394744873,
+        "tanh_accuracy": 0.9934066108294896,
+        "deficit_vs_tanh": -0.04058607135500225
+      },
+      {
+        "task": "fdanti",
+        "accuracy": 0.9620948076248169,
+        "tanh_accuracy": 0.988956195967538,
+        "deficit_vs_tanh": -0.026861388342721115
+      },
+      {
+        "task": "reactgo",
+        "accuracy": 0.9724215507507324,
+        "tanh_accuracy": 0.9942344852856227,
+        "deficit_vs_tanh": -0.021812934534890305
+      },
+      {
+        "task": "reactanti",
+        "accuracy": 0.9905511736869812,
+        "tanh_accuracy": 0.996250467641013,
+        "deficit_vs_tanh": -0.005699293954031792
+      }
+    ]
+  },
+  "interventions": {
+    "linear": {
+      "model_name": "everything_seed772_L21e4linear+hidden300+batch128+angle",
+      "normal": 0.9314098358154297,
+      "frozen_modulation": 0.1594991683959961,
+      "centered_hebb": 0.9096352458000183
+    },
+    "relu": {
+      "model_name": "everything_seed352_L21e4relu+hidden300+batch128+angle",
+      "normal": 0.9689710736274719,
+      "frozen_modulation": 0.31736525893211365,
+      "centered_hebb": 0.6804572343826294
+    },
+    "softplus": {
+      "model_name": "everything_seed665_L21e4softplus+hidden300+batch128+angle",
+      "normal": 0.7778987288475037,
+      "frozen_modulation": 0.45236796140670776,
+      "centered_hebb": 0.24605333805084229
+    },
+    "sigmoid": {
+      "model_name": "everything_seed795_L21e4sigmoid+hidden300+batch128+angle",
+      "normal": 0.7490473389625549,
+      "frozen_modulation": 0.3179096281528473,
+      "centered_hebb": 0.1671202927827835
+    },
+    "tanh": {
+      "model_name": "everything_seed408_L21e4+hidden300+batch128+angle",
+      "normal": 0.9657049179077148,
+      "frozen_modulation": 0.16004353761672974,
+      "centered_hebb": 0.9335873126983643
+    }
+  }
+}
