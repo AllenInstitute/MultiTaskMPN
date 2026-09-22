@@ -27,6 +27,8 @@ __pycache__/
 *.h5
 *.hdf5
 
+/multiple_task/activation_function_diagnosis_results.json
+
 # Output directories (figures, analysis results)
 multiple_tasks/
 multiple_tasks_analysis/
