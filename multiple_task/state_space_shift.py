@@ -9,23 +9,33 @@ conditions also produce similar dynamical trajectories.
 
 Analyses:
 1. Context-end PCA — projects hidden/modulation states at the end of the
-   fixation period (just before stimulus onset) into 2D via PCA, colored by
-   task and by computational category (pro/anti, delayed/reaction, etc.).
+    Context period (just before stimulus onset) into 2D via PCA, colored by
+    task and by the six paper color groups.
 2. Initial condition distance vs. trajectory angle — for each pair of tasks
-   sharing the same stimulus, computes the Euclidean distance between their
-   pre-stimulus states (initial conditions) and the angle between their
-   first-step displacement vectors after stimulus onset. A positive correlation
-   indicates that the network separates tasks via distinct initial conditions
-   that lead to diverging trajectories.
+    and each shared stimulus index, averages Euclidean initial-state distances
+    and first-step displacement angles over all cross-task trial pairs, then
+    averages equally over the available stimulus indices. The task-pair means
+    are fitted with free-intercept OLS (angle = intercept + slope * distance).
+    Reported r is Pearson correlation; p is the nominal slope-test p-value,
+    assuming independent task pairs despite tasks being shared across pairs.
+    A positive correlation indicates an association between more distant
+    initial states and more different initial motion directions, not causation.
 
 These analyses are run on three representations: hidden states, raw modulation
 M, and effective modulation (W ⊙ M).
 
 For this analysis only, every task's first stimulus is aligned to the same
-requested 500-ms fixation duration.  The shared task generator retains its
+requested 500-ms Context duration (rounded down to whole simulation steps).
+The shared task generator retains its
 original variable-timing behavior unless this script explicitly opts in.
 
 Outputs saved to ./state_space/.
+
+The same PCA caches retain original-feature task centroids and trial counts.
+After analysis, run ``python paper_plot.py --only state_space_combined`` to
+rank L2=1e-4 seeds by category-balanced high-dimensional centroid separation,
+save the per-seed ranking/summary, and display the best seed's PCA panels.
+Display PCA is incremental; quantitative scoring uses the full task centers.
 
 By default, the batch entry point analyzes only the paper cohorts with tanh
 activation, a 300-dimensional input projection, a 300-dimensional plastic
@@ -35,11 +45,8 @@ hidden layer, and L2 regularization 1e-5, 1e-4, 1e-3, or 1e-2 (feature tags
 from pathlib import Path
 import json
 import numpy as np
-import seaborn as sns 
 import pickle
-import copy 
 import gc
-import sys  
 
 import matplotlib as mpl 
 import matplotlib.pyplot as plt
@@ -56,7 +63,7 @@ mpl.rcParams.update({
     "ps.fonttype": 42,
 })
 
-from sklearn.decomposition import PCA
+from sklearn.decomposition import IncrementalPCA
 
 import torch 
 
@@ -68,7 +75,6 @@ import helper
 import multiple_task_performance as mpf 
 
 c_vals = color_func.rainbow_generate(15)
-c_vals_l = color_func.rainbow_generate(30)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
@@ -81,6 +87,8 @@ TARGET_ACTIVATION = "tanh"
 TARGET_PROJECTION_DIM = 300
 TARGET_HIDDEN_DIM = 300
 FIXED_FIXATION_MS = 500
+EVALUATION_SEED = 42
+PCA_BATCH_SIZE = 16
 TARGET_FEATURE_REG_LAMBDAS = {
     "L21e5": 1e-5,
     "L21e4": 1e-4,
@@ -166,8 +174,64 @@ def _clean_state_space_results(output_dir=STATE_SPACE_DIR):
     return removed
 
 
+def _context_pca_record(states, rule_labels, n_rules, batch_size=PCA_BATCH_SIZE):
+    """Return original-feature task means, counts and incremental display PCA."""
+    states = np.asarray(states)
+    rule_labels = np.asarray(rule_labels)
+    if (states.ndim < 2 or rule_labels.shape != (states.shape[0],)
+            or not np.issubdtype(rule_labels.dtype, np.integer)
+            or states.shape[0] < 2 or n_rules < 1 or batch_size < 2
+            or np.any(rule_labels < 0) or np.any(rule_labels >= n_rules)):
+        raise ValueError("Need aligned task labels and at least two PCA samples per batch.")
+    states = states.reshape(states.shape[0], -1)
+    if states.shape[1] < 2:
+        raise ValueError("Display PCA requires at least two original features.")
+    counts = np.bincount(rule_labels, minlength=n_rules)
+    if np.any(counts == 0):
+        raise ValueError("Every task must have context-end samples.")
+
+    sums = np.zeros((n_rules, states.shape[1]), dtype=np.float64)
+    pca = IncrementalPCA(n_components=2, batch_size=batch_size)
+    start = 0
+    while start < states.shape[0]:
+        stop = min(start + batch_size, states.shape[0])
+        if states.shape[0] - stop == 1:
+            stop += 1
+        samples = np.array(states[start:stop], dtype=np.float32, copy=True)
+        if not np.all(np.isfinite(samples)):
+            raise ValueError("Context states must be finite.")
+        labels = rule_labels[start:stop]
+        for rule_index in np.unique(labels):
+            sums[rule_index] += samples[labels == rule_index].sum(
+                axis=0, dtype=np.float64)
+        pca.partial_fit(samples)
+        del samples
+        start = stop
+
+    projection = np.empty((states.shape[0], 2), dtype=np.float32)
+    for start in range(0, states.shape[0], batch_size):
+        stop = min(start + batch_size, states.shape[0])
+        projection[start:stop] = pca.transform(states[start:stop])
+    return {
+        "X_2d": projection,
+        "ctx_rule_labels": rule_labels.astype(int, copy=False),
+        "explained_variance_ratio": pca.explained_variance_ratio_,
+        "task_centroids": sums / counts[:, None],
+        "task_trial_counts": counts,
+        "centroid_space": "original_features",
+        "pca_method": "IncrementalPCA",
+        "pca_batch_size": int(batch_size),
+    }
+
+
 def eval_one(netpathname):
-    """
+    """Analyze one checkpoint's Context geometry and first-step directions.
+
+    Save PCA coordinates, high-dimensional task centers and diagnostic plots.
+    Return (aname, hidden_size, l2_info, rval_dict, scatter_dict,
+    fixed_fixation_steps, fixed_fixation_ms). Scatter records retain the fitted
+    intercept; rval_dict retains the (Pearson r, slope, nominal p) tuples.
+    Full hidden and modulation trajectories are retained on CPU during analysis.
     """
     hidden_size, l2_info = mpf.parse_hidden_and_l2(netpathname)
 
@@ -200,8 +264,10 @@ def eval_one(netpathname):
     
     noise_level = 0.01
     task_params["sigma_x"] = noise_level
+    np.random.seed(EVALUATION_SEED)
+    torch.manual_seed(EVALUATION_SEED)
 
-    task_params_c, train_params_c, net_params_c = mpn_tasks.convert_and_init_multitask_params(
+    task_params_c, _, _ = mpn_tasks.convert_and_init_multitask_params(
         (task_params, train_params, net_params)
     )
     
@@ -210,6 +276,8 @@ def eval_one(netpathname):
     # setup the evaluation dataset generator
     test_n_batch = 50
     task_params_c['hp']['batch_size_train'] = test_n_batch
+    task_params_c['hp']['seed'] = EVALUATION_SEED
+    task_params_c['hp']['rng'] = np.random.RandomState(EVALUATION_SEED)
     dt_ms = task_params_c['hp']['dt']
     fixed_fixation_steps = max(1, int(FIXED_FIXATION_MS / dt_ms))
     
@@ -315,7 +383,7 @@ def eval_one(netpathname):
     }
 
     assert set(all_rules).issubset(set(rule_motif_mapping.keys()))
-    assert len(np.unique([v[0] for v in rule_motif_mapping.values()])) == 6
+    assert len({color for _, color in rule_motif_mapping.values()}) == 6
     
     embed_data_names = ["hidden", "mod", "eff_mod"]
     embed_data = [hs, Ms, eff_Ms]
@@ -337,14 +405,9 @@ def eval_one(netpathname):
         ctx_extract = np.concatenate(ctx_endfix, axis=0)
         ctx_rule_labels = np.concatenate(ctx_rule_labels, axis=0)
 
-        pca = PCA(n_components=2)
-        X_2d = pca.fit_transform(ctx_extract)
-
-        pca_results[data_name] = {
-            "X_2d": X_2d,
-            "ctx_rule_labels": ctx_rule_labels,
-            "explained_variance_ratio": pca.explained_variance_ratio_,
-        }
+        pca_results[data_name] = _context_pca_record(
+            ctx_extract, ctx_rule_labels, len(all_rules))
+        X_2d = pca_results[data_name]["X_2d"]
 
         fig, axs = plt.subplots(1,2,figsize=(4*2,4))
 
@@ -371,31 +434,27 @@ def eval_one(netpathname):
         # -------------------------
         # Panel 2: color by paper computation category
         # -------------------------
-        category_order = [
-            "Pro Delayed",
-            "Anti Delayed",
-            "Pro Reaction",
-            "Anti Reaction",
-            "Pro Integration",
-            "Categorization",
+        category_styles = [
+            ("Pro Delayed", "#3182ce"),
+            ("Anti Delayed", "#e53e3e"),
+            ("Pro Reaction / Match", "#38a169"),
+            ("Anti Reaction / Non-match", "#dd6b20"),
+            ("Integration", "#805ad5"),
+            ("Category", "#ff1493"),
         ]
 
-        category_to_color = {}
-        for rule, (cat, color) in rule_motif_mapping.items():
-            category_to_color[cat] = color
-
-        for cat in category_order:
+        for category, color in category_styles:
             rule_idxs_in_cat = [
                 idx for idx, rule in enumerate(all_rules)
-                if rule_motif_mapping[rule][0] == cat
+                if rule_motif_mapping[rule][1] == color
             ]
             sel = np.isin(ctx_rule_labels, rule_idxs_in_cat)
             ctx_values = X_2d[sel]
             axs[1].scatter(
                 ctx_values[:, 0],
                 ctx_values[:, 1],
-                label=cat,
-                color=category_to_color[cat],
+                label=category,
+                color=color,
                 alpha=0.5,
                 s=18,
             )
@@ -421,6 +480,9 @@ def eval_one(netpathname):
             "all_rules": list(all_rules),
             "rule_motif_mapping": rule_motif_mapping,
             "noise_level": noise_level,
+            "evaluation_seed": EVALUATION_SEED,
+            "trials_per_rule": test_n_batch,
+            "l2_info": float(l2_info),
             "fixed_fixation_steps": fixed_fixation_steps,
             "fixed_fixation_ms": fixed_fixation_steps * dt_ms,
             "aname": aname,
@@ -428,7 +490,7 @@ def eval_one(netpathname):
     print(f"Saved PCA data to {pca_save_path}")
 
     # distance between initial conditions vs. angle between first step (closer to Fig 4C)
-    def fig4c(shift_time):
+    def fig4c(shift_time, embed_data):
         fig, axs = plt.subplots(1, len(embed_data), figsize=(4*len(embed_data),4))
         rval_dict = {}
         # Raw per-task-pair scatter (x = initial-condition distance, y = first-
@@ -468,8 +530,8 @@ def eval_one(netpathname):
                         dh1 = data[idxs1, ctx_endtime1+shift_time, :] - h0_1
                         dh2 = data[idxs2, ctx_endtime2+shift_time, :] - h0_2
 
-                        # compare matched trial pairs
-                        # if counts differ, use all cross-pairs
+                        # Compare every cross-task trial pair sharing this stimulus,
+                        # including when the two tasks have equal trial counts.
                         pair_dists = []
                         pair_angles = []
 
@@ -498,13 +560,22 @@ def eval_one(netpathname):
                         all_x.append(np.mean(stim_dists))
                         all_y.append(np.mean(stim_angles))
                         
-            x_fit, y_fit, r_value, slope, intercept, p_value = helper.linear_regression(np.array(all_x), np.array(all_y), log=False, through_origin=True)
+            x_fit, y_fit, r_value, slope, intercept, p_value = helper.linear_regression(
+                np.array(all_x), np.array(all_y), log=False, through_origin=False)
             rval_dict[embed_data_names[idx]] = (r_value, slope, p_value)
             scatter_dict[embed_data_names[idx]] = {
                 "dists": np.asarray(all_x, dtype=float),
                 "angles_deg": np.asarray(all_y, dtype=float),
+                "regression": {
+                    "through_origin": False,
+                    "intercept": float(intercept),
+                    "p_value_method": "OLS slope t-test assuming independent task pairs",
+                },
             }
-            axs[idx].plot(x_fit, y_fit, color='red', label=f"Fit: slope={slope:.2f}, r={r_value:.2f}, p={p_value:.3f}")
+            axs[idx].plot(
+                x_fit, y_fit, color='red',
+                label=(f"Fit: slope={slope:.2f}, intercept={intercept:.2f}, "
+                       f"r={r_value:.2f}, nominal p={p_value:.3f}"))
         
             axs[idx].set_xlabel("Distance between initial conditions")
             axs[idx].set_ylabel(f"Angle between {shift_time+1} step of trajectories (deg.)")
@@ -521,7 +592,7 @@ def eval_one(netpathname):
 
         return rval_dict, scatter_dict
 
-    rval_dict, scatter_dict = fig4c(shift_time=0)
+    rval_dict, scatter_dict = fig4c(shift_time=0, embed_data=embed_data)
 
     # Cleanup to prevent CPU memory compounding across experiments.
     del test_trials_extra
@@ -577,16 +648,9 @@ def summarize():
     r_values = {dt: [] for dt in data_types}
     slopes = {dt: [] for dt in data_types}
     p_values = {dt: [] for dt in data_types}
-    hidden_sizes = []
-    l2_infos = []
-    anames = []
     
     # Extract all values
-    for aname, results in result_dict.items():
-        anames.append(aname)
-        hidden_sizes.append(results["hidden_size"])
-        l2_infos.append(results["l2_info"])
-        
+    for results in result_dict.values():
         for dt in data_types:
             if dt in results["rval_dict"]:
                 r_val, slope, p_val = results["rval_dict"][dt]
@@ -609,7 +673,8 @@ def summarize():
               f"min={np.min(r_arr):.3f}, max={np.max(r_arr):.3f}")
         print(f"  Slopes:   mean={np.mean(slope_arr):.3f}, std={np.std(slope_arr):.3f}, "
               f"min={np.min(slope_arr):.3f}, max={np.max(slope_arr):.3f}")
-        print(f"  P-values: mean={np.mean(p_arr):.4f}, significant (p<0.05): {np.sum(p_arr < 0.05)}/{len(p_arr)}")
+        print(f"  Nominal P-values (task-pair independence assumed): "
+              f"mean={np.mean(p_arr):.4f}, p<0.05: {np.sum(p_arr < 0.05)}/{len(p_arr)}")
     
     # Create comparison visualization
     fig, ax = plt.subplots(1,1,figsize=(4,4))
