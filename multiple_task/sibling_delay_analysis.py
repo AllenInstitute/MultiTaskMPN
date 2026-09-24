@@ -12,7 +12,7 @@ under ``two_in_multiples/{aname}/``.
 Run one or both families without rerunning clustering or lesion analysis::
 
     python multiple_task/sibling_delay_analysis.py \
-        --seed 921 --feature L21e4 --families delaydm1 --method gradient
+    --seed 749 --feature L21e4 --families delaydm1 --method gradient
 
 Select ``--method long_delay_endpoint`` instead to use the final state of a
 generated very-long delay as the fixed-point proxy and save its sampled path.
@@ -1452,7 +1452,7 @@ def build_arg_parser():
         description=("Analyze DelayDM or DMC sibling-task memory geometry "
                      "without running clustering or lesion experiments."))
     parser.add_argument("--seed", type=int, required=True,
-                        help="Seed of the trained everything network (for example 921).")
+                        help="Seed of the trained everything network (for example 749).")
     parser.add_argument("--feature", required=True,
                         help="Run feature token (for example L21e4).")
     parser.add_argument(

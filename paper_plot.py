@@ -7,7 +7,8 @@ figures, or import individual functions as needed.
 
 Figures are grouped into modes by the experiment they depend on:
     one_task         single-task training analyses
-    multiple_tasks   full multi-task network (clustering and lesion analyses)
+    multiple_tasks   multi-task clustering and network structure
+    leison           multi-task lesion effects and cross-seed lesion summaries
     state_space      multi-task state-space geometry analyses
     acc_plot         accuracy comparisons (L2, activation, projection/hidden dims)
     two_in_multiple  sibling-task fixed-point geometry in the multi-task network
@@ -18,15 +19,19 @@ Usage:
     python paper_plot.py                       # generate every mode
     python paper_plot.py all                   # same as above
     python paper_plot.py one_task              # only the one-task figures
-    python paper_plot.py multiple_tasks        # only the multi-task figures
+    python paper_plot.py multiple_tasks        # clustering and network structure
+    python paper_plot.py leison                # only the lesion figures
     python paper_plot.py state_space            # only the state-space figures
     python paper_plot.py acc_plot              # only the accuracy figures
     python paper_plot.py two_in_multiple       # only the two-in-multiple figures
     python paper_plot.py pretraining           # only the pretraining figures
+    python paper_plot.py pretraining --pretraining-bound mod2
+                                                # pretraining with M in [-2, 2]
     python paper_plot.py two_task              # only the two-task figures
     python paper_plot.py --only input          # generate a single figure
 """
 import pickle
+import json
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -34,8 +39,8 @@ import matplotlib.ticker as mticker
 import seaborn as sns
 from pathlib import Path
 from scipy.cluster.hierarchy import fcluster
-from sklearn.metrics import silhouette_samples
 from core.sibling_geometry import best_task_specific_pc_pair
+from core.state_space_geometry import task_centroid_separation
 
 # ─── Global style ────────────────────────────────────────────────────────────
 mpl.rcParams.update({
@@ -230,16 +235,16 @@ OUT_DIR = Path("paper_plot")
 ANAME = "everything_seed749_L21e4+hidden300+batch128+angle"
 DATA_DIR = Path("multiple_tasks_analysis") / ANAME
 # State-space example figures automatically select one run from the tanh,
-# projection-300, hidden-300, L2=1e-3 cohort. The selected run has the highest
-# macro-averaged color-cluster silhouette score in the plotted 2D effective-
-# modulation PCA space: same-color tasks should cluster and different colors
-# should separate. This remains independent of ANAME, which continues to select
+# projection-300, hidden-300, L2=1e-4 cohort. The selected run has the highest
+# category-balanced separation of task centroids in full effective-modulation
+# space; the two-dimensional PCA is used only for display.
+# This remains independent of ANAME, which continues to select
 # the clustering/lesion paper figures above. The R-value summary still shows all
 # four L2 cohorts.
-# DelayDM and DMCGo sibling-task probes (two_in_multiple mode). May differ from
-# ANAME — set independently so these figures can come from a different
-# seed/regularization than the clustering/lesion figures.
-DELAYDM_ANAME = "everything_seed921_L21e4+hidden300+batch128+angle"
+# DelayDM and DMCGo sibling-task probes (two_in_multiple mode) select their
+# trained runs independently of each other and of the clustering figures.
+DELAYDM_ANAME = "everything_seed408_L21e4+hidden300+batch128+angle"
+DMCGO_ANAME = "everything_seed921_L21e4+hidden300+batch128+angle"
 # Produced by multiple_task/sibling_delay_analysis.py, which writes into
 # two_in_multiples/{aname}/ the artifacts the sibling geometry figures read:
 #     fixed_points_grad_{aname}_{rule}.pkl   one per delayDM rule
@@ -515,9 +520,8 @@ _TASK_DISPLAY = {
 # (dmsgo) shares Pro Reaction's green and ReactNonMatch2Sample (dmsnogo)
 # shares Anti Reaction's orange — match/non-match is a pro/anti response
 # rule, so the label color carries that. Only the dmc pair takes
-# Categorization's own deeppink. NB the state-space scatter colors by
-# CATEGORY (dict last-wins => Categorization = deeppink there), so dms
-# points are deeppink in that figure while their heatmap labels stay paired.
+# Categorization's own deeppink. State-space panels and task-center scoring
+# group by these colors, keeping the DMS match/non-match pairing consistent.
 _RULE_MOTIF = {
     "fdgo":            ("Pro Delayed",    "#3182ce"),  # blue
     "fdanti":          ("Anti Delayed",   "#e53e3e"),  # red
@@ -1904,55 +1908,31 @@ def _plot_dimension_accuracy(*, vary_hidden):
 
 STATE_SPACE_DIR = Path("state_space")
 RVAL_RESULT_PATH = STATE_SPACE_DIR / "initial_condition_distance_vs_angle_results.pkl"
-STATE_SPACE_EXAMPLE_L2 = 1e-3
+STATE_SPACE_EXAMPLE_L2 = 1e-4
+STATE_SPACE_NOISE_LEVEL = 0.01
 STATE_SPACE_L2_STRENGTHS = (1e-5, 1e-4, 1e-3, 1e-2)
 
 
-def _eff_mod_color_clustering_score(data):
-    """Score how well the plotted eff-mod PCA points cluster by paper color.
-
-    A silhouette value is computed for every point using its displayed color
-    as the cluster label. We then average within each color before averaging
-    across colors, so a larger category (for example Pro Integration) cannot
-    dominate smaller categories such as Pro Delayed.
-    """
-    pca = data["pca_results"]["eff_mod"]
-    points = np.asarray(pca["X_2d"], dtype=float)
-    rule_indices = np.asarray(pca["ctx_rule_labels"], dtype=int)
+def _eff_mod_task_centroid_metrics(data):
+    """Score full-dimensional task centers using the six paper color groups."""
+    record = data["pca_results"]["eff_mod"]
     all_rules = list(data["all_rules"])
-
-    if points.ndim != 2 or rule_indices.ndim != 1 or len(points) != len(rule_indices):
-        raise ValueError("Invalid effective-modulation PCA point/label shapes.")
-    if len(rule_indices) == 0 or np.any(rule_indices < 0) or np.any(rule_indices >= len(all_rules)):
-        raise ValueError("Invalid effective-modulation PCA rule labels.")
-
-    color_labels = np.asarray([
-        _RULE_MOTIF[all_rules[rule_idx]][1] for rule_idx in rule_indices
-    ])
-    finite = np.all(np.isfinite(points), axis=1)
-    points = points[finite]
-    color_labels = color_labels[finite]
-    colors, counts = np.unique(color_labels, return_counts=True)
-    if len(colors) < 2 or len(points) <= len(colors) or np.any(counts < 2):
-        raise ValueError("Need at least two colors with two finite points each.")
-
-    point_scores = silhouette_samples(points, color_labels, metric="euclidean")
-    color_scores = [np.mean(point_scores[color_labels == color]) for color in colors]
-    score = float(np.mean(color_scores))
-    if not np.isfinite(score):
-        raise ValueError("Effective-modulation color silhouette is not finite.")
-    return score
+    if record.get("centroid_space") != "original_features":
+        raise ValueError("Missing original-feature task centers; rerun state_space_shift.py.")
+    counts = np.asarray(record["task_trial_counts"])
+    if (len(set(all_rules)) != len(all_rules)
+            or counts.shape != (len(all_rules),)
+            or not np.all(np.isfinite(counts)) or np.any(counts <= 0)):
+        raise ValueError("Every distinct task must have context samples.")
+    categories = [_RULE_MOTIF[rule][1] for rule in all_rules]
+    return task_centroid_separation(record["task_centroids"], categories)
 
 
-def _best_state_space_trial(result_dict, pca_loader=None):
-    """Return the best eff-mod color clustering trial within L2=1e-3.
-
-    Sorting names first makes equal-score selection deterministic. ``pca_loader``
-    is injectable so the selection rule can be tested without filesystem data.
-    """
+def _state_space_centroid_ranking(result_dict, pca_loader=None):
+    """Rank all valid seeds and summarize their high-dimensional separation."""
     if pca_loader is None:
         pca_loader = _load_state_space_pca
-    candidates = []
+    rankings, skipped = [], []
     for aname in sorted(result_dict):
         try:
             entry = result_dict[aname]
@@ -1963,43 +1943,91 @@ def _best_state_space_trial(result_dict, pca_loader=None):
                 or not np.isclose(l2_strength, STATE_SPACE_EXAMPLE_L2,
                                   rtol=1e-6, atol=0.0)):
             continue
-        data = pca_loader(aname)
-        if data is None:
-            continue
         try:
-            score = _eff_mod_color_clustering_score(data)
-        except (KeyError, IndexError, TypeError, ValueError):
+            data = pca_loader(aname)
+            if data is None:
+                raise ValueError("No state-space PCA cache at the configured noise level.")
+            metrics = _eff_mod_task_centroid_metrics(data)
+        except (KeyError, IndexError, TypeError, ValueError, OSError,
+                EOFError, pickle.UnpicklingError) as exc:
+            skipped.append({"aname": aname, "reason": str(exc)})
             continue
-        candidates.append((aname, score))
-    if not candidates:
+        rankings.append({"aname": aname, **metrics})
+    rankings.sort(key=lambda row: (-row["score"], row["aname"]))
+    summary = {}
+    if rankings:
+        for metric in ("score", "within_distance", "between_distance"):
+            values = np.asarray([row[metric] for row in rankings])
+            summary[metric] = {
+                "mean": float(values.mean()),
+                "std": float(values.std(ddof=1)) if values.size > 1 else None,
+                "min": float(values.min()),
+                "max": float(values.max()),
+            }
+    return {
+        "criterion": "(between_distance - within_distance) / (between_distance + within_distance)",
+        "space": "original effective-modulation features (W * M)",
+        "weighting": "equal within-category means and equal between-category-pair means",
+        "l2": STATE_SPACE_EXAMPLE_L2,
+        "noise_level": STATE_SPACE_NOISE_LEVEL,
+        "n_candidates": len(rankings) + len(skipped),
+        "n_scored": len(rankings),
+        "best_aname": rankings[0]["aname"] if rankings else None,
+        "rankings": rankings,
+        "summary": summary,
+        "skipped": skipped,
+    }
+
+
+def _best_state_space_trial(result_dict, pca_loader=None):
+    """Select maximal task-center separation; break ties by run name."""
+    report = _state_space_centroid_ranking(result_dict, pca_loader)
+    if not report["rankings"]:
         return None
-    return max(candidates, key=lambda candidate: candidate[1])
+    best = report["rankings"][0]
+    return best["aname"], best["score"]
 
 
 def _load_best_state_space_trial():
-    """Load results and select the shared trial for all example-state panels."""
+    """Report all seed scores and select the shared example without a 2D fallback."""
     result_dict = _load_pkl_or_skip(
-        RVAL_RESULT_PATH, "Run state_space_shift.py first.")
+        RVAL_RESULT_PATH, "Run python multiple_task/state_space_shift.py first.")
     if result_dict is None:
         return None
-    selection = _best_state_space_trial(result_dict)
-    if selection is None:
-        print(f"  Skipped: no valid effective-modulation color clustering "
-              f"result for L2={STATE_SPACE_EXAMPLE_L2:.0e}.")
+    report = _state_space_centroid_ranking(result_dict)
+    _ensure_out_dir()
+    report_path = _multitask_out("state_space_centroid_scores.json")
+    with report_path.open("w") as stream:
+        json.dump(report, stream, indent=2, allow_nan=False)
+    print(f"  Task-center ranking: {report['n_scored']}/{report['n_candidates']} seeds "
+          f"at L2={STATE_SPACE_EXAMPLE_L2:.0e}; saved {report_path}")
+    for row in report["rankings"]:
+        print(f"    {row['aname']}: S={row['score']:.6f}, "
+              f"within={row['within_distance']:.6g}, "
+              f"between={row['between_distance']:.6g}")
+    for row in report["skipped"]:
+        print(f"    Skipped {row['aname']}: {row['reason']}")
+    if report["skipped"] or not report["rankings"]:
+        print("  Populate missing task centers: python multiple_task/state_space_shift.py")
+    if not report["rankings"]:
         return None
-    aname, score = selection
+    stats = report["summary"]["score"]
+    spread = f"{stats['std']:.6f}" if stats["std"] is not None else "N/A (one seed)"
+    print(f"  Across scored seeds: mean S={stats['mean']:.6f}, sample SD={spread}")
+    best = report["rankings"][0]
+    aname, score = best["aname"], best["score"]
     print(f"  State-space trial selected automatically: {aname} "
-          f"(eff_mod color silhouette={score:.3f})")
+          f"(high-dimensional task-center separation={score:.6f})")
     return aname, score, result_dict[aname]
 
 
 def _load_state_space_pca(aname):
-    """Load the PCA pickle for the selected state-space model."""
-    pattern = f"state_space_pca_{aname}_noise*.pkl"
-    matches = sorted(STATE_SPACE_DIR.glob(pattern))
-    if not matches:
+    """Load state_space_shift's shared PCA and original-feature task centers."""
+    path = STATE_SPACE_DIR / f"state_space_pca_{aname}_noise{STATE_SPACE_NOISE_LEVEL}.pkl"
+    if not path.exists():
         return None
-    return pickle.load(open(matches[0], "rb"))
+    with path.open("rb") as stream:
+        return pickle.load(stream)
 
 
 # Legend for the state-space panels: one entry per DISTINCT color in
@@ -2061,8 +2089,8 @@ def plot_state_space_combined():
 
     These are separate PCA spaces whose PCs are not comparable, so each is sized
     and placed independently. Each carries its own axis labels and category
-    legend. All three use the same trial selected by effective-modulation color
-    clustering, while ``mod`` plots M and ``eff_mod`` plots M elementwise
+    legend. All three use the same trial selected by high-dimensional task-center
+    separation, while ``mod`` plots M and ``eff_mod`` plots M elementwise
     multiplied by the learned plastic weight matrix W.
     """
     _ensure_out_dir()
@@ -2161,8 +2189,8 @@ def plot_state_space_r_values():
 def plot_state_space_dist_angle():
     """
     Figure: initial-condition distance vs first-step trajectory angle for the
-    automatically selected L2=1e-3 state-space trial with the best same-color
-    clustering in effective-modulation PCA space — the per-task-pair scatter
+    automatically selected L2=1e-4 state-space trial with the best task-center
+    separation in full effective-modulation space — the per-task-pair scatter
     that the R-value bars (plot_state_space_r_values) summarize. The same
     selected trial supplies the hidden-state and effective-modulation PCA
     figures.
@@ -2171,11 +2199,10 @@ def plot_state_space_dist_angle():
     pair: x = mean Euclidean distance between the two tasks' pre-stimulus
     states (end of the Context period, matched by stimulus), y = mean angle
     (deg) between their first post-stimulus displacement vectors. The line and
-    the annotated r/slope are the through-origin fit state_space_shift.py
-    computed — read from the same pickle, never refit here, so this figure and
-    the R-value bars cannot drift apart. Needs the raw scatter data
-    state_space_shift.py now saves; older pickles (r-values only) are skipped
-    with a message to re-run it.
+    the annotated r/slope come from the free-intercept OLS fit state_space_shift.py
+    computed, read from the same pickle and never refit here. The saved p-value
+    assumes independent task pairs and is labeled nominal. Older caches without
+    a saved free-intercept fit are skipped with a message to rerun the analysis.
     """
     _ensure_out_dir()
     selected = _load_best_state_space_trial()
@@ -2189,6 +2216,15 @@ def plot_state_space_dist_angle():
         return
 
     panels = [("hidden", "Hidden state"), ("eff_mod", "Eff. modulation")]
+    for key, _ in panels:
+        if key not in scatter:
+            continue
+        regression = scatter[key].get("regression", {})
+        if (regression.get("through_origin") is not False
+                or "intercept" not in regression):
+            print(f"  Skipped: {key} has no saved free-intercept regression "
+                  "(legacy cache). Re-run multiple_task/state_space_shift.py.")
+            return
     fig, axs = plt.subplots(1, 2, figsize=(5.4, 2.6))
     for ax, (key, title) in zip(axs, panels):
         sd = scatter.get(key)
@@ -2198,13 +2234,16 @@ def plot_state_space_dist_angle():
         x = np.asarray(sd["dists"], float)
         y = np.asarray(sd["angles_deg"], float)
         r_value, slope, p_value = entry["rval_dict"][key]
+        intercept = float(sd["regression"]["intercept"])
 
         ax.scatter(x, y, color="#3182ce", edgecolors="k", linewidths=0.4,
                    s=22, alpha=0.75, zorder=3)
         x_fit = np.linspace(x.min(), x.max(), 50)
-        ax.plot(x_fit, slope * x_fit, color="tomato", linewidth=1.2, zorder=4)
+        ax.plot(x_fit, intercept + slope * x_fit,
+            color="tomato", linewidth=1.2, zorder=4)
 
-        p_str = "p < 1e-4" if p_value < 1e-4 else f"p = {p_value:.3f}"
+        p_str = ("nominal p < 1e-4" if p_value < 1e-4
+             else f"nominal p = {p_value:.3f}")
         _legend(ax, [f"r = {r_value:.2f}, {p_str}"], loc="lower right",
                 fontsize=6, frameon=True)
         ax.set_xlabel("Distance between initial conditions", fontsize=8)
@@ -2236,7 +2275,9 @@ def _plot_overmembership_single(pkl_template, out_filename):
     Plot a 2×1 over-membership figure (top: same-neuron, bottom: same neuron-cluster),
     aggregated across all available experiments (seeds) that have the matching
     prepost_belonging pickle. Bars show the mean over-membership; error bars show
-    the standard error across experiments.
+    the standard error across experiments. The same-neuron Both slot is N/A:
+    distinct modulation entries cannot share both neuron endpoints, making its
+    observed and control counts zero and its relative over-membership undefined.
 
     pkl_template: a filename template containing "{aname}", e.g.
         "modulation_all_prepost_belonging_{aname}_unnormalized.pkl"
@@ -2281,17 +2322,23 @@ def _plot_overmembership_single(pkl_template, out_filename):
         bar_names = bar_name_lst[row_idx]
         short_names = [n.replace("Share-", "").replace("-Cluster", " Cl.") for n in bar_names]
 
-        colors = ["#3182ce", "#e53e3e", "#38a169", "#718096"][:len(mean)]
         x = np.arange(len(mean))
-        ax.bar(x, mean, yerr=sem, capsize=3, color=colors,
+        if row_idx == 0:
+            short_names.insert(2, "Both")
+            x[x >= 2] += 1
+            ax.annotate("N/A", xy=(2, 0), xytext=(0, 5),
+                        textcoords="offset points", ha="center", va="bottom",
+                        fontsize=7, color="0.4")
+        ax.bar(x, mean, yerr=sem, capsize=3, color="0.6",
                edgecolor="k", linewidth=0.5, width=0.6, zorder=2)
         # Overlay individual experiment points
         for over in per_row_over[row_idx]:
             jitter = np.random.default_rng(0).uniform(-0.12, 0.12, len(over))
             ax.scatter(x + jitter, over, color="k", s=8, alpha=0.5, zorder=3)
         ax.axhline(0, color="k", lw=0.5, zorder=0)
-        ax.set_xticks(x)
+        ax.set_xticks(np.arange(len(short_names)))
         ax.set_xticklabels(short_names, rotation=35, ha="right", fontsize=6)
+        ax.set_xlim(-0.6, len(short_names) - 0.4)
         ax.spines[["top", "right"]].set_visible(False)
 
     fig.subplots_adjust(hspace=0.45)
@@ -2331,6 +2378,116 @@ def plot_overmembership_var_weighted():
     )
 
 
+OVERMEMBERSHIP_EXAMPLE_FIXED_K = 20
+OVERMEMBERSHIP_EXAMPLE_CLUSTERS = (3, 4)
+
+
+def plot_overmembership_examples():
+    """Show selected modulation clusters' input-by-hidden block enrichment.
+
+    Reads global_assignment_fixed_k20: input, hidden and modulation use their
+    fixed-k unnormalized clusterings, with variance weighting for modulation.
+    Extra endpoint group k+1, when present, is the unresponsive class (U).
+    OM is observed/expected, with baseline 1, not pooled G=100 pair statistics.
+    The null shuffles labels among surviving synapses, so expected counts are
+    n_active_block * cluster_size_percent. Show every positive-expectation cell;
+    zero-expectation ratios are undefined and labeled N/A. Outline each example's
+    highest OM with expected >= 3 and observed >= 20; this is a descriptive
+    selection, not a significance test. Low-expectation ratios can be unstable.
+
+    The full cluster cache can be several GB; run on an allocated compute node.
+    """
+    mod_info = _load_cluster_info_mod()
+    if mod_info is None:
+        print("  Skipped OM examples: modulation cluster cache not found.")
+        return
+    entry = mod_info["modulation_all_var_weighted_unnormalized"]
+    assignment_key = f"global_assignment_fixed_k{OVERMEMBERSHIP_EXAMPLE_FIXED_K}"
+    assignment = entry.get(assignment_key)
+    if (assignment is None or "n_active_block" not in assignment
+            or assignment.get("fixed_k") != OVERMEMBERSHIP_EXAMPLE_FIXED_K):
+        print(f"  Skipped OM examples: regenerate {assignment_key} with active-block counts.")
+        return
+    ratios = np.asarray(assignment["om_stack"], dtype=float)
+    cluster_ids = list(assignment["all_choice_order"])
+    fractions = np.asarray(assignment["cluster_size_percent"], dtype=float)
+    active = np.asarray(assignment["n_active_block"], dtype=float)
+    if (ratios.ndim != 3 or ratios.shape != (len(cluster_ids), *active.shape)
+            or active.ndim != 2 or fractions.shape != (len(cluster_ids),)
+            or len(set(cluster_ids)) != len(cluster_ids)
+            or not np.isfinite(ratios).all() or np.any(ratios < 0)
+            or not np.isfinite(active).all() or np.any(active < 0)
+            or not np.isfinite(fractions).all() or np.any(fractions <= 0)
+            or not np.isclose(fractions.sum(), 1.0)):
+        raise ValueError("Invalid OM example cache: counts, ratios and cluster IDs must align.")
+    panels = []
+    for cluster_id in OVERMEMBERSHIP_EXAMPLE_CLUSTERS:
+        if cluster_id not in cluster_ids:
+            print(f"  Skipped OM examples: modulation C{cluster_id} not found in {ANAME}.")
+            return
+        cluster_index = cluster_ids.index(cluster_id)
+        ratio = ratios[cluster_index]
+        expected = active * fractions[cluster_index]
+        observed = ratio * expected
+        valid = expected > 0.0
+        candidates = (expected >= 3.0) & (observed >= 20.0)
+        if not np.any(candidates):
+            print(f"  Skipped OM examples: C{cluster_id} has no supported example block.")
+            return
+        peak = np.unravel_index(np.argmax(np.where(candidates, ratio, -np.inf)), ratio.shape)
+        panels.append((cluster_id, ratio, valid, expected, observed, peak))
+    del mod_info, entry, assignment
+
+    _ensure_out_dir()
+    vmax = max(1.0, np.ceil(max(ratio[valid].max()
+                              for _, ratio, valid, _, _, _ in panels)))
+    fig, axes = plt.subplots(1, len(panels), figsize=(10.5, 5.2), squeeze=False)
+    fig.subplots_adjust(left=0.07, right=0.84, bottom=0.26, top=0.89, wspace=0.34)
+    colorbar_axis = fig.add_axes((0.89, 0.27, 0.016, 0.60))
+    for axis, (cluster_id, ratio, valid, expected, observed, peak) in zip(axes[0], panels):
+        axis.set_facecolor("0.92")
+        sns.heatmap(
+            ratio.T, mask=~valid.T, ax=axis, cmap="Greys", vmin=0, vmax=vmax,
+            annot=True, fmt=".1f", annot_kws={"fontsize": 5},
+            linewidths=0.5, linecolor="white", cbar=False, square=True,
+            xticklabels=["U" if index == OVERMEMBERSHIP_EXAMPLE_FIXED_K else f"C{index + 1}"
+                         for index in range(ratio.shape[0])],
+            yticklabels=["U" if index == OVERMEMBERSHIP_EXAMPLE_FIXED_K else f"C{index + 1}"
+                         for index in range(ratio.shape[1])],
+        )
+        for input_index, hidden_index in np.argwhere(~valid):
+            axis.text(input_index + 0.5, hidden_index + 0.5, "N/A",
+                      ha="center", va="center", fontsize=5, color="0.5")
+        input_index, hidden_index = peak
+        axis.add_patch(mpl.patches.Rectangle(
+            (input_index + 0.06, hidden_index + 0.06), 0.88, 0.88,
+            fill=False, edgecolor="white" if ratio[peak] > vmax / 2 else "0.15",
+            linewidth=1.2, linestyle="--"))
+        axis.set_title(f"Modulation C{cluster_id}", fontsize=10)
+        axis.set_xlabel("Input cluster", fontsize=8)
+        axis.set_ylabel("Hidden cluster", fontsize=8)
+        axis.tick_params(axis="both", length=0, labelsize=7, labelrotation=0)
+        axis.tick_params(axis="x", labelrotation=90)
+        axis.text(0.5, -0.24,
+                  f"C{input_index + 1} / C{hidden_index + 1}: "
+                  f"{observed[peak]:.0f} observed / {expected[peak]:.2f} expected",
+                  transform=axis.transAxes, ha="center", va="top", fontsize=7)
+        print(f"  Modulation C{cluster_id}: input C{input_index + 1}, "
+              f"hidden C{hidden_index + 1}, OM={ratio[peak]:.3f}; "
+              f"observed={observed[peak]:.0f}, expected={expected[peak]:.2f}")
+    colorbar = fig.colorbar(axes[0, 0].collections[0], cax=colorbar_axis)
+    colorbar.set_ticks(sorted({0., 1., vmax / 2, vmax}))
+    colorbar.set_label("OM (observed / expected)", fontsize=8)
+    colorbar.ax.tick_params(labelsize=7)
+    fig.text(0.07, 0.025,
+             f"Fixed k = {OVERMEMBERSHIP_EXAMPLE_FIXED_K}; U: unresponsive group; "
+             "OM = 1: random expectation; N/A: expected count = 0",
+             fontsize=7, color="0.35")
+    _save_fig(fig, _multitask_out("overmembership_examples.png"),
+              extra=(f"  ({ANAME}; fixed k={OVERMEMBERSHIP_EXAMPLE_FIXED_K}; "
+                     "var-weighted unnormalized modulation; unnormalized input/hidden)"))
+
+
 # ─── Figure: Lesion heatmap ──────────────────────────────────────────────────
 
 LESION_DIR = Path("multiple_tasks_perf") / ANAME
@@ -2349,8 +2506,10 @@ def plot_lesion_heatmap():
     """
         Figure: Normalized lesion effect heatmaps for unnormalized clusterings.
 
-    Two panels stacked vertically:
-            Top — hidden (post) cluster lesion effect from `leison_unnorm`
+    Three panels stacked vertically:
+            Top — input (pre) cluster lesion effect from `leison_unnorm`
+                        (tasks × input clusters)
+            Middle — hidden (post) cluster lesion effect from `leison_unnorm`
                         (tasks × hidden clusters)
             Bottom — modulation cluster lesion effect from
                              `modulation_all_var_weighted_unnormalized__freeze_M`
@@ -2383,15 +2542,18 @@ def plot_lesion_heatmap():
         all_tasks = hidden["tasks"]
         if set(all_tasks) != set(modulation["tasks"]):
             raise ValueError("hidden and modulation task sets differ")
+        pre_idx = [index for index, name in enumerate(hidden["conditions"]) if name.startswith("pre_c")]
         post_idx = [index for index, name in enumerate(hidden["conditions"]) if name.startswith("post_c")]
         mod_idx = [index for index, name in enumerate(modulation["conditions"]) if name.startswith("mod_c")]
-        if not post_idx or not mod_idx:
-            raise ValueError("no saved hidden or modulation cluster effects")
+        if not pre_idx or not post_idx or not mod_idx:
+            raise ValueError("missing saved input, hidden or modulation cluster effects")
         mod_rows = [modulation["tasks"].index(task) for task in all_tasks]
+        effect_pre = np.asarray(hidden["effect"], dtype=float)[:, pre_idx] * 100
         effect_post = np.asarray(hidden["effect"], dtype=float)[:, post_idx] * 100
         effect_mod = np.asarray(modulation["effect"], dtype=float)[np.ix_(mod_rows, mod_idx)] * 100
-        if not np.isfinite(effect_post).all() or not np.isfinite(effect_mod).all():
+        if not all(np.isfinite(effect).all() for effect in (effect_pre, effect_post, effect_mod)):
             raise ValueError("non-finite saved effect values")
+        pre_labels = ["C" + hidden["conditions"][index].removeprefix("pre_c") for index in pre_idx]
         post_labels = ["C" + hidden["conditions"][index].removeprefix("post_c") for index in post_idx]
         mod_labels = ["C" + modulation["conditions"][index].removeprefix("mod_c") for index in mod_idx]
     except (KeyError, TypeError, ValueError) as error:
@@ -2399,16 +2561,17 @@ def plot_lesion_heatmap():
         return
 
     all_tasks_display = [_TASK_DISPLAY.get(task, task) for task in all_tasks]
-    vmax = max(np.abs(effect_post).max(), np.abs(effect_mod).max(), 1e-6)
+    vmax = max(np.abs(effect_pre).max(), np.abs(effect_post).max(), np.abs(effect_mod).max(), 1e-6)
 
     fig, axes = plt.subplots(
-        2, 1, figsize=(6, 5.5),
-        gridspec_kw={"height_ratios": [1, 1], "hspace": 0.1},
+        3, 1, figsize=(6, 8.25),
+        gridspec_kw={"height_ratios": [1, 1, 1], "hspace": 0.1},
     )
 
     panels = [
-        (axes[0], effect_post, post_labels),
-        (axes[1], effect_mod, mod_labels),
+        (axes[0], effect_pre, pre_labels),
+        (axes[1], effect_post, post_labels),
+        (axes[2], effect_mod, mod_labels),
     ]
 
     for idx, (ax, effect, cluster_labels) in enumerate(panels):
@@ -2422,7 +2585,7 @@ def plot_lesion_heatmap():
         ax.set_ylabel("")
         ax.tick_params(axis="y", labelsize=6, rotation=0)
         ax.tick_params(axis="x", labelsize=6)
-        if idx < 1:
+        if idx < len(panels) - 1:
             ax.set_xlabel("")
             ax.tick_params(axis="x", labelbottom=False)
         else:
@@ -2454,8 +2617,8 @@ def plot_lesion_heatmap():
 
 def plot_lesion_cluster_sizes():
     """
-    Figure: relative size of every cluster shown in the lesion heatmap
-    (plot_lesion_heatmap), as two stacked bar panels sharing its column order:
+    Figure: relative sizes of the hidden and modulation clusters in the lesion
+    heatmap (plot_lesion_heatmap), as two bar panels retaining their column order:
 
         Top    — hidden (post) neuron clusters from the unnormalized
                  clustering: % of all hidden neurons per cluster
@@ -2465,7 +2628,8 @@ def plot_lesion_cluster_sizes():
     Companion to the heatmap: it says how much substrate each column's lesion
     removes, so a big effect from a small cluster reads as selectivity rather
     than mass. Cluster indices match the heatmap's C1..Cn labels (the two
-    panels' numberings are independent of each other, as there).
+    panels' numberings are independent of each other, as there). Percentages
+    use logarithmic y axes; zero-size clusters are labeled 0% without a bar.
     """
     _ensure_out_dir()
     data = _load_lesion_results()
@@ -2496,14 +2660,26 @@ def plot_lesion_cluster_sizes():
         (hid_sizes, f"Hidden neuron clusters (n = {int(hid_sizes.sum())} neurons)"),
         (mod_sizes, f"Modulation clusters (n = {int(mod_sizes.sum())} synapses)"),
     ]
+    if any(not np.isfinite(sizes).all() or np.any(sizes < 0) or sizes.sum() <= 0
+           for sizes, _ in panels):
+        print("  Skipped: cluster sizes must be nonnegative with positive totals.")
+        return
     fig, axes = plt.subplots(2, 1, figsize=(6, 3.6), sharex=False)
     for ax, (sizes, title) in zip(axes, panels):
         pct = sizes / sizes.sum() * 100
         xs = np.arange(len(pct))
-        ax.bar(xs, pct, color="#4682b4", edgecolor="k", linewidth=0.4, width=0.7)
+        positive = pct > 0
+        ax.bar(xs[positive], pct[positive], color="#4682b4", edgecolor="k",
+               linewidth=0.4, width=0.7)
+        ax.set_yscale("log")
+        ax.set_ylim(pct[positive].min() * 0.5, pct[positive].max() * 1.4)
+        ax.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:g}"))
+        for index in xs[~positive]:
+            ax.text(index, 0.04, "0%", transform=ax.get_xaxis_transform(),
+                    ha="center", va="bottom", fontsize=6)
         ax.set_xticks(xs)
         ax.set_xticklabels([f"C{i + 1}" for i in xs], fontsize=6)
-        ax.set_ylabel("Cluster size (%)", fontsize=8)
+        ax.set_ylabel("Cluster size (%)\n(log scale)", fontsize=8)
         ax.set_title(title, fontsize=8)
         ax.spines[["top", "right"]].set_visible(False)
         ax.tick_params(labelsize=7)
@@ -2935,7 +3111,54 @@ def plot_cross_seed_summary():
 # ─── Figure: Transfer speed ──────────────────────────────────────────────────
 
 PRETRAINING_ANALYSIS_DIR = Path("pretraining_analysis")
-PRETRAINING_ADDON_NAME = "+hidden200+L21e3+batch128+angle"
+_PRETRAINING_BOUND_ADDONS = {
+    "mb1": "+hidden200+L21e3+batch128+angle",
+    "mb2": "+hidden200+L21e3mb2+batch128+angle",
+}
+_PRETRAINING_BOUND_LIMITS = {
+    "mb1": (-1, 1),
+    "mb2": (-2, 2),
+}
+_PRETRAINING_RULESET_STYLES = {
+    "fdgo_delaygo": ("Irrelevant motif", "#3182ce"),
+    "fdanti_delaygo": ("Relevant motif", "#e53e3e"),
+    "fdanti": ("DelayAnti", "#dd6b20"),
+    "fdgo": ("DelayPro", "#4c51bf"),
+}
+_PRETRAINING_TRAJECTORY_FIGSIZE = (3.0, 2.2 * 2 / 3)
+_TRANSFER_SPEED_FIGSIZE = (3.3, 2.2 * 2 / 3 * 1.1)
+_TRANSFER_SPEED_YTICKS = (50, 75, 100)
+_BACKBONE_PROBE_FIGSIZE = (3.4, 2.0)
+PRETRAINING_BOUND = "mb1"
+PRETRAINING_ADDON_NAME = _PRETRAINING_BOUND_ADDONS[PRETRAINING_BOUND]
+
+
+def _parse_pretraining_bound(value):
+    """Normalize the user-facing mod1/mod2 aliases to repository mb1/mb2."""
+    import argparse as _argparse
+
+    normalized = str(value).strip().lower()
+    aliases = {"mod1": "mb1", "mod2": "mb2", "mb1": "mb1", "mb2": "mb2"}
+    if normalized not in aliases:
+        raise _argparse.ArgumentTypeError(
+            "expected mod1/mb1 for [-1,1] or mod2/mb2 for [-2,2]")
+    return aliases[normalized]
+
+
+def _set_pretraining_bound(bound):
+    """Select the exact pretraining artifact variant used by every plot."""
+    global PRETRAINING_BOUND, PRETRAINING_ADDON_NAME
+
+    if bound not in _PRETRAINING_BOUND_ADDONS:
+        raise ValueError(f"Unknown pretraining bound: {bound!r}")
+    PRETRAINING_BOUND = bound
+    PRETRAINING_ADDON_NAME = _PRETRAINING_BOUND_ADDONS[bound]
+
+
+def _pretraining_combined_pkls(suffix):
+    """Return combined pickles strictly matched to the selected M bound."""
+    pattern = f"*_dmpn_{PRETRAINING_ADDON_NAME}_{suffix}.pkl"
+    return sorted(PRETRAINING_ANALYSIS_DIR.glob(pattern))
 
 
 def _pretraining_result_pkls():
@@ -2970,7 +3193,7 @@ def _transfer_speed_summary(per_seed_iters):
 def plot_transfer_speed():
     """
     Figure: Transfer speed — iterations to reach accuracy thresholds during
-    post-training, comparing fdgo_delaygo vs fdanti_delaygo rulesets.
+    post-training, comparing both motifs and both single-task controls.
 
     Loads from the combined transfer_speed.pkl if available; otherwise falls
     back to loading individual per-seed result pickles.
@@ -2984,7 +3207,7 @@ def plot_transfer_speed():
         return
 
     # Try loading the combined pickle first (saved by pretraining_analysis.py)
-    ts_pkl = list(PRETRAINING_ANALYSIS_DIR.glob("*_transfer_speed.pkl"))
+    ts_pkl = _pretraining_combined_pkls("transfer_speed")
     if ts_pkl:
         with open(ts_pkl[0], "rb") as f:
             ts_data = pickle.load(f)
@@ -3026,20 +3249,11 @@ def plot_transfer_speed():
             by_ruleset_mats[rs] = {"per_seed_iters": per_seed_mat, "n_seeds": len(seed_results)}
 
     ys = thresholds * 100
-    ruleset_colors = {
-        "fdgo_delaygo": "#3182ce",
-        "fdanti_delaygo": "#e53e3e",
-    }
-    ruleset_labels = {
-        "fdgo_delaygo": "Irrelevant motif",
-        "fdanti_delaygo": "Relevant motif",
-    }
-
-    fig, ax = plt.subplots(figsize=(3, 2.2 * 2 / 3))
+    fig, ax = plt.subplots(figsize=_TRANSFER_SPEED_FIGSIZE)
 
     for rs, rs_data in by_ruleset_mats.items():
-        color = ruleset_colors.get(rs, "#718096")
-        label = ruleset_labels.get(rs, rs)
+        label, color = _PRETRAINING_RULESET_STYLES.get(
+            rs, (rs, "#718096"))
         per_seed_mat = np.asarray(rs_data["per_seed_iters"], dtype=float)
         medians, lower, upper, _, n_seeds = _transfer_speed_summary(per_seed_mat)
         if per_seed_mat.shape[1] != len(ys) or rs_data["n_seeds"] != n_seeds:
@@ -3057,7 +3271,7 @@ def plot_transfer_speed():
     ax.set_xlabel("Iterations to reach threshold")
     ax.set_ylabel("Accuracy\nthreshold (%)", ha="center")
     ax.set_xscale("log")
-    ax.yaxis.set_major_locator(mpl.ticker.MultipleLocator(10))
+    ax.set_yticks(_TRANSFER_SPEED_YTICKS)
     ax.set_ylim(float(np.min(ys)) - 3, float(np.max(ys)) + 3)
     ax.set_title("Reaching seeds: median and IQR", fontsize=8)
     _legend(ax, fontsize=6, frameon=True)
@@ -3074,8 +3288,9 @@ def plot_backbone_probe():
     Reads the per-checkpoint JSONs in pretraining_analysis/ written by pretraining_post.py's
     --backbone-probe experiment (accuracy_pct is already in percent).
     Points average random rule initializations within each seed; diamonds show
-    the across-seed mean with population SD. This is not the exact stage-2 init.
-    A two-sided independent-seed permutation test compares group means, assuming
+    the across-seed mean with population SD for both motifs and both single-task
+    controls. This is not the exact stage-2 init. A two-sided independent-seed
+    permutation test compares the relevant and irrelevant motif means, assuming
     exchangeability under the null; random initializations are not replicates.
     """
     import json
@@ -3083,8 +3298,8 @@ def plot_backbone_probe():
     from scipy.stats import permutation_test
 
     groups = {
-        "fdgo_delaygo": ("Irrelevant\nmotif", "#3182ce"),
-        "fdanti_delaygo": ("Relevant\nmotif", "#e53e3e"),
+        ruleset: (label.replace(" motif", "\nmotif"), color)
+        for ruleset, (label, color) in _PRETRAINING_RULESET_STYLES.items()
     }
     values = {ruleset: [] for ruleset in groups}
     pattern = _re.compile(
@@ -3114,7 +3329,7 @@ def plot_backbone_probe():
         return
 
     _ensure_out_dir()
-    fig, axis = plt.subplots(figsize=(2.6, 2.4))
+    fig, axis = plt.subplots(figsize=_BACKBONE_PROBE_FIGSIZE)
     counts = []
     bounds = []
     for position, (ruleset, (_, color)) in enumerate(groups.items()):
@@ -3125,16 +3340,16 @@ def plot_backbone_probe():
         mean, std = samples.mean(), samples.std()
         bounds.extend([samples.min(), samples.max(), mean - std, mean + std])
         jitter = np.linspace(-0.10, 0.10, samples.size) if samples.size > 1 else np.zeros(1)
-        axis.scatter(position + jitter, samples, color=color, s=24,
+        axis.scatter(position + jitter, samples, color=color, s=18,
                      alpha=0.7, edgecolors="k", linewidths=0.4, zorder=3)
         axis.errorbar(position, mean, yerr=std,
                       fmt="D", color="k", markerfacecolor="white",
                       markersize=4, capsize=3, linewidth=1.0, zorder=4)
-    axis.set_xticks([0, 1])
+    axis.set_xticks(np.arange(len(groups)))
     axis.set_xticklabels([label for label, _ in groups.values()])
-    axis.set_xlim(-0.5, 1.5)
+    axis.set_xlim(-0.5, len(groups) - 0.5)
     axis.set_ylabel("Accuracy (%)", fontsize=8)
-    axis.tick_params(labelsize=7)
+    axis.tick_params(labelsize=6.5)
     axis.spines[["top", "right"]].set_visible(False)
     lower, upper = min(bounds), max(bounds)
     padding = max((upper - lower) * 0.1, 0.5)
@@ -3166,17 +3381,16 @@ def plot_backbone_probe():
             f"{PRETRAINING_ADDON_NAME}: {stats_label.replace(chr(10), '; ')}\n"
         )
     fig.suptitle("Random-rule backbone probe", fontsize=9)
-    fig.tight_layout()
+    fig.tight_layout(pad=0.4)
     _save_fig(fig, OUT_DIR / "backbone_probe.png", extra=f" ({'; '.join(counts)})")
 
 
 def plot_learning_trajectory():
     """
     Figure: post-training learning trajectory — accuracy vs training iteration,
-    comparing fdgo_delaygo vs fdanti_delaygo rulesets. Same rulesets /
-    colors as plot_transfer_speed, but plotting the full accuracy curve with
-    transparent per-seed trajectories plus the mean rather than
-    iterations-to-threshold.
+    comparing the relevant and irrelevant motifs plus the DelayAnti and
+    DelayPro single-task controls. Transparent lines are individual seeds and
+    thick lines are condition means.
 
     Reads per-seed result pickles (learning.acc_iter_post / learning.acc_post).
     Seeds are resampled onto a shared iteration grid before averaging, so it is
@@ -3211,21 +3425,13 @@ def plot_learning_trajectory():
         print("  Skipped: no learning trajectories found.")
         return
 
-    ruleset_colors = {
-        "fdgo_delaygo": "#3182ce",
-        "fdanti_delaygo": "#e53e3e",
-    }
-    ruleset_labels = {
-        "fdgo_delaygo": "Irrelevant motif",
-        "fdanti_delaygo": "Relevant motif",
-    }
-
-    fig, ax = plt.subplots(1, 1, figsize=(3, 2.2 * 2 / 3))  # match transfer_speed
+    fig, ax = plt.subplots(
+        1, 1, figsize=_PRETRAINING_TRAJECTORY_FIGSIZE)
 
     for rs in sorted(by_ruleset_traj.keys()):
         trajs = by_ruleset_traj[rs]
-        color = ruleset_colors.get(rs, "#718096")
-        label = ruleset_labels.get(rs, rs)
+        label, color = _PRETRAINING_RULESET_STYLES.get(
+            rs, (rs, "#718096"))
 
         # Shared iteration grid = intersection of every seed's [min, max] range,
         # log-spaced so the (log-x) curve is evenly sampled; interpolate each
@@ -3265,7 +3471,8 @@ def plot_rule_vectors():
     Figure: Pairwise cosine similarity between rule-input vectors.
 
     Shows how the novel task's learned rule vector relates to every available
-    pretrained rule vector, including the one-parent DelayAnti condition.
+    pretrained rule vector, including the DelayAnti and DelayPro single-task
+    controls.
     """
     _ensure_out_dir()
     if not PRETRAINING_ANALYSIS_DIR.exists():
@@ -3273,7 +3480,7 @@ def plot_rule_vectors():
         return
 
     # Try combined pkl first
-    rv_pkls = list(PRETRAINING_ANALYSIS_DIR.glob("*_rule_vectors.pkl"))
+    rv_pkls = _pretraining_combined_pkls("rule_vectors")
     if rv_pkls:
         with open(rv_pkls[0], "rb") as f:
             rv_data = pickle.load(f)
@@ -3333,14 +3540,12 @@ def plot_rule_vectors():
         return
 
     ruleset_colors = {
-        "fdgo_delaygo": "#3182ce",
-        "fdanti_delaygo": "#e53e3e",
-        "fdanti": "#dd6b20",
+        ruleset: color
+        for ruleset, (_, color) in _PRETRAINING_RULESET_STYLES.items()
     }
     ruleset_labels = {
-        "fdgo_delaygo": "Irrelevant motif",
-        "fdanti_delaygo": "Relevant motif",
-        "fdanti": "DelayAnti",
+        ruleset: label
+        for ruleset, (label, _) in _PRETRAINING_RULESET_STYLES.items()
     }
 
     task_display_names = {
@@ -3418,8 +3623,8 @@ def plot_rule_vectors():
             for values, label, _ in bar_specs
         ]
 
-    # The original two-ruleset figure had four bars. DelayAnti adds a
-    # fifth, so scale width with the actual count to keep multiline labels apart.
+    # The original two-ruleset figure had four bars. The two single-task
+    # controls add one each, so scale width with the actual count.
     n_bars_total = sum(len(bars) for bars in per_rs_bars.values())
     fig.set_size_inches(max(3.6, 1.05 * n_bars_total), 2.4 * 2 / 3)
 
@@ -3478,7 +3683,7 @@ def _load_aggregate_cve_by_ruleset(analysis_types, periods):
         return {}
 
     # Try combined aggregate pkls first
-    agg_pkls = sorted(PRETRAINING_ANALYSIS_DIR.glob("*_dmpn_*_aggregate.pkl"))
+    agg_pkls = _pretraining_combined_pkls("aggregate")
 
     by_ruleset = {}
     if agg_pkls:
@@ -3539,8 +3744,10 @@ def _plot_aggregate_cve_panel(ax, by_ruleset, dtype, period, ruleset_colors,
     cross_alpha = 0.18
     cross_style = "-"
 
-    ruleset_order = ("fdanti", "fdanti_delaygo", "fdgo_delaygo")
-    self_ruleset_order = ("fdanti_delaygo", "fdgo_delaygo", "fdanti")
+    ruleset_order = (
+        "fdanti", "fdgo", "fdanti_delaygo", "fdgo_delaygo")
+    self_ruleset_order = (
+        "fdanti_delaygo", "fdgo_delaygo", "fdanti", "fdgo")
 
     # Plot self (black) — use one available ruleset as the shared reference.
     self_plotted = False
@@ -3609,7 +3816,7 @@ def _plot_aggregate_cve_period(period):
     """
     Figure: single-period-only CVE. Single row, two columns — hidden (left)
     and effective modulation (right) — overlaying the relevant and irrelevant
-    motif rulesets.
+    motifs plus the DelayAnti and DelayPro single-task controls.
     """
     if period not in {"stimulus", "response"}:
         raise ValueError(f"Unsupported aggregate CVE period: {period}")
@@ -3625,14 +3832,12 @@ def _plot_aggregate_cve_period(period):
         return
 
     ruleset_colors = {
-        "fdgo_delaygo": "#3182ce",
-        "fdanti_delaygo": "#e53e3e",
-        "fdanti": "#dd6b20",
+        ruleset: color
+        for ruleset, (_, color) in _PRETRAINING_RULESET_STYLES.items()
     }
     ruleset_labels = {
-        "fdgo_delaygo": "Irrelevant motif",
-        "fdanti_delaygo": "Relevant motif",
-        "fdanti": "DelayAnti",
+        ruleset: label
+        for ruleset, (label, _) in _PRETRAINING_RULESET_STYLES.items()
     }
 
     x_lim_map = {"hidden": 20, "modulation_weighted": 1000}
@@ -3667,7 +3872,8 @@ def _plot_aggregate_cve_period(period):
 def plot_aggregate_cve_stimulus():
     """
     Figure: stimulus-period-only CVE. Single row, two columns — hidden (left)
-    and effective modulation (right) — overlaying all three motif conditions.
+    and effective modulation (right) — overlaying both motifs and both
+    single-task controls.
     """
     _plot_aggregate_cve_period("stimulus")
 
@@ -3679,11 +3885,7 @@ def plot_pretraining_principal_angles():
     available spectrum length; indices order angles, not individual PCs.
     Regenerate legacy analysis results after the numerical-rank correction.
     """
-    groups = {
-        "fdgo_delaygo": ("Irrelevant motif", "#3182ce"),
-        "fdanti_delaygo": ("Relevant motif", "#e53e3e"),
-        "fdanti": ("DelayAnti", "#dd6b20"),
-    }
+    groups = _PRETRAINING_RULESET_STYLES
     representations = [("hidden", "Hidden"), ("modulation_weighted", "Effective Modulation")]
     periods = ["stimulus", "response"]
     spectra = {(period, dtype, ruleset): [] for period in periods
@@ -3745,8 +3947,9 @@ def plot_pretraining_principal_angles():
 def plot_aggregate_cve_response():
     """
     Figure: response-period-only CVE. Single row, two columns — hidden (left)
-    and effective modulation (right) — overlaying all three motif conditions,
-    with the same conventions as plot_aggregate_cve_stimulus.
+    and effective modulation (right) — overlaying both motifs and both
+    single-task controls, with the same conventions as
+    plot_aggregate_cve_stimulus.
     """
     _plot_aggregate_cve_period("response")
 
@@ -6769,6 +6972,15 @@ _MULTITASK_SIBLING_ENDPOINT_DEFAULT_PC_PLANE = (1, 2)
 _MULTITASK_RULE_MARKERS = ("s", "^")
 _MULTITASK_ENDPOINT_LIMIT_PADDING = 0.13
 _MULTITASK_DELAYDM_EMODULATION_LIMIT_PADDING = 0.18
+_MULTITASK_DMCGO_EMODULATION_LIMITS = {
+    (1, 2): ((-5.2, 5.2), (-0.55, 0.75)),
+    (3, 4): ((-0.52, 0.52), (-0.29, 0.49)),
+}
+
+
+def _multitask_sibling_aname(family):
+    """Return the configured training run for one sibling-task family."""
+    return {"delaydm1": DELAYDM_ANAME, "dmcgo": DMCGO_ANAME}[family]
 
 
 def _multitask_sibling_hint(family, method="gradient"):
@@ -6777,7 +6989,7 @@ def _multitask_sibling_hint(family, method="gradient"):
 
     match = _re.fullmatch(
         r"everything_seed(\d+)_(.+)\+hidden\d+\+batch\d+\+angle",
-        DELAYDM_ANAME,
+        _multitask_sibling_aname(family),
     )
     if match is None:
         return "Run multiple_task/sibling_delay_analysis.py first."
@@ -6872,7 +7084,7 @@ def _sibling_alignment_metrics(family, rules, rep_key="fixed_WM",
     matrices and is therefore translation invariant. These metrics are computed
     before PCA; the trajectory-PC panels below only visualize them.
     """
-    aname = DELAYDM_ANAME
+    aname = _multitask_sibling_aname(family)
     run_dir = TWO_IN_MULTIPLES_DIR / aname
     records = []
     for rule in rules:
@@ -6934,7 +7146,7 @@ def _plot_multitask_sibling_fixed_point_geometry_representation(
     Quantitative annotations are computed in the corresponding original
     high-dimensional representation, before PCA.
     """
-    aname = DELAYDM_ANAME
+    aname = _multitask_sibling_aname(family)
     pc_label = "Joint Delay"
     path = (TWO_IN_MULTIPLES_DIR / aname
             / f"{family}_delay_pc_projections_{aname}.pkl")
@@ -6975,9 +7187,8 @@ def _plot_multitask_sibling_fixed_point_geometry_representation(
     task_names = list(entry.get("task_names", rules))
     n_stim = int(stim_idx.max()) + 1
     fig, axs = plt.subplots(1, 2, figsize=(6.2, 2.75), squeeze=False)
-    panels = ((projection, "a   Original state space"),
-              (aligned, "b   Task offset removed"))
-    for panel_index, (ax, (shown, title)) in enumerate(zip(axs[0], panels)):
+    panels = (projection, aligned)
+    for panel_index, (ax, shown) in enumerate(zip(axs[0], panels)):
         # Matched-condition connectors expose the displacement field in panel A
         # and the remaining non-translational mismatch in panel B.
         for i, j in zip(first_idx, second_idx):
@@ -7021,11 +7232,13 @@ def _plot_multitask_sibling_fixed_point_geometry_representation(
         xlim, ylim = _adaptive_pc_limits(shown, bx, by, padding=0.13)
         ax.set_xlim(*xlim)
         ax.set_ylim(*ylim)
-        ax.set_title(title, fontsize=9.5, loc="left")
+        ax.set_box_aspect(1)
         ax.set_xlabel(f"{pc_label} PC{pc_x}", fontsize=8.5)
         if panel_index == 0:
             ax.set_ylabel(f"{pc_label} PC{pc_y}", fontsize=8.5)
-        ax.tick_params(length=2.5)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.minorticks_off()
         ax.spines[["top", "right"]].set_visible(False)
 
     handles = [plt.Line2D([], [],
@@ -7051,15 +7264,11 @@ def _plot_multitask_sibling_fixed_point_geometry_representation(
 
 
 def _sibling_endpoint_cluster_labels(family, entry):
-    """Return endpoint labels used for color in sibling-family plots."""
-    if family == "delaydm1":
+    """Return stimulus labels used for color in sibling-family plots."""
+    if family in ("delaydm1", "dmcgo"):
         if "stim_idx" not in entry:
-            raise KeyError("DelayDM endpoint projection has no stim_idx labels")
+            raise KeyError(f"{family} endpoint projection has no stim_idx labels")
         return np.asarray(entry["stim_idx"], dtype=int), "stimulus direction"
-    if family == "dmcgo":
-        if "group_labels" not in entry:
-            raise KeyError("DMC endpoint projection has no group_labels")
-        return np.asarray(entry["group_labels"], dtype=int), "task-adjusted category"
     raise ValueError(f"no long-delay clustering criterion for {family!r}")
 
 
@@ -7113,24 +7322,17 @@ def _plot_multitask_long_delay_endpoint_representation(
     if len(task_names) != len(rules):
         task_names = list(rules)
 
-    if family == "delaydm1":
-        n_colors = int(labels.max()) + 1
-        color_for = lambda label: stim_color(int(label), n_colors)
-    else:
-        category_colors = ("#3182ce", "#e53e3e")
-        color_for = lambda label: category_colors[int(label) % len(category_colors)]
+    n_colors = int(labels.max()) + 1
+    color_for = lambda label: stim_color(int(label), n_colors)
 
     fig, axs = plt.subplots(1, 2, figsize=(6.8, 3.0), squeeze=False)
     trajectory_linestyles = ("-", "--")
     evr = np.asarray(entry.get("explained_variance_ratio", []), dtype=float)
     panel_specs = (
-        (axs[0, 0], default_pc_x, default_pc_y, default_bx, default_by,
-         "Long-delay endpoint\nDefault PC1-PC2"),
-        (axs[0, 1], best_pc_x, best_pc_y, best_bx, best_by,
-         f"Long-delay endpoint\nBest task-specific projection "
-         f"(score = {score:.2f})"),
+        (axs[0, 0], default_pc_x, default_pc_y, default_bx, default_by),
+        (axs[0, 1], best_pc_x, best_pc_y, best_bx, best_by),
     )
-    for ax, pc_x, pc_y, bx, by, title in panel_specs:
+    for ax, pc_x, pc_y, bx, by in panel_specs:
         for trial_index in range(projection.shape[0]):
             path = trajectories[trial_index][:, [bx, by]]
             finite = np.isfinite(path).all(axis=1)
@@ -7164,39 +7366,42 @@ def _plot_multitask_long_delay_endpoint_representation(
         y_var = f" ({100 * evr[by]:.1f}%)" if evr.size > by else ""
         ax.set_xlabel(f"Joint Delay PC{pc_x}{x_var}")
         ax.set_ylabel(f"Joint Delay PC{pc_y}{y_var}")
-        ax.set_title(title, fontsize=9.5)
-        # Frame every long-delay panel around its settled endpoints. Early
-        # trajectory samples remain plotted but may be clipped by this zoom.
-        limit_points = projection
-        limit_padding = _MULTITASK_ENDPOINT_LIMIT_PADDING
-        if family == "delaydm1" and plot_name == "e_modulation":
-            # Keep the endpoint-based automatic zoom, with slightly more room
-            # around DelayDM effective-modulation endpoints and trajectories.
-            limit_padding = _MULTITASK_DELAYDM_EMODULATION_LIMIT_PADDING
-        xlim, ylim = _adaptive_pc_limits(
-            limit_points, bx, by, padding=limit_padding)
+        limits = None
+        if family == "dmcgo" and plot_name == "e_modulation":
+            limits = _MULTITASK_DMCGO_EMODULATION_LIMITS.get((pc_x, pc_y))
+        if limits is not None:
+            xlim, ylim = limits
+        else:
+            limit_padding = _MULTITASK_ENDPOINT_LIMIT_PADDING
+            if family == "delaydm1" and plot_name == "e_modulation":
+                limit_padding = _MULTITASK_DELAYDM_EMODULATION_LIMIT_PADDING
+            xlim, ylim = _adaptive_pc_limits(
+                projection, bx, by, padding=limit_padding)
         ax.set_xlim(*xlim)
         ax.set_ylim(*ylim)
-        ax.tick_params(length=2.5)
+        ax.set_box_aspect(1)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.minorticks_off()
         ax.spines[["top", "right"]].set_visible(False)
 
-    handles = [
-        plt.Line2D([], [], marker=_MULTITASK_RULE_MARKERS[t % 2],
-                   markerfacecolor="0.45", markeredgecolor="white",
-                   color="0.45", linewidth=0.7,
-                   linestyle=trajectory_linestyles[t % 2], markersize=5.5,
-                   label=_TASK_DISPLAY.get(rule, rule))
-        for t, rule in enumerate(task_names)
-    ]
-    if family == "dmcgo":
-        handles.extend([
-            plt.Line2D([], [], marker="o", color="none",
-                       markerfacecolor=color_for(group), markeredgecolor="none",
-                       markersize=5.5, label=f"Category group {group + 1}")
-            for group in np.unique(labels)
-        ])
-    _legend(axs[0, 1], handles=handles, frameon=False, fontsize=6.2,
-            loc="best", handletextpad=0.3)
+    if SHOW_LEGEND and plot_name == "e_modulation":
+        handles = [
+            plt.Line2D([], [], marker=_MULTITASK_RULE_MARKERS[task % 2],
+                       markerfacecolor="0.45", markeredgecolor="white",
+                       color="0.45", linewidth=0.7,
+                       linestyle=trajectory_linestyles[task % 2], markersize=5.5,
+                       label=_TASK_DISPLAY.get(rule, rule))
+            for task, rule in enumerate(task_names)
+        ]
+        legend_fig = plt.figure(figsize=(2.0, 0.65))
+        legend_fig.legend(handles=handles, loc="center", frameon=False,
+                          fontsize=8, handletextpad=0.5)
+        _save_fig(
+            legend_fig,
+            _multitask_out(
+                f"{_MULTITASK_SIBLING_OUTPUT_NAMES[family]}_long_delay_endpoint_"
+                "legend.png"))
     fig.tight_layout(w_pad=1.5)
     _save_fig(
         fig,
@@ -7216,9 +7421,9 @@ def plot_multitask_delaydm_fixed_point_geometry():
     visualization; quantitative metrics use the original high-dimensional
     representation.
     """
-    aname = DELAYDM_ANAME
-    run_dir = TWO_IN_MULTIPLES_DIR / aname
     for family, rules in _MULTITASK_SIBLING_FAMILIES.items():
+        aname = _multitask_sibling_aname(family)
+        run_dir = TWO_IN_MULTIPLES_DIR / aname
         path = run_dir / f"{family}_delay_pc_projections_{aname}.pkl"
         data = _load_pkl_or_skip(path, _multitask_sibling_hint(family))
         if data is None:
@@ -7235,6 +7440,8 @@ def plot_multitask_delaydm_fixed_point_geometry():
     # for the gradient fixed-point geometry above. Missing endpoint artifacts
     # skip only these panels so gradient-only runs remain fully supported.
     for family, rules in _MULTITASK_SIBLING_FAMILIES.items():
+        aname = _multitask_sibling_aname(family)
+        run_dir = TWO_IN_MULTIPLES_DIR / aname
         path = (run_dir
                 / f"{family}_long_delay_endpoint_pc_projections_{aname}.pkl")
         data = _load_pkl_or_skip(
@@ -8441,7 +8648,8 @@ def plot_two_task_attractor_first():
 # isolation without touching the others' inputs.
 #
 #   one_task         analyses of the dedicated one-task training run
-#   multiple_tasks   the full multi-task network: clustering and lesion
+#   multiple_tasks   multi-task clustering and network structure
+#   leison           multi-task lesion effects and cross-seed lesion summaries
 #   state_space      context-state and trajectory geometry of the multi-task net
 #   acc_plot         accuracy comparisons across training configurations
 #   two_in_multiple  sibling fixed-point geometry probes of the multi-task net
@@ -8476,7 +8684,10 @@ FIGURES_BY_MODE = {
         "overmembership_unnorm": plot_overmembership_unnorm,
         "overmembership_weighted": plot_overmembership_weighted,
         "overmembership_var_weighted": plot_overmembership_var_weighted,
+        "overmembership_examples": plot_overmembership_examples,
         "input_weight_correlation": plot_input_weight_correlation,
+    },
+    "leison": {
         "lesion_heatmap": plot_lesion_heatmap,
         "lesion_cluster_sizes": plot_lesion_cluster_sizes,
         "cluster_corr_vs_lesion": plot_cluster_corr_vs_lesion,
@@ -8579,12 +8790,25 @@ def main():
         help="Suppress legends on every figure (overrides the SHOW_LEGEND "
              "default).",
     )
+    parser.add_argument(
+        "--pretraining-bound",
+        type=_parse_pretraining_bound,
+        choices=("mb1", "mb2"),
+        default="mb1",
+        metavar="{mod1,mod2}",
+        help="Pretraining modulation bound: mod1/mb1 selects M in [-1,1] "
+             "(default); mod2/mb2 selects M in [-2,2].",
+    )
     args = parser.parse_args()
 
     bad_modes = [m for m in args.mode if m not in valid_modes]
     if bad_modes:
         parser.error(f"invalid mode(s): {', '.join(bad_modes)}. "
                      f"Choose from: {', '.join(valid_modes)}")
+
+    # Apply before resolving/running figures because all pretraining loaders
+    # build exact artifact patterns from this selected addon.
+    _set_pretraining_bound(args.pretraining_bound)
 
     # Apply the legend toggle globally; every figure routes through _legend(),
     # which reads this module-level flag.
@@ -8619,14 +8843,22 @@ def main():
     mode_experiment = {
         "one_task": ONETASK_ANAME,
         "multiple_tasks": ANAME,
+        "leison": f"{ANAME} (cross-seed summary aggregates matching runs)",
         "state_space": (
-            "(auto-selects best eff_mod color clustering within L2=1e-3; "
+            f"(auto-selects best high-dimensional task-center separation within L2={STATE_SPACE_EXAMPLE_L2:.0e}; "
             "R-values split across L2 1e-5/1e-4/1e-3/1e-2 cohorts)"
         ),
         "acc_plot": "(aggregated across seeds)",
-        "two_in_multiple": DELAYDM_ANAME,
+        "two_in_multiple": "; ".join(
+            f"{family}: {_multitask_sibling_aname(family)}"
+            for family in _MULTITASK_SIBLING_FAMILIES
+        ),
         "two_task": TWOTASK_ANAME,
-        "pretraining": "(aggregated across seeds)",
+        "pretraining": (
+            f"(aggregated across seeds; {PRETRAINING_BOUND}, "
+            f"M in [{_PRETRAINING_BOUND_LIMITS[PRETRAINING_BOUND][0]}, "
+            f"{_PRETRAINING_BOUND_LIMITS[PRETRAINING_BOUND][1]}])"
+        ),
     }
     if modes_run in ("all", "only"):
         printed_modes = list(FIGURES_BY_MODE.keys())

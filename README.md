@@ -59,6 +59,8 @@ python multiple_task/sibling_delay_analysis.py \
 
 # additional state-space analysis
 python multiple_task/state_space_shift.py
+# rank state-space seeds and plot the best example without clearing other figures
+python paper_plot.py --only state_space_combined
 
 # single- / two-task (train + analyze chained by the pipeline)
 python one_task/run_one_task_pipeline.py
@@ -69,13 +71,51 @@ python pretrain/pretraining.py
 
 # paper figures
 python paper_plot.py
+# multi-task clustering, overmembership and network structure
+python paper_plot.py multiple_tasks
+# lesion effects and cross-seed lesion summaries (project spelling: leison)
+python paper_plot.py leison
 ```
+
+The `leison` figure mode contains `lesion_heatmap`, `lesion_cluster_sizes`,
+`cluster_corr_vs_lesion`, `om_vs_lesion`, and `cross_seed_summary`.
+These no longer run under `multiple_tasks`; use
+`python paper_plot.py multiple_tasks leison` for both groups. Existing figure
+names and `--only FIGURE` commands are unchanged. Mode runs retain the existing
+behavior of clearing top-level `paper_plot/` outputs; `--only` preserves other
+figures.
 
 Key data outputs: `multiple_tasks/` (checkpoints, curves),
 `multiple_tasks_analysis/` (per-run analysis figures, cluster info),
 `two_in_multiples/` (sibling-task delay/fixed-point analysis),
 `multiple_tasks_perf/` and `multiple_tasks_norm/` (lesion results/plots),
 `onetask/`, `twotasks/`, `pretraining/`, `state_space/`, `paper_plot/`.
+
+The state-space workflow is `state_space_shift.py` -> `paper_plot.py`.
+The analysis saves original-feature task centroids, trial counts and display
+PCA together in `state_space/state_space_pca_<aname>_noise0.01.pkl`, alongside
+the existing distance-angle results. Display PCA is fitted in batches; the
+analysis otherwise retains its full-trajectory workflow and memory requirements.
+The batch analysis clears top-level files in `state_space/` before regenerating
+the four standard L2 cohorts.
+
+Paper examples are selected within `STATE_SPACE_EXAMPLE_L2` (currently `1e-4`)
+using full-dimensional effective-modulation task centers. Same-category task
+distances are averaged equally across categories; different-category distances
+are averaged equally across category pairs. The score is
+`(between - within) / (between + within)`, with larger scores preferred.
+Categories follow the six paper color groups. All valid seeds are ranked and
+summarized in `paper_plot/multitask_state_space_centroid_scores.json`; missing
+high-dimensional centers are reported, never replaced with a 2D score.
+The best seed supplies all three PCA example panels, with names breaking ties.
+
+Distance-angle regression uses ordinary least squares with a fitted intercept:
+`angle = intercept + slope * distance`. The existing `(r, slope, p)` tuples
+remain unchanged in structure, while `scatter[representation]["regression"]`
+records the intercept and `through_origin=False`. Paper plots use these saved
+coefficients and skip legacy caches without a free-intercept fit. Reported
+`r` is Pearson correlation; `p` is the nominal OLS slope-test value, which
+assumes independent task pairs and is not adjusted for their shared tasks.
 
 Both `pretrain/pretraining_analysis.py` and `pretrain/pretraining_post.py` write
 analysis data to `pretraining_analysis/`, pooled figures to `pretrain/fig/`, and

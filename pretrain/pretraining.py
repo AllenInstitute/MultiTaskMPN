@@ -25,6 +25,10 @@ targets and task metadata, recorded M and hidden states, accuracy curves,
 the final checkpoint, and both stages' full histories. Unused predictions,
 bias/input traces, and duplicate result metadata are not saved.
 The feature argument labels files; it does not set the regularization strength.
+Bounds and non-legacy M decay are appended to that label automatically.
+Lambda = 1 - DT_MS / M_TIME_SCALE; the historical lambda=0.99 keeps its
+existing filename. At 400 ms with bounds (-2, 2), use --feature L21e3mb2lam0.9
+in the downstream analysis scripts to select the new runs.
 """
 
 import copy
@@ -97,11 +101,14 @@ RULES_DICT_FREQUENCY = {
 }
 OUT_DIR = Path("./pretraining")
 
-N_TRIALS = 10
+N_TRIALS = 5
 SEED_LIST = None
 PRETRAIN_RULESET = "fdgo"
 POSTTRAIN_RULESET = "delayanti"
 FEATURE = "L21e3"
+DT_MS = 40
+M_TIME_SCALE = 400
+LEGACY_M_LAMBDA = 0.99
 
 # Multiplicative modulation bounds (min, max) for M. The default (-1, 1)
 # keeps W_eff = W * (1 + M) within [0, 2W], so no synapse can flip the sign
@@ -110,7 +117,7 @@ FEATURE = "L21e3"
 # automatically (e.g. L21e3 -> L21e3mb2), so their output files can never
 # overwrite or be confused with default-bound runs, and downstream analyses
 # select them explicitly via their feature string.
-M_BOUNDS = (-2.0, 2.0)
+M_BOUNDS = (-1.0, 1.0)
 
 
 def _feature_with_bounds(feature, m_bounds=None):
@@ -121,6 +128,25 @@ def _feature_with_bounds(feature, m_bounds=None):
     if m_bounds[0] == -m_bounds[1]:
         return f"{feature}mb{m_bounds[1]:g}"
     return f"{feature}mb{m_bounds[0]:g}to{m_bounds[1]:g}"
+
+
+def _feature_with_lambda(feature, dt=None, m_time_scale=None):
+    """Append the configured M retention unless it is the historical 0.99.
+
+    The suffix stays inside the feature token so downstream --feature filters
+    keep working. The model uses the same dt and time constant to build lambda.
+    """
+    dt = DT_MS if dt is None else dt
+    m_time_scale = M_TIME_SCALE if m_time_scale is None else m_time_scale
+    if not np.isfinite(dt) or dt <= 0:
+        raise ValueError("dt must be finite and positive")
+    if not np.isfinite(m_time_scale) or m_time_scale < dt:
+        raise ValueError("m_time_scale must be finite and at least dt")
+    retention = 1.0 - dt / m_time_scale
+    if np.isclose(retention, LEGACY_M_LAMBDA, rtol=0, atol=1e-12):
+        return feature
+    return f"{feature}lam{retention:.12g}"
+
 
 reload(nets)
 reload(net_helpers)
@@ -153,7 +179,7 @@ def _current_basic_params(hyp_dict_input, *, train, n_hidden, mpn_depth):
         'task_type': hyp_dict_input['task_type'],
         'rules': RULES_DICT[hyp_dict_input['ruleset']],
         'rules_probs': RULES_DICT_FREQUENCY[hyp_dict_input['ruleset']],
-        'dt': 40,
+        'dt': DT_MS,
         'ruleset': hyp_dict_input['ruleset'],
         'n_eachring': 8,
         'in_out_mode': 'low_dim',
@@ -231,7 +257,7 @@ def _current_basic_params(hyp_dict_input, *, train, n_hidden, mpn_depth):
             'eta_type': 'scalar',
             'eta_train': True,
             'lam_type': 'scalar',
-            'm_time_scale': 4000,
+            'm_time_scale': M_TIME_SCALE,
             'lam_train': False,
             'W_freeze': False,
             'm_bounds': M_BOUNDS,
@@ -351,9 +377,12 @@ def run_trial(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", pos
     mpn_depth = 1
     n_hidden = 200
     chosen_network = 'dmpn'
-    feature = _feature_with_bounds(feature)
-    print(f"Feature label (with M-bound tag if non-default): {feature}; "
-          f"m_bounds={M_BOUNDS}")
+    feature = _feature_with_lambda(_feature_with_bounds(feature))
+    print(
+        f"Feature label (including M bounds and decay): {feature}; "
+        f"m_bounds={M_BOUNDS}; m_time_scale={M_TIME_SCALE} ms; "
+        f"dt={DT_MS} ms; lambda={1.0 - DT_MS / M_TIME_SCALE:.12g}"
+    )
     hyp_dict_old, hyp_dict = _build_experiment_hyp_dicts(
         feature,
         pretrain_ruleset,
