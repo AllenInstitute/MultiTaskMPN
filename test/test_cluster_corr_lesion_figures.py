@@ -85,6 +85,7 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
     def test_entry_point_draws_one_figure_per_entry_and_no_supplement(self):
         normalized = self.entry()
         unnormalized = self.entry(exclude_last=True, rho=-0.4)
+        abs_weighted = self.entry(exclude_last=True, rho=-0.3)
         with tempfile.TemporaryDirectory() as directory:
             root = self.root(directory)
             for variant, entry in (("normalized", normalized), ("unnormalized", unnormalized)):
@@ -95,6 +96,8 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
                        {"normalized_zero-W": normalized})
             self.write(root, "mod_lesion_effect_var-weighted-unnormalized_zero-W",
                        {"var-weighted-unnormalized_zero-W": unnormalized})
+            self.write(root, "mod_lesion_effect_abs-weighted-unnormalized_zero-W",
+                       {"abs-weighted-unnormalized_zero-W": abs_weighted})
             self.write(root, "mod_lesion_effect_unnormalized_zero-W",
                        {"unnormalized_zero-W": self.entry(True, rho=0.99)})
             self.write(root, "mod_lesion_effect_var-weighted-unnormalized_freeze-M",
@@ -108,6 +111,7 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
             "multitask_cluster_corr_vs_lesion_hidden_unnorm.png": unnormalized,
             "multitask_cluster_corr_vs_lesion_modulation_norm_zero_W.png": normalized,
             "multitask_cluster_corr_vs_lesion_modulation_var_weighted_unnorm_zero_W.png": unnormalized,
+            "multitask_cluster_corr_vs_lesion_modulation_abs_weighted_unnorm_zero_W.png": abs_weighted,
         }
         self.assertEqual(set(figures), set(expected))
         for name, entry in expected.items():
@@ -143,7 +147,7 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
             root = self.root(directory)
             self.write(root, "normalized_lesion_effect_unnorm",
                        {"input_unnormalized_k20": self.entry(True),
-                        "hidden_unnormalized_k20": self.entry(True, aname=paper_plot.ANAME)})
+                        "hidden_unnormalized_k20": self.entry(True, aname="another_run")})
             figures = self.render(root)
         self.assertEqual(set(figures), {"multitask_cluster_corr_vs_lesion_input_unnorm.png"})
 

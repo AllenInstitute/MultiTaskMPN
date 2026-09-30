@@ -52,6 +52,8 @@ regularization `feature`) are set inside each training script.
 # multi-task: train, analyze (clustering), lesion, lesion plots
 python multiple_task/multiple_task.py
 python multiple_task/run_pipeline.py --seed 749 --feature L21e4
+# several seeds of one cohort, run in the given order
+python multiple_task/run_pipeline.py --feature L21e3 --seed 299 365 487 501 934
 
 # optional sibling-task geometry only (does not rerun clustering or lesions)
 python multiple_task/sibling_delay_analysis.py \
@@ -126,12 +128,32 @@ Mode runs retain the existing
 behavior of clearing top-level `paper_plot/` outputs; `--only` preserves other
 figures.
 
+The `multiple_tasks` and `lesion` figures read one L2 cohort of the
+`everything_seed*_L2<l2>+hidden300+batch128+angle` runs, selected by
+`MULTITASK_L2` in `paper_plot.py` (currently `1e3`) or per invocation with
+`python paper_plot.py --multitask-l2 1e4 multiple_tasks lesion`. The aggregate
+figures (overmembership, `plasticity_share_seeds`, `causal_vs_activity_seeds`)
+summarize every cached seed of that cohort. The single-run figures use the
+cohort's designated seed from `MULTITASK_DESIGNATED_SEEDS` (749 for clustering
+and 921 for lesions in the 1e4 cohort; none for 1e3) when its cache directory
+holds pickles; otherwise `paper_plot` picks the cached seed covering the most of
+the category's cache directories, lowest seed on ties, and prints the switch.
+Each category resolves once, so its figures never mix runs, and a run is never
+taken from another cohort; this also applies to `--only` and to imported plotting
+functions. Empty directories and pickles of other runs do not count as cached
+data. Missing or incompatible individual caches still use the existing per-figure
+checks rather than switching seeds per figure. The seed-921 statistics quoted
+below describe the L2=1e-4 cohort.
+
 `python paper_plot.py --only cluster_corr_vs_lesion` draws the four input/hidden
-scatter figures and two modulation figures:
-`multitask_cluster_corr_vs_lesion_modulation_norm_zero_W_n.png` and
-`multitask_cluster_corr_vs_lesion_modulation_var_weighted_unnorm_zero_W_n.png`.
-Both use cached **zero_W** effects; the unnormalized figure uses var-weighted
-modulation and drops the unresponsive cluster. Each figure is scale-free
+scatter figures and three modulation figures:
+`multitask_cluster_corr_vs_lesion_modulation_norm_zero_W_n.png`,
+`multitask_cluster_corr_vs_lesion_modulation_var_weighted_unnorm_zero_W_n.png`
+and `multitask_cluster_corr_vs_lesion_modulation_abs_weighted_unnorm_zero_W_n.png`.
+All use cached **zero_W** effects; the two unnormalized figures use var-weighted
+(W·Var(M)) and abs-weighted (|W|·Var(M)) modulation and drop the unresponsive
+cluster. A run whose `lesion_plot.py` caches predate the abs-weighted variant
+skips only that figure. Each figure is scale-free
 on both axes: x is the Pearson correlation between cluster mean tuning
 profiles, y is one minus the Pearson correlation between per-task lesion
 effects after z-scoring each effect against its stored random-control repeats
@@ -317,7 +339,18 @@ cluster-correlation caches). `abs_weighted` was added after the others; existing
 it, and their `var_weighted` entries predate the sign fixes. To obtain it, rerun
 the pipeline for the run (`python multiple_task/run_pipeline.py --seed 921
 --feature L21e4`), which reclusters, lesions and re-plots all five variants.
-`paper_plot.py` is unchanged and keeps reading the var-weighted variant.
+The lesion paper figures keep reading the var-weighted variant, while the
+`multiple_tasks` mode draws one aggregate over-membership figure per variant
+(`overmembership_norm`, `overmembership_unnorm`, `overmembership_weighted`,
+`overmembership_var_weighted`, `overmembership_abs_weighted`); a run without
+the `abs_weighted` prepost-belonging pickle is skipped by that figure only.
+`--only modulation_abs_weighted` draws the clustered task-variance heatmap of
+the `abs_weighted` variant (`multitask_clustered_modulation_abs_weighted_n.png`),
+the |W|·Var(M) counterpart of the normalized `modulation` heatmap: same layout
+and G=300 grouping, but the unnormalized cells are log-scaled from a 1e-4 floor
+(the analysis script's own floor) to the run's maximum, so it exports its own
+colorbar, `multitask_clustered_modulation_abs_weighted_colorbar_n.png`, instead
+of sharing `heatmap_colorbar`.
 
 Key data outputs: `multiple_tasks/` (checkpoints, curves),
 `multiple_tasks_analysis/` (per-run analysis figures, cluster info),

@@ -61,9 +61,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--feature", type=str, default=None,
                         help="Only run models with this feature (e.g. 'L21e4')")
-    parser.add_argument("--seed", type=int, default=None,
-                        help="Only run the model with this seed (e.g. 749). "
-                             "Combine with --feature to disambiguate.")
+    parser.add_argument("--seed", type=int, nargs="+", default=None,
+                        help="Only run the model(s) with these seeds, in the "
+                             "given order (e.g. --seed 299 365 487). Combine "
+                             "with --feature to disambiguate.")
     parser.add_argument("--families", nargs="+", default=[],
                         choices=list(sibling_delay_analysis.SIBLING_FAMILIES),
                         help="Optional sibling-task families to analyze before "
@@ -92,7 +93,14 @@ def main():
     if args.feature:
         param_lst = [(s, f) for s, f in param_lst if f == args.feature]
     if args.seed is not None:
-        param_lst = [(s, f) for s, f in param_lst if s == args.seed]
+        requested = list(dict.fromkeys(args.seed))  # de-duplicate, keep order
+        missing = [s for s in requested if s not in {s for s, _ in param_lst}]
+        if missing:
+            print(f"WARNING: no checkpoint for seed(s) {missing}"
+                  + (f" with feature {args.feature}" if args.feature else "")
+                  + "; skipping them.")
+        # Run in the order the seeds were given on the command line.
+        param_lst = [(s, f) for seed in requested for s, f in param_lst if s == seed]
 
     print(f"Running {len(param_lst)} models: {param_lst}")
 

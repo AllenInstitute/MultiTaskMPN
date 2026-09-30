@@ -21,6 +21,9 @@ Usage:
     python paper_plot.py one_task              # only the one-task figures
     python paper_plot.py multiple_tasks        # clustering and network structure
     python paper_plot.py lesion                # only the lesion figures
+    python paper_plot.py --multitask-l2 1e4 multiple_tasks lesion
+                                                # both from the L2=1e-4 cohort
+                                                # (default cohort: MULTITASK_L2)
     python paper_plot.py state_space            # only the state-space figures
     python paper_plot.py acc_plot              # only the accuracy figures
     python paper_plot.py two_in_multiple       # only the two-in-multiple figures
@@ -110,21 +113,23 @@ def _save_fig(fig, out_path, extra=""):
     print(f"Saved: {out_path}{extra}")
 
 
-def _save_standalone_colorbar(out_path, cmap, vmin, vmax, ticks=None,
+def _save_standalone_colorbar(out_path, cmap, vmin=None, vmax=None, ticks=None,
                               ticklabels=None, label=None,
                               orientation="horizontal", figsize=(1.5, 0.45),
                               rect=(0.05, 0.5, 0.9, 0.35), labelsize=8,
-                              label_fontsize=8):
+                              label_fontsize=8, norm=None):
     """Save JUST a colorbar as its own small figure at `out_path`.
 
     For panels that share one color scale: drawing the bar once beside them beats
     repeating it inside each, and a standalone bar can be placed and sized in the
     manuscript independently of the panels. `rect` is the bar's axes rectangle
-    within the figure, leaving room for the tick labels and `label`."""
+    within the figure, leaving room for the tick labels and `label`. The scale is
+    linear over [vmin, vmax] unless a matplotlib `norm` (e.g. LogNorm) is given."""
     figc = plt.figure(figsize=figsize)
     axc = figc.add_axes(rect)                     # [left, bottom, width, height]
-    sm = mpl.cm.ScalarMappable(cmap=cmap,
-                               norm=mpl.colors.Normalize(vmin=vmin, vmax=vmax))
+    if norm is None:
+        norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
+    sm = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
     cbar = figc.colorbar(sm, cax=axc, orientation=orientation)
     if ticks is not None:
@@ -236,28 +241,133 @@ def _load_twotask_glob_or_skip(pattern):
 # family so a run can be swapped in one place.
 OUT_DIR = Path("paper_plot")
 
+
 # ── Multi-task (one full multi-task network) ──
-ANAME = "everything_seed749_L21e4+hidden300+batch128+angle"
-DATA_DIR = Path("multiple_tasks_analysis") / ANAME
+# The `multiple_tasks` (clustering) and `lesion` figures read ONE L2 cohort of
+# the multi-task runs, everything_seed{seed}_L2{l2}+hidden300+batch128+angle.
+# MULTITASK_L2 is the control: change it here, or pass `--multitask-l2 1e4` on
+# the command line. Everything below follows it:
+#   * the aggregate figures (overmembership, the `*_seeds` figures) summarize
+#     every cached seed of that cohort (`_find_experiment_dirs`,
+#     `_sibling_run_dirs`);
+#   * the single-run figures use the cohort's designated seed from
+#     MULTITASK_DESIGNATED_SEEDS when that seed has cached results, otherwise
+#     the cached seed with the most complete caches (ties: lowest seed). Each
+#     category resolves once, so related figures never mix runs, and a run
+#     is never taken from another L2 cohort.
+MULTITASK_L2 = "1e3"
+MULTITASK_L2_CHOICES = ("1e3", "1e4")
+_MULTITASK_RUN_SUFFIX = "+hidden300+batch128+angle"
+MULTITASK_ANALYSIS_ROOT = Path("multiple_tasks_analysis")
+LESION_PERF_ROOT = Path("multiple_tasks_perf")
+LESION_NORM_ROOT = Path("multiple_tasks_norm")
+# Designated example seed per cohort and figure category; None means "the
+# lowest cached seed". For L2=1e-4, seed 921 is the lesion example because its
+# hidden-neuron tuning-vs-lesion effect is the clearest of the seven seeds
+# (rho = -0.41, permutation p = 0.001, 13 clusters; all seven agree on the
+# sign) and seed 749 is the clustering example. Its lesion caches come from
+#     python multiple_task/lesion_plot.py --seed 921 --feature L21e4
+MULTITASK_DESIGNATED_SEEDS = {
+    "1e4": {"multiple_tasks": 749, "lesion": 921},
+    "1e3": {"multiple_tasks": None, "lesion": None},
+}
+# Cache roots whose per-run directories decide whether a seed is available.
+_MULTITASK_CACHE_ROOTS = {
+    "multiple_tasks": (MULTITASK_ANALYSIS_ROOT,),
+    "lesion": (LESION_PERF_ROOT, LESION_NORM_ROOT),
+}
+
+
+def multitask_feature(l2=None):
+    """Training-script feature tag of an L2 cohort (e.g. 'L21e3')."""
+    return f"L2{MULTITASK_L2 if l2 is None else l2}"
+
+
+def multitask_aname(seed, l2=None):
+    """Run identifier of one multi-task run; `seed` may be '*' for a glob."""
+    return f"everything_seed{seed}_{multitask_feature(l2)}{_MULTITASK_RUN_SUFFIX}"
+
+
+def _cached_multitask_seeds(l2, roots):
+    """Map each cohort seed with cached results to the roots that hold them.
+
+    A run counts as cached under a root when its own directory there holds at
+    least one pickle carrying its name (legacy spellings included); empty
+    directories and pickles of other runs do not count.
+    """
+    import re
+
+    seed_pattern = re.compile(
+        r"everything_seed(\d+)_" + re.escape(f"{multitask_feature(l2)}{_MULTITASK_RUN_SUFFIX}"))
+    cached = {}
+    for root in roots:
+        for directory in Path(root).glob(multitask_aname("*", l2)):
+            match = seed_pattern.fullmatch(directory.name)
+            if match is None or not directory.is_dir():
+                continue
+            if any(path.is_file() for path in directory.glob(f"*{directory.name}*.pkl")):
+                cached.setdefault(int(match.group(1)), set()).add(Path(root))
+    return cached
+
+
+def _resolve_multitask_run(l2, category):
+    """Pick the run one figure category reads from the selected L2 cohort.
+
+    The designated seed wins when it has cached results. Otherwise the cached
+    seed covering the most cache roots is used (ties: lowest seed) and the
+    switch is printed. With no cached run at all the designated name, or the
+    cohort name with seed 0, is kept so the per-figure "Skipped" messages fire.
+    """
+    if l2 not in MULTITASK_L2_CHOICES:
+        raise ValueError(f"MULTITASK_L2 must be one of {MULTITASK_L2_CHOICES}, got {l2!r}")
+    designated = MULTITASK_DESIGNATED_SEEDS[l2][category]
+    cached = _cached_multitask_seeds(l2, _MULTITASK_CACHE_ROOTS[category])
+    if designated is not None and designated in cached:
+        return multitask_aname(designated, l2)
+    if not cached:
+        print(f"  {category}: no cached {multitask_feature(l2)} run found under "
+              + ", ".join(str(root) for root in _MULTITASK_CACHE_ROOTS[category]) + ".")
+        return multitask_aname(0 if designated is None else designated, l2)
+    seed = min(cached, key=lambda candidate: (-len(cached[candidate]), candidate))
+    if designated is not None:
+        print(f"  {category}: designated run {multitask_aname(designated, l2)} has no "
+              f"cached results; using seed {seed}.")
+    return multitask_aname(seed, l2)
+
+
+def _set_multitask_l2(l2):
+    """Select the L2 cohort and re-resolve every multi-task run name and path.
+
+    Called once at import with MULTITASK_L2 and again by `main()` when
+    `--multitask-l2` is given, so imported plotting functions and the command
+    line see the same run selection.
+    """
+    global MULTITASK_L2, ANAME, DATA_DIR, LESION_ANAME, LESION_DIR, LESION_NORM_DIR
+    ANAME = _resolve_multitask_run(l2, "multiple_tasks")
+    LESION_ANAME = _resolve_multitask_run(l2, "lesion")
+    MULTITASK_L2 = l2
+    DATA_DIR = MULTITASK_ANALYSIS_ROOT / ANAME
+    LESION_DIR = LESION_PERF_ROOT / LESION_ANAME
+    LESION_NORM_DIR = LESION_NORM_ROOT / LESION_ANAME
+
+
+# Clustering run (`multiple_tasks` figures) and its analysis directory, and the
+# lesion run shared by every single-run figure of the `lesion` mode with its
+# multiple_tasks_perf / multiple_tasks_norm directories. All six are assigned by
+# _set_multitask_l2 from the cohort above.
+ANAME = DATA_DIR = LESION_ANAME = LESION_DIR = LESION_NORM_DIR = None
+_set_multitask_l2(MULTITASK_L2)
 # State-space example figures automatically select one run from the tanh,
 # projection-300, hidden-300, L2=1e-4 cohort. The selected run has the highest
 # category-balanced separation of task centroids in full effective-modulation
 # space; the two-dimensional PCA is used only for display.
-# This remains independent of ANAME, which continues to select
-# the clustering/lesion paper figures above. The R-value summary still shows all
-# four L2 cohorts.
+# This remains independent of MULTITASK_L2, ANAME and LESION_ANAME, which select
+# the clustering and lesion paper figures above. The R-value summary still shows
+# all four L2 cohorts.
 # DelayDM and DMCGo sibling-task probes (two_in_multiple mode) select their
 # trained runs independently of each other and of the clustering figures.
 DELAYDM_ANAME = "everything_seed408_L21e4+hidden300+batch128+angle"
 DMCGO_ANAME = "everything_seed921_L21e4+hidden300+batch128+angle"
-# Every figure of the `lesion` mode (lesion heatmap, cluster sizes, tuning vs
-# lesion scatters, OM vs lesion) is drawn from this single run, independent of
-# ANAME, which keeps selecting the clustering figures of `multiple_tasks`. Seed
-# 921 is used because its hidden-neuron tuning-vs-lesion effect is the clearest
-# of the seven L2=1e-4 seeds (rho = -0.41, permutation p = 0.001, 13 clusters);
-# all seven seeds agree on the sign. Its lesion caches come from
-#     python multiple_task/lesion_plot.py --seed 921 --feature L21e4
-LESION_ANAME = "everything_seed921_L21e4+hidden300+batch128+angle"
 # Produced by multiple_task/sibling_delay_analysis.py, which writes into
 # two_in_multiples/{aname}/ the artifacts the sibling geometry figures read:
 #     fixed_points_grad_{aname}_{rule}.pkl   one per delayDM rule
@@ -840,12 +950,15 @@ def _compute_order_from_labels(linkage, labels):
 
 
 # ─── Multi-task heatmap color scale ───────────────────────────────────────────
-# The input / hidden / modulation task-variance heatmaps all show the SAME
-# quantity on the SAME scale, so the scale is defined once here and the colorbar is
-# a figure of its own (`plot_multitask_heatmap_colorbar`) rather than a strip
-# repeated inside each panel — the same split the one-task modulation snapshots use
-# (_plot_onetask_snapshot_single + _onetask_hcbar). Change the scale here and the
-# heatmaps and their colorbar move together.
+# The input / hidden / normalized-modulation task-variance heatmaps all show the
+# SAME quantity on the SAME scale, so the scale is defined once here and the
+# colorbar is a figure of its own (`plot_multitask_heatmap_colorbar`) rather than
+# a strip repeated inside each panel — the same split the one-task modulation
+# snapshots use (_plot_onetask_snapshot_single + _onetask_hcbar). Change the scale
+# here and the heatmaps and their colorbar move together. The one exception is
+# the |W|*Var(M) heatmap (`plot_clustered_modulation_abs_weighted`), whose
+# unnormalized values need a data-driven log scale and so export their own bar;
+# it shares only the colormap.
 _MULTITASK_HEATMAP_CMAP = "viridis"
 _MULTITASK_HEATMAP_VLIM = (0.0, 1.0)
 _MULTITASK_HEATMAP_CLABEL = "Normalized variance"
@@ -1062,44 +1175,54 @@ def _load_cluster_info_mod():
         return pickle.load(f)
 
 
-def plot_clustered_modulation(G_index=1):
-    """
-    Figure: Clustered normalized task-variance matrix for MODULATION synapses.
+# Color floor of the log-scaled |W|*Var(M) heatmap: the same 1e-4 the analysis
+# script uses for its own unnormalized modulation heatmaps (LogNorm(vmin=1e-4)).
+_ABS_WEIGHTED_MOD_KEY = "modulation_all_abs_weighted_unnormalized"
+_ABS_WEIGHTED_HEATMAP_FLOOR = 1e-4
 
-    Uses the G=300 KMeans pre-grouping result (index 1 in result_all_lst).
-    The figure is 2x wider than input/hidden figures to accommodate the
-    90,000 synapse columns.
-    """
-    _ensure_out_dir()
+
+def _load_modulation_variant(mod_key):
+    """The saved clustering entry of one modulation variant, or None with a
+    "Skipped" message when the cache or the variant is missing."""
     mod_info = _load_cluster_info_mod()
     if mod_info is None:
         print(f"  Skipped: cluster_info_mod_{ANAME}.pkl not found. "
               "Run multiple_task_analysis.py first.")
-        return
-    mod_data = mod_info["modulation_all_normalized"]
+        return None
+    mod_data = mod_info.get(mod_key)
+    if mod_data is None:
+        print(f"  Skipped: {mod_key} not in cluster_info_mod_{ANAME}.pkl "
+              "(older caches lack it); rerun multiple_task_analysis.py.")
+    return mod_data
 
+
+def _draw_clustered_modulation(mod_data, G_index, norm, out_filename):
+    """Shared layout of the clustered modulation task-variance heatmaps.
+
+    `norm` maps the saved feature values to colors: the fixed linear
+    `_MULTITASK_HEATMAP_VLIM` scale for the normalized variant, a data-driven
+    log scale for the unnormalized ones. Values below `norm.vmin` are floored
+    so that a log scale never masks silent (zero) synapses. No colorbar is drawn
+    in the panel; callers export the matching bar as its own figure.
+    """
     cell_vars = mod_data["cell_vars_rules_sorted_norm"]
     tb_break_name = mod_data["tb_break_name"]
     result = mod_data["result_all_lst"][G_index]
 
     row_order = result["row_order"]
     col_order = result["col_order"]
-    ordered = cell_vars[np.ix_(row_order, col_order)]
+    ordered = np.maximum(cell_vars[np.ix_(row_order, col_order)], norm.vmin)
 
     rl = np.asarray(result["row_tol_labels"])[row_order]
     cl = np.asarray(result["col_tol_labels"])[col_order]
     rbreaks = _breaks(rl)
     cbreaks = _breaks(cl)
 
-    row_k = result["row_tol_k"]
-    col_k = result["col_tol_k"]
-
     fig, ax = plt.subplots(1, 1, figsize=(16, 7))
 
-    # No colorbar here either — see plot_multitask_heatmap_colorbar.
-    sns.heatmap(ordered, ax=ax, cmap=_MULTITASK_HEATMAP_CMAP,
-                vmin=_MULTITASK_HEATMAP_VLIM[0], vmax=_MULTITASK_HEATMAP_VLIM[1],
-                cbar=False)
+    # No colorbar here — see plot_multitask_heatmap_colorbar and the
+    # abs_weighted colorbar exported by plot_clustered_modulation_abs_weighted.
+    sns.heatmap(ordered, ax=ax, cmap=_MULTITASK_HEATMAP_CMAP, norm=norm, cbar=False)
 
     for rb in rbreaks:
         ax.axhline(rb, color="0.6", lw=0.5, zorder=3, alpha=0.6)
@@ -1120,21 +1243,72 @@ def plot_clustered_modulation(G_index=1):
     _add_row_cluster_strip(ax, rl, rbreaks)
 
     fig.tight_layout()
+    _save_fig(fig, _multitask_out(out_filename))
 
-    out_path = _multitask_out("clustered_modulation_normalized.png")
-    _save_fig(fig, out_path)
+
+def plot_clustered_modulation(G_index=1):
+    """
+    Figure: Clustered normalized task-variance matrix for MODULATION synapses.
+
+    Uses the G=300 KMeans pre-grouping result (index 1 in result_all_lst).
+    The figure is 2x wider than input/hidden figures to accommodate the
+    90,000 synapse columns. Colors follow the shared normalized scale of
+    plot_multitask_heatmap_colorbar.
+    """
+    _ensure_out_dir()
+    mod_data = _load_modulation_variant("modulation_all_normalized")
+    if mod_data is None:
+        return
+    _draw_clustered_modulation(
+        mod_data, G_index, mpl.colors.Normalize(*_MULTITASK_HEATMAP_VLIM),
+        "clustered_modulation_normalized.png")
+
+
+def plot_clustered_modulation_abs_weighted(G_index=1):
+    """
+    Figure: Clustered |W|*Var(M) task-variance matrix for MODULATION synapses.
+
+    The abs_weighted counterpart of plot_clustered_modulation: same layout, same
+    G=300 pre-grouping index, but rows/columns follow the abs_weighted
+    clustering and the cells show the unnormalized feature |W|*Var(M). Because
+    these values span orders of magnitude and are not on the shared [0, 1]
+    scale, colors are log-scaled from the 1e-4 floor the analysis script uses
+    to the run's maximum, and the matching colorbar is exported separately as
+    clustered_modulation_abs_weighted_colorbar.png. Runs analyzed before the
+    abs_weighted variant existed have no entry and are skipped.
+    """
+    _ensure_out_dir()
+    mod_data = _load_modulation_variant(_ABS_WEIGHTED_MOD_KEY)
+    if mod_data is None:
+        return
+    cell_vars = np.asarray(mod_data["cell_vars_rules_sorted_norm"], dtype=float)
+    vmax = float(np.nanmax(cell_vars))
+    if not np.isfinite(vmax) or vmax <= _ABS_WEIGHTED_HEATMAP_FLOOR:
+        raise ValueError(f"abs_weighted modulation features must exceed the "
+                         f"{_ABS_WEIGHTED_HEATMAP_FLOOR:g} color floor (max {vmax:g})")
+    norm = mpl.colors.LogNorm(vmin=_ABS_WEIGHTED_HEATMAP_FLOOR, vmax=vmax)
+    _draw_clustered_modulation(mod_data, G_index, norm,
+                               "clustered_modulation_abs_weighted.png")
+    _save_standalone_colorbar(
+        _multitask_out("clustered_modulation_abs_weighted_colorbar.png"),
+        cmap=_MULTITASK_HEATMAP_CMAP, norm=norm,
+        label=r"$|W|\,\mathrm{Var}(M)$",
+        orientation="horizontal", figsize=(1.9, 0.62),
+        rect=(0.05, 0.62, 0.90, 0.24), labelsize=8, label_fontsize=8)
 
 
 def plot_multitask_heatmap_colorbar():
     """
     The colorbar for the multi-task task-variance heatmaps (input, hidden and
-    modulation), as its own figure.
+    normalized modulation), as its own figure.
 
     Those three panels show the same quantity on the same scale
     (`_MULTITASK_HEATMAP_CMAP` over `_MULTITASK_HEATMAP_VLIM`), so none of them
     draws a colorbar: one bar published once serves all three, is not repeated
     three times at three different panel widths, and can be placed and sized in the
     manuscript independently of the panels. Reads no data — the scale is fixed.
+    The |W|*Var(M) heatmap is log-scaled and exports its own colorbar instead
+    (`plot_clustered_modulation_abs_weighted`).
     """
     _ensure_out_dir()
     vmin, vmax = _MULTITASK_HEATMAP_VLIM
@@ -2284,13 +2458,13 @@ def plot_state_space_dist_angle():
 
 def _find_experiment_dirs():
     """Return all experiment subfolders under multiple_tasks_analysis/ matching
-    the same feature/hidden/batch signature as ANAME (any seed)."""
+    the same feature/hidden/batch signature as ANAME (any seed), i.e. every
+    analyzed run of the selected MULTITASK_L2 cohort."""
     import re as _re
     # ANAME = everything_seed{seed}_{feature}+hidden{h}+batch{b}+angle
     m = _re.match(r"everything_seed\d+_(.+)$", ANAME)
     suffix = m.group(1) if m else ""
-    base = Path("multiple_tasks_analysis")
-    dirs = sorted(base.glob(f"everything_seed*_{suffix}"))
+    dirs = sorted(DATA_DIR.parent.glob(f"everything_seed*_{suffix}"))
     return [d for d in dirs if d.is_dir()]
 
 
@@ -2306,6 +2480,9 @@ def _plot_overmembership_single(pkl_template, out_filename):
 
     pkl_template: a filename template containing "{aname}", e.g.
         "modulation_all_prepost_belonging_{aname}_unnormalized.pkl"
+    One figure exists per modulation clustering variant of
+    core/modulation_variants.py (normalized, unnormalized, weighted,
+    var_weighted, abs_weighted); see the plot_overmembership_* wrappers below.
     """
     _ensure_out_dir()
 
@@ -2399,7 +2576,23 @@ def plot_overmembership_var_weighted():
     )
 
 
+def plot_overmembership_abs_weighted():
+    """Figure: Over-membership for |W|-weighted (abs_weighted) unnormalized modulation
+    (G=100), aggregated across seeds. Fifth clustering variant of
+    core/modulation_variants.py; runs analyzed before it existed have no pickle and
+    are skipped."""
+    _plot_overmembership_single(
+        "modulation_all_abs_weighted_prepost_belonging_{aname}_unnormalized.pkl",
+        "overmembership_abs_weighted.png",
+    )
+
+
 OVERMEMBERSHIP_EXAMPLE_FIXED_K = 20
+# Modulation cluster IDs (1-based, fixed k = 20) shown by
+# plot_overmembership_examples. They were chosen on the L2=1e-4 seed-749 run;
+# cluster numbering is not comparable across runs, so revisit them when
+# MULTITASK_L2 or the resolved ANAME changes (the figure skips, with a message,
+# when an ID is absent).
 OVERMEMBERSHIP_EXAMPLE_CLUSTERS = (3, 4)
 # Blocks expecting fewer synapses than this under the label-shuffle null are
 # masked: their observed/expected ratio swings wildly with one or two synapses.
@@ -2530,8 +2723,7 @@ def plot_overmembership_examples():
 
 
 # ─── Figure: Lesion heatmap ──────────────────────────────────────────────────
-
-LESION_DIR = Path("multiple_tasks_perf") / LESION_ANAME
+# LESION_DIR (multiple_tasks_perf/{LESION_ANAME}) is set by _set_multitask_l2.
 
 
 def _load_lesion_results():
@@ -3040,8 +3232,7 @@ def plot_input_weight_correlation():
 
 
 # ─── Figure: Cluster tuning vs lesion effect ─────────────────────────────────
-
-LESION_NORM_DIR = Path("multiple_tasks_norm") / LESION_ANAME
+# LESION_NORM_DIR (multiple_tasks_norm/{LESION_ANAME}) is set by _set_multitask_l2.
 CLUSTER_CORR_SCHEMA_VERSION = 2
 CLUSTER_CORR_X_DEFINITION = "pearson_corr_of_cluster_mean_tuning_profiles"
 CLUSTER_CORR_Y_DEFINITION = "one_minus_pearson_corr_of_z_scored_effect_profiles"
@@ -3120,10 +3311,12 @@ def plot_cluster_corr_vs_lesion():
     cluster-label permutation p, because cluster pairs share clusters. A saved
     OLS line is drawn as a visual guide to the trend; it is not the statistic.
 
-    Produces input/hidden figures for both clustering variants, plus two zero_W
-    modulation figures: normalized and var-weighted unnormalized. Modulation
-    uses only the exact saved variant/mode entry, never a freeze_M substitute;
-    only its unnormalized variant drops the unresponsive cluster. All
+    Produces input/hidden figures for both clustering variants, plus three
+    zero_W modulation figures: normalized, var-weighted unnormalized (W*Var(M))
+    and abs-weighted unnormalized (|W|*Var(M)); Var(W*M) has its own entry
+    point, plot_cluster_corr_vs_lesion_weighted. Modulation uses only the
+    exact saved variant/mode entry, never a freeze_M substitute; its
+    unnormalized variants drop the unresponsive cluster. All
     entries come from LESION_ANAME's caches. Legacy caches are skipped, not
     refitted, and the L1 supplement kept in the caches is not drawn here.
     """
@@ -3134,6 +3327,8 @@ def plot_cluster_corr_vs_lesion():
          "normalized_zero-W"),
         ("mod_lesion_effect_var-weighted-unnormalized_zero-W",
          "modulation_var_weighted_unnorm_zero_W", "var-weighted-unnormalized_zero-W"),
+        ("mod_lesion_effect_abs-weighted-unnormalized_zero-W",
+         "modulation_abs_weighted_unnorm_zero_W", "abs-weighted-unnormalized_zero-W"),
     ]
     _plot_cluster_corr_vs_lesion_variants(variants)
 
@@ -3207,7 +3402,8 @@ def _plot_cluster_corr_vs_lesion_variants(variants):
 
 
 def _sibling_run_dirs():
-    """Directories of LESION_ANAME's sibling runs (same feature, any seed)."""
+    """Directories of LESION_ANAME's sibling runs (same feature, any seed),
+    i.e. every post-processed run of the selected MULTITASK_L2 cohort."""
     import re as _re
 
     pattern = _re.sub(r"seed\d+", "seed*", LESION_ANAME)
@@ -9209,11 +9405,13 @@ FIGURES_BY_MODE = {
         "input": plot_clustered_input,
         "hidden": plot_clustered_hidden,
         "modulation": plot_clustered_modulation,
+        "modulation_abs_weighted": plot_clustered_modulation_abs_weighted,
         "heatmap_colorbar": plot_multitask_heatmap_colorbar,
         "overmembership_norm": plot_overmembership_norm,
         "overmembership_unnorm": plot_overmembership_unnorm,
         "overmembership_weighted": plot_overmembership_weighted,
         "overmembership_var_weighted": plot_overmembership_var_weighted,
+        "overmembership_abs_weighted": plot_overmembership_abs_weighted,
         "overmembership_examples": plot_overmembership_examples,
         "input_weight_correlation": plot_input_weight_correlation,
     },
@@ -9327,6 +9525,15 @@ def main():
              "default).",
     )
     parser.add_argument(
+        "--multitask-l2",
+        choices=MULTITASK_L2_CHOICES,
+        default=None,
+        help="L2 cohort read by the multiple_tasks and lesion figures "
+             f"(default: MULTITASK_L2 = {MULTITASK_L2}). Single-run figures use "
+             "the cohort's designated seed when cached, else the best-covered "
+             "cached seed; aggregate figures summarize every cached seed.",
+    )
+    parser.add_argument(
         "--pretraining-bound",
         type=_parse_pretraining_bound,
         choices=("mb1", "mb2"),
@@ -9354,6 +9561,10 @@ def main():
     # build exact artifact patterns from this selected addon.
     _set_pretraining_bound(args.pretraining_bound)
     _set_pretraining_groups(args.pretraining_groups)
+    # Re-resolve the multi-task run names only when the cohort is overridden;
+    # the import-time selection already reflects MULTITASK_L2.
+    if args.multitask_l2 is not None and args.multitask_l2 != MULTITASK_L2:
+        _set_multitask_l2(args.multitask_l2)
 
     # Apply the legend toggle globally; every figure routes through _legend(),
     # which reads this module-level flag.
@@ -9387,8 +9598,8 @@ def main():
     # no single identifier.
     mode_experiment = {
         "one_task": ONETASK_ANAME,
-        "multiple_tasks": ANAME,
-        "lesion": LESION_ANAME,
+        "multiple_tasks": f"{ANAME} (L2={MULTITASK_L2} cohort; aggregates over its cached seeds)",
+        "lesion": f"{LESION_ANAME} (L2={MULTITASK_L2} cohort; *_seeds figures over its cached seeds)",
         "state_space": (
             f"(auto-selects best high-dimensional task-center separation within L2={STATE_SPACE_EXAMPLE_L2:.0e}; "
             "R-values split across L2 1e-5/1e-4/1e-3/1e-2 cohorts)"

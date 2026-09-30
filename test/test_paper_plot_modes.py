@@ -14,6 +14,61 @@ import paper_plot
 
 
 class PaperPlotModeTests(unittest.TestCase):
+    @staticmethod
+    def modulation_entry(values, row_labels, col_labels):
+        """A minimal saved modulation clustering entry (two G groupings)."""
+        n_rows, n_cols = values.shape
+        result = {"row_order": np.arange(n_rows)[::-1], "col_order": np.arange(n_cols),
+                  "row_tol_labels": row_labels, "col_tol_labels": col_labels,
+                  "row_tol_k": len(set(row_labels)), "col_tol_k": len(set(col_labels))}
+        return {"cell_vars_rules_sorted_norm": values,
+                "tb_break_name": np.array(["delaygo-stim1", "delaygo-go1", "fdgo-go1"][:n_rows]),
+                "result_all_lst": [result, result]}
+
+    def test_abs_weighted_clustered_modulation_uses_log_scale_and_own_colorbar(self):
+        values = np.array([[0.0, 2e-3, 0.5], [1e-3, 0.0, 4.0], [2.0, 3.0, 0.0]])
+        cache = {
+            "modulation_all_normalized": self.modulation_entry(
+                values / values.max(axis=0, keepdims=True), [1, 1, 2], [1, 2, 2]),
+            "modulation_all_abs_weighted_unnormalized": self.modulation_entry(
+                values, [1, 2, 2], [1, 1, 2]),
+        }
+        with patch.object(paper_plot, "_load_cluster_info_mod", return_value=cache), \
+                patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(paper_plot, "_save_fig") as save_fig:
+            paper_plot.plot_clustered_modulation_abs_weighted()
+            paper_plot.plot_clustered_modulation()
+        names = [call.args[1].name for call in save_fig.call_args_list]
+        self.assertEqual(names, ["multitask_clustered_modulation_abs_weighted.png",
+                                 "multitask_clustered_modulation_abs_weighted_colorbar.png",
+                                 "multitask_clustered_modulation_normalized.png"])
+        for call in save_fig.call_args_list:
+            self.addCleanup(paper_plot.plt.close, call.args[0])
+        heatmap = save_fig.call_args_list[0].args[0].axes[0].collections[0]
+        self.assertIsInstance(heatmap.norm, paper_plot.mpl.colors.LogNorm)
+        self.assertEqual((heatmap.norm.vmin, heatmap.norm.vmax), (1e-4, 4.0))
+        # Silent synapses are floored to the color minimum, never masked.
+        drawn = heatmap.get_array()
+        self.assertEqual(float(np.min(drawn)), 1e-4)
+        self.assertFalse(np.ma.is_masked(drawn))
+        colorbar_norm = save_fig.call_args_list[1].args[0].axes[0].collections[-1].norm
+        self.assertIsInstance(colorbar_norm, paper_plot.mpl.colors.LogNorm)
+        normalized = save_fig.call_args_list[2].args[0].axes[0].collections[0]
+        self.assertNotIsInstance(normalized.norm, paper_plot.mpl.colors.LogNorm)
+        self.assertEqual((normalized.norm.vmin, normalized.norm.vmax),
+                         paper_plot._MULTITASK_HEATMAP_VLIM)
+
+    def test_abs_weighted_clustered_modulation_skips_caches_without_the_variant(self):
+        cache = {"modulation_all_normalized": self.modulation_entry(
+            np.ones((2, 2)), [1, 2], [1, 2])}
+        with patch.object(paper_plot, "_load_cluster_info_mod", return_value=cache), \
+                patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(paper_plot, "_save_fig") as save_fig, \
+                patch("builtins.print") as output:
+            paper_plot.plot_clustered_modulation_abs_weighted()
+        save_fig.assert_not_called()
+        self.assertIn("modulation_all_abs_weighted_unnormalized", output.call_args.args[0])
+
     def test_overmembership_variants_align_both_na_with_uniform_gray_bars(self):
         variants = (
             (paper_plot.plot_overmembership_norm,
@@ -28,6 +83,9 @@ class PaperPlotModeTests(unittest.TestCase):
             (paper_plot.plot_overmembership_var_weighted,
              "modulation_all_var_weighted_prepost_belonging_{aname}_unnormalized.pkl",
              "overmembership_var_weighted.png"),
+            (paper_plot.plot_overmembership_abs_weighted,
+             "modulation_all_abs_weighted_prepost_belonging_{aname}_unnormalized.pkl",
+             "overmembership_abs_weighted.png"),
         )
         observations = (np.array([2., 4., 8.]), np.array([4., 6., 8., 10.]))
         controls = (np.full(3, 2.), np.full(4, 2.))
