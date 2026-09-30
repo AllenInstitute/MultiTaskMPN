@@ -127,7 +127,55 @@ def unresponsive_row_mask(data, norm_frac):
     return magnitude < norm_frac * max_magnitude
 
 
-def fixed_k_col_clusters(ci_entry, fk):
+def unresponsive_label(labels, unresponsive_mask):
+    """The single cluster label carried by the unresponsive entries, or None.
+
+    `labels` and `unresponsive_mask` are aligned 1-D arrays (one entry per
+    neuron, task condition or synapse). The clustering functions give every
+    unresponsive entry the label k + 1; this reads that label back from the
+    saved arrays instead of re-deriving it from a k that may since have been
+    re-cut. Raises if the unresponsive entries carry more than one label or
+    share their label with an active entry, since the label would then not
+    identify the class.
+    """
+    labels = np.asarray(labels)
+    unresponsive_mask = np.asarray(unresponsive_mask, dtype=bool)
+    if labels.shape != unresponsive_mask.shape:
+        raise ValueError("labels and unresponsive_mask must have the same shape")
+    if not unresponsive_mask.any():
+        return None
+    unres_labels = np.unique(labels[unresponsive_mask])
+    if unres_labels.size != 1:
+        raise ValueError(f"unresponsive entries carry {unres_labels.size} labels: "
+                         f"{unres_labels.tolist()}")
+    label = unres_labels[0]
+    if np.any(labels[~unresponsive_mask] == label):
+        raise ValueError(f"unresponsive label {label} is also used by active entries")
+    return int(label)
+
+
+def unresponsive_label_from_result(result, axis="col", labels=None):
+    """Unresponsive label of one clustering result along `axis` ("col"/"row").
+
+    Reads the saved `{axis}_unresponsive_mask` (written by the clustering
+    functions below) and the given `labels` (default: the tolerance-selected
+    `{axis}_tol_labels`). Results saved before the mask existed fall back to the
+    k + 1 convention of `{axis}_tol_k`: that label is the unresponsive class
+    when it is present in `{axis}_tol_labels`, else there is none. Returns an
+    int or None.
+    """
+    if axis not in ("col", "row"):
+        raise ValueError("axis must be 'col' or 'row'")
+    tol_labels = np.asarray(result[f"{axis}_tol_labels"])
+    labels = tol_labels if labels is None else np.asarray(labels)
+    mask = result.get(f"{axis}_unresponsive_mask")
+    if mask is None:
+        legacy = int(result[f"{axis}_tol_k"]) + 1
+        mask = tol_labels == legacy
+    return unresponsive_label(labels, mask)
+
+
+def fixed_k_col_clusters(ci_entry, fk, return_unresponsive_label=False):
     """Re-cut a saved column dendrogram at exactly `fk` clusters.
 
     `ci_entry` is one entry of a cluster_info pickle: a dict whose "result"
@@ -144,12 +192,20 @@ def fixed_k_col_clusters(ci_entry, fk):
     to 1..K here; downstream `range(1, n + 1)` lookups and `label - 1` 0-based
     indexing rely on this and must not be "fixed" locally in the callers.
 
+    With `return_unresponsive_label=True` the result is `(clusters, label)`,
+    where `label` is the key of the unresponsive class or None when the entry
+    has no unresponsive columns. Consumers must use that label rather than
+    assuming the last key is the unresponsive class.
+
     Single shared implementation for multiple_task_analysis.py, lesion.py and
     lesion_plot.py; do not copy it back into those scripts.
     """
     res = ci_entry["result"]
     tol_labels = np.asarray(res["col_tol_labels"])
-    unres_mask = tol_labels == (res["col_tol_k"] + 1)
+    unres_mask = res.get("col_unresponsive_mask")
+    if unres_mask is None:
+        unres_mask = tol_labels == (res["col_tol_k"] + 1)
+    unres_mask = np.asarray(unres_mask, dtype=bool)
     active_labels = fcluster(res["col_linkage"], fk, criterion="maxclust")
     uniq = np.unique(active_labels)
     n_active_clusters = uniq.size
@@ -165,9 +221,38 @@ def fixed_k_col_clusters(ci_entry, fk):
     active_labels = np.searchsorted(uniq, active_labels) + 1
     full = np.zeros(len(tol_labels), dtype=int)
     full[~unres_mask] = active_labels
+    label = None
     if unres_mask.any():
-        full[unres_mask] = n_active_clusters + 1
-    return {int(lab): np.where(full == lab)[0] for lab in np.unique(full) if lab > 0}
+        label = n_active_clusters + 1
+        full[unres_mask] = label
+    clusters = {int(lab): np.where(full == lab)[0] for lab in np.unique(full) if lab > 0}
+    if return_unresponsive_label:
+        return clusters, label
+    return clusters
+
+
+def prune_labels_by_k(result, keep_ks):
+    """Shallow copy of a clustering result keeping the column per-k arrays only for `keep_ks`.
+
+    `cluster_variance_matrix_forgroup` returns one full label array per
+    candidate k in `col_labels_by_k` (and matching entries in
+    `col_unresponsive_label_by_k` / `col_cut_distance_by_k`). For the 90,000
+    plastic synapses with k up to G = 1000 that is the bulk of the multi-GB
+    cluster_info_mod pickle, while the saved file is only ever read at the
+    fixed lesion k and the tolerance-selected k. Keys absent from the result
+    are ignored. The copy records the kept keys in `col_labels_by_k_kept` and
+    sets `col_labels_by_k_pruned=True`; row-side dictionaries are untouched
+    (they index the few task conditions and are small).
+    """
+    keep = {int(k) for k in keep_ks}
+    pruned = dict(result)
+    for name in ("col_labels_by_k", "col_unresponsive_label_by_k", "col_cut_distance_by_k"):
+        table = result.get(name)
+        if isinstance(table, dict):
+            pruned[name] = {k: v for k, v in table.items() if int(k) in keep}
+    pruned["col_labels_by_k_kept"] = sorted(pruned.get("col_labels_by_k", {}).keys())
+    pruned["col_labels_by_k_pruned"] = True
+    return pruned
 
 
 def _score_threshold_from_best(best_score, silhouette_tol=0.02, tol_mode="relative"):
@@ -550,6 +635,10 @@ def _hierarchical_clustering_repeat(
         labels=strict_labels,
         k=strict_best_k,
         cut_threshold=strict_cut_threshold,
+        # One flag per observation; the unresponsive ones carry label k + 1 in
+        # every label array above. Saved so consumers read the class from the
+        # data instead of assuming it is the last cluster.
+        unresponsive_mask=unresponsive_mask.copy(),
 
         alt_k=alt_k,
         alt_labels=final_alt_labels,
@@ -726,6 +815,14 @@ def cluster_variance_matrix_repeat(
         col_tol_k=col_res["alt_k"],
         row_cut_tol_threshold=row_res["alt_cut_threshold"],
         col_cut_tol_threshold=col_res["alt_cut_threshold"],
+        # Explicit unresponsive class: per-observation masks and the label the
+        # tolerance-selected label arrays give that class (None if empty).
+        row_unresponsive_mask=row_res["unresponsive_mask"],
+        col_unresponsive_mask=col_res["unresponsive_mask"],
+        row_unresponsive_label=unresponsive_label(row_res["alt_labels"],
+                                                  row_res["unresponsive_mask"]),
+        col_unresponsive_label=unresponsive_label(col_res["alt_labels"],
+                                                  col_res["unresponsive_mask"]),
     )
 
     
@@ -870,10 +967,12 @@ def _hierarchical_clustering_forgroup(
     tol_k_select : "min" selects the smallest k within the tolerance band of
         the best silhouette score; "max" selects the largest; "mean" selects
         the k closest to the arithmetic mean of the band.
-    skip_unresponsive_detection : when False (default), rows whose L2 norm is
-        below unresponsive_norm_frac * max_norm are excluded from clustering
-        and assigned a dedicated label (k+1), appended at the end of leaf_order.
-        Set to True to disable detection (e.g. already-normalised data).
+    skip_unresponsive_detection : when False (default), rows whose mean |value|
+        is below unresponsive_norm_frac times the largest row mean |value|
+        (unresponsive_row_mask) are excluded from clustering and assigned a
+        dedicated label (k+1), appended at the end of leaf_order; the flags are
+        returned as `unresponsive_mask`. Set to True to disable detection
+        (e.g. already-normalised data).
     """
     if tol_k_select not in ("min", "max", "mean", "ari", "gap"):
         raise ValueError("tol_k_select must be 'min', 'max', 'mean', 'ari', or 'gap'.")
@@ -942,6 +1041,7 @@ def _hierarchical_clustering_forgroup(
             alt_labels=labels_deg,
             alt_cut_distance=None,
             primary_candidates=[k_deg],
+            unresponsive_mask=unresponsive_mask.copy(),
         )
 
     pairwise = pdist(active_data, metric=metric)
@@ -1036,6 +1136,9 @@ def _hierarchical_clustering_forgroup(
         alt_k=alt_k,
         alt_labels=_expand_labels(alt_labels, alt_k),
         alt_cut_distance=alt_cut_distance,
+        # Group-level flag (one per observation of `data`); label k + 1 in
+        # `labels` and in every `labels_by_k[k]`.
+        unresponsive_mask=unresponsive_mask.copy(),
     )
 
 
@@ -1300,6 +1403,14 @@ def cluster_variance_matrix_forgroup(
     col_labels = np.take(col_group_labels_at_best_k, col_map)
     col_labels_by_k = {k: np.take(lbls, col_map) for k, lbls in col_res["labels_by_k"].items()}
 
+    # Unresponsive class expanded from the (representative) groups to the
+    # individual rows / columns. Every label array above gives it k + 1, so the
+    # label is read back per array rather than assumed.
+    row_unresponsive_mask = np.take(row_res["unresponsive_mask"], row_map)
+    col_unresponsive_mask = np.take(col_res["unresponsive_mask"], col_map)
+    col_unresponsive_label_by_k = {
+        k: unresponsive_label(lbls, col_unresponsive_mask) for k, lbls in col_labels_by_k.items()}
+
     # --- pre-compute arrays for score-curve keys ---
     row_score_recording = row_res["score_recording"]
     sorted_k_row = sorted(row_score_recording.keys())
@@ -1362,6 +1473,12 @@ def cluster_variance_matrix_forgroup(
         col_tol_k=best_k_col,
         row_cut_threshold=row_res["best_cut_distance"],
         col_cut_threshold=col_best_cut_distance,
+        # explicit unresponsive class (see cluster_variance_matrix_repeat)
+        row_unresponsive_mask=row_unresponsive_mask,
+        col_unresponsive_mask=col_unresponsive_mask,
+        row_unresponsive_label=unresponsive_label(row_labels, row_unresponsive_mask),
+        col_unresponsive_label=unresponsive_label(col_labels, col_unresponsive_mask),
+        col_unresponsive_label_by_k=col_unresponsive_label_by_k,
         # score-curve arrays matching cluster_variance_matrix_repeat return shape
         row_score_recording_mean=row_score_recording,           # single run: mean == value
         row_score_recording_std={k: 0.0 for k in row_score_recording},

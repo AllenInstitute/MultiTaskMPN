@@ -14,8 +14,13 @@ network whose effective weights are modulated by a fast plasticity matrix **M**:
 W_eff(t) = W + W ⊙ M(t)     (multiplicative)   or   W + M(t)   (additive)
 ```
 
-**M** evolves by a Hebbian rule with learnable learning-rate η and decay λ (each
-scalar, pre/post-vector, or full matrix). The network has three weight matrices:
+**M** evolves by a Hebbian rule with learning-rate η and decay λ (each scalar,
+pre/post-vector, or full matrix). In every training script η is learned and λ
+is fixed (`lam_train = False`) at λ = 1 − Δt/`m_time_scale`, with Δt = 40 ms:
+the single-task and pretraining runs use `m_time_scale` = 400 ms (λ = 0.9), the
+two-task, multi-task and flexible-task runs use 4000 ms (λ = 0.99). See
+[SCHEME.md](SCHEME.md) for where each model's time constant lives and how to
+read λ back from a checkpoint. The network has three weight matrices:
 `W_initial_linear` (input projection), `mp_layer1.W` (recurrent plastic weights),
 and `W_output` (readout).
 
@@ -126,7 +131,7 @@ scatter figures and two modulation figures:
 `multitask_cluster_corr_vs_lesion_modulation_norm_zero_W_n.png` and
 `multitask_cluster_corr_vs_lesion_modulation_var_weighted_unnorm_zero_W_n.png`.
 Both use cached **zero_W** effects; the unnormalized figure uses var-weighted
-modulation and drops the unresponsive last cluster. Each figure is scale-free
+modulation and drops the unresponsive cluster. Each figure is scale-free
 on both axes: x is the Pearson correlation between cluster mean tuning
 profiles, y is one minus the Pearson correlation between per-task lesion
 effects after z-scoring each effect against its stored random-control repeats
@@ -254,6 +259,36 @@ python paper_plot.py --only om_vs_lesion
 Use `--seed all` in the first command to update every matching run's OM results.
 This reuses completed lesion experiments, but clears and regenerates the selected
 runs' post-processing outputs in `multiple_tasks_norm/`.
+
+## Modulation cluster pickle size
+
+`cluster_info_mod_{aname}.pkl` stores each grouped modulation clustering
+result with `col_labels_by_k` only at the fixed lesion k (20) and at that
+result's tolerance-selected k (`clustering.prune_labels_by_k`, recorded in
+`col_labels_by_k_kept`). These are the only k values `lesion.py` reads back;
+the between-modulation metric sweep over other k runs inside
+`multiple_task_analysis.py` before saving. Pickles written before this change
+hold one 90,000-synapse label array per candidate k (up to k = G = 1000) and
+are several GB; they remain readable.
+
+## Unresponsive classes
+
+Every clustering appends the silent (unresponsive) neurons or synapses as one
+extra class, labelled `k + 1`. Since 2026-09-29 that class is recorded
+explicitly instead of being inferred from its position: each clustering result
+carries `col_unresponsive_mask` / `col_unresponsive_label` (and
+`col_unresponsive_label_by_k` for the grouped modulation clusterings), each
+`cluster_info_{aname}.pkl` entry carries `unresponsive_label` and
+`unresponsive_neurons`, the OM caches carry `unresponsive_input_index` /
+`unresponsive_hidden_index`, and `lesion_prune_results_{aname}.pkl` records
+`unresponsive_labels` / `unresponsive_conditions` per neuron variant,
+`unresponsive_pre_label` / `unresponsive_post_label` per combined lesion and
+`unresponsive_label` per modulation lesion (`None` when nothing was flagged).
+`lesion_plot.py` and `paper_plot.py` read these fields; caches written before
+they existed fall back to the former rule (the last cluster of an unnormalized
+variant), which holds for the seven L2=1e-4 seeds. The `cluster_corr_vs_lesion`
+caches keep their `exclude_last_cluster` flag, now meaning that an unresponsive
+exclusion was applied, and add `unresponsive_source`.
 
 ## Modulation clustering variants
 

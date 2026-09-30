@@ -769,32 +769,41 @@ def _load_cluster_info():
 
 # ─── Figure: Clustered variance matrix ───────────────────────────────────────
 
-def _recut_labels(linkage, k, original_labels):
+def _recut_labels(linkage, k, original_labels, unresponsive_mask=None):
     """
     Re-cut a dendrogram at a different k.
 
     The linkage matrix was built on the "active" subset (excluding any
     unresponsive neurons marked with label = original_k + 1). This
     function cuts the linkage at the new k, then maps back to the full
-    label array preserving the unresponsive label if present.
-    """
-    original_k = linkage.shape[0]  # n_obs - 1 gives linkage rows
-    n_obs = linkage.shape[0] + 1
-    original_labels = np.asarray(original_labels)
-    unique_orig = np.unique(original_labels)
+    label array, giving the unresponsive neurons label k + 1.
 
-    # Detect unresponsive cluster (label > original_k stored in result)
-    max_label = unique_orig.max()
-    # If there's an unresponsive cluster, its label = col_tol_k + 1
-    # which equals n_obs + 1 (since linkage has n_obs - 1 rows → n_obs active neurons)
-    has_unresponsive = (max_label > n_obs)
-    unres_mask = original_labels == max_label if has_unresponsive else np.zeros(len(original_labels), dtype=bool)
+    `unresponsive_mask` is the per-neuron flag the clustering saves
+    (`result["col_unresponsive_mask"]`). Results saved before it existed are
+    recognized by their length: the full label array is longer than the
+    number of dendrogram leaves exactly when unresponsive neurons were held
+    out, and those neurons carry the largest label.
+    """
+    n_active = linkage.shape[0] + 1     # leaves of the dendrogram
+    original_labels = np.asarray(original_labels)
+
+    if unresponsive_mask is not None:
+        unres_mask = np.asarray(unresponsive_mask, dtype=bool)
+        if unres_mask.shape != original_labels.shape:
+            raise ValueError("unresponsive_mask must align with original_labels")
+    elif len(original_labels) > n_active:
+        unres_mask = original_labels == original_labels.max()
+    else:
+        unres_mask = np.zeros(len(original_labels), dtype=bool)
+    if int((~unres_mask).sum()) != n_active:
+        raise ValueError(f"{int((~unres_mask).sum())} active labels but the linkage has "
+                         f"{n_active} leaves")
 
     new_active_labels = fcluster(linkage, t=k, criterion="maxclust")
 
     full_labels = np.zeros(len(original_labels), dtype=int)
     full_labels[~unres_mask] = new_active_labels
-    if has_unresponsive:
+    if unres_mask.any():
         full_labels[unres_mask] = k + 1
 
     return full_labels
@@ -947,7 +956,8 @@ def _plot_clustered_variance(
     """
     # Determine row labels and order
     if row_k_override is not None:
-        rl_full = _recut_labels(result["row_linkage"], row_k_override, result["row_tol_labels"])
+        rl_full = _recut_labels(result["row_linkage"], row_k_override, result["row_tol_labels"],
+                                result.get("row_unresponsive_mask"))
         row_order = _compute_order_from_labels(result["row_linkage"], rl_full)
         row_k = row_k_override
     else:
@@ -957,7 +967,8 @@ def _plot_clustered_variance(
 
     # Determine col labels and order
     if col_k_override is not None:
-        cl_full = _recut_labels(result["col_linkage"], col_k_override, result["col_tol_labels"])
+        cl_full = _recut_labels(result["col_linkage"], col_k_override, result["col_tol_labels"],
+                                result.get("col_unresponsive_mask"))
         col_order = _compute_order_from_labels(result["col_linkage"], cl_full)
         col_k = col_k_override
     else:
@@ -3112,7 +3123,7 @@ def plot_cluster_corr_vs_lesion():
     Produces input/hidden figures for both clustering variants, plus two zero_W
     modulation figures: normalized and var-weighted unnormalized. Modulation
     uses only the exact saved variant/mode entry, never a freeze_M substitute;
-    only its unnormalized variant drops the last (unresponsive) cluster. All
+    only its unnormalized variant drops the unresponsive cluster. All
     entries come from LESION_ANAME's caches. Legacy caches are skipped, not
     refitted, and the L1 supplement kept in the caches is not drawn here.
     """

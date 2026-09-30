@@ -167,6 +167,84 @@ def _om_point_mask(ga, om_idx, *, skip_input=(), skip_hidden=(), min_expected=OM
 
 OM_N_PERM = 1000
 
+# Baseline (no-lesion) condition names of the neuron lesions, old and new spelling.
+NEURON_BASELINE_KEYS = frozenset({"pre_cNone", "post_cNone", "pre_nolesion", "post_nolesion"})
+
+
+# ── Unresponsive-class lookups ──────────────────────────────────────────────
+#
+# The clustering appends the unresponsive (silent) neurons or synapses as one
+# extra class. lesion.py and multiple_task_analysis.py now record its label
+# explicitly (`unresponsive_label`, `unresponsive_conditions`,
+# `unresponsive_{input,hidden}_index`, `unresponsive_{pre,post}_label`); these
+# helpers read those fields. Caches written before the fields existed fall back
+# to the historical convention — the unnormalized clusterings put the class
+# last — which is what the fields were introduced to replace.
+
+def _unresponsive_grid_index(ga, side, variant):
+    """0-based row/column of the unresponsive class in an OM grid, or None.
+
+    ga: an OM cache (`global_assignment*`); side: "input" or "hidden";
+    variant: "norm" / "unnorm", used only by the legacy fallback.
+    """
+    if side not in ("input", "hidden"):
+        raise ValueError("side must be 'input' or 'hidden'")
+    key = f"unresponsive_{side}_index"
+    if key in ga:
+        return None if ga[key] is None else int(ga[key])
+    if variant == "unnorm":
+        return int(ga["n_in" if side == "input" else "n_hid"]) - 1
+    return None
+
+
+def _combined_unresponsive_index(cdata, side, variant):
+    """0-based grid index of the unresponsive class in a combined-lesion entry, or None."""
+    if side not in ("pre", "post"):
+        raise ValueError("side must be 'pre' or 'post'")
+    key = f"unresponsive_{side}_label"
+    if key in cdata:
+        return None if cdata[key] is None else int(cdata[key]) - 1
+    if variant == "unnorm":
+        return int(cdata["pre_n" if side == "pre" else "post_n"]) - 1
+    return None
+
+
+def _unresponsive_condition_names(entry, legacy_last=False):
+    """Condition names ("pre_c21", "post_c21") of the unresponsive classes.
+
+    entry: a `lesion` / `lesion_unnorm` record. Without the explicit field the
+    legacy rule (last condition of each side) applies only when `legacy_last`.
+    """
+    if "unresponsive_conditions" in entry:
+        return {str(name) for name in entry["unresponsive_conditions"]}
+    if not legacy_last:
+        return set()
+    names = [n for n in entry["all_comb_names_lesion"] if n not in NEURON_BASELINE_KEYS]
+    found = set()
+    for prefix in ("pre_c", "post_c"):
+        side = [n for n in names if n.startswith(prefix)]
+        if side:
+            found.add(side[-1])
+    return found
+
+
+def _mod_unresponsive_label(mod_data, legacy_last=False):
+    """Cluster id of the unresponsive synapse class in a mod_lesion record, or None."""
+    if "unresponsive_label" in mod_data:
+        label = mod_data["unresponsive_label"]
+        return None if label is None else int(label)
+    if not legacy_last:
+        return None
+    ids = sorted(int(n.replace("mod_c", "")) for n in mod_data["all_comb_names_mod"]
+                 if n.startswith("mod_c"))
+    return ids[-1] if ids else None
+
+
+def _indices_without(n, index):
+    """np.arange(n) with one optional index removed."""
+    keep = np.arange(int(n))
+    return keep if index is None else keep[keep != int(index)]
+
 
 def _om_scatter_perm_test(mod_profiles, row_om, row_cm, n_perm=OM_N_PERM, seed=0):
     """Spearman cluster-permutation p-value for the OM vs profile-L1 scatter.
@@ -460,7 +538,8 @@ def _mantel_spearman(x_matrix, y_matrix, n_perm=CLUSTER_CORR_N_PERM, seed=0):
 
 
 def _tuning_vs_lesion_summary(cluster_means, lesion_acc, control_raw, cluster_labels, *,
-                              exclude_last_cluster=False, n_perm=CLUSTER_CORR_N_PERM,
+                              exclude_last_cluster=False, unresponsive_labels=None,
+                              n_perm=CLUSTER_CORR_N_PERM,
                               seed=0, sd_floor=CLUSTER_CORR_SD_FLOOR,
                               quantile=CLUSTER_CORR_SIG_QUANTILE):
     """Build the scale-free tuning-vs-lesion comparison and its L1 supplement.
@@ -469,13 +548,17 @@ def _tuning_vs_lesion_summary(cluster_means, lesion_acc, control_raw, cluster_la
     task x period variances). lesion_acc: (T, C). control_raw: (T, C, R).
     cluster_labels: C labels in the shared column order.
 
-    Main comparison (`tuning_corr`, `lesion_profile_dissim`): the last
-    cluster is dropped first when requested (the unresponsive cluster of the
-    unnormalized clusterings), then clusters without a significant lesion
-    effect or with a constant profile on either side. Supplement (`l1`): the
-    former figure's tuning cosine similarity and effect L1 distance over the
-    same clusters minus only the optional last one, plus the summed effect
-    magnitude of each pair that explains the L1 distance.
+    Main comparison (`tuning_corr`, `lesion_profile_dissim`): the unresponsive
+    cluster is dropped first, then clusters without a significant lesion effect
+    or with a constant profile on either side. `unresponsive_labels` names that
+    class explicitly (a collection of labels, possibly empty when the run has
+    no unresponsive class); the older `exclude_last_cluster=True` drops the
+    last cluster and is kept for caches without the explicit label. The saved
+    `exclude_last_cluster` flag records that an unresponsive exclusion was
+    applied by either route. Supplement (`l1`): the former figure's tuning
+    cosine similarity and effect L1 distance over the same clusters minus only
+    the unresponsive one, plus the summed effect magnitude of each pair that
+    explains the L1 distance.
     """
     cluster_means = np.asarray(cluster_means, dtype=float)
     cluster_labels = list(cluster_labels)
@@ -490,7 +573,18 @@ def _tuning_vs_lesion_summary(cluster_means, lesion_acc, control_raw, cluster_la
     significance = _cluster_effect_significance(control_raw, scored["sd"], scored["z"],
                                                 quantile=quantile)
 
-    base = np.arange(n_clusters - 1 if exclude_last_cluster and n_clusters > 1 else n_clusters)
+    if unresponsive_labels is not None:
+        unresponsive = {str(label) for label in unresponsive_labels}
+        base = np.array([index for index in range(n_clusters)
+                         if str(cluster_labels[index]) not in unresponsive], dtype=int)
+        unresponsive_source = "explicit_label"
+    elif exclude_last_cluster and n_clusters > 1:
+        base = np.arange(n_clusters - 1)
+        unresponsive_source = "last_cluster"
+    else:
+        base = np.arange(n_clusters)
+        unresponsive_source = None
+    exclude_last_cluster = bool(exclude_last_cluster or unresponsive_labels is not None)
     effect_base = scored["effect"][:, base]
     means_base = cluster_means[:, base]
     tuning_cos = _cosine_similarity_matrix(means_base)
@@ -530,7 +624,8 @@ def _tuning_vs_lesion_summary(cluster_means, lesion_acc, control_raw, cluster_la
         "schema_version": CLUSTER_CORR_SCHEMA_VERSION,
         "x_definition": CLUSTER_CORR_X_DEFINITION,
         "y_definition": CLUSTER_CORR_Y_DEFINITION,
-        "exclude_last_cluster": bool(exclude_last_cluster),
+        "exclude_last_cluster": exclude_last_cluster,
+        "unresponsive_source": unresponsive_source,
         "cluster_labels": cluster_labels,
         "included_clusters": [cluster_labels[index] for index in keep],
         "excluded_clusters": excluded,
@@ -761,7 +856,7 @@ def main(seed, feature):
     results = load_lesion_pickle(pickle_name)
         
     # handle both old pickle names ("pre_cNone") and new ("pre_nolesion") after rename fix
-    baseline_keys = {"pre_cNone", "post_cNone", "pre_nolesion", "post_nolesion"}
+    baseline_keys = set(NEURON_BASELINE_KEYS)
     mod_lesion_results = results.get("mod_lesion", {})
     normalized_effects = {"schema_version": 1, "aname": aname,
                           "primary_modulation_mode": "zero_W", "entries": {}}
@@ -1085,7 +1180,15 @@ def main(seed, feature):
             }, _f)
         print(f"[causal-dep {vtag}] {n_sig}/{n_cells} significant cells "
               f"(BH-FDR q=0.05); saved map + pkl")
-        _causal_sig[vtag] = {"sig": sig, "cluster_names": cnames}
+        # Unresponsive classes, in the renamed ("i3"/"h21") cluster names, read
+        # from the lesion pickle; legacy pickles: last cluster of each side of
+        # the unnormalized variant.
+        unresponsive_names = {
+            name.replace("pre_c", "i").replace("post_c", "h")
+            for name in _unresponsive_condition_names(results[lesion_key],
+                                                      legacy_last=(vtag == "unnorm"))}
+        _causal_sig[vtag] = {"sig": sig, "cluster_names": cnames,
+                             "unresponsive_names": unresponsive_names}
         return E
 
     _causal_sig = {}   # reused by the task-specificity section below
@@ -1232,7 +1335,9 @@ def main(seed, feature):
     # SCREENING thresholds, not formal tests — a genuinely protective
     # cluster must show systematic improvement across tasks, not one cell.
     # ══════════════════════════════════════════════════════════════════
-    _N_EVAL_TRIALS = 200   # lesion.py's test_n_batch (not stored in the pickle)
+    # lesion.py's per-task trial count; pickles written before it was stored
+    # used 200.
+    _N_EVAL_TRIALS = int(results.get("test_n_batch", 200))
 
     for _pc_vtag, _pc_lesion, _pc_random in [
         ("norm", "lesion", "random_lesion"),
@@ -1918,7 +2023,10 @@ def main(seed, feature):
 
         share = np.full_like(E_zw, np.nan)
         share[sig_zw] = E_fm[sig_zw] / E_zw[sig_zw]              # sig ⇒ E_zw > 0
-        _mod_sig[_pd_type] = {"sig": sig_zw, "cluster_ids": list(_cids)}
+        _mod_sig[_pd_type] = {
+            "sig": sig_zw, "cluster_ids": list(_cids),
+            "unresponsive_label": _mod_unresponsive_label(
+                zw, legacy_last=("unnormalized" in _pd_type))}
 
         n_sig_pd = int(sig_zw.sum())
         type_tag = _pd_type.replace("modulation_all_", "").replace("_", "-")
@@ -2040,7 +2148,8 @@ def main(seed, feature):
         variant: "norm" or "unnorm"
         mod_type_key: e.g. "modulation_all_normalized"
         mod_lesion_mode: "zero_W" or "freeze_M"
-        cluster_info: neuron clustering pickle (needed to identify unresponsive clusters)
+        cluster_info: unused (the unresponsive classes are read from the OM
+            cache's recorded indices); kept for call compatibility
         """
         ckey = f"combined_lesion_{variant}"
         if ckey not in results or not results[ckey]:
@@ -2072,17 +2181,17 @@ def main(seed, feature):
         om_id_to_idx = {cid: idx for idx, cid in enumerate(all_choice_order)}
 
         # --- Identify unresponsive cluster indices (0-based) to exclude ---
-        # The overmembership om_stack uses fixed-k clusters. For unnormalized data,
-        # the unresponsive cluster is the last one (index n_in-1 / n_hid-1).
-        # For normalized: no unresponsive cluster exists.
-        # Modulation clusters enter below only when their ID is in the saved
-        # active OM population and their footprint has supported blocks.
-        skip_input = set()
-        skip_hidden = set()
-        if variant == "unnorm":
-            skip_input.add(n_in - 1)
-            skip_hidden.add(n_hid - 1)
-            print(f"[om_vs_lesion] excluding unresponsive: input idx={n_in-1}, hidden idx={n_hid-1}")
+        # Read from the OM cache's explicit unresponsive_{input,hidden}_index
+        # (legacy caches: last row/column of the unnormalized grids; none for
+        # normalized). Modulation clusters enter below only when their ID is in
+        # the saved active OM population and their footprint has supported blocks.
+        skip_input = {idx for idx in [_unresponsive_grid_index(ga, "input", variant)]
+                      if idx is not None}
+        skip_hidden = {idx for idx in [_unresponsive_grid_index(ga, "hidden", variant)]
+                       if idx is not None}
+        if skip_input or skip_hidden:
+            print(f"[om_vs_lesion] excluding unresponsive: input idx={sorted(skip_input)}, "
+                  f"hidden idx={sorted(skip_hidden)}")
 
         # --- Modulation lesion effect (random - cluster), per task ---
         mod_data = results["mod_lesion"][mod_result_key]
@@ -2230,11 +2339,10 @@ def main(seed, feature):
             n_hid = ga["n_hid"]
             om_id_to_idx = {cid: idx for idx, cid in enumerate(all_choice_order)}
 
-            skip_input = set()
-            skip_hidden = set()
-            if variant == "unnorm":
-                skip_input.add(n_in - 1)
-                skip_hidden.add(n_hid - 1)
+            skip_input = {idx for idx in [_unresponsive_grid_index(ga, "input", variant)]
+                          if idx is not None}
+            skip_hidden = {idx for idx in [_unresponsive_grid_index(ga, "hidden", variant)]
+                           if idx is not None}
 
             mod_data = results["mod_lesion"][mod_result_key]
             mod_baseline_keys_ = {"mod_nolesion"}
@@ -2476,8 +2584,8 @@ def main(seed, feature):
             return
         CE = (np.asarray(cdata["combined_random_accs"], float)
               - np.asarray(cdata["combined_accs"], float))       # (T, P, H)
-        sel_i = np.arange(n_in - 1 if variant == "unnorm" else n_in)
-        sel_h = np.arange(n_hid - 1 if variant == "unnorm" else n_hid)
+        sel_i = _indices_without(n_in, _unresponsive_grid_index(ga, "input", variant))
+        sel_h = _indices_without(n_hid, _unresponsive_grid_index(ga, "hidden", variant))
         CE_s = CE[:, sel_i][:, :, sel_h]                         # (T, P', H')
 
         mod_data = results["mod_lesion"][mod_result_key]
@@ -2655,21 +2763,24 @@ def main(seed, feature):
     # Significance masks: unnormalized input/hidden neuron clusters from the
     # causal-dependency block, var-weighted zero_W synapse clusters from the
     # plasticity-share block (both one-sided BH-FDR q=0.05 against control
-    # repeats). The unresponsive last cluster of each type is excluded.
+    # repeats). The unresponsive cluster of each type, identified by its
+    # recorded label, is excluded.
     # ══════════════════════════════════════════════════════════════════
     _spec_types = {}
     if "unnorm" in _causal_sig:
         _cs = _causal_sig["unnorm"]
         for side, prefix in (("input", "i"), ("hidden", "h")):
-            cols = [k for k, n in enumerate(_cs["cluster_names"]) if n.startswith(prefix)]
-            cols = cols[:-1]   # drop the unresponsive class (last per side)
+            # drop the unresponsive class, identified by name (see _causal_dependency)
+            cols = [k for k, n in enumerate(_cs["cluster_names"])
+                    if n.startswith(prefix) and n not in _cs["unresponsive_names"]]
             if len(cols) >= 2:
                 _spec_types[side] = {"sig": _cs["sig"][:, cols],
                                      "cluster_labels": [_cs["cluster_names"][k] for k in cols]}
     _spec_mod_key = "modulation_all_var_weighted_unnormalized"
     if _spec_mod_key in _mod_sig:
         _ms = _mod_sig[_spec_mod_key]
-        keep = list(range(len(_ms["cluster_ids"]) - 1))   # drop unresponsive last cluster
+        # drop the unresponsive synapse class, identified by its recorded label
+        keep = [k for k, cid in enumerate(_ms["cluster_ids"]) if cid != _ms["unresponsive_label"]]
         if len(keep) >= 2:
             _spec_types["modulation"] = {"sig": _ms["sig"][:, keep],
                                          "cluster_labels": [f"c{_ms['cluster_ids'][k]}" for k in keep]}
@@ -2777,13 +2888,16 @@ def main(seed, feature):
 
     # ── Cluster tuning similarity vs lesion-profile similarity (docstring #4) ──
     def plot_cluster_corr_vs_lesion(panels, savesuffix, aname, save_dir,
-                                    exclude_last_cluster=False):
+                                    exclude_last_cluster=False, unresponsive_labels=None):
         """5×N diagnostic figure and the paper-facing scatter cache.
 
         panels: ordered {name: {"cluster_means": (F, C), "lesion_acc": (T, C),
         "control_raw": (T, C, R), "cluster_labels": [C labels],
-        optional "mod_lesion_mode"}}. Every statistic is computed by
-        `_tuning_vs_lesion_summary`; this function only draws and saves.
+        optional "mod_lesion_mode"}}. `unresponsive_labels` (a collection of
+        cluster labels, or None) names the unresponsive class to drop in every
+        panel; `exclude_last_cluster` is the legacy positional rule. Every
+        statistic is computed by `_tuning_vs_lesion_summary`; this function
+        only draws and saves.
         Rows: tuning-correlation heatmap, lesion-profile dissimilarity heatmap
         (both over the compared clusters), the scale-free scatter with its
         Spearman rho and label-permutation p, then the L1 supplement: tuning
@@ -2805,7 +2919,8 @@ def main(seed, feature):
             try:
                 summary = _tuning_vs_lesion_summary(
                     panel["cluster_means"], panel["lesion_acc"], panel["control_raw"],
-                    panel["cluster_labels"], exclude_last_cluster=exclude_last_cluster)
+                    panel["cluster_labels"], exclude_last_cluster=exclude_last_cluster,
+                    unresponsive_labels=unresponsive_labels)
             except ValueError as error:
                 print(f"[cluster_corr_vs_lesion] {name}: {error}; panel skipped")
                 for row in range(5):
@@ -2960,7 +3075,8 @@ def main(seed, feature):
                 _neuron_lesion_panels("lesion_unnorm", "random_lesion_unnorm",
                                       cluster_means_unnorm),
                 "normalized_lesion_effect_unnorm", aname, save_dir,
-                exclude_last_cluster=True,
+                unresponsive_labels=_unresponsive_condition_names(
+                    results["lesion_unnorm"], legacy_last=True),
             )
 
     # --- Modulation variant ---
@@ -3011,6 +3127,14 @@ def main(seed, feature):
                 type_tag = mod_type_key.replace("modulation_all_", "").replace("_", "-")
                 mode_tag = mode.replace("_", "-")
                 mod_name = f"{type_tag}_{mode_tag}"
+                # Unnormalized variants carry an unresponsive synapse class; its
+                # recorded label (legacy pickles: the last cluster) is dropped.
+                # Normalized variants have none and keep every cluster.
+                if "unnormalized" in mod_type_key:
+                    _unres_mod = _mod_unresponsive_label(mod_data, legacy_last=True)
+                    _unres_mod_labels = set() if _unres_mod is None else {f"mod_c{_unres_mod}"}
+                else:
+                    _unres_mod_labels = None
                 plot_cluster_corr_vs_lesion(
                     {mod_name: {
                         "cluster_means": cluster_means_mod,
@@ -3022,7 +3146,7 @@ def main(seed, feature):
                         "tuning_profile": _tuning_note,
                     }},
                     f"mod_lesion_effect_{type_tag}_{mode_tag}", aname, save_dir,
-                    exclude_last_cluster="unnormalized" in mod_type_key,
+                    unresponsive_labels=_unres_mod_labels,
                 )
 
     # ══════════════════════════════════════════════════════════════════
@@ -3038,7 +3162,7 @@ def main(seed, feature):
     # om_vs_lesion section above), the interaction strength is regressed
     # against each (input, hidden) block's PEAK synapse-cluster enrichment:
     # does anatomical co-location explain functional interaction? The
-    # 3+ GB cluster_info_mod pickle is deliberately NOT re-loaded here.
+    # large cluster_info_mod pickle is deliberately NOT re-loaded here.
     # ══════════════════════════════════════════════════════════════════
     try:
         _cim_for_interaction = cluster_info_mod
@@ -3147,11 +3271,11 @@ def main(seed, feature):
 
         om_reg = None
         if om_max is not None:
-            # For the unnorm variant the LAST input/hidden cluster is the
-            # unresponsive class (same convention as om_vs_lesion above) —
-            # excluded from the regression, kept in the heatmap.
-            _sel_i = np.arange(c_pre_n - 1 if vtag == "unnorm" else c_pre_n)
-            _sel_h = np.arange(c_post_n - 1 if vtag == "unnorm" else c_post_n)
+            # The unresponsive input/hidden class (recorded in the combined
+            # lesion entry; legacy pickles: last cluster of the unnorm variant)
+            # is excluded from the regression, kept in the heatmap.
+            _sel_i = _indices_without(c_pre_n, _combined_unresponsive_index(cdata, "pre", vtag))
+            _sel_h = _indices_without(c_post_n, _combined_unresponsive_index(cdata, "post", vtag))
             x = om_max[np.ix_(_sel_i, _sel_h)].ravel()
             y = I_avg[np.ix_(_sel_i, _sel_h)].ravel() * 100
             _sl, _ic, _r, _pv, _ = linregress(x, y)

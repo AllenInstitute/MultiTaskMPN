@@ -25,6 +25,11 @@ Experiments:
 4. Magnitude pruning — zero the lowest-magnitude fraction of W at increasing
    sparsity levels (0–99.9%) to assess weight redundancy.
 
+All experiments score the same per-task test set, generated once at the start
+(test_n_batch trials per task; the combined lesion uses the first
+combined_test_n_batch of them), so baselines and effects are comparable across
+experiments and no trials are regenerated inside the loops.
+
 Outputs:
   - Heatmaps of per-task accuracy under each lesion condition
   - lesion_prune_results_{aname}.pkl — full results dict for downstream
@@ -152,15 +157,28 @@ def main(seed, feature):
                    "input_unnormalized", "hidden_unnormalized"]
     for _base in _base_names:
         _fk_key = f"{_base}_k{FIXED_K}"
-        _fk_clusters = clustering.fixed_k_col_clusters(cluster_info[_base], FIXED_K)
+        _fk_clusters, _fk_unres_label = clustering.fixed_k_col_clusters(
+            cluster_info[_base], FIXED_K, return_unresponsive_label=True)
         cluster_info[_fk_key] = {
             "col_clusters": _fk_clusters,
             "row_clusters": cluster_info[_base]["row_clusters"],
             "tb_break_name": cluster_info[_base]["tb_break_name"],
             "cell_vars_rules_sorted_norm": cluster_info[_base]["cell_vars_rules_sorted_norm"],
             "result": cluster_info[_base]["result"],
+            # key of the unresponsive (silent-neuron) class in col_clusters, or
+            # None; carried into the results pickle so lesion_plot.py never has
+            # to assume the last cluster is the unresponsive one.
+            "unresponsive_label": _fk_unres_label,
         }
-        print(f"Derived {_fk_key}: {len(_fk_clusters)} clusters")
+        print(f"Derived {_fk_key}: {len(_fk_clusters)} clusters "
+              f"(unresponsive label: {_fk_unres_label})")
+
+    def _unresponsive_conditions(variant):
+        """Unresponsive-class labels and condition names for one neuron variant."""
+        labels = {"pre": cluster_info[f"input_{variant}"]["unresponsive_label"],
+                  "post": cluster_info[f"hidden_{variant}"]["unresponsive_label"]}
+        conditions = [f"{tag}_c{lab}" for tag, lab in labels.items() if lab is not None]
+        return labels, conditions
 
     _input_norm_key    = f"input_normalized_k{FIXED_K}"
     _hidden_norm_key   = f"hidden_normalized_k{FIXED_K}"
@@ -444,10 +462,33 @@ def main(seed, feature):
         f"{save_dir}/lesion_units_{aname}.png",
     )
     
-    # setup the evaluation dataset generator
+    # ── Shared per-task test sets ──
+    # One test set per task, generated once and reused by every experiment
+    # below (single-cluster, pruning, combined and modulation lesions), so all
+    # conditions of all experiments are scored on identical trials and the
+    # baselines are directly comparable across experiments. The combined
+    # lesion uses the first `combined_test_n_batch` trials of the same set.
     test_n_batch = 200
+    combined_test_n_batch = 100
     task_params_c['hp']['batch_size_train'] = test_n_batch
-    
+    test_sets = {}
+    for task in all_tasks:
+        test_data, _ = mpn_tasks.generate_trials_wrap(
+            task_params_c, test_n_batch, rules=[task],
+            mode_input="random_batch", device=device, verbose=False
+        )
+        test_sets[task] = tuple(test_data)   # (input, output, mask), each (B, T, ·)
+
+    def task_test_set(task, n_trials=None):
+        """(input, output, mask) of one task's shared test set, optionally its first n_trials."""
+        test_input, test_output, test_mask = test_sets[task]
+        if n_trials is None or n_trials >= test_input.shape[0]:
+            return test_input, test_output, test_mask
+        return test_input[:n_trials], test_output[:n_trials], test_mask[:n_trials]
+
+    print(f"Generated shared test sets: {len(test_sets)} tasks x {test_n_batch} trials "
+          f"(combined lesion uses the first {combined_test_n_batch})")
+
     # L2 pruning for W
     K_lst = [0.0, 10.0, 50.0, 90.0, 95.0, 98.0, 99.0, 99.90]
     sparsity_lst = [k / 100.0 for k in K_lst]
@@ -490,11 +531,7 @@ def main(seed, feature):
 
         for task in all_tasks:
             print(f"[{label}] Evaluating task: {task}")
-            test_data, _ = mpn_tasks.generate_trials_wrap(
-                task_params_c, test_n_batch, rules=[task],
-                mode_input="random_batch", device=device, verbose=False
-            )
-            test_input, test_output, test_mask = test_data
+            test_input, test_output, test_mask = task_test_set(task)
 
             ihaccs, ihrandomaccs, ihrandomaccs_raw = [], [], []
             # Per-task control cache (each task has its own test set); see the
@@ -561,11 +598,7 @@ def main(seed, feature):
     wtask_accs = []
     for task in all_tasks:
         print(f"[pruning] Evaluating task: {task}")
-        test_data, _ = mpn_tasks.generate_trials_wrap(
-            task_params_c, test_n_batch, rules=[task],
-            mode_input="random_batch", device=device, verbose=False
-        )
-        test_input, test_output, test_mask = test_data
+        test_input, test_output, test_mask = task_test_set(task)
 
         waccs = []
         for idx, W_pruned in enumerate(pruned_Ws):
@@ -633,10 +666,9 @@ def main(seed, feature):
 
     # ── Combined lesion: simultaneously lesion 1 input + 1 hidden cluster ──
     # Result shape per variant: (n_tasks, pre_n, post_n)
-    # Smaller batch than the single-cluster sweep: the pre_n × post_n grid
-    # multiplies forward passes, and per-cell noise averages out over the grid.
-    combined_test_n_batch = 100
-    task_params_c['hp']['batch_size_train'] = combined_test_n_batch
+    # Fewer trials than the single-cluster sweep (the first combined_test_n_batch
+    # of each task's shared test set): the pre_n × post_n grid multiplies
+    # forward passes, and per-cell noise averages out over the grid.
     _combined_cache = {}
     for variant, pre_n_v, post_n_v in [
         (VARIANT_NORM,   pre_n,        post_n),
@@ -658,11 +690,7 @@ def main(seed, feature):
 
         for ti, task in enumerate(all_tasks):
             print(f"  [{variant}] task: {task}")
-            test_data, _ = mpn_tasks.generate_trials_wrap(
-                task_params_c, combined_test_n_batch, rules=[task],
-                mode_input="random_batch", device=device, verbose=False
-            )
-            test_input, test_output, test_mask = test_data
+            test_input, test_output, test_mask = task_test_set(task, combined_test_n_batch)
 
             # baseline (no lesion)
             with torch.inference_mode():
@@ -746,6 +774,7 @@ def main(seed, feature):
 
         saved_dict_key = f"combined_lesion_{vtag}"
         # store temporarily; will be added to saved_dict later
+        _unres_labels_v, _ = _unresponsive_conditions(variant)
         _combined_cache[saved_dict_key] = {
             "combined_accs": combined_accs,
             "combined_random_accs": combined_random_accs,
@@ -756,10 +785,12 @@ def main(seed, feature):
             "post_n": post_n_v,
             "variant": variant,
             "test_n_batch": combined_test_n_batch,
+            "test_set": f"first {combined_test_n_batch} trials of the shared per-task test set",
+            # 1-based cluster labels of the unresponsive input / hidden class
+            # (grid index = label - 1), or None
+            "unresponsive_pre_label": _unres_labels_v["pre"],
+            "unresponsive_post_label": _unres_labels_v["post"],
         }
-
-    # Restore the full evaluation batch for the modulation lesion below.
-    task_params_c['hp']['batch_size_train'] = test_n_batch
 
     # Modulation lesion — loop over all clustering types and both lesion modes.
     # "zero_W": zero the static weight W at cluster synapses (original method).
@@ -774,21 +805,33 @@ def main(seed, feature):
         mod_result_cur = cluster_info_mod[mod_type_key]["result_all_lst"][mod_G_idx_cur]
         # Use fixed-k labels if available; if FIXED_K is below k_min, use smallest available k
         if "col_labels_by_k" in mod_result_cur and FIXED_K in mod_result_cur["col_labels_by_k"]:
+            mod_k_used = FIXED_K
             mod_col_labels_cur = mod_result_cur["col_labels_by_k"][FIXED_K]
             print(f"  Using fixed k={FIXED_K} for modulation clustering")
         elif "col_labels_by_k" in mod_result_cur and mod_result_cur["col_labels_by_k"]:
             _available_ks = sorted(mod_result_cur["col_labels_by_k"].keys())
-            _fallback_k = _available_ks[0]
-            mod_col_labels_cur = mod_result_cur["col_labels_by_k"][_fallback_k]
-            print(f"  Fixed k={FIXED_K} not in col_labels_by_k (range [{_available_ks[0]},{_available_ks[-1]}]); "
-                  f"using smallest available k={_fallback_k}")
+            mod_k_used = _available_ks[0]
+            mod_col_labels_cur = mod_result_cur["col_labels_by_k"][mod_k_used]
+            print(f"  Fixed k={FIXED_K} not in col_labels_by_k (saved k: {_available_ks}); "
+                  f"using smallest saved k={mod_k_used}")
         else:
+            mod_k_used = mod_result_cur["col_k"]
             mod_col_labels_cur = mod_result_cur["col_labels"]
-            print(f"  col_labels_by_k not available, using optimal k={mod_result_cur['col_k']}")
+            print(f"  col_labels_by_k not available, using optimal k={mod_k_used}")
+        mod_col_labels_cur = np.asarray(mod_col_labels_cur)
+        # Label of the unresponsive synapse class in these labels (None if the
+        # clustering flagged no synapse). Read from the saved mask; analysis
+        # pickles written before the mask existed use the k + 1 convention of
+        # the k the labels were cut at.
+        _mod_unres_mask = mod_result_cur.get("col_unresponsive_mask")
+        if _mod_unres_mask is None:
+            _mod_unres_mask = mod_col_labels_cur == (int(mod_k_used) + 1)
+        mod_unres_label_cur = clustering.unresponsive_label(mod_col_labels_cur, _mod_unres_mask)
         mod_col_clusters_cur = {}
         for flat_idx, label in enumerate(mod_col_labels_cur):
             mod_col_clusters_cur.setdefault(int(label), []).append(flat_idx)
-        print(f"  {len(mod_col_clusters_cur)} modulation clusters")
+        print(f"  {len(mod_col_clusters_cur)} modulation clusters "
+              f"(unresponsive label: {mod_unres_label_cur})")
 
         all_comb_mod = [("mod", None)] + [("mod", i) for i in sorted(mod_col_clusters_cur.keys())]
         all_comb_names_mod = ["mod_nolesion"] + [f"mod_c{i}" for i in sorted(mod_col_clusters_cur.keys())]
@@ -831,11 +874,7 @@ def main(seed, feature):
 
             for task in all_tasks:
                 print(f"    Evaluating task: {task}")
-                test_data, _ = mpn_tasks.generate_trials_wrap(
-                    task_params_c, test_n_batch, rules=[task],
-                    mode_input="random_batch", device=device, verbose=False
-                )
-                test_input, test_output, test_mask = test_data
+                test_input, test_output, test_mask = task_test_set(task)
 
                 modaccs = []
                 modrandomaccs = []
@@ -912,18 +951,29 @@ def main(seed, feature):
                 "mod_G_idx": mod_G_idx_cur,
                 "mod_col_clusters": mod_col_clusters_cur,
                 "mod_lesion_mode": mod_lesion_mode,
+                # key of the unresponsive synapse class in mod_col_clusters
+                # (condition f"mod_c{label}"), or None
+                "unresponsive_label": mod_unres_label_cur,
+                "mod_k": int(mod_k_used),
             }
 
     # Ordering note: corr/l1_dist row/col i → cluster i+1.
     # ihtask_accs columns: [0]=pre_nolesion, [1..pre_n]=lesion pre cluster 1..pre_n,
     #                       [pre_n+1]=post_nolesion, [pre_n+2..end]=lesion post cluster 1..post_n.
     # So ihtask_accs[:, 1:pre_n+1] aligns with corr_matrices["input"] and l1_dist_matrices["input"].
+    _unres_labels_norm, _unres_conditions_norm = _unresponsive_conditions(VARIANT_NORM)
+    _unres_labels_unnorm, _unres_conditions_unnorm = _unresponsive_conditions(VARIANT_UNNORM)
     saved_dict = {
         "lesion": {
             "ihtask_accs": ihtask_accs,
             "all_comb_names_lesion": all_comb_names_lesion,
             "all_tasks": all_tasks,
             "lesion_units": lesion_units_norm,
+            # {"pre": label|None, "post": label|None} and the matching
+            # condition names (e.g. "post_c21"); the unresponsive class is
+            # identified by these, never by position.
+            "unresponsive_labels": _unres_labels_norm,
+            "unresponsive_conditions": _unres_conditions_norm,
         },
         "prune": {
             "wtask_accs": wtask_accs,
@@ -941,6 +991,8 @@ def main(seed, feature):
             "all_comb_names_lesion": all_comb_names_lesion_unnorm,
             "all_tasks": all_tasks,
             "lesion_units": lesion_units_unnorm,
+            "unresponsive_labels": _unres_labels_unnorm,
+            "unresponsive_conditions": _unres_conditions_unnorm,
         },
         "random_lesion_unnorm": {
             "ihrandomtask_accs": ihrandomtask_accs_unnorm,
@@ -958,6 +1010,10 @@ def main(seed, feature):
         },
         "fixed_k": FIXED_K,
         "repeat_num": repeat_num,
+        # Every experiment above scored the same per-task trials (the combined
+        # lesion the first combined_test_n_batch of them).
+        "test_n_batch": test_n_batch,
+        "shared_test_set": True,
     }
 
     with open(f"{save_dir}/lesion_prune_results_{aname}.pkl", "wb") as f:

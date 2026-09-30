@@ -29,8 +29,16 @@ files by aname — but the two are computed from different sources and would
 diverge for a run saved with a shorter addon_name:
   - figures (every savefig prints its path)
   - cluster_info_{savefigure_name_base}.pkl     — neuron cluster assignments,
-    consumed by the lesion experiments
-  - cluster_info_mod_{savefigure_name_base}.pkl — modulation synapse clusters
+    consumed by the lesion experiments; each entry records the unresponsive
+    (silent-neuron) class explicitly as `unresponsive_label` (None if empty)
+    and `unresponsive_neurons`
+  - cluster_info_mod_{savefigure_name_base}.pkl — modulation synapse clusters;
+    the OM caches carry `unresponsive_{input,hidden}_index` and
+    `unresponsive_mod_label`, and every clustering result carries
+    `col_unresponsive_mask` (see core/clustering.py). The saved results keep
+    `col_labels_by_k` only at FIXED_K_OM and the tolerance-selected k
+    (`clustering.prune_labels_by_k`); the between-modulation metric sweep
+    over other k runs in memory before saving.
 
 Sibling-task DelayDM/DMC fixed-point geometry is intentionally separate in
 ``sibling_delay_analysis.py``, which has its own CLI. No CLI entry point here:
@@ -511,17 +519,25 @@ def main(seed, feature, clean=True):
     )
 
     if reevaluate:
-        test_n_batch = 50 # number of batches for each task 
+        test_n_batch = 50 # number of batches for each task
         task_params_c['hp']['batch_size_train'] = test_n_batch
-            
+
+        # Trials for the whole analysis (activity recording, task variance,
+        # clustering). mode_input="random" is required: the per-period variance
+        # below slices every trial of a rule with that rule's single
+        # rules_epochs boundaries, so all trials of a rule must share one
+        # timing. The timing itself is drawn from the same "normal" period
+        # ranges the network was trained and lesioned with (long_all=False);
+        # long_all=True, used earlier, fixed every period at the top of its
+        # training range instead.
         test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(
-            task_params_c, 
-            test_n_batch, 
+            task_params_c,
+            test_n_batch,
             rules=task_params_c['rules'],
-            mode_input="random", 
-            device="cpu", 
+            mode_input="random",
+            device="cpu",
             verbose=False,
-            long_all=True
+            long_all=False
         )
         
         test_input, test_output, test_mask = test_data
@@ -558,11 +574,12 @@ def main(seed, feature, clean=True):
         acc, _ = model.compute_acc(net_out.to(device), test_output, test_mask, test_input, isvalid=True, mode=model.acc_measure)
         print(f"Accuracy: {acc}")
 
-        # ── 每个任务单独计算精度并绘制柱状图 ────────────────────────────────────
-        # 在进行后续聚类分析之前，先快速直观地汇报网络在每个任务上的表现，
-        # 便于判断网络训练是否收敛，以及哪些任务相对困难。
-        # 这里复用已有的 net_out / test_output / test_mask / test_input（均在 device 上），
-        # 通过 helper.find_task 识别每条 trial 属于哪个 rule，再逐 rule 计算精度。
+        # ── Per-task accuracy bar chart ──────────────────────────────────────────
+        # Before the clustering analyses, report the network's accuracy on every
+        # task so it is easy to see whether training converged and which tasks
+        # are relatively hard. Reuses the net_out / test_output / test_mask /
+        # test_input already on `device`; helper.find_task identifies each
+        # trial's rule, then accuracy is computed rule by rule.
         _test_task_tmp = np.array([
             int(c) for c in helper.find_task(task_params, test_input.detach().cpu().numpy(), 0)
         ]).flatten()
@@ -1182,13 +1199,21 @@ def main(seed, feature, clean=True):
             # registration
             col_clusters_all[clustering_save_name] = col_clusters
             
+            # The unresponsive class (silent neurons, label col_tol_k + 1) is
+            # recorded explicitly so downstream readers never have to assume it
+            # is the last cluster; None when no neuron was flagged.
+            unresponsive_label = clustering.unresponsive_label_from_result(result, "col")
             cluster_info_save[clustering_save_name] = {
                 "col_clusters": col_clusters,
                 "row_clusters": row_clusters,
                 "tb_break_name": tb_break_name,
                 "cell_vars_rules_sorted_norm": cell_vars_rules_sorted_norm,
                 "result": result,
+                "unresponsive_label": unresponsive_label,
+                "unresponsive_neurons": np.where(result["col_unresponsive_mask"])[0],
             }
+            print(f"  unresponsive {clustering_name} neurons: "
+                  f"{int(result['col_unresponsive_mask'].sum())} (label {unresponsive_label})")
 
             # plot the optimization score as a function of number of clustering
             # also plot the indicator for the optimal number of cluster (and with tolerance version)
@@ -2197,13 +2222,21 @@ def main(seed, feature, clean=True):
                 # iteration happened to run last.
                 _active_by_mode = {}
 
+                # Stage 1 (shared by both exclusion modes): the unresponsive
+                # modulation cluster. Its label (col_k + 1 when present) is read
+                # from the saved mask; None means no unresponsive synapses. The
+                # same synapses are unresponsive at every k, so this mask also
+                # applies to the fixed-k labels used further down.
+                _unres_mod_label = clustering.unresponsive_label_from_result(result_all, "col")
+                _active_mod_mask = (np.ones(col_all.size, dtype=bool) if _unres_mod_label is None
+                                    else col_all != _unres_mod_label)
+
                 for _excl_mode in _exclusion_modes:
                     print(f"  --- Exclusion mode: {_excl_mode} ---")
 
-                    # Stage 1: exclude the unresponsive modulation cluster (label = col_k + 1).
-                    # flat_idx preserves original positions so post=i//M and pre=i%M stay correct.
-                    _unres_mod_label = result_all["col_k"] + 1
-                    _active_mod_mask = col_all != _unres_mod_label
+                    # Stage 1: drop the unresponsive modulation cluster. flat_idx
+                    # preserves original positions so post=i//M and pre=i%M stay
+                    # correct.
                     _col_all_active  = col_all[_active_mod_mask]
                     _flat_idx_active = np.where(_active_mod_mask)[0]
                     _n_drop_unres_mod = int((~_active_mod_mask).sum())
@@ -2219,10 +2252,8 @@ def main(seed, feature, clean=True):
                     _n_unres_input_neurons = 0
                     _n_unres_hidden_neurons = 0
                     if _n_drop_unres_mod > 0 and not clustering_normalize:
-                        _input_col_k_um  = cluster_info_save["input_unnormalized"]["result"]["col_tol_k"]
-                        _hidden_col_k_um = cluster_info_save["hidden_unnormalized"]["result"]["col_tol_k"]
-                        _unres_input_um  = set(cluster_input.get(_input_col_k_um  + 1, []))
-                        _unres_hidden_um = set(cluster_hidden.get(_hidden_col_k_um + 1, []))
+                        _unres_input_um  = set(cluster_info_save["input_unnormalized"]["unresponsive_neurons"].tolist())
+                        _unres_hidden_um = set(cluster_info_save["hidden_unnormalized"]["unresponsive_neurons"].tolist())
                         _n_unres_input_neurons = len(_unres_input_um)
                         _n_unres_hidden_neurons = len(_unres_hidden_um)
                         _flat_unres_mod  = np.where(~_active_mod_mask)[0]
@@ -2246,10 +2277,8 @@ def main(seed, feature, clean=True):
                     _n_drop_post_only = 0
                     _n_drop_both      = 0
                     if _excl_mode == "mod_and_endpoint" and not clustering_normalize:
-                        _input_col_k  = cluster_info_save["input_unnormalized"]["result"]["col_tol_k"]
-                        _hidden_col_k = cluster_info_save["hidden_unnormalized"]["result"]["col_tol_k"]
-                        _unres_input_neurons  = set(cluster_input.get(_input_col_k  + 1, []))
-                        _unres_hidden_neurons = set(cluster_hidden.get(_hidden_col_k + 1, []))
+                        _unres_input_neurons  = set(cluster_info_save["input_unnormalized"]["unresponsive_neurons"].tolist())
+                        _unres_hidden_neurons = set(cluster_info_save["hidden_unnormalized"]["unresponsive_neurons"].tolist())
 
                         if _unres_input_neurons or _unres_hidden_neurons:
                             # modulation_W is (post, pre); C-order decode by pre_num
@@ -2366,8 +2395,10 @@ def main(seed, feature, clean=True):
                 # ── Fixed-k prepost_belonging (k=FIXED_K_OM for input, hidden, modulation) ──
                 _ppb_input_key = "input_normalized" if clustering_normalize else "input_unnormalized"
                 _ppb_hidden_key = "hidden_normalized" if clustering_normalize else "hidden_unnormalized"
-                _ppb_fk_input = _fixed_k_col_clusters(cluster_info_save[_ppb_input_key], FIXED_K_OM)
-                _ppb_fk_hidden = _fixed_k_col_clusters(cluster_info_save[_ppb_hidden_key], FIXED_K_OM)
+                _ppb_fk_input, _ppb_fk_input_unres = _fixed_k_col_clusters(
+                    cluster_info_save[_ppb_input_key], FIXED_K_OM, return_unresponsive_label=True)
+                _ppb_fk_hidden, _ppb_fk_hidden_unres = _fixed_k_col_clusters(
+                    cluster_info_save[_ppb_hidden_key], FIXED_K_OM, return_unresponsive_label=True)
                 _ppb_fk_input = dict(sorted(_ppb_fk_input.items()))
                 _ppb_fk_hidden = dict(sorted(_ppb_fk_hidden.items()))
 
@@ -2382,9 +2413,9 @@ def main(seed, feature, clean=True):
                     _ppb_fk_mod_labels = None
 
                 if _ppb_fk_mod_labels is not None:
-                    # Exclude unresponsive modulation cluster (mod_only mode)
-                    _ppb_unres_label = result_all["col_k"] + 1
-                    _ppb_active_mask = col_all != _ppb_unres_label
+                    # Exclude the unresponsive modulation cluster (mod_only mode)
+                    # with the shared stage-1 mask computed above.
+                    _ppb_active_mask = _active_mod_mask
                     _ppb_fk_col_active = _ppb_fk_mod_labels[_ppb_active_mask]
                     _ppb_fk_flat_idx = np.where(_ppb_active_mask)[0]
 
@@ -2425,6 +2456,8 @@ def main(seed, feature, clean=True):
                         "N_cluster": _ppb_fk_N_cluster,
                         "n_pre_clusters": len(_ppb_fk_input),
                         "n_post_clusters": len(_ppb_fk_hidden),
+                        "unresponsive_pre_label": _ppb_fk_input_unres,
+                        "unresponsive_post_label": _ppb_fk_hidden_unres,
                         "bar_all_lst": [np.array(b) for b in _ppb_fk_bar_all],
                         "bar_all_ctrl_lst": [np.array(b) for b in _ppb_fk_bar_ctrl],
                         "bar_name_lst": _ppb_fk_bar_names,
@@ -2450,6 +2483,11 @@ def main(seed, feature, clean=True):
                     _col_all_active, _flat_idx_active = _active_by_mode[_om_mode]
                     print(f"    [OM] population: {_om_mode} "
                           f"({_col_all_active.size} surviving synapses)")
+                    # Neuron clusterings the OM grids are built on (optimal k here,
+                    # fixed k below); their unresponsive labels are recorded in the
+                    # OM caches.
+                    _input_base_om_name = "input_normalized" if clustering_normalize else "input_unnormalized"
+                    _hidden_base_om_name = "hidden_normalized" if clustering_normalize else "hidden_unnormalized"
                     all_choice_order_dict = helper.value_counts_desc(_col_all_active)
                     all_choice_order = list(all_choice_order_dict.keys())
 
@@ -2529,6 +2567,12 @@ def main(seed, feature, clean=True):
                     om_stack = np.stack(over_membership_lst)           # (N_cls, n_in, n_hid)
                     N_cls = len(over_membership_lst)
 
+                    # 0-based grid index of the unresponsive input / hidden class
+                    # (cluster keys are contiguous 1..n, so index = label - 1), or
+                    # None when that clustering flagged no neuron. Consumers use
+                    # these instead of assuming the last row / column.
+                    _input_unres_label = cluster_info_save[_input_base_om_name]["unresponsive_label"]
+                    _hidden_unres_label = cluster_info_save[_hidden_base_om_name]["unresponsive_label"]
                     global_assignment_cache = {
                         "om_stack": om_stack,
                         "all_choice_order": all_choice_order,
@@ -2539,15 +2583,22 @@ def main(seed, feature, clean=True):
                         # consumers mask blocks whose expected counts are too
                         # small for a stable OM ratio.
                         "n_active_block": n_active_block,
+                        "unresponsive_input_index": (None if _input_unres_label is None
+                                                     else int(_input_unres_label) - 1),
+                        "unresponsive_hidden_index": (None if _hidden_unres_label is None
+                                                      else int(_hidden_unres_label) - 1),
+                        # The unresponsive synapse class itself is not an OM row
+                        # (it is excluded from the population above).
+                        "unresponsive_mod_label": _unres_mod_label,
                     }
 
                     # ── Fixed-k overmembership (for lesion_plot.py) ──
                     # Recompute overmembership using FIXED_K_OM for input, hidden,
                     # and modulation clusters so it aligns with the fixed-k lesion.
-                    _input_base_om = "input_normalized" if clustering_normalize else "input_unnormalized"
-                    _hidden_base_om = "hidden_normalized" if clustering_normalize else "hidden_unnormalized"
-                    _fk_input = _fixed_k_col_clusters(cluster_info_save[_input_base_om], FIXED_K_OM)
-                    _fk_hidden = _fixed_k_col_clusters(cluster_info_save[_hidden_base_om], FIXED_K_OM)
+                    _fk_input, _fk_input_unres = _fixed_k_col_clusters(
+                        cluster_info_save[_input_base_om_name], FIXED_K_OM, return_unresponsive_label=True)
+                    _fk_hidden, _fk_hidden_unres = _fixed_k_col_clusters(
+                        cluster_info_save[_hidden_base_om_name], FIXED_K_OM, return_unresponsive_label=True)
                     _fk_n_in = len(_fk_input)
                     _fk_n_hid = len(_fk_hidden)
 
@@ -2608,6 +2659,13 @@ def main(seed, feature, clean=True):
                             "n_hid": _fk_n_hid,
                             "fixed_k": FIXED_K_OM,
                             "n_active_block": _fk_n_active_block,
+                            # explicit unresponsive classes of this fixed-k grid
+                            "unresponsive_input_index": (None if _fk_input_unres is None
+                                                         else int(_fk_input_unres) - 1),
+                            "unresponsive_hidden_index": (None if _fk_hidden_unres is None
+                                                          else int(_fk_hidden_unres) - 1),
+                            "unresponsive_mod_label": clustering.unresponsive_label(
+                                _fk_mod_labels_full, ~_active_mod_mask),
                         }
                         print(f"    [fixed-k OM] computed: {len(_fk_mod_order)} mod clusters × "
                               f"{_fk_n_in} input × {_fk_n_hid} hidden (k={FIXED_K_OM})")
@@ -3463,10 +3521,19 @@ def main(seed, feature, clean=True):
                 fig.savefig(f"{save_dir}/{clustering_name}_between_modulation_{savefigure_name}.png", dpi=300)
                 plt.close(fig)
 
+            # Save only the per-k label arrays that are read back: the fixed
+            # lesion k (FIXED_K_OM) and each result's tolerance-selected k
+            # (whose labels equal `col_labels`). The full k range was used
+            # above (between-modulation metrics) and is not needed downstream;
+            # keeping it made the pickle several GB (one 90,000-synapse array
+            # per candidate k, up to k = G = 1000).
+            def _prune_saved(result):
+                return clustering.prune_labels_by_k(result, {FIXED_K_OM, int(result["col_k"])})
+
             cluster_info_save_mod[clustering_save_name] = {
-                "result_pre": result_pre,
-                "result_post": result_post,
-                "result_all_lst": result_all_lst,
+                "result_pre": _prune_saved(result_pre),
+                "result_post": _prune_saved(result_post),
+                "result_all_lst": [_prune_saved(r) for r in result_all_lst],
                 "result_all_name_lst": result_all_name_lst,
                 "tb_break_name": tb_break_name,
                 "cell_vars_rules_sorted_norm": cell_vars_rules_sorted_norm,
@@ -3475,6 +3542,12 @@ def main(seed, feature, clean=True):
                 # (n_post, n_pre) of the plastic layer — lets consumers decode
                 # flat synapse indices without assuming a square matrix.
                 "mod_shape": (post_num, pre_num),
+                # Per G-grouping (same order as result_all_lst): label of the
+                # unresponsive synapse class in that grouping's tolerance-k
+                # labels, or None. Each result also carries
+                # col_unresponsive_mask / col_unresponsive_label_by_k for other k.
+                "unresponsive_label_all_lst": [
+                    clustering.unresponsive_label_from_result(r, "col") for r in result_all_lst],
             }
 
         # Free the reference to the large source array for this iteration
