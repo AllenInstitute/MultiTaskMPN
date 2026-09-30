@@ -111,6 +111,22 @@ def labels_at_k(Z, k):
     t = np.nextafter(t_low, t_high)     # just above t_low, still below t_high
     return fcluster(Z, t, criterion="distance")
 
+def unresponsive_row_mask(data, norm_frac):
+    """Rows whose mean |value| is below `norm_frac` times the largest row mean |value|.
+
+    The magnitude is taken elementwise BEFORE averaging, so a row that is
+    strongly negative throughout (e.g. a synapse with W < 0 under the signed
+    W*Var(M) feature) counts as responsive. For non-negative data this equals
+    the plain row mean, so the variance-feature clusterings are unchanged. An
+    earlier version used the signed row mean, which silently classified every
+    negative-W synapse of the var_weighted modulation clustering as
+    unresponsive.
+    """
+    magnitude = np.abs(np.asarray(data, dtype=float)).mean(axis=1)
+    max_magnitude = magnitude.max() if magnitude.size and magnitude.max() > 0 else 1.0
+    return magnitude < norm_frac * max_magnitude
+
+
 def fixed_k_col_clusters(ci_entry, fk):
     """Re-cut a saved column dendrogram at exactly `fk` clusters.
 
@@ -128,8 +144,8 @@ def fixed_k_col_clusters(ci_entry, fk):
     to 1..K here; downstream `range(1, n + 1)` lookups and `label - 1` 0-based
     indexing rely on this and must not be "fixed" locally in the callers.
 
-    Single shared implementation for multiple_task_analysis.py, leison.py and
-    leison_plot.py; do not copy it back into those scripts.
+    Single shared implementation for multiple_task_analysis.py, lesion.py and
+    lesion_plot.py; do not copy it back into those scripts.
     """
     res = ci_entry["result"]
     tol_labels = np.asarray(res["col_tol_labels"])
@@ -273,8 +289,9 @@ def _hierarchical_clustering_repeat(
     # ------------------------------------------------------------------
     # Unresponsive row detection (active for all metrics).
     #
-    # Rows whose L2 norm is < unresponsive_norm_frac * max_norm are
-    # considered "unresponsive" (silent neuron or silent task period).
+    # Rows whose mean |value| is < unresponsive_norm_frac * the largest row
+    # mean |value| are considered "unresponsive" (silent neuron or silent task
+    # period); see unresponsive_row_mask.
     # For cosine/correlation metrics this is essential because the
     # distance is undefined for zero vectors. For Euclidean/Ward it is
     # also beneficial: near-zero rows form a trivial cluster that can
@@ -287,16 +304,13 @@ def _hierarchical_clustering_repeat(
     if skip_unresponsive_detection:
         unresponsive_mask = np.zeros(n_obs, dtype=bool)
     else:
-        row_means = data.mean(axis=1)
-        max_mean  = row_means.max() if row_means.max() > 0 else 1.0
-        unresponsive_mask = row_means < unresponsive_norm_frac * max_mean
+        unresponsive_mask = unresponsive_row_mask(data, unresponsive_norm_frac)
 
     n_unresponsive = int(unresponsive_mask.sum())
     if n_unresponsive > 0:
         warnings.warn(
             f"{n_unresponsive} unresponsive row(s) detected "
-            f"(mean < {unresponsive_norm_frac} * max_mean = "
-            f"{unresponsive_norm_frac * max_mean:.3g}); "
+            f"(mean |value| < {unresponsive_norm_frac} * max); "
             f"excluding from clustering and assigning to dedicated cluster (label = k+1).",
             RuntimeWarning,
             stacklevel=3,
@@ -869,23 +883,21 @@ def _hierarchical_clustering_forgroup(
 
     # ------------------------------------------------------------------
     # Unresponsive observation detection.
-    # Rows whose L2 norm is < unresponsive_norm_frac * max_norm are
-    # excluded from clustering.  They are assigned label k+1 and appended
+    # Rows whose mean |value| is < unresponsive_norm_frac * the largest row
+    # mean |value| (unresponsive_row_mask) are excluded from clustering.  They
+    # are assigned label k+1 and appended
     # at the end of leaf_order so they form a contiguous block in heatmaps.
     # ------------------------------------------------------------------
     if skip_unresponsive_detection:
         unresponsive_mask = np.zeros(n_obs, dtype=bool)
     else:
-        row_means = data.mean(axis=1)
-        max_mean  = row_means.max() if row_means.max() > 0 else 1.0
-        unresponsive_mask = row_means < unresponsive_norm_frac * max_mean
+        unresponsive_mask = unresponsive_row_mask(data, unresponsive_norm_frac)
 
     n_unresponsive = int(unresponsive_mask.sum())
     if n_unresponsive > 0:
         warnings.warn(
             f"{n_unresponsive} unresponsive observation(s) detected "
-            f"(mean < {unresponsive_norm_frac} * max_mean = "
-            f"{unresponsive_norm_frac * max_mean:.3g}); "
+            f"(mean |value| < {unresponsive_norm_frac} * max); "
             f"excluding from clustering and assigning to dedicated cluster (label = k+1).",
             RuntimeWarning,
             stacklevel=3,

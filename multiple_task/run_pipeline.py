@@ -4,8 +4,8 @@ Run the full analysis pipeline for each experiment:
             explicitly with --families
   1. multiple_task_analysis  — weight structure and clustering (produces the
      cluster_info pickles steps 2-3 need)
-  2. leison                  — lesion & pruning experiments
-  3. leison_plot             — normalized lesion effect plots
+  2. lesion                  — lesion & pruning experiments
+  3. lesion_plot             — normalized lesion effect plots
 """
 import re
 import time
@@ -15,8 +15,8 @@ import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 from run_logging import tee_output
 import multiple_task_analysis
 import sibling_delay_analysis
-import leison
-import leison_plot
+import lesion
+import lesion_plot
 
 
 def run_pipeline(seed, feature, families=(), sibling_method=None):
@@ -40,17 +40,17 @@ def run_pipeline(seed, feature, families=(), sibling_method=None):
     cluster_path = Path(f"./multiple_tasks_analysis/{aname}/cluster_info_{aname}.pkl")
     cluster_path_mod = Path(f"./multiple_tasks_analysis/{aname}/cluster_info_mod_{aname}.pkl")
     if not cluster_path.exists() or not cluster_path_mod.exists():
-        print("    Skipping leison steps: cluster files not found")
+        print("    Skipping lesion steps: cluster files not found")
         return
 
-    print("\n--- Step 2/3: leison ---")
+    print("\n--- Step 2/3: lesion ---")
     t2 = time.time()
-    leison.main(seed, feature)
+    lesion.main(seed, feature)
     print(f"    done ({time.time() - t2:.1f}s)")
 
-    print("\n--- Step 3/3: leison_plot ---")
+    print("\n--- Step 3/3: lesion_plot ---")
     t3 = time.time()
-    leison_plot.main(seed, feature)
+    lesion_plot.main(seed, feature)
     print(f"    done ({time.time() - t3:.1f}s)")
 
     print(f"\n  Pipeline complete: {aname} ({time.time() - t0:.1f}s total)")

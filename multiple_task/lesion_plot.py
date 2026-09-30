@@ -1,30 +1,46 @@
 """
 Post-processing and visualization of lesion experiment results.
 
-Reads the raw lesion pickle produced by leison.py and computes normalized
+Reads the raw lesion pickle produced by lesion.py and computes normalized
 effects (random_accuracy - cluster_accuracy) to identify which neuron or
 synapse clusters are selectively important for specific tasks. Produces:
 
-1. Normalized lesion heatmaps — (cluster × task) matrices showing how much
+1. Normalized lesion heatmaps — (task × cluster) matrices showing how much
    each cluster lesion impairs each task beyond the random-lesion baseline.
 2. Combined heatmaps — side-by-side zero_W vs freeze_M modulation lesions
-   with shared color scale, revealing whether a synapse cluster's contribution
-   comes from static connectivity or dynamic plasticity.
+    with shared color scale, comparing removal of selected connections (zero_W)
+    with freezing their M at its initial value while preserving W (freeze_M).
 3. Violin plots — distribution of normalized effect across tasks for each
-   cluster, highlighting clusters with broad vs. task-specific roles.
-4. Cluster similarity vs lesion effect — correlates cluster tuning similarity
-   (from activity profiles) with functional lesion similarity (from accuracy
-   patterns) to test whether similarly-tuned clusters have similar causal roles.
+   cluster, highlighting clusters with broad vs. task-specific roles. The
+   modulation panels cover every variant in core/modulation_variants.py, in
+   its order and colors.
+4. Cluster similarity vs lesion effect — compares cluster tuning similarity
+   (Pearson correlation of cluster mean activity/modulation profiles) with
+   lesion-profile dissimilarity (one minus the correlation of per-task effects
+   z-scored against their random-control repeats), over clusters whose effect
+   exceeds a control-only null, to test whether similarly-tuned clusters have
+   similar causal roles. Both axes are scale-free and significance comes from
+   a cluster-label (Mantel-type) Spearman permutation test, because cluster
+   pairs share clusters. The former tuning-cosine vs effect-L1 scatter is kept
+   as a supplement together with L1 vs summed effect magnitude, the size
+   confound that produced its positive correlation.
 5. Overmembership vs lesion difference — relates modulation cluster enrichment
    in (input, hidden) neuron pairs to the functional similarity (task-profile
    L1 distance) between modulation lesion and combined neuron lesion effects,
-   with a cluster-permutation p (footprint ownership shuffled) alongside the
-   naive per-point regression p.
+    using pooled Spearman rho and a negative-sided cluster-permutation p
+    (footprint ownership shuffled). Scatter plots include quantile-bin medians,
+    not a fitted regression line; neither a linear nor decreasing shape is imposed.
 6. Causal dependency map — z-scores every (task, cluster) lesion effect
    against its stored random-control repeats (one-sided, BH-FDR across
    cells), biclusters the masked dependency matrix, and Mantel-tests whether
    the task organization implied by CAUSAL dependence matches the one
-   implied by ACTIVITY tuning (cluster_info variance profiles).
+   implied by ACTIVITY tuning (cluster_info variance profiles). The paper
+   variant pairs the unnormalized neuron clusters' lesion effects with raw
+   (unnormalized) task-variance features; the normalized pairing is kept as a
+   reference. Task-pair similarities, the two-sided Spearman label-permutation
+   test and an OLS guide line are saved to
+   causal_vs_activity_tasksim_{side}_{aname}.pkl for paper_plot.py (one file
+   per activity side, hidden and input).
 7. Combined-lesion interaction map — I(i,j) = combined − single_i − single_j
    per (input, hidden) cluster pair (I < 0 sub-additive/redundant, I > 0
    synergistic), regressed against each block's peak synapse-cluster
@@ -44,11 +60,18 @@ synapse clusters are selectively important for specific tasks. Produces:
    most-enriched blocks.
 9. Plasticity-dependence decomposition — for every (task, synapse cluster)
    cell whose zero_W effect is significant, plasticity share =
-   freeze_M effect / zero_W effect, i.e. the fraction of the cluster's
-   contribution that flows through the plastic channel M rather than the
-   static weight W. Aggregated per task and compared between memory-family
+    freeze_M effect / zero_W effect. This compares two intervention effects;
+    it is not an exact additive partition of static and plastic contributions.
+    Aggregated per task and compared between memory-family
    tasks (delay/dm/dms/dmc) and reaction-family tasks (fd/react) — the
    MPN prediction is that working-memory tasks run on M.
+11. Task specificity and compositional sharing — how many tasks each
+    (unresponsive-excluded) input, hidden or var-weighted synapse cluster
+    significantly impairs, with a per-task shuffle null for the dispersion of
+    that count, and the Jaccard overlap of impaired clusters for every task
+    pair grouped by the task component the pair differs in (response rule,
+    timing, modality, context cue, family) with a task-label permutation p.
+    Saved to task_specificity_{aname}.pkl for paper_plot.py.
 10. Protective-cluster dissection — decomposes every NEGATIVE normalized
     lesion effect (cluster lesion hurting LESS than the size-matched random
     control) into own damage vs control damage on the shared test set, to
@@ -58,8 +81,21 @@ synapse clusters are selectively important for specific tasks. Produces:
 
 Outputs saved to ./multiple_tasks_norm/{aname}/.
 
+The paper-facing normalized-effect cache uses zero_W for the primary
+modulation lesion comparison with input/hidden neuron lesions. Both zero_W
+and freeze_M records remain available, with explicit intervention metadata,
+for the plasticity-dependence and cross-mode comparisons.
+
+Effect matrices are saved as accuracy differences in fraction units; multiplying
+by 100 for display gives percentage points, not a relative percent decrease.
+This script computes per-run effects, scatter coordinates, OM rank statistics
+and bin medians, other regressions and permutation/Mantel statistics.
+paper_plot.py reads these for the main heatmap
+and scatter figures, but its cluster-size figure derives counts/percentages
+from saved memberships.
+
 Entry points: run_pipeline.py calls `main(seed, feature)` as pipeline step 3.
-Standalone, `python multiple_task/leison_plot.py --seed 749 --feature L21e4`
+Standalone, `python multiple_task/lesion_plot.py --seed 749 --feature L21e4`
 (run from the repository root) re-plots one COMPLETED lesion run. Passing
 `--seed all --feature L21e4` re-plots all completed runs matching that
 feature. Single-run filters must still select exactly one run — anything
@@ -80,6 +116,9 @@ import matplotlib as mpl
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import helper
 import clustering
+from modulation_variants import (LESION_MODULATION_TYPES, MODULATION_TYPE_COLORS,
+                                 MODULATION_VARIANCE_WEIGHTS)
+from lesion_cache import load_lesion_pickle
 
 mpl.rcParams.update({
     "font.family": "sans-serif",
@@ -130,7 +169,7 @@ OM_N_PERM = 1000
 
 
 def _om_scatter_perm_test(mod_profiles, row_om, row_cm, n_perm=OM_N_PERM, seed=0):
-    """Cluster-permutation p-value for the OM vs profile-L1 scatter.
+    """Spearman cluster-permutation p-value for the OM vs profile-L1 scatter.
 
     The scatter's (mod cluster, block) points are massively non-independent:
     each cluster's lesion profile is reused across all its blocks and each
@@ -139,35 +178,97 @@ def _om_scatter_perm_test(mod_profiles, row_om, row_cm, n_perm=OM_N_PERM, seed=0
     The honest null keeps every lesion effect fixed and permutes WHICH cluster
     owns WHICH OM footprint — row_om[k] (masked OM values) and row_cm[k] (the
     matching blocks' combined-lesion task profiles) travel together with their
-    stability mask — recomputing the pooled Pearson r each time. One-sided
-    toward negative r (hypothesis: higher OM -> more similar lesion profiles).
+    stability mask — recomputing pooled Spearman rho each time. One-sided
+    toward negative rho (hypothesis: higher OM -> more similar lesion profiles).
 
     mod_profiles: (C, T) per-cluster modulation-lesion task profiles.
     row_om: length-C list of (B_k,) masked OM values per footprint.
     row_cm: length-C list of (B_k, T) matching blocks' task profiles.
     y for a (cluster c, footprint k) pairing is the per-block task-profile
     L1/T distance: mean_t |mod_profiles[c, t] - row_cm[k][b, t]|.
-    Returns (r_obs, p_perm, null_r).
+    Returns (rho_obs, p_perm, null_rho); no regression model is fitted.
     """
     nC = len(mod_profiles)
+    if n_perm < 1:
+        raise ValueError("Need at least one cluster permutation.")
 
-    def _pooled_r(assign):
+    def _pooled_rho(assign):
         x = np.concatenate([row_om[k] for k in assign])
         y = np.concatenate([
             np.mean(np.abs(row_cm[k] - mod_profiles[c][None, :]), axis=1)
             for c, k in enumerate(assign)])
         if np.std(x) < 1e-12 or np.std(y) < 1e-12:
             return np.nan
-        return float(np.corrcoef(x, y)[0, 1])
+        return float(spearmanr(x, y).statistic)
 
-    r_obs = _pooled_r(np.arange(nC))
+    rho_obs = _pooled_rho(np.arange(nC))
+    if nC < 2:
+        return rho_obs, np.nan, np.full(n_perm, np.nan)
     rng = np.random.default_rng(seed)
-    null_r = np.array([_pooled_r(rng.permutation(nC)) for _ in range(n_perm)])
-    finite = np.isfinite(null_r)
-    if not np.isfinite(r_obs) or not finite.any():
-        return r_obs, np.nan, null_r
-    p_perm = (1.0 + np.sum(null_r[finite] <= r_obs)) / (finite.sum() + 1.0)
-    return r_obs, float(p_perm), null_r
+    null_rho = np.array([_pooled_rho(rng.permutation(nC)) for _ in range(n_perm)])
+    finite = np.isfinite(null_rho)
+    if not np.isfinite(rho_obs) or not finite.any():
+        return rho_obs, np.nan, null_rho
+    p_perm = (1.0 + np.sum(null_rho[finite] <= rho_obs)) / (finite.sum() + 1.0)
+    return rho_obs, float(p_perm), null_rho
+
+
+def _om_binned_medians(om_vals, lesion_diffs, n_bins=5):
+    """Describe the scatter with quantile-bin medians, keeping tied OM together."""
+    om_vals = np.asarray(om_vals, dtype=float)
+    lesion_diffs = np.asarray(lesion_diffs, dtype=float)
+    if (om_vals.ndim != 1 or om_vals.size == 0 or om_vals.shape != lesion_diffs.shape
+            or not np.isfinite(om_vals).all() or not np.isfinite(lesion_diffs).all()
+            or np.any(om_vals < 0) or np.any(lesion_diffs < 0)
+            or not isinstance(n_bins, int) or n_bins < 1):
+        raise ValueError("Binned medians require finite nonnegative scatter pairs and positive n_bins.")
+    edges = np.unique(np.quantile(om_vals, np.linspace(0, 1, n_bins + 1)))
+    bin_ids = np.searchsorted(edges[1:-1], om_vals, side="right")
+    groups = [bin_ids == index for index in np.unique(bin_ids)]
+    return {
+        "method": "quantile",
+        "n_bins_requested": n_bins,
+        "edges": edges,
+        "x": np.asarray([np.median(om_vals[group]) for group in groups]),
+        "y": np.asarray([np.median(lesion_diffs[group]) for group in groups]),
+        "counts": np.asarray([np.count_nonzero(group) for group in groups]),
+    }
+
+
+def _om_scatter_summary(mod_profiles, row_om, row_cm, n_perm=OM_N_PERM,
+                        seed=0, n_bins=5):
+    """Shared single/combined export: scatter, rank permutation test and medians."""
+    mod_profiles = np.asarray(mod_profiles, dtype=float)
+    if (mod_profiles.ndim != 2 or mod_profiles.size == 0
+            or len(row_om) != len(mod_profiles) or len(row_cm) != len(mod_profiles)
+            or not np.isfinite(mod_profiles).all()):
+        raise ValueError("Modulation profiles and cluster footprints must align.")
+    row_om = [np.asarray(values, dtype=float) for values in row_om]
+    row_cm = [np.asarray(values, dtype=float) for values in row_cm]
+    for footprint, profiles in zip(row_om, row_cm):
+        if (footprint.ndim != 1 or footprint.size == 0
+                or profiles.shape != (footprint.size, mod_profiles.shape[1])
+                or not np.isfinite(profiles).all()):
+            raise ValueError("Each OM footprint must match its combined-lesion profiles.")
+    om_vals = np.concatenate(row_om)
+    lesion_diffs = np.concatenate([
+        np.mean(np.abs(combined - modulation[None, :]), axis=1)
+        for modulation, combined in zip(mod_profiles, row_cm)])
+    medians = _om_binned_medians(om_vals, lesion_diffs, n_bins=n_bins)
+    rho, p_perm, null_rho = _om_scatter_perm_test(
+        mod_profiles, row_om, row_cm, n_perm=n_perm, seed=seed)
+    return {
+        "om_vals": om_vals,
+        "lesion_diffs": lesion_diffs,
+        "association": {
+            "statistic": "spearman", "rho": rho, "p_perm": p_perm,
+            "null_rho": null_rho, "n_perm": int(n_perm),
+            "n_valid_perm": int(np.isfinite(null_rho).sum()),
+            "n_clusters": len(mod_profiles), "seed": int(seed), "side": "less",
+            "permutation_unit": "modulation_cluster_footprint",
+        },
+        "binned_medians": medians,
+    }
 
 
 def _om_pred_perm_test(pred, actual, n_perm=OM_N_PERM, seed=0):
@@ -204,6 +305,443 @@ def _normalized_effect_record(effect, tasks, conditions):
             "definition": "random_minus_lesion", "units": "fraction"}
 
 
+def _normalized_modulation_effect_record(mod_type_key, mod_data, default_tasks):
+    """Compute random-minus-lesion effects and export explicit mode metadata.
+
+    Keep task and condition order, excluding baseline columns. A key suffix
+    must agree with any saved mode; legacy unsuffixed records use their saved
+    mode, defaulting to zero_W when that field is absent.
+    """
+    if "__" in mod_type_key:
+        base_key, mode = mod_type_key.rsplit("__", 1)
+    else:
+        base_key = mod_type_key
+        mode = mod_data.get("mod_lesion_mode", "zero_W")
+    if mode not in ("zero_W", "freeze_M"):
+        raise ValueError(f"Unknown modulation lesion mode: {mode}")
+    if mod_data.get("mod_lesion_mode", mode) != mode:
+        raise ValueError(f"Modulation lesion mode disagrees with key {mod_type_key}")
+    conditions = list(mod_data["all_comb_names_mod"])
+    lesion_acc = np.asarray(mod_data["modtask_accs"], dtype=float)
+    random_acc = np.asarray(mod_data["modrandomtask_accs"], dtype=float)
+    if (lesion_acc.ndim != 2 or random_acc.shape != lesion_acc.shape
+            or lesion_acc.shape[1] != len(conditions)):
+        raise ValueError("Modulation lesion/control accuracy shapes must match conditions")
+    selected = [index for index, name in enumerate(conditions)
+                if name not in ("mod_nolesion", "mod_cNone")]
+    record = _normalized_effect_record(
+        (random_acc - lesion_acc)[:, selected],
+        mod_data.get("all_tasks", default_tasks),
+        [conditions[index] for index in selected])
+    record["mod_lesion_mode"] = mode
+    return base_key, mode, record
+
+
+# ── Cluster tuning similarity vs lesion-profile similarity (docstring #4) ──
+#
+# The lesion-effect L1 distance between two clusters, sum_t |e_i(t) - e_j(t)|,
+# is dominated by how LARGE the two effects are, not by how different their
+# task profiles are (on seed 749 it correlates at r = 0.92 with the summed
+# effect magnitude). Tuning cosine similarity, by contrast, is scale-free and
+# is highest between the large, high-|W| clusters whose mean profiles converge
+# on the population-average profile. Both axes therefore track cluster size and
+# weight, which manufactured a positive tuning-similarity/L1 correlation that
+# said nothing about profile shape. The scale-free comparison below separates
+# the two: x is the Pearson correlation between cluster mean tuning profiles,
+# y is one minus the Pearson correlation between per-task lesion effects after
+# each effect is z-scored against its own size-matched random-control repeats.
+# Only clusters whose lesion effect exceeds the control null are compared, and
+# significance comes from permuting cluster labels (Mantel-type test), because
+# the C(C-1)/2 cluster pairs share C clusters and are not independent samples.
+# The L1 version is kept as an explicit supplement together with its magnitude
+# confound so the change of metric is documented in the data.
+CLUSTER_CORR_SCHEMA_VERSION = 2
+CLUSTER_CORR_N_PERM = 10000
+# One accuracy percentage point. Saturated tasks give control repeats with
+# (near-)zero spread; without a floor their tiny effects would receive huge z
+# values and dominate the profile correlation.
+CLUSTER_CORR_SD_FLOOR = 0.01
+CLUSTER_CORR_SIG_QUANTILE = 0.95
+CLUSTER_CORR_X_DEFINITION = "pearson_corr_of_cluster_mean_tuning_profiles"
+CLUSTER_CORR_Y_DEFINITION = "one_minus_pearson_corr_of_z_scored_effect_profiles"
+CLUSTER_CORR_L1_DEFINITION = "sum_over_tasks_abs_effect_difference"
+
+
+def _z_scored_lesion_effects(lesion_acc, control_raw, sd_floor=CLUSTER_CORR_SD_FLOOR):
+    """Z-score (task, cluster) lesion effects against their control repeats.
+
+    lesion_acc: (T, C) accuracy after lesioning each cluster.
+    control_raw: (T, C, R) accuracy under R size-matched random lesions.
+    Returns effect = control mean - lesion (fraction units), the floored
+    control standard deviation and z = effect / sd, all shaped (T, C).
+    """
+    lesion_acc = np.asarray(lesion_acc, dtype=float)
+    control_raw = np.asarray(control_raw, dtype=float)
+    if (lesion_acc.ndim != 2 or control_raw.ndim != 3
+            or control_raw.shape[:2] != lesion_acc.shape or control_raw.shape[2] < 2
+            or not np.isfinite(lesion_acc).all() or not np.isfinite(control_raw).all()):
+        raise ValueError("Need (T, C) lesion accuracies and matching (T, C, R>=2) "
+                         "finite control repeats")
+    if not sd_floor > 0:
+        raise ValueError("The control SD floor must be positive")
+    effect = control_raw.mean(axis=2) - lesion_acc
+    sd = np.maximum(control_raw.std(axis=2, ddof=1), float(sd_floor))
+    return {"effect": effect, "sd": sd, "z": effect / sd,
+            "n_repeats": int(control_raw.shape[2]), "sd_floor": float(sd_floor)}
+
+
+def _cluster_effect_significance(control_raw, sd, z, quantile=CLUSTER_CORR_SIG_QUANTILE):
+    """Flag clusters whose summed |z| exceeds a control-only null.
+
+    The statistic is sum_t |z(t, c)|. Its null is built without any lesion:
+    each control repeat k plays the role of the lesioned network against the
+    mean of the other R-1 repeats, z-scored with the same floored sd, and the
+    resulting statistics are pooled over clusters and repeats. A cluster is
+    kept when its statistic exceeds the null's `quantile`.
+    """
+    control_raw = np.asarray(control_raw, dtype=float)
+    sd = np.asarray(sd, dtype=float)
+    z = np.asarray(z, dtype=float)
+    n_rep = control_raw.shape[2]
+    if not 0 < quantile < 1:
+        raise ValueError("The significance quantile must lie strictly inside (0, 1)")
+    statistic = np.abs(z).sum(axis=0)                         # (C,)
+    total = control_raw.sum(axis=2, keepdims=True)
+    held_out = control_raw
+    others_mean = (total - held_out) / (n_rep - 1)
+    null_z = (others_mean - held_out) / sd[:, :, None]         # (T, C, R)
+    null = np.abs(null_z).sum(axis=0).ravel()                 # (C * R,)
+    threshold = float(np.quantile(null, quantile))
+    return {"statistic": "sum_abs_z", "per_cluster": statistic,
+            "threshold": threshold, "quantile": float(quantile),
+            "null": null, "significant": statistic > threshold}
+
+
+def _mantel_spearman(x_matrix, y_matrix, n_perm=CLUSTER_CORR_N_PERM, seed=0):
+    """Two-sided Spearman Mantel test between two square similarity matrices.
+
+    Spearman rho is computed over the strict lower triangles. The null
+    permutes the cluster labels of `y_matrix` (rows and columns together) so
+    every pair keeps its dependence on the shared clusters. Returns a dict
+    with rho, the permutation p, the null rhos and the test metadata.
+    """
+    x_matrix = np.asarray(x_matrix, dtype=float)
+    y_matrix = np.asarray(y_matrix, dtype=float)
+    n = x_matrix.shape[0]
+    if (x_matrix.ndim != 2 or x_matrix.shape != (n, n) or y_matrix.shape != (n, n)
+            or n < 3 or not np.isfinite(x_matrix).all() or not np.isfinite(y_matrix).all()):
+        raise ValueError("Mantel test needs two finite square matrices over >= 3 clusters")
+    if n_perm < 1:
+        raise ValueError("Need at least one label permutation")
+    tri = np.tril_indices(n, k=-1)
+    x = x_matrix[tri]
+
+    def _rho(matrix):
+        y = matrix[tri]
+        if np.std(x) < 1e-12 or np.std(y) < 1e-12:
+            return np.nan
+        return float(spearmanr(x, y).statistic)
+
+    rho = _rho(y_matrix)
+    rng = np.random.default_rng(seed)
+    null = np.empty(n_perm)
+    for index in range(n_perm):
+        perm = rng.permutation(n)
+        null[index] = _rho(y_matrix[np.ix_(perm, perm)])
+    finite = np.isfinite(null)
+    if np.isfinite(rho) and finite.any():
+        p_perm = float((1.0 + np.sum(np.abs(null[finite]) >= abs(rho))) / (finite.sum() + 1.0))
+    else:
+        p_perm = np.nan
+    return {"statistic": "spearman", "rho": rho, "p_perm": p_perm, "null_rho": null,
+            "n_perm": int(n_perm), "n_valid_perm": int(finite.sum()), "seed": int(seed),
+            "side": "two-sided", "permutation_unit": "cluster_label",
+            "n_clusters": int(n), "n_pairs": int(len(x))}
+
+
+def _tuning_vs_lesion_summary(cluster_means, lesion_acc, control_raw, cluster_labels, *,
+                              exclude_last_cluster=False, n_perm=CLUSTER_CORR_N_PERM,
+                              seed=0, sd_floor=CLUSTER_CORR_SD_FLOOR,
+                              quantile=CLUSTER_CORR_SIG_QUANTILE):
+    """Build the scale-free tuning-vs-lesion comparison and its L1 supplement.
+
+    cluster_means: (F, C) mean tuning profile per cluster (F features, e.g.
+    task x period variances). lesion_acc: (T, C). control_raw: (T, C, R).
+    cluster_labels: C labels in the shared column order.
+
+    Main comparison (`tuning_corr`, `lesion_profile_dissim`): the last
+    cluster is dropped first when requested (the unresponsive cluster of the
+    unnormalized clusterings), then clusters without a significant lesion
+    effect or with a constant profile on either side. Supplement (`l1`): the
+    former figure's tuning cosine similarity and effect L1 distance over the
+    same clusters minus only the optional last one, plus the summed effect
+    magnitude of each pair that explains the L1 distance.
+    """
+    cluster_means = np.asarray(cluster_means, dtype=float)
+    cluster_labels = list(cluster_labels)
+    n_clusters = len(cluster_labels)
+    if (cluster_means.ndim != 2 or cluster_means.shape[1] != n_clusters
+            or len(set(cluster_labels)) != n_clusters
+            or not np.isfinite(cluster_means).all()):
+        raise ValueError("Cluster means must be finite, (features, clusters) and match the labels")
+    scored = _z_scored_lesion_effects(lesion_acc, control_raw, sd_floor=sd_floor)
+    if scored["effect"].shape[1] != n_clusters:
+        raise ValueError("Lesion columns must match the cluster labels")
+    significance = _cluster_effect_significance(control_raw, scored["sd"], scored["z"],
+                                                quantile=quantile)
+
+    base = np.arange(n_clusters - 1 if exclude_last_cluster and n_clusters > 1 else n_clusters)
+    effect_base = scored["effect"][:, base]
+    means_base = cluster_means[:, base]
+    tuning_cos = _cosine_similarity_matrix(means_base)
+    l1 = np.abs(effect_base[:, :, None] - effect_base[:, None, :]).sum(axis=0)
+    magnitude = np.abs(effect_base).sum(axis=0)
+    magnitude_sum = magnitude[:, None] + magnitude[None, :]
+    tri_base = np.tril_indices(len(base), k=-1)
+    supplement = {
+        "y_definition": CLUSTER_CORR_L1_DEFINITION,
+        "cluster_labels": [cluster_labels[index] for index in base],
+        "tuning_cos_sim": tuning_cos[tri_base], "lesion_l1_dist": l1[tri_base],
+        "effect_magnitude_sum": magnitude_sum[tri_base],
+        "association_tuning": _mantel_spearman(tuning_cos, l1, n_perm=n_perm, seed=seed),
+        "association_magnitude": _mantel_spearman(magnitude_sum, l1, n_perm=n_perm, seed=seed),
+    }
+
+    constant_tuning = np.std(cluster_means, axis=0) < 1e-12
+    constant_z = np.std(scored["z"], axis=0) < 1e-12
+    excluded = {
+        "last": [cluster_labels[index] for index in range(n_clusters) if index not in base],
+        "not_significant": [cluster_labels[index] for index in base
+                            if not significance["significant"][index]],
+        "degenerate": [cluster_labels[index] for index in base
+                       if significance["significant"][index]
+                       and (constant_tuning[index] or constant_z[index])],
+    }
+    keep = np.array([index for index in base
+                     if significance["significant"][index]
+                     and not constant_tuning[index] and not constant_z[index]], dtype=int)
+    if len(keep) < 3:
+        raise ValueError(f"Only {len(keep)} clusters with a significant, non-degenerate "
+                         "lesion profile; need at least 3 for a pairwise comparison")
+    tuning_corr = np.corrcoef(cluster_means[:, keep].T)
+    lesion_dissim = 1.0 - np.corrcoef(scored["z"][:, keep].T)
+    tri = np.tril_indices(len(keep), k=-1)
+    return {
+        "schema_version": CLUSTER_CORR_SCHEMA_VERSION,
+        "x_definition": CLUSTER_CORR_X_DEFINITION,
+        "y_definition": CLUSTER_CORR_Y_DEFINITION,
+        "exclude_last_cluster": bool(exclude_last_cluster),
+        "cluster_labels": cluster_labels,
+        "included_clusters": [cluster_labels[index] for index in keep],
+        "excluded_clusters": excluded,
+        "tuning_corr": tuning_corr[tri],
+        "lesion_profile_dissim": lesion_dissim[tri],
+        "tuning_corr_matrix": tuning_corr,
+        "lesion_profile_dissim_matrix": lesion_dissim,
+        "effect": scored["effect"], "z": scored["z"],
+        "n_repeats": scored["n_repeats"], "sd_floor": scored["sd_floor"],
+        "significance": significance,
+        "association": _mantel_spearman(tuning_corr, lesion_dissim, n_perm=n_perm, seed=seed),
+        "trend_line": _descriptive_trend_line(tuning_corr[tri], lesion_dissim[tri]),
+        "l1": supplement,
+    }
+
+
+def _descriptive_trend_line(x, y):
+    """Ordinary least-squares line through the scatter, as a visual guide only.
+
+    The reported association is Spearman rho with a cluster-label permutation
+    p; this line is not that statistic (a rank correlation has no line in the
+    raw coordinates) and carries no inferential claim. Returns None when x is
+    constant.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if x.size < 2 or np.std(x) < 1e-12:
+        return None
+    slope, intercept = np.polyfit(x, y, 1)
+    return {"method": "ols", "slope": float(slope), "intercept": float(intercept),
+            "role": "descriptive_guide_for_spearman_scatter"}
+
+
+def _tuning_profiles_for_variant(cluster_means, mod_type_key):
+    """Cluster mean tuning profiles as compared across clusters.
+
+    For the signed W*Var(M) variant, positive- and negative-W synapses form
+    separate clusters whose mean profiles differ in sign but not in shape, so
+    the profiles are compared by magnitude (elementwise absolute value); a
+    pair of same-shape clusters of opposite sign would otherwise read as
+    anti-correlated. Non-negative variants pass through unchanged. Returns
+    (profiles, description).
+    """
+    base = mod_type_key.replace("_unnormalized", "").replace("_normalized", "")
+    cluster_means = np.asarray(cluster_means, dtype=float)
+    if MODULATION_VARIANCE_WEIGHTS.get(base) == "signed":
+        return np.abs(cluster_means), "absolute value of cluster mean (signed feature)"
+    return cluster_means, "cluster mean"
+
+
+def _cosine_similarity_matrix(columns):
+    """Cosine similarity between the columns of a (features, items) array."""
+    columns = np.asarray(columns, dtype=float)
+    norms = np.linalg.norm(columns, axis=0)
+    safe = np.where(norms > 0, norms, 1.0)
+    unit = columns / safe
+    similarity = unit.T @ unit
+    return np.clip(similarity, -1.0, 1.0)
+
+
+# ── Task specificity of clusters and compositional sharing (docstring #11) ──
+#
+# A cluster's lesion profile marks which tasks it significantly impairs. The
+# number of tasks per cluster measures its specificity; whether that count
+# distribution is more dispersed than a per-task-rate-preserving shuffle tells
+# specialized/hub organization apart from uniform mixing (a null that keeps
+# how many clusters each task depends on but breaks cluster identity). The
+# same masks give, for every task pair, the Jaccard overlap of the clusters
+# they depend on; grouping pairs by which task component they differ in asks
+# whether shared clusters follow the compositional structure of the battery.
+TASK_SPECIFICITY_N_PERM = 5000
+TASK_PAIR_RELATIONS = {
+    "response rule": [("fdgo", "fdanti"), ("delaygo", "delayanti"),
+                      ("reactgo", "reactanti"), ("dmsgo", "dmsnogo"),
+                      ("dmcgo", "dmcnogo")],
+    "timing": [("fdgo", "delaygo"), ("fdgo", "reactgo"), ("delaygo", "reactgo"),
+               ("fdanti", "delayanti"), ("fdanti", "reactanti"),
+               ("delayanti", "reactanti")],
+    "modality": [("delaydm1", "delaydm2"), ("contextdelaydm1", "contextdelaydm2")],
+    "context cue": [("delaydm1", "contextdelaydm1"), ("delaydm2", "contextdelaydm2")],
+    "integration family": [("delaydm1", "contextdelaydm2"), ("delaydm2", "contextdelaydm1"),
+                           ("multidelaydm", "delaydm1"), ("multidelaydm", "delaydm2"),
+                           ("multidelaydm", "contextdelaydm1"),
+                           ("multidelaydm", "contextdelaydm2")],
+    "match/category family": [("dmsgo", "dmcgo"), ("dmsgo", "dmcnogo"),
+                              ("dmsnogo", "dmcgo"), ("dmsnogo", "dmcnogo")],
+}
+TASK_PAIR_OTHER = "other"
+
+
+def _task_specificity_counts(sig):
+    """Number of tasks each cluster significantly impairs; sig is (T, C) bool."""
+    sig = np.asarray(sig, dtype=bool)
+    if sig.ndim != 2:
+        raise ValueError("sig must be a (tasks, clusters) boolean matrix")
+    return sig.sum(axis=0)
+
+
+def _count_dispersion_test(sig, n_perm=TASK_SPECIFICITY_N_PERM, seed=0):
+    """Variance of tasks-per-cluster against a per-task shuffle of cluster identity.
+
+    Each permutation shuffles every task row independently across clusters,
+    preserving how many clusters each task depends on while destroying which
+    clusters co-occur. One-sided p for the observed variance exceeding the
+    null (more specialized/hub-like than mixing).
+    """
+    sig = np.asarray(sig, dtype=bool)
+    counts = _task_specificity_counts(sig)
+    if n_perm < 1:
+        raise ValueError("Need at least one permutation")
+    rng = np.random.default_rng(seed)
+    null = np.empty(n_perm)
+    for index in range(n_perm):
+        shuffled = np.stack([rng.permutation(row) for row in sig])
+        null[index] = shuffled.sum(axis=0).var()
+    observed = float(counts.var())
+    return {"counts": counts, "observed_var": observed, "null_var": null,
+            "p_perm": float((1.0 + np.sum(null >= observed)) / (n_perm + 1.0)),
+            "n_perm": int(n_perm), "seed": int(seed), "side": "greater",
+            "null": "independent per-task shuffle of cluster identity"}
+
+
+def _pair_relation_labels(tasks):
+    """Relation of every task pair (i < j): a TASK_PAIR_RELATIONS key or 'other'."""
+    tasks = list(tasks)
+    lookup = {}
+    for relation, pairs in TASK_PAIR_RELATIONS.items():
+        for first, second in pairs:
+            key = frozenset((first, second))
+            if key in lookup:
+                raise ValueError(f"Task pair {first}/{second} listed under two relations")
+            lookup[key] = relation
+    labels = {}
+    for i in range(len(tasks)):
+        for j in range(i + 1, len(tasks)):
+            labels[(i, j)] = lookup.get(frozenset((tasks[i], tasks[j])), TASK_PAIR_OTHER)
+    return labels
+
+
+def _jaccard_matrix(sig):
+    """Jaccard overlap of significant-cluster sets for every task pair; NaN if both empty."""
+    sig = np.asarray(sig, dtype=bool).astype(float)
+    intersection = sig @ sig.T
+    sizes = sig.sum(axis=1)
+    union = sizes[:, None] + sizes[None, :] - intersection
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(union > 0, intersection / union, np.nan)
+
+
+def _sharing_by_relation(sig, tasks, n_perm=TASK_SPECIFICITY_N_PERM, seed=0):
+    """Mean Jaccard sharing per task-pair relation with a task-label permutation p.
+
+    The null relabels tasks (rows and columns of the Jaccard matrix together),
+    keeping every pairwise overlap and shuffling which pairs count as related.
+    One-sided: related pairs share more than the shuffled assignment predicts.
+    """
+    tasks = list(tasks)
+    jaccard = _jaccard_matrix(sig)
+    if jaccard.shape != (len(tasks), len(tasks)):
+        raise ValueError("sig rows must match the task list")
+    labels = _pair_relation_labels(tasks)
+    relations = [name for name in TASK_PAIR_RELATIONS
+                 if any(label == name for label in labels.values())] + [TASK_PAIR_OTHER]
+    groups = {name: [pair for pair, label in labels.items() if label == name] for name in relations}
+    related = [pair for pair, label in labels.items() if label != TASK_PAIR_OTHER]
+
+    def _mean(matrix, pairs):
+        values = np.array([matrix[i, j] for i, j in pairs], dtype=float)
+        values = values[np.isfinite(values)]
+        return float(values.mean()) if values.size else np.nan
+
+    rng = np.random.default_rng(seed)
+    null = {name: np.empty(n_perm) for name in relations + ["related"]}
+    for index in range(n_perm):
+        perm = rng.permutation(len(tasks))
+        shuffled = jaccard[np.ix_(perm, perm)]
+        for name in relations:
+            null[name][index] = _mean(shuffled, groups[name])
+        null["related"][index] = _mean(shuffled, related)
+    out = {"jaccard": jaccard, "tasks": tasks, "relations": relations, "n_perm": int(n_perm),
+           "seed": int(seed), "side": "greater", "permutation_unit": "task_label",
+           "by_relation": {}}
+    for name, pairs in list(groups.items()) + [("related", related)]:
+        observed = _mean(jaccard, pairs)
+        finite = null[name][np.isfinite(null[name])]
+        p_perm = (float((1.0 + np.sum(finite >= observed)) / (finite.size + 1.0))
+                  if np.isfinite(observed) and finite.size else np.nan)
+        out["by_relation"][name] = {
+            "pairs": [(tasks[i], tasks[j]) for i, j in pairs],
+            "values": np.array([jaccard[i, j] for i, j in pairs], dtype=float),
+            "mean": observed, "p_perm": p_perm, "null_mean": null[name]}
+    return out
+
+
+def _task_specificity_summary(sig_by_type, tasks, n_perm=TASK_SPECIFICITY_N_PERM, seed=0):
+    """Counts, dispersion tests and relation sharing for each cluster type."""
+    summary = {"schema_version": 1, "tasks": list(tasks), "n_perm": int(n_perm),
+               "types": {}}
+    for type_name, entry in sig_by_type.items():
+        sig = np.asarray(entry["sig"], dtype=bool)
+        if sig.shape != (len(tasks), len(entry["cluster_labels"])):
+            raise ValueError(f"{type_name}: sig shape does not match tasks and clusters")
+        summary["types"][type_name] = {
+            "cluster_labels": list(entry["cluster_labels"]),
+            "dispersion": _count_dispersion_test(sig, n_perm=n_perm, seed=seed),
+            "sharing": _sharing_by_relation(sig, tasks, n_perm=n_perm, seed=seed),
+            "sig": sig,
+        }
+    return summary
+
+
 def main(seed, feature):
     aname = f"everything_seed{seed}_{feature}+hidden300+batch128+angle"
     print(f"aname: {aname}")
@@ -220,25 +758,25 @@ def main(seed, feature):
         print(f"Cleared {len(_old_files)} old file(s) from {save_dir}")
 
     pickle_name = f"{pickle_dir}/lesion_prune_results_{aname}.pkl"
-    with open(pickle_name, 'rb') as f:
-        results = pickle.load(f)
+    results = load_lesion_pickle(pickle_name)
         
-    # handle both old pickle names ("pre_cNone") and new ("pre_noleison") after rename fix
-    baseline_keys = {"pre_cNone", "post_cNone", "pre_noleison", "post_noleison"}
-    mod_leison_results = results.get("mod_leison", {})
-    normalized_effects = {"schema_version": 1, "aname": aname, "entries": {}}
+    # handle both old pickle names ("pre_cNone") and new ("pre_nolesion") after rename fix
+    baseline_keys = {"pre_cNone", "post_cNone", "pre_nolesion", "post_nolesion"}
+    mod_lesion_results = results.get("mod_lesion", {})
+    normalized_effects = {"schema_version": 1, "aname": aname,
+                          "primary_modulation_mode": "zero_W", "entries": {}}
 
-    def compute_and_plot_normalized_lesion(leison_key, random_key, savename, xlabel_suffix=""):
+    def compute_and_plot_normalized_lesion(lesion_key, random_key, savename, xlabel_suffix=""):
         """Compute normalized lesion effect (random - cluster) and plot its heatmap.
         Returns (select_props, all_comb_names_filtered) for downstream use.
         """
-        all_comb_names = results[leison_key]["all_comb_names_leison"]
+        all_comb_names = results[lesion_key]["all_comb_names_lesion"]
         def _rename(k):
             return k.replace("pre_c", "i").replace("post_c", "h")
         all_comb_names_filtered = [_rename(k) for k in all_comb_names if k not in baseline_keys]
-        tasks = results[leison_key]["all_tasks"]
+        tasks = results[lesion_key]["all_tasks"]
 
-        ihtask = np.asarray(results[leison_key]["ihtask_accs"], dtype=float)
+        ihtask = np.asarray(results[lesion_key]["ihtask_accs"], dtype=float)
         ihrandom = np.asarray(results[random_key]["ihrandomtask_accs"], dtype=float)
 
         props = []
@@ -247,7 +785,7 @@ def main(seed, feature):
                 props.append(ihrandom[:, key_idx] - ihtask[:, key_idx])
 
         props = np.array(props).T  # (n_tasks, n_clusters)
-        normalized_effects["entries"][leison_key] = _normalized_effect_record(
+        normalized_effects["entries"][lesion_key] = _normalized_effect_record(
             props, tasks, [key for key in all_comb_names if key not in baseline_keys])
         suffix = f" {xlabel_suffix}" if xlabel_suffix else ""
         print(f"[{savename}] select_props: {props.shape}")
@@ -259,29 +797,29 @@ def main(seed, feature):
 
         return props, all_comb_names_filtered
 
-    select_props, all_comb_names_leison_ = compute_and_plot_normalized_lesion(
-        "leison", "random_leison", "normalized_leison",
+    select_props, all_comb_names_lesion_ = compute_and_plot_normalized_lesion(
+        "lesion", "random_lesion", "normalized_lesion",
     )
-    all_tasks = results["leison"]["all_tasks"]
+    all_tasks = results["lesion"]["all_tasks"]
 
     select_props_unnorm = None
     all_comb_names_unnorm_ = None
-    if "leison_unnorm" in results and "random_leison_unnorm" in results:
+    if "lesion_unnorm" in results and "random_lesion_unnorm" in results:
         select_props_unnorm, all_comb_names_unnorm_ = compute_and_plot_normalized_lesion(
-            "leison_unnorm", "random_leison_unnorm",
-            "normalized_leison_unnorm", xlabel_suffix="(unnorm)",
+            "lesion_unnorm", "random_lesion_unnorm",
+            "normalized_lesion_unnorm", xlabel_suffix="(unnorm)",
         )
 
     # Combined violin: 4 panels — input/hidden × normalized/unnormalized
     if select_props_unnorm is not None:
-        _n_input_norm_v = len([n for n in all_comb_names_leison_ if n.startswith("i")])
+        _n_input_norm_v = len([n for n in all_comb_names_lesion_ if n.startswith("i")])
         _n_input_unnorm_v = len([n for n in all_comb_names_unnorm_ if n.startswith("i")])
 
         _ih_panels = [
             ("Input (normalized)", select_props[:, :_n_input_norm_v],
-             [n for n in all_comb_names_leison_ if n.startswith("i")]),
+             [n for n in all_comb_names_lesion_ if n.startswith("i")]),
             ("Hidden (normalized)", select_props[:, _n_input_norm_v:],
-             [n for n in all_comb_names_leison_ if n.startswith("h")]),
+             [n for n in all_comb_names_lesion_ if n.startswith("h")]),
             ("Input (unnormalized)", select_props_unnorm[:, :_n_input_unnorm_v],
              [n for n in all_comb_names_unnorm_ if n.startswith("i")]),
             ("Hidden (unnormalized)", select_props_unnorm[:, _n_input_unnorm_v:],
@@ -323,14 +861,14 @@ def main(seed, feature):
             ax_v.tick_params(labelsize=8)
 
         fig_ih.tight_layout()
-        fig_ih.savefig(f"{save_dir}/normalized_leison_violin_all_{aname}.png", dpi=300)
+        fig_ih.savefig(f"{save_dir}/normalized_lesion_violin_all_{aname}.png", dpi=300)
         plt.close(fig_ih)
         print("Saved combined input/hidden violin plot (4 panels)")
 
     # Histogram of mean lesion effect per cluster for input/hidden (4 categories)
     # Split select_props into input and hidden based on the all_comb structure
-    # all_comb_names_leison_ has i1..iN then h1..hM (after _rename)
-    _n_input_norm = len([n for n in all_comb_names_leison_ if n.startswith("i")])
+    # all_comb_names_lesion_ has i1..iN then h1..hM (after _rename)
+    _n_input_norm = len([n for n in all_comb_names_lesion_ if n.startswith("i")])
 
     _hist_data = {}
     _hist_data["Input (norm)"] = select_props[:, :_n_input_norm].mean(axis=0) * 100
@@ -413,7 +951,7 @@ def main(seed, feature):
         ax_stats_twin.legend(loc="upper right", fontsize=6, frameon=False)
 
         fig_hist.tight_layout()
-        fig_hist.savefig(f"{save_dir}/normalized_leison_hist_mean_{aname}.png", dpi=300)
+        fig_hist.savefig(f"{save_dir}/normalized_lesion_hist_mean_{aname}.png", dpi=300)
         plt.close(fig_hist)
         print("Saved input/hidden histogram (cluster-averaged + task-specific + stats)")
 
@@ -445,7 +983,7 @@ def main(seed, feature):
                            "Input (unnorm)": "#6baed6", "Hidden (unnorm)": "#fc9272"}
         _plot_ranked_effect(_hist_data, _ih_rank_colors,
                             "Ranked cluster importance (input/hidden)",
-                            f"{save_dir}/normalized_leison_ranked_{aname}.png")
+                            f"{save_dir}/normalized_lesion_ranked_{aname}.png")
 
     # ══════════════════════════════════════════════════════════════════
     # Causal dependency map — significance layer + biclustering, and the
@@ -453,11 +991,11 @@ def main(seed, feature):
     #
     # Statistics: every (task, cluster) lesion effect is z-scored against
     # its own size-matched random-control distribution, using the raw
-    # repeats leison.py stores (ihrandomtask_accs_raw):
+    # repeats lesion.py stores (ihrandomtask_accs_raw):
     #     z = (mean_ctrl - acc_lesion) / std_ctrl,   p = Phi(-z)  one-sided
     # The normal approximation is justified because each control accuracy
     # is itself a mean over test_n_batch trials. BH-FDR at q = 0.05 across
-    # all cells of a variant. NB leison.py's control cache shares draws
+    # all cells of a variant. NB lesion.py's control cache shares draws
     # between same-(side, size) conditions, so p-values of such cells are
     # correlated — fine for a per-cell mask, but the cells are not fully
     # independent.
@@ -477,18 +1015,18 @@ def main(seed, feature):
         mask[order[:k]] = True
         return mask.reshape(np.asarray(p).shape)
 
-    def _causal_dependency(leison_key, random_key, vtag):
+    def _causal_dependency(lesion_key, random_key, vtag):
         """FDR-masked (task, cluster) dependency matrix + biclustered view.
 
         Returns the UNMASKED effect matrix (n_tasks, n_clusters) for reuse
         by the task-similarity comparison below (correlations pool over all
         clusters and are robust to per-cell noise, so they use the full
         matrix; the masked matrix drives the module-map figure only)."""
-        names_all = results[leison_key]["all_comb_names_leison"]
+        names_all = results[lesion_key]["all_comb_names_lesion"]
         keep_idx = [k for k, n in enumerate(names_all) if n not in baseline_keys]
         cnames = [names_all[k].replace("pre_c", "i").replace("post_c", "h")
                   for k in keep_idx]
-        accs = np.asarray(results[leison_key]["ihtask_accs"], float)[:, keep_idx]
+        accs = np.asarray(results[lesion_key]["ihtask_accs"], float)[:, keep_idx]
         raw = np.asarray(results[random_key]["ihrandomtask_accs_raw"],
                          float)[:, keep_idx, :]
         E = raw.mean(axis=2) - accs                       # (n_tasks, n_clusters)
@@ -547,17 +1085,30 @@ def main(seed, feature):
             }, _f)
         print(f"[causal-dep {vtag}] {n_sig}/{n_cells} significant cells "
               f"(BH-FDR q=0.05); saved map + pkl")
+        _causal_sig[vtag] = {"sig": sig, "cluster_names": cnames}
         return E
 
-    E_dep_norm = _causal_dependency("leison", "random_leison", "norm")
-    if "leison_unnorm" in results and "random_leison_unnorm" in results:
-        _causal_dependency("leison_unnorm", "random_leison_unnorm", "unnorm")
+    _causal_sig = {}   # reused by the task-specificity section below
+    E_dep_norm = _causal_dependency("lesion", "random_lesion", "norm")
+    E_dep_unnorm = None
+    if "lesion_unnorm" in results and "random_lesion_unnorm" in results:
+        E_dep_unnorm = _causal_dependency("lesion_unnorm", "random_lesion_unnorm", "unnorm")
 
-    # ── Causal vs activity task organization (norm variant) ─────────────
-    # Task-task similarity from lesion-dependency profiles vs from
-    # task-averaged activity tuning; one-sided Mantel permutation test.
+    # ── Causal vs activity task organization ────────────────────────────
+    # Task-task similarity from lesion-dependency profiles vs from task-averaged
+    # activity tuning. The paper-facing variant is UNNORMALIZED on both sides
+    # (unnormalized neuron clusters' lesion effects; raw task-variance features),
+    # matching the other lesion figures. Normalization divides each neuron's
+    # variance by its maximum over rules and thereby discards the amplitude that
+    # predicts causal impact: across the seven L2=1e-4 seeds the unnormalized
+    # pairing gives hidden rho 0.27-0.50 (all seven p < 0.05) against 0.11-0.35
+    # (three of seven) for the normalized pairing, while the input side stays
+    # near zero under both. The normalized pairing is kept in the cache as a
+    # reference variant. Periods of a task are averaged into one activity
+    # vector; a response-period-only variant is not used because it also makes
+    # the input side correlate.
     def _mantel(S_ref, S_other, n_perm=10000, seed=0):
-        """One-sided Mantel test (positive association) on upper triangles."""
+        """One-sided Pearson Mantel test (positive association) on upper triangles."""
         n = S_ref.shape[0]
         iu = np.triu_indices(n, k=1)
         y = S_other[iu]
@@ -570,40 +1121,79 @@ def main(seed, feature):
                 count += 1
         return r_obs, (count + 1) / (n_perm + 1)
 
+    def _activity_task_similarity(ci_entry, tasks):
+        """Task x task Pearson correlation of period-averaged task-variance profiles."""
+        V = ci_entry["cell_vars_rules_sorted_norm"]
+        tb = ci_entry["tb_break_name"]
+        A_task = np.stack([
+            V[[r for r, nm in enumerate(tb) if str(nm).split("-")[0] == t]].mean(axis=0)
+            for t in tasks
+        ])                                   # (n_tasks, n_neurons)
+        return np.corrcoef(A_task)
+
+    def _causal_vs_activity_variant(S_act, S_les, tasks):
+        """Pairs, two-sided Spearman label-permutation test and OLS guide for one pairing."""
+        iu = np.triu_indices(len(tasks), k=1)
+        return {
+            "activity_similarity": S_act, "causal_similarity": S_les,
+            "activity_pairs": S_act[iu], "causal_pairs": S_les[iu],
+            "association": _mantel_spearman(S_act, S_les, n_perm=CLUSTER_CORR_N_PERM, seed=0),
+            "trend_line": _descriptive_trend_line(S_act[iu], S_les[iu]),
+        }
+
     _ci_path = f"./multiple_tasks_analysis/{aname}/cluster_info_{aname}.pkl"
-    if os.path.exists(_ci_path):
+    if os.path.exists(_ci_path) and E_dep_unnorm is not None:
         with open(_ci_path, "rb") as _f:
             cluster_info = pickle.load(_f)  # also reused by later sections
 
-        S_les = np.corrcoef(E_dep_norm)     # task × task, causal profiles
+        _S_les = {"unnormalized": np.corrcoef(E_dep_unnorm),
+                  "normalized": np.corrcoef(E_dep_norm)}
         for side in ["hidden", "input"]:
-            V = cluster_info[f"{side}_normalized"]["cell_vars_rules_sorted_norm"]
-            tb = cluster_info[f"{side}_normalized"]["tb_break_name"]
-            A_task = np.stack([
-                V[[r for r, nm in enumerate(tb)
-                   if str(nm).split("-")[0] == t]].mean(axis=0)
-                for t in all_tasks
-            ])                               # (n_tasks, n_neurons)
-            S_act = np.corrcoef(A_task)
-            if not (np.isfinite(S_les).all() and np.isfinite(S_act).all()):
-                print(f"[causal-vs-activity] {side}: non-finite similarity, skipping")
+            _variants = {}
+            for variant in ("unnormalized", "normalized"):
+                S_act = _activity_task_similarity(cluster_info[f"{side}_{variant}"], all_tasks)
+                if not (np.isfinite(_S_les[variant]).all() and np.isfinite(S_act).all()):
+                    print(f"[causal-vs-activity] {side}/{variant}: non-finite similarity, skipping")
+                    continue
+                _variants[variant] = _causal_vs_activity_variant(S_act, _S_les[variant], all_tasks)
+            if "unnormalized" not in _variants:
                 continue
+            primary = _variants["unnormalized"]
+            S_act, S_les = primary["activity_similarity"], primary["causal_similarity"]
             r_m, p_m = _mantel(S_act, S_les)
+            _assoc_sp = primary["association"]
+            with open(f"{save_dir}/causal_vs_activity_tasksim_{side}_{aname}.pkl", "wb") as _f:
+                pickle.dump({
+                    "schema_version": 2, "aname": aname, "side": side,
+                    "neuron_variant": "unnormalized",
+                    "tasks": list(all_tasks),
+                    **primary,
+                    "x_definition": "pearson_corr_of_task_mean_activity_variance_profiles",
+                    "y_definition": "pearson_corr_of_task_lesion_effect_profiles_over_neuron_clusters",
+                    "lesion_source": "causal_dependency_unnorm (input + hidden neuron clusters)",
+                    "pearson_mantel_one_sided": {"r": r_m, "p_perm": p_m, "n_perm": 10000},
+                    "reference_variants": {name: value for name, value in _variants.items()
+                                           if name != "unnormalized"},
+                }, _f)
 
             fig, axs = plt.subplots(1, 3, figsize=(13, 3.8), dpi=300)
-            for ax, S, ttl in [(axs[0], S_les, "Causal (lesion profiles)"),
-                               (axs[1], S_act, f"Activity ({side} tuning)")]:
+            for ax, S, ttl in [(axs[0], S_les, "Causal (lesion profiles, unnormalized clusters)"),
+                               (axs[1], S_act, f"Activity ({side} tuning, unnormalized)")]:
                 sns.heatmap(S, ax=ax, cmap="RdBu_r", vmin=-1, vmax=1, center=0,
                             xticklabels=all_tasks, yticklabels=all_tasks,
                             cbar_kws={"shrink": 0.75})
                 ax.set_title(ttl, fontsize=9)
                 ax.tick_params(labelsize=6)
-            iu = np.triu_indices(len(all_tasks), k=1)
-            axs[2].scatter(S_act[iu], S_les[iu], s=14, alpha=0.7,
+            axs[2].scatter(primary["activity_pairs"], primary["causal_pairs"], s=14, alpha=0.7,
                            color="steelblue", edgecolors="none")
             axs[2].set_xlabel(f"Activity task similarity ({side})", fontsize=8)
             axs[2].set_ylabel("Causal task similarity", fontsize=8)
-            axs[2].set_title(f"Mantel r={r_m:.2f}, p={p_m:.4f}", fontsize=9)
+            _ref = _variants.get("normalized")
+            _ref_txt = (f"; normalized pairing rho={_ref['association']['rho']:.2f}, "
+                        f"p={_ref['association']['p_perm']:.3f}" if _ref else "")
+            axs[2].set_title(f"Spearman rho={_assoc_sp['rho']:.2f}, two-sided "
+                             f"p={_assoc_sp['p_perm']:.4f}; Pearson Mantel r={r_m:.2f}, "
+                             f"one-sided p={p_m:.4f}{_ref_txt}", fontsize=7)
             axs[2].spines["top"].set_visible(False)
             axs[2].spines["right"].set_visible(False)
             fig.suptitle("Do tasks that look alike (activity) depend on the "
@@ -612,7 +1202,11 @@ def main(seed, feature):
             fig.savefig(f"{save_dir}/causal_vs_activity_tasksim_{side}_{aname}.png",
                         dpi=300)
             plt.close(fig)
-            print(f"[causal-vs-activity] {side}: Mantel r={r_m:.2f}, p={p_m:.4f}")
+            print(f"[causal-vs-activity] {side} (unnormalized): Spearman rho={_assoc_sp['rho']:.2f}, "
+                  f"p={_assoc_sp['p_perm']:.4f}; Pearson Mantel r={r_m:.2f}, p={p_m:.4f}"
+                  f"{_ref_txt}; cache saved")
+    elif E_dep_unnorm is None:
+        print("[causal-vs-activity] unnormalized lesion results not found, skipping")
     else:
         print("[causal-vs-activity] cluster_info pickle not found, skipping")
 
@@ -628,7 +1222,7 @@ def main(seed, feature):
     #        accuracy above the intact baseline (disinhibition-like).
     # Decomposition per (task, cluster) cell, all on the SAME trials (each
     # task's test set is shared by the baseline, cluster and control runs
-    # inside leison.py, and the forward pass is deterministic):
+    # inside lesion.py, and the forward pass is deterministic):
     #   own_damage  = baseline − lesion acc        (< 0 ⇒ improvement)
     #   ctrl_damage = baseline − mean control acc
     #   normalized effect (random − lesion) ≡ own_damage − ctrl_damage
@@ -638,23 +1232,23 @@ def main(seed, feature):
     # SCREENING thresholds, not formal tests — a genuinely protective
     # cluster must show systematic improvement across tasks, not one cell.
     # ══════════════════════════════════════════════════════════════════
-    _N_EVAL_TRIALS = 200   # leison.py's test_n_batch (not stored in the pickle)
+    _N_EVAL_TRIALS = 200   # lesion.py's test_n_batch (not stored in the pickle)
 
-    for _pc_vtag, _pc_leison, _pc_random in [
-        ("norm", "leison", "random_leison"),
-        ("unnorm", "leison_unnorm", "random_leison_unnorm"),
+    for _pc_vtag, _pc_lesion, _pc_random in [
+        ("norm", "lesion", "random_lesion"),
+        ("unnorm", "lesion_unnorm", "random_lesion_unnorm"),
     ]:
-        if _pc_leison not in results or _pc_random not in results:
+        if _pc_lesion not in results or _pc_random not in results:
             continue
-        _names_pc = results[_pc_leison]["all_comb_names_leison"]
-        _acc_pc = np.asarray(results[_pc_leison]["ihtask_accs"], float)
+        _names_pc = results[_pc_lesion]["all_comb_names_lesion"]
+        _acc_pc = np.asarray(results[_pc_lesion]["ihtask_accs"], float)
         _rnd_pc = np.asarray(results[_pc_random]["ihrandomtask_accs"], float)
-        _units_pc = results[_pc_leison].get("lesion_units", {})
+        _units_pc = results[_pc_lesion].get("lesion_units", {})
 
         # The two no-lesion baselines are both no-op forwards on the same
         # test set and should be identical; average defensively if not.
-        _b_pre = _acc_pc[:, _names_pc.index("pre_noleison")]
-        _b_post = _acc_pc[:, _names_pc.index("post_noleison")]
+        _b_pre = _acc_pc[:, _names_pc.index("pre_nolesion")]
+        _b_post = _acc_pc[:, _names_pc.index("post_nolesion")]
         if not np.allclose(_b_pre, _b_post, atol=1e-6):
             print(f"[protective {_pc_vtag}] warning: the two no-lesion "
                   "baselines differ; using their mean")
@@ -773,7 +1367,7 @@ def main(seed, feature):
 
     # Normalized combined lesion effect (input × hidden) for both norm and unnorm
     for vtag in ["norm", "unnorm"]:
-        ckey = f"combined_leison_{vtag}"
+        ckey = f"combined_lesion_{vtag}"
         if ckey not in results or not results[ckey]:
             print(f"[combined] skipping {vtag}: key not found in pickle")
             continue
@@ -795,7 +1389,7 @@ def main(seed, feature):
             helper.plot_heatmap(
                 combined_norm_effect_flat, flat_names, c_all_tasks,
                 xlabel=f"Combined Lesion (input, hidden) [{vtag}]", ylabel="Task",
-                savename=f"normalized_combined_leison_{vtag}",
+                savename=f"normalized_combined_lesion_{vtag}",
                 aname=aname, label="Normalized Accuracy",
                 vmin=None, vmax=None, save_dir=save_dir,
             )
@@ -808,9 +1402,9 @@ def main(seed, feature):
     # Deviation from the diagonal reveals nonlinear interaction:
     #   above diagonal → super-additive (shared computation, synergistic damage)
     #   below diagonal → sub-additive (redundancy, partial compensation)
-    _n_input_norm = len([n for n in all_comb_names_leison_ if n.startswith("i")])
+    _n_input_norm = len([n for n in all_comb_names_lesion_ if n.startswith("i")])
     for vtag in ["norm", "unnorm"]:
-        ckey = f"combined_leison_{vtag}"
+        ckey = f"combined_lesion_{vtag}"
         if ckey not in results or not results[ckey]:
             continue
         cdata = results[ckey]
@@ -908,34 +1502,19 @@ def main(seed, feature):
         plt.close(fig_add)
         print(f"Saved additivity plot [{vtag}]")
 
-    # Normalized modulation lesion effect for each clustering type
-    mod_baseline_keys = {"mod_noleison"}
+    mod_baseline_keys = {"mod_nolesion"}
 
     # First pass: compute normalized effect and collect by clustering type.
     # Individual heatmaps are not plotted; combined (zero_W | freeze_M) panels are plotted below.
     from collections import defaultdict
     mod_by_type = defaultdict(dict)
 
-    for mod_type_key, mod_data in mod_leison_results.items():
-        all_comb_names_mod = mod_data["all_comb_names_mod"]
-        all_comb_names_mod_ = [k for k in all_comb_names_mod if k not in mod_baseline_keys]
-        modtask_accs = np.asarray(mod_data["modtask_accs"], dtype=float)
-        modrandomtask_accs = np.asarray(mod_data["modrandomtask_accs"], dtype=float)
-
-        mod_select_props = []
-        for key_idx, key in enumerate(all_comb_names_mod):
-            if key not in mod_baseline_keys:
-                mod_select_props.append(modrandomtask_accs[:, key_idx] - modtask_accs[:, key_idx])
-
-        mod_select_props = np.array(mod_select_props).T
-        normalized_effects["entries"][mod_type_key] = _normalized_effect_record(
-            mod_select_props, mod_data.get("all_tasks", all_tasks), all_comb_names_mod_)
-
-        if "__" in mod_type_key:
-            base_key, mode = mod_type_key.rsplit("__", 1)
-        else:
-            base_key = mod_type_key
-            mode = mod_data.get("mod_lesion_mode", "zero_W")
+    for mod_type_key, mod_data in mod_lesion_results.items():
+        base_key, mode, effect_record = _normalized_modulation_effect_record(
+            mod_type_key, mod_data, all_tasks)
+        mod_select_props = effect_record["effect"]
+        all_comb_names_mod_ = effect_record["conditions"]
+        normalized_effects["entries"][f"{base_key}__{mode}"] = effect_record
 
         print(f"[{mod_type_key}] mod_select_props: {mod_select_props.shape}")
 
@@ -947,13 +1526,9 @@ def main(seed, feature):
     with open(f"{save_dir}/normalized_lesion_effects_{aname}.pkl", "wb") as handle:
         pickle.dump(normalized_effects, handle)
 
-    # Combined violin plot for all modulation types (zero_W only), 4 vertical subpanels
-    _mod_violin_order = [
-        "modulation_all_normalized",
-        "modulation_all_unnormalized",
-        "modulation_all_var_weighted_unnormalized",
-        "modulation_all_weighted_unnormalized",
-    ]
+    # Combined violin plot for all modulation types (zero_W only), one vertical
+    # subpanel per registered variant, in registry order.
+    _mod_violin_order = list(LESION_MODULATION_TYPES)
     _mod_violin_data = []
     for bk in _mod_violin_order:
         if bk in mod_by_type and "zero_W" in mod_by_type[bk]:
@@ -1005,42 +1580,32 @@ def main(seed, feature):
             ax_v.tick_params(labelsize=8)
 
         fig_v.tight_layout()
-        fig_v.savefig(f"{save_dir}/normalized_mod_leison_violin_all_{aname}.png", dpi=300)
+        fig_v.savefig(f"{save_dir}/normalized_mod_lesion_violin_all_{aname}.png", dpi=300)
         plt.close(fig_v)
         print(f"Saved combined modulation violin plot ({n_panels} panels)")
 
         # Ranked mean effect comparison: sorted cluster rank vs mean effect per type.
         # Steeper curve = better separation between critical and dispensable clusters.
-        _rank_colors = {
-            "normalized": "#1b9e77",
-            "unnormalized": "#d95f02",
-            "var-weighted-unnormalized": "#e7298a",
-            "weighted-unnormalized": "#7570b3",
-        }
+        _rank_colors = MODULATION_TYPE_COLORS
         _mod_rank_data = {
             bk.replace("modulation_all_", "").replace("_", "-"): d["select_props"].mean(axis=0) * 100
             for bk, d in _mod_violin_data
         }
         _plot_ranked_effect(_mod_rank_data, _rank_colors,
                             "Ranked cluster importance (modulation)",
-                            f"{save_dir}/normalized_mod_leison_ranked_{aname}.png")
+                            f"{save_dir}/normalized_mod_lesion_ranked_{aname}.png")
 
         # Cluster size vs normalized lesion effect
         # Tests whether larger clusters are more important after size-matching control.
-        _size_colors = {
-            "normalized": "#1b9e77",
-            "unnormalized": "#d95f02",
-            "var-weighted-unnormalized": "#e7298a",
-            "weighted-unnormalized": "#7570b3",
-        }
+        _size_colors = MODULATION_TYPE_COLORS
         fig_size, ax_size = plt.subplots(figsize=(4.5, 3.5), dpi=300)
         for bk, mode_data in _mod_violin_data:
             type_tag = bk.replace("modulation_all_", "").replace("_", "-")
             mean_per_cluster = mode_data["select_props"].mean(axis=0) * 100
             # Get cluster sizes from the lesion pickle
             _mod_rkey = f"{bk}__zero_W"
-            if _mod_rkey in mod_leison_results:
-                _col_cls = mod_leison_results[_mod_rkey]["mod_col_clusters"]
+            if _mod_rkey in mod_lesion_results:
+                _col_cls = mod_lesion_results[_mod_rkey]["mod_col_clusters"]
                 _sorted_ids = sorted(_col_cls.keys())
                 sizes = np.array([len(_col_cls[cid]) for cid in _sorted_ids])
                 _sl, _ic, _r, _p, _ = linregress(sizes, mean_per_cluster)
@@ -1060,17 +1625,12 @@ def main(seed, feature):
         ax_size.spines["right"].set_visible(False)
         ax_size.tick_params(labelsize=7)
         fig_size.tight_layout()
-        fig_size.savefig(f"{save_dir}/normalized_mod_leison_size_vs_effect_{aname}.png", dpi=300)
+        fig_size.savefig(f"{save_dir}/normalized_mod_lesion_size_vs_effect_{aname}.png", dpi=300)
         plt.close(fig_size)
         print("Saved modulation cluster size vs effect plot")
 
         # Histogram for modulation (cluster-averaged + task-specific + summary stats)
-        _mod_hist_colors = {
-            "normalized": "#1b9e77",
-            "unnormalized": "#d95f02",
-            "var-weighted-unnormalized": "#e7298a",
-            "weighted-unnormalized": "#7570b3",
-        }
+        _mod_hist_colors = MODULATION_TYPE_COLORS
         _all_mod_means = np.concatenate([d["select_props"].mean(axis=0) * 100 for _, d in _mod_violin_data])
         _mod_hist_bins = np.linspace(_all_mod_means.min(), _all_mod_means.max(), 15)
         _all_mod_indiv = np.concatenate([d["select_props"].ravel() * 100 for _, d in _mod_violin_data])
@@ -1143,7 +1703,7 @@ def main(seed, feature):
         ax_stats_twin.legend(loc="upper right", fontsize=6, frameon=False)
 
         fig_mhist.tight_layout()
-        fig_mhist.savefig(f"{save_dir}/normalized_mod_leison_hist_mean_{aname}.png", dpi=300)
+        fig_mhist.savefig(f"{save_dir}/normalized_mod_lesion_hist_mean_{aname}.png", dpi=300)
         plt.close(fig_mhist)
         print("Saved modulation histogram (cluster-averaged + task-specific + stats)")
 
@@ -1156,7 +1716,7 @@ def main(seed, feature):
 
         _ari_types = []
         _ari_labels_lst = []
-        for mod_result_key, mod_data in mod_leison_results.items():
+        for mod_result_key, mod_data in mod_lesion_results.items():
             if "zero_W" not in mod_result_key:
                 continue
             base_key = mod_result_key.rsplit("__", 1)[0]
@@ -1218,7 +1778,7 @@ def main(seed, feature):
                 helper.plot_heatmap(
                     mode_data["select_props"], mode_data["cluster_names"], all_tasks,
                     xlabel=f"Modulation Lesion ({mode})", ylabel="Task",
-                    savename=f"normalized_mod_leison_{base_tag}_{mode_tag}",
+                    savename=f"normalized_mod_lesion_{base_tag}_{mode_tag}",
                     aname=aname, label="Normalized Accuracy",
                     vmin=None, vmax=None, save_dir=save_dir,
                 )
@@ -1270,7 +1830,7 @@ def main(seed, feature):
 
         fig_hm.suptitle(f"Normalized modulation lesion effect — {base_tag}", fontsize=10)
         fig_hm.tight_layout()
-        _hm_path = f"{save_dir}/normalized_mod_leison_{base_tag}_combined_heatmap_{aname}"
+        _hm_path = f"{save_dir}/normalized_mod_lesion_{base_tag}_combined_heatmap_{aname}"
         fig_hm.savefig(f"{_hm_path}.png", dpi=300)
         plt.close(fig_hm)
         print(f"Saved combined heatmap for {base_key}")
@@ -1303,7 +1863,7 @@ def main(seed, feature):
         ax.spines["right"].set_visible(False)
 
         fig.tight_layout()
-        fig.savefig(f"{save_dir}/normalized_mod_leison_compare_{base_tag}_{aname}.png", dpi=300)
+        fig.savefig(f"{save_dir}/normalized_mod_lesion_compare_{base_tag}_{aname}.png", dpi=300)
         plt.close(fig)
         print(f"Saved comparison scatter for {base_key}")
 
@@ -1334,11 +1894,10 @@ def main(seed, feature):
 
     _FAM_COLORS = {"reaction": "#d95f02", "memory": "#1b9e77"}
 
-    for _pd_type in ["modulation_all_normalized", "modulation_all_unnormalized",
-                     "modulation_all_weighted_unnormalized",
-                     "modulation_all_var_weighted_unnormalized"]:
-        zw = mod_leison_results.get(f"{_pd_type}__zero_W")
-        fm = mod_leison_results.get(f"{_pd_type}__freeze_M")
+    _mod_sig = {}   # zero_W significance per modulation type, for task specificity
+    for _pd_type in LESION_MODULATION_TYPES:
+        zw = mod_lesion_results.get(f"{_pd_type}__zero_W")
+        fm = mod_lesion_results.get(f"{_pd_type}__freeze_M")
         if zw is None or fm is None:
             continue
         _names_pd = zw["all_comb_names_mod"]
@@ -1359,6 +1918,7 @@ def main(seed, feature):
 
         share = np.full_like(E_zw, np.nan)
         share[sig_zw] = E_fm[sig_zw] / E_zw[sig_zw]              # sig ⇒ E_zw > 0
+        _mod_sig[_pd_type] = {"sig": sig_zw, "cluster_ids": list(_cids)}
 
         n_sig_pd = int(sig_zw.sum())
         type_tag = _pd_type.replace("modulation_all_", "").replace("_", "-")
@@ -1482,13 +2042,13 @@ def main(seed, feature):
         mod_lesion_mode: "zero_W" or "freeze_M"
         cluster_info: neuron clustering pickle (needed to identify unresponsive clusters)
         """
-        ckey = f"combined_leison_{variant}"
+        ckey = f"combined_lesion_{variant}"
         if ckey not in results or not results[ckey]:
             print(f"[om_vs_lesion] skipping {variant}: combined lesion data not found")
             return
         mod_result_key = f"{mod_type_key}__{mod_lesion_mode}"
-        if mod_result_key not in results["mod_leison"]:
-            print(f"[om_vs_lesion] skipping: {mod_result_key} not found in mod_leison")
+        if mod_result_key not in results["mod_lesion"]:
+            print(f"[om_vs_lesion] skipping: {mod_result_key} not found in mod_lesion")
             return
         if mod_type_key not in cluster_info_mod:
             print(f"[om_vs_lesion] skipping: {mod_type_key} not in cluster_info_mod")
@@ -1515,8 +2075,8 @@ def main(seed, feature):
         # The overmembership om_stack uses fixed-k clusters. For unnormalized data,
         # the unresponsive cluster is the last one (index n_in-1 / n_hid-1).
         # For normalized: no unresponsive cluster exists.
-        # Fixed-k modulation labels (from col_labels_by_k) have no separate
-        # unresponsive cluster, so no modulation exclusion is needed.
+        # Modulation clusters enter below only when their ID is in the saved
+        # active OM population and their footprint has supported blocks.
         skip_input = set()
         skip_hidden = set()
         if variant == "unnorm":
@@ -1525,8 +2085,8 @@ def main(seed, feature):
             print(f"[om_vs_lesion] excluding unresponsive: input idx={n_in-1}, hidden idx={n_hid-1}")
 
         # --- Modulation lesion effect (random - cluster), per task ---
-        mod_data = results["mod_leison"][mod_result_key]
-        mod_baseline_keys = {"mod_noleison"}
+        mod_data = results["mod_lesion"][mod_result_key]
+        mod_baseline_keys = {"mod_nolesion"}
         all_comb_names_mod = mod_data["all_comb_names_mod"]
         modtask_accs = np.asarray(mod_data["modtask_accs"], dtype=float)
         modrandomtask_accs = np.asarray(mod_data["modrandomtask_accs"], dtype=float)
@@ -1580,33 +2140,27 @@ def main(seed, feature):
         if not row_om_list:
             print(f"[om_vs_lesion] no data points to plot")
             return
-        mod_profiles = np.array(mod_profiles)
-        om_vals = np.concatenate(row_om_list)
-        lesion_diffs = np.concatenate([
-            np.mean(np.abs(cm - mp[None, :]), axis=1)
-            for mp, cm in zip(mod_profiles, row_cm_list)])
-
-        if len(om_vals) < 2:
+        if sum(len(values) for values in row_om_list) < 2:
             print(f"[om_vs_lesion] no data points to plot")
             return
 
-        # Naive regression (slope/line for display; its p treats every point
-        # as independent and is kept only for reference) + the honest
-        # cluster-permutation p (see _om_scatter_perm_test).
-        slope, intercept, r, p, _ = linregress(om_vals, lesion_diffs)
-        _, p_perm, _null_r = _om_scatter_perm_test(mod_profiles, row_om_list, row_cm_list)
+        summary = _om_scatter_summary(mod_profiles, row_om_list, row_cm_list)
+        om_vals, lesion_diffs = summary["om_vals"], summary["lesion_diffs"]
+        association, medians = summary["association"], summary["binned_medians"]
+        rho, p_perm = association["rho"], association["p_perm"]
 
         fig, ax = plt.subplots(figsize=(5, 4.5), dpi=300)
-        ax.scatter(om_vals, lesion_diffs, alpha=0.5, s=20, edgecolors="none", color="steelblue")
-
-        x_line = np.linspace(om_vals.min(), om_vals.max(), 100)
-        ax.plot(x_line, slope * x_line + intercept, color="tomato", linewidth=1.2)
+        ax.scatter(om_vals, lesion_diffs, alpha=0.25, s=20, edgecolors="none", color="steelblue")
+        ax.plot(medians["x"], medians["y"], "o-", color="tomato", linewidth=1.2,
+                markersize=4, label="Binned median")
+        ax.set_ylim(bottom=0)
+        ax.legend(loc="lower left", frameon=False, fontsize=7)
 
         _pp_str = (f"p_perm = {p_perm:.3f}" if np.isfinite(p_perm) else "p_perm = n/a")
         ax.text(0.05, 0.95,
-                f"r = {r:.2f}, slope = {slope:.2f}\n"
+            f"Spearman rho = {rho:.2f}\n"
                 f"{_pp_str} ({OM_N_PERM} perms, {len(mod_profiles)} clusters)\n"
-                f"n = {len(om_vals)} (naive p = {p:.1e})",
+            f"n = {len(om_vals)}",
                 transform=ax.transAxes, va="top", ha="left", fontsize=8)
 
         ax.set_xlabel("Over-membership")
@@ -1628,14 +2182,10 @@ def main(seed, feature):
         data_path = f"{save_dir}/om_vs_lesion_diff_{type_tag}_{mode_tag}_{variant}_{aname}.pkl"
         with open(data_path, "wb") as _f:
             pickle.dump({
-                "om_vals": om_vals,
-                "lesion_diffs": lesion_diffs,
+                "schema_version": 2,
+                **summary,
                 "aname": aname,
                 "labels": labels,
-                "regression": {"slope": slope, "intercept": intercept, "r": r, "p": p},
-                "permutation": {"p_perm": p_perm, "null_r": _null_r,
-                                "n_perm": OM_N_PERM, "n_clusters": len(mod_profiles),
-                                "side": "one-sided (r <= r_obs)"},
                 "y_definition": "task-profile L1/T: mean_t |mod_effect(t) - combined_effect(t)|",
                 "mod_type_key": mod_type_key,
                 "mod_lesion_mode": mod_lesion_mode,
@@ -1661,7 +2211,7 @@ def main(seed, feature):
             if mode not in modes:
                 continue
             mod_result_key = f"{base_key}__{mode}"
-            if mod_result_key not in results["mod_leison"]:
+            if mod_result_key not in results["mod_lesion"]:
                 continue
             if base_key not in cluster_info_mod:
                 continue
@@ -1686,8 +2236,8 @@ def main(seed, feature):
                 skip_input.add(n_in - 1)
                 skip_hidden.add(n_hid - 1)
 
-            mod_data = results["mod_leison"][mod_result_key]
-            mod_baseline_keys_ = {"mod_noleison"}
+            mod_data = results["mod_lesion"][mod_result_key]
+            mod_baseline_keys_ = {"mod_nolesion"}
             all_comb_names_mod = mod_data["all_comb_names_mod"]
             modtask_accs = np.asarray(mod_data["modtask_accs"], dtype=float)
             modrandomtask_accs = np.asarray(mod_data["modrandomtask_accs"], dtype=float)
@@ -1699,7 +2249,7 @@ def main(seed, feature):
                 cid = int(key.replace("mod_c", ""))
                 mod_effects[cid] = modrandomtask_accs[:, key_idx] - modtask_accs[:, key_idx]
 
-            ckey = f"combined_leison_{variant}"
+            ckey = f"combined_lesion_{variant}"
             if ckey not in results or not results[ckey]:
                 continue
             cdata = results[ckey]
@@ -1729,16 +2279,9 @@ def main(seed, feature):
                 row_cm_list.append(combined_effect[:, point_mask].T)  # (B, T)
 
             if row_om_list:
-                mod_profiles = np.array(mod_profiles)
-                om_vals = np.concatenate(row_om_list)
-                lesion_diffs = np.concatenate([
-                    np.mean(np.abs(cm - mp[None, :]), axis=1)
-                    for mp, cm in zip(mod_profiles, row_cm_list)])
-                if len(om_vals) >= 2:
-                    _, _p_perm, _ = _om_scatter_perm_test(
+                if sum(len(values) for values in row_om_list) >= 2:
+                    mode_data_all[mode] = _om_scatter_summary(
                         mod_profiles, row_om_list, row_cm_list)
-                    mode_data_all[mode] = (om_vals, lesion_diffs,
-                                           _p_perm, len(mod_profiles))
 
         if len(mode_data_all) < 2:
             return
@@ -1749,7 +2292,7 @@ def main(seed, feature):
         # Uses zero_W mode for the prediction.
         _pred_x, _pred_y = [], []
         mod_result_key_zw = f"{base_key}__zero_W"
-        if mod_result_key_zw in results["mod_leison"] and base_key in cluster_info_mod:
+        if mod_result_key_zw in results["mod_lesion"] and base_key in cluster_info_mod:
             _mod_keys_p = cluster_info_mod[base_key]
             _fk_ga_keys_p = [k for k in _mod_keys_p if k.startswith("global_assignment_fixed_k")]
             ga_p = _mod_keys_p[_fk_ga_keys_p[0]] if _fk_ga_keys_p else _mod_keys_p.get("global_assignment")
@@ -1759,19 +2302,19 @@ def main(seed, feature):
                 n_in_p, n_hid_p = ga_p["n_in"], ga_p["n_hid"]
                 om_id_to_idx_p = {cid: idx for idx, cid in enumerate(all_choice_order_p)}
 
-                ckey_p = f"combined_leison_{variant}"
+                ckey_p = f"combined_lesion_{variant}"
                 if ckey_p in results and results[ckey_p]:
                     cdata_p = results[ckey_p]
                     comb_eff_p = (np.asarray(cdata_p["combined_random_accs"], dtype=float)
                                   - np.asarray(cdata_p["combined_accs"], dtype=float))
                     comb_mean_p = comb_eff_p.mean(axis=0)  # (pre_n, post_n)
 
-                    mod_data_p = results["mod_leison"][mod_result_key_zw]
+                    mod_data_p = results["mod_lesion"][mod_result_key_zw]
                     _mt_p = np.asarray(mod_data_p["modtask_accs"], dtype=float)
-                    _baseline_idx_p = mod_data_p["all_comb_names_mod"].index("mod_noleison")
+                    _baseline_idx_p = mod_data_p["all_comb_names_mod"].index("mod_nolesion")
                     _base_p = _mt_p[:, _baseline_idx_p]
                     for key_idx, key in enumerate(mod_data_p["all_comb_names_mod"]):
-                        if key == "mod_noleison":
+                        if key == "mod_nolesion":
                             continue
                         cid = int(key.replace("mod_c", ""))
                         if cid not in om_id_to_idx_p:
@@ -1798,24 +2341,27 @@ def main(seed, feature):
 
         fig, axes = plt.subplots(1, 3 if _has_pred else 2,
                                  figsize=(10.5 if _has_pred else 7, 3.2), dpi=300)
-        mode_regressions = {}
         for ax, mode in zip(axes[:2], ["zero_W", "freeze_M"]):
             if mode not in mode_data_all:
                 ax.set_visible(False)
                 continue
-            om_vals, lesion_diffs, p_perm, n_clusters = mode_data_all[mode]
-            slope, intercept, r, p, _ = linregress(om_vals, lesion_diffs)
-            mode_regressions[mode] = {"slope": slope, "intercept": intercept, "r": r, "p": p}
+            summary = mode_data_all[mode]
+            om_vals, lesion_diffs = summary["om_vals"], summary["lesion_diffs"]
+            association, medians = summary["association"], summary["binned_medians"]
+            rho, p_perm = association["rho"], association["p_perm"]
+            n_clusters = association["n_clusters"]
 
-            ax.scatter(om_vals, lesion_diffs, alpha=0.4, s=12, edgecolors="none", color="steelblue")
-            x_line = np.linspace(om_vals.min(), om_vals.max(), 100)
-            ax.plot(x_line, slope * x_line + intercept, color="tomato", linewidth=1.0)
+            ax.scatter(om_vals, lesion_diffs, alpha=0.25, s=12, edgecolors="none", color="steelblue")
+            ax.plot(medians["x"], medians["y"], "o-", color="tomato", linewidth=1.0,
+                    markersize=3, label="Binned median")
+            ax.set_ylim(bottom=0)
+            ax.legend(loc="lower left", frameon=False, fontsize=6)
 
             _pp_str = (f"p_perm = {p_perm:.3f}" if np.isfinite(p_perm)
                        else "p_perm = n/a")
             ax.text(0.05, 0.95,
-                    f"r = {r:.2f}\n{_pp_str} ({n_clusters} clusters)\n"
-                    f"n = {len(om_vals)} (naive p = {p:.1e})",
+                    f"Spearman rho = {rho:.2f}\n{_pp_str} ({n_clusters} clusters)\n"
+                    f"n = {len(om_vals)}",
                     transform=ax.transAxes, va="top", ha="left", fontsize=7)
             ax.set_xlabel("Over-membership", fontsize=8)
             ax.set_ylabel("Profile L1 dist. (mean |Δ| over tasks)", fontsize=8)
@@ -1860,7 +2406,8 @@ def main(seed, feature):
         plt.close(fig)
         print(f"[om_vs_lesion] saved combined: {savepath}")
         _perm_summary = ", ".join(
-            f"{mode} p_perm={vals[2]:.3f}" for mode, vals in mode_data_all.items())
+            f"{mode} Spearman p_perm={values['association']['p_perm']:.3f}"
+            for mode, values in mode_data_all.items())
         print(f"[om_vs_lesion] {type_tag} [{variant}] permutation "
               f"({OM_N_PERM} perms): {_perm_summary}"
               + (f", prediction p_perm={_pred_p_perm:.3f}"
@@ -1872,12 +2419,8 @@ def main(seed, feature):
         data_path = f"{save_dir}/om_vs_lesion_diff_{type_tag}_combined_{variant}_{aname}.pkl"
         with open(data_path, "wb") as _f:
             pickle.dump({
-                "mode_data": {
-                    mode: {"om_vals": vals[0], "lesion_diffs": vals[1],
-                           "p_perm": vals[2], "n_clusters": vals[3],
-                           "regression": mode_regressions[mode]}
-                    for mode, vals in mode_data_all.items()
-                },
+                "schema_version": 2,
+                "mode_data": mode_data_all,
                 "aname": aname,
                 "prediction": ({"predicted_pct": np.asarray(_pred_x),
                                 "actual_pct": np.asarray(_pred_y),
@@ -1889,7 +2432,7 @@ def main(seed, feature):
                 "variant": variant,
                 "min_expected": OM_MIN_EXPECTED,
                 "n_perm": OM_N_PERM,
-                "perm_side": {"scatter": "one-sided (r <= r_obs)",
+                "perm_side": {"scatter": "one-sided (rho <= rho_obs)",
                               "prediction": "one-sided (r >= r_obs)"},
                 "y_definition": "task-profile L1/T: mean_t |mod_effect(t) - combined_effect(t)|",
             }, _f)
@@ -1911,7 +2454,7 @@ def main(seed, feature):
         input/hidden classes excluded for the unnorm variant, as elsewhere.
         """
         mod_result_key = f"{base_key}__zero_W"
-        if (mod_result_key not in results["mod_leison"]
+        if (mod_result_key not in results["mod_lesion"]
                 or base_key not in cluster_info_mod):
             return
         _mk = cluster_info_mod[base_key]
@@ -1923,7 +2466,7 @@ def main(seed, feature):
         om_id_to_idx = {cid: idx for idx, cid in enumerate(ga["all_choice_order"])}
         n_in, n_hid = ga["n_in"], ga["n_hid"]
 
-        ckey = f"combined_leison_{variant}"
+        ckey = f"combined_lesion_{variant}"
         if ckey not in results or not results[ckey]:
             return
         cdata = results[ckey]
@@ -1937,13 +2480,13 @@ def main(seed, feature):
         sel_h = np.arange(n_hid - 1 if variant == "unnorm" else n_hid)
         CE_s = CE[:, sel_i][:, :, sel_h]                         # (T, P', H')
 
-        mod_data = results["mod_leison"][mod_result_key]
+        mod_data = results["mod_lesion"][mod_result_key]
         _mt = np.asarray(mod_data["modtask_accs"], float)
-        _baseline_idx = mod_data["all_comb_names_mod"].index("mod_noleison")
+        _baseline_idx = mod_data["all_comb_names_mod"].index("mod_nolesion")
         _base = _mt[:, _baseline_idx]
         clusters, om_rows, actual = [], [], []
         for key_idx, key in enumerate(mod_data["all_comb_names_mod"]):
-            if key == "mod_noleison":
+            if key == "mod_nolesion":
                 continue
             cid = int(key.replace("mod_c", ""))
             if cid not in om_id_to_idx:
@@ -2107,6 +2650,93 @@ def main(seed, feature):
               f"{_xl[alphas.index(best['alpha'])]} (cell r={best['r_cell']:.2f}, "
               f"slope={best['slope']:.2f})")
 
+    # ══════════════════════════════════════════════════════════════════
+    # Task specificity of clusters and compositional sharing (docstring #11).
+    # Significance masks: unnormalized input/hidden neuron clusters from the
+    # causal-dependency block, var-weighted zero_W synapse clusters from the
+    # plasticity-share block (both one-sided BH-FDR q=0.05 against control
+    # repeats). The unresponsive last cluster of each type is excluded.
+    # ══════════════════════════════════════════════════════════════════
+    _spec_types = {}
+    if "unnorm" in _causal_sig:
+        _cs = _causal_sig["unnorm"]
+        for side, prefix in (("input", "i"), ("hidden", "h")):
+            cols = [k for k, n in enumerate(_cs["cluster_names"]) if n.startswith(prefix)]
+            cols = cols[:-1]   # drop the unresponsive class (last per side)
+            if len(cols) >= 2:
+                _spec_types[side] = {"sig": _cs["sig"][:, cols],
+                                     "cluster_labels": [_cs["cluster_names"][k] for k in cols]}
+    _spec_mod_key = "modulation_all_var_weighted_unnormalized"
+    if _spec_mod_key in _mod_sig:
+        _ms = _mod_sig[_spec_mod_key]
+        keep = list(range(len(_ms["cluster_ids"]) - 1))   # drop unresponsive last cluster
+        if len(keep) >= 2:
+            _spec_types["modulation"] = {"sig": _ms["sig"][:, keep],
+                                         "cluster_labels": [f"c{_ms['cluster_ids'][k]}" for k in keep]}
+    if _spec_types:
+        _spec = _task_specificity_summary(_spec_types, all_tasks)
+        _spec["aname"] = aname
+        _spec["modulation_type"] = _spec_mod_key
+        _spec["neuron_variant"] = "unnormalized"
+        _spec["significance"] = "one-sided z vs control repeats, BH-FDR q=0.05"
+        with open(f"{save_dir}/task_specificity_{aname}.pkl", "wb") as _f:
+            pickle.dump(_spec, _f)
+
+        _type_colors = {"input": "#2171b5", "hidden": "#cb181d", "modulation": "#e7298a"}
+        fig, axs = plt.subplots(1, 1 + len(_spec_types), figsize=(4.2 * (1 + len(_spec_types)), 3.4),
+                                dpi=300, squeeze=False)
+        ax0 = axs[0, 0]
+        n_tasks = len(all_tasks)
+        for type_name, entry in _spec["types"].items():
+            counts = entry["dispersion"]["counts"]
+            hist = np.bincount(counts, minlength=n_tasks + 1) / counts.size
+            ax0.plot(range(n_tasks + 1), hist, "o-", markersize=3, linewidth=1,
+                     color=_type_colors[type_name],
+                     label=f"{type_name} (n={counts.size}; dispersion p="
+                           f"{entry['dispersion']['p_perm']:.3f})")
+        ax0.set_xlabel("# tasks a cluster significantly impairs")
+        ax0.set_ylabel("Fraction of clusters")
+        ax0.legend(fontsize=6, frameon=False)
+        ax0.set_title("Task specificity (unresponsive clusters excluded)", fontsize=8)
+        for ax, (type_name, entry) in zip(axs[0, 1:], _spec["types"].items()):
+            sharing = entry["sharing"]
+            for pos, name in enumerate(sharing["relations"]):
+                rel = sharing["by_relation"][name]
+                values = rel["values"][np.isfinite(rel["values"])]
+                if values.size:
+                    ax.scatter(np.full(values.size, pos) + np.linspace(-0.15, 0.15, values.size),
+                               values, s=10, alpha=0.6, color=_type_colors[type_name],
+                               edgecolors="none")
+                    ax.scatter([pos], [np.nanmedian(values)], marker="_", s=200,
+                               color="black", linewidths=1.5, zorder=3)
+                    ax.text(pos, 1.02, f"p={rel['p_perm']:.2f}", ha="center",
+                            va="bottom", fontsize=5.5)
+            ax.set_xticks(range(len(sharing["relations"])))
+            ax.set_xticklabels(sharing["relations"], rotation=35, ha="right", fontsize=6)
+            ax.set_ylim(-0.02, 1.12)
+            ax.set_ylabel("Jaccard overlap of impaired clusters", fontsize=7)
+            related = sharing["by_relation"]["related"]
+            ax.set_title(f"{type_name}: related pairs mean {related['mean']:.2f}, "
+                         f"p={related['p_perm']:.3f}", fontsize=8)
+        for ax in axs[0]:
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.tick_params(labelsize=6)
+        fig.tight_layout()
+        fig.savefig(f"{save_dir}/task_specificity_{aname}.png", dpi=300)
+        plt.close(fig)
+        for type_name, entry in _spec["types"].items():
+            disp = entry["dispersion"]
+            rel = entry["sharing"]["by_relation"]
+            print(f"[task-specificity] {type_name}: tasks/cluster median "
+                  f"{np.median(disp['counts']):.0f} (range {disp['counts'].min()}-"
+                  f"{disp['counts'].max()}), dispersion var {disp['observed_var']:.2f} vs null "
+                  f"{disp['null_var'].mean():.2f} p={disp['p_perm']:.3f}; related-pair Jaccard "
+                  f"{rel['related']['mean']:.2f} vs other {rel['other']['mean']:.2f} "
+                  f"p={rel['related']['p_perm']:.3f}")
+    else:
+        print("[task-specificity] no significance masks available, skipping")
+
     # Load cluster_info and cluster_info_mod for overmembership analysis
     cluster_path = f"./multiple_tasks_analysis/{aname}/cluster_info_{aname}.pkl"
     cluster_mod_path = f"./multiple_tasks_analysis/{aname}/cluster_info_mod_{aname}.pkl"
@@ -2119,7 +2749,7 @@ def main(seed, feature):
         # Group by (base_key, variant) to plot both modes side-by-side
         from collections import defaultdict
         _om_groups = defaultdict(dict)
-        for mod_result_key in results["mod_leison"]:
+        for mod_result_key in results["mod_lesion"]:
             base_key, mode = mod_result_key.rsplit("__", 1)
             if "normalized" in base_key and "unnormalized" not in base_key:
                 variant = "norm"
@@ -2145,150 +2775,163 @@ def main(seed, feature):
     else:
         print(f"[om_vs_lesion] cluster pickle(s) not found, skipping")
 
-    # ── Cluster similarity vs normalized lesion effect ──
-    def plot_cluster_corr_vs_lesion(corr_matrices_dict, select_props_mat, slices_dict,
-                                    savesuffix, aname, save_dir,
-                                    cluster_means_dict=None,
+    # ── Cluster tuning similarity vs lesion-profile similarity (docstring #4) ──
+    def plot_cluster_corr_vs_lesion(panels, savesuffix, aname, save_dir,
                                     exclude_last_cluster=False):
-        """3×N figure: for each cluster type (column),
-        row 0 = cluster tuning cosine similarity heatmap,
-        row 1 = lesion effect L1 distance heatmap,
-        row 2 = scatter of tuning cosine sim vs lesion L1 distance.
+        """5×N diagnostic figure and the paper-facing scatter cache.
 
-        corr_matrices_dict only supplies the panel names and cluster counts;
-        both plotted matrices are computed here — tuning similarity from
-        cluster_means_dict, lesion L1 distance from select_props_mat.
-
-        If exclude_last_cluster=True, the last cluster (unresponsive) is excluded
-        from the scatter plot (row 2) but still shown in the heatmaps."""
-        n_cols = len(corr_matrices_dict)
-        fig, axs = plt.subplots(3, n_cols, figsize=(4.5 * n_cols, 11), dpi=300,
+        panels: ordered {name: {"cluster_means": (F, C), "lesion_acc": (T, C),
+        "control_raw": (T, C, R), "cluster_labels": [C labels],
+        optional "mod_lesion_mode"}}. Every statistic is computed by
+        `_tuning_vs_lesion_summary`; this function only draws and saves.
+        Rows: tuning-correlation heatmap, lesion-profile dissimilarity heatmap
+        (both over the compared clusters), the scale-free scatter with its
+        Spearman rho and label-permutation p, then the L1 supplement: tuning
+        cosine vs L1 and summed effect magnitude vs L1.
+        """
+        n_cols = len(panels)
+        fig, axs = plt.subplots(5, n_cols, figsize=(4.5 * n_cols, 18), dpi=300,
                                 squeeze=False)
-
-        from sklearn.metrics.pairwise import cosine_similarity as _cosine_sim
-        from scipy.spatial.distance import squareform as _squareform, pdist as _pdist
-
         scatter_save_data = {}
 
-        for col, (name, corr_matrix) in enumerate(corr_matrices_dict.items()):
-            lesion_vecs = select_props_mat[:, slices_dict[name]].T  # (n_clusters, n_tasks)
+        def _rank_label(association):
+            if not np.isfinite(association["rho"]):
+                return "constant x or y"
+            return (f"rho = {association['rho']:.2f}\n"
+                    f"permutation p = {association['p_perm']:.3f} "
+                    f"(n = {association['n_clusters']} clusters)")
 
-            # Cluster tuning: cosine similarity between cluster mean profiles.
-            # Required — a silent fallback here (the old np.eye placeholder)
-            # would draw a meaningless identity-similarity panel instead of
-            # failing, so missing means are treated as a caller error.
-            if cluster_means_dict is None or name not in cluster_means_dict:
-                raise ValueError(
-                    f"cluster_means_dict must provide {name!r}: the tuning-"
-                    "similarity panel is computed from cluster mean profiles"
-                )
-            tuning_cos = _cosine_sim(cluster_means_dict[name].T)
-            # Lesion effect: L1 distance between lesion effect vectors
-            lesion_l1 = _squareform(_pdist(lesion_vecs, metric="cityblock"))
+        for col, (name, panel) in enumerate(panels.items()):
+            try:
+                summary = _tuning_vs_lesion_summary(
+                    panel["cluster_means"], panel["lesion_acc"], panel["control_raw"],
+                    panel["cluster_labels"], exclude_last_cluster=exclude_last_cluster)
+            except ValueError as error:
+                print(f"[cluster_corr_vs_lesion] {name}: {error}; panel skipped")
+                for row in range(5):
+                    axs[row, col].set_axis_off()
+                axs[0, col].set_title(f"{name}: skipped ({error})", fontsize=7)
+                continue
+            summary["aname"] = aname
+            if "mod_lesion_mode" in panel:
+                summary["mod_lesion_mode"] = panel["mod_lesion_mode"]
+            summary["tuning_profile"] = panel.get("tuning_profile", "cluster mean")
+            scatter_save_data[name] = summary
 
-            n = corr_matrix.shape[0]
+            labels = [str(label).replace("pre_c", "i").replace("post_c", "h")
+                      .replace("mod_c", "c") for label in summary["included_clusters"]]
+            n = len(labels)
             tril_idx = np.tril_indices(n, k=-1)
-            cluster_labels = [str(i) for i in range(n)]
+            for row, (matrix, cmap, limits, cbar_label, title) in enumerate((
+                    (summary["tuning_corr_matrix"], "RdBu_r", (-1, 1), "Pearson r",
+                     "tuning profile correlation"),
+                    (summary["lesion_profile_dissim_matrix"], "viridis", (0, 2),
+                     "1 - r", "lesion profile dissimilarity (z-scored)"))):
+                ax = axs[row, col]
+                shown = np.full((n, n), np.nan)
+                shown[tril_idx] = matrix[tril_idx]
+                image = ax.imshow(shown, aspect="auto", cmap=cmap, vmin=limits[0],
+                                  vmax=limits[1], origin="upper")
+                fig.colorbar(image, ax=ax, shrink=0.8, label=cbar_label)
+                ax.set_xticks(range(n))
+                ax.set_yticks(range(n))
+                ax.set_xticklabels(labels, rotation=90, fontsize=6)
+                ax.set_yticklabels(labels, fontsize=6)
+                ax.set_xlabel("Cluster")
+                ax.set_ylabel("Cluster")
+                ax.set_title(f"{name}: {title}")
 
-            ax0 = axs[0, col]
-            mat0 = np.full((n, n), np.nan)
-            mat0[tril_idx] = tuning_cos[tril_idx]
-            im0 = ax0.imshow(mat0, aspect="auto", cmap="RdBu_r", vmin=-1, vmax=1,
-                             origin="upper")
-            fig.colorbar(im0, ax=ax0, shrink=0.8, label="Cosine sim.")
-            ax0.set_xticks(range(n))
-            ax0.set_yticks(range(n))
-            ax0.set_xticklabels(cluster_labels)
-            ax0.set_yticklabels(cluster_labels)
-            ax0.set_xlabel("Cluster index")
-            ax0.set_ylabel("Cluster index")
-            ax0.set_title(f"{name}: tuning cosine similarity")
+            ax_main = axs[2, col]
+            ax_main.scatter(summary["tuning_corr"], summary["lesion_profile_dissim"],
+                            alpha=0.6, s=30, edgecolors="none", color="steelblue")
+            ax_main.text(0.05, 0.95, _rank_label(summary["association"]),
+                         transform=ax_main.transAxes, va="top", ha="left", fontsize=8)
+            trend = summary["trend_line"]
+            if trend is not None:
+                x_line = np.linspace(summary["tuning_corr"].min(), summary["tuning_corr"].max(), 50)
+                ax_main.plot(x_line, trend["intercept"] + trend["slope"] * x_line,
+                             color="tomato", linewidth=1.2, label="OLS guide")
+            ax_main.set_xlabel("Tuning profile correlation")
+            ax_main.set_ylabel("Lesion profile dissimilarity (1 - r)")
+            ax_main.set_ylim(bottom=0)
+            excluded = summary["excluded_clusters"]
+            ax_main.set_title(
+                f"{name}: {n} clusters compared; excluded "
+                f"{len(excluded['last'])} last, {len(excluded['not_significant'])} "
+                f"non-significant, {len(excluded['degenerate'])} degenerate", fontsize=7)
 
-            ax1 = axs[1, col]
-            mat1 = np.full((n, n), np.nan)
-            mat1[tril_idx] = lesion_l1[tril_idx]
-            im1 = ax1.imshow(mat1, aspect="auto", cmap="viridis",
-                             origin="upper")
-            fig.colorbar(im1, ax=ax1, shrink=0.8, label="L1 distance")
-            ax1.set_xticks(range(n))
-            ax1.set_yticks(range(n))
-            ax1.set_xticklabels(cluster_labels)
-            ax1.set_yticklabels(cluster_labels)
-            ax1.set_xlabel("Cluster index")
-            ax1.set_ylabel("Cluster index")
-            ax1.set_title(f"{name}: lesion effect L1 distance")
+            supplement = summary["l1"]
+            for row, (x_values, x_label, association) in enumerate((
+                    (supplement["tuning_cos_sim"], "Tuning cosine similarity",
+                     supplement["association_tuning"]),
+                    (supplement["effect_magnitude_sum"],
+                     "Summed effect magnitude of the pair",
+                     supplement["association_magnitude"])), start=3):
+                ax = axs[row, col]
+                ax.scatter(x_values, supplement["lesion_l1_dist"], alpha=0.6, s=30,
+                           edgecolors="none", color="grey")
+                ax.text(0.05, 0.95, _rank_label(association), transform=ax.transAxes,
+                        va="top", ha="left", fontsize=8)
+                ax.set_xlabel(x_label)
+                ax.set_ylabel("Lesion effect L1 distance")
+                ax.set_title(f"{name}: L1 supplement", fontsize=8)
 
-            ax2 = axs[2, col]
-            if exclude_last_cluster and n > 1:
-                # Exclude pairs involving the last cluster (unresponsive)
-                n_active = n - 1
-                tril_idx_active = np.tril_indices(n_active, k=-1)
-                x = tuning_cos[:n_active, :n_active][tril_idx_active]
-                y = lesion_l1[:n_active, :n_active][tril_idx_active]
-            else:
-                x = tuning_cos[tril_idx]
-                y = lesion_l1[tril_idx]
-            ax2.scatter(x, y, alpha=0.6, s=30, edgecolors="none", color="steelblue")
-
-            regression = None
-            if np.std(x) > 1e-12 and np.std(y) > 1e-12:
-                slope, intercept, r, p, _ = linregress(x, y)
-                regression = {"slope": slope, "intercept": intercept, "r": r, "p": p}
-                x_line = np.linspace(x.min(), x.max(), 100)
-                ax2.plot(x_line, slope * x_line + intercept, color="tomato", linewidth=1.2)
-
-                p_str = f"p = {p:.2e}" if p < 0.001 else f"p = {p:.3f}"
-                ax2.text(0.05, 0.95, f"r = {r:.2f}\n{p_str}",
-                         transform=ax2.transAxes, va="top", ha="left", fontsize=8)
-            else:
-                ax2.text(0.05, 0.95, "constant x or y", transform=ax2.transAxes,
-                         va="top", ha="left", fontsize=8)
-
-            ax2.set_xlabel("Tuning cosine similarity")
-            ax2.set_ylabel("Lesion effect L1 distance")
-            ax2.set_title(f"{name} clusters")
-
-            scatter_save_data[name] = {
-                "tuning_cos_sim": x.tolist(),
-                "lesion_l1_dist": y.tolist(),
-                "regression": regression,
-                "y_definition": "sum_over_tasks_abs_effect_difference",
-                "exclude_last_cluster": exclude_last_cluster,
-                "aname": aname,
-            }
+            print(f"[cluster_corr_vs_lesion] {name}: rho={summary['association']['rho']:+.2f} "
+                  f"p_perm={summary['association']['p_perm']:.3f} over {n} clusters; "
+                  f"L1 vs tuning cos rho={supplement['association_tuning']['rho']:+.2f}, "
+                  f"L1 vs magnitude rho={supplement['association_magnitude']['rho']:+.2f}")
 
         fig.tight_layout()
         fig.savefig(f"{save_dir}/cluster_corr_vs_{savesuffix}_{aname}.png", dpi=300)
         plt.close(fig)
         print(f"Saved cluster_corr_vs_{savesuffix}")
 
-        # Save scatter data for paper_plot reuse
         scatter_pkl_path = f"{save_dir}/cluster_corr_vs_{savesuffix}_{aname}.pkl"
         with open(scatter_pkl_path, "wb") as _f:
             pickle.dump(scatter_save_data, _f)
         print(f"Saved scatter data: {scatter_pkl_path}")
 
+    def _neuron_lesion_panels(lesion_key, random_key, cluster_means_by_side):
+        """Split neuron lesion accuracies and control repeats into input/hidden panels.
+
+        cluster_means_by_side: {"input": (name, (F, C)), "hidden": (name, (F, C))}.
+        Columns follow the saved condition order with baselines removed.
+        """
+        names = results[lesion_key]["all_comb_names_lesion"]
+        acc = np.asarray(results[lesion_key]["ihtask_accs"], dtype=float)
+        raw = np.asarray(results[random_key]["ihrandomtask_accs_raw"], dtype=float)
+        panels = {}
+        for side, prefix in (("input", "pre_c"), ("hidden", "post_c")):
+            index = [k for k, key in enumerate(names)
+                     if key.startswith(prefix) and key not in baseline_keys]
+            panel_name, means = cluster_means_by_side[side]
+            if means.shape[1] != len(index):
+                raise ValueError(f"{panel_name}: {means.shape[1]} cluster means but "
+                                 f"{len(index)} lesion conditions")
+            panels[panel_name] = {
+                "cluster_means": means, "lesion_acc": acc[:, index],
+                "control_raw": raw[:, index, :],
+                "cluster_labels": [names[k] for k in index],
+            }
+        return panels
+
     # --- Normalized variant ---
-    corr_matrices_norm = results["cluster_similarity"]["corr_matrices"]
     cluster_means_norm = results["cluster_similarity"]["cluster_means"]
     # Keys may be "input_normalized" or "input_normalized_k{N}" depending on FIXED_K
-    _input_norm_key = [k for k in corr_matrices_norm if k.startswith("input_normalized")][0]
-    _hidden_norm_key = [k for k in corr_matrices_norm if k.startswith("hidden_normalized")][0]
-    pre_n = len(corr_matrices_norm[_input_norm_key])
-    post_n = len(corr_matrices_norm[_hidden_norm_key])
-    slices_norm = {
-        _input_norm_key:  slice(0, pre_n),
-        _hidden_norm_key: slice(pre_n, pre_n + post_n),
-    }
+    _input_norm_key = [k for k in cluster_means_norm if k.startswith("input_normalized")][0]
+    _hidden_norm_key = [k for k in cluster_means_norm if k.startswith("hidden_normalized")][0]
     plot_cluster_corr_vs_lesion(
-        corr_matrices_norm, select_props, slices_norm,
-        "normalized_leison_effect", aname, save_dir,
-        cluster_means_dict=cluster_means_norm,
+        _neuron_lesion_panels("lesion", "random_lesion", {
+            "input": (_input_norm_key, np.asarray(cluster_means_norm[_input_norm_key], float)),
+            "hidden": (_hidden_norm_key, np.asarray(cluster_means_norm[_hidden_norm_key], float)),
+        }),
+        "normalized_lesion_effect", aname, save_dir,
     )
 
     # --- Unnormalized variant ---
-    # Compute cluster similarity on-the-fly from cluster_info (not in the lesion pickle)
-    if select_props_unnorm is not None and os.path.exists(cluster_path):
+    # Cluster means are computed on-the-fly from cluster_info (not in the lesion pickle)
+    if ("lesion_unnorm" in results and "random_lesion_unnorm" in results
+            and os.path.exists(cluster_path)):
         try:
             cluster_info
         except NameError:
@@ -2297,10 +2940,9 @@ def main(seed, feature):
 
         _fixed_k_plot = results.get("fixed_k", 20)
 
-        corr_matrices_unnorm = {}
         cluster_means_unnorm = {}
-        _unnorm_keys = {}
-        for name in ["input_unnormalized", "hidden_unnormalized"]:
+        for side in ("input", "hidden"):
+            name = f"{side}_unnormalized"
             if name not in cluster_info:
                 continue
             ci = cluster_info[name]
@@ -2311,31 +2953,20 @@ def main(seed, feature):
                 [V[:, col_clusters[c]].mean(axis=1) for c in range(1, n_clusters + 1)],
                 axis=1,
             )
-            fk_name = f"{name}_k{_fixed_k_plot}"
-            corr_matrices_unnorm[fk_name] = np.corrcoef(cluster_means.T)
-            cluster_means_unnorm[fk_name] = cluster_means
-            _unnorm_keys[name] = fk_name
+            cluster_means_unnorm[side] = (f"{name}_k{_fixed_k_plot}", cluster_means)
 
-        if "input_unnormalized" in _unnorm_keys and "hidden_unnormalized" in _unnorm_keys:
-            _ik = _unnorm_keys["input_unnormalized"]
-            _hk = _unnorm_keys["hidden_unnormalized"]
-            pre_n_u = len(corr_matrices_unnorm[_ik])
-            post_n_u = len(corr_matrices_unnorm[_hk])
-            slices_unnorm = {
-                _ik: slice(0, pre_n_u),
-                _hk: slice(pre_n_u, pre_n_u + post_n_u),
-            }
+        if len(cluster_means_unnorm) == 2:
             plot_cluster_corr_vs_lesion(
-                corr_matrices_unnorm, select_props_unnorm, slices_unnorm,
-                "normalized_leison_effect_unnorm", aname, save_dir,
-                cluster_means_dict=cluster_means_unnorm,
+                _neuron_lesion_panels("lesion_unnorm", "random_lesion_unnorm",
+                                      cluster_means_unnorm),
+                "normalized_lesion_effect_unnorm", aname, save_dir,
                 exclude_last_cluster=True,
             )
 
     # --- Modulation variant ---
-    # For each modulation clustering type × lesion mode, compute cluster similarity
-    # from cell_vars_rules_sorted_norm + the actual cluster assignments used in lesion,
-    # then compare against the normalized modulation lesion effect.
+    # For each modulation clustering type × lesion mode, the cluster means come
+    # from cell_vars_rules_sorted_norm and the cluster assignments actually
+    # used in the lesion; the lesion side uses that mode's raw control repeats.
     if os.path.exists(cluster_mod_path):
         try:
             cluster_info_mod
@@ -2347,46 +2978,51 @@ def main(seed, feature):
             if mod_type_key not in cluster_info_mod:
                 continue
             mod_ci = cluster_info_mod[mod_type_key]
-            V_mod = mod_ci["cell_vars_rules_sorted_norm"]   # (n_tasks, n_synapses)
+            V_mod = mod_ci["cell_vars_rules_sorted_norm"]   # (n_features, n_synapses)
 
             # Use the actual cluster assignments saved in the lesion pickle
-            # (guaranteed to match mod_select_props columns).
-            _any_mode = next(iter(modes_dict.values()))
+            # (guaranteed to match the lesion columns).
             _result_key = f"{mod_type_key}__{next(iter(modes_dict.keys()))}"
-            mod_data_ref = mod_leison_results[_result_key]
-            col_clusters_mod = mod_data_ref["mod_col_clusters"]
+            col_clusters_mod = mod_lesion_results[_result_key]["mod_col_clusters"]
             unique_labels = sorted(col_clusters_mod.keys())
-            n_mod_clusters = len(unique_labels)
             cluster_means_mod = np.stack(
                 [V_mod[:, col_clusters_mod[lab]].mean(axis=1) for lab in unique_labels],
                 axis=1,
-            )  # (n_tasks, n_mod_clusters)
-            corr_matrix_mod = np.corrcoef(cluster_means_mod.T)
+            )  # (n_features, n_mod_clusters)
+            cluster_means_mod, _tuning_note = _tuning_profiles_for_variant(
+                cluster_means_mod, mod_type_key)
 
-            for mode, mode_data in modes_dict.items():
-                mod_select_props = mode_data["select_props"]   # (n_tasks, n_mod_clusters)
-                n_lesion_cols = mod_select_props.shape[1]
-
-                # mod_select_props columns are ordered by sorted cluster IDs,
-                # excluding the no-lesion baseline. The similarity matrix rows/cols
-                # follow unique_labels (also sorted). They should match.
-                if n_lesion_cols != n_mod_clusters:
-                    print(f"[mod corr_vs_lesion] column mismatch for {mod_type_key}__{mode}: "
-                          f"lesion={n_lesion_cols}, similarity={n_mod_clusters}, skipping")
+            for mode in modes_dict:
+                mod_data = mod_lesion_results[f"{mod_type_key}__{mode}"]
+                names_mod = list(mod_data["all_comb_names_mod"])
+                index = [k for k, key in enumerate(names_mod)
+                         if key not in ("mod_nolesion", "mod_cNone")]
+                lesion_labels = [names_mod[k] for k in index]
+                if lesion_labels != [f"mod_c{lab}" for lab in unique_labels]:
+                    print(f"[mod corr_vs_lesion] cluster order mismatch for "
+                          f"{mod_type_key}__{mode}: lesion={lesion_labels}, "
+                          f"similarity={unique_labels}, skipping")
+                    continue
+                if "modrandomtask_accs_raw" not in mod_data:
+                    print(f"[mod corr_vs_lesion] {mod_type_key}__{mode} has no stored "
+                          "control repeats; rerun lesion.py to enable z-scoring, skipping")
                     continue
 
                 type_tag = mod_type_key.replace("modulation_all_", "").replace("_", "-")
                 mode_tag = mode.replace("_", "-")
                 mod_name = f"{type_tag}_{mode_tag}"
-
-                _is_unnorm_mod = "unnormalized" in mod_type_key
                 plot_cluster_corr_vs_lesion(
-                    {mod_name: corr_matrix_mod},
-                    mod_select_props,
-                    {mod_name: slice(0, n_mod_clusters)},
-                    f"mod_leison_effect_{type_tag}_{mode_tag}", aname, save_dir,
-                    cluster_means_dict={mod_name: cluster_means_mod},
-                    exclude_last_cluster=_is_unnorm_mod,
+                    {mod_name: {
+                        "cluster_means": cluster_means_mod,
+                        "lesion_acc": np.asarray(mod_data["modtask_accs"], float)[:, index],
+                        "control_raw": np.asarray(mod_data["modrandomtask_accs_raw"],
+                                                  float)[:, index, :],
+                        "cluster_labels": lesion_labels,
+                        "mod_lesion_mode": mode,
+                        "tuning_profile": _tuning_note,
+                    }},
+                    f"mod_lesion_effect_{type_tag}_{mode_tag}", aname, save_dir,
+                    exclude_last_cluster="unnormalized" in mod_type_key,
                 )
 
     # ══════════════════════════════════════════════════════════════════
@@ -2410,10 +3046,10 @@ def main(seed, feature):
         _cim_for_interaction = None
 
     for vtag, singles, names_f in [
-        ("norm", select_props, all_comb_names_leison_),
+        ("norm", select_props, all_comb_names_lesion_),
         ("unnorm", select_props_unnorm, all_comb_names_unnorm_),
     ]:
-        ckey = f"combined_leison_{vtag}"
+        ckey = f"combined_lesion_{vtag}"
         if singles is None or ckey not in results or not results[ckey]:
             print(f"[interaction {vtag}] missing singles or combined data, skipping")
             continue

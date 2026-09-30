@@ -12,16 +12,21 @@ class LesionClusterSizeTests(unittest.TestCase):
     def data(self, hidden_sizes, modulation_sizes):
         names = [f"post_c{index + 1}" for index in range(len(hidden_sizes))]
         return {
-            "leison_unnorm": {
+            "lesion_unnorm": {
                 "lesion_units": dict(zip(names, hidden_sizes)),
-                "all_comb_names_leison": ["post_noleison", *names],
+                "all_comb_names_lesion": ["post_nolesion", *names],
             },
-            "mod_leison": {
-                "modulation_all_var_weighted_unnormalized__freeze_M": {
+            "mod_lesion": {
+                "modulation_all_var_weighted_unnormalized__zero_W": {
+                    "mod_lesion_mode": "zero_W",
                     "mod_col_clusters": {
                         index + 1: list(range(size))
                         for index, size in reversed(list(enumerate(modulation_sizes)))
                     },
+                },
+                "modulation_all_var_weighted_unnormalized__freeze_M": {
+                    "mod_lesion_mode": "freeze_M",
+                    "mod_col_clusters": {1: [0], 2: [1], 3: [2]},
                 },
             },
         }
@@ -58,6 +63,21 @@ class LesionClusterSizeTests(unittest.TestCase):
                 self.assertGreater(axis.get_ylim()[1], pct.max())
                 self.assertEqual([text.get_text() for text in axis.texts],
                                  ["0%"] * np.count_nonzero(~positive))
+
+    def test_missing_or_mislabeled_zero_w_does_not_use_freeze_m_sizes(self):
+        for problem in ("missing", "mislabeled"):
+            data = self.data([1, 9, 90], [1, 99, 900])
+            key = "modulation_all_var_weighted_unnormalized__zero_W"
+            if problem == "missing":
+                del data["mod_lesion"][key]
+            else:
+                data["mod_lesion"][key]["mod_lesion_mode"] = "freeze_M"
+            with self.subTest(problem=problem), \
+                    patch.object(paper_plot, "_ensure_out_dir"), \
+                    patch.object(paper_plot, "_load_lesion_results", return_value=data), \
+                    patch.object(paper_plot, "_save_fig") as save:
+                paper_plot.plot_lesion_cluster_sizes()
+            save.assert_not_called()
 
     def test_all_zero_sizes_skip_instead_of_producing_invalid_log_axis(self):
         with patch.object(paper_plot, "_ensure_out_dir"), \

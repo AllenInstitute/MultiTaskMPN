@@ -13,8 +13,11 @@ This module owns the following analyses:
      hidden and modulation activity, giving neuron × task-condition matrices.
   3. Hierarchical clustering of those matrices along both axes (task conditions
      and neurons / modulation synapses), k chosen by silhouette within a
-     tolerance band. Modulation synapses are additionally grouped by shared pre-
-     neuron, by shared post-neuron, and by K-means pre-grouping at several G.
+     tolerance band. Modulation synapses are clustered under five feature
+     variants registered in core/modulation_variants.py: Var(M) normalized and
+     unnormalized, Var(W*M), W*Var(M) and |W|*Var(M). They are additionally
+     grouped by shared pre-neuron, by shared post-neuron, and by K-means
+     pre-grouping at several G.
   4. Over-membership and entropy diagnostics asking whether modulation clusters
      align with presynaptic or postsynaptic neuron clusters.
 
@@ -76,6 +79,7 @@ import clustering_metric
 import color_func
 import mpn
 import mpn_tasks
+from modulation_variants import LESION_MODULATION_TYPES, weight_modulation_variance, signed_log1p
 from sibling_delay_analysis import is_sibling_artifact
 
 # Log every saved figure path (like paper_plot.py). Wrap Figure.savefig once so
@@ -161,7 +165,7 @@ def _gap_curve(Z, k_vals):
     return np.asarray(gaps, dtype=float)
 
 
-# Fixed-k dendrogram re-cut shared with leison.py / leison_plot.py — single
+# Fixed-k dendrogram re-cut shared with lesion.py / lesion_plot.py — single
 # implementation in core/clustering.py so the three scripts cannot drift.
 _fixed_k_col_clusters = clustering.fixed_k_col_clusters
 
@@ -668,12 +672,17 @@ def main(seed, feature, clean=True):
     # cluster_info pickle both fire on len(clustering_corr_info) == 4), and the
     # modulation passes rely on those neuron clusters already being registered in
     # col_clusters_all. Reordering the list silently changes what they see.
-    clustering_data_analysis = [xs, xs, hs, hs, Ms_orig, Ms_orig, weighted_Ms_orig, Ms_orig]
-    clustering_data_analysis_names = ["input", "input", "hidden", "hidden", \
-        "modulation_all", "modulation_all", "modulation_all_weighted", "modulation_all_var_weighted"]
-    clustering_data_normalize = [True, False, True, False, True, False, False, False]
-    c_metrics = ["euclidean", "euclidean", "euclidean", "euclidean", "euclidean", "euclidean", "euclidean", "euclidean"]
-    c_methods = ["ward", "ward", "ward", "ward", "ward", "ward", "ward", "ward"]
+    # The five modulation entries are the variants registered in
+    # core/modulation_variants.py (LESION_MODULATION_TYPES): Var(M) normalized and
+    # unnormalized, Var(W*M), W*Var(M) and |W|*Var(M). The last two reuse Ms_orig
+    # and apply their weight after the variance (weight_modulation_variance).
+    clustering_data_analysis = [xs, xs, hs, hs, Ms_orig, Ms_orig, weighted_Ms_orig, Ms_orig, Ms_orig]
+    clustering_data_analysis_names = ["input", "input", "hidden", "hidden",
+                                      "modulation_all", "modulation_all", "modulation_all_weighted",
+                                      "modulation_all_var_weighted", "modulation_all_abs_weighted"]
+    clustering_data_normalize = [True, False, True, False, True, False, False, False, False]
+    c_metrics = ["euclidean"] * len(clustering_data_analysis)
+    c_methods = ["ward"] * len(clustering_data_analysis)
     assert len(clustering_data_analysis) == len(clustering_data_analysis_names) \
         == len(clustering_data_normalize)
 
@@ -798,9 +807,11 @@ def main(seed, feature, clean=True):
             clustering_save_name = clustering_name + "_unnormalized"
             vmins, vmaxs = None, None
 
-        # for var_weighted: compute variance on Ms_orig then weight by modulation_W
-        if "var_weighted" in clustering_name:
-            cell_vars_rules_norm = cell_vars_rules_norm * modulation_W.flatten()[np.newaxis, :]
+        # var_weighted / abs_weighted: variance is computed on Ms_orig above, then
+        # each synapse column is scaled by W or |W| (core/modulation_variants.py).
+        if "all" in clustering_name:
+            cell_vars_rules_norm = weight_modulation_variance(
+                cell_vars_rules_norm, clustering_name, modulation_W)
 
         # modulation only, reshape to (N, post, pre) shape after calculating the variance
         # modulation_W is (post, pre)
@@ -1043,11 +1054,12 @@ def main(seed, feature, clean=True):
             # For unnormalized variance data (all non-negative), apply log1p to compress
             # the dynamic range before clustering so that cosine distance captures
             # selectivity profile shape rather than raw amplitude differences.
-            # Normalized data is passed through unchanged.
+            # Normalized data is passed through unchanged. signed_log1p equals
+            # log1p here; it exists for the signed modulation features below.
             if clustering_normalize:
                 V_for_clustering = cell_vars_rules_sorted_norm
             else:
-                V_for_clustering = np.log1p(cell_vars_rules_sorted_norm)
+                V_for_clustering = signed_log1p(cell_vars_rules_sorted_norm)
 
             # clustering & grouping & re-ordering
             # first loop on input, second loop in hidden
@@ -1940,13 +1952,15 @@ def main(seed, feature, clean=True):
             # pre/post membership statistics.
             # ----------------------------------------------------------------
 
-            # Apply log1p to unnormalized modulation data before clustering,
-            # matching the same transform used for unnormalized input/hidden data.
+            # Compress unnormalized modulation features before clustering, as for
+            # the unnormalized input/hidden data. The compression is sign-symmetric
+            # (sign(x) * log1p(|x|)) because var_weighted features W * Var(M) are
+            # signed; for the non-negative variants it is plain log1p.
             # Normalized data is passed unchanged.
             if clustering_normalize:
                 V_for_clustering_mod = cell_vars_rules_sorted_norm
             else:
-                V_for_clustering_mod = np.log1p(cell_vars_rules_sorted_norm)
+                V_for_clustering_mod = signed_log1p(cell_vars_rules_sorted_norm)
 
             # 2026-04-10: just a buffer to save the 4D shape of the modulation matrix
             assert len(clustering_data_old.shape) == 4
@@ -2478,8 +2492,9 @@ def main(seed, feature, clean=True):
                     # harmless for normalized/unnormalized (exclusions align
                     # with whole silent rows/columns; responsive-block survival
                     # > 99.9%) but a real per-block distortion for
-                    # weighted/var_weighted, where ~40-50% of the synapses
-                    # inside responsive blocks are excluded as weak-|W|.
+                    # the W-weighted variants (weighted / var_weighted /
+                    # abs_weighted), where ~40-50% of the synapses inside
+                    # responsive blocks are excluded as weak-|W|.
                     n_active_block = np.bincount(
                         pre_clusters * n_hid + post_clusters,
                         minlength=n_in * n_hid).reshape(n_in, n_hid).astype(float)
@@ -2526,7 +2541,7 @@ def main(seed, feature, clean=True):
                         "n_active_block": n_active_block,
                     }
 
-                    # ── Fixed-k overmembership (for leison_plot.py) ──
+                    # ── Fixed-k overmembership (for lesion_plot.py) ──
                     # Recompute overmembership using FIXED_K_OM for input, hidden,
                     # and modulation clusters so it aligns with the fixed-k lesion.
                     _input_base_om = "input_normalized" if clustering_normalize else "input_unnormalized"
@@ -3472,6 +3487,12 @@ def main(seed, feature, clean=True):
     del xs, hs, Ms_orig, weighted_Ms_orig
     gc.collect()
 
-    # save this only at the end     
+    # save this only at the end
+    _missing_mod = set(LESION_MODULATION_TYPES) - set(cluster_info_save_mod)
+    _extra_mod = set(cluster_info_save_mod) - set(LESION_MODULATION_TYPES)
+    if _missing_mod or _extra_mod:
+        print(f"WARNING: modulation variants differ from core/modulation_variants.py "
+              f"(missing={sorted(_missing_mod)}, unregistered={sorted(_extra_mod)}); "
+              "lesion.py only lesions registered variants.")
     with open(f"{save_dir}/cluster_info_mod_{savefigure_name_base}.pkl", "wb") as f:
         pickle.dump(cluster_info_save_mod, f)

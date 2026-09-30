@@ -73,17 +73,216 @@ python pretrain/pretraining.py
 python paper_plot.py
 # multi-task clustering, overmembership and network structure
 python paper_plot.py multiple_tasks
-# lesion effects and cross-seed lesion summaries (project spelling: leison)
-python paper_plot.py leison
+# lesion effects and cluster comparisons
+python paper_plot.py lesion
+# pretraining: Relevant and Irrelevant motifs only
+python paper_plot.py pretraining --pretraining-groups motifs
+# pretraining: motifs plus DelayAnti and DelayPro (default)
+python paper_plot.py pretraining --pretraining-groups all
 ```
 
-The `leison` figure mode contains `lesion_heatmap`, `lesion_cluster_sizes`,
-`cluster_corr_vs_lesion`, `om_vs_lesion`, and `cross_seed_summary`.
-These no longer run under `multiple_tasks`; use
-`python paper_plot.py multiple_tasks leison` for both groups. Existing figure
-names and `--only FIGURE` commands are unchanged. Mode runs retain the existing
+`--pretraining-groups {motifs,all}` controls the conditions shown in every
+pretraining paper figure: backbone probe, transfer speed, learning trajectory,
+rule vectors, principal angles, and both aggregate CVE figures. `motifs` selects
+only Relevant/Irrelevant motifs; `all` also includes the DelayAnti/DelayPro
+single-task controls and remains the default. The selection applies to both
+combined and per-seed caches, including the CVE self-reference, and can be
+combined with `--pretraining-bound mod2`, `--no-legend`, or `--only`, for example:
+`python paper_plot.py --only learning_trajectory --pretraining-groups motifs`.
+Other experiment modes are unaffected. Output filenames are unchanged, so
+running the other group selection replaces the same figure; `--only` preserves
+unrelated figures, while mode runs retain the output cleanup described below.
+
+`python paper_plot.py --only learning_trajectory_linear` exports
+`learning_trajectory_linear_n.png`: the same seed and mean curves as
+`learning_trajectory_n.png`, with a linear iteration axis instead of a log axis.
+Both are included in `pretraining` mode and honor the group/bound options.
+For `--only rule_vectors --pretraining-groups motifs`, a vertical divider
+separates the four bars into two pairs (2 | 2); `all` keeps its existing layout.
+
+The `lesion` figure mode contains `lesion_heatmap`, `lesion_cluster_sizes`,
+`cluster_corr_vs_lesion`, `cluster_corr_vs_lesion_weighted`, `om_vs_lesion`,
+`plasticity_share`, `plasticity_share_seeds`, `causal_vs_activity_tasks`,
+`causal_vs_activity_seeds` and `task_specificity`. All but the two `_seeds`
+figures read one run, `LESION_ANAME` (seed 921), independently of `ANAME`,
+which keeps selecting the `multiple_tasks` clustering figures; seed 921 is the
+run whose hidden-neuron tuning-vs-lesion effect is clearest of the seven
+L2=1e-4 seeds. These figures no longer run under `multiple_tasks`; use
+`python paper_plot.py multiple_tasks lesion` for both groups. Existing figure
+names and `--only FIGURE` commands are unchanged. The historical `leison`
+spelling is now `lesion` in commands, module names, output names and cache keys:
+use `multiple_task/lesion.py`, `multiple_task/lesion_plot.py` and the `lesion`
+paper mode. Existing caches have NOT been migrated or renamed. Readers accept
+their legacy filenames, keys and condition labels through a read-only adapter;
+correctly spelled files take precedence when both exist. Conflicting new/old
+keys in one cache raise an error rather than losing data. New results use only
+the corrected spelling; this compatibility does not bypass schema validation.
+Mode runs retain the existing
 behavior of clearing top-level `paper_plot/` outputs; `--only` preserves other
 figures.
+
+`python paper_plot.py --only cluster_corr_vs_lesion` draws the four input/hidden
+scatter figures and two modulation figures:
+`multitask_cluster_corr_vs_lesion_modulation_norm_zero_W_n.png` and
+`multitask_cluster_corr_vs_lesion_modulation_var_weighted_unnorm_zero_W_n.png`.
+Both use cached **zero_W** effects; the unnormalized figure uses var-weighted
+modulation and drops the unresponsive last cluster. Each figure is scale-free
+on both axes: x is the Pearson correlation between cluster mean tuning
+profiles, y is one minus the Pearson correlation between per-task lesion
+effects after z-scoring each effect against its stored random-control repeats
+(control SD floored at one accuracy point). Only clusters whose summed |z|
+exceeds the 95th percentile of a control-only, leave-one-repeat-out null are
+compared. The legend reports Spearman rho with a two-sided cluster-label
+(Mantel-type) permutation p from 10,000 permutations, because the cluster pairs
+share clusters and are not independent samples. The line through the points is
+an ordinary least-squares fit saved by `lesion_plot.py` as a visual guide to the
+trend; it is not the reported statistic and carries no p-value. Caches written
+before the line was added draw without it until `lesion_plot.py` is rerun. All entries come from
+`LESION_ANAME`; across the seven L2=1e-4 seeds the hidden-neuron unnormalized
+entry's rho is negative in every run (similar tuning, similar lesion profile),
+and seed 921 is where it is clearest. Coordinates
+and statistics are read from the `schema_version=2` caches written by
+`lesion_plot.py`; legacy caches holding OLS regressions are skipped, never
+refitted. Missing or incompatible caches skip only the affected figure, with no
+fallback to other variants or freeze_M. The caches also hold an L1
+supplement (the former tuning-cosine vs lesion-effect L1 scatter and L1 vs the
+pair's summed effect magnitude, which is what L1 mostly measures) that
+`lesion_plot.py` draws in its per-run diagnostic figure; `paper_plot.py` does
+not export it. The `_n` suffix is omitted with `--no-legend`.
+
+`python paper_plot.py --only cluster_corr_vs_lesion_weighted` draws the separate
+**Var(WM)** comparison from `LESION_ANAME`, exporting only
+`multitask_cluster_corr_vs_lesion_modulation_weighted_unnorm_zero_W_n.png`.
+The upstream `modulation_all_weighted_unnormalized`
+features take variance **after** multiplying modulation by static W, giving
+`W**2 * Var(M)`, unlike `var_weighted`, which gives `W * Var(M)`.
+The plot reads only the `weighted-unnormalized_zero-W` scatter cache, drops
+the last unresponsive cluster, and reuses the saved profile correlations,
+z-scored lesion dissimilarities and permutation statistics without refitting.
+No clustering or lesion experiment is rerun. Use an allocated compute node for
+rendering; this `--only` command preserves all other figures.
+
+The primary `lesion_heatmap` compares input/hidden neuron lesions with
+var-weighted, unnormalized modulation **zero_W** lesions (selected synaptic
+weights set to zero). Its `lesion_cluster_sizes` companion reads the same
+zero_W cluster memberships. `lesion_plot.py` exports both zero_W and freeze_M
+effects with explicit mode metadata; missing zero_W results are never replaced
+by freeze_M in these two figures. Existing explicit zero_W cache keys remain
+readable. The OM scatter reads the same zero_W mode (`paper_plot.OM_LESION_MODE`),
+so heatmap, cluster sizes and scatter describe one lesion experiment; upstream
+plasticity-share/cross-mode comparisons retain both intervention modes.
+
+The OM-versus-lesion-profile scatter uses Spearman rank correlation and a
+one-sided (negative association) modulation-cluster-footprint permutation test,
+not linear regression. `lesion_plot.py` saves the scatter, `association`
+(rho, matching permutation p, null statistics and test metadata), and
+`binned_medians` in both single-mode and combined `schema_version=2` caches;
+`paper_plot.py` takes the zero_W entry (across the seven L2=1e-4 seeds zero_W
+gives rho between -0.38 and -0.52, freeze_M between -0.23 and -0.47, all with
+permutation p < 0.02).
+Up to five quantile bins provide median OM/L1 points and counts; tied OM values
+stay together. The median connector is descriptive and is not forced to decrease.
+`paper_plot.py` only reads these values, draws pale scatter points and the saved
+median connector, and starts the L1 axis at zero. Pearson-only caches are skipped,
+not silently reused.
+
+`python paper_plot.py --only plasticity_share` draws
+`multitask_plasticity_share_n.png` from `plasticity_share_var-weighted-unnormalized_<aname>.pkl`.
+For every (task, synapse cluster) cell whose zero_W effect is significant
+(one-sided BH-FDR q = 0.05 against the stored random-control repeats),
+`lesion_plot.py` saves the plasticity share = freeze_M effect / zero_W effect:
+1 means freezing the cluster's plasticity costs the task as much as removing
+its weights, 0 means the static wiring suffices. The figure shows one column
+per task (no-working-memory tasks fdgo/fdanti/reactgo/reactanti first), the
+saved cells as pale points, the saved task median as a dash, and the saved
+one-sided task-level Mann-Whitney U p for memory tasks exceeding no-memory
+tasks; values outside the fixed y-limits appear as hollow triangles at the
+edge. Across the seven L2=1e-4 seeds the memory-family median exceeds the
+no-memory median in six (seed 692 ties), with per-seed p between 0.001 and 0.7.
+The share compares two interventions and is not an exact additive partition of
+static and plastic contributions. `--only plasticity_share_seeds` reads the same
+cache for every sibling run of `LESION_ANAME` and plots, per run, the median
+over tasks of the saved task medians for the no-memory and memory families as a
+joined pair, filled when the saved Mann-Whitney p is below 0.05, with the median
+over runs as a dash.
+
+`python paper_plot.py --only causal_vs_activity_tasks` draws
+`multitask_causal_vs_activity_tasks_hidden_n.png` and `..._input_n.png` from
+`causal_vs_activity_tasksim_<side>_<aname>.pkl`: one point per task pair, x the
+Pearson correlation of the two tasks' period-averaged raw (unnormalized) task
+variance profiles over that side's neurons, y the correlation of their
+lesion-effect profiles over all unnormalized input and hidden neuron clusters
+(the `causal_dependency_unnorm` matrix). Per-neuron normalization was dropped
+because it discards the amplitude that predicts causal impact; the normalized
+pairing is kept in the cache under `reference_variants`. The
+legend reports the saved two-sided Spearman task-label (Mantel-type)
+permutation p, and the line is the saved OLS guide, matching the cluster-level
+tuning-vs-lesion scatters. `--only causal_vs_activity_seeds` reads the same
+caches for every sibling run of `LESION_ANAME` (same feature, any seed) and
+plots each run's hidden and input rho as a joined pair, filled when the saved
+permutation p is below 0.05, with the median as a dash. Across the seven
+L2=1e-4 seeds the hidden rho is 0.27 to 0.50 with permutation p < 0.05 in all
+seven, while the input rho stays within -0.11 to 0.14 and is never significant
+(under the earlier normalized pairing hidden was 0.11 to 0.35 with three seeds
+significant). A response-period-only activity vector is not used: it also makes
+the input side correlate. Both figures need `schema_version=2` caches written
+by the current `lesion_plot.py`.
+
+`python paper_plot.py --only task_specificity` draws
+`multitask_task_specificity_counts_n.png` and one
+`multitask_task_sharing_relations_<type>_n.png` per cluster type (input and
+hidden neuron clusters from the unnormalized clustering, var-weighted zero_W
+synapse clusters; the unresponsive class excluded) from
+`task_specificity_<aname>.pkl`. A cluster "impairs" a task when its zero_W
+lesion effect is significant (one-sided z against the control repeats, BH-FDR
+q = 0.05, the causal-dependency mask). The counts figure shows the fraction of
+clusters impairing 0 to 15 tasks, with a one-sided permutation p for the count
+variance exceeding a null that shuffles cluster identity within each task
+(small p: specialized or hub-like rather than uniformly mixed). The sharing
+figures show, per task pair, the Jaccard overlap of impaired clusters grouped
+by the component the two tasks differ in (`TASK_PAIR_RELATIONS` in
+`lesion_plot.py`: response rule, timing, modality, context cue, integration
+family, match/category family, other), with a task-label permutation p per
+group and for all related pairs pooled. Nothing is recomputed in
+`paper_plot.py`.
+
+On a compute node, regenerate the post-processing cache and then the paper figure:
+```bash
+python multiple_task/lesion_plot.py --seed 921 --feature L21e4
+python paper_plot.py --only om_vs_lesion
+```
+Use `--seed all` in the first command to update every matching run's OM results.
+This reuses completed lesion experiments, but clears and regenerates the selected
+runs' post-processing outputs in `multiple_tasks_norm/`.
+
+## Modulation clustering variants
+
+The plastic synapses of `mp_layer1` are clustered under five task-variance
+feature definitions, registered once in `core/modulation_variants.py` and
+shared by `multiple_task_analysis.py` (clustering), `lesion.py` (lesions) and
+`lesion_plot.py` (per-variant comparisons, in this order and with fixed colors):
+
+| saved name | feature |
+|---|---|
+| `modulation_all_normalized` | Var(M), each synapse divided by its max over rules |
+| `modulation_all_unnormalized` | Var(M) |
+| `modulation_all_weighted_unnormalized` | Var(W·M), i.e. W²·Var(M) |
+| `modulation_all_var_weighted_unnormalized` | W·Var(M), signed: positive- and negative-W synapses form separate clusters (in caches produced before 2026-09-25 every negative-W synapse had been classified as unresponsive, so those results describe positive-W synapses only) |
+| `modulation_all_abs_weighted_unnormalized` | \|W\|·Var(M), magnitude-weighted and sign-blind |
+
+Two sign-aware steps are identities for the non-negative variants and matter
+only for `var_weighted`: `clustering.unresponsive_row_mask` judges a synapse
+unresponsive by its mean |feature| (the previous signed mean treated every
+negative-W synapse as unresponsive), and `modulation_variants.signed_log1p`
+compresses unnormalized features symmetrically before clustering. Because the
+signed variant's negative clusters have negative mean profiles, `lesion_plot.py`
+compares its cluster tuning profiles by absolute value (`tuning_profile` in the
+cluster-correlation caches). `abs_weighted` was added after the others; existing
+`cluster_info_mod_*.pkl` and `lesion_prune_results_*.pkl` files do not contain
+it, and their `var_weighted` entries predate the sign fixes. To obtain it, rerun
+the pipeline for the run (`python multiple_task/run_pipeline.py --seed 921
+--feature L21e4`), which reclusters, lesions and re-plots all five variants.
+`paper_plot.py` is unchanged and keeps reading the var-weighted variant.
 
 Key data outputs: `multiple_tasks/` (checkpoints, curves),
 `multiple_tasks_analysis/` (per-run analysis figures, cluster info),

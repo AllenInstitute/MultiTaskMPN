@@ -85,13 +85,7 @@ class PaperPlotModeTests(unittest.TestCase):
                             [segment[1, 1] - segment[0, 1] for segment in segments], 1.)
                         scatters = [collection for collection in axis.collections
                                     if isinstance(collection, paper_plot.mpl.collections.PathCollection)]
-                        self.assertEqual(len(scatters), 2)
-                        for scatter, offset in zip(scatters, (0., 2.)):
-                            offsets = scatter.get_offsets()
-                            np.testing.assert_allclose(np.rint(offsets[:, 0]), positions)
-                            np.testing.assert_allclose(
-                                offsets[:, 1],
-                                (observations[row_index] + offset - controls[row_index]) / controls[row_index])
+                        self.assertEqual(scatters, [])
                     label = figure.axes[0].texts[0]
                     self.assertEqual(label.xy, (2, 0))
                     figure.canvas.draw()
@@ -103,15 +97,20 @@ class PaperPlotModeTests(unittest.TestCase):
                             figure.axes[0].get_xaxis_transform().transform((position, 0))[0],
                             figure.axes[1].get_xaxis_transform().transform((position, 0))[0])
 
-    def test_lesion_figures_have_their_own_leison_mode(self):
+    def test_lesion_figures_have_their_own_lesion_mode(self):
         expected = {
             "lesion_heatmap": paper_plot.plot_lesion_heatmap,
             "lesion_cluster_sizes": paper_plot.plot_lesion_cluster_sizes,
             "cluster_corr_vs_lesion": paper_plot.plot_cluster_corr_vs_lesion,
+            "cluster_corr_vs_lesion_weighted": paper_plot.plot_cluster_corr_vs_lesion_weighted,
             "om_vs_lesion": paper_plot.plot_om_vs_lesion,
-            "cross_seed_summary": paper_plot.plot_cross_seed_summary,
+            "plasticity_share": paper_plot.plot_plasticity_share,
+            "plasticity_share_seeds": paper_plot.plot_plasticity_share_seeds,
+            "causal_vs_activity_tasks": paper_plot.plot_causal_vs_activity,
+            "causal_vs_activity_seeds": paper_plot.plot_causal_vs_activity_seeds,
+            "task_specificity": paper_plot.plot_task_specificity,
         }
-        self.assertEqual(paper_plot.FIGURES_BY_MODE["leison"], expected)
+        self.assertEqual(paper_plot.FIGURES_BY_MODE["lesion"], expected)
         self.assertTrue(set(expected).isdisjoint(
             paper_plot.FIGURES_BY_MODE["multiple_tasks"]))
         self.assertEqual(set(paper_plot.FIGURES_BY_MODE["multiple_tasks"]), {
@@ -127,16 +126,16 @@ class PaperPlotModeTests(unittest.TestCase):
                  for name in group]
         self.assertEqual(len(names), len(set(names)))
 
-    def test_leison_cli_dispatch_and_existing_single_figure_names(self):
+    def test_lesion_cli_dispatch_and_existing_single_figure_names(self):
         cases = [
-            (["leison"], set(paper_plot.FIGURES_BY_MODE["leison"])),
+            (["lesion"], set(paper_plot.FIGURES_BY_MODE["lesion"])),
             (["multiple_tasks"], set(paper_plot.FIGURES_BY_MODE["multiple_tasks"])),
-            (["multiple_tasks", "leison"],
+            (["multiple_tasks", "lesion"],
              set(paper_plot.FIGURES_BY_MODE["multiple_tasks"])
-             | set(paper_plot.FIGURES_BY_MODE["leison"])),
+             | set(paper_plot.FIGURES_BY_MODE["lesion"])),
         ]
         cases.extend((["--only", name], {name})
-                     for name in paper_plot.FIGURES_BY_MODE["leison"])
+                     for name in paper_plot.FIGURES_BY_MODE["lesion"])
         for arguments, expected in cases:
             with self.subTest(arguments=arguments), \
                     tempfile.TemporaryDirectory() as directory:
@@ -159,9 +158,9 @@ class PaperPlotModeTests(unittest.TestCase):
                 )
                 for name in expected:
                     figures[name].assert_called_once_with()
-                if "leison" in arguments:
+                if "lesion" in arguments:
                     self.assertTrue(any(
-                        f"leison: {paper_plot.ANAME}" in str(call.args[0])
+                        f"lesion: {paper_plot.LESION_ANAME}" in str(call.args[0])
                         for call in output.call_args_list if call.args))
 
     def test_state_space_figures_have_their_own_mode(self):
@@ -358,9 +357,11 @@ class PaperPlotModeTests(unittest.TestCase):
             save_fig.assert_not_called()
             self.assertIn("legacy cache", output.call_args.args[0])
 
-    def test_cross_seed_summary_does_not_write_csv(self):
-        source = inspect.getsource(paper_plot.plot_cross_seed_summary)
-        self.assertNotIn("cross_seed_summary.csv", source)
+    def test_removed_cross_seed_summary_is_not_available(self):
+        self.assertFalse(hasattr(paper_plot, "plot_cross_seed_summary"))
+        self.assertNotIn("cross_seed_summary", paper_plot.ALL_FIGURES)
+        for group in paper_plot.FIGURES_BY_MODE.values():
+            self.assertNotIn("cross_seed_summary", group)
 
     def test_two_in_multiple_renders_both_sibling_families(self):
         loaded = {"representations": {}}

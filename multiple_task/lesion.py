@@ -17,7 +17,8 @@ Experiments:
    modulation lesions below, keyed by size pair / synapse count).
 2. Combined lesion (input × hidden) — simultaneously lesion one input cluster
    and one hidden cluster for all (i, j) combinations to test interactions.
-3. Modulation lesion — for each synapse cluster in M, either zero the static
+3. Modulation lesion — for each synapse cluster of every clustering variant
+   listed in core/modulation_variants.py, either zero the static
    weight W at those synapses (remove connectivity) or freeze M at those
    synapses (remove plasticity), to dissect the contributions of static vs.
    plastic pathways.
@@ -27,7 +28,7 @@ Experiments:
 Outputs:
   - Heatmaps of per-task accuracy under each lesion condition
   - lesion_prune_results_{aname}.pkl — full results dict for downstream
-    analysis in leison_plot.py
+    analysis in lesion_plot.py
 
 No CLI entry point: `main(seed, feature)` is invoked by run_pipeline.py.
 """
@@ -62,6 +63,7 @@ import mpn
 import mpn_tasks
 import helper
 import clustering
+from modulation_variants import LESION_MODULATION_TYPES
 
 def main(seed, feature):
     """Run the lesion & pruning experiments for one trained network."""
@@ -145,7 +147,7 @@ def main(seed, feature):
         print(f"No global_assignment_fixed_k* found in cluster_info_mod; defaulting FIXED_K={FIXED_K}")
 
     # Derive fixed-k clusters for input/hidden and inject into cluster_info
-    # so that leison_prepost_inplace can look them up via the variant string.
+    # so that lesion_prepost_inplace can look them up via the variant string.
     _base_names = ["input_normalized", "hidden_normalized",
                    "input_unnormalized", "hidden_unnormalized"]
     for _base in _base_names:
@@ -204,7 +206,7 @@ def main(seed, feature):
             # visible — a [0, 1] range clamps them all to the bottom color.
             (axes[0], corr,    f"{name}: correlation",  "RdBu_r", -1.0, 1.0),
             # L1 distance is non-negative: sequential colormap, data-driven
-            # range (matches the L1 panels in leison_plot.py).
+            # range (matches the L1 panels in lesion_plot.py).
             (axes[1], l1_dist, f"{name}: L1 distance",  "viridis", None, None),
         ]:
             hm = sns.heatmap(mat, mask=upper_mask, cmap=cmap, vmin=vmin, vmax=vmax,
@@ -234,9 +236,9 @@ def main(seed, feature):
         [("pre", None)] + [("pre", i) for i in range(1, pre_n + 1)] +
         [("post", None)] + [("post", i) for i in range(1, post_n + 1)]
     )
-    rename = {"pre_cNone": "pre_noleison", "post_cNone": "post_noleison"}
-    all_comb_names_leison = [rename.get(f"{tag}_c{i}", f"{tag}_c{i}") for tag, i in all_comb]
-    print(f"all_comb_names_leison: {all_comb_names_leison}")
+    rename = {"pre_cNone": "pre_nolesion", "post_cNone": "post_nolesion"}
+    all_comb_names_lesion = [rename.get(f"{tag}_c{i}", f"{tag}_c{i}") for tag, i in all_comb]
+    print(f"all_comb_names_lesion: {all_comb_names_lesion}")
 
     print(model.W_initial_linear.weight.shape, model.mp_layer1.W.shape, model.mp_layer1.b.shape, model.W_output.shape)
 
@@ -246,17 +248,13 @@ def main(seed, feature):
         for name in [_input_norm_key, _hidden_norm_key, _input_unnorm_key, _hidden_unnorm_key]
     }
 
-    # All modulation clustering types to run lesion experiments on; the second
+    # All modulation clustering types to run lesion experiments on (the five
+    # variants registered in core/modulation_variants.py); the second
     # tuple element indexes result_all_lst in the upstream cluster_info_mod
     # pickle — the per-G clustering solutions saved by multiple_task_analysis.py
     # in its G_lst order (index 1 = G=300 for every type currently). The actual
     # G is read back from the pickle's result_all_name_lst, never hard-coded here.
-    mod_type_lst_all = [
-        ("modulation_all_normalized",                1),
-        ("modulation_all_unnormalized",              1),
-        ("modulation_all_weighted_unnormalized",     1),
-        ("modulation_all_var_weighted_unnormalized", 1),
-    ]
+    mod_type_lst_all = [(type_key, 1) for type_key in LESION_MODULATION_TYPES]
     mod_type_lst = [(k, g) for k, g in mod_type_lst_all if k in cluster_info_mod]
     print(f"Modulation types to lesion ({len(mod_type_lst)}): {[k for k,_ in mod_type_lst]}")
 
@@ -272,11 +270,11 @@ def main(seed, feature):
         f"checkpoint's plastic layer is {n_post_mod}x{n_pre_mod}={MM} — "
         "analysis pickle and checkpoint do not match")
 
-    def leison_prepost_inplace(net, cluster_index, preorpost, random=False, variant="normalized"):
-        """Apply lesion in-place on net; returns (saved_state, leison_units).
-        Call restore_leison(net, saved_state) to undo.  No deepcopy."""
+    def lesion_prepost_inplace(net, cluster_index, preorpost, random=False, variant="normalized"):
+        """Apply lesion in-place on net; returns (saved_state, lesion_units).
+        Call restore_lesion(net, saved_state) to undo.  No deepcopy."""
         name = f"input_{variant}" if preorpost == "pre" else f"hidden_{variant}"
-        leison_units = 0
+        lesion_units = 0
         saved = {}
 
         if cluster_index is not None:
@@ -284,7 +282,7 @@ def main(seed, feature):
             class_N = len(neuron_index)
             # Same count whether the target is the cluster itself or the
             # size-matched random control.
-            leison_units = class_N
+            lesion_units = class_N
 
             if not random:
                 neuron_index = torch.tensor(neuron_index, dtype=torch.long, device=net.W_output.device)
@@ -315,9 +313,9 @@ def main(seed, feature):
                     net.mp_layer1.b[neuron_index] = 0.0
                     net.W_output[:, neuron_index] = 0.0
 
-        return saved, leison_units
+        return saved, lesion_units
 
-    def leison_modulation_inplace(net, cluster_index, mod_col_clusters_, MM_, n_pre_, random=False):
+    def lesion_modulation_inplace(net, cluster_index, mod_col_clusters_, MM_, n_pre_, random=False):
         """Lesion a modulation cluster by zeroing mp_layer1.W[post, pre] entries.
         W is (post, pre); C-order flat_idx k → post = k // n_pre_, pre = k % n_pre_
         (valid for square and non-square layers alike).
@@ -340,7 +338,7 @@ def main(seed, feature):
             net.mp_layer1.W[post_t, pre_t] = 0.0
         return saved, n
 
-    def leison_modulation_freeze_inplace(net, cluster_index, mod_col_clusters_, MM_, n_pre_, random=False):
+    def lesion_modulation_freeze_inplace(net, cluster_index, mod_col_clusters_, MM_, n_pre_, random=False):
         """Freeze plasticity at a modulation cluster: M stays at its initial value
         at those (post, pre) positions throughout the trial, but W is untouched.
         W is (post, pre); C-order flat_idx k → post = k // n_pre_, pre = k % n_pre_
@@ -362,9 +360,9 @@ def main(seed, feature):
         }
         return saved, n
 
-    def restore_leison(net, saved):
-        """Restore weights modified by leison_prepost_inplace, leison_modulation_inplace,
-        or leison_modulation_freeze_inplace."""
+    def restore_lesion(net, saved):
+        """Restore weights modified by lesion_prepost_inplace, lesion_modulation_inplace,
+        or lesion_modulation_freeze_inplace."""
         if not saved:
             return
         with torch.no_grad():
@@ -441,7 +439,7 @@ def main(seed, feature):
         return dict(zip(all_comb_names_, units))
 
     lesion_units_norm = plot_lesion_unit_distribution(
-        all_comb, all_comb_names_leison, pre_n, post_n,
+        all_comb, all_comb_names_lesion, pre_n, post_n,
         VARIANT_NORM, cluster_info,
         f"{save_dir}/lesion_units_{aname}.png",
     )
@@ -477,7 +475,7 @@ def main(seed, feature):
         """Leave-one-out cluster lesion + size-matched random lesion for all tasks.
 
         Random controls are cached per task by (side, lesion size): the random
-        draw in leison_prepost_inplace depends only on how many neurons are
+        draw in lesion_prepost_inplace depends only on how many neurons are
         removed and on which side's weights are zeroed — never on the cluster
         identity — so same-(side, size) conditions have identically distributed
         controls and share one set of repeat_num draws.
@@ -485,7 +483,7 @@ def main(seed, feature):
         Returns (ihtask_accs, ihrandomtask_accs, ihrandomtask_accs_raw); the raw
         entry keeps every random repeat (n_tasks × n_conditions × repeat_num) —
         rows belonging to same-(side, size) conditions are identical copies of
-        the shared draws. Downstream (leison_plot.py) consumes only the
+        the shared draws. Downstream (lesion_plot.py) consumes only the
         per-condition control means.
         """
         ihtask_accs_, ihrandomtask_accs_, ihrandomtask_accs_raw_ = [], [], []
@@ -504,7 +502,7 @@ def main(seed, feature):
             ctrl_cache = {}  # (preorpost, lesion size) -> [repeat_num accs]
 
             for idx, comb in enumerate(all_comb_):
-                saved, _ = leison_prepost_inplace(
+                saved, _ = lesion_prepost_inplace(
                     model, cluster_index=comb[1], preorpost=comb[0], variant=variant
                 )
                 with torch.inference_mode():
@@ -512,11 +510,11 @@ def main(seed, feature):
                     acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input,
                                                isvalid=True, mode=model.acc_measure)
                 ihaccs.append(acc.item())
-                restore_leison(model, saved)
+                restore_lesion(model, saved)
                 del net_out
 
-                # Same size expression leison_prepost_inplace uses for its
-                # random draw; the noleison baseline (cluster None) is a no-op
+                # Same size expression lesion_prepost_inplace uses for its
+                # random draw; the nolesion baseline (cluster None) is a no-op
                 # on both the cluster and the control side, keyed as size 0.
                 if comb[1] is None:
                     ctrl_key = (comb[0], 0)
@@ -527,7 +525,7 @@ def main(seed, feature):
                 if ctrl_key not in ctrl_cache:
                     rset = []
                     for _ in range(repeat_num):
-                        saved_r, _ = leison_prepost_inplace(
+                        saved_r, _ = lesion_prepost_inplace(
                             model, cluster_index=comb[1], preorpost=comb[0],
                             random=True, variant=variant
                         )
@@ -536,7 +534,7 @@ def main(seed, feature):
                             acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input,
                                                        isvalid=True, mode=model.acc_measure)
                         rset.append(acc.item())
-                        restore_leison(model, saved_r)
+                        restore_lesion(model, saved_r)
                         del net_out
                     ctrl_cache[ctrl_key] = rset
                 ihrandomaccs.append(np.mean(ctrl_cache[ctrl_key]))
@@ -556,7 +554,7 @@ def main(seed, feature):
 
     # ── Normalized cluster lesion (k=FIXED_K) ──
     ihtask_accs, ihrandomtask_accs, ihrandomtask_accs_raw = run_cluster_lesion(
-        all_comb, all_comb_names_leison, variant=VARIANT_NORM, label="norm"
+        all_comb, all_comb_names_lesion, variant=VARIANT_NORM, label="norm"
     )
 
     # Pruning (normalized only) — runs in its own task loop
@@ -586,7 +584,7 @@ def main(seed, feature):
         gc.collect()  # once per task; see note in run_cluster_lesion
 
     helper.plot_heatmap(
-        ihtask_accs, all_comb_names_leison, all_tasks,
+        ihtask_accs, all_comb_names_lesion, all_tasks,
         xlabel="Lesion Condition", ylabel="Task", savename="lesion", aname=aname,
         save_dir=save_dir,
     )
@@ -596,7 +594,7 @@ def main(seed, feature):
         save_dir=save_dir,
     )
     helper.plot_heatmap(
-        ihrandomtask_accs, all_comb_names_leison, all_tasks,
+        ihrandomtask_accs, all_comb_names_lesion, all_tasks,
         xlabel="Random Lesion Condition", ylabel="Task", savename="random_lesion", aname=aname,
         save_dir=save_dir,
     )
@@ -606,29 +604,29 @@ def main(seed, feature):
         [("pre", None)] + [("pre", i) for i in range(1, pre_n_unnorm + 1)] +
         [("post", None)] + [("post", i) for i in range(1, post_n_unnorm + 1)]
     )
-    rename_unnorm = {"pre_cNone": "pre_noleison", "post_cNone": "post_noleison"}
-    all_comb_names_leison_unnorm = [
+    rename_unnorm = {"pre_cNone": "pre_nolesion", "post_cNone": "post_nolesion"}
+    all_comb_names_lesion_unnorm = [
         rename_unnorm.get(f"{tag}_c{i}", f"{tag}_c{i}") for tag, i in all_comb_unnorm
     ]
-    print(f"\n[unnormalized lesion] conditions: {all_comb_names_leison_unnorm}")
+    print(f"\n[unnormalized lesion] conditions: {all_comb_names_lesion_unnorm}")
 
     lesion_units_unnorm = plot_lesion_unit_distribution(
-        all_comb_unnorm, all_comb_names_leison_unnorm, pre_n_unnorm, post_n_unnorm,
+        all_comb_unnorm, all_comb_names_lesion_unnorm, pre_n_unnorm, post_n_unnorm,
         VARIANT_UNNORM, cluster_info,
         f"{save_dir}/lesion_units_unnorm_{aname}.png",
     )
 
     ihtask_accs_unnorm, ihrandomtask_accs_unnorm, ihrandomtask_accs_raw_unnorm = run_cluster_lesion(
-        all_comb_unnorm, all_comb_names_leison_unnorm, variant=VARIANT_UNNORM, label="unnorm"
+        all_comb_unnorm, all_comb_names_lesion_unnorm, variant=VARIANT_UNNORM, label="unnorm"
     )
 
     helper.plot_heatmap(
-        ihtask_accs_unnorm, all_comb_names_leison_unnorm, all_tasks,
+        ihtask_accs_unnorm, all_comb_names_lesion_unnorm, all_tasks,
         xlabel="Lesion Condition (unnorm)", ylabel="Task",
         savename="lesion_unnorm", aname=aname, save_dir=save_dir,
     )
     helper.plot_heatmap(
-        ihrandomtask_accs_unnorm, all_comb_names_leison_unnorm, all_tasks,
+        ihrandomtask_accs_unnorm, all_comb_names_lesion_unnorm, all_tasks,
         xlabel="Random Lesion Condition (unnorm)", ylabel="Task",
         savename="random_lesion_unnorm", aname=aname, save_dir=save_dir,
     )
@@ -652,7 +650,7 @@ def main(seed, feature):
         combined_baseline = np.zeros(len(all_tasks))
 
         # Cluster sizes for the random-control cache below — the same size
-        # expressions leison_prepost_inplace uses to draw its random lesions.
+        # expressions lesion_prepost_inplace uses to draw its random lesions.
         _pre_sizes = {i: len(cluster_info[f"input_{variant}"]["col_clusters"][i])
                       for i in range(1, pre_n_v + 1)}
         _post_sizes = {i: len(cluster_info[f"hidden_{variant}"]["col_clusters"][i])
@@ -682,10 +680,10 @@ def main(seed, feature):
             for pi in range(1, pre_n_v + 1):
                 for qi in range(1, post_n_v + 1):
                     # cluster lesion
-                    saved_pre, _ = leison_prepost_inplace(
+                    saved_pre, _ = lesion_prepost_inplace(
                         model, cluster_index=pi, preorpost="pre", variant=variant
                     )
-                    saved_post, _ = leison_prepost_inplace(
+                    saved_post, _ = lesion_prepost_inplace(
                         model, cluster_index=qi, preorpost="post", variant=variant
                     )
                     with torch.inference_mode():
@@ -693,8 +691,8 @@ def main(seed, feature):
                         acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input,
                                                    isvalid=True, mode=model.acc_measure)
                     combined_accs[ti, pi - 1, qi - 1] = acc.item()
-                    restore_leison(model, saved_post)
-                    restore_leison(model, saved_pre)
+                    restore_lesion(model, saved_post)
+                    restore_lesion(model, saved_pre)
                     del net_out
 
                     # random lesion (same sizes, repeated), cached by size pair
@@ -702,11 +700,11 @@ def main(seed, feature):
                     if ctrl_key not in ctrl_cache:
                         rset = []
                         for _ in range(repeat_num):
-                            saved_pre_r, _ = leison_prepost_inplace(
+                            saved_pre_r, _ = lesion_prepost_inplace(
                                 model, cluster_index=pi, preorpost="pre",
                                 random=True, variant=variant
                             )
-                            saved_post_r, _ = leison_prepost_inplace(
+                            saved_post_r, _ = lesion_prepost_inplace(
                                 model, cluster_index=qi, preorpost="post",
                                 random=True, variant=variant
                             )
@@ -715,8 +713,8 @@ def main(seed, feature):
                                 acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input,
                                                            isvalid=True, mode=model.acc_measure)
                             rset.append(acc.item())
-                            restore_leison(model, saved_post_r)
-                            restore_leison(model, saved_pre_r)
+                            restore_lesion(model, saved_post_r)
+                            restore_lesion(model, saved_pre_r)
                             del net_out
                         ctrl_cache[ctrl_key] = rset
                     combined_random_accs[ti, pi - 1, qi - 1] = np.mean(ctrl_cache[ctrl_key])
@@ -746,7 +744,7 @@ def main(seed, feature):
         else:
             print(f"  [{vtag}] Skipping combined heatmap: {pre_n_v} × {post_n_v} = {pre_n_v * post_n_v} > 100")
 
-        saved_dict_key = f"combined_leison_{vtag}"
+        saved_dict_key = f"combined_lesion_{vtag}"
         # store temporarily; will be added to saved_dict later
         _combined_cache[saved_dict_key] = {
             "combined_accs": combined_accs,
@@ -767,7 +765,7 @@ def main(seed, feature):
     # "zero_W": zero the static weight W at cluster synapses (original method).
     # "freeze_M": keep W intact but freeze plasticity (M stays at M_init) at cluster synapses.
     mod_lesion_modes = ["zero_W", "freeze_M"]
-    mod_leison_results = {}
+    mod_lesion_results = {}
 
     for mod_type_key, mod_G_idx_cur in mod_type_lst:
         _G_name = cluster_info_mod[mod_type_key]["result_all_name_lst"][mod_G_idx_cur]
@@ -793,7 +791,7 @@ def main(seed, feature):
         print(f"  {len(mod_col_clusters_cur)} modulation clusters")
 
         all_comb_mod = [("mod", None)] + [("mod", i) for i in sorted(mod_col_clusters_cur.keys())]
-        all_comb_names_mod = ["mod_noleison"] + [f"mod_c{i}" for i in sorted(mod_col_clusters_cur.keys())]
+        all_comb_names_mod = ["mod_nolesion"] + [f"mod_c{i}" for i in sorted(mod_col_clusters_cur.keys())]
 
         # Plot cluster sizes for this modulation clustering type
         mod_cluster_ids_sorted = sorted(mod_col_clusters_cur.keys())
@@ -823,9 +821,9 @@ def main(seed, feature):
             print(f"  [mode={mod_lesion_mode}]")
 
             if mod_lesion_mode == "zero_W":
-                _lesion_fn = leison_modulation_inplace
+                _lesion_fn = lesion_modulation_inplace
             else:
-                _lesion_fn = leison_modulation_freeze_inplace
+                _lesion_fn = lesion_modulation_freeze_inplace
 
             modtask_accs = []
             modrandomtask_accs = []
@@ -858,10 +856,10 @@ def main(seed, feature):
                         acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input,
                                                    isvalid=True, mode=model.acc_measure)
                     modaccs.append(acc.item())
-                    restore_leison(model, saved)
+                    restore_lesion(model, saved)
                     del net_out
 
-                    # mod_noleison (ci None) is a no-op on both sides: size 0
+                    # mod_nolesion (ci None) is a no-op on both sides: size 0
                     n_syn = 0 if ci is None else len(mod_col_clusters_cur[ci])
                     if n_syn not in ctrl_cache:
                         rset = []
@@ -876,7 +874,7 @@ def main(seed, feature):
                                 acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input,
                                                            isvalid=True, mode=model.acc_measure)
                             rset.append(acc.item())
-                            restore_leison(model, saved_r)
+                            restore_lesion(model, saved_r)
                             del net_out
                         ctrl_cache[n_syn] = rset
                     modrandomaccs.append(np.mean(ctrl_cache[n_syn]))
@@ -905,7 +903,7 @@ def main(seed, feature):
             )
 
             result_key = f"{mod_type_key}__{mod_lesion_mode}"
-            mod_leison_results[result_key] = {
+            mod_lesion_results[result_key] = {
                 "modtask_accs": modtask_accs,
                 "modrandomtask_accs": modrandomtask_accs,
                 "modrandomtask_accs_raw": modrandomtask_accs_raw,
@@ -917,13 +915,13 @@ def main(seed, feature):
             }
 
     # Ordering note: corr/l1_dist row/col i → cluster i+1.
-    # ihtask_accs columns: [0]=pre_noleison, [1..pre_n]=lesion pre cluster 1..pre_n,
-    #                       [pre_n+1]=post_noleison, [pre_n+2..end]=lesion post cluster 1..post_n.
+    # ihtask_accs columns: [0]=pre_nolesion, [1..pre_n]=lesion pre cluster 1..pre_n,
+    #                       [pre_n+1]=post_nolesion, [pre_n+2..end]=lesion post cluster 1..post_n.
     # So ihtask_accs[:, 1:pre_n+1] aligns with corr_matrices["input"] and l1_dist_matrices["input"].
     saved_dict = {
-        "leison": {
+        "lesion": {
             "ihtask_accs": ihtask_accs,
-            "all_comb_names_leison": all_comb_names_leison,
+            "all_comb_names_lesion": all_comb_names_lesion,
             "all_tasks": all_tasks,
             "lesion_units": lesion_units_norm,
         },
@@ -932,27 +930,27 @@ def main(seed, feature):
             "all_comb_names_prune": all_comb_names_prune,
             "all_tasks": all_tasks,
         },
-        "random_leison": {
+        "random_lesion": {
             "ihrandomtask_accs": ihrandomtask_accs,
             "ihrandomtask_accs_raw": ihrandomtask_accs_raw,
-            "all_comb_names_leison": all_comb_names_leison,
+            "all_comb_names_lesion": all_comb_names_lesion,
             "all_tasks": all_tasks,
         },
-        "leison_unnorm": {
+        "lesion_unnorm": {
             "ihtask_accs": ihtask_accs_unnorm,
-            "all_comb_names_leison": all_comb_names_leison_unnorm,
+            "all_comb_names_lesion": all_comb_names_lesion_unnorm,
             "all_tasks": all_tasks,
             "lesion_units": lesion_units_unnorm,
         },
-        "random_leison_unnorm": {
+        "random_lesion_unnorm": {
             "ihrandomtask_accs": ihrandomtask_accs_unnorm,
             "ihrandomtask_accs_raw": ihrandomtask_accs_raw_unnorm,
-            "all_comb_names_leison": all_comb_names_leison_unnorm,
+            "all_comb_names_lesion": all_comb_names_lesion_unnorm,
             "all_tasks": all_tasks,
         },
-        "combined_leison_norm": _combined_cache.get("combined_leison_norm", {}),
-        "combined_leison_unnorm": _combined_cache.get("combined_leison_unnorm", {}),
-        "mod_leison": mod_leison_results,
+        "combined_lesion_norm": _combined_cache.get("combined_lesion_norm", {}),
+        "combined_lesion_unnorm": _combined_cache.get("combined_lesion_unnorm", {}),
+        "mod_lesion": mod_lesion_results,
         "cluster_similarity": {
             "corr_matrices": corr_matrices,
             "l1_dist_matrices": l1_dist_matrices,
