@@ -26,6 +26,13 @@ from matplotlib.patches import Rectangle
 
 
 OUT_DIR = Path("cartoon_plot")
+# Shared aisynphys cache on the project filesystem: `database/` holds the
+# medium SQLite database (11 GB), `waveforms/` the NWB recordings (5 GB).
+# Home directories are small and quota-limited, so when this directory exists
+# both synaptic-physiology scripts default to it instead of the aisynphys
+# package default under ~. Override with --cache-dir / --db-cache-dir.
+SHARED_CACHE_DIR = Path(
+    "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/aisynphys_cache")
 DEFAULT_FREQUENCY_HZ = 50.0
 DEFAULT_RECOVERY_MS = 250.0
 DEFAULT_MIN_SOURCE_EVENTS = 20
@@ -55,8 +62,21 @@ plt.rcParams.update({
 })
 
 
+def default_cache_dir(subdirectory=None):
+    """SHARED_CACHE_DIR (or a subdirectory of it) when it exists, else None.
+
+    None tells callers to fall back to the aisynphys package default under the
+    home directory, which is only sensible on machines without the shared
+    cache."""
+    path = SHARED_CACHE_DIR if subdirectory is None else SHARED_CACHE_DIR / subdirectory
+    return path if path.is_dir() else None
+
+
 def _load_database(cache_dir=None):
-    """Load the current medium aisynphys database, downloading if necessary."""
+    """Load the current medium aisynphys database, downloading if necessary.
+
+    `cache_dir=None` uses the shared project cache when present (see
+    `default_cache_dir`), otherwise the aisynphys package default."""
     try:
         from aisynphys import config
         from aisynphys.database import SynphysDatabase
@@ -66,6 +86,8 @@ def _load_database(cache_dir=None):
             "the script handoff, then run this script in that environment."
         ) from exc
 
+    if cache_dir is None:
+        cache_dir = default_cache_dir()
     if cache_dir is not None:
         cache_dir = Path(cache_dir).expanduser().resolve()
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -536,7 +558,8 @@ def main():
                         help=f"output directory (default: {OUT_DIR})")
     parser.add_argument("--cache-dir", default=None,
                         help="aisynphys download/cache directory; omit to use "
-                             "the package default")
+                             f"{SHARED_CACHE_DIR} when it exists, else the "
+                             "package default")
     parser.add_argument("--frequency-hz", type=float,
                         default=DEFAULT_FREQUENCY_HZ,
                         help=f"induction frequency (default: "
