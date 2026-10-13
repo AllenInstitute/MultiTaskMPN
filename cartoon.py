@@ -9,11 +9,13 @@ seed), so these figures are reproducible but must never be captioned as data. Ke
 that separation strict: `paper_plot.py` shows what the network did, `cartoon.py`
 shows what we are claiming about it.
 
-Three cartoons so far: `plot_rich_dynamics` (heterogeneous single-unit responses in
+Four cartoons so far: `plot_rich_dynamics` (heterogeneous single-unit responses in
 one trial), `plot_fast_slow_curves` (two families of curves, fast and slow, the
-ingredients of a richer dynamics) and `plot_mouse_shape` (the mouse background silhouette,
+ingredients of a richer dynamics), `plot_mouse_shape` (the mouse background silhouette,
 traced from `cartoon_plot/mouse.png` so it can be redrawn, recolored and composed
-with other panels instead of pasted as a bitmap).
+with other panels instead of pasted as a bitmap) and `plot_synapse_lesion_schematic`
+(a wiring cartoon of the two lesion kinds, neuron and synapse cluster, plus the
+trace that tells the zero_W and freeze_M synapse interventions apart).
 
 One exception to "synthetic": `plot_synaptic_train_amplitudes` redraws MEASURED
 Allen Synaptic Physiology recordings (extracted by
@@ -33,6 +35,7 @@ Usage:
     python cartoon.py --out-dir /tmp   # somewhere else
     python cartoon.py --figure mouse   # just the mouse silhouette
     python cartoon.py --figure synaptic   # measured PSP trains (Fig. 4A layout)
+    python cartoon.py --figure lesion     # neuron / synapse-cluster lesion schematic
 """
 import argparse
 import json
@@ -848,16 +851,202 @@ def plot_synaptic_train_amplitudes(out_dir=OUT_DIR, data_path=None,
           extra=f"  (MEASURED: {data['path'].name}; {detail})")
 
 
+# ─── Lesion schematic: neurons, synapse clusters, two synapse interventions ──
+# The lesion figures of paper_plot.py intervene on two kinds of unit. A NEURON
+# cluster lesion removes neurons: a hidden neuron loses its incoming weights,
+# bias and readout, an input neuron its outgoing weights. A SYNAPSE cluster
+# lesion acts on a set of entries of the plastic recurrent weight matrix
+# mp_layer1.W that were grouped by their task-variance profile W*Var(M); those
+# synapses connect different neuron pairs, so the set is not any neuron's
+# fan-in or fan-out. The synapse lesion comes in two modes that look alike on
+# a wiring diagram and differ only in time: zero_W removes the synapses
+# (W <- 0, the effective weight is zero for the whole trial), freeze_M keeps W
+# and holds the modulation at its initial value (the effective weight stays
+# at W instead of following M(t)). Both are scored against a size-matched
+# random lesion; that comparison is left to the caption.
+#
+# Drawn in the style of a wiring cartoon: a few presynaptic (input) neurons on
+# the left, postsynaptic (hidden) neurons on the right, every edge a synapse,
+# an ellipsis for the rest of the layer. Everything is invented and fixed, so
+# the figure explains the procedure and must not be captioned as data.
+_LESION_N_NODES = 3                         # neurons drawn per side (plus an ellipsis)
+_LESION_NODE_Y = (1.0, 0.45, -0.4)          # node rows, top to bottom; the gap holds "..."
+_LESION_ELLIPSIS_Y = 0.0
+_LESION_NODE_RADIUS = 0.085
+# Edge (pre, post) -> synapse cluster; the two clusters interleave across
+# neuron pairs, which is the point: a synapse cluster is a set of edges, not
+# a node's fan-in.
+_LESION_EDGE_CLUSTERS = {
+    (0, 0): 1, (0, 1): 0, (0, 2): 0,
+    (1, 0): 0, (1, 1): 1, (1, 2): 1,
+    (2, 0): 0, (2, 1): 0, (2, 2): 1,
+}
+_LESION_SYNAPSE_COLORS = (c_vals[1], c_vals[2])   # synapse clusters 1 and 2 (categorical)
+_LESION_LESIONED_SYNAPSE_CLUSTER = 0              # the one crossed out
+_LESION_LESIONED_NEURONS = (0, 1)                 # the hidden (post) neuron cluster crossed out
+_LESION_CROSS_COLOR = c_vals[0]                   # the red lesion mark of the hand-drawn cartoon
+_LESION_W = 0.8                                   # static weight of the traced synapse (a.u.)
+# Text follows paper_plot: 7 pt ticks (its rcParams), 8 pt axis and panel
+# titles (its lesion figures); only the line-side notes are smaller (6.5 pt).
+_LESION_TICK_FONTSIZE = 7
+_LESION_LABEL_FONTSIZE = 8
+_LESION_NOTE_FONTSIZE = 6.5
+_LESION_FIGSIZE = (5.6, 1.8)
+
+
+def _edge_point(pre, post, frac):
+    """Point a fraction `frac` of the way along edge (pre, post), in the panel's
+    data units: pre neurons at x = 0, post neurons at x = 1."""
+    y0, y1 = _LESION_NODE_Y[pre], _LESION_NODE_Y[post]
+    return frac, y0 + frac * (y1 - y0)
+
+
+def _draw_cross(ax, x, y, size=0.055, color=_LESION_CROSS_COLOR, lw=1.6):
+    """The red lesion mark: an X centered on (x, y)."""
+    ax.plot([x - size, x + size], [y - size, y + size], color=color, lw=lw,
+            solid_capstyle="round", zorder=6)
+    ax.plot([x - size, x + size], [y + size, y - size], color=color, lw=lw,
+            solid_capstyle="round", zorder=6)
+
+
+def _draw_wiring(ax, edge_colors, removed_edges=(), crossed_edges=(), crossed_nodes=(),
+                 title=None):
+    """One wiring cartoon: `_LESION_N_NODES` pre neurons (x = 0) and post neurons
+    (x = 1) with an ellipsis, every (pre, post) edge in `edge_colors[edge]`.
+
+    `removed_edges` are drawn faint (their neuron is gone), `crossed_edges` get
+    the lesion mark at a staggered point along the edge so marks on crossing
+    edges do not pile up at the center, `crossed_nodes` are post neurons (by
+    row) that get the mark. Nodes and the ellipsis are black on white, like
+    the hand-drawn version this follows."""
+    for index, (edge, color) in enumerate(edge_colors.items()):
+        pre, post = edge
+        (x0, y0), (x1, y1) = _edge_point(pre, post, 0.0), _edge_point(pre, post, 1.0)
+        faint = edge in removed_edges
+        ax.plot([x0, x1], [y0, y1], color=color, lw=2.2, alpha=0.18 if faint else 0.75,
+                solid_capstyle="round", zorder=2)
+        if edge in crossed_edges:
+            frac = 0.3 if index % 2 else 0.62
+            _draw_cross(ax, *_edge_point(pre, post, frac))
+    for x in (0.0, 1.0):
+        for row, y in enumerate(_LESION_NODE_Y):
+            ax.add_patch(plt.Circle((x, y), _LESION_NODE_RADIUS, facecolor="white",
+                                    edgecolor="k", linewidth=1.8, zorder=4))
+            if x == 1.0 and row in crossed_nodes:
+                _draw_cross(ax, x, y, size=0.075, lw=2.0)
+        ax.text(x, _LESION_ELLIPSIS_Y, "...", ha="center", va="center", fontsize=8,
+                fontweight="bold", zorder=5)
+    ax.set_xlim(-0.2, 1.2)
+    ax.set_ylim(min(_LESION_NODE_Y) - 0.2, max(_LESION_NODE_Y) + 0.2)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    if title:
+        ax.set_title(title, fontsize=_LESION_LABEL_FONTSIZE, pad=3)
+
+
+def _modulation_trace(rng, t_ms, n_samples=N_SAMPLES):
+    """A synthetic M(t) over one trial: zero at trial start (M_init), rising
+    through the stimulus and memory periods with a Hebbian-looking wobble."""
+    rise = 0.55 * _sig(t_ms, 900.0, 220.0) * (1.0 + 0.3 * np.sin(2 * np.pi * t_ms / 1100.0))
+    return rise + _smooth_noise(rng, n_samples, 0.04, width=0.03 * n_samples)
+
+
+def _lesion_mode_traces(ax, t_ms, w, m, color):
+    """W_eff(t) = W (1 + M(t)) of one lesioned synapse under the three
+    conditions, labelled at the right end by what was done to the synapse:
+    intact (grey dashed), M(t) <- M(0) (freeze_M, flat at W) and W <- 0
+    (zero_W, flat at zero). The trial end is marked T rather than in ms:
+    the trace is a cartoon, not a recorded trial. Returns the three traces."""
+    intact = w * (1.0 + m)
+    zero = np.zeros_like(intact)
+    frozen = np.full_like(intact, w)
+    ax.plot(t_ms, intact, color="0.55", lw=0.9, linestyle="--", zorder=2)
+    ax.plot(t_ms, frozen, color=color, lw=1.4, zorder=3)
+    ax.plot(t_ms, zero, color=color, lw=1.4, zorder=3)
+    x_label = t_ms[-1] + 0.03 * t_ms[-1]
+    ax.text(x_label, intact[-1], "intact", color="0.45", fontsize=_LESION_NOTE_FONTSIZE,
+            va="center", ha="left")
+    ax.text(x_label, w, r"$M(t) \leftarrow M(0)$", color=color, fontsize=_LESION_NOTE_FONTSIZE,
+            va="center", ha="left")
+    ax.text(x_label, 0.0, r"$W \leftarrow 0$", color=color, fontsize=_LESION_NOTE_FONTSIZE,
+            va="center", ha="left")
+    ax.set_xlim(t_ms[0], t_ms[-1])
+    ax.set_ylim(-0.12 * w, 1.8 * w)
+    ax.set_yticks([0.0, w])
+    ax.set_yticklabels(["0", "W"])
+    ax.set_xticks([t_ms[0], t_ms[-1]])
+    ax.set_xticklabels(["0", "T"])
+    ax.set_xlabel("Trial time", fontsize=_LESION_LABEL_FONTSIZE, labelpad=1)
+    ax.set_ylabel(r"$W_{\mathrm{eff}}$", fontsize=_LESION_LABEL_FONTSIZE, labelpad=1)
+    ax.tick_params(labelsize=_LESION_TICK_FONTSIZE, length=2, pad=1)
+    ax.spines[["top", "right"]].set_visible(False)
+    return intact, zero, frozen
+
+
+def plot_synapse_lesion_schematic(out_dir=OUT_DIR, seed=0):
+    """
+    Cartoon: the two kinds of lesion and the two synapse-lesion modes, in the
+    style of a wiring diagram.
+
+    Left, "Neuron-cluster lesion": pre neurons (left column) wired to post
+    neurons (right column); the post neurons of one cluster are crossed out
+    and their synapses fade - the lesion removes a whole neuron cluster with
+    everything attached to it. Middle, "Synapse-cluster lesion": the same
+    wiring with every edge colored by its synapse cluster, the clusters
+    interleaved across neuron pairs; the edges of one cluster are crossed out
+    while every neuron stays - the lesion unit is a set of synapses. Right,
+    "Synapse lesion: two modes": what no wiring diagram can show, one
+    lesioned synapse's effective weight over a trial, intact (dashed), under
+    zero_W (held at zero) and under freeze_M (held at W, the plasticity
+    frozen). The size-matched random control that scores every lesion belongs
+    in the caption.
+
+    All values are invented and fixed by `seed`; this is the procedure of
+    lesion.py, not data.
+    """
+    rng = np.random.RandomState(seed)
+    t_ms = np.linspace(0.0, (T_END - 1) * DT, N_SAMPLES)
+    m_trace = _modulation_trace(rng, t_ms)
+    colors = {edge: _LESION_SYNAPSE_COLORS[cluster]
+              for edge, cluster in _LESION_EDGE_CLUSTERS.items()}
+    lesioned_color = _LESION_SYNAPSE_COLORS[_LESION_LESIONED_SYNAPSE_CLUSTER]
+
+    fig = plt.figure(figsize=_LESION_FIGSIZE)
+    grid = fig.add_gridspec(1, 3, width_ratios=[1.0, 1.0, 1.75], wspace=0.55,
+                            left=0.02, right=0.82, top=0.87, bottom=0.21)
+    ax_neuron, ax_synapse, ax_trace = (fig.add_subplot(grid[0, k]) for k in range(3))
+
+    # Neuron-cluster lesion: wiring in neutral grey, one cluster of post
+    # neurons and their synapses gone; the ellipsis stands for the rest.
+    grey = {edge: "0.55" for edge in _LESION_EDGE_CLUSTERS}
+    removed = tuple(edge for edge in _LESION_EDGE_CLUSTERS if edge[1] in _LESION_LESIONED_NEURONS)
+    _draw_wiring(ax_neuron, grey, removed_edges=removed, crossed_nodes=_LESION_LESIONED_NEURONS,
+                 title="Neuron-cluster lesion")
+    # Synapse-cluster lesion: edges colored by cluster, one cluster crossed out.
+    crossed = tuple(edge for edge, cluster in _LESION_EDGE_CLUSTERS.items()
+                    if cluster == _LESION_LESIONED_SYNAPSE_CLUSTER)
+    _draw_wiring(ax_synapse, colors, crossed_edges=crossed, title="Synapse-cluster lesion")
+    _lesion_mode_traces(ax_trace, t_ms, _LESION_W, m_trace, lesioned_color)
+    ax_trace.set_title("Synapse lesion: two modes", fontsize=_LESION_LABEL_FONTSIZE, pad=3)
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _save(fig, out_dir / "cartoon_synapse_lesion_schematic.png",
+          extra=(f"  (SYNTHETIC: {_LESION_N_NODES}+{_LESION_N_NODES} neurons, "
+                 f"{len(crossed)} of {len(_LESION_EDGE_CLUSTERS)} synapses in the lesioned cluster)"))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", default=str(OUT_DIR),
                        help="Directory to write the cartoons into "
                             f"(default: {OUT_DIR}).")
     parser.add_argument("--figure",
-                       choices=("traces", "fastslow", "mouse", "synaptic", "all"),
+                       choices=("traces", "fastslow", "mouse", "synaptic", "lesion", "all"),
                        default="all",
                        help="Which cartoon(s) to draw (default: all). 'synaptic' "
-                            "is the measured Allen PSP-train figure.")
+                            "is the measured Allen PSP-train figure; 'lesion' the "
+                            "synapse-cluster lesion schematic.")
     parser.add_argument("--synaptic-data", default=None,
                        help="JSON of per-trial PSP amplitudes for --figure synaptic "
                             "(default: cartoon_plot/biology_fast_synaptic_trial_"
@@ -900,6 +1089,8 @@ def main():
                         if args.mouse_style == "all" else (args.mouse_style,))
         for style in mouse_styles:
             plot_mouse_shape(out_dir=args.out_dir, style=style)
+    if args.figure in ("lesion", "all"):
+        plot_synapse_lesion_schematic(out_dir=args.out_dir, seed=args.seed)
     if args.figure in ("synaptic", "all"):
         try:
             plot_synaptic_train_amplitudes(out_dir=args.out_dir,
