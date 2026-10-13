@@ -76,7 +76,7 @@ class CausalVsActivityFigureTests(unittest.TestCase):
             self.assertIn(f"= {cache['association']['rho']:.2f}", legend)
             self.assertIn("(n = 5 tasks)", legend)
             self.assertIn("lesion profiles", axis.get_ylabel())
-            np.testing.assert_allclose(figures[name].get_size_inches(), paper_plot._CLUSTER_CORR_FIGSIZE)
+            np.testing.assert_allclose(figures[name].get_size_inches(), paper_plot._LESION_SCATTER_FIGSIZE)
         self.assertIn("hidden activity", figures["multitask_causal_vs_activity_tasks_hidden.png"].axes[0].get_xlabel())
 
     def test_per_run_figure_rejects_other_run_side_or_legacy_cache(self):
@@ -132,7 +132,7 @@ class CausalVsActivityFigureTests(unittest.TestCase):
                      for collection in points)
         self.assertEqual(filled, 3)        # hidden 11, hidden 33, input 33
         self.assertEqual([label.get_text() for label in axis.get_xticklabels()],
-                         ["Hidden activity", "Input activity"])
+                         ["Hidden", "Input"])
         self.assertEqual(len(axis.lines), 1 + 3)   # zero line + one join per run
         # medians: hidden 0.3, input -0.1 drawn as hlines
         hline_values = sorted(float(segment[0][1]) for collection in medians

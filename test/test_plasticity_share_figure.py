@@ -142,7 +142,7 @@ class PlasticityShareSeedsTests(PlasticityShareFigureTests):
         values = sorted(float(seg[0][1]) for c in medians for seg in c.get_segments())
         self.assertEqual(values, [0.2, 0.8])
         self.assertEqual([label.get_text() for label in axis.get_xticklabels()],
-                         ["No\nworking memory", "Working\nmemory"])
+                         ["No memory", "Memory"])
         self.assertIs(paper_plot.FIGURES_BY_MODE["lesion"]["plasticity_share_seeds"],
                       paper_plot.plot_plasticity_share_seeds)
 

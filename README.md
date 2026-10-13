@@ -108,13 +108,12 @@ For `--only rule_vectors --pretraining-groups motifs`, a vertical divider
 separates the four bars into two pairs (2 | 2); `all` keeps its existing layout.
 
 The `lesion` figure mode contains `lesion_heatmap`, `lesion_cluster_sizes`,
-`cluster_corr_vs_lesion`, `cluster_corr_vs_lesion_weighted`, `om_vs_lesion`,
-`plasticity_share`, `plasticity_share_seeds`, `causal_vs_activity_tasks`,
-`causal_vs_activity_seeds` and `task_specificity`. All but the two `_seeds`
-figures read one run, `LESION_ANAME` (seed 921), independently of `ANAME`,
-which keeps selecting the `multiple_tasks` clustering figures; seed 921 is the
-run whose hidden-neuron tuning-vs-lesion effect is clearest of the seven
-L2=1e-4 seeds. These figures no longer run under `multiple_tasks`; use
+`cluster_corr_vs_lesion`, `cluster_corr_vs_lesion_weighted`,
+`cluster_corr_vs_lesion_seeds`, `om_vs_lesion`, `plasticity_share`,
+`plasticity_share_seeds`, `causal_vs_activity_tasks`, `causal_vs_activity_seeds`
+and `task_specificity`. All but the three `_seeds` figures read one run,
+`LESION_ANAME`, independently of `ANAME`, which selects the `multiple_tasks`
+clustering figures. These figures no longer run under `multiple_tasks`; use
 `python paper_plot.py multiple_tasks lesion` for both groups. Existing figure
 names and `--only FIGURE` commands are unchanged. The historical `leison`
 spelling is now `lesion` in commands, module names, output names and cache keys:
@@ -142,8 +141,7 @@ Each category resolves once, so its figures never mix runs, and a run is never
 taken from another cohort; this also applies to `--only` and to imported plotting
 functions. Empty directories and pickles of other runs do not count as cached
 data. Missing or incompatible individual caches still use the existing per-figure
-checks rather than switching seeds per figure. The seed-921 statistics quoted
-below describe the L2=1e-4 cohort.
+checks rather than switching seeds per figure.
 
 `python paper_plot.py --only cluster_corr_vs_lesion` draws the four input/hidden
 scatter figures and three modulation figures:
@@ -155,9 +153,12 @@ All use cached **zero_W** effects; the two unnormalized figures use var-weighted
 cluster. A run whose `lesion_plot.py` caches predate the abs-weighted variant
 skips only that figure. Each figure is scale-free
 on both axes: x is the Pearson correlation between cluster mean tuning
-profiles, y is one minus the Pearson correlation between per-task lesion
-effects after z-scoring each effect against its stored random-control repeats
-(control SD floored at one accuracy point). Only clusters whose summed |z|
+profiles, y is the Pearson correlation between per-task lesion effects after
+z-scoring each effect against its stored random-control repeats (control SD
+floored at one accuracy point). The caches store the dissimilarity 1 − r and
+the rank statistics of that quantity; `paper_plot.py` shows the similarity r,
+so it flips y, the sign of the saved Spearman rho and the saved OLS guide (the
+two-sided permutation p is unchanged) without refitting anything. Only clusters whose summed |z|
 exceeds the 95th percentile of a control-only, leave-one-repeat-out null are
 compared. The legend reports Spearman rho with a two-sided cluster-label
 (Mantel-type) permutation p from 10,000 permutations, because the cluster pairs
@@ -165,9 +166,7 @@ share clusters and are not independent samples. The line through the points is
 an ordinary least-squares fit saved by `lesion_plot.py` as a visual guide to the
 trend; it is not the reported statistic and carries no p-value. Caches written
 before the line was added draw without it until `lesion_plot.py` is rerun. All entries come from
-`LESION_ANAME`; across the seven L2=1e-4 seeds the hidden-neuron unnormalized
-entry's rho is negative in every run (similar tuning, similar lesion profile),
-and seed 921 is where it is clearest. Coordinates
+`LESION_ANAME`. Coordinates
 and statistics are read from the `schema_version=2` caches written by
 `lesion_plot.py`; legacy caches holding OLS regressions are skipped, never
 refitted. Missing or incompatible caches skip only the affected figure, with no
@@ -176,6 +175,12 @@ supplement (the former tuning-cosine vs lesion-effect L1 scatter and L1 vs the
 pair's summed effect magnitude, which is what L1 mostly measures) that
 `lesion_plot.py` draws in its per-run diagnostic figure; `paper_plot.py` does
 not export it. The `_n` suffix is omitted with `--no-legend`.
+`--only cluster_corr_vs_lesion_seeds` reads the same unnormalized hidden and
+input caches for every sibling run of `LESION_ANAME` and plots each run's
+similarity rho as a joined hidden/input pair, filled when the saved permutation
+p is below 0.05, with the median over runs as a dash; a single run has only
+8-17 clusters, so the cohort view is where the cluster-level relation should
+be judged.
 
 `python paper_plot.py --only cluster_corr_vs_lesion_weighted` draws the separate
 **Var(WM)** comparison from `LESION_ANAME`, exporting only
@@ -204,9 +209,7 @@ one-sided (negative association) modulation-cluster-footprint permutation test,
 not linear regression. `lesion_plot.py` saves the scatter, `association`
 (rho, matching permutation p, null statistics and test metadata), and
 `binned_medians` in both single-mode and combined `schema_version=2` caches;
-`paper_plot.py` takes the zero_W entry (across the seven L2=1e-4 seeds zero_W
-gives rho between -0.38 and -0.52, freeze_M between -0.23 and -0.47, all with
-permutation p < 0.02).
+`paper_plot.py` takes the zero_W entry.
 Up to five quantile bins provide median OM/L1 points and counts; tied OM values
 stay together. The median connector is descriptive and is not forced to decrease.
 `paper_plot.py` only reads these values, draws pale scatter points and the saved
@@ -224,9 +227,7 @@ per task (no-working-memory tasks fdgo/fdanti/reactgo/reactanti first), the
 saved cells as pale points, the saved task median as a dash, and the saved
 one-sided task-level Mann-Whitney U p for memory tasks exceeding no-memory
 tasks; values outside the fixed y-limits appear as hollow triangles at the
-edge. Across the seven L2=1e-4 seeds the memory-family median exceeds the
-no-memory median in six (seed 692 ties), with per-seed p between 0.001 and 0.7.
-The share compares two interventions and is not an exact additive partition of
+edge. The share compares two interventions and is not an exact additive partition of
 static and plastic contributions. `--only plasticity_share_seeds` reads the same
 cache for every sibling run of `LESION_ANAME` and plots, per run, the median
 over tasks of the saved task medians for the no-memory and memory families as a
@@ -247,12 +248,9 @@ permutation p, and the line is the saved OLS guide, matching the cluster-level
 tuning-vs-lesion scatters. `--only causal_vs_activity_seeds` reads the same
 caches for every sibling run of `LESION_ANAME` (same feature, any seed) and
 plots each run's hidden and input rho as a joined pair, filled when the saved
-permutation p is below 0.05, with the median as a dash. Across the seven
-L2=1e-4 seeds the hidden rho is 0.27 to 0.50 with permutation p < 0.05 in all
-seven, while the input rho stays within -0.11 to 0.14 and is never significant
-(under the earlier normalized pairing hidden was 0.11 to 0.35 with three seeds
-significant). A response-period-only activity vector is not used: it also makes
-the input side correlate. Both figures need `schema_version=2` caches written
+permutation p is below 0.05, with the median as a dash. A response-period-only
+activity vector is not used: it also makes the input side correlate. Both
+figures need `schema_version=2` caches written
 by the current `lesion_plot.py`.
 
 `python paper_plot.py --only task_specificity` draws
@@ -308,7 +306,7 @@ carries `col_unresponsive_mask` / `col_unresponsive_label` (and
 `unresponsive_label` per modulation lesion (`None` when nothing was flagged).
 `lesion_plot.py` and `paper_plot.py` read these fields; caches written before
 they existed fall back to the former rule (the last cluster of an unnormalized
-variant), which holds for the seven L2=1e-4 seeds. The `cluster_corr_vs_lesion`
+variant). The `cluster_corr_vs_lesion`
 caches keep their `exclude_last_cluster` flag, now meaning that an unresponsive
 exclusion was applied, and add `unresponsive_source`.
 

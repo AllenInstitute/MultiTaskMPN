@@ -262,10 +262,10 @@ MULTITASK_ANALYSIS_ROOT = Path("multiple_tasks_analysis")
 LESION_PERF_ROOT = Path("multiple_tasks_perf")
 LESION_NORM_ROOT = Path("multiple_tasks_norm")
 # Designated example seed per cohort and figure category; None means "the
-# lowest cached seed". For L2=1e-4, seed 921 is the lesion example because its
-# hidden-neuron tuning-vs-lesion effect is the clearest of the seven seeds
-# (rho = -0.41, permutation p = 0.001, 13 clusters; all seven agree on the
-# sign) and seed 749 is the clustering example. Its lesion caches come from
+# cached seed with the most complete caches, lowest seed on ties". For
+# L2=1e-4, seed 749 is the clustering example and seed 921 the lesion example
+# (chosen for a clear hidden-neuron tuning-vs-lesion relation; see the figure
+# legends for the current statistics). Its lesion caches come from
 #     python multiple_task/lesion_plot.py --seed 921 --feature L21e4
 MULTITASK_DESIGNATED_SEEDS = {
     "1e4": {"multiple_tasks": 749, "lesion": 921},
@@ -335,17 +335,48 @@ def _resolve_multitask_run(l2, category):
     return multitask_aname(seed, l2)
 
 
+def multitask_cohort_of(aname):
+    """Cohort tag of a multi-task run name ('L21e3' for
+    everything_seed86_L21e3+hidden300+batch128+angle), or None when the name
+    is not a run of this run family."""
+    import re
+
+    match = re.fullmatch(r"everything_seed\d+_(L2[^+]*)" + re.escape(_MULTITASK_RUN_SUFFIX),
+                         str(aname))
+    return match.group(1) if match else None
+
+
+def _check_same_cohort(l2, **runs):
+    """Raise unless every named run belongs to the `l2` cohort.
+
+    The `multiple_tasks` and `lesion` figures must describe one set of
+    experiments; this is the guard that keeps a hand-edited or stale run name
+    from mixing, say, an L2=1e-3 clustering with L2=1e-4 lesions."""
+    expected = multitask_feature(l2)
+    mismatched = {name: aname for name, aname in runs.items()
+                  if multitask_cohort_of(aname) != expected}
+    if mismatched:
+        raise RuntimeError(f"multi-task figure runs must all come from the {expected} "
+                           f"cohort; got {mismatched}")
+
+
 def _set_multitask_l2(l2):
     """Select the L2 cohort and re-resolve every multi-task run name and path.
 
     Called once at import with MULTITASK_L2 and again by `main()` when
     `--multitask-l2` is given, so imported plotting functions and the command
-    line see the same run selection.
+    line see the same run selection. Both categories are resolved from the
+    same `l2` and verified to share its cohort before anything is assigned, so
+    the `multiple_tasks` and `lesion` figures can never describe different
+    experiment sets (their example seeds may differ, their cohort cannot).
     """
     global MULTITASK_L2, ANAME, DATA_DIR, LESION_ANAME, LESION_DIR, LESION_NORM_DIR
-    ANAME = _resolve_multitask_run(l2, "multiple_tasks")
-    LESION_ANAME = _resolve_multitask_run(l2, "lesion")
+    clustering = _resolve_multitask_run(l2, "multiple_tasks")
+    lesion = _resolve_multitask_run(l2, "lesion")
+    _check_same_cohort(l2, multiple_tasks=clustering, lesion=lesion)
     MULTITASK_L2 = l2
+    ANAME = clustering
+    LESION_ANAME = lesion
     DATA_DIR = MULTITASK_ANALYSIS_ROOT / ANAME
     LESION_DIR = LESION_PERF_ROOT / LESION_ANAME
     LESION_NORM_DIR = LESION_NORM_ROOT / LESION_ANAME
@@ -2461,6 +2492,7 @@ def _find_experiment_dirs():
     the same feature/hidden/batch signature as ANAME (any seed), i.e. every
     analyzed run of the selected MULTITASK_L2 cohort."""
     import re as _re
+    _check_same_cohort(MULTITASK_L2, multiple_tasks=ANAME)
     # ANAME = everything_seed{seed}_{feature}+hidden{h}+batch{b}+angle
     m = _re.match(r"everything_seed\d+_(.+)$", ANAME)
     suffix = m.group(1) if m else ""
@@ -3030,7 +3062,7 @@ def plot_om_vs_lesion():
     medians = saved["binned_medians"]
     rho = saved["rho"]
     p_perm = saved["p_perm"]
-    fig1, ax1 = plt.subplots(1, 1, figsize=(3, 2.8))
+    fig1, ax1 = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
     ax1.scatter(om_vals, lesion_diffs, color="#3182ce", edgecolors="k",
                 linewidths=0.5, s=40, alpha=0.8, zorder=3)
     ax1.plot(medians["x"], medians["y"], "o-", color="tomato", linewidth=1.2,
@@ -3057,6 +3089,9 @@ def plot_om_vs_lesion():
 PLASTICITY_SHARE_MOD_TYPE = "modulation_all_var_weighted_unnormalized"
 _PLASTICITY_SHARE_YLIM = (-0.6, 1.6)
 _PLASTICITY_SHARE_FIGSIZE = (4.6, 2.8)
+# Short family names for the 2 in per-run figure; the task-level figure keeps
+# the full labels below.
+_PLASTICITY_SHARE_SEED_LABELS = {"reaction": "No memory", "memory": "Memory"}
 _PLASTICITY_SHARE_FAMILY_LABELS = {"reaction": "No working memory",
                                    "memory": "Working memory"}
 
@@ -3236,7 +3271,24 @@ def plot_input_weight_correlation():
 CLUSTER_CORR_SCHEMA_VERSION = 2
 CLUSTER_CORR_X_DEFINITION = "pearson_corr_of_cluster_mean_tuning_profiles"
 CLUSTER_CORR_Y_DEFINITION = "one_minus_pearson_corr_of_z_scored_effect_profiles"
-_CLUSTER_CORR_FIGSIZE = (3, 2.8)
+# One size for every lesion-mode scatter figure (tuning vs lesion, OM vs lesion,
+# causal vs activity and the per-run `_seeds` dot plots), so they tile as equal
+# squares; the task-specificity count bars keep their own size below.
+_LESION_SCATTER_FIGSIZE = (2.0, 2.0)
+_TASK_SPECIFICITY_FIGSIZE = (3, 2.8)
+
+
+def _seeds_legend(ax, handles, n_runs):
+    """Legend of the per-run `_seeds` figures, placed above the axes (a 2 in
+    panel has no empty corner for a box) with the run count as its title."""
+    return _legend(ax, handles=handles, loc="lower left", bbox_to_anchor=(0.0, 1.0),
+                   borderaxespad=0.0, ncol=2, columnspacing=0.8, handletextpad=0.3,
+                   fontsize=6, frameon=False, title=f"{n_runs} runs", title_fontsize=6)
+
+
+def _invisible_legend_handle():
+    """A zero-size, fully transparent legend handle, for text-only legends."""
+    return mpl.patches.Patch(facecolor="none", edgecolor="none", linewidth=0)
 
 
 def _rank_association_label(association, unit=""):
@@ -3247,8 +3299,10 @@ def _rank_association_label(association, unit=""):
         raise ValueError("non-finite saved rank statistics")
     p_text = "p < 0.001" if p_perm < 0.001 else f"p = {p_perm:.3f}"
     suffix = f" {unit}" if unit else ""
-    return (rf"$\rho$ = {rho:.2f}, permutation {p_text}"
-            f" (n = {int(association['n_clusters'])}{suffix})")
+    # Two short lines: a one-line label is wider than the 2 in scatter axes and
+    # would make tight_layout squeeze the plot to make room for it.
+    return (rf"$\rho$ = {rho:.2f} (n = {int(association['n_clusters'])}{suffix})"
+            "\n" f"permutation {p_text}")
 
 
 def _saved_association(association):
@@ -3263,7 +3317,7 @@ def _saved_association(association):
     return copied
 
 
-def _read_cluster_corr_entry(name, data, expected_entry):
+def _read_cluster_corr_entry(name, data, expected_entry, aname=None):
     """Validate one saved cluster-correlation entry and extract plot inputs.
 
     Only `schema_version` 2 caches are accepted: they hold the scale-free
@@ -3271,8 +3325,10 @@ def _read_cluster_corr_entry(name, data, expected_entry):
     of z-scored lesion profiles, over clusters with a significant effect).
     Older caches with OLS regressions are rejected so they are regenerated by
     lesion_plot.py instead of being drawn silently. Entries must come from
-    LESION_ANAME.
+    `aname` (default LESION_ANAME; the per-run `_seeds` figure passes each
+    sibling run).
     """
+    aname = LESION_ANAME if aname is None else aname
     if data.get("schema_version") != CLUSTER_CORR_SCHEMA_VERSION:
         raise ValueError("legacy cache without the scale-free comparison")
     if expected_entry is not None:
@@ -3283,7 +3339,7 @@ def _read_cluster_corr_entry(name, data, expected_entry):
             raise ValueError("modulation variant, mode or cluster exclusion does not match")
     if (data.get("x_definition") != CLUSTER_CORR_X_DEFINITION
             or data.get("y_definition") != CLUSTER_CORR_Y_DEFINITION
-            or data.get("aname", LESION_ANAME) != LESION_ANAME):
+            or data.get("aname", aname) != aname):
         raise ValueError("saved metric or run does not match")
     x = np.asarray(data["tuning_corr"], dtype=float)
     y = np.asarray(data["lesion_profile_dissim"], dtype=float)
@@ -3301,15 +3357,17 @@ def _read_cluster_corr_entry(name, data, expected_entry):
 
 def plot_cluster_corr_vs_lesion():
     """
-    Figure: cluster tuning-profile correlation vs lesion-profile dissimilarity.
+    Figure: cluster tuning-profile correlation vs lesion-profile similarity.
 
-    Draws the exact coordinates and rank statistics saved by lesion_plot.py:
-    x is the Pearson correlation between cluster mean tuning profiles, y is one
-    minus the Pearson correlation between per-task lesion effects z-scored
-    against their random-control repeats, over clusters whose lesion effect
-    exceeds the control null. The legend reports Spearman rho with a
-    cluster-label permutation p, because cluster pairs share clusters. A saved
-    OLS line is drawn as a visual guide to the trend; it is not the statistic.
+    Draws the coordinates and rank statistics saved by lesion_plot.py, seen
+    from the similarity side: x is the Pearson correlation between cluster mean
+    tuning profiles, y the Pearson correlation between per-task lesion effects
+    z-scored against their random-control repeats (the caches store 1 - r; the
+    renderer flips y, the sign of the saved Spearman rho and the saved OLS
+    guide, see _plot_cluster_corr_vs_lesion_variants), over clusters whose
+    lesion effect exceeds the control null. The legend reports Spearman rho
+    with a cluster-label permutation p, because cluster pairs share clusters.
+    The OLS line is a visual guide to the trend; it is not the statistic.
 
     Produces input/hidden figures for both clustering variants, plus three
     zero_W modulation figures: normalized, var-weighted unnormalized (W*Var(M))
@@ -3376,29 +3434,132 @@ def _plot_cluster_corr_vs_lesion_variants(variants):
             clean_name = output_name or name.replace("_normalized", "_norm").replace(
                 "_unnormalized", "_unnorm").replace("_k20", "")
 
-            fig, ax = plt.subplots(1, 1, figsize=_CLUSTER_CORR_FIGSIZE)
-            ax.scatter(entry["x"], entry["y"], color="#3182ce", edgecolors="k",
+            # The caches store the lesion-profile DISSIMILARITY 1 - r and the
+            # rank statistics of that quantity. The figure shows the similarity
+            # r instead, which is the same comparison seen from the other side:
+            # y flips to 1 - y, the Spearman rho changes sign (rank order
+            # reversed; the two-sided permutation p is unchanged) and the OLS
+            # guide becomes (1 - intercept) - slope * x. Nothing is refitted.
+            similarity = 1.0 - entry["y"]
+            association = dict(entry["association"])
+            association["rho"] = -association["rho"]
+            trend = entry["trend_line"]
+            fig, ax = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
+            ax.scatter(entry["x"], similarity, color="#3182ce", edgecolors="k",
                        linewidths=0.5, s=40, alpha=0.8, zorder=3)
             # Saved OLS line as a visual guide; the legend statistic stays the
-            # cached Spearman rho with its label-permutation p.
-            if entry["trend_line"] is not None:
+            # cached Spearman rho (sign-flipped) with its label-permutation p.
+            if trend is not None:
                 positions = np.linspace(entry["x"].min(), entry["x"].max(), 100)
-                ax.plot(positions, entry["trend_line"]["intercept"]
-                        + entry["trend_line"]["slope"] * positions,
+                ax.plot(positions, (1.0 - trend["intercept"]) - trend["slope"] * positions,
                         color="tomato", linewidth=1.2, zorder=4)
             else:
                 print(f"  Note: {name} cache has no saved trend line; "
                       "rerun multiple_task/lesion_plot.py to add one.")
-            _legend(ax, [_rank_association_label(entry["association"])],
-                    loc="upper left", fontsize=7, frameon=True)
+            # Above the axes: a 2 in panel has no empty corner for a legend box.
+            # The invisible handle keeps the scatter marker out of the text.
+            _legend(ax, [_invisible_legend_handle()], [_rank_association_label(association)],
+                    loc="lower left", bbox_to_anchor=(0.0, 1.0), borderaxespad=0.0,
+                    fontsize=6, frameon=False, handlelength=0, handletextpad=0)
             ax.spines[["top", "right"]].set_visible(False)
-            ax.set_xlabel(f"{tuning_word} profile correlation", fontsize=8)
-            ax.set_ylabel("Lesion profile dissimilarity (1 $-$ r)", fontsize=8)
-            ax.set_ylim(bottom=0)
+            ax.set_xlabel(f"{tuning_word} correlation", fontsize=7)
+            ax.set_ylabel("Lesion similarity (r)", fontsize=7)
             ax.yaxis.set_major_locator(mticker.MultipleLocator(0.5))
             fig.tight_layout()
             _save_fig(fig, _multitask_out(f"cluster_corr_vs_lesion_{clean_name}.png"),
                       extra=f" [{LESION_ANAME}]")
+
+
+_CLUSTER_CORR_SEED_SIDES = ("hidden", "input")
+_CLUSTER_CORR_SEED_LABELS = {"hidden": "Hidden", "input": "Input"}
+
+
+def _cluster_corr_seed_runs(sides=_CLUSTER_CORR_SEED_SIDES):
+    """Saved neuron-cluster tuning-vs-lesion associations of every sibling run.
+
+    Reads each run's `cluster_corr_vs_normalized_lesion_effect_unnorm` cache
+    (unnormalized clustering, fixed k = 20) and returns {aname: {side:
+    association}} with rho on the similarity sign the figures use. A run is
+    kept only when every side validates, so hidden and input always come from
+    the same runs; legacy or incomplete caches are skipped with a note."""
+    runs = {}
+    for directory in _sibling_run_dirs():
+        aname = directory.name
+        path = resolve_lesion_cache_path(
+            directory / f"cluster_corr_vs_normalized_lesion_effect_unnorm_{aname}.pkl")
+        if not path.exists():
+            continue
+        saved = load_lesion_pickle(path)
+        entries = {}
+        for side in sides:
+            name = f"{side}_unnormalized_k20"
+            try:
+                entry = _read_cluster_corr_entry(name, saved[name], None, aname=aname)
+            except (KeyError, TypeError, ValueError, AttributeError) as error:
+                print(f"  Skipped {aname} {name}: incomplete or incompatible cache ({error}).")
+                entries = None
+                break
+            association = dict(entry["association"])
+            association["rho"] = -association["rho"]      # dissimilarity -> similarity
+            entries[side] = association
+        if entries:
+            runs[aname] = entries
+    return runs
+
+
+def plot_cluster_corr_vs_lesion_seeds():
+    """
+    Figure: the cluster-level tuning-vs-lesion Spearman rho of every sibling
+    run of LESION_ANAME, hidden and input neuron clusters side by side.
+
+    The single-run `cluster_corr_vs_lesion` scatters have only 8-17 clusters
+    each, so one run rarely reaches significance; this figure shows the whole
+    cohort. Each run contributes one point per cluster type (rho of tuning
+    correlation vs lesion-profile similarity, sign-flipped from the cached
+    dissimilarity), joined by a thin line; filled markers have a saved
+    cluster-label permutation p below 0.05, hollow ones do not. The dash is
+    the median over runs. Only saved statistics are drawn; the saved message
+    counts the runs with positive and with significant rho.
+    """
+    _ensure_out_dir()
+    runs = _cluster_corr_seed_runs()
+    if len(runs) < 2:
+        print(f"  Skipped: {len(runs)} run(s) with saved cluster-level caches; need >= 2.")
+        return
+    sides = _CLUSTER_CORR_SEED_SIDES
+    fig, ax = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
+    ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
+    positions = np.arange(len(sides))
+    for run_index, entries in enumerate(runs.values()):
+        offset = (run_index - (len(runs) - 1) / 2) * 0.03
+        ax.plot(positions + offset, [entries[side]["rho"] for side in sides],
+                color="0.75", linewidth=0.6, zorder=2)
+        for position, side in zip(positions, sides):
+            significant = entries[side]["p_perm"] < 0.05
+            ax.scatter([position + offset], [entries[side]["rho"]], s=32, zorder=3,
+                       color="#3182ce" if significant else "white",
+                       edgecolors="#3182ce" if significant else "k", linewidths=0.6)
+    for position, side in zip(positions, sides):
+        median = np.median([entries[side]["rho"] for entries in runs.values()])
+        ax.hlines(median, position - 0.22, position + 0.22, color="tomato",
+                  linewidth=1.8, zorder=4)
+    ax.set_xticks(positions)
+    ax.set_xticklabels([_CLUSTER_CORR_SEED_LABELS[side] for side in sides], fontsize=7)
+    ax.set_xlim(-0.6, len(positions) - 0.4)
+    ax.set_ylabel(r"Spearman $\rho$" + "\n(tuning vs lesion similarity)", fontsize=7)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.tick_params(axis="y", labelsize=7)
+    filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color="#3182ce",
+                              markersize=5, label="permutation p < 0.05")
+    hollow = mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
+                              markeredgecolor="k", markersize=5, label=r"p $\geq$ 0.05")
+    _seeds_legend(ax, [filled, hollow], len(runs))
+    fig.tight_layout()
+    summary = ", ".join(
+        f"{side}: {sum(e[side]['rho'] > 0 for e in runs.values())}/{len(runs)} rho > 0, "
+        f"{sum(e[side]['p_perm'] < 0.05 for e in runs.values())} significant"
+        for side in sides)
+    _save_fig(fig, _multitask_out("cluster_corr_vs_lesion_seeds.png"), extra="  " + summary)
 
 
 def _sibling_run_dirs():
@@ -3406,6 +3567,7 @@ def _sibling_run_dirs():
     i.e. every post-processed run of the selected MULTITASK_L2 cohort."""
     import re as _re
 
+    _check_same_cohort(MULTITASK_L2, lesion=LESION_ANAME)
     pattern = _re.sub(r"seed\d+", "seed*", LESION_ANAME)
     return sorted(LESION_NORM_DIR.parent.glob(pattern))
 
@@ -3443,7 +3605,7 @@ def plot_plasticity_share_seeds():
         return
     kinds = ("reaction", "memory")
     positions = np.arange(len(kinds))
-    fig, ax = plt.subplots(1, 1, figsize=(2.6, 2.8))
+    fig, ax = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
     ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
     ax.axhline(1.0, color="0.6", linewidth=0.6, linestyle="--", zorder=1)
     for run_index, entry in enumerate(runs.values()):
@@ -3459,18 +3621,16 @@ def plot_plasticity_share_seeds():
         ax.hlines(median, position - 0.22, position + 0.22, color="tomato",
                   linewidth=1.8, zorder=4)
     ax.set_xticks(positions)
-    ax.set_xticklabels([_PLASTICITY_SHARE_FAMILY_LABELS[kind].replace(" ", "\n", 1)
-                        for kind in kinds], fontsize=7)
+    ax.set_xticklabels([_PLASTICITY_SHARE_SEED_LABELS[kind] for kind in kinds], fontsize=7)
     ax.set_xlim(-0.6, len(kinds) - 0.4)
-    ax.set_ylabel("Plasticity share\n(median over tasks)", fontsize=8)
+    ax.set_ylabel("Plasticity share\n(median over tasks)", fontsize=7)
     ax.spines[["top", "right"]].set_visible(False)
     ax.tick_params(axis="y", labelsize=7)
     filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color="#3182ce",
                               markersize=5, label="MWU p < 0.05")
     hollow = mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
                               markeredgecolor="k", markersize=5, label=r"p $\geq$ 0.05")
-    _legend(ax, handles=[filled, hollow], loc="lower right", fontsize=6, frameon=True,
-            title=f"{len(runs)} runs", title_fontsize=6)
+    _seeds_legend(ax, [filled, hollow], len(runs))
     fig.tight_layout()
     n_higher = sum(entry["medians"]["memory"] > entry["medians"]["reaction"]
                    for entry in runs.values())
@@ -3549,7 +3709,7 @@ def plot_causal_vs_activity():
             print(f"  Skipped {side}: incompatible {path.name} ({error}); "
                   "run multiple_task/lesion_plot.py again.")
             continue
-        fig, ax = plt.subplots(1, 1, figsize=_CLUSTER_CORR_FIGSIZE)
+        fig, ax = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
         ax.scatter(entry["x"], entry["y"], color="#3182ce", edgecolors="k",
                    linewidths=0.5, s=40, alpha=0.8, zorder=3)
         if entry["trend_line"] is not None:
@@ -3557,12 +3717,14 @@ def plot_causal_vs_activity():
             ax.plot(positions, entry["trend_line"]["intercept"]
                     + entry["trend_line"]["slope"] * positions,
                     color="tomato", linewidth=1.2, zorder=4)
-        _legend(ax, [_rank_association_label(entry["association"], unit="tasks")],
-                loc="upper left", fontsize=7, frameon=True)
+        _legend(ax, [_invisible_legend_handle()],
+                [_rank_association_label(entry["association"], unit="tasks")],
+                loc="lower left", bbox_to_anchor=(0.0, 1.0), borderaxespad=0.0,
+                fontsize=6, frameon=False, handlelength=0, handletextpad=0)
         ax.spines[["top", "right"]].set_visible(False)
-        ax.set_xlabel(f"Task similarity: {_CAUSAL_VS_ACTIVITY_SIDE_LABELS[side].lower()}",
-                      fontsize=8)
-        ax.set_ylabel("Task similarity: lesion profiles", fontsize=8)
+        ax.set_xlabel(f"Similarity: {_CAUSAL_VS_ACTIVITY_SIDE_LABELS[side].lower()}",
+                      fontsize=7)
+        ax.set_ylabel("Similarity: lesion profiles", fontsize=7)
         fig.tight_layout()
         _save_fig(fig, _multitask_out(f"causal_vs_activity_tasks_{side}.png"),
                   extra=f" [{LESION_ANAME}] {entry['n_tasks']} tasks")
@@ -3600,7 +3762,7 @@ def plot_causal_vs_activity_seeds():
     if len(runs) < 2:
         print(f"  Skipped: {len(runs)} run(s) with saved task-level Mantel caches; need >= 2.")
         return
-    fig, ax = plt.subplots(1, 1, figsize=(2.6, 2.8))
+    fig, ax = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
     ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
     positions = np.arange(len(CAUSAL_VS_ACTIVITY_SIDES))
     for run_index, (name, entries) in enumerate(runs.items()):
@@ -3618,18 +3780,16 @@ def plot_causal_vs_activity_seeds():
         ax.hlines(median, position - 0.22, position + 0.22, color="tomato",
                   linewidth=1.8, zorder=4)
     ax.set_xticks(positions)
-    ax.set_xticklabels([_CAUSAL_VS_ACTIVITY_SIDE_LABELS[side] for side in CAUSAL_VS_ACTIVITY_SIDES],
-                       fontsize=7)
+    ax.set_xticklabels([side.capitalize() for side in CAUSAL_VS_ACTIVITY_SIDES], fontsize=7)
     ax.set_xlim(-0.6, len(positions) - 0.4)
-    ax.set_ylabel(r"Task-level Mantel $\rho$" + "\n(activity vs lesion similarity)", fontsize=8)
+    ax.set_ylabel(r"Task-level Mantel $\rho$" + "\n(activity vs lesion similarity)", fontsize=7)
     ax.spines[["top", "right"]].set_visible(False)
     ax.tick_params(axis="y", labelsize=7)
     filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color="#3182ce",
                               markersize=5, label="permutation p < 0.05")
     hollow = mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
                               markeredgecolor="k", markersize=5, label=r"p $\geq$ 0.05")
-    _legend(ax, handles=[filled, hollow], loc="lower left", fontsize=6, frameon=True,
-            title=f"{len(runs)} runs", title_fontsize=6)
+    _seeds_legend(ax, [filled, hollow], len(runs))
     fig.tight_layout()
     n_positive = {side: sum(entries[side]["association"]["rho"] > 0 for entries in runs.values())
                   for side in CAUSAL_VS_ACTIVITY_SIDES}
@@ -3721,7 +3881,7 @@ def plot_task_specificity():
     if saved is None:
         return
     n_tasks = len(saved["tasks"])
-    fig, ax = plt.subplots(1, 1, figsize=_CLUSTER_CORR_FIGSIZE)
+    fig, ax = plt.subplots(1, 1, figsize=_TASK_SPECIFICITY_FIGSIZE)
     for type_name in _TASK_SPECIFICITY_TYPES:
         entry = saved["types"].get(type_name)
         if entry is None:
@@ -9420,6 +9580,7 @@ FIGURES_BY_MODE = {
         "lesion_cluster_sizes": plot_lesion_cluster_sizes,
         "cluster_corr_vs_lesion": plot_cluster_corr_vs_lesion,
         "cluster_corr_vs_lesion_weighted": plot_cluster_corr_vs_lesion_weighted,
+        "cluster_corr_vs_lesion_seeds": plot_cluster_corr_vs_lesion_seeds,
         "om_vs_lesion": plot_om_vs_lesion,
         "plasticity_share": plot_plasticity_share,
         "plasticity_share_seeds": plot_plasticity_share_seeds,
@@ -9622,6 +9783,8 @@ def main():
     else:
         printed_modes = modes
     print("Experiment(s):")
+    if {"multiple_tasks", "lesion"} & set(printed_modes):
+        print(f"  multi-task cohort: {multitask_feature()} (shared by multiple_tasks and lesion)")
     for m in printed_modes:
         print(f"  {m}: {mode_experiment.get(m, '?')}")
     print(f"Output: {OUT_DIR}/")

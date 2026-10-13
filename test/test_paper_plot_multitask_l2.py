@@ -90,6 +90,20 @@ class MultitaskRunResolutionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.resolve("1e2")
 
+    def test_cohort_tag_is_parsed_from_run_names(self):
+        self.assertEqual(paper_plot.multitask_cohort_of(aname(86)), "L21e3")
+        self.assertEqual(paper_plot.multitask_cohort_of(aname(921, "1e4")), "L21e4")
+        self.assertIsNone(paper_plot.multitask_cohort_of("delaygo_seed395_hidden200+batch128+angle"))
+        self.assertIsNone(paper_plot.multitask_cohort_of(
+            "everything_seed86_L21e3+hidden100+batch128+angle"))
+
+    def test_mixed_cohorts_are_refused(self):
+        paper_plot._check_same_cohort("1e3", multiple_tasks=aname(86), lesion=aname(196))
+        with self.assertRaises(RuntimeError) as caught:
+            paper_plot._check_same_cohort("1e3", multiple_tasks=aname(86), lesion=aname(921, "1e4"))
+        self.assertIn("lesion", str(caught.exception))
+        self.assertIn("L21e3", str(caught.exception))
+
 
 class MultitaskL2ControlTests(unittest.TestCase):
     def setUp(self):
@@ -138,6 +152,41 @@ class MultitaskL2ControlTests(unittest.TestCase):
         self.assertEqual(module.ANAME, aname(196, "1e4"))
         self.assertEqual(module.LESION_ANAME, aname(921, "1e4"))
         self.assertEqual(module.LESION_NORM_DIR, Path("multiple_tasks_norm") / aname(921, "1e4"))
+
+    def test_both_categories_always_share_the_selected_cohort(self):
+        """Whatever seeds are cached, clustering and lesion runs come from one L2."""
+        write_cache(self.root / "multiple_tasks_analysis", aname(86), "cluster_info")
+        write_cache(self.root / "multiple_tasks_analysis", aname(749, "1e4"), "cluster_info")
+        write_cache(self.root / "multiple_tasks_norm", aname(934), "normalized_lesion_effects")
+        write_cache(self.root / "multiple_tasks_norm", aname(921, "1e4"), "normalized_lesion_effects")
+        module = self.load_module()
+        previous_cwd = Path.cwd()
+        try:
+            os.chdir(self.root)
+            for l2 in ("1e3", "1e4", "1e3"):
+                with patch("builtins.print"):
+                    module._set_multitask_l2(l2)
+                tag = module.multitask_feature(l2)
+                self.assertEqual(module.multitask_cohort_of(module.ANAME), tag)
+                self.assertEqual(module.multitask_cohort_of(module.LESION_ANAME), tag)
+                self.assertEqual(module.DATA_DIR, Path("multiple_tasks_analysis") / module.ANAME)
+                self.assertEqual(module.LESION_NORM_DIR,
+                                 Path("multiple_tasks_norm") / module.LESION_ANAME)
+                # The aggregate scans stay inside that cohort as well.
+                self.assertTrue(all(module.multitask_cohort_of(d.name) == tag
+                                    for d in module._find_experiment_dirs()))
+                self.assertTrue(all(module.multitask_cohort_of(d.name) == tag
+                                    for d in module._sibling_run_dirs()))
+            # A run name from another cohort is refused before any global changes.
+            with patch.object(module, "_resolve_multitask_run",
+                              side_effect=lambda l2, category: aname(86) if category == "multiple_tasks"
+                              else aname(921, "1e4")):
+                with self.assertRaises(RuntimeError):
+                    module._set_multitask_l2("1e3")
+            self.assertEqual(module.MULTITASK_L2, "1e3")
+            self.assertEqual(module.multitask_cohort_of(module.LESION_ANAME), "L21e3")
+        finally:
+            os.chdir(previous_cwd)
 
     def test_command_line_override_switches_cohort_before_plotting(self):
         modes = {mode: {name: Mock(name=name) for name in group}

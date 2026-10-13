@@ -63,24 +63,24 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
     def assert_main_figure(self, figure, entry, tuning_word="Tuning"):
         self.assertEqual(len(figure.axes), 1)
         axis = figure.axes[0]
+        # Caches hold 1 - r; the figure shows r, with rho and the OLS guide flipped.
         np.testing.assert_allclose(
             axis.collections[0].get_offsets(),
-            np.column_stack((entry["tuning_corr"], entry["lesion_profile_dissim"])))
+            np.column_stack((entry["tuning_corr"], 1.0 - np.asarray(entry["lesion_profile_dissim"]))))
         self.assertEqual(len(axis.lines), 1)
         line = axis.lines[0]
         np.testing.assert_allclose(line.get_ydata(),
-                                   1.0 - entry["association"]["rho"] * line.get_xdata())
+                                   entry["association"]["rho"] * line.get_xdata(), atol=1e-12)
         self.assertAlmostEqual(line.get_xdata().min(), min(entry["tuning_corr"]))
         self.assertAlmostEqual(line.get_xdata().max(), max(entry["tuning_corr"]))
         legend = axis.get_legend().get_texts()[0].get_text()
         self.assertIn("permutation p = 0.012", legend)
-        self.assertIn(f"= {entry['association']['rho']:.2f}", legend)
+        self.assertIn(f"= {-entry['association']['rho']:.2f}", legend)
         self.assertIn("(n = 4)", legend)
-        self.assertEqual(axis.get_xlabel(), f"{tuning_word} profile correlation")
-        self.assertIn("Lesion profile dissimilarity", axis.get_ylabel())
-        self.assertEqual(axis.get_ylim()[0], 0)
+        self.assertEqual(axis.get_xlabel(), f"{tuning_word} correlation")
+        self.assertIn("Lesion similarity", axis.get_ylabel())
         np.testing.assert_allclose(np.diff(axis.get_yticks()), 0.5)
-        np.testing.assert_allclose(figure.get_size_inches(), [3.0, 2.8])
+        np.testing.assert_allclose(figure.get_size_inches(), paper_plot._LESION_SCATTER_FIGSIZE)
 
     def test_entry_point_draws_one_figure_per_entry_and_no_supplement(self):
         normalized = self.entry()
@@ -251,6 +251,79 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
                     entry["exclude_last_cluster"] = False
                 self.write(root, f"mod_lesion_effect_{tag}", {key: entry})
                 self.assertEqual(self.render(root, weighted_only=True), {})
+
+    def test_seeds_figure_pools_every_sibling_run_with_both_sides(self):
+        """One hidden/input pair per run, similarity sign, filled when p < 0.05."""
+        import re
+        runs = {}
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            for seed, (rho_hidden, p_hidden, rho_input, p_input) in {
+                    11: (-0.4, 0.010, 0.1, 0.600), 22: (-0.2, 0.080, 0.2, 0.300),
+                    33: (-0.5, 0.001, -0.1, 0.700)}.items():
+                aname = re.sub(r"seed\d+", f"seed{seed}", paper_plot.LESION_ANAME)
+                hidden = self.entry(True, rho=rho_hidden, aname=aname)
+                hidden["association"]["p_perm"] = p_hidden
+                inputs = self.entry(True, rho=rho_input, aname=aname)
+                inputs["association"]["p_perm"] = p_input
+                (base / aname).mkdir()
+                with (base / aname / f"cluster_corr_vs_normalized_lesion_effect_unnorm_{aname}.pkl"
+                      ).open("wb") as stream:
+                    pickle.dump({"hidden_unnormalized_k20": hidden,
+                                 "input_unnormalized_k20": inputs}, stream)
+                runs[aname] = (rho_hidden, p_hidden, rho_input, p_input)
+            # A run lacking the input entry is skipped entirely, never half-drawn.
+            partial = re.sub(r"seed\d+", "seed44", paper_plot.LESION_ANAME)
+            (base / partial).mkdir()
+            with (base / partial / f"cluster_corr_vs_normalized_lesion_effect_unnorm_{partial}.pkl"
+                  ).open("wb") as stream:
+                pickle.dump({"hidden_unnormalized_k20": self.entry(True, aname=partial)}, stream)
+            with patch.object(paper_plot, "LESION_NORM_DIR", base / paper_plot.LESION_ANAME), \
+                    patch.object(paper_plot, "_ensure_out_dir"), \
+                    patch.object(paper_plot, "_save_fig") as save, \
+                    patch("builtins.print") as output:
+                paper_plot.plot_cluster_corr_vs_lesion_seeds()
+        save.assert_called_once()
+        figure, path = save.call_args.args[:2]
+        self.addCleanup(paper_plot.plt.close, figure)
+        self.assertEqual(path.name, "multitask_cluster_corr_vs_lesion_seeds.png")
+        self.assertIn("hidden: 3/3 rho > 0, 2 significant", save.call_args.kwargs["extra"])
+        self.assertIn("input: 1/3 rho > 0, 0 significant", save.call_args.kwargs["extra"])
+        self.assertTrue(any("seed44" in str(call.args[0]) for call in output.call_args_list if call.args))
+        axis = figure.axes[0]
+        # Scatter points only: the median dashes are LineCollections in `collections` too.
+        dots = [c for c in axis.collections
+                if isinstance(c, paper_plot.mpl.collections.PathCollection)]
+        points = sorted((round(float(c.get_offsets()[0, 0])), float(c.get_offsets()[0, 1]),
+                         bool(np.allclose(c.get_facecolor()[0][:3], (1, 1, 1))))
+                        for c in dots)
+        expected = sorted([(0, -rh, not (ph < 0.05)) for rh, ph, _, _ in runs.values()]
+                          + [(1, -ri, not (pi < 0.05)) for _, _, ri, pi in runs.values()])
+        for (x, y, hollow), (ex, ey, ehollow) in zip(points, expected):
+            self.assertEqual(x, ex)
+            self.assertAlmostEqual(y, ey)
+            self.assertEqual(hollow, ehollow)
+        np.testing.assert_allclose(figure.get_size_inches(), paper_plot._LESION_SCATTER_FIGSIZE)
+        self.assertEqual([label.get_text() for label in axis.get_xticklabels()],
+                         ["Hidden", "Input"])
+
+    def test_seeds_figure_needs_two_runs(self):
+        import re
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            aname = re.sub(r"seed\d+", "seed11", paper_plot.LESION_ANAME)
+            (base / aname).mkdir()
+            with (base / aname / f"cluster_corr_vs_normalized_lesion_effect_unnorm_{aname}.pkl"
+                  ).open("wb") as stream:
+                pickle.dump({"hidden_unnormalized_k20": self.entry(True, aname=aname),
+                             "input_unnormalized_k20": self.entry(True, aname=aname)}, stream)
+            with patch.object(paper_plot, "LESION_NORM_DIR", base / paper_plot.LESION_ANAME), \
+                    patch.object(paper_plot, "_ensure_out_dir"), \
+                    patch.object(paper_plot, "_save_fig") as save, \
+                    patch("builtins.print") as output:
+                paper_plot.plot_cluster_corr_vs_lesion_seeds()
+        save.assert_not_called()
+        self.assertIn("need >= 2", output.call_args.args[0])
 
     def test_no_legend_keeps_figure_without_legend(self):
         with tempfile.TemporaryDirectory() as directory:
