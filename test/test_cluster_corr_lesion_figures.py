@@ -17,9 +17,26 @@ def association(rho, p_perm=0.012, n_clusters=4):
             "side": "two-sided", "n_perm": 10}
 
 
+def binned_medians(tuning, dissim, n_bins=2):
+    """The quantile-bin summary lesion_plot.py saves: median x, median y with
+    quartiles and count per bin of the tuning correlation."""
+    tuning = np.asarray(tuning, dtype=float)
+    dissim = np.asarray(dissim, dtype=float)
+    edges = np.unique(np.quantile(tuning, np.linspace(0, 1, n_bins + 1)))
+    ids = np.searchsorted(edges[1:-1], tuning, side="right")
+    groups = [ids == index for index in np.unique(ids)]
+    return {"method": "quantile", "n_bins_requested": n_bins, "edges": edges,
+            "x": np.array([np.median(tuning[g]) for g in groups]),
+            "y": np.array([np.median(dissim[g]) for g in groups]),
+            "y_q25": np.array([np.percentile(dissim[g], 25) for g in groups]),
+            "y_q75": np.array([np.percentile(dissim[g], 75) for g in groups]),
+            "counts": np.array([np.count_nonzero(g) for g in groups])}
+
+
 class ClusterCorrLesionFigureTests(unittest.TestCase):
     def entry(self, exclude_last=False, rho=0.5, aname=paper_plot.LESION_ANAME):
         tuning = np.array([-0.2, 0.1, 0.4, 0.8, 0.3, 0.6])
+        dissim = 1.0 - rho * tuning
         return {
             "schema_version": 2,
             "aname": aname,
@@ -28,9 +45,10 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
             "exclude_last_cluster": exclude_last,
             "included_clusters": ["c1", "c2", "c3", "c4"],
             "tuning_corr": tuning.tolist(),
-            "lesion_profile_dissim": (1.0 - rho * tuning).tolist(),
+            "lesion_profile_dissim": dissim.tolist(),
             "association": association(rho),
             "trend_line": {"method": "ols", "slope": -rho, "intercept": 1.0},
+            "binned_medians": binned_medians(tuning, dissim),
             "l1": {"tuning_cos_sim": (0.5 + 0.5 * tuning).tolist(),
                    "lesion_l1_dist": (2.0 + tuning).tolist()},
         }
@@ -63,24 +81,35 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
     def assert_main_figure(self, figure, entry, tuning_word="Tuning"):
         self.assertEqual(len(figure.axes), 1)
         axis = figure.axes[0]
-        # Caches hold 1 - r; the figure shows r, with rho and the OLS guide flipped.
+        # Caches hold 1 - r; the figure shows r, with rho and the bin medians
+        # flipped (and their quartiles swapped). No OLS line is drawn.
+        points = [c for c in axis.collections
+                  if isinstance(c, paper_plot.mpl.collections.PathCollection)]
         np.testing.assert_allclose(
-            axis.collections[0].get_offsets(),
+            points[0].get_offsets(),
             np.column_stack((entry["tuning_corr"], 1.0 - np.asarray(entry["lesion_profile_dissim"]))))
+        medians = entry["binned_medians"]
+        bars = [c for c in axis.containers
+                if isinstance(c, paper_plot.mpl.container.ErrorbarContainer)]
+        self.assertEqual(len(bars), 1)
         self.assertEqual(len(axis.lines), 1)
         line = axis.lines[0]
-        np.testing.assert_allclose(line.get_ydata(),
-                                   entry["association"]["rho"] * line.get_xdata(), atol=1e-12)
-        self.assertAlmostEqual(line.get_xdata().min(), min(entry["tuning_corr"]))
-        self.assertAlmostEqual(line.get_xdata().max(), max(entry["tuning_corr"]))
-        legend = axis.get_legend().get_texts()[0].get_text()
+        np.testing.assert_allclose(line.get_xdata(), medians["x"])
+        np.testing.assert_allclose(line.get_ydata(), 1.0 - medians["y"])
+        segments = bars[0].lines[2][0].get_segments()
+        np.testing.assert_allclose([segment[0, 1] for segment in segments], 1.0 - medians["y_q75"])
+        np.testing.assert_allclose([segment[1, 1] for segment in segments], 1.0 - medians["y_q25"])
+        self.assertEqual(line.get_color(), paper_plot._TREND_LINE_COLOR)
+        legend_box = axis.get_legend()
+        legend = legend_box.get_title().get_text()
         self.assertIn("permutation p = 0.012", legend)
         self.assertIn(f"= {-entry['association']['rho']:.2f}", legend)
         self.assertIn("(n = 4)", legend)
+        self.assertEqual([text.get_text() for text in legend_box.get_texts()], ["Bin median, IQR"])
         self.assertEqual(axis.get_xlabel(), f"{tuning_word} correlation")
         self.assertIn("Lesion similarity", axis.get_ylabel())
         self.assertLessEqual(len(axis.get_yticks()), paper_plot._STAT_SCATTER_MAX_TICKS + 1)
-        np.testing.assert_array_equal(axis.collections[0].get_sizes(),
+        np.testing.assert_array_equal(points[0].get_sizes(),
                                       [paper_plot._SCATTER_POINT_STYLE["s"]])
         np.testing.assert_allclose(figure.get_size_inches(), paper_plot._LESION_SCATTER_FIGSIZE)
 
@@ -153,25 +182,38 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
             figures = self.render(root)
         self.assertEqual(set(figures), {"multitask_cluster_corr_vs_lesion_input_unnorm.png"})
 
-    def test_cache_without_trend_line_still_renders_without_a_line(self):
+    def test_cache_without_binned_medians_still_renders_without_a_connector(self):
         entry = self.entry()
-        entry.pop("trend_line")
+        entry.pop("binned_medians")
         with tempfile.TemporaryDirectory() as directory:
             root = self.root(directory)
             self.write(root, "mod_leison_effect_normalized_zero-W", {"normalized_zero-W": entry})
-            figures = self.render(root)
+            with patch("builtins.print") as output:
+                figures = self.render(root)
         self.assertEqual(len(figures), 1)
         axis = next(iter(figures.values())).axes[0]
         self.assertEqual(len(axis.lines), 0)
+        self.assertEqual(axis.containers, [])
         self.assertIsNotNone(axis.get_legend())
+        self.assertTrue(any("no saved binned medians" in str(call.args[0])
+                            for call in output.call_args_list if call.args))
 
-    def test_non_finite_trend_line_is_rejected(self):
-        entry = self.entry()
-        entry["trend_line"]["slope"] = np.nan
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.root(directory)
-            self.write(root, "mod_leison_effect_normalized_zero-W", {"normalized_zero-W": entry})
-            self.assertEqual(self.render(root), {})
+    def test_invalid_binned_medians_are_rejected(self):
+        for problem in ("nonfinite", "quartile_order", "length", "zero_count"):
+            entry = self.entry()
+            medians = entry["binned_medians"]
+            if problem == "nonfinite":
+                medians["y"][0] = np.nan
+            elif problem == "quartile_order":
+                medians["y_q25"][0] = medians["y"][0] + 1.0
+            elif problem == "length":
+                medians["x"] = medians["x"][:-1]
+            else:
+                medians["counts"][0] = 0
+            with self.subTest(problem=problem), tempfile.TemporaryDirectory() as directory:
+                root = self.root(directory)
+                self.write(root, "mod_leison_effect_normalized_zero-W", {"normalized_zero-W": entry})
+                self.assertEqual(self.render(root), {})
 
     def test_missing_modulation_variant_does_not_fall_back_or_block_others(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -291,6 +333,16 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
         self.assertEqual(path.name, "multitask_cluster_corr_vs_lesion_seeds.png")
         self.assertIn("hidden: 3/3 rho > 0, 2 significant", save.call_args.kwargs["extra"])
         self.assertIn("input: 1/3 rho > 0, 0 significant", save.call_args.kwargs["extra"])
+        from scipy.stats import wilcoxon
+        expected_p = {side: float(wilcoxon([-values[index] for values in runs.values()]).pvalue)
+                      for side, index in (("hidden", 0), ("input", 2))}
+        self.assertIn(f"Wilcoxon p = {expected_p['hidden']:.3f}", save.call_args.kwargs["extra"])
+        self.assertEqual([label.get_text() for label in figure.axes[0].get_xticklabels()],
+                         ["Hidden", "Input"])
+        self.assertEqual(len(figure.axes[0].texts), 0)
+        self.assertEqual(figure.axes[0].get_legend().get_title().get_text(),
+                         "3 runs; Wilcoxon signed-rank vs 0:\n"
+                         f"hidden p = {expected_p['hidden']:.3f}, input p = {expected_p['input']:.3f}")
         self.assertTrue(any("seed44" in str(call.args[0]) for call in output.call_args_list if call.args))
         axis = figure.axes[0]
         # Scatter points only: the median dashes are LineCollections in `collections` too.
@@ -306,8 +358,6 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
             self.assertAlmostEqual(y, ey)
             self.assertEqual(hollow, ehollow)
         np.testing.assert_allclose(figure.get_size_inches(), paper_plot._LESION_SCATTER_FIGSIZE)
-        self.assertEqual([label.get_text() for label in axis.get_xticklabels()],
-                         ["Hidden", "Input"])
 
     def test_seeds_figure_needs_two_runs(self):
         import re

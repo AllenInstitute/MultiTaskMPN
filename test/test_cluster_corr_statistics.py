@@ -178,6 +178,40 @@ class MantelTests(unittest.TestCase):
             lesion_plot._mantel_spearman(x_matrix, y_matrix, n_perm=0)
 
 
+class BinnedMedianTests(unittest.TestCase):
+    def test_quantile_bins_report_median_quartiles_and_counts(self):
+        x = np.array([-0.4, -0.2, 0.1, 0.3, 0.5, 0.6, 0.8, 0.9])
+        y = np.array([1.6, 1.2, 1.0, 1.4, 0.9, 0.5, 0.7, 0.3])
+        record = lesion_plot._quantile_bin_summary(x, y, 2)
+        np.testing.assert_allclose(record["edges"], [-0.4, 0.4, 0.9])
+        np.testing.assert_allclose(record["x"], [-0.05, 0.7])
+        np.testing.assert_allclose(record["y"], [1.3, 0.6])
+        np.testing.assert_allclose(record["y_q25"], [np.percentile(y[:4], 25), np.percentile(y[4:], 25)])
+        np.testing.assert_allclose(record["y_q75"], [np.percentile(y[:4], 75), np.percentile(y[4:], 75)])
+        np.testing.assert_array_equal(record["counts"], [4, 4])
+        self.assertEqual(record["n_bins_requested"], 2)
+
+    def test_tied_x_collapses_bins_and_bad_inputs_raise(self):
+        tied = lesion_plot._quantile_bin_summary(np.full(5, 0.3), np.arange(5.0), 4)
+        np.testing.assert_allclose(tied["x"], [0.3])
+        np.testing.assert_allclose(tied["y"], [2.0])
+        np.testing.assert_array_equal(tied["counts"], [5])
+        with self.assertRaises(ValueError):
+            lesion_plot._quantile_bin_summary([0.1, np.nan], [1.0, 2.0], 2)
+        with self.assertRaises(ValueError):
+            lesion_plot._quantile_bin_summary([0.1, 0.2], [1.0], 2)
+        with self.assertRaises(ValueError):
+            lesion_plot._quantile_bin_summary([0.1, 0.2], [1.0, 2.0], 0)
+
+    def test_om_medians_keep_their_nonnegative_contract(self):
+        with self.assertRaises(ValueError):
+            lesion_plot._om_binned_medians([-0.1, 0.2], [1.0, 2.0])
+        record = lesion_plot._om_binned_medians([0.0, 0.5, 1.0, 1.5], [3.0, 1.0, 2.0, 0.0], n_bins=2)
+        np.testing.assert_allclose(record["x"], [0.25, 1.25])
+        np.testing.assert_allclose(record["y"], [2.0, 1.0])
+        np.testing.assert_array_equal(record["counts"], [2, 2])
+
+
 class SummaryTests(unittest.TestCase):
     def test_summary_excludes_last_and_null_clusters_and_matches_definitions(self):
         cluster_means, lesion_acc, control_raw, labels = synthetic_lesion()
@@ -201,6 +235,13 @@ class SummaryTests(unittest.TestCase):
                                    (1.0 - np.corrcoef(scored["z"][:, keep].T))[tri])
         self.assertEqual(summary["association"]["n_clusters"], 4)
         self.assertEqual(summary["association"]["n_pairs"], 6)
+        medians = summary["binned_medians"]
+        self.assertEqual(medians["method"], "quantile")
+        self.assertEqual(medians["n_bins_requested"], lesion_plot.CLUSTER_CORR_N_BINS)
+        self.assertEqual(medians["counts"].sum(), summary["association"]["n_pairs"])
+        self.assertTrue(np.all(medians["y_q25"] <= medians["y"]))
+        self.assertTrue(np.all(medians["y"] <= medians["y_q75"]))
+        self.assertTrue(np.all(np.diff(medians["x"]) > 0))
         slope, intercept = np.polyfit(summary["tuning_corr"], summary["lesion_profile_dissim"], 1)
         self.assertEqual(summary["trend_line"]["method"], "ols")
         self.assertAlmostEqual(summary["trend_line"]["slope"], slope)

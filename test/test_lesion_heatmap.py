@@ -1,4 +1,5 @@
-"""Input, hidden and modulation lesion panels use saved effects and identities."""
+"""Hidden and modulation lesion panels use saved effects and identities; the
+input effects kept in the same cache are not drawn."""
 
 import unittest
 from unittest.mock import patch
@@ -42,7 +43,7 @@ class LesionHeatmapTests(unittest.TestCase):
             },
         }
 
-    def test_input_is_top_and_all_panels_share_task_order_and_color_limits(self):
+    def test_hidden_is_top_and_both_panels_share_task_order_and_color_limits(self):
         with patch.object(paper_plot, "_ensure_out_dir"), \
                 patch.object(paper_plot, "_load_pkl_or_skip", return_value=self.cache()), \
                 patch.object(paper_plot, "_save_fig") as save, \
@@ -52,26 +53,28 @@ class LesionHeatmapTests(unittest.TestCase):
         figure, output_path = save.call_args.args[:2]
         self.addCleanup(paper_plot.plt.close, figure)
         self.assertEqual(output_path.name, "multitask_lesion_heatmap_unnorm.png")
-        self.assertEqual(len(figure.axes), 3)
+        self.assertEqual(len(figure.axes), 2)
+        # Hidden (post) clusters above modulation clusters; the input (pre)
+        # effects, with the largest magnitude in this cache, are not drawn and
+        # do not set the color scale.
         expected_effects = (
-            [[-80., 30.], [60., -10.]],
             [[10., 20.], [20., 40.]],
             [[30., 10.], [50., -20.]],
         )
-        cluster_labels = (["C4", "C2"], ["C7", "C3"], ["C9", "C1"])
+        cluster_labels = (["C7", "C3"], ["C9", "C1"])
         for axis, expected, labels in zip(figure.axes, expected_effects, cluster_labels):
             mesh = axis.collections[0]
             np.testing.assert_allclose(mesh.get_array().reshape(2, 2), expected)
-            self.assertEqual(mesh.get_clim(), (-80., 80.))
+            self.assertEqual(mesh.get_clim(), (-50., 50.))
             self.assertEqual([text.get_text() for text in axis.get_yticklabels()],
                              [paper_plot._TASK_DISPLAY[rule] for rule in ("fdgo", "fdanti")])
             self.assertEqual([axis.xaxis.get_major_formatter()(index)
                               for index in axis.get_xticks()], labels)
         self.assertEqual(figure.axes[-1].get_xlabel(), "Cluster")
-        self.assertTrue(all(not axis.get_xticklabels() for axis in figure.axes[:2]))
+        self.assertFalse(figure.axes[0].get_xticklabels())
         colorbar.assert_called_once()
-        self.assertEqual(colorbar.call_args.kwargs["vmin"], -80.)
-        self.assertEqual(colorbar.call_args.kwargs["vmax"], 80.)
+        self.assertEqual(colorbar.call_args.kwargs["vmin"], -50.)
+        self.assertEqual(colorbar.call_args.kwargs["vmax"], 50.)
 
     def test_c21_displays_as_unresponsive_without_changing_effects_or_cache(self):
         data = self.cache()
@@ -89,12 +92,11 @@ class LesionHeatmapTests(unittest.TestCase):
         figure = save.call_args.args[0]
         self.addCleanup(paper_plot.plt.close, figure)
         expected_effects = (
-            [[-80., 30.], [60., -10.]],
             [[10., 20.], [20., 40.]],
             [[30., 10.], [50., -20.]],
         )
         for axis, expected, other_label in zip(
-                figure.axes, expected_effects, ("C2", "C3", "C1")):
+                figure.axes, expected_effects, ("C3", "C1")):
             self.assertEqual([axis.xaxis.get_major_formatter()(index)
                               for index in axis.get_xticks()], ["U", other_label])
             np.testing.assert_allclose(axis.collections[0].get_array().reshape(2, 2),
@@ -102,17 +104,17 @@ class LesionHeatmapTests(unittest.TestCase):
         self.assertEqual(neurons["conditions"][:2], ["post_c21", "pre_c21"])
         self.assertEqual(modulation["conditions"][0], "mod_c21")
 
-    def test_missing_input_or_invalid_zero_w_does_not_save_partial_figure(self):
+    def test_missing_hidden_or_invalid_zero_w_does_not_save_partial_figure(self):
         for problem in ("missing", "nonfinite", "missing_zero_w", "wrong_mode"):
             data = self.cache()
             neurons = data["entries"]["lesion_unnorm"]
             if problem == "missing":
                 indices = [index for index, name in enumerate(neurons["conditions"])
-                           if not name.startswith("pre_c")]
+                           if not name.startswith("post_c")]
                 neurons["conditions"] = [neurons["conditions"][index] for index in indices]
                 neurons["effect"] = np.asarray(neurons["effect"])[:, indices]
             elif problem == "nonfinite":
-                neurons["effect"][0][1] = np.nan
+                neurons["effect"][0][0] = np.nan
             elif problem == "missing_zero_w":
                 del data["entries"]["modulation_all_var_weighted_unnormalized__zero_W"]
             else:
@@ -142,7 +144,7 @@ class LesionHeatmapTests(unittest.TestCase):
         figure = save.call_args.args[0]
         self.addCleanup(paper_plot.plt.close, figure)
         np.testing.assert_allclose(figure.axes[0].collections[0].get_array().reshape(2, 2),
-                                   [[-80., 30.], [60., -10.]])
+                                   [[10., 20.], [20., 40.]])
         self.assertIn("leison_unnorm", data["entries"])
         self.assertNotIn("lesion_unnorm", data["entries"])
         self.assertIn("post_noleison", neurons["conditions"])
@@ -158,7 +160,7 @@ class LesionHeatmapTests(unittest.TestCase):
         save.assert_called_once()
         figure = save.call_args.args[0]
         self.addCleanup(paper_plot.plt.close, figure)
-        np.testing.assert_allclose(figure.axes[2].collections[0].get_array().reshape(2, 2),
+        np.testing.assert_allclose(figure.axes[1].collections[0].get_array().reshape(2, 2),
                                    [[30., 10.], [50., -20.]])
 
 

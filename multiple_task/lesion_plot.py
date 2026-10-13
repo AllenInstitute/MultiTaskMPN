@@ -21,8 +21,11 @@ synapse clusters are selectively important for specific tasks. Produces:
    exceeds a control-only null, to test whether similarly-tuned clusters have
    similar causal roles. Both axes are scale-free and significance comes from
    a cluster-label (Mantel-type) Spearman permutation test, because cluster
-   pairs share clusters. The former tuning-cosine vs effect-L1 scatter is kept
-   as a supplement together with L1 vs summed effect magnitude, the size
+   pairs share clusters. The scatter's shape is summarized by quantile-bin
+   medians of the dissimilarity (with quartiles) along the tuning correlation,
+   which paper_plot.py draws in place of a fitted line; the OLS guide is kept
+   for the diagnostic figure. The former tuning-cosine vs effect-L1 scatter is
+   kept as a supplement together with L1 vs summed effect magnitude, the size
    confound that produced its positive correlation.
 5. Overmembership vs lesion difference — relates modulation cluster enrichment
    in (input, hidden) neuron pairs to the functional similarity (task-profile
@@ -308,26 +311,43 @@ def _om_scatter_perm_test(mod_profiles, row_om, row_cm, n_perm=OM_N_PERM, seed=0
     return rho_obs, float(p_perm), null_rho
 
 
-def _om_binned_medians(om_vals, lesion_diffs, n_bins=5):
-    """Describe the scatter with quantile-bin medians, keeping tied OM together."""
-    om_vals = np.asarray(om_vals, dtype=float)
-    lesion_diffs = np.asarray(lesion_diffs, dtype=float)
-    if (om_vals.ndim != 1 or om_vals.size == 0 or om_vals.shape != lesion_diffs.shape
-            or not np.isfinite(om_vals).all() or not np.isfinite(lesion_diffs).all()
-            or np.any(om_vals < 0) or np.any(lesion_diffs < 0)
+def _quantile_bin_summary(x, y, n_bins):
+    """Describe a scatter by quantile bins of x: per bin the median x, the
+    median y with its quartiles, and the count.
+
+    Bin edges are the x quantiles; tied x values stay in one bin, so fewer
+    than `n_bins` bins may result. Inputs must be finite, one-dimensional and
+    of equal length; callers add their own range checks.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if (x.ndim != 1 or x.size == 0 or x.shape != y.shape
+            or not np.isfinite(x).all() or not np.isfinite(y).all()
             or not isinstance(n_bins, int) or n_bins < 1):
-        raise ValueError("Binned medians require finite nonnegative scatter pairs and positive n_bins.")
-    edges = np.unique(np.quantile(om_vals, np.linspace(0, 1, n_bins + 1)))
-    bin_ids = np.searchsorted(edges[1:-1], om_vals, side="right")
+        raise ValueError("Binned medians require finite scatter pairs and a positive n_bins.")
+    edges = np.unique(np.quantile(x, np.linspace(0, 1, n_bins + 1)))
+    bin_ids = np.searchsorted(edges[1:-1], x, side="right")
     groups = [bin_ids == index for index in np.unique(bin_ids)]
     return {
         "method": "quantile",
         "n_bins_requested": n_bins,
         "edges": edges,
-        "x": np.asarray([np.median(om_vals[group]) for group in groups]),
-        "y": np.asarray([np.median(lesion_diffs[group]) for group in groups]),
+        "x": np.asarray([np.median(x[group]) for group in groups]),
+        "y": np.asarray([np.median(y[group]) for group in groups]),
+        "y_q25": np.asarray([np.percentile(y[group], 25) for group in groups]),
+        "y_q75": np.asarray([np.percentile(y[group], 75) for group in groups]),
         "counts": np.asarray([np.count_nonzero(group) for group in groups]),
     }
+
+
+def _om_binned_medians(om_vals, lesion_diffs, n_bins=5):
+    """Describe the OM scatter with quantile-bin medians, keeping tied OM together."""
+    om_vals = np.asarray(om_vals, dtype=float)
+    lesion_diffs = np.asarray(lesion_diffs, dtype=float)
+    if (om_vals.ndim != 1 or om_vals.shape != lesion_diffs.shape
+            or np.any(om_vals < 0) or np.any(lesion_diffs < 0)):
+        raise ValueError("Binned medians require finite nonnegative scatter pairs and positive n_bins.")
+    return _quantile_bin_summary(om_vals, lesion_diffs, n_bins)
 
 
 def _om_scatter_summary(mod_profiles, row_om, row_cm, n_perm=OM_N_PERM,
@@ -461,6 +481,12 @@ CLUSTER_CORR_SIG_QUANTILE = 0.95
 CLUSTER_CORR_X_DEFINITION = "pearson_corr_of_cluster_mean_tuning_profiles"
 CLUSTER_CORR_Y_DEFINITION = "one_minus_pearson_corr_of_z_scored_effect_profiles"
 CLUSTER_CORR_L1_DEFINITION = "sum_over_tasks_abs_effect_difference"
+# Quantile bins of the tuning correlation that describe the scatter's shape
+# (median and quartiles of the lesion dissimilarity per bin). A run has 28 to
+# 136 cluster pairs, so quartile bins keep at least about seven pairs each;
+# the relation is concentrated among the most similarly tuned pairs, which a
+# straight line through the cloud does not show.
+CLUSTER_CORR_N_BINS = 4
 
 
 def _z_scored_lesion_effects(lesion_acc, control_raw, sd_floor=CLUSTER_CORR_SD_FLOOR):
@@ -696,6 +722,8 @@ def _tuning_vs_lesion_summary(cluster_means, lesion_acc, control_raw, cluster_la
         "significance": significance,
         "association": _mantel_spearman(tuning_corr, lesion_dissim, n_perm=n_perm, seed=seed),
         "trend_line": _descriptive_trend_line(tuning_corr[tri], lesion_dissim[tri]),
+        "binned_medians": _quantile_bin_summary(tuning_corr[tri], lesion_dissim[tri],
+                                                CLUSTER_CORR_N_BINS),
         "l1": supplement,
     }
 
@@ -3044,6 +3072,12 @@ def main(seed, feature):
                 x_line = np.linspace(summary["tuning_corr"].min(), summary["tuning_corr"].max(), 50)
                 ax_main.plot(x_line, trend["intercept"] + trend["slope"] * x_line,
                              color="tomato", linewidth=1.2, label="OLS guide")
+            medians = summary["binned_medians"]
+            ax_main.errorbar(medians["x"], medians["y"],
+                             yerr=[medians["y"] - medians["y_q25"], medians["y_q75"] - medians["y"]],
+                             fmt="o-", color="k", markersize=4, linewidth=1.2, elinewidth=0.8,
+                             capsize=0, label="quantile-bin median, IQR")
+            ax_main.legend(fontsize=7, frameon=False)
             ax_main.set_xlabel("Tuning profile correlation")
             ax_main.set_ylabel("Lesion profile dissimilarity (1 - r)")
             ax_main.set_ylim(bottom=0)

@@ -2812,17 +2812,18 @@ def _load_lesion_results():
 def plot_lesion_heatmap():
     """Plot cached random-control-adjusted effects for unnormalized clusters.
 
-    Three task-by-cluster panels: input (pre) above hidden (post), both from
-    lesion_unnorm, then modulation from
-    modulation_all_var_weighted_unnormalized__zero_W. Modulation connections
-    are removed via zero_W; freeze_M is reserved for separate comparisons.
+    Two task-by-cluster panels: hidden neuron clusters (post, from
+    lesion_unnorm) above modulation clusters from
+    modulation_all_var_weighted_unnormalized__zero_W. The input (pre) effects
+    saved in the same cache are not drawn. Modulation connections are removed
+    via zero_W; freeze_M is reserved for separate comparisons.
 
     lesion_plot.py computes random_acc - cluster_acc. Positive values mean the
     targeted lesion impairs accuracy more than the size-matched random control.
     This renderer selects columns, aligns task rows and multiplies by 100 to
     show accuracy percentage points; it does not recompute effects or tests.
     Each panel retains its own cluster identities. C21 is displayed as U for
-    the fixed-k=20 results. All three share a symmetric color scale, with the
+    the fixed-k=20 results. Both share a symmetric color scale, with the
     colorbar saved separately.
     """
     _ensure_out_dir()
@@ -2850,18 +2851,15 @@ def plot_lesion_heatmap():
         all_tasks = hidden["tasks"]
         if set(all_tasks) != set(modulation["tasks"]):
             raise ValueError("hidden and modulation task sets differ")
-        pre_idx = [index for index, name in enumerate(hidden["conditions"]) if name.startswith("pre_c")]
         post_idx = [index for index, name in enumerate(hidden["conditions"]) if name.startswith("post_c")]
         mod_idx = [index for index, name in enumerate(modulation["conditions"]) if name.startswith("mod_c")]
-        if not pre_idx or not post_idx or not mod_idx:
-            raise ValueError("missing saved input, hidden or modulation cluster effects")
+        if not post_idx or not mod_idx:
+            raise ValueError("missing saved hidden or modulation cluster effects")
         mod_rows = [modulation["tasks"].index(task) for task in all_tasks]
-        effect_pre = np.asarray(hidden["effect"], dtype=float)[:, pre_idx] * 100
         effect_post = np.asarray(hidden["effect"], dtype=float)[:, post_idx] * 100
         effect_mod = np.asarray(modulation["effect"], dtype=float)[np.ix_(mod_rows, mod_idx)] * 100
-        if not all(np.isfinite(effect).all() for effect in (effect_pre, effect_post, effect_mod)):
+        if not all(np.isfinite(effect).all() for effect in (effect_post, effect_mod)):
             raise ValueError("non-finite saved effect values")
-        pre_labels = ["C" + hidden["conditions"][index].removeprefix("pre_c") for index in pre_idx]
         post_labels = ["C" + hidden["conditions"][index].removeprefix("post_c") for index in post_idx]
         mod_labels = ["C" + modulation["conditions"][index].removeprefix("mod_c") for index in mod_idx]
     except (KeyError, TypeError, ValueError) as error:
@@ -2869,17 +2867,16 @@ def plot_lesion_heatmap():
         return
 
     all_tasks_display = [_TASK_DISPLAY.get(task, task) for task in all_tasks]
-    vmax = max(np.abs(effect_pre).max(), np.abs(effect_post).max(), np.abs(effect_mod).max(), 1e-6)
+    vmax = max(np.abs(effect_post).max(), np.abs(effect_mod).max(), 1e-6)
 
     fig, axes = plt.subplots(
-        3, 1, figsize=(6, 8.25),
-        gridspec_kw={"height_ratios": [1, 1, 1], "hspace": 0.1},
+        2, 1, figsize=(6, 5.5),
+        gridspec_kw={"height_ratios": [1, 1], "hspace": 0.1},
     )
 
     panels = [
-        (axes[0], effect_pre, pre_labels),
-        (axes[1], effect_post, post_labels),
-        (axes[2], effect_mod, mod_labels),
+        (axes[0], effect_post, post_labels),
+        (axes[1], effect_mod, mod_labels),
     ]
 
     for idx, (ax, effect, cluster_labels) in enumerate(panels):
@@ -3318,12 +3315,17 @@ _LESION_SCATTER_FIGSIZE = (2.0, 2.0)
 _TASK_SPECIFICITY_FIGSIZE = (3, 2.8)
 
 
-def _seeds_legend(ax, handles, n_runs):
+def _seeds_legend(ax, handles, n_runs, note=None):
     """Legend of the per-run `_seeds` figures, placed above the axes (a 2 in
-    panel has no empty corner for a box) with the run count as its title."""
+    panel has no empty corner for a box) with the run count as its title;
+    `note` is appended to that title and may hold its own line breaks.
+    tight_layout reserves the legend's width for the axes, so every title
+    line must stay within the two-column handle row (about 1.4 in at 6 pt)
+    or the axes shrink."""
+    title = f"{n_runs} runs" + (f"; {note}" if note else "")
     return _legend(ax, handles=handles, loc="lower left", bbox_to_anchor=(0.0, 1.0),
                    borderaxespad=0.0, ncol=2, columnspacing=0.8, handletextpad=0.3,
-                   fontsize=6, frameon=False, title=f"{n_runs} runs", title_fontsize=6)
+                   fontsize=6, frameon=False, title=title, title_fontsize=6)
 
 
 def _rank_association_label(association, unit=""):
@@ -3349,6 +3351,25 @@ def _saved_association(association):
     if association.get("statistic") != "spearman" or "cluster" not in str(
             association.get("permutation_unit", "")):
         raise ValueError("saved association is not a cluster-permutation Spearman test")
+    return copied
+
+
+def _saved_binned_medians(medians):
+    """Validate and copy a saved quantile-bin summary (median x, median y with
+    quartiles and count per bin); None when the cache predates it."""
+    if medians is None:
+        return None
+    copied = {key: np.asarray(medians[key], dtype=float)
+              for key in ("x", "y", "y_q25", "y_q75")}
+    counts = np.asarray(medians["counts"])
+    size = copied["x"].size
+    if (size == 0 or any(value.shape != (size,) for value in copied.values())
+            or counts.shape != (size,)
+            or not all(np.isfinite(value).all() for value in copied.values())
+            or np.any(counts < 1)
+            or np.any(copied["y_q25"] > copied["y"]) or np.any(copied["y"] > copied["y_q75"])):
+        raise ValueError("invalid saved binned medians")
+    copied["counts"] = counts.astype(int)
     return copied
 
 
@@ -3381,13 +3402,8 @@ def _read_cluster_corr_entry(name, data, expected_entry, aname=None):
     if (x.ndim != 1 or x.size == 0 or x.shape != y.shape
             or not np.isfinite(x).all() or not np.isfinite(y).all()):
         raise ValueError("invalid saved scatter coordinates")
-    trend = data.get("trend_line")
-    if trend is not None:
-        trend = {key: float(trend[key]) for key in ("slope", "intercept")}
-        if not all(np.isfinite(value) for value in trend.values()):
-            raise ValueError("non-finite saved trend line")
     return {"x": x, "y": y, "association": _saved_association(data["association"]),
-            "trend_line": trend}
+            "binned_medians": _saved_binned_medians(data.get("binned_medians"))}
 
 
 def plot_cluster_corr_vs_lesion():
@@ -3398,11 +3414,13 @@ def plot_cluster_corr_vs_lesion():
     from the similarity side: x is the Pearson correlation between cluster mean
     tuning profiles, y the Pearson correlation between per-task lesion effects
     z-scored against their random-control repeats (the caches store 1 - r; the
-    renderer flips y, the sign of the saved Spearman rho and the saved OLS
-    guide, see _plot_cluster_corr_vs_lesion_variants), over clusters whose
+    renderer flips y, the sign of the saved Spearman rho and the saved bin
+    medians, see _plot_cluster_corr_vs_lesion_variants), over clusters whose
     lesion effect exceeds the control null. The legend reports Spearman rho
     with a cluster-label permutation p, because cluster pairs share clusters.
-    The OLS line is a visual guide to the trend; it is not the statistic.
+    The saved quantile-bin medians (with their interquartile range) describe
+    the shape of the relation, which is concentrated among the most similarly
+    tuned pairs; they are descriptive, not the statistic.
 
     Produces input/hidden figures for both clustering variants, plus three
     zero_W modulation figures: normalized, var-weighted unnormalized (W*Var(M))
@@ -3473,26 +3491,36 @@ def _plot_cluster_corr_vs_lesion_variants(variants):
             # rank statistics of that quantity. The figure shows the similarity
             # r instead, which is the same comparison seen from the other side:
             # y flips to 1 - y, the Spearman rho changes sign (rank order
-            # reversed; the two-sided permutation p is unchanged) and the OLS
-            # guide becomes (1 - intercept) - slope * x. Nothing is refitted.
+            # reversed; the two-sided permutation p is unchanged) and each bin
+            # median flips with its quartiles swapped. Nothing is refitted.
             similarity = 1.0 - entry["y"]
             association = dict(entry["association"])
             association["rho"] = -association["rho"]
-            trend = entry["trend_line"]
-            # Saved OLS line as a visual guide; the legend statistic stays the
-            # cached Spearman rho (sign-flipped) with its label-permutation p.
-            if trend is None:
-                print(f"  Note: {name} cache has no saved trend line; "
-                      "rerun multiple_task/lesion_plot.py to add one.")
-            else:
-                trend = {"slope": -trend["slope"], "intercept": 1.0 - trend["intercept"]}
             fig, ax = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
+            handles = []
+            if entry["binned_medians"] is None:
+                print(f"  Note: {name} cache has no saved binned medians; "
+                      "rerun multiple_task/lesion_plot.py to add them.")
+            else:
+                handles.append(_draw_similarity_bin_medians(ax, entry["binned_medians"]))
             _stat_scatter(ax, entry["x"], similarity, _rank_association_label(association),
-                          trend_line=trend, xlabel=f"{tuning_word} correlation",
+                          legend_handles=handles, xlabel=f"{tuning_word} correlation",
                           ylabel="Lesion similarity (r)")
             fig.tight_layout()
             _save_fig(fig, _multitask_out(f"cluster_corr_vs_lesion_{clean_name}.png"),
                       extra=f" [{LESION_ANAME}]")
+
+
+def _draw_similarity_bin_medians(ax, medians):
+    """Draw saved quantile-bin medians of the lesion DISSIMILARITY on the
+    similarity axis: 1 - median per bin, with the interquartile range as a
+    bar (the quartiles swap under the flip). Returns the legend handle."""
+    center = 1.0 - medians["y"]
+    lower = 1.0 - medians["y_q75"]
+    upper = 1.0 - medians["y_q25"]
+    return ax.errorbar(medians["x"], center, yerr=[center - lower, upper - center],
+                       fmt="o-", markersize=3.5, elinewidth=0.8, capsize=0,
+                       label="Bin median, IQR", **_TREND_LINE_STYLE)
 
 
 _CLUSTER_CORR_SEED_SIDES = ("hidden", "input")
@@ -3532,25 +3560,25 @@ def _cluster_corr_seed_runs(sides=_CLUSTER_CORR_SEED_SIDES):
     return runs
 
 
-def plot_cluster_corr_vs_lesion_seeds():
-    """
-    Figure: the cluster-level tuning-vs-lesion Spearman rho of every sibling
-    run of LESION_ANAME, hidden and input neuron clusters side by side.
+def _wilcoxon_vs_zero(values):
+    """Two-sided Wilcoxon signed-rank p of per-run statistics against zero,
+    the cohort-level test of the per-run figures; NaN below two runs or when
+    every value is zero. Returns (p, legend text)."""
+    from scipy.stats import wilcoxon
 
-    The single-run `cluster_corr_vs_lesion` scatters have only 8-17 clusters
-    each, so one run rarely reaches significance; this figure shows the whole
-    cohort. Each run contributes one point per cluster type (rho of tuning
-    correlation vs lesion-profile similarity, sign-flipped from the cached
-    dissimilarity), joined by a thin line; filled markers have a saved
-    cluster-label permutation p below 0.05, hollow ones do not. The dash is
-    the median over runs. Only saved statistics are drawn; the saved message
-    counts the runs with positive and with significant rho.
-    """
-    _ensure_out_dir()
-    runs = _cluster_corr_seed_runs()
-    if len(runs) < 2:
-        print(f"  Skipped: {len(runs)} run(s) with saved cluster-level caches; need >= 2.")
-        return
+    values = np.asarray(values, dtype=float)
+    if values.size < 2 or np.all(values == 0):
+        return np.nan, "p = n/a"
+    p_value = float(wilcoxon(values).pvalue)
+    return p_value, ("p < 0.001" if p_value < 0.001 else f"p = {p_value:.3f}")
+
+
+def _plot_cluster_corr_seed_rhos(runs, out_name):
+    """Renderer of the per-run rho figure: one joined hidden/input pair per
+    run (filled when its saved permutation p is below 0.05), the median over
+    runs as a dash, and in the legend title the two-sided Wilcoxon signed-rank
+    p of each cluster type's rhos against zero (the axes are too narrow to
+    hold a p under each tick label)."""
     sides = _CLUSTER_CORR_SEED_SIDES
     fig, ax = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
     ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
@@ -3564,10 +3592,13 @@ def plot_cluster_corr_vs_lesion_seeds():
             ax.scatter([position + offset], [entries[side]["rho"]], s=32, zorder=3,
                        color=_SCATTER_POINT_COLOR if significant else "white",
                        edgecolors=_SCATTER_POINT_COLOR if significant else "k", linewidths=0.6)
+    cohort_tests, test_texts = {}, []
     for position, side in zip(positions, sides):
-        median = np.median([entries[side]["rho"] for entries in runs.values()])
-        ax.hlines(median, position - 0.22, position + 0.22, color=_TREND_LINE_COLOR,
+        rhos = [entries[side]["rho"] for entries in runs.values()]
+        ax.hlines(np.median(rhos), position - 0.22, position + 0.22, color=_TREND_LINE_COLOR,
                   linewidth=1.8, zorder=4)
+        cohort_tests[side], p_text = _wilcoxon_vs_zero(rhos)
+        test_texts.append(f"{side} {p_text}")
     ax.set_xticks(positions)
     ax.set_xticklabels([_CLUSTER_CORR_SEED_LABELS[side] for side in sides], fontsize=7)
     ax.set_xlim(-0.6, len(positions) - 0.4)
@@ -3578,13 +3609,39 @@ def plot_cluster_corr_vs_lesion_seeds():
                               markersize=5, label="permutation p < 0.05")
     hollow = mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
                               markeredgecolor="k", markersize=5, label=r"p $\geq$ 0.05")
-    _seeds_legend(ax, [filled, hollow], len(runs))
+    _seeds_legend(ax, [filled, hollow], len(runs),
+                  note="Wilcoxon signed-rank vs 0:\n" + ", ".join(test_texts))
     fig.tight_layout()
     summary = ", ".join(
         f"{side}: {sum(e[side]['rho'] > 0 for e in runs.values())}/{len(runs)} rho > 0, "
-        f"{sum(e[side]['p_perm'] < 0.05 for e in runs.values())} significant"
+        f"{sum(e[side]['p_perm'] < 0.05 for e in runs.values())} significant, "
+        f"Wilcoxon p = {cohort_tests[side]:.3f}"
         for side in sides)
-    _save_fig(fig, _multitask_out("cluster_corr_vs_lesion_seeds.png"), extra="  " + summary)
+    _save_fig(fig, _multitask_out(out_name), extra="  " + summary)
+
+
+def plot_cluster_corr_vs_lesion_seeds():
+    """
+    Figure: the cluster-level tuning-vs-lesion Spearman rho of every sibling
+    run of LESION_ANAME, hidden and input neuron clusters side by side.
+
+    The single-run `cluster_corr_vs_lesion` scatters have only 8-17 clusters
+    each, so one run rarely reaches significance; this figure shows the whole
+    cohort. Each run contributes one point per cluster type (rho of tuning
+    correlation vs lesion-profile similarity, sign-flipped from the cached
+    dissimilarity), joined by a thin line; filled markers have a saved
+    cluster-label permutation p below 0.05, hollow ones do not. The dash is
+    the median over runs, and the tick label carries the two-sided Wilcoxon
+    signed-rank p of the runs' rhos against zero, the cohort-level test. Only
+    saved per-run statistics enter; the saved message counts the runs with
+    positive and with significant rho.
+    """
+    _ensure_out_dir()
+    runs = _cluster_corr_seed_runs()
+    if len(runs) < 2:
+        print(f"  Skipped: {len(runs)} run(s) with saved cluster-level caches; need >= 2.")
+        return
+    _plot_cluster_corr_seed_rhos(runs, "cluster_corr_vs_lesion_seeds.png")
 
 
 def _sibling_run_dirs():

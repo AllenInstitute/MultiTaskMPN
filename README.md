@@ -182,15 +182,21 @@ profiles, y is the Pearson correlation between per-task lesion effects after
 z-scoring each effect against its stored random-control repeats (control SD
 floored at one accuracy point). The caches store the dissimilarity 1 − r and
 the rank statistics of that quantity; `paper_plot.py` shows the similarity r,
-so it flips y, the sign of the saved Spearman rho and the saved OLS guide (the
-two-sided permutation p is unchanged) without refitting anything. Only clusters whose summed |z|
+so it flips y, the sign of the saved Spearman rho and the saved bin medians
+(their quartiles swap; the two-sided permutation p is unchanged) without
+refitting anything. Only clusters whose summed |z|
 exceeds the 95th percentile of a control-only, leave-one-repeat-out null are
 compared. The legend reports Spearman rho with a two-sided cluster-label
 (Mantel-type) permutation p from 10,000 permutations, because the cluster pairs
-share clusters and are not independent samples. The line through the points is
-an ordinary least-squares fit saved by `lesion_plot.py` as a visual guide to the
-trend; it is not the reported statistic and carries no p-value. Caches written
-before the line was added draw without it until `lesion_plot.py` is rerun. All entries come from
+share clusters and are not independent samples. The red connector through the
+points joins the saved quantile-bin medians (`CLUSTER_CORR_N_BINS` = 4 bins of
+the tuning correlation; tied values stay together) with the interquartile range
+of each bin as a bar. It describes the shape of the relation, which is
+concentrated among the most similarly tuned pairs rather than linear across the
+range; it is not the reported statistic. `lesion_plot.py` still saves its OLS
+guide for its own diagnostic figure, but `paper_plot.py` no longer draws it.
+Caches written before the bin medians were added draw without the connector
+until `lesion_plot.py` is rerun. All entries come from
 `LESION_ANAME`. Coordinates
 and statistics are read from the `schema_version=2` caches written by
 `lesion_plot.py`; legacy caches holding OLS regressions are skipped, never
@@ -205,7 +211,11 @@ input caches for every sibling run of `LESION_ANAME` and plots each run's
 similarity rho as a joined hidden/input pair, filled when the saved permutation
 p is below 0.05, with the median over runs as a dash; a single run has only
 8-17 clusters, so the cohort view is where the cluster-level relation should
-be judged.
+be judged. The legend title carries the cohort-level test, a two-sided
+Wilcoxon signed-rank p of the runs' rhos against zero for each cluster type,
+computed in `paper_plot.py` from the saved per-run rhos (nothing below the run
+level is recomputed). Like every lesion figure it describes the one cohort
+selected by `--multitask-l2`; render it once per cohort to compare them.
 
 `python paper_plot.py --only cluster_corr_vs_lesion_weighted` draws the separate
 **Var(WM)** comparison from `LESION_ANAME`, exporting only
@@ -219,9 +229,11 @@ z-scored lesion dissimilarities and permutation statistics without refitting.
 No clustering or lesion experiment is rerun. Use an allocated compute node for
 rendering; this `--only` command preserves all other figures.
 
-The primary `lesion_heatmap` compares input/hidden neuron lesions with
+The primary `lesion_heatmap` compares hidden neuron lesions with
 var-weighted, unnormalized modulation **zero_W** lesions (selected synaptic
-weights set to zero). Its `lesion_cluster_sizes` companion reads the same
+weights set to zero), as two task-by-cluster panels; the input neuron effects
+saved in the same cache are not drawn, and the shared color scale covers only
+the two drawn panels. Its `lesion_cluster_sizes` companion reads the same
 zero_W cluster memberships. `lesion_plot.py` exports both zero_W and freeze_M
 effects with explicit mode metadata; missing zero_W results are never replaced
 by freeze_M in these two figures. Existing explicit zero_W cache keys remain
@@ -269,8 +281,8 @@ lesion-effect profiles over all unnormalized input and hidden neuron clusters
 because it discards the amplitude that predicts causal impact; the normalized
 pairing is kept in the cache under `reference_variants`. The
 legend reports the saved two-sided Spearman task-label (Mantel-type)
-permutation p, and the line is the saved OLS guide, matching the cluster-level
-tuning-vs-lesion scatters. `--only causal_vs_activity_seeds` reads the same
+permutation p, and the line is the saved OLS guide (the cluster-level
+tuning-vs-lesion scatters show bin medians instead, see above). `--only causal_vs_activity_seeds` reads the same
 caches for every sibling run of `LESION_ANAME` (same feature, any seed) and
 plots each run's hidden and input rho as a joined pair, filled when the saved
 permutation p is below 0.05, with the median as a dash. A response-period-only
