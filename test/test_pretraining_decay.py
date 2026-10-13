@@ -4,6 +4,8 @@
 import ast
 import copy
 import io
+import random
+import re
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -26,18 +28,20 @@ def load_producer():
     tree = ast.parse(SOURCE.read_text())
     constants = {
         "DT_MS", "M_TIME_SCALE", "LEGACY_M_LAMBDA", "M_BOUNDS",
-        "RULES_DICT", "RULES_DICT_FREQUENCY",
+        "RULES_DICT", "RULES_DICT_FREQUENCY", "OUT_DIR", "SEED_POOL",
+        "N_TRIALS", "SEED_LIST", "PRETRAIN_RULESET",
     }
     functions = {
         "_feature_with_bounds", "_feature_with_lambda", "_current_basic_params",
         "_build_experiment_hyp_dicts", "_build_file_tag",
+        "_completed_seeds", "_pick_new_seeds",
     }
     nodes = [node for node in tree.body
              if (isinstance(node, ast.FunctionDef) and node.name in functions)
              or (isinstance(node, ast.Assign)
                  and any(isinstance(target, ast.Name) and target.id in constants
                          for target in node.targets))]
-    namespace = {"np": np, "copy": copy}
+    namespace = {"np": np, "copy": copy, "re": re, "random": random, "Path": Path}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), "exec"), namespace)  # noqa: S102
     return namespace
 
@@ -83,7 +87,11 @@ class PretrainingDecayTests(unittest.TestCase):
         namespace = {**self.producer, "feature": "L21e3"}
         exec(compile(ast.Module(body=[assignment], type_ignores=[]), str(SOURCE), "exec"), namespace)  # noqa: S102
         feature = namespace["feature"]
-        self.assertEqual(feature, "L21e3mb2lam0.9")
+        # run_trial must label its files exactly as the helpers do for the
+        # configured bounds and decay (L21e3lam0.9 for (-1, 1) at 400 ms).
+        self.assertEqual(feature, self.producer["_feature_with_lambda"](
+            self.producer["_feature_with_bounds"]("L21e3")))
+        self.assertEqual(feature, "L21e3lam0.9")
         for ruleset in pretraining_utils.RULESET_SPECS:
             stage1, stage2 = self.producer["_build_experiment_hyp_dicts"](
                 feature, ruleset, "delayanti", n_hidden=200, chosen_network="dmpn")
@@ -92,9 +100,11 @@ class PretrainingDecayTests(unittest.TestCase):
                     task, train, model = self.producer["_current_basic_params"](
                         stage, train=True, n_hidden=200, mpn_depth=1)
                 self.assertEqual(task["dt"], 40)
-                self.assertEqual(model["ml_params"]["m_time_scale"], 400)
+                self.assertEqual(model["ml_params"]["m_time_scale"],
+                                 self.producer["M_TIME_SCALE"])
                 self.assertFalse(model["ml_params"]["lam_train"])
-                self.assertEqual(model["ml_params"]["m_bounds"], (-2.0, 2.0))
+                self.assertEqual(tuple(model["ml_params"]["m_bounds"]),
+                                 tuple(self.producer["M_BOUNDS"]))
                 stage["addon_name"] += f"+batch{train['n_batches']}+{model['acc_measure']}"
                 self.assertEqual(stage["addon_name"], pretraining_utils.variant_addon(200, feature))
             self.assertEqual(
@@ -135,6 +145,54 @@ class PretrainingDecayTests(unittest.TestCase):
                 self.assertEqual(analysis["discover_seeds"](), [seed])
                 matches = pretraining_post.discover_checkpoints(root, feature, 200, ruleset="fdgo")
                 self.assertEqual([entry[2] for entry in matches], [seed])
+
+
+class PretrainingSeedBookkeepingTests(unittest.TestCase):
+    """Repeated `python pretrain/pretraining.py` runs add seeds, never overwrite."""
+
+    def setUp(self):
+        self.producer = load_producer()
+
+    def test_direct_run_targets_five_new_fdgo_delaygo_trials(self):
+        self.assertEqual(self.producer["PRETRAIN_RULESET"], "fdgo_delaygo")
+        self.assertEqual(self.producer["N_TRIALS"], 5)
+        self.assertIsNone(self.producer["SEED_LIST"])
+        self.assertEqual(self.producer["M_TIME_SCALE"], 400)
+        self.assertEqual(tuple(self.producer["M_BOUNDS"]), (-1.0, 1.0))
+
+    def test_completed_seeds_match_only_finished_runs_of_the_same_label(self):
+        completed = self.producer["_completed_seeds"]
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            finished = pretraining_utils.run_name("fdgo_delaygo", "dmpn", 123, 200, "L21e3lam0.9")
+            (root / f"hist_{finished}.pkl").touch()
+            (root / f"savednet_{finished}.pt").touch()
+            # Failed midway: no history pickle, so the seed stays available.
+            partial = pretraining_utils.run_name("fdgo_delaygo", "dmpn", 7, 200, "L21e3lam0.9")
+            (root / f"param_{partial}_result.npz").touch()
+            # Other labels and rulesets never count.
+            for ruleset, feature in (("fdgo_delaygo", "L21e3"), ("fdgo_delaygo", "L21e3mb2lam0.9"),
+                                     ("fdanti_delaygo", "L21e3lam0.9")):
+                other = pretraining_utils.run_name(ruleset, "dmpn", 55, 200, feature)
+                (root / f"hist_{other}.pkl").touch()
+            self.assertEqual(completed("L21e3lam0.9", "fdgo_delaygo", root), [123])
+            self.assertEqual(completed("L21e3", "fdgo_delaygo", root), [55])
+            self.assertEqual(completed("L21e3lam0.9", "fdanti_delaygo", root), [55])
+            self.assertEqual(completed("L21e3lam0.9", "fdanti", root), [])
+        self.assertEqual(completed("L21e3lam0.9", "fdgo_delaygo", Path(directory) / "missing"), [])
+
+    def test_new_seeds_avoid_completed_ones_and_stay_in_pool(self):
+        pick = self.producer["_pick_new_seeds"]
+        pool = set(self.producer["SEED_POOL"])
+        completed = list(range(1, 996))
+        for _ in range(5):
+            chosen = pick(5, completed, random.Random(0))
+            self.assertEqual(sorted(chosen), [996, 997, 998, 999, 1000])
+        chosen = pick(5, [123, 558, 580, 892, 936], random.Random(1))
+        self.assertEqual(len(set(chosen)), 5)
+        self.assertTrue(set(chosen) <= pool - {123, 558, 580, 892, 936})
+        with self.assertRaises(ValueError):
+            pick(6, completed, random.Random(0))
 
 
 if __name__ == "__main__":

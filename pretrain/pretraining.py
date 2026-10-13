@@ -5,7 +5,10 @@ Pretraining -> Post-training transfer experiment.
 
 run_trial runs one seed; main uses the configuration below to run a batch.
 run_many remains a callable batch entry point. Fixed SEED_LIST values override
-N_TRIALS; otherwise each invocation selects distinct random seeds.
+N_TRIALS; otherwise each invocation draws N_TRIALS random seeds that have no
+completed run of the configured ruleset and feature label, so running the
+script again adds that many trials to the existing cohort without overwriting
+any run.
 
 Protocol
 --------
@@ -27,8 +30,9 @@ bias/input traces, and duplicate result metadata are not saved.
 The feature argument labels files; it does not set the regularization strength.
 Bounds and non-legacy M decay are appended to that label automatically.
 Lambda = 1 - DT_MS / M_TIME_SCALE; the historical lambda=0.99 keeps its
-existing filename. At 400 ms with bounds (-2, 2), use --feature L21e3mb2lam0.9
-in the downstream analysis scripts to select the new runs.
+existing filename. The current configuration (400 ms, bounds (-1, 1)) labels
+its runs L21e3lam0.9; pass that as --feature to the downstream analysis scripts
+(L21e3mb2lam0.9 for bounds (-2, 2)).
 """
 
 import copy
@@ -36,6 +40,7 @@ import gc
 import json
 import pickle
 import random
+import re
 import traceback
 from importlib import reload
 from pathlib import Path
@@ -101,9 +106,13 @@ RULES_DICT_FREQUENCY = {
 }
 OUT_DIR = Path("./pretraining")
 
+# Batch configuration for `python pretrain/pretraining.py`: adds N_TRIALS new
+# seeds of PRETRAIN_RULESET at the feature label built from FEATURE, M_BOUNDS
+# and M_TIME_SCALE below (currently L21e3lam0.9). Seeds that already have a
+# completed run are never redrawn; set SEED_LIST to run specific seeds instead.
 N_TRIALS = 5
 SEED_LIST = None
-PRETRAIN_RULESET = "fdgo"
+PRETRAIN_RULESET = "fdgo_delaygo"
 POSTTRAIN_RULESET = "delayanti"
 FEATURE = "L21e3"
 DT_MS = 40
@@ -647,18 +656,66 @@ def run_trial(seed=None, feature="L21e3", pretrain_ruleset="fdanti_delaygo", pos
     }
 
 
+SEED_POOL = range(1, 1001)
+
+
+def _completed_seeds(full_feature, pretrain_ruleset, out_dir=None):
+    """Seeds of this ruleset and feature label whose run finished.
+
+    run_trial saves the training history last, so only runs with a hist pickle
+    count; a run that failed midway is not listed and its seed can be reused.
+    full_feature is the label including the bound and decay tags, as returned
+    by _feature_with_lambda(_feature_with_bounds(feature)).
+    """
+    out_dir = OUT_DIR if out_dir is None else Path(out_dir)
+    if not out_dir.is_dir():
+        return []
+    # run_trial always trains a dmpn; hidden size, batch and accuracy metric
+    # are matched loosely because they are fixed inside run_trial.
+    pattern = re.compile(
+        rf"hist_{re.escape(pretrain_ruleset)}_dmpn_seed(\d+)_"
+        rf"\+hidden\d+\+{re.escape(full_feature)}\+batch\d+\+\w+\.pkl")
+    matches = (pattern.fullmatch(path.name) for path in out_dir.iterdir())
+    return sorted(int(match.group(1)) for match in matches if match)
+
+
+def _pick_new_seeds(n_runs, completed, rng=None):
+    """Draw n_runs distinct seeds from SEED_POOL that have no completed run."""
+    rng = random.Random() if rng is None else rng
+    candidates = sorted(set(SEED_POOL) - set(completed))
+    if len(candidates) < n_runs:
+        raise ValueError(
+            f"Only {len(candidates)} unused seeds remain in "
+            f"{SEED_POOL.start}..{SEED_POOL.stop - 1}; cannot add {n_runs} runs")
+    return rng.sample(candidates, n_runs)
+
+
 def run_many(n_runs=5, feature="L21e3", pretrain_ruleset="fdanti_delaygo", posttrain_ruleset="delayanti", *, seeds=None):
-    """Run independent seeds, continue after failures, and list successful runs."""
+    """Run independent seeds, continue after failures, and list successful runs.
+
+    Without explicit seeds, n_runs seeds are drawn from those without a
+    completed run of this ruleset and feature label, so every invocation adds
+    new trials to the cohort. Explicit seeds that already have a completed run
+    are rejected instead of being overwritten.
+    """
+    full_feature = _feature_with_lambda(_feature_with_bounds(feature))
+    completed = _completed_seeds(full_feature, pretrain_ruleset)
     if seeds is None:
-        seeds = random.Random().sample(range(1, 1001), n_runs)
+        seeds = _pick_new_seeds(n_runs, completed)
     else:
         seeds = list(seeds)
         if any(not isinstance(seed, int) or seed < 0 for seed in seeds):
             raise ValueError("seeds must contain nonnegative integers")
         if len(set(seeds)) != len(seeds):
             raise ValueError("seeds must be distinct to avoid overwriting runs")
+        clashes = sorted(set(seeds) & set(completed))
+        if clashes:
+            raise ValueError(
+                f"seeds {clashes} already have completed {pretrain_ruleset} runs "
+                f"at {full_feature}; choose other seeds or remove those outputs")
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"Completed {pretrain_ruleset} seeds at {full_feature}: {completed}")
     print(f"Running {len(seeds)} independent trials: seeds={seeds}")
     results = []
     for seed in seeds:
