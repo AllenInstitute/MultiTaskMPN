@@ -84,14 +84,18 @@ class OmLesionScatterTests(unittest.TestCase):
                 np.testing.assert_allclose(axis.collections[0].get_offsets(),
                                            np.column_stack((entry["om_vals"], entry["lesion_diffs"])))
                 scatter = axis.collections[0]
-                self.assertEqual(scatter.get_alpha(), 0.8)
+                self.assertEqual(scatter.get_alpha(), paper_plot._DENSE_SCATTER_ALPHA)
                 self.assertEqual(scatter.get_zorder(), 3)
-                np.testing.assert_array_equal(scatter.get_sizes(), [40])
-                np.testing.assert_array_equal(scatter.get_linewidths(), [0.5])
+                np.testing.assert_array_equal(scatter.get_sizes(), [paper_plot._SCATTER_POINT_STYLE["s"]])
+                np.testing.assert_array_equal(scatter.get_linewidths(),
+                                              [paper_plot._SCATTER_POINT_STYLE["linewidths"]])
                 np.testing.assert_allclose(scatter.get_facecolors(),
-                                           [paper_plot.mpl.colors.to_rgba("#3182ce", 0.8)])
+                                           [paper_plot.mpl.colors.to_rgba(
+                                               paper_plot._SCATTER_POINT_COLOR,
+                                               paper_plot._DENSE_SCATTER_ALPHA)])
                 np.testing.assert_allclose(scatter.get_edgecolors(),
-                                           [paper_plot.mpl.colors.to_rgba("k", 0.8)])
+                                           [paper_plot.mpl.colors.to_rgba(
+                                               "k", paper_plot._DENSE_SCATTER_ALPHA)])
                 legend = axis.get_legend()
                 self.assertIn("Spearman", legend.get_title().get_text())
                 self.assertIn(f"p_perm = {entry['association']['p_perm']:.3f}", legend.get_title().get_text())

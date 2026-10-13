@@ -805,6 +805,63 @@ _IO_RESPONSE = ("#7e3ff2", "#c4a3f5")  # purple (cos dark, sin light) = readout
 # purple (readout), so the emphasized "Combine" line never reads as a component.
 _IO_COMBINE = "#2166ac"               # deep blue = Fix + Task (+ bias) sum
 
+# ─── Statistics-overlay style (association scatters) ─────────────────────────
+# Every x-y scatter that reports a saved association (state-space distance vs
+# angle, cluster tuning vs lesion, OM vs lesion, causal vs activity) and the
+# per-run `_seeds` dot plots draw their points and trend / median overlay with
+# these two colors, defined once so the figures agree (SCHEME.md family 4):
+# points in c_vals' blue, the overlay in a warm red no other family uses.
+_SCATTER_POINT_COLOR = c_vals[1]          # "#3182ce"
+_TREND_LINE_COLOR = "tomato"
+_SCATTER_POINT_STYLE = dict(color=_SCATTER_POINT_COLOR, edgecolors="k", linewidths=0.4,
+                            s=22, alpha=0.75, zorder=3)
+_TREND_LINE_STYLE = dict(color=_TREND_LINE_COLOR, linewidth=1.2, zorder=4)
+# Dense scatters (hundreds of points, e.g. OM vs lesion) fade their dots.
+_DENSE_SCATTER_ALPHA = 0.45
+# Small panels keep a few ticks per axis.
+_STAT_SCATTER_MAX_TICKS = 4
+
+
+def _invisible_legend_handle():
+    """A zero-size, fully transparent legend handle, for text-only legends."""
+    return mpl.patches.Patch(facecolor="none", edgecolor="none", linewidth=0)
+
+
+def _stat_scatter(ax, x, y, legend_text, *, trend_line=None, xlabel="", ylabel="",
+                  legend_handles=None, point_alpha=None, label_fontsize=8):
+    """Draw one association scatter the way every such figure draws it.
+
+    Points in _SCATTER_POINT_STYLE (optionally faded with `point_alpha`), the
+    saved OLS guide `trend_line` ({"slope", "intercept"}) in _TREND_LINE_STYLE
+    spanning the data, and the statistics text as a frameless legend above the
+    axes - the only place a 2 in panel can hold it without hiding points. With
+    `legend_handles` (e.g. a median connector) the text becomes the legend
+    title and the handles its entries. Spines, label sizes and tick counts are
+    set here so the figures cannot drift apart; axis limits are left to the
+    caller.
+    """
+    style = dict(_SCATTER_POINT_STYLE)
+    if point_alpha is not None:
+        style["alpha"] = point_alpha
+    ax.scatter(x, y, **style)
+    if trend_line is not None:
+        positions = np.linspace(float(np.min(x)), float(np.max(x)), 100)
+        ax.plot(positions, trend_line["intercept"] + trend_line["slope"] * positions,
+                **_TREND_LINE_STYLE)
+    placement = dict(loc="lower left", bbox_to_anchor=(0.0, 1.0), borderaxespad=0.0,
+                     fontsize=6, frameon=False)
+    if legend_handles:
+        _legend(ax, handles=legend_handles, title=legend_text, title_fontsize=6, **placement)
+    else:
+        _legend(ax, [_invisible_legend_handle()], [legend_text], handlelength=0,
+                handletextpad=0, **placement)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.set_xlabel(xlabel, fontsize=label_fontsize)
+    ax.set_ylabel(ylabel, fontsize=label_fontsize)
+    ax.tick_params(labelsize=7)
+    ax.xaxis.set_major_locator(mticker.MaxNLocator(_STAT_SCATTER_MAX_TICKS))
+    ax.yaxis.set_major_locator(mticker.MaxNLocator(_STAT_SCATTER_MAX_TICKS))
+
 
 def _relabel_tb_name(name):
     """Convert '{rule}-{phase}' to '{DisplayRule}-{DisplayPhase}'."""
@@ -1410,8 +1467,7 @@ def plot_l2_vs_accuracy():
     acc_vals = np.array([e["acc"] for e in tanh_results]) * 100
 
     fig, ax = plt.subplots(1, 1, figsize=(2.3, 3))
-    ax.scatter(l2_vals, acc_vals, color="#3182ce", edgecolors="k",
-               linewidths=0.5, s=40, alpha=0.8, zorder=3)
+    ax.scatter(l2_vals, acc_vals, **_SCATTER_POINT_STYLE)
 
     # Overlay the across-seed mean at each L2 value and connect those means to
     # make the regularization trend visible without hiding the individual runs.
@@ -1568,9 +1624,7 @@ def plot_modulation_bound_accuracy():
             jitter = (np.linspace(-0.06, 0.06, values.size)
                       if values.size > 1 else np.zeros(1))
             ax.scatter(
-                position + jitter, values, color="#3182ce",
-                edgecolors="k", linewidths=0.5, s=40,
-                alpha=0.8, zorder=3)
+                position + jitter, values, **_SCATTER_POINT_STYLE)
         means = np.asarray(means, dtype=float)
         finite_means = np.isfinite(means)
         ax.plot(
@@ -1678,10 +1732,8 @@ def plot_l2e4_activation_accuracy():
         values = np.asarray(accuracies[feature], dtype=float)
         all_values.extend(values.tolist())
         jitter = np.linspace(-0.10, 0.10, len(values)) if len(values) > 1 else np.zeros(1)
-        ax.scatter(
-            x + jitter, values, color=color, edgecolors="k", linewidths=0.5,
-            s=40, alpha=0.8, zorder=3,
-        )
+        # Shared marker style; the color stays per activation function.
+        ax.scatter(x + jitter, values, **{**_SCATTER_POINT_STYLE, "color": color})
         ax.errorbar(
             x, values.mean(), yerr=values.std(), fmt="D", color="k",
             markerfacecolor="white", markeredgewidth=0.8, markersize=4,
@@ -2102,10 +2154,7 @@ def _plot_dimension_accuracy(*, vary_hidden):
         values = np.asarray(entries, dtype=float)
         all_values.extend(values.tolist())
         mean_acc.append(values.mean())
-        ax.scatter(
-            np.full(len(values), position), values, color=c_vals[1], edgecolors="k",
-            linewidths=0.5, s=40, alpha=0.8, zorder=3,
-        )
+        ax.scatter(np.full(len(values), position), values, **_SCATTER_POINT_STYLE)
     ax.plot(
         positions, mean_acc, color="k", linewidth=1.2, marker="D",
         markerfacecolor="white", markeredgecolor="k", markeredgewidth=0.8,
@@ -2264,7 +2313,7 @@ def _load_state_space_pca(aname):
 # the Reaction hues by the match=pro / non-match=anti pairing, so green and
 # orange cover both).
 _STATE_SPACE_LEGEND = [
-    ("Pro Delayed", "#3182ce"),
+    ("Pro Delayed", _SCATTER_POINT_COLOR),
     ("Anti Delayed", "#e53e3e"),
     ("Pro Reaction / Match", "#38a169"),
     ("Anti Reaction / Non-match", "#dd6b20"),
@@ -2375,7 +2424,7 @@ def plot_state_space_r_values():
 
     data_types = ["hidden", "mod", "eff_mod"]
     labels = ["Hidden", "Mod.", "Eff. Mod."]
-    colors = ["#3182ce", "#dd6b20", "#38a169"]
+    colors = [_SCATTER_POINT_COLOR, "#dd6b20", "#38a169"]
 
     grouped_r_values = _state_space_r_values_by_l2(result_dict, data_types)
     fig, axs = plt.subplots(1, 4, figsize=(9, 3), sharey=True)
@@ -2465,21 +2514,14 @@ def plot_state_space_dist_angle():
         r_value, slope, p_value = entry["rval_dict"][key]
         intercept = float(sd["regression"]["intercept"])
 
-        ax.scatter(x, y, color="#3182ce", edgecolors="k", linewidths=0.4,
-                   s=22, alpha=0.75, zorder=3)
-        x_fit = np.linspace(x.min(), x.max(), 50)
-        ax.plot(x_fit, intercept + slope * x_fit,
-            color="tomato", linewidth=1.2, zorder=4)
-
         p_str = ("nominal p < 1e-4" if p_value < 1e-4
              else f"nominal p = {p_value:.3f}")
-        _legend(ax, [f"r = {r_value:.2f}, {p_str}"], loc="lower right",
-                fontsize=6, frameon=True)
-        ax.set_xlabel("Distance between initial conditions", fontsize=8)
-        ax.set_ylabel("Angle between first step\nof trajectories (deg.)", fontsize=8)
-        ax.set_title(title, fontsize=9)
-        ax.spines[["top", "right"]].set_visible(False)
-        ax.tick_params(labelsize=7)
+        _stat_scatter(ax, x, y, f"r = {r_value:.2f}\n{p_str}",
+                      trend_line={"slope": slope, "intercept": intercept},
+                      xlabel="Distance between initial conditions",
+                      ylabel="Angle between first step\nof trajectories (deg.)")
+        # The statistics sit above the axes, so the panel title goes higher.
+        ax.set_title(title, fontsize=9, pad=22)
 
     fig.tight_layout()
     _save_fig(fig, _multitask_out("state_space_dist_angle.png"))
@@ -3063,19 +3105,16 @@ def plot_om_vs_lesion():
     rho = saved["rho"]
     p_perm = saved["p_perm"]
     fig1, ax1 = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
-    ax1.scatter(om_vals, lesion_diffs, color="#3182ce", edgecolors="k",
-                linewidths=0.5, s=40, alpha=0.8, zorder=3)
-    ax1.plot(medians["x"], medians["y"], "o-", color="tomato", linewidth=1.2,
-             markersize=3.5, zorder=4, label="Binned median")
+    median_line, = ax1.plot(medians["x"], medians["y"], "o-", markersize=3.5,
+                            label="Binned median", **_TREND_LINE_STYLE)
     _pp_str = (f"p_perm = {p_perm:.3f}" if np.isfinite(p_perm) else "p_perm = n/a")
     _rho_str = (rf"Spearman $\rho$ = {rho:.2f}" if np.isfinite(rho)
                 else r"Spearman $\rho$ = n/a")
-    _legend(ax1, loc="upper right", fontsize=7, frameon=True,
-            title=f"{_rho_str}\n{_pp_str}", title_fontsize=7)
+    # Hundreds of points: fade them so the median connector stays readable.
+    _stat_scatter(ax1, om_vals, lesion_diffs, f"{_rho_str}\n{_pp_str}",
+                  legend_handles=[median_line], point_alpha=_DENSE_SCATTER_ALPHA,
+                  xlabel="Over-membership", ylabel="Lesion profile L1 distance")
     ax1.set_ylim(bottom=0)
-    ax1.set_xlabel("Over-membership", fontsize=8)
-    ax1.set_ylabel("Lesion profile L1 distance", fontsize=8)
-    ax1.spines[["top", "right"]].set_visible(False)
     fig1.tight_layout()
     out_path1 = _multitask_out("om_vs_lesion_scatter.png")
     _save_fig(fig1, out_path1)
@@ -3176,16 +3215,16 @@ def plot_plasticity_share():
             continue
         jitter = np.linspace(-0.18, 0.18, values.size) if values.size > 1 else np.zeros(1)
         inside = (values >= low) & (values <= high)
-        ax.scatter(position + jitter[inside], values[inside], color="#3182ce",
+        ax.scatter(position + jitter[inside], values[inside], color=_SCATTER_POINT_COLOR,
                    edgecolors="none", s=14, alpha=0.45, zorder=2)
         for beyond, marker, edge in ((values > high, "^", high), (values < low, "v", low)):
             if beyond.any():
                 n_clipped += int(beyond.sum())
                 ax.scatter(position + jitter[beyond], np.full(beyond.sum(), edge),
-                           marker=marker, facecolors="none", edgecolors="#3182ce",
+                           marker=marker, facecolors="none", edgecolors=_SCATTER_POINT_COLOR,
                            linewidths=0.6, s=16, zorder=2)
         ax.scatter([position], [saved["medians"][index]], marker="_", s=160,
-                   color="tomato", linewidths=1.8, zorder=4)
+                   color=_TREND_LINE_COLOR, linewidths=1.8, zorder=4)
     ax.set_xticks(range(len(order)))
     ax.set_xticklabels([_TASK_DISPLAY.get(tasks[index], tasks[index]) for index in order],
                        rotation=60, ha="right", fontsize=6)
@@ -3201,7 +3240,7 @@ def plot_plasticity_share():
     ax.spines[["top", "right"]].set_visible(False)
     ax.tick_params(axis="y", labelsize=7)
     p_text = ("p < 0.001" if saved["p_value"] < 0.001 else f"p = {saved['p_value']:.3f}")
-    median_handle = mpl.lines.Line2D([], [], color="tomato", marker="_", linestyle="none",
+    median_handle = mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, marker="_", linestyle="none",
                                      markersize=8, markeredgewidth=1.8, label="Task median")
     # The band below share 0 is empty for the memory tasks, so the legend sits
     # there instead of over the points at the right edge.
@@ -3284,11 +3323,6 @@ def _seeds_legend(ax, handles, n_runs):
     return _legend(ax, handles=handles, loc="lower left", bbox_to_anchor=(0.0, 1.0),
                    borderaxespad=0.0, ncol=2, columnspacing=0.8, handletextpad=0.3,
                    fontsize=6, frameon=False, title=f"{n_runs} runs", title_fontsize=6)
-
-
-def _invisible_legend_handle():
-    """A zero-size, fully transparent legend handle, for text-only legends."""
-    return mpl.patches.Patch(facecolor="none", edgecolor="none", linewidth=0)
 
 
 def _rank_association_label(association, unit=""):
@@ -3444,27 +3478,17 @@ def _plot_cluster_corr_vs_lesion_variants(variants):
             association = dict(entry["association"])
             association["rho"] = -association["rho"]
             trend = entry["trend_line"]
-            fig, ax = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
-            ax.scatter(entry["x"], similarity, color="#3182ce", edgecolors="k",
-                       linewidths=0.5, s=40, alpha=0.8, zorder=3)
             # Saved OLS line as a visual guide; the legend statistic stays the
             # cached Spearman rho (sign-flipped) with its label-permutation p.
-            if trend is not None:
-                positions = np.linspace(entry["x"].min(), entry["x"].max(), 100)
-                ax.plot(positions, (1.0 - trend["intercept"]) - trend["slope"] * positions,
-                        color="tomato", linewidth=1.2, zorder=4)
-            else:
+            if trend is None:
                 print(f"  Note: {name} cache has no saved trend line; "
                       "rerun multiple_task/lesion_plot.py to add one.")
-            # Above the axes: a 2 in panel has no empty corner for a legend box.
-            # The invisible handle keeps the scatter marker out of the text.
-            _legend(ax, [_invisible_legend_handle()], [_rank_association_label(association)],
-                    loc="lower left", bbox_to_anchor=(0.0, 1.0), borderaxespad=0.0,
-                    fontsize=6, frameon=False, handlelength=0, handletextpad=0)
-            ax.spines[["top", "right"]].set_visible(False)
-            ax.set_xlabel(f"{tuning_word} correlation", fontsize=7)
-            ax.set_ylabel("Lesion similarity (r)", fontsize=7)
-            ax.yaxis.set_major_locator(mticker.MultipleLocator(0.5))
+            else:
+                trend = {"slope": -trend["slope"], "intercept": 1.0 - trend["intercept"]}
+            fig, ax = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
+            _stat_scatter(ax, entry["x"], similarity, _rank_association_label(association),
+                          trend_line=trend, xlabel=f"{tuning_word} correlation",
+                          ylabel="Lesion similarity (r)")
             fig.tight_layout()
             _save_fig(fig, _multitask_out(f"cluster_corr_vs_lesion_{clean_name}.png"),
                       extra=f" [{LESION_ANAME}]")
@@ -3537,11 +3561,11 @@ def plot_cluster_corr_vs_lesion_seeds():
         for position, side in zip(positions, sides):
             significant = entries[side]["p_perm"] < 0.05
             ax.scatter([position + offset], [entries[side]["rho"]], s=32, zorder=3,
-                       color="#3182ce" if significant else "white",
-                       edgecolors="#3182ce" if significant else "k", linewidths=0.6)
+                       color=_SCATTER_POINT_COLOR if significant else "white",
+                       edgecolors=_SCATTER_POINT_COLOR if significant else "k", linewidths=0.6)
     for position, side in zip(positions, sides):
         median = np.median([entries[side]["rho"] for entries in runs.values()])
-        ax.hlines(median, position - 0.22, position + 0.22, color="tomato",
+        ax.hlines(median, position - 0.22, position + 0.22, color=_TREND_LINE_COLOR,
                   linewidth=1.8, zorder=4)
     ax.set_xticks(positions)
     ax.set_xticklabels([_CLUSTER_CORR_SEED_LABELS[side] for side in sides], fontsize=7)
@@ -3549,7 +3573,7 @@ def plot_cluster_corr_vs_lesion_seeds():
     ax.set_ylabel(r"Spearman $\rho$" + "\n(tuning vs lesion similarity)", fontsize=7)
     ax.spines[["top", "right"]].set_visible(False)
     ax.tick_params(axis="y", labelsize=7)
-    filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color="#3182ce",
+    filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color=_SCATTER_POINT_COLOR,
                               markersize=5, label="permutation p < 0.05")
     hollow = mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
                               markeredgecolor="k", markersize=5, label=r"p $\geq$ 0.05")
@@ -3614,11 +3638,11 @@ def plot_plasticity_share_seeds():
         significant = entry["p_value"] < 0.05
         ax.plot(positions + offset, values, color="0.75", linewidth=0.6, zorder=2)
         ax.scatter(positions + offset, values, s=32, zorder=3,
-                   color="#3182ce" if significant else "white",
-                   edgecolors="#3182ce" if significant else "k", linewidths=0.6)
+                   color=_SCATTER_POINT_COLOR if significant else "white",
+                   edgecolors=_SCATTER_POINT_COLOR if significant else "k", linewidths=0.6)
     for position, kind in zip(positions, kinds):
         median = np.median([entry["medians"][kind] for entry in runs.values()])
-        ax.hlines(median, position - 0.22, position + 0.22, color="tomato",
+        ax.hlines(median, position - 0.22, position + 0.22, color=_TREND_LINE_COLOR,
                   linewidth=1.8, zorder=4)
     ax.set_xticks(positions)
     ax.set_xticklabels([_PLASTICITY_SHARE_SEED_LABELS[kind] for kind in kinds], fontsize=7)
@@ -3626,7 +3650,7 @@ def plot_plasticity_share_seeds():
     ax.set_ylabel("Plasticity share\n(median over tasks)", fontsize=7)
     ax.spines[["top", "right"]].set_visible(False)
     ax.tick_params(axis="y", labelsize=7)
-    filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color="#3182ce",
+    filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color=_SCATTER_POINT_COLOR,
                               markersize=5, label="MWU p < 0.05")
     hollow = mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
                               markeredgecolor="k", markersize=5, label=r"p $\geq$ 0.05")
@@ -3710,21 +3734,11 @@ def plot_causal_vs_activity():
                   "run multiple_task/lesion_plot.py again.")
             continue
         fig, ax = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
-        ax.scatter(entry["x"], entry["y"], color="#3182ce", edgecolors="k",
-                   linewidths=0.5, s=40, alpha=0.8, zorder=3)
-        if entry["trend_line"] is not None:
-            positions = np.linspace(entry["x"].min(), entry["x"].max(), 100)
-            ax.plot(positions, entry["trend_line"]["intercept"]
-                    + entry["trend_line"]["slope"] * positions,
-                    color="tomato", linewidth=1.2, zorder=4)
-        _legend(ax, [_invisible_legend_handle()],
-                [_rank_association_label(entry["association"], unit="tasks")],
-                loc="lower left", bbox_to_anchor=(0.0, 1.0), borderaxespad=0.0,
-                fontsize=6, frameon=False, handlelength=0, handletextpad=0)
-        ax.spines[["top", "right"]].set_visible(False)
-        ax.set_xlabel(f"Similarity: {_CAUSAL_VS_ACTIVITY_SIDE_LABELS[side].lower()}",
-                      fontsize=7)
-        ax.set_ylabel("Similarity: lesion profiles", fontsize=7)
+        _stat_scatter(ax, entry["x"], entry["y"],
+                      _rank_association_label(entry["association"], unit="tasks"),
+                      trend_line=entry["trend_line"],
+                      xlabel=f"Similarity: {_CAUSAL_VS_ACTIVITY_SIDE_LABELS[side].lower()}",
+                      ylabel="Similarity: lesion profiles")
         fig.tight_layout()
         _save_fig(fig, _multitask_out(f"causal_vs_activity_tasks_{side}.png"),
                   extra=f" [{LESION_ANAME}] {entry['n_tasks']} tasks")
@@ -3773,11 +3787,11 @@ def plot_causal_vs_activity_seeds():
             association = entries[side]["association"]
             significant = association["p_perm"] < 0.05
             ax.scatter([position + offset], [association["rho"]], s=32, zorder=3,
-                       color="#3182ce" if significant else "white",
-                       edgecolors="#3182ce" if significant else "k", linewidths=0.6)
+                       color=_SCATTER_POINT_COLOR if significant else "white",
+                       edgecolors=_SCATTER_POINT_COLOR if significant else "k", linewidths=0.6)
     for position, side in zip(positions, CAUSAL_VS_ACTIVITY_SIDES):
         median = np.median([entries[side]["association"]["rho"] for entries in runs.values()])
-        ax.hlines(median, position - 0.22, position + 0.22, color="tomato",
+        ax.hlines(median, position - 0.22, position + 0.22, color=_TREND_LINE_COLOR,
                   linewidth=1.8, zorder=4)
     ax.set_xticks(positions)
     ax.set_xticklabels([side.capitalize() for side in CAUSAL_VS_ACTIVITY_SIDES], fontsize=7)
@@ -3785,7 +3799,7 @@ def plot_causal_vs_activity_seeds():
     ax.set_ylabel(r"Task-level Mantel $\rho$" + "\n(activity vs lesion similarity)", fontsize=7)
     ax.spines[["top", "right"]].set_visible(False)
     ax.tick_params(axis="y", labelsize=7)
-    filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color="#3182ce",
+    filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color=_SCATTER_POINT_COLOR,
                               markersize=5, label="permutation p < 0.05")
     hollow = mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
                               markeredgecolor="k", markersize=5, label=r"p $\geq$ 0.05")
@@ -3926,7 +3940,7 @@ def plot_task_specificity():
             jitter = np.linspace(-0.18, 0.18, values.size) if values.size > 1 else np.zeros(1)
             ax.scatter(position + jitter, values, color=_TASK_SPECIFICITY_COLORS[type_name],
                        edgecolors="none", s=14, alpha=0.45, zorder=2)
-            ax.scatter([position], [np.median(values)], marker="_", s=160, color="tomato",
+            ax.scatter([position], [np.median(values)], marker="_", s=160, color=_TREND_LINE_COLOR,
                        linewidths=1.8, zorder=4)
         ax.set_xticks(range(len(relations)))
         ax.set_xticklabels(tick_labels, fontsize=6)
@@ -3939,7 +3953,7 @@ def plot_task_specificity():
         ax.tick_params(axis="y", labelsize=7)
         related = entry["by_relation"]["related"]
         p_text = "p < 0.001" if related["p_perm"] < 0.001 else f"p = {related['p_perm']:.3f}"
-        median_handle = mpl.lines.Line2D([], [], color="tomato", marker="_", linestyle="none",
+        median_handle = mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, marker="_", linestyle="none",
                                          markersize=8, markeredgewidth=1.8, label="Median")
         # Anchored above the axes (right of the left-aligned title) so the box
         # never covers pairs near Jaccard 1.
@@ -3964,7 +3978,7 @@ _PRETRAINING_BOUND_LIMITS = {
     "mb2": (-2, 2),
 }
 _PRETRAINING_RULESET_STYLES = {
-    "fdgo_delaygo": ("Irrelevant motif", "#3182ce"),
+    "fdgo_delaygo": ("Irrelevant motif", _SCATTER_POINT_COLOR),
     "fdanti_delaygo": ("Relevant motif", "#e53e3e"),
     "fdanti": ("DelayAnti", "#dd6b20"),
     "fdgo": ("DelayPro", "#4c51bf"),

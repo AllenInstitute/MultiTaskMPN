@@ -128,7 +128,7 @@ class CausalVsActivityFigureTests(unittest.TestCase):
                    if isinstance(collection, paper_plot.mpl.collections.LineCollection)]
         self.assertEqual(len(points), 6)   # 3 runs x 2 sides
         filled = sum(np.allclose(collection.get_facecolors()[0][:3],
-                                 paper_plot.mpl.colors.to_rgb("#3182ce"))
+                                 paper_plot.mpl.colors.to_rgb(paper_plot._SCATTER_POINT_COLOR))
                      for collection in points)
         self.assertEqual(filled, 3)        # hidden 11, hidden 33, input 33
         self.assertEqual([label.get_text() for label in axis.get_xticklabels()],

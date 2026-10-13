@@ -79,7 +79,9 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
         self.assertIn("(n = 4)", legend)
         self.assertEqual(axis.get_xlabel(), f"{tuning_word} correlation")
         self.assertIn("Lesion similarity", axis.get_ylabel())
-        np.testing.assert_allclose(np.diff(axis.get_yticks()), 0.5)
+        self.assertLessEqual(len(axis.get_yticks()), paper_plot._STAT_SCATTER_MAX_TICKS + 1)
+        np.testing.assert_array_equal(axis.collections[0].get_sizes(),
+                                      [paper_plot._SCATTER_POINT_STYLE["s"]])
         np.testing.assert_allclose(figure.get_size_inches(), paper_plot._LESION_SCATTER_FIGSIZE)
 
     def test_entry_point_draws_one_figure_per_entry_and_no_supplement(self):
