@@ -42,7 +42,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
-from matplotlib.colors import Normalize, to_rgb
+from matplotlib.colors import to_rgb
 from matplotlib.patches import Polygon
 
 # Style, palette and savers come from the real figure module so the two agree by
@@ -529,11 +529,11 @@ def plot_mouse_shape(out_dir=OUT_DIR, style="gradient", margin=8):
 # depressing, one facilitating and one pseudo-linear excitatory connection, a
 # 50 Hz 12-pulse train: over each pulse a swarm of grey dots, one per trial's
 # PSP amplitude; under them, in black, that pulse's trial-mean PSP waveform
-# (-1 to 8 ms after the spike); and the dots of pulses 1 and 8 colored by the
-# connection's resting-state and STP-induced variability, log(aCV), on viridis
-# from -1 to 1. `plot_synaptic_train_amplitudes` draws the same elements for
-# the paper's own three example pairs (biology_fast_synaptic_waveforms.py),
-# with two departures from the paper's layout: only a subset of pulses is
+# (-1 to 8 ms after the spike). `plot_synaptic_train_amplitudes` draws the
+# same elements for the paper's own three example pairs
+# (biology_fast_synaptic_waveforms.py), all dots in one grey (the paper also
+# colors pulses 1 and 8 by a variability metric; that encoding is dropped
+# here), with two departures from the paper's layout: only a subset of pulses is
 # drawn (SYNAPTIC_PULSES, default 1, 4, 6, 10, 12: early, mid and late
 # induction plus two recovery pulses), one slot each, and the x axis is
 # labeled with each pulse's real time after the first presynaptic spike
@@ -550,23 +550,14 @@ def plot_mouse_shape(out_dir=OUT_DIR, style="gradient", margin=8):
 # QC-passed response, all 50 Hz trains pooled as in the paper; per-pulse mean
 # waveforms from the NWB recordings). Fallback: the older
 # biology_fast_synaptic_waveforms_metadata.json, which only holds per-trial
-# peaks for pulses 1, 4, 8, 9 and 12 - the figure then shows just those pulses,
-# a mean dash instead of a waveform, and the unadjusted log CV.
-#
-# Variability coloring follows aisynphys.dynamics.generate_pair_dynamics: the
-# resting-state aCV (pulse 1) is computed from the first-pulse responses, the
-# STP-induced aCV from pulses 5-8 pooled and drawn on pulse 8 - or, when fewer
-# pulses are shown, on the last shown induction pulse - and the noise SD from
-# the connection's baseline fits pooled over every pulse.
+# peaks for pulses 1, 4, 8, 9 and 12 - the figure then shows just those pulses
+# with a mean dash instead of a waveform.
 SYNAPTIC_AMPLITUDES_JSON = OUT_DIR / "biology_fast_synaptic_trial_amplitudes.json"
 SYNAPTIC_LEGACY_JSON = OUT_DIR / "biology_fast_synaptic_waveforms_metadata.json"
 # Row order of the paper figure, top to bottom.
 SYNAPTIC_GROUP_ORDER = ("depressing", "facilitating", "pseudolinear")
 SYNAPTIC_PULSES = (1, 4, 6, 10, 12)       # 1-based pulses drawn by default
 SYNAPTIC_N_INDUCTION = 8                  # pulses before the recovery interval
-SYNAPTIC_RESTING_PULSE = 0                # 0-based pulse colored by the resting-state aCV
-SYNAPTIC_INDUCED_PULSES = (4, 5, 6, 7)    # 0-based pulses pooled for the induced-state aCV
-SYNAPTIC_VARIABILITY_RANGE = (-1.0, 1.0)  # log(aCV) color range, as in the paper
 SYNAPTIC_SWARM_HALF_WIDTH_MS = 7.0        # max swarm half-width around a pulse, in ms
 # Fixed y range per row (mV): 0 to this, ticked at 0 and the top; the small pad
 # below zero keeps failures scattered just under 0 visible. Dots beyond the top
@@ -580,9 +571,7 @@ _SYNAPTIC_MARKER_PT = 2.1                 # dot diameter in points (paper: 3.2, 
 # it pulls the spikes together.
 _SYNAPTIC_FIGSIZE = (2.5, 0.55, 0.42)
 _SYNAPTIC_HSPACE = 0.15
-# viridis is both the paper's choice and the project's sequential heatmap map.
-_SYNAPTIC_CV_CMAP = pp._MULTITASK_HEATMAP_CMAP
-_SYNAPTIC_DOT_COLOR = (0.7, 0.7, 0.7)
+_SYNAPTIC_DOT_COLOR = (0.7, 0.7, 0.7)     # the paper's grey, for every dot
 
 
 def _parse_pulse_label(label):
@@ -611,8 +600,9 @@ def load_synaptic_trial_amplitudes(path=None):
     inhibitory), amplitudes {0-based pulse: trial amplitudes in mV}, noise
     {pulse: trial noise amplitudes} or None, waveforms {pulse: (time_ms,
     mean_mv)} or None), `statistic` (how one trial's amplitude was measured),
-    `adjusted` (whether noise amplitudes allow the paper's adjusted CV),
-    `frequency_hz`, `recovery_ms` and `path`."""
+    `adjusted` (whether the file carries the baseline-noise amplitudes the
+    paper's adjusted CV needs; kept for completeness, the figure does not
+    color by variability), `frequency_hz`, `recovery_ms` and `path`."""
     if path is None:
         path = (SYNAPTIC_AMPLITUDES_JSON if SYNAPTIC_AMPLITUDES_JSON.exists()
                 else SYNAPTIC_LEGACY_JSON)
@@ -667,29 +657,6 @@ def load_synaptic_trial_amplitudes(path=None):
         "recovery_ms": float(protocol.get("recovery_ms", 250.0)),
         "path": path,
     }
-
-
-def _log_adjusted_cv(amplitudes, noise=None):
-    """The paper's variability metric for one set of trial amplitudes.
-
-    aisynphys.dynamics: log( sqrt(SD(amp)^2 - SD(noise)^2) / |median(amp)| ),
-    population SDs; `noise` is the connection's pooled baseline-fit amplitudes.
-    Without noise amplitudes the unadjusted log(SD / |median|) is returned.
-    -inf when the noise variance swallows the amplitude variance (the color
-    scale clips it to its minimum), NaN when fewer than two trials or a zero
-    median make the ratio undefined."""
-    amplitudes = np.asarray(amplitudes, dtype=float)
-    if amplitudes.size < 2:
-        return np.nan
-    median = abs(float(np.median(amplitudes)))
-    if not median > 0:
-        return np.nan
-    variance = float(np.var(amplitudes))
-    if noise is not None:
-        variance -= float(np.var(np.asarray(noise, dtype=float)))
-    if variance <= 0:
-        return -np.inf
-    return float(np.log(np.sqrt(variance) / median))
 
 
 def _beeswarm_offsets(y_px, marker_px, max_half_width_px):
@@ -779,19 +746,13 @@ def plot_synaptic_train_amplitudes(out_dir=OUT_DIR, data_path=None,
     in black with its time window centered on the slot, as the paper does,
     under a beeswarm of grey dots, one per trial's amplitude, centered on the
     slot too - so trace and dots line up and the waveform's absolute latency
-    is not represented. Rows use the fixed y ranges of SYNAPTIC_YLIM_TOP (0 to
-    1, 2 and 5 mV), ticked at 0 and the top, with dots beyond the top clipped.
-    The first pulse is colored by the resting-state log(aCV) of the
-    first-pulse responses and the last shown induction pulse by the
-    STP-induced log(aCV) of pulses 5-8 pooled (pulse 8 when drawn, as in the
-    paper), aCV being the coefficient of variation with the connection's pooled
-    baseline-noise variance subtracted (`_log_adjusted_cv`); viridis from -1
-    to 1, saved separately as `..._colorbar.png`. Each row keeps its own y
-    scale.
+    is not represented. All dots share one grey; the paper's variability
+    coloring of pulses 1 and 8 is not reproduced. Rows use the fixed y ranges
+    of SYNAPTIC_YLIM_TOP (0 to 1, 2 and 5 mV), ticked at 0 and the top, with
+    dots beyond the top clipped and counted in the saved message.
 
-    Legacy metadata (five pulses, no waveforms, no noise amplitudes) draws a
-    mean dash per pulse and colors by the unadjusted log CV; the saved message
-    says so. Reads `load_synaptic_trial_amplitudes(data_path)`.
+    Legacy metadata (five pulses, no waveforms) draws a mean dash per pulse;
+    the saved message says so. Reads `load_synaptic_trial_amplitudes(data_path)`.
     """
     requested = sorted({int(pulse) - 1 for pulse in pulses})
     if not requested or requested[0] < 0 or requested[-1] > 11:
@@ -803,14 +764,10 @@ def plot_synaptic_train_amplitudes(out_dir=OUT_DIR, data_path=None,
         raise ValueError(f"no known STP group among {sorted(by_group)}")
     frequency_hz, recovery_ms = data["frequency_hz"], data["recovery_ms"]
     interval = 1000.0 / frequency_hz
-    cmap = plt.get_cmap(_SYNAPTIC_CV_CMAP)
-    norm = Normalize(*SYNAPTIC_VARIABILITY_RANGE, clip=True)
     available = {pulse for group in groups for pulse in by_group[group]["amplitudes"]}
     shown = [pulse for pulse in requested if pulse in available]
     if not shown:
         raise ValueError(f"none of pulses {[p + 1 for p in requested]} in {data['path']}")
-    induced_pulse = max(pulse for pulse in shown if pulse < SYNAPTIC_N_INDUCTION) \
-        if any(pulse < SYNAPTIC_N_INDUCTION for pulse in shown) else None
     # One slot per shown pulse; its tick names the pulse's real time.
     slot = {pulse: float(index) for index, pulse in enumerate(shown)}
     times = {pulse: synaptic_pulse_time_ms(pulse, frequency_hz, recovery_ms) for pulse in shown}
@@ -844,24 +801,11 @@ def plot_synaptic_train_amplitudes(out_dir=OUT_DIR, data_path=None,
             ax.set_ylim(-SYNAPTIC_YLIM_PAD * top, top)
             ax.set_yticks([0.0, top])
             n_clipped[group] = int(sum(int(np.sum(v > top)) for v in amplitudes.values()))
-        pooled_noise = (None if conn["noise"] is None
-                        else np.concatenate([conn["noise"][p] for p in sorted(conn["noise"])]))
         for pulse in pulses:
             values = amplitudes[pulse]
-            color = _SYNAPTIC_DOT_COLOR
-            source = None
-            if pulse == SYNAPTIC_RESTING_PULSE:
-                source = [SYNAPTIC_RESTING_PULSE]
-            elif pulse == induced_pulse:
-                source = [p for p in SYNAPTIC_INDUCED_PULSES if p in conn["amplitudes"]]
-            if source:
-                variability = _log_adjusted_cv(
-                    np.concatenate([sign * conn["amplitudes"][p] for p in source]), pooled_noise)
-                if not np.isnan(variability):
-                    color = cmap(norm(variability))
             ax.scatter(_swarm_x(ax, slot[pulse], values,
                                 half_width=SYNAPTIC_SWARM_HALF_WIDTH_MS * ms_to_slot),
-                       values, s=_SYNAPTIC_MARKER_PT ** 2, color=color,
+                       values, s=_SYNAPTIC_MARKER_PT ** 2, color=_SYNAPTIC_DOT_COLOR,
                        edgecolors=_SYNAPTIC_DOT_COLOR, linewidths=0.3, zorder=3)
             if waveforms is not None:
                 time_ms, mean_mv = waveforms[pulse]
@@ -893,31 +837,15 @@ def plot_synaptic_train_amplitudes(out_dir=OUT_DIR, data_path=None,
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = ", ".join(f"{group}: {by_group[group]['classes'] or '?'}" for group in groups)
-    colored = f"pulse {SYNAPTIC_RESTING_PULSE + 1}" + (
-        f" and pulse {induced_pulse + 1}" if induced_pulse is not None else "")
     pulse_text = ", ".join(f"{p + 1} ({times[p]:g} ms)" for p in shown)
     clipped_text = "; ".join(f"{group} {n} dot(s) above {SYNAPTIC_YLIM_TOP[group]:g} mV clipped"
                              for group, n in n_clipped.items() if n)
     detail = (f"pulses {pulse_text} at {frequency_hz:g} Hz; rows top to bottom {rows}; "
               + (f"{clipped_text}; " if clipped_text else "")
               + f"amplitude = {data['statistic']}; "
-              + f"{'adjusted' if data['adjusted'] else 'UNADJUSTED'} log CV on {colored}; "
               + ("mean waveforms" if data["connections"][0]["waveforms"] else "mean dashes (legacy)"))
     _save(fig, out_dir / "cartoon_synaptic_train_amplitudes.png",
           extra=f"  (MEASURED: {data['path'].name}; {detail})")
-    # The variability scale as its own bar, like the paper's panel-D color scale.
-    was = pp.SHOW_LEGEND
-    pp.SHOW_LEGEND = False
-    try:
-        pp._save_standalone_colorbar(
-            out_dir / "cartoon_synaptic_train_amplitudes_colorbar.png",
-            cmap=_SYNAPTIC_CV_CMAP, vmin=SYNAPTIC_VARIABILITY_RANGE[0],
-            vmax=SYNAPTIC_VARIABILITY_RANGE[1],
-            ticks=[SYNAPTIC_VARIABILITY_RANGE[0], 0.0, SYNAPTIC_VARIABILITY_RANGE[1]],
-            label="log(aCV)" if data["adjusted"] else "log(CV), unadjusted",
-            figsize=(1.9, 0.62), rect=(0.05, 0.62, 0.90, 0.24))
-    finally:
-        pp.SHOW_LEGEND = was
 
 
 def main():

@@ -73,11 +73,10 @@ class SynapticTrainFigureTests(unittest.TestCase):
         self.root = Path(directory.name)
 
     def render(self, data_path, **kwargs):
-        # cartoon imported `_save_fig` by name, so both bindings are patched: the
-        # main figure goes through cartoon._save, the colorbar through paper_plot.
+        # cartoon imported `_save_fig` by name, so its own binding is the one to
+        # patch: the figure is saved through cartoon._save.
         save_fig = Mock()
-        with patch.object(cartoon, "_save_fig", save_fig), \
-                patch.object(paper_plot, "_save_fig", save_fig):
+        with patch.object(cartoon, "_save_fig", save_fig):
             cartoon.plot_synaptic_train_amplitudes(out_dir=self.root, data_path=data_path,
                                                    **kwargs)
         for call in save_fig.call_args_list:
@@ -97,12 +96,11 @@ class SynapticTrainFigureTests(unittest.TestCase):
         data = write_full_format(path)
         save_fig = self.render(path)
         names = [call.args[1].name for call in save_fig.call_args_list]
-        self.assertEqual(names, ["cartoon_synaptic_train_amplitudes.png",
-                                 "cartoon_synaptic_train_amplitudes_colorbar.png"])
+        self.assertEqual(names, ["cartoon_synaptic_train_amplitudes.png"])
         extra = save_fig.call_args_list[0].kwargs["extra"]
         self.assertIn("MEASURED", extra)
         self.assertIn("pulses 1 (0 ms), 4 (60 ms), 6 (100 ms), 10 (410 ms), 12 (450 ms)", extra)
-        self.assertIn("adjusted log CV on pulse 1 and pulse 6", extra)
+        self.assertNotIn("log CV", extra)
         self.assertIn("depressing: L5 ET\u2192Pv", extra)
         figure = save_fig.call_args_list[0].args[0]
         self.assertEqual(len(figure.axes), 3)
@@ -119,8 +117,6 @@ class SynapticTrainFigureTests(unittest.TestCase):
             else:
                 self.assertNotIn(f"above {top:g} mV clipped", extra)
         grey = paper_plot.mpl.colors.to_rgba(cartoon._SYNAPTIC_DOT_COLOR)
-        cmap = paper_plot.plt.get_cmap(cartoon._SYNAPTIC_CV_CMAP)
-        norm = paper_plot.mpl.colors.Normalize(*cartoon.SYNAPTIC_VARIABILITY_RANGE, clip=True)
         half_width_slots = cartoon.SYNAPTIC_SWARM_HALF_WIDTH_MS / INTERVAL_MS
         # Paper row order, and no in-axes labels: the caption names the rows.
         for axis, group in zip(figure.axes, ("depressing", "facilitating", "pseudolinear")):
@@ -134,8 +130,8 @@ class SynapticTrainFigureTests(unittest.TestCase):
                 np.testing.assert_allclose(
                     sorted(offsets[:, 1]), sorted(entry["trial_amplitude_mv"][str(pulse)]))
                 self.assertTrue(np.all(np.abs(offsets[:, 0] - index) <= half_width_slots + 1e-6))
-                is_grey = np.allclose(collection.get_facecolor()[0], grey)
-                self.assertEqual(is_grey, index not in (0, 2), msg=f"pulse {pulse + 1}")
+                # Every dot in the same grey: no variability coloring.
+                np.testing.assert_allclose(collection.get_facecolor()[0], grey)
             waveforms = self.waveform_lines(axis)
             self.assertEqual(len(waveforms), len(shown))
             # Paper-style alignment: the -1..8 ms window is centered on the slot.
@@ -148,13 +144,6 @@ class SynapticTrainFigureTests(unittest.TestCase):
             top = cartoon.SYNAPTIC_YLIM_TOP[group]
             np.testing.assert_allclose(axis.get_ylim(), (-cartoon.SYNAPTIC_YLIM_PAD * top, top))
             np.testing.assert_allclose(axis.get_yticks(), [0.0, top])
-            # Resting-state aCV on pulse 1; induced-state aCV (pulses 5-8 pooled)
-            # on the last shown induction pulse (pulse 6 here); noise pooled over all.
-            pooled_noise = np.concatenate([entry["trial_noise_mv"][str(p)] for p in range(12)])
-            for slot_index, source in ((0, (0,)), (2, (4, 5, 6, 7))):
-                pooled = np.concatenate([entry["trial_amplitude_mv"][str(p)] for p in source])
-                expected = cmap(norm(cartoon._log_adjusted_cv(pooled, pooled_noise)))
-                np.testing.assert_allclose(axis.collections[slot_index].get_facecolor()[0], expected)
         last = figure.axes[-1]
         self.assertEqual([label.get_text() for label in last.get_xticklabels()],
                          ["0", "60", "100", "410", "450"])
@@ -170,14 +159,9 @@ class SynapticTrainFigureTests(unittest.TestCase):
         save_fig = self.render(path, pulses=range(1, 13))
         extra = save_fig.call_args_list[0].kwargs["extra"]
         self.assertIn("8 (140 ms), 9 (390 ms)", extra)
-        self.assertIn("pulse 1 and pulse 8", extra)
         figure = save_fig.call_args_list[0].args[0]
         axis = figure.axes[0]
         self.assertEqual(len(axis.collections), 12)
-        grey = paper_plot.mpl.colors.to_rgba(cartoon._SYNAPTIC_DOT_COLOR)
-        colored = [p for p, c in enumerate(axis.collections)
-                   if not np.allclose(c.get_facecolor()[0], grey)]
-        self.assertEqual(colored, [0, 7])
         last = figure.axes[-1]
         self.assertEqual([label.get_text() for label in last.get_xticklabels()],
                          [f"{p * INTERVAL_MS:g}" for p in range(8)]
@@ -188,12 +172,11 @@ class SynapticTrainFigureTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.render(path, pulses=bad)
 
-    def test_without_noise_amplitudes_the_colors_use_the_unadjusted_cv(self):
+    def test_files_without_noise_or_classes_still_load_and_draw(self):
         path = self.root / "amps.json"
         write_full_format(path, with_noise=False, with_classes=False)
         save_fig = self.render(path)
         extra = save_fig.call_args_list[0].kwargs["extra"]
-        self.assertIn("UNADJUSTED", extra)
         self.assertIn("depressing: ?", extra)
         loaded = cartoon.load_synaptic_trial_amplitudes(path)
         self.assertFalse(loaded["adjusted"])
@@ -206,7 +189,6 @@ class SynapticTrainFigureTests(unittest.TestCase):
         save_fig = self.render(path, pulses=(1, 4, 8, 9, 12))
         extra = save_fig.call_args_list[0].kwargs["extra"]
         self.assertIn("legacy", extra)
-        self.assertIn("UNADJUSTED", extra)
         figure = save_fig.call_args_list[0].args[0]
         self.assertEqual(len(figure.axes), 1)
         self.assertEqual(len(figure.axes[0].collections), 5)
@@ -234,15 +216,6 @@ class SynapticTrainFigureTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             cartoon.load_synaptic_trial_amplitudes(path)
         self.assertEqual(cartoon._parse_pulse_label("Pulse 9 (recovery)"), 8)
-
-    def test_variability_metric_matches_the_paper_definition(self):
-        # log( sqrt(var(amp) - var(noise)) / |median| ), population variances.
-        self.assertAlmostEqual(cartoon._log_adjusted_cv([1.0, 3.0]), np.log(1.0 / 2.0))
-        self.assertAlmostEqual(cartoon._log_adjusted_cv([1.0, 3.0], noise=[-0.5, 0.5]),
-                               np.log(np.sqrt(1.0 - 0.25) / 2.0))
-        self.assertEqual(cartoon._log_adjusted_cv([1.0, 3.0], noise=[-2.0, 2.0]), -np.inf)
-        self.assertTrue(np.isnan(cartoon._log_adjusted_cv([0.3])))
-        self.assertTrue(np.isnan(cartoon._log_adjusted_cv([-0.2, 0.2])))
 
     def test_beeswarm_separates_coincident_points_and_respects_the_width(self):
         offsets = cartoon._beeswarm_offsets([0.0, 0.0, 0.0], marker_px=4.0, max_half_width_px=10.0)
