@@ -86,6 +86,34 @@ class SharingTests(unittest.TestCase):
         self.assertEqual(result["permutation_unit"], "task_label")
         self.assertIn("related", result["by_relation"])
 
+    def test_sharing_null_reproduces_the_permuted_matrix_loop(self):
+        rng = np.random.default_rng(11)
+        sig = rng.random((len(TASKS), 9)) < 0.3
+        result = lesion_plot._sharing_by_relation(sig, TASKS, n_perm=150, seed=4)
+        jaccard = lesion_plot._jaccard_matrix(sig)
+        labels = lesion_plot._pair_relation_labels(TASKS)
+        groups = {name: [pair for pair, label in labels.items() if label == name]
+                  for name in result["relations"]}
+        groups["related"] = [pair for pair, label in labels.items()
+                             if label != lesion_plot.TASK_PAIR_OTHER]
+
+        def mean(matrix, pairs):
+            values = np.array([matrix[i, j] for i, j in pairs], dtype=float)
+            values = values[np.isfinite(values)]
+            return float(values.mean()) if values.size else np.nan
+
+        loop_rng = np.random.default_rng(4)
+        for index in range(150):
+            perm = loop_rng.permutation(len(TASKS))
+            shuffled = jaccard[np.ix_(perm, perm)]
+            for name, pairs in groups.items():
+                expected = mean(shuffled, pairs)
+                actual = result["by_relation"][name]["null_mean"][index]
+                if np.isnan(expected):
+                    self.assertTrue(np.isnan(actual))
+                else:
+                    self.assertEqual(actual, expected)
+
     def test_summary_bundles_types_and_validates_shapes(self):
         rng = np.random.default_rng(5)
         sig_by_type = {"hidden": {"sig": rng.random((15, 8)) < 0.3,

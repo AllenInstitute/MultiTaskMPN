@@ -108,7 +108,7 @@ from pathlib import Path
 import numpy as np
 
 import pickle
-from scipy.stats import linregress, norm as gauss_norm, pearsonr, mannwhitneyu, spearmanr
+from scipy.stats import linregress, norm as gauss_norm, pearsonr, mannwhitneyu, rankdata, spearmanr
 
 import matplotlib.pyplot as plt
 import matplotlib as mpl
@@ -265,19 +265,36 @@ def _om_scatter_perm_test(mod_profiles, row_om, row_cm, n_perm=OM_N_PERM, seed=0
     y for a (cluster c, footprint k) pairing is the per-block task-profile
     L1/T distance: mean_t |mod_profiles[c, t] - row_cm[k][b, t]|.
     Returns (rho_obs, p_perm, null_rho); no regression model is fitted.
+
+    Implementation: shuffling footprint ownership only reorders the pooled OM
+    values, so their spread and ranks are computed once and re-assembled per
+    permutation; the (cluster, footprint) profile distances are precomputed
+    for every pairing, and each permutation's Spearman rho is the Pearson
+    correlation of the two rank vectors (what scipy.stats.spearmanr computes,
+    without its per-call p-value machinery). Same RNG stream as before.
     """
     nC = len(mod_profiles)
     if n_perm < 1:
         raise ValueError("Need at least one cluster permutation.")
+    mod_profiles = np.asarray(mod_profiles, dtype=float)
+    row_om = [np.asarray(values, dtype=float) for values in row_om]
+    row_cm = [np.asarray(values, dtype=float) for values in row_cm]
+    pooled_om = np.concatenate(row_om)
+    om_std = np.std(pooled_om)
+    rank_om = np.split(rankdata(pooled_om), np.cumsum([values.size for values in row_om])[:-1])
+    distance = [[np.mean(np.abs(row_cm[k] - mod_profiles[c][None, :]), axis=1)
+                 for k in range(nC)] for c in range(nC)]
 
     def _pooled_rho(assign):
-        x = np.concatenate([row_om[k] for k in assign])
-        y = np.concatenate([
-            np.mean(np.abs(row_cm[k] - mod_profiles[c][None, :]), axis=1)
-            for c, k in enumerate(assign)])
-        if np.std(x) < 1e-12 or np.std(y) < 1e-12:
+        y = np.concatenate([distance[c][k] for c, k in enumerate(assign)])
+        if om_std < 1e-12 or np.std(y) < 1e-12:
             return np.nan
-        return float(spearmanr(x, y).statistic)
+        rank_x = np.concatenate([rank_om[k] for k in assign])
+        rank_y = rankdata(y)
+        centered_x = rank_x - rank_x.mean()
+        centered_y = rank_y - rank_y.mean()
+        return float(centered_x @ centered_y
+                     / np.sqrt((centered_x ** 2).sum() * (centered_y ** 2).sum()))
 
     rho_obs = _pooled_rho(np.arange(nC))
     if nC < 2:
@@ -419,8 +436,9 @@ def _normalized_modulation_effect_record(mod_type_key, mod_data, default_tasks):
 #
 # The lesion-effect L1 distance between two clusters, sum_t |e_i(t) - e_j(t)|,
 # is dominated by how LARGE the two effects are, not by how different their
-# task profiles are (on seed 749 it correlates at r = 0.92 with the summed
-# effect magnitude). Tuning cosine similarity, by contrast, is scale-free and
+# task profiles are (it tracks the pair's summed effect magnitude almost
+# one-to-one; the saved L1 supplement documents this per run). Tuning cosine
+# similarity, by contrast, is scale-free and
 # is highest between the large, high-|W| clusters whose mean profiles converge
 # on the population-average profile. Both axes therefore track cluster size and
 # weight, which manufactured a positive tuning-similarity/L1 correlation that
@@ -495,6 +513,16 @@ def _cluster_effect_significance(control_raw, sd, z, quantile=CLUSTER_CORR_SIG_Q
             "null": null, "significant": statistic > threshold}
 
 
+# Permutations are drawn one at a time (same RNG stream as the original
+# per-permutation loop) but evaluated in blocks of this many at once.
+_PERM_BLOCK = 1000
+
+
+def _label_permutations(rng, n, count):
+    """`count` label permutations of range(n), one row each, drawn in order."""
+    return np.stack([rng.permutation(n) for _ in range(count)])
+
+
 def _mantel_spearman(x_matrix, y_matrix, n_perm=CLUSTER_CORR_N_PERM, seed=0):
     """Two-sided Spearman Mantel test between two square similarity matrices.
 
@@ -502,6 +530,16 @@ def _mantel_spearman(x_matrix, y_matrix, n_perm=CLUSTER_CORR_N_PERM, seed=0):
     permutes the cluster labels of `y_matrix` (rows and columns together) so
     every pair keeps its dependence on the shared clusters. Returns a dict
     with rho, the permutation p, the null rhos and the test metadata.
+
+    Implementation: for a symmetric `y_matrix` (every caller passes
+    correlation, cosine, L1 or summed-magnitude matrices) relabeling the
+    clusters only rearranges the lower-triangle pair values, so their ranks
+    and spread are fixed; each permutation's rho is then one dot product of
+    centered ranks, evaluated for a block of permutations at a time. This is
+    what scipy.stats.spearmanr computes per call, minus its p-value
+    machinery, and the RNG stream is unchanged, so rho, the null and p are
+    the same up to floating-point rounding. An asymmetric `y_matrix` falls
+    back to ranking every permuted triangle.
     """
     x_matrix = np.asarray(x_matrix, dtype=float)
     y_matrix = np.asarray(y_matrix, dtype=float)
@@ -513,19 +551,39 @@ def _mantel_spearman(x_matrix, y_matrix, n_perm=CLUSTER_CORR_N_PERM, seed=0):
         raise ValueError("Need at least one label permutation")
     tri = np.tril_indices(n, k=-1)
     x = x_matrix[tri]
-
-    def _rho(matrix):
-        y = matrix[tri]
-        if np.std(x) < 1e-12 or np.std(y) < 1e-12:
-            return np.nan
-        return float(spearmanr(x, y).statistic)
-
-    rho = _rho(y_matrix)
+    y = y_matrix[tri]
+    x_constant = np.std(x) < 1e-12
     rng = np.random.default_rng(seed)
     null = np.empty(n_perm)
-    for index in range(n_perm):
-        perm = rng.permutation(n)
-        null[index] = _rho(y_matrix[np.ix_(perm, perm)])
+
+    if not np.allclose(y_matrix, y_matrix.T):
+        def _rho(matrix):
+            values = matrix[tri]
+            if x_constant or np.std(values) < 1e-12:
+                return np.nan
+            return float(spearmanr(x, values).statistic)
+
+        rho = _rho(y_matrix)
+        for index in range(n_perm):
+            perm = rng.permutation(n)
+            null[index] = _rho(y_matrix[np.ix_(perm, perm)])
+    elif x_constant or np.std(y) < 1e-12:
+        rho = np.nan
+        null[:] = np.nan
+    else:
+        rank_x = rankdata(x)
+        rank_y = rankdata(y)
+        rank_matrix = np.zeros((n, n))
+        rank_matrix[tri] = rank_y
+        rank_matrix = rank_matrix + rank_matrix.T
+        centered_x = rank_x - rank_x.mean()
+        mean_y = rank_y.mean()                      # invariant under relabeling
+        denominator = np.sqrt((centered_x ** 2).sum() * ((rank_y - mean_y) ** 2).sum())
+        rho = float(centered_x @ (rank_y - mean_y) / denominator)
+        for start in range(0, n_perm, _PERM_BLOCK):
+            perms = _label_permutations(rng, n, min(_PERM_BLOCK, n_perm - start))
+            permuted = rank_matrix[perms[:, tri[0]], perms[:, tri[1]]]   # (block, n_pairs)
+            null[start:start + len(perms)] = (permuted - mean_y) @ centered_x / denominator
     finite = np.isfinite(null)
     if np.isfinite(rho) and finite.any():
         p_perm = float((1.0 + np.sum(np.abs(null[finite]) >= abs(rho))) / (finite.sum() + 1.0))
@@ -640,6 +698,35 @@ def _tuning_vs_lesion_summary(cluster_means, lesion_acc, control_raw, cluster_la
         "trend_line": _descriptive_trend_line(tuning_corr[tri], lesion_dissim[tri]),
         "l1": supplement,
     }
+
+
+def _mantel_pearson_one_sided(reference, other, n_perm=10000, seed=0):
+    """One-sided Pearson Mantel test (positive association) on upper triangles.
+
+    `reference` is relabeled (rows and columns together) against the fixed
+    `other`; both are symmetric task-similarity matrices. Returns
+    (r_obs, p_perm). Permutations are drawn in the original order and
+    evaluated in blocks as dot products of centered pair vectors, which is
+    the Pearson correlation np.corrcoef computed per permutation before.
+    """
+    reference = np.asarray(reference, dtype=float)
+    other = np.asarray(other, dtype=float)
+    n = reference.shape[0]
+    iu = np.triu_indices(n, k=1)
+    centered_y = other[iu] - other[iu].mean()
+    norm_y = np.sqrt((centered_y ** 2).sum())
+
+    def _r(pairs):
+        centered = pairs - pairs.mean(axis=-1, keepdims=True)
+        return centered @ centered_y / (np.sqrt((centered ** 2).sum(axis=-1)) * norm_y)
+
+    r_obs = float(_r(reference[iu]))
+    rng = np.random.default_rng(seed)
+    count = 0
+    for start in range(0, n_perm, _PERM_BLOCK):
+        perms = _label_permutations(rng, n, min(_PERM_BLOCK, n_perm - start))
+        count += int(np.sum(_r(reference[perms[:, iu[0]], perms[:, iu[1]]]) >= r_obs))
+    return r_obs, (count + 1) / (n_perm + 1)
 
 
 def _descriptive_trend_line(x, y):
@@ -792,19 +879,25 @@ def _sharing_by_relation(sig, tasks, n_perm=TASK_SPECIFICITY_N_PERM, seed=0):
     groups = {name: [pair for pair, label in labels.items() if label == name] for name in relations}
     related = [pair for pair, label in labels.items() if label != TASK_PAIR_OTHER]
 
-    def _mean(matrix, pairs):
-        values = np.array([matrix[i, j] for i, j in pairs], dtype=float)
+    def _finite_mean(values):
         values = values[np.isfinite(values)]
         return float(values.mean()) if values.size else np.nan
 
+    def _mean(matrix, pairs):
+        return _finite_mean(np.array([matrix[i, j] for i, j in pairs], dtype=float))
+
+    # Index arrays per group: relabeling tasks by `perm` turns pair (i, j) into
+    # (perm[i], perm[j]), so each null draw is one fancy-index lookup instead
+    # of rebuilding the permuted matrix and walking the pairs in Python.
+    pair_index = {name: (np.array([i for i, _ in pairs], dtype=int),
+                         np.array([j for _, j in pairs], dtype=int))
+                  for name, pairs in list(groups.items()) + [("related", related)]}
     rng = np.random.default_rng(seed)
     null = {name: np.empty(n_perm) for name in relations + ["related"]}
     for index in range(n_perm):
         perm = rng.permutation(len(tasks))
-        shuffled = jaccard[np.ix_(perm, perm)]
-        for name in relations:
-            null[name][index] = _mean(shuffled, groups[name])
-        null["related"][index] = _mean(shuffled, related)
+        for name, (rows, cols) in pair_index.items():
+            null[name][index] = _finite_mean(jaccard[perm[rows], perm[cols]])
     out = {"jaccard": jaccard, "tasks": tasks, "relations": relations, "n_perm": int(n_perm),
            "seed": int(seed), "side": "greater", "permutation_unit": "task_label",
            "by_relation": {}}
@@ -1203,27 +1296,12 @@ def main(seed, feature):
     # (unnormalized neuron clusters' lesion effects; raw task-variance features),
     # matching the other lesion figures. Normalization divides each neuron's
     # variance by its maximum over rules and thereby discards the amplitude that
-    # predicts causal impact: across the seven L2=1e-4 seeds the unnormalized
-    # pairing gives hidden rho 0.27-0.50 (all seven p < 0.05) against 0.11-0.35
-    # (three of seven) for the normalized pairing, while the input side stays
-    # near zero under both. The normalized pairing is kept in the cache as a
-    # reference variant. Periods of a task are averaged into one activity
+    # predicts causal impact, which weakened the hidden-side association in
+    # every run examined while the input side stayed near zero under both
+    # pairings. The normalized pairing is kept in the cache as a reference
+    # variant. Periods of a task are averaged into one activity
     # vector; a response-period-only variant is not used because it also makes
     # the input side correlate.
-    def _mantel(S_ref, S_other, n_perm=10000, seed=0):
-        """One-sided Pearson Mantel test (positive association) on upper triangles."""
-        n = S_ref.shape[0]
-        iu = np.triu_indices(n, k=1)
-        y = S_other[iu]
-        r_obs = float(np.corrcoef(S_ref[iu], y)[0, 1])
-        rng = np.random.default_rng(seed)
-        count = 0
-        for _ in range(n_perm):
-            perm = rng.permutation(n)
-            if np.corrcoef(S_ref[np.ix_(perm, perm)][iu], y)[0, 1] >= r_obs:
-                count += 1
-        return r_obs, (count + 1) / (n_perm + 1)
-
     def _activity_task_similarity(ci_entry, tasks):
         """Task x task Pearson correlation of period-averaged task-variance profiles."""
         V = ci_entry["cell_vars_rules_sorted_norm"]
@@ -1263,7 +1341,7 @@ def main(seed, feature):
                 continue
             primary = _variants["unnormalized"]
             S_act, S_les = primary["activity_similarity"], primary["causal_similarity"]
-            r_m, p_m = _mantel(S_act, S_les)
+            r_m, p_m = _mantel_pearson_one_sided(S_act, S_les)
             _assoc_sp = primary["association"]
             with open(f"{save_dir}/causal_vs_activity_tasksim_{side}_{aname}.pkl", "wb") as _f:
                 pickle.dump({

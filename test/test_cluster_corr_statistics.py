@@ -98,6 +98,74 @@ class MantelTests(unittest.TestCase):
             x_matrix[np.ix_(perm, perm)], y_matrix[np.ix_(perm, perm)], n_perm=5)
         self.assertAlmostEqual(relabeled["rho"], result["rho"])
 
+    @staticmethod
+    def reference_spearman_mantel(x_matrix, y_matrix, n_perm, seed):
+        """The original implementation: scipy.stats.spearmanr on every permuted triangle."""
+        n = x_matrix.shape[0]
+        tri = np.tril_indices(n, k=-1)
+        x = x_matrix[tri]
+
+        def rho(matrix):
+            y = matrix[tri]
+            if np.std(x) < 1e-12 or np.std(y) < 1e-12:
+                return np.nan
+            return float(spearmanr(x, y).statistic)
+
+        rng = np.random.default_rng(seed)
+        null = np.array([rho(y_matrix[np.ix_(perm, perm)])
+                         for perm in (rng.permutation(n) for _ in range(n_perm))])
+        observed = rho(y_matrix)
+        finite = np.isfinite(null)
+        p_perm = float((1.0 + np.sum(np.abs(null[finite]) >= abs(observed))) / (finite.sum() + 1.0))
+        return observed, p_perm, null
+
+    def test_vectorized_mantel_reproduces_the_spearmanr_loop(self):
+        rng = np.random.default_rng(3)
+        n = 9
+        for ties in (False, True):
+            with self.subTest(ties=ties):
+                x_matrix = rng.normal(size=(n, n))
+                x_matrix = (x_matrix + x_matrix.T) / 2
+                y_matrix = np.corrcoef(rng.normal(size=(n, 12)))
+                if ties:          # repeated pair values exercise average ranks
+                    y_matrix = np.round(y_matrix, 1)
+                    x_matrix = np.round(x_matrix, 1)
+                result = lesion_plot._mantel_spearman(x_matrix, y_matrix, n_perm=300, seed=5)
+                observed, p_perm, null = self.reference_spearman_mantel(x_matrix, y_matrix, 300, 5)
+                self.assertAlmostEqual(result["rho"], observed, places=12)
+                np.testing.assert_allclose(result["null_rho"], null, rtol=0, atol=1e-12)
+                self.assertEqual(result["p_perm"], p_perm)
+                self.assertEqual(result["n_valid_perm"], 300)
+
+    def test_asymmetric_y_matrix_takes_the_per_permutation_path(self):
+        rng = np.random.default_rng(4)
+        n = 7
+        x_matrix = np.corrcoef(rng.normal(size=(n, 10)))
+        y_matrix = rng.normal(size=(n, n))           # deliberately not symmetric
+        result = lesion_plot._mantel_spearman(x_matrix, y_matrix, n_perm=120, seed=2)
+        observed, p_perm, null = self.reference_spearman_mantel(x_matrix, y_matrix, 120, 2)
+        self.assertAlmostEqual(result["rho"], observed, places=12)
+        np.testing.assert_allclose(result["null_rho"], null, rtol=0, atol=1e-12)
+        self.assertEqual(result["p_perm"], p_perm)
+
+    def test_pearson_mantel_reproduces_the_corrcoef_loop(self):
+        rng = np.random.default_rng(8)
+        n = 8
+        reference = np.corrcoef(rng.normal(size=(n, 20)))
+        other = np.corrcoef(rng.normal(size=(n, 20)) + reference[:, :1])
+        iu = np.triu_indices(n, k=1)
+        y = other[iu]
+        r_obs = float(np.corrcoef(reference[iu], y)[0, 1])
+        loop_rng = np.random.default_rng(1)
+        count = 0
+        for _ in range(250):
+            perm = loop_rng.permutation(n)
+            if np.corrcoef(reference[np.ix_(perm, perm)][iu], y)[0, 1] >= r_obs:
+                count += 1
+        r_fast, p_fast = lesion_plot._mantel_pearson_one_sided(reference, other, n_perm=250, seed=1)
+        self.assertAlmostEqual(r_fast, r_obs, places=12)
+        self.assertAlmostEqual(p_fast, (count + 1) / 251)
+
     def test_constant_matrix_yields_nan_and_bad_inputs_raise(self):
         x_matrix, y_matrix = self.matrices()
         result = lesion_plot._mantel_spearman(np.ones((6, 6)), y_matrix, n_perm=3)
