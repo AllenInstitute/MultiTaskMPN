@@ -989,6 +989,55 @@ class PaperPlotModeTests(unittest.TestCase):
         finally:
             paper_plot._set_pretraining_bound(original_bound)
 
+    def test_pretraining_lambda_switches_every_artifact_pattern(self):
+        original_bound = paper_plot.PRETRAINING_BOUND
+        original_lambda = paper_plot.PRETRAINING_LAMBDA
+        try:
+            self.assertEqual(paper_plot.PRETRAINING_LAMBDA, "0.99")
+            self.assertEqual(
+                paper_plot.PRETRAINING_ADDON_NAME,
+                "+hidden200+L21e3+batch128+angle",
+            )
+
+            paper_plot._set_pretraining_lambda("0.9")
+            self.assertEqual(paper_plot.PRETRAINING_LAMBDA, "0.9")
+            self.assertEqual(
+                paper_plot.PRETRAINING_ADDON_NAME,
+                "+hidden200+L21e3lam0.9+batch128+angle",
+            )
+            with patch.object(Path, "glob", return_value=[]) as glob:
+                paper_plot._pretraining_result_pkls()
+                glob.assert_called_once_with(
+                    "*_dmpn_seed*_+hidden200+L21e3lam0.9+batch128+angle_result.pkl")
+            with patch.object(Path, "glob", return_value=[]) as glob:
+                paper_plot._pretraining_combined_pkls("transfer_speed")
+                glob.assert_called_once_with(
+                    "*_dmpn_+hidden200+L21e3lam0.9+batch128+angle_transfer_speed.pkl")
+            self.assertEqual(
+                paper_plot._pretraining_ruleset_from_result_name(
+                    "fdanti_delaygo_dmpn_seed3_+hidden200+L21e3lam0.9+batch128+angle_result.pkl"),
+                "fdanti_delaygo")
+            self.assertIsNone(paper_plot._pretraining_ruleset_from_result_name(
+                "fdanti_delaygo_dmpn_seed11_+hidden200+L21e3+batch128+angle_result.pkl"))
+
+            # The bound and lambda tags compose in the training script's order.
+            paper_plot._set_pretraining_bound("mb2")
+            self.assertEqual(
+                paper_plot.PRETRAINING_ADDON_NAME,
+                "+hidden200+L21e3mb2lam0.9+batch128+angle",
+            )
+            paper_plot._set_pretraining_lambda("0.99")
+            self.assertEqual(
+                paper_plot.PRETRAINING_ADDON_NAME,
+                "+hidden200+L21e3mb2+batch128+angle",
+            )
+            with self.assertRaises(ValueError):
+                paper_plot._set_pretraining_lambda("0.95")
+            self.assertEqual(paper_plot.PRETRAINING_LAMBDA, "0.99")
+        finally:
+            paper_plot._set_pretraining_bound(original_bound)
+            paper_plot._set_pretraining_lambda(original_lambda)
+
     def test_aggregate_cve_panel_includes_delaypro_control(self):
         rulesets = (
             "fdanti", "fdgo", "fdanti_delaygo", "fdgo_delaygo")

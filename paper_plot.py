@@ -49,6 +49,7 @@ from scipy.cluster.hierarchy import fcluster
 from core.sibling_geometry import best_task_specific_pc_pair
 from core.state_space_geometry import task_centroid_separation
 from core.lesion_cache import load_lesion_pickle, normalize_lesion_cache, resolve_lesion_cache_path
+from pretrain.pretraining_utils import variant_addon
 
 # ─── Global style ────────────────────────────────────────────────────────────
 mpl.rcParams.update({
@@ -3969,13 +3970,29 @@ def plot_task_specificity():
 # ─── Figure: Transfer speed ──────────────────────────────────────────────────
 
 PRETRAINING_ANALYSIS_DIR = Path("pretraining_analysis")
-_PRETRAINING_BOUND_ADDONS = {
-    "mb1": "+hidden200+L21e3+batch128+angle",
-    "mb2": "+hidden200+L21e3mb2+batch128+angle",
+# Every pretraining figure reads the dmpn runs with hidden 200, L2 1e-3 and
+# batch 128. pretraining.py appends two optional tags to that feature: the M
+# bound when it is not the default [-1, 1] ("mb2") and the M retention per
+# 40 ms step when it is not the historical 0.99 ("lam0.9", m_time_scale 400 ms
+# instead of 4000 ms), giving L21e3, L21e3mb2, L21e3lam0.9 and L21e3mb2lam0.9.
+_PRETRAINING_HIDDEN = 200
+_PRETRAINING_FEATURE = "L21e3"
+_PRETRAINING_BOUND_TAGS = {
+    "mb1": "",
+    "mb2": "mb2",
 }
 _PRETRAINING_BOUND_LIMITS = {
     "mb1": (-1, 1),
     "mb2": (-2, 2),
+}
+# CLI spelling of lambda -> (feature tag, m_time_scale in ms).
+_PRETRAINING_LAMBDA_TAGS = {
+    "0.99": "",
+    "0.9": "lam0.9",
+}
+_PRETRAINING_LAMBDA_TIME_SCALES_MS = {
+    "0.99": 4000,
+    "0.9": 400,
 }
 _PRETRAINING_RULESET_STYLES = {
     "fdgo_delaygo": ("Irrelevant motif", _SCATTER_POINT_COLOR),
@@ -3989,11 +4006,37 @@ _PRETRAINING_GROUPS = {
 }
 PRETRAINING_GROUPS = "all"
 _PRETRAINING_TRAJECTORY_FIGSIZE = (3.0, 2.2 * 2 / 3)
+# rule_vectors with --pretraining-groups motifs: the two pairs of bars are set
+# apart by this many bar steps and separated by a dark divider, so the break
+# between the two comparisons is read before the bars are.
+_RULE_VECTORS_PAIR_GAP = 0.5
+_RULE_VECTORS_DIVIDER_STYLE = dict(color="0.3", linewidth=1.0, zorder=1)
+# x extent of that layout in bar steps (two pairs plus the gap); it is drawn at
+# exactly _PRETRAINING_TRAJECTORY_FIGSIZE and other layouts scale their width
+# from it so every layout keeps the same height and width per bar.
+_RULE_VECTORS_MOTIFS_EXTENT = 4 + _RULE_VECTORS_PAIR_GAP
+# The two-line "MemoryAnti / <-> partner" tick labels sit one bar step (about
+# 0.5 in) apart at that width, which only a 5 pt font fits without overlap.
+_RULE_VECTORS_TICK_FONTSIZE = 5
+# Fraction of the x range left free of bars at each end; the default 0.05 is
+# halved to give the tick labels room.
+_RULE_VECTORS_X_MARGIN = 0.025
 _TRANSFER_SPEED_FIGSIZE = (3.3, 2.2 * 2 / 3 * 1.1)
 _TRANSFER_SPEED_YTICKS = (50, 75, 100)
+_LEARNING_TRAJECTORY_YTICKS = (0, 50, 100)
 _BACKBONE_PROBE_FIGSIZE = (3.4, 2.0)
 PRETRAINING_BOUND = "mb1"
-PRETRAINING_ADDON_NAME = _PRETRAINING_BOUND_ADDONS[PRETRAINING_BOUND]
+PRETRAINING_LAMBDA = "0.99"
+
+
+def _pretraining_addon_name(bound, lam):
+    """Filename suffix of the pretraining runs with this M bound and retention."""
+    feature = (f"{_PRETRAINING_FEATURE}{_PRETRAINING_BOUND_TAGS[bound]}"
+               f"{_PRETRAINING_LAMBDA_TAGS[lam]}")
+    return variant_addon(_PRETRAINING_HIDDEN, feature)
+
+
+PRETRAINING_ADDON_NAME = _pretraining_addon_name(PRETRAINING_BOUND, PRETRAINING_LAMBDA)
 
 
 def _parse_pretraining_bound(value):
@@ -4009,13 +4052,23 @@ def _parse_pretraining_bound(value):
 
 
 def _set_pretraining_bound(bound):
-    """Select the exact pretraining artifact variant used by every plot."""
+    """Select the M bound of the pretraining runs read by every plot."""
     global PRETRAINING_BOUND, PRETRAINING_ADDON_NAME
 
-    if bound not in _PRETRAINING_BOUND_ADDONS:
+    if bound not in _PRETRAINING_BOUND_TAGS:
         raise ValueError(f"Unknown pretraining bound: {bound!r}")
     PRETRAINING_BOUND = bound
-    PRETRAINING_ADDON_NAME = _PRETRAINING_BOUND_ADDONS[bound]
+    PRETRAINING_ADDON_NAME = _pretraining_addon_name(bound, PRETRAINING_LAMBDA)
+
+
+def _set_pretraining_lambda(lam):
+    """Select the M retention (lambda per step) of the pretraining runs read by every plot."""
+    global PRETRAINING_LAMBDA, PRETRAINING_ADDON_NAME
+
+    if lam not in _PRETRAINING_LAMBDA_TAGS:
+        raise ValueError(f"Unknown pretraining lambda: {lam!r}")
+    PRETRAINING_LAMBDA = lam
+    PRETRAINING_ADDON_NAME = _pretraining_addon_name(PRETRAINING_BOUND, lam)
 
 
 def _set_pretraining_groups(groups):
@@ -4264,7 +4317,8 @@ def plot_backbone_probe():
         handle.write(
             f"[{datetime.now().isoformat(timespec='seconds')}] "
             f"feature={PRETRAINING_ADDON_NAME}; groups={PRETRAINING_GROUPS}; "
-            f"bound={PRETRAINING_BOUND}: {stats_label.replace(chr(10), '; ')}\n"
+            f"bound={PRETRAINING_BOUND}; lambda={PRETRAINING_LAMBDA}: "
+            f"{stats_label.replace(chr(10), '; ')}\n"
         )
     fig.suptitle("Random-rule backbone probe", fontsize=9)
     fig.tight_layout(pad=0.4)
@@ -4342,7 +4396,7 @@ def plot_learning_trajectory(*, xscale="log"):
     ax.set_ylabel("Accuracy (%)")
     ax.set_xscale(xscale)
     # ylim tops at 105 for headroom; explicit ticks stop at 100 so no >100% tick.
-    ax.set_yticks(np.arange(0, 101, 20))
+    ax.set_yticks(_LEARNING_TRAJECTORY_YTICKS)
     ax.set_ylim([0, 105])
     ax.tick_params(axis="both", labelsize=7)
     _legend(ax, fontsize=6, frameon=True)
@@ -4463,12 +4517,11 @@ def plot_rule_vectors():
         frozenset(("fdgo", "delaygo")),
     }
 
-    fig, ax = plt.subplots(1, 1, figsize=(3.6, 2.4 * 2 / 3))  # height squeezed by 1/3
-
-    # All bars are evenly spaced (no extra gap between column groups).
+    # All bars are evenly spaced; only the motifs layout opens a gap between
+    # its two column groups so the divider drawn below reads as a break.
     bar_step = 1.0
     bar_width = 0.8
-    group_gap = 0.0
+    group_gap = _RULE_VECTORS_PAIR_GAP if PRETRAINING_GROUPS == "motifs" else 0.0
 
     # Build the per-ruleset bar list first, then interleave columns across
     # rulesets instead of grouping all of one ruleset's bars together.
@@ -4519,13 +4572,13 @@ def plot_rule_vectors():
             for values, label, _ in bar_specs
         ]
 
-    # The original two-ruleset figure had four bars. The two single-task
-    # controls add one each, so scale width with the actual count.
+    # Match learning_trajectory: the motifs layout (two pairs and their gap)
+    # takes exactly its size; the six-bar layout keeps the same height and
+    # the same width per bar step, so its labels stay as legible.
     n_bars_total = sum(len(bars) for bars in per_rs_bars.values())
-    figure_width = max(3.6, 1.05 * n_bars_total)
-    if PRETRAINING_GROUPS == "motifs":
-        figure_width *= 0.9
-    fig.set_size_inches(figure_width, 2.4 * 2 / 3)
+    figure_width, figure_height = _PRETRAINING_TRAJECTORY_FIGSIZE
+    figure_width *= (n_bars_total + group_gap) / _RULE_VECTORS_MOTIFS_EXTENT
+    fig, ax = plt.subplots(1, 1, figsize=(figure_width, figure_height))
 
     # Interleave: for each column index, emit one bar per ruleset; a group_gap
     # separates successive columns.
@@ -4552,14 +4605,17 @@ def plot_rule_vectors():
             x += bar_step
         x += group_gap  # gap between successive interleaved column groups
 
+    ax.margins(x=_RULE_VECTORS_X_MARGIN)
     ax.set_xticks(all_x)
-    ax.set_xticklabels(all_labels, rotation=0, ha="center", fontsize=7)
+    ax.set_xticklabels(all_labels, rotation=0, ha="center",
+                       fontsize=_RULE_VECTORS_TICK_FONTSIZE)
     ax.tick_params(axis="y", labelsize=7)
     ax.axhline(0.0, color="gray", linewidth=0.8, linestyle="--")
     if PRETRAINING_GROUPS == "motifs" and len(all_x) == 4:
-        ax.axvline((all_x[1] + all_x[2]) / 2, color="0.6", linewidth=0.8, zorder=0)
+        ax.axvline((all_x[1] + all_x[2]) / 2, **_RULE_VECTORS_DIVIDER_STYLE)
     ax.set_ylabel("Cosine similarity")
-    _legend(ax, fontsize=7, frameon=True)
+    # Upper right is free in both layouts: the bars there are negative.
+    _legend(ax, fontsize=6, frameon=True, loc="upper right")
     ax.spines[["top", "right"]].set_visible(False)
 
     fig.tight_layout()
@@ -9718,6 +9774,15 @@ def main():
              "(default); mod2/mb2 selects M in [-2,2].",
     )
     parser.add_argument(
+        "--pretraining-lambda",
+        choices=tuple(_PRETRAINING_LAMBDA_TAGS),
+        default=PRETRAINING_LAMBDA,
+        help="Pretraining M retention per 40 ms step: 0.99 selects the runs "
+             "trained with m_time_scale 4000 ms (default; untagged file names), "
+             "0.9 the lam0.9 runs trained with 400 ms. Combines with "
+             "--pretraining-bound.",
+    )
+    parser.add_argument(
         "--pretraining-groups",
         choices=tuple(_PRETRAINING_GROUPS),
         default="all",
@@ -9735,6 +9800,7 @@ def main():
     # Apply before resolving/running figures because all pretraining loaders
     # build exact artifact patterns from this selected addon.
     _set_pretraining_bound(args.pretraining_bound)
+    _set_pretraining_lambda(args.pretraining_lambda)
     _set_pretraining_groups(args.pretraining_groups)
     # Re-resolve the multi-task run names only when the cohort is overridden;
     # the import-time selection already reflects MULTITASK_L2.
@@ -9787,6 +9853,8 @@ def main():
         "two_task": TWOTASK_ANAME,
         "pretraining": (
             f"(aggregated across seeds; groups={PRETRAINING_GROUPS}; {PRETRAINING_BOUND}, "
+            f"lambda={PRETRAINING_LAMBDA} (m_time_scale "
+            f"{_PRETRAINING_LAMBDA_TIME_SCALES_MS[PRETRAINING_LAMBDA]} ms); "
             f"feature={PRETRAINING_ADDON_NAME}; "
             f"M in [{_PRETRAINING_BOUND_LIMITS[PRETRAINING_BOUND][0]}, "
             f"{_PRETRAINING_BOUND_LIMITS[PRETRAINING_BOUND][1]}])"

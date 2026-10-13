@@ -1,11 +1,25 @@
 """Pretraining group selection applies to every paper plot and cache format."""
 
 import json
+import os
 import pickle
 import tempfile
 import unittest
-from contextlib import chdir
 from pathlib import Path
+
+try:
+    from contextlib import chdir
+except ImportError:  # Python < 3.11 (the project's mpn environment is 3.9)
+    from contextlib import contextmanager
+
+    @contextmanager
+    def chdir(path):
+        previous = os.getcwd()
+        os.chdir(path)
+        try:
+            yield
+        finally:
+            os.chdir(previous)
 from unittest.mock import Mock, patch
 
 import _bootstrap  # noqa: F401
@@ -17,9 +31,12 @@ class PretrainingGroupTests(unittest.TestCase):
     def setUp(self):
         self.original_groups = paper_plot.PRETRAINING_GROUPS
         self.original_bound = paper_plot.PRETRAINING_BOUND
+        self.original_lambda = paper_plot.PRETRAINING_LAMBDA
         self.addCleanup(paper_plot._set_pretraining_groups, self.original_groups)
         self.addCleanup(paper_plot._set_pretraining_bound, self.original_bound)
+        self.addCleanup(paper_plot._set_pretraining_lambda, self.original_lambda)
         paper_plot._set_pretraining_bound("mb1")
+        paper_plot._set_pretraining_lambda("0.99")
 
     def write_fixtures(self, root, combined=False, rulesets=None):
         rulesets = rulesets or tuple(paper_plot._PRETRAINING_RULESET_STYLES)
@@ -100,12 +117,20 @@ class PretrainingGroupTests(unittest.TestCase):
                                     labels = set(figure.axes[0].get_legend_handles_labels()[1])
                                 self.assertEqual(labels, expected | (
                                     {"Self"} if name.startswith("aggregate_cve") else set()))
+                                if name.startswith("learning_trajectory"):
+                                    np.testing.assert_array_equal(
+                                        figure.axes[0].get_yticks(),
+                                        paper_plot._LEARNING_TRAJECTORY_YTICKS)
+                                    self.assertEqual(figure.axes[0].get_ylim(), (0, 105))
                                 if name == "rule_vectors":
                                     self.assertEqual(len(figure.axes[0].patches),
                                                      4 if groups == "motifs" else 6)
-                                    np.testing.assert_allclose(
-                                        figure.get_size_inches(),
-                                        [3.78 if groups == "motifs" else 6.3, 1.6])
+                                    # Sized like learning_trajectory: identical for the
+                                    # motifs layout, same height and width per bar for all.
+                                    width, height = paper_plot._PRETRAINING_TRAJECTORY_FIGSIZE
+                                    if groups != "motifs":
+                                        width *= 6 / paper_plot._RULE_VECTORS_MOTIFS_EXTENT
+                                    np.testing.assert_allclose(figure.get_size_inches(), [width, height])
                                     self.assertFalse(any(line.get_marker() == "."
                                              for line in figure.axes[0].lines))
                                     bars = [container for container in figure.axes[0].containers
@@ -113,12 +138,38 @@ class PretrainingGroupTests(unittest.TestCase):
                                     self.assertEqual(len(bars), len(figure.axes[0].patches))
                                     self.assertTrue(all(bar.errorbar is not None
                                             and bar.errorbar.has_yerr for bar in bars))
+                                    # The motifs layout opens a gap between the two
+                                    # pairs (bars at 0, 1, 2 + gap, 3 + gap) and draws
+                                    # the divider in its middle.
+                                    divider_x = 1.5 + paper_plot._RULE_VECTORS_PAIR_GAP / 2
+                                    # One two-line label per bar, all in one row.
+                                    texts = [label.get_text() for label in figure.axes[0].get_xticklabels()]
+                                    partners = (["DelayAnti", "DelayPro", "MemoryPro", "MemoryPro"]
+                                                if groups == "motifs" else
+                                                ["DelayAnti", "DelayAnti", "DelayPro", "DelayPro",
+                                                 "MemoryPro", "MemoryPro"])
+                                    self.assertEqual(
+                                        texts, [f"MemoryAnti\n↔ {partner}" for partner in partners])
+                                    self.assertTrue(all(
+                                        label.get_fontsize() == paper_plot._RULE_VECTORS_TICK_FONTSIZE
+                                        for label in figure.axes[0].get_xticklabels()))
+                                    self.assertEqual(figure.axes[0].get_xlabel(), "")
                                     dividers = [line for line in figure.axes[0].lines
                                                 if len(line.get_xdata()) == 2
-                                                and np.allclose(line.get_xdata(), [1.5, 1.5])]
+                                                and np.allclose(line.get_xdata(), [divider_x] * 2)]
                                     self.assertEqual(len(dividers), int(groups == "motifs"))
+                                    bar_x = sorted(patch.get_x() + patch.get_width() / 2
+                                                   for patch in figure.axes[0].patches)
                                     if dividers:
                                         np.testing.assert_array_equal(dividers[0].get_ydata(), [0, 1])
+                                        style = paper_plot._RULE_VECTORS_DIVIDER_STYLE
+                                        self.assertEqual(dividers[0].get_linewidth(), style["linewidth"])
+                                        self.assertEqual(dividers[0].get_color(), style["color"])
+                                        np.testing.assert_allclose(
+                                            bar_x, [0, 1, 2 + paper_plot._RULE_VECTORS_PAIR_GAP,
+                                                    3 + paper_plot._RULE_VECTORS_PAIR_GAP])
+                                    else:
+                                        np.testing.assert_allclose(bar_x, np.arange(len(bar_x)))
                             finally:
                                 paper_plot.plt.close(figure)
 
@@ -196,9 +247,16 @@ class PretrainingGroupTests(unittest.TestCase):
                     self.assertTrue(any(f"groups={expected}" in str(call)
                                         for call in output.call_args_list))
 
-    def test_cli_logs_selected_feature_for_default_and_mod2(self):
-        for arguments, bound in (([], "mb1"), (["--pretraining-bound", "mod2"], "mb2")):
-            with self.subTest(bound=bound), tempfile.TemporaryDirectory() as directory:
+    def test_cli_logs_selected_feature_for_bound_and_lambda(self):
+        cases = (
+            ([], "+hidden200+L21e3+batch128+angle"),
+            (["--pretraining-bound", "mod2"], "+hidden200+L21e3mb2+batch128+angle"),
+            (["--pretraining-lambda", "0.9"], "+hidden200+L21e3lam0.9+batch128+angle"),
+            (["--pretraining-bound", "mod2", "--pretraining-lambda", "0.9"],
+             "+hidden200+L21e3mb2lam0.9+batch128+angle"),
+        )
+        for arguments, feature in cases:
+            with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as directory:
                 figures = {"learning_trajectory": Mock()}
                 with patch.object(paper_plot, "FIGURES_BY_MODE", {"pretraining": figures}), \
                         patch.object(paper_plot, "ALL_FIGURES", figures), \
@@ -206,9 +264,19 @@ class PretrainingGroupTests(unittest.TestCase):
                         patch("sys.argv", ["paper_plot.py", "--only", "learning_trajectory", *arguments]), \
                         patch("builtins.print") as output:
                     paper_plot.main()
-                feature = paper_plot._PRETRAINING_BOUND_ADDONS[bound]
+                self.assertEqual(paper_plot.PRETRAINING_ADDON_NAME, feature)
                 self.assertTrue(any(f"feature={feature};" in str(call)
                                     for call in output.call_args_list))
+
+    def test_cli_rejects_unknown_lambda(self):
+        figures = {"learning_trajectory": Mock()}
+        with patch.object(paper_plot, "FIGURES_BY_MODE", {"pretraining": figures}), \
+                patch.object(paper_plot, "ALL_FIGURES", figures), \
+                patch("sys.argv", ["paper_plot.py", "--only", "learning_trajectory",
+                                   "--pretraining-lambda", "0.95"]), \
+                patch("sys.stderr"), self.assertRaises(SystemExit):
+            paper_plot.main()
+        figures["learning_trajectory"].assert_not_called()
 
     def test_invalid_groups_are_rejected_before_dispatch(self):
         with self.assertRaises(ValueError):
