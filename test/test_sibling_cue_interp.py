@@ -652,11 +652,14 @@ class CueInterpPaperFigureTests(unittest.TestCase):
 
         figures = {Path(call.args[1]).name: call.args[0]
                    for call in save.call_args_list}
+        # The overlaid copy and its legend carry the `_cue_interp` suffix, so
+        # the plain figure names are untouched.
         self.assertEqual(set(figures), {
-            "multitask_delaydm_long_delay_endpoint_legend.png",
-            "multitask_delaydm_long_delay_endpoint_emodulation.png",
+            "multitask_delaydm_long_delay_endpoint_legend_cue_interp.png",
+            "multitask_delaydm_long_delay_endpoint_emodulation_cue_interp.png",
             "multitask_delaydm_long_delay_endpoint_hidden.png"})
-        overlaid = figures["multitask_delaydm_long_delay_endpoint_emodulation.png"]
+        overlaid = figures[
+            "multitask_delaydm_long_delay_endpoint_emodulation_cue_interp.png"]
         plain = figures["multitask_delaydm_long_delay_endpoint_hidden.png"]
         for fig in (overlaid, plain):
             self.addCleanup(paper_plot.plt.close, fig)
@@ -671,7 +674,8 @@ class CueInterpPaperFigureTests(unittest.TestCase):
         for ax in plain.axes:
             self.assertFalse(
                 [line for line in ax.lines if line.get_linestyle() == ":"])
-        legend = figures["multitask_delaydm_long_delay_endpoint_legend.png"]
+        legend = figures[
+            "multitask_delaydm_long_delay_endpoint_legend_cue_interp.png"]
         self.addCleanup(paper_plot.plt.close, legend)
         labels = [text.get_text() for text in legend.legends[0].get_texts()]
         self.assertEqual(len(labels), 4)
@@ -680,7 +684,38 @@ class CueInterpPaperFigureTests(unittest.TestCase):
         extra = [call.kwargs.get("extra", "") for call in save.call_args_list]
         self.assertTrue(any("cue sweep overlaid: 3 alphas" in text
                             for text in extra))
-        self.assertTrue(any("no cue sweep" in text for text in extra))
+
+    def test_driver_saves_the_plain_figure_and_an_overlaid_copy(self):
+        base_data = {"representations": {}}
+        marker = object()
+
+        def load(path, hint=""):
+            return base_data if "long_delay_endpoint" in path.name else None
+
+        def overlay(family, plot_name):
+            return marker if plot_name == "e_modulation" else None
+
+        with patch.object(paper_plot, "_load_pkl_or_skip", side_effect=load), \
+                patch.object(paper_plot, "_cue_interp_endpoint_overlay",
+                             side_effect=overlay), \
+                patch.object(
+                    paper_plot,
+                    "_plot_multitask_long_delay_endpoint_representation",
+                ) as render:
+            paper_plot.plot_multitask_delaydm_fixed_point_geometry()
+
+        calls = [(call.args[1], call.args[3], call.kwargs.get("cue_sweep"))
+                 for call in render.call_args_list]
+        # Per family: plain e_modulation, overlaid e_modulation, plain hidden
+        # (no sweep for hidden, so no second copy).
+        self.assertEqual(calls, [
+            ("delaydm1", "e_modulation", None),
+            ("delaydm1", "e_modulation", marker),
+            ("delaydm1", "hidden", None),
+            ("dmcgo", "e_modulation", None),
+            ("dmcgo", "e_modulation", marker),
+            ("dmcgo", "hidden", None),
+        ])
 
     def test_endpoint_plane_comes_from_the_base_endpoint_projection(self):
         with tempfile.TemporaryDirectory() as directory:

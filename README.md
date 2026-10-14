@@ -451,12 +451,15 @@ figure's plane: the configured plane for gradient, the best task-specific pair
 for endpoints. Colors follow the alpha ramp of SCHEME family 5 (dark at alpha =
 0, light at alpha = 1; filled = converged, hollow = not; endpoints always
 filled). When the endpoint sweep is cached, the base endpoint figure
-(`multitask_{delaydm,dmcgo}_long_delay_endpoint_{emodulation,hidden}`) also
-overlays each sweep trial's path across alpha in its two planes: hue stays
-with the stimulus direction, the alpha = 0 start takes the base rule's marker
-(small, filled), the alpha = 1 end the sibling's marker, hollow, with dots at
-the intermediate alphas along a dotted path; the legend gains one entry per
-sweep direction. The sweep always runs together with the method's base
+(`multitask_{delaydm,dmcgo}_long_delay_endpoint_{emodulation,hidden}`) is
+saved unchanged and a second copy with the `_cue_interp` suffix
+(`..._long_delay_endpoint_{emodulation,hidden}_cue_interp`, legend
+`..._long_delay_endpoint_legend_cue_interp`) overlays each sweep trial's path
+across alpha in the same two planes: hue stays with the stimulus direction,
+the alpha = 0 start takes the base rule's marker (small, filled), the alpha =
+1 end the sibling's marker, hollow, with dots at the intermediate alphas
+along a dotted path; that legend gains one entry per sweep direction. The
+sweep always runs together with the method's base
 analysis, so rerunning a family regenerates its base artifacts from new random
 trials as well.
 

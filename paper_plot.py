@@ -8858,7 +8858,10 @@ def _plot_multitask_long_delay_endpoint_representation(
     `cue_sweep` is the family's long-delay rule-cue sweep as returned by
     `_cue_interp_endpoint_overlay` (the caller loads it); when given, each
     sweep trial's path across alpha is overlaid in the same plane
-    (`_draw_cue_interp_endpoint_overlay`) and the limits include its points."""
+    (`_draw_cue_interp_endpoint_overlay`), the limits include its points, and
+    the figure and its legend are saved under a `_cue_interp` suffix so the
+    plain figure keeps its name."""
+    name_suffix = "" if cue_sweep is None else "_cue_interp"
     entry = data.get("representations", {}).get(plot_name)
     if entry is None:
         print(f"  Skipped {family} long-delay {plot_name}: representation "
@@ -9009,15 +9012,15 @@ def _plot_multitask_long_delay_endpoint_representation(
             legend_fig,
             _multitask_out(
                 f"{_MULTITASK_SIBLING_OUTPUT_NAMES[family]}_long_delay_endpoint_"
-                "legend.png"))
+                f"legend{name_suffix}.png"))
     fig.tight_layout(w_pad=1.5)
-    overlay_note = ("; no cue sweep" if overlay is None else
+    overlay_note = ("" if overlay is None else
                     f"; cue sweep overlaid: {alphas.size} alphas, bases {list(sweeps)}")
     _save_fig(
         fig,
         _multitask_out(
             f"{_MULTITASK_SIBLING_OUTPUT_NAMES[family]}_long_delay_endpoint_"
-            f"{output_suffix}.png"),
+            f"{output_suffix}{name_suffix}.png"),
         extra=(f"  (default PC1-PC2; best PC{best_pc_x}-PC{best_pc_y}; "
                f"metric={metric_name}; score={score:.3f}{overlay_note})"))
     return True
@@ -9061,9 +9064,15 @@ def plot_multitask_delaydm_fixed_point_geometry():
         for plot_name, output_suffix in (
                 ("e_modulation", "emodulation"),
                 ("hidden", "hidden")):
+            # The plain figure first, then, when the rule-cue sweep is
+            # cached, a second copy with the sweep overlaid (`_cue_interp`).
             _plot_multitask_long_delay_endpoint_representation(
-                data, family, rules, plot_name, output_suffix,
-                cue_sweep=_cue_interp_endpoint_overlay(family, plot_name))
+                data, family, rules, plot_name, output_suffix)
+            cue_sweep = _cue_interp_endpoint_overlay(family, plot_name)
+            if cue_sweep is not None:
+                _plot_multitask_long_delay_endpoint_representation(
+                    data, family, rules, plot_name, output_suffix,
+                    cue_sweep=cue_sweep)
 
 
 # ─── Rule-cue interpolation between the sibling rules ────────────────────────

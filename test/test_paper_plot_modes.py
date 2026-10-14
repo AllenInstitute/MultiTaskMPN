@@ -427,7 +427,11 @@ class PaperPlotModeTests(unittest.TestCase):
 
     def test_two_in_multiple_renders_both_sibling_families(self):
         loaded = {"representations": {}}
+        # No rule-cue sweep: a cached sweep on disk would add an overlaid copy
+        # per representation (covered by test_sibling_cue_interp).
         with patch.object(paper_plot, "_load_pkl_or_skip", return_value=loaded) as load, \
+                patch.object(paper_plot, "_cue_interp_endpoint_overlay",
+                             return_value=None), \
                 patch.object(
                     paper_plot,
                     "_plot_multitask_sibling_fixed_point_geometry_representation",
