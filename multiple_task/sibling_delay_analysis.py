@@ -20,7 +20,6 @@ generated very-long delay as the fixed-point proxy and save its sampled path.
 Both methods finish with a rule-cue interpolation sweep between the two
 sibling rules (``--cue-interp-n-alpha``; the multi-task analog of the two-task
 pro<->anti sweep), projected onto the method's joint delay basis.
-``--cue-interp-only`` adds that sweep to an already cached run.
 """
 import copy
 import gc
@@ -200,38 +199,24 @@ def _artifact_method(path):
     return None
 
 
-def is_cue_interp_artifact(path):
-    """Whether a sibling artifact belongs to the rule-cue interpolation sweep."""
-    return "_cue_interp_" in Path(path).name
-
-
-def _clean_stale_sibling_artifacts(save_dir, families, method=None,
-                                   cue_interp_only=False):
+def _clean_stale_sibling_artifacts(save_dir, families, method=None):
     """Remove selected-family outputs owned by one method plus shared files.
 
     ``method=None`` retains the legacy behavior of removing every artifact for
     the selected families. A method-specific run preserves results produced by
-    the other fixed-point method. ``cue_interp_only`` removes only that
-    method's rule-cue interpolation artifacts, leaving the base analysis (and
-    the PCA basis the sweep is projected onto) untouched.
+    the other fixed-point method.
     """
     save_dir = Path(save_dir)
     families = _validate_families(families)
     if method is not None and method not in SIBLING_METHODS:
         raise ValueError(f"unknown sibling method {method!r}; choose from "
                          f"{SIBLING_METHODS}")
-    if cue_interp_only and method is None:
-        raise ValueError("cue_interp_only cleanup needs an explicit method")
-
-    def _stale(path):
-        if not (path.is_file() and is_sibling_artifact(path, families)):
-            return False
-        owner = _artifact_method(path)
-        if cue_interp_only:
-            return is_cue_interp_artifact(path) and owner == method
-        return method is None or owner in (None, method)
-
-    stale = sorted(path for path in save_dir.iterdir() if _stale(path))
+    stale = sorted(
+        path for path in save_dir.iterdir()
+        if (path.is_file()
+            and is_sibling_artifact(path, families)
+            and (method is None or _artifact_method(path) in (None, method)))
+    )
     for path in stale:
         path.unlink()
 
@@ -249,15 +234,12 @@ def _run_sibling_family(*, aname, save_name, save_dir, family, method,
                         model, device,
                         task_params, train_params, net_params,
                         converted_task_params, W_fp,
-                        cue_interp_n_alpha=SIBLING_CUE_INTERP_N_ALPHA,
-                        cue_interp_only=False):
+                        cue_interp_n_alpha=SIBLING_CUE_INTERP_N_ALPHA):
     """Analyze one pair of sibling tasks using a loaded multi-task network.
 
     The base analysis (shared PCA bases plus the method's per-rule fixed
     points or long-delay endpoints) runs first; the rule-cue interpolation
-    sweep then projects onto the joint basis it produced. ``cue_interp_only``
-    skips the base analysis and requires that basis to exist already, so the
-    sweep can be added to a cached run without regenerating its trials.
+    sweep then projects onto the joint basis it produced.
     ``cue_interp_n_alpha <= 0`` disables the sweep.
     """
     rules = list(SIBLING_FAMILIES[family])
@@ -269,20 +251,11 @@ def _run_sibling_family(*, aname, save_name, save_dir, family, method,
         "train_params": train_params,
         "net_params": net_params,
     }
-    if cue_interp_only:
-        basis_path = _delay_pca_path(
-            save_dir, aname, family, rules, "joint", method)
-        if not basis_path.exists():
-            raise FileNotFoundError(
-                f"{basis_path} is missing; run --method {method} without "
-                "--cue-interp-only first so the sweep has a basis to project "
-                "onto")
-    else:
-        _run_sibling_family_base(
-            aname=aname, save_name=save_name, save_dir=save_dir,
-            family=family, rules=rules, method=method, model=model,
-            device=device, cfg_fp=cfg_fp,
-            converted_task_params=converted_task_params, W_fp=W_fp)
+    _run_sibling_family_base(
+        aname=aname, save_name=save_name, save_dir=save_dir,
+        family=family, rules=rules, method=method, model=model,
+        device=device, cfg_fp=cfg_fp,
+        converted_task_params=converted_task_params, W_fp=W_fp)
     if int(cue_interp_n_alpha) > 0:
         _run_cue_interp(
             aname=aname, save_dir=save_dir, family=family, rules=rules,
@@ -421,20 +394,16 @@ def _run_sibling_family_base(*, aname, save_name, save_dir, family, rules,
 
 
 def run_sibling_analysis(seed, feature, families, method,
-                         cue_interp_n_alpha=SIBLING_CUE_INTERP_N_ALPHA,
-                         cue_interp_only=False):
+                         cue_interp_n_alpha=SIBLING_CUE_INTERP_N_ALPHA):
     """Run selected sibling analyses without clustering or lesion experiments.
 
     ``cue_interp_n_alpha`` sets the rule-cue interpolation grid (``n + 1``
-    alphas; 0 disables the sweep). ``cue_interp_only`` adds or refreshes only
-    that sweep for a run whose ``method`` analysis is already cached.
+    alphas; 0 disables the sweep).
     """
     families = _validate_families(families)
     if method not in SIBLING_METHODS:
         raise ValueError(f"unknown sibling method {method!r}; choose from "
                          f"{SIBLING_METHODS}")
-    if cue_interp_only and int(cue_interp_n_alpha) <= 0:
-        raise ValueError("cue_interp_only needs cue_interp_n_alpha > 0")
     aname = build_aname(seed, feature)
     result_path = Path("multiple_tasks") / f"param_{aname}_result.npz"
     param_path = Path("multiple_tasks") / f"param_{aname}_param.json"
@@ -451,8 +420,7 @@ def run_sibling_analysis(seed, feature, families, method,
     save_name = f"{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}"
     save_dir = SIBLING_ANALYSIS_DIR / save_name
     save_dir.mkdir(parents=True, exist_ok=True)
-    _clean_stale_sibling_artifacts(save_dir, families, method=method,
-                                   cue_interp_only=cue_interp_only)
+    _clean_stale_sibling_artifacts(save_dir, families, method=method)
 
     add_safe_globals([np.core.multiarray._reconstruct])
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
@@ -476,9 +444,7 @@ def run_sibling_analysis(seed, feature, families, method,
     for family in families:
         rules = SIBLING_FAMILIES[family]
         print(f"\n{'=' * 70}\n[sibling] family {family} "
-              f"({' + '.join(rules)}) | method={method}"
-              f"{' | cue-interp only' if cue_interp_only else ''}"
-              f"\n{'=' * 70}", flush=True)
+              f"({' + '.join(rules)}) | method={method}\n{'=' * 70}", flush=True)
         try:
             _run_sibling_family(
                 aname=aname, save_dir=save_dir, family=family, method=method,
@@ -486,8 +452,7 @@ def run_sibling_analysis(seed, feature, families, method,
                 model=model, device=device, task_params=task_params,
                 train_params=train_params, net_params=net_params,
                 converted_task_params=converted_task_params, W_fp=W_fp,
-                cue_interp_n_alpha=cue_interp_n_alpha,
-                cue_interp_only=cue_interp_only)
+                cue_interp_n_alpha=cue_interp_n_alpha)
         except Exception as exc:
             failures.append((family, exc))
             print(f"  [{family}] family failed: {exc}")
@@ -2064,11 +2029,6 @@ def build_arg_parser():
               "rules, swept with the selected method after its base analysis "
               f"(N + 1 alphas in [0, 1]; default {SIBLING_CUE_INTERP_N_ALPHA}; "
               "0 disables the sweep)."))
-    parser.add_argument(
-        "--cue-interp-only", action="store_true",
-        help=("Add or refresh only the rule-cue interpolation sweep for a run "
-              "whose selected-method analysis is already cached; the base "
-              "artifacts and their PCA basis are left untouched."))
     return parser
 
 
@@ -2076,8 +2036,7 @@ def main(argv=None):
     args = build_arg_parser().parse_args(argv)
     run_sibling_analysis(
         args.seed, args.feature, args.families, args.method,
-        cue_interp_n_alpha=args.cue_interp_n_alpha,
-        cue_interp_only=args.cue_interp_only)
+        cue_interp_n_alpha=args.cue_interp_n_alpha)
 
 
 if __name__ == "__main__":

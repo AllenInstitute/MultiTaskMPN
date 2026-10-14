@@ -65,11 +65,10 @@ python multiple_task/sibling_delay_analysis.py \
   --method long_delay_endpoint
 
 # both methods end with a rule-cue interpolation sweep between the two sibling
-# rules (--cue-interp-n-alpha N gives N + 1 alphas, default 10; 0 disables it);
-# add only that sweep to a run whose method analysis is already cached
+# rules (--cue-interp-n-alpha N gives N + 1 alphas, default 10; 0 disables it)
 python multiple_task/sibling_delay_analysis.py \
   --seed 408 --feature L21e4 --families delaydm1 dmcgo \
-  --method long_delay_endpoint --cue-interp-only
+  --method long_delay_endpoint
 python paper_plot.py --only sibling_cue_interp
 
 # additional state-space analysis
@@ -456,9 +455,9 @@ overlays each sweep trial's path across alpha in its two planes: hue stays
 with the stimulus direction, the alpha = 0 start takes the base rule's marker
 (small, filled), the alpha = 1 end the sibling's marker, hollow, with dots at
 the intermediate alphas along a dotted path; the legend gains one entry per
-sweep direction. `--cue-interp-only` adds the sweep to a cached run without
-touching its base artifacts, which otherwise are regenerated from new random
-trials.
+sweep direction. The sweep always runs together with the method's base
+analysis, so rerunning a family regenerates its base artifacts from new random
+trials as well.
 
 Both `pretrain/pretraining_analysis.py` and `pretrain/pretraining_post.py` write
 analysis data to `pretraining_analysis/`, pooled figures to `pretrain/fig/`, and

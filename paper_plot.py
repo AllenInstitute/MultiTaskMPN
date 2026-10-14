@@ -9304,8 +9304,7 @@ def plot_multitask_sibling_cue_interp():
             data = _load_pkl_or_skip(
                 path,
                 _multitask_sibling_hint(family, method)
-                + " (its rule-cue sweep writes this file; add "
-                  "--cue-interp-only for a cached run).")
+                + " (its rule-cue sweep writes this file).")
             if data is None:
                 continue
             if data.get("kind") != "cue_interp":

@@ -148,38 +148,9 @@ class CueInterpArtifactTests(unittest.TestCase):
             for path in (endpoint_sweep, endpoint_proj):
                 self.assertEqual(
                     sibling._artifact_method(path), "long_delay_endpoint")
-                self.assertTrue(sibling.is_cue_interp_artifact(path))
             for path in (gradient_sweep, gradient_proj):
                 self.assertEqual(sibling._artifact_method(path), "gradient")
-                self.assertTrue(sibling.is_cue_interp_artifact(path))
             self.assertTrue(sibling.is_sibling_artifact(gradient_sweep))
-            self.assertFalse(sibling.is_cue_interp_artifact(
-                root / "delaydm1_long_delay_endpoints_run.pkl"))
-
-    def test_cue_interp_only_cleanup_keeps_the_base_analysis(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            base_files = [
-                root / "delaydm1_long_delay_endpoints_run.pkl",
-                root / "delaydm1_long_delay_endpoint_delay_trajectory_pca_run.pkl",
-                root / "fixed_points_grad_run_delaydm1.pkl",
-                root / "delaydm1_cue_interp_fixed_points_run.pkl",
-                root / "dmcgo_cue_interp_long_delay_endpoints_run.pkl",
-            ]
-            sweep_files = list(sibling.cue_interp_artifact_paths(
-                root, "run", "delaydm1", "long_delay_endpoint"))
-            for path in base_files + sweep_files:
-                path.touch()
-
-            removed = sibling._clean_stale_sibling_artifacts(
-                root, ("delaydm1",), method="long_delay_endpoint",
-                cue_interp_only=True)
-
-            self.assertEqual(set(removed), set(sweep_files))
-            self.assertTrue(all(path.exists() for path in base_files))
-            with self.assertRaises(ValueError):
-                sibling._clean_stale_sibling_artifacts(
-                    root, ("delaydm1",), cue_interp_only=True)
 
     def test_full_method_cleanup_also_removes_the_methods_sweep(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -202,21 +173,17 @@ class CueInterpArtifactTests(unittest.TestCase):
             "--method", "long_delay_endpoint"])
         self.assertEqual(args.cue_interp_n_alpha,
                          sibling.SIBLING_CUE_INTERP_N_ALPHA)
-        self.assertFalse(args.cue_interp_only)
         args = parser.parse_args([
             "--seed", "408", "--feature", "L21e4", "--families", "dmcgo",
-            "--method", "gradient", "--cue-interp-n-alpha", "4",
-            "--cue-interp-only"])
+            "--method", "gradient", "--cue-interp-n-alpha", "4"])
         self.assertEqual(args.cue_interp_n_alpha, 4)
-        self.assertTrue(args.cue_interp_only)
         with patch.object(sibling, "run_sibling_analysis") as run:
             sibling.main([
                 "--seed", "408", "--feature", "L21e4", "--families", "dmcgo",
-                "--method", "gradient", "--cue-interp-only"])
+                "--method", "gradient"])
         run.assert_called_once_with(
             408, "L21e4", ["dmcgo"], "gradient",
-            cue_interp_n_alpha=sibling.SIBLING_CUE_INTERP_N_ALPHA,
-            cue_interp_only=True)
+            cue_interp_n_alpha=sibling.SIBLING_CUE_INTERP_N_ALPHA)
 
 
 class CueInterpEndpointSweepTests(unittest.TestCase):
@@ -521,33 +488,6 @@ class CueInterpProjectionTests(unittest.TestCase):
 
 
 class CueInterpFamilyWiringTests(unittest.TestCase):
-    def test_cue_interp_only_requires_the_methods_basis(self):
-        with tempfile.TemporaryDirectory() as directory, \
-                patch.object(sibling, "_run_sibling_family_base") as base, \
-                patch.object(sibling, "_run_cue_interp") as sweep:
-            with self.assertRaisesRegex(FileNotFoundError,
-                                        "--cue-interp-only"):
-                sibling._run_sibling_family(
-                    aname="run", save_name="save", save_dir=Path(directory),
-                    family="delaydm1", method="gradient", model=None,
-                    device=None, task_params={}, train_params={},
-                    net_params={}, converted_task_params={}, W_fp=None,
-                    cue_interp_only=True)
-            base.assert_not_called()
-            sweep.assert_not_called()
-
-            (Path(directory) / "delaydm1_delay_trajectory_pca_run.pkl").touch()
-            sibling._run_sibling_family(
-                aname="run", save_name="save", save_dir=Path(directory),
-                family="delaydm1", method="gradient", model=None,
-                device=None, task_params={}, train_params={},
-                net_params={}, converted_task_params={}, W_fp=None,
-                cue_interp_n_alpha=4, cue_interp_only=True)
-            base.assert_not_called()
-            sweep.assert_called_once()
-            self.assertEqual(sweep.call_args.kwargs["n_alpha"], 4)
-            self.assertEqual(sweep.call_args.kwargs["method"], "gradient")
-
     def test_base_analysis_precedes_the_sweep_and_zero_alphas_disable_it(self):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(sibling, "_run_sibling_family_base") as base, \
@@ -556,11 +496,15 @@ class CueInterpFamilyWiringTests(unittest.TestCase):
                 aname="run", save_name="save", save_dir=Path(directory),
                 family="dmcgo", method="long_delay_endpoint", model=None,
                 device=None, task_params={}, train_params={},
-                net_params={}, converted_task_params={}, W_fp=None)
+                net_params={}, converted_task_params={}, W_fp=None,
+                cue_interp_n_alpha=4)
             base.assert_called_once()
             sweep.assert_called_once()
             self.assertEqual(sweep.call_args.kwargs["rules"],
                              ["dmcgo", "dmcnogo"])
+            self.assertEqual(sweep.call_args.kwargs["n_alpha"], 4)
+            self.assertEqual(sweep.call_args.kwargs["method"],
+                             "long_delay_endpoint")
             base.reset_mock()
             sweep.reset_mock()
             sibling._run_sibling_family(
