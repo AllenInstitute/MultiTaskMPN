@@ -65,7 +65,7 @@ python multiple_task/sibling_delay_analysis.py \
   --method long_delay_endpoint
 
 # both methods end with a rule-cue interpolation sweep between the two sibling
-# rules (--cue-interp-n-alpha N gives N + 1 alphas, default 10; 0 disables it)
+# rules (11 alphas, fixed by SIBLING_CUE_INTERP_N_ALPHA)
 python multiple_task/sibling_delay_analysis.py \
   --seed 408 --feature L21e4 --families delaydm1 dmcgo \
   --method long_delay_endpoint
@@ -433,8 +433,9 @@ of the two-task pro/anti interpolation for the two sibling families
 `multiple_task/sibling_delay_analysis.py` runs the sweep after each method's
 base analysis: the stimulus is held at one base rule's trials while its
 one-hot rule cue fades out and the sibling's fades in,
-`x_alpha = x_base + alpha * (e_sibling - e_base)`, over `--cue-interp-n-alpha`
-+ 1 alphas (default 11). The two-task sweep mixed whole trials, which is a cue
+`x_alpha = x_base + alpha * (e_sibling - e_base)`, over the 11 alphas 0.0,
+0.1, ..., 1.0 fixed by `SIBLING_CUE_INTERP_N_ALPHA` (no CLI option; the
+two-task sweep uses the same grid). The two-task sweep mixed whole trials, which is a cue
 mix only because pro and anti share their stimulus; the DelayDM rules present
 their stimulus on different modalities, so only the cue channels move here and
 both rules serve as base in turn (`SIBLING_CUE_INTERP_BASE_RULES`), whereas

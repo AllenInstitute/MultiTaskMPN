@@ -18,8 +18,9 @@ Select ``--method long_delay_endpoint`` instead to use the final state of a
 generated very-long delay as the fixed-point proxy and save its sampled path.
 
 Both methods finish with a rule-cue interpolation sweep between the two
-sibling rules (``--cue-interp-n-alpha``; the multi-task analog of the two-task
-pro<->anti sweep), projected onto the method's joint delay basis.
+sibling rules (``SIBLING_CUE_INTERP_N_ALPHA`` + 1 alphas; the multi-task
+analog of the two-task pro<->anti sweep), projected onto the method's joint
+delay basis.
 """
 import copy
 import gc
@@ -123,7 +124,8 @@ SIBLING_LONG_DELAY_PCA_SEEDS = tuple(range(10))
 # spaced alphas in [0, 1]. alpha = 0 is the base rule's own trial; alpha = 1
 # shows the base rule's stimulus under the sibling's cue, an input the network
 # never saw in training. Both sibling methods run the sweep: the long-delay
-# endpoint proxy and the gradient fixed-point solve.
+# endpoint proxy and the gradient fixed-point solve. The grid is fixed here
+# (no CLI option), matching the two-task sweep's 0.0, 0.1, ..., 1.0.
 SIBLING_CUE_INTERP_N_ALPHA = 10
 # Base rules whose trials supply the stimulus. The two DelayDM rules present
 # their stimulus on different modalities, so each direction of the sweep asks
@@ -233,14 +235,13 @@ def _clean_stale_sibling_artifacts(save_dir, families, method=None):
 def _run_sibling_family(*, aname, save_name, save_dir, family, method,
                         model, device,
                         task_params, train_params, net_params,
-                        converted_task_params, W_fp,
-                        cue_interp_n_alpha=SIBLING_CUE_INTERP_N_ALPHA):
+                        converted_task_params, W_fp):
     """Analyze one pair of sibling tasks using a loaded multi-task network.
 
     The base analysis (shared PCA bases plus the method's per-rule fixed
     points or long-delay endpoints) runs first; the rule-cue interpolation
-    sweep then projects onto the joint basis it produced.
-    ``cue_interp_n_alpha <= 0`` disables the sweep.
+    sweep (SIBLING_CUE_INTERP_N_ALPHA + 1 alphas) then projects onto the joint
+    basis it produced.
     """
     rules = list(SIBLING_FAMILIES[family])
     if method not in SIBLING_METHODS:
@@ -256,17 +257,19 @@ def _run_sibling_family(*, aname, save_name, save_dir, family, method,
         family=family, rules=rules, method=method, model=model,
         device=device, cfg_fp=cfg_fp,
         converted_task_params=converted_task_params, W_fp=W_fp)
-    if int(cue_interp_n_alpha) > 0:
-        _run_cue_interp(
-            aname=aname, save_dir=save_dir, family=family, rules=rules,
-            method=method, model=model, device=device, cfg_fp=cfg_fp,
-            converted_task_params=converted_task_params, W_fp=W_fp,
-            n_alpha=int(cue_interp_n_alpha))
+    _run_cue_interp(
+        aname=aname, save_dir=save_dir, family=family, rules=rules,
+        method=method, model=model, device=device, cfg_fp=cfg_fp,
+        converted_task_params=converted_task_params, W_fp=W_fp)
 
 
 def _run_cue_interp(*, aname, save_dir, family, rules, method, model, device,
-                    cfg_fp, converted_task_params, W_fp, n_alpha):
-    """Run the rule-cue interpolation sweep with the selected method."""
+                    cfg_fp, converted_task_params, W_fp):
+    """Run the rule-cue interpolation sweep with the selected method.
+
+    Grid and solver budgets are passed explicitly (as for the per-rule
+    solves) so the module-level settings are read at call time."""
+    n_alpha = SIBLING_CUE_INTERP_N_ALPHA
     print(f"  [cue-interp/{family}] method={method}, "
           f"{n_alpha + 1} alphas, base rules "
           f"{list(SIBLING_CUE_INTERP_BASE_RULES[family])}", flush=True)
@@ -275,8 +278,6 @@ def _run_cue_interp(*, aname, save_dir, family, rules, method, model, device,
             aname, save_dir, family, rules, model, device,
             converted_task_params, W_fp, layer_index=1, n_alpha=n_alpha)
     else:
-        # Budgets are passed explicitly (as for the per-rule solves) so the
-        # module-level settings are read at call time.
         sweep_path = solve_cue_interp_fixed_points(
             aname, save_dir, family, rules, model, device, cfg_fp, W_fp,
             layer_index=1, n_alpha=n_alpha,
@@ -393,13 +394,8 @@ def _run_sibling_family_base(*, aname, save_name, save_dir, family, rules,
             "PC projection was not generated")
 
 
-def run_sibling_analysis(seed, feature, families, method,
-                         cue_interp_n_alpha=SIBLING_CUE_INTERP_N_ALPHA):
-    """Run selected sibling analyses without clustering or lesion experiments.
-
-    ``cue_interp_n_alpha`` sets the rule-cue interpolation grid (``n + 1``
-    alphas; 0 disables the sweep).
-    """
+def run_sibling_analysis(seed, feature, families, method):
+    """Run selected sibling analyses without clustering or lesion experiments."""
     families = _validate_families(families)
     if method not in SIBLING_METHODS:
         raise ValueError(f"unknown sibling method {method!r}; choose from "
@@ -451,8 +447,7 @@ def run_sibling_analysis(seed, feature, families, method,
                 save_name=save_name,
                 model=model, device=device, task_params=task_params,
                 train_params=train_params, net_params=net_params,
-                converted_task_params=converted_task_params, W_fp=W_fp,
-                cue_interp_n_alpha=cue_interp_n_alpha)
+                converted_task_params=converted_task_params, W_fp=W_fp)
         except Exception as exc:
             failures.append((family, exc))
             print(f"  [{family}] family failed: {exc}")
@@ -2022,21 +2017,12 @@ def build_arg_parser():
         help=("Fixed-point method to run. 'gradient' runs the optimizer-based "
               "solver; 'long_delay_endpoint' runs very-long-delay trials and "
               "uses the last delay state. Only the selected method is run."))
-    parser.add_argument(
-        "--cue-interp-n-alpha", type=int, default=SIBLING_CUE_INTERP_N_ALPHA,
-        metavar="N",
-        help=("Rule-cue interpolation intervals between the two sibling "
-              "rules, swept with the selected method after its base analysis "
-              f"(N + 1 alphas in [0, 1]; default {SIBLING_CUE_INTERP_N_ALPHA}; "
-              "0 disables the sweep)."))
     return parser
 
 
 def main(argv=None):
     args = build_arg_parser().parse_args(argv)
-    run_sibling_analysis(
-        args.seed, args.feature, args.families, args.method,
-        cue_interp_n_alpha=args.cue_interp_n_alpha)
+    run_sibling_analysis(args.seed, args.feature, args.families, args.method)
 
 
 if __name__ == "__main__":

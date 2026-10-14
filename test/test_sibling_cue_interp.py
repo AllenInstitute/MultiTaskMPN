@@ -166,24 +166,19 @@ class CueInterpArtifactTests(unittest.TestCase):
             self.assertEqual(removed, [gradient_sweep])
             self.assertTrue(endpoint_sweep.exists())
 
-    def test_cli_exposes_the_cue_interp_options(self):
+    def test_cli_has_no_cue_interp_options(self):
         parser = sibling.build_arg_parser()
-        args = parser.parse_args([
-            "--seed", "408", "--feature", "L21e4", "--families", "delaydm1",
-            "--method", "long_delay_endpoint"])
-        self.assertEqual(args.cue_interp_n_alpha,
-                         sibling.SIBLING_CUE_INTERP_N_ALPHA)
-        args = parser.parse_args([
-            "--seed", "408", "--feature", "L21e4", "--families", "dmcgo",
-            "--method", "gradient", "--cue-interp-n-alpha", "4"])
-        self.assertEqual(args.cue_interp_n_alpha, 4)
+        option_strings = {
+            option for action in parser._actions
+            for option in action.option_strings}
+        self.assertFalse(
+            {option for option in option_strings if "cue" in option})
+        self.assertEqual(sibling.SIBLING_CUE_INTERP_N_ALPHA, 10)
         with patch.object(sibling, "run_sibling_analysis") as run:
             sibling.main([
                 "--seed", "408", "--feature", "L21e4", "--families", "dmcgo",
                 "--method", "gradient"])
-        run.assert_called_once_with(
-            408, "L21e4", ["dmcgo"], "gradient",
-            cue_interp_n_alpha=sibling.SIBLING_CUE_INTERP_N_ALPHA)
+        run.assert_called_once_with(408, "L21e4", ["dmcgo"], "gradient")
 
 
 class CueInterpEndpointSweepTests(unittest.TestCase):
@@ -488,33 +483,44 @@ class CueInterpProjectionTests(unittest.TestCase):
 
 
 class CueInterpFamilyWiringTests(unittest.TestCase):
-    def test_base_analysis_precedes_the_sweep_and_zero_alphas_disable_it(self):
+    def test_base_analysis_precedes_the_sweep(self):
+        calls = []
         with tempfile.TemporaryDirectory() as directory, \
-                patch.object(sibling, "_run_sibling_family_base") as base, \
-                patch.object(sibling, "_run_cue_interp") as sweep:
+                patch.object(sibling, "_run_sibling_family_base",
+                             side_effect=lambda **kw: calls.append("base")), \
+                patch.object(sibling, "_run_cue_interp",
+                             side_effect=lambda **kw: calls.append(
+                                 ("sweep", kw["method"], kw["rules"]))):
             sibling._run_sibling_family(
                 aname="run", save_name="save", save_dir=Path(directory),
                 family="dmcgo", method="long_delay_endpoint", model=None,
                 device=None, task_params={}, train_params={},
-                net_params={}, converted_task_params={}, W_fp=None,
-                cue_interp_n_alpha=4)
-            base.assert_called_once()
-            sweep.assert_called_once()
-            self.assertEqual(sweep.call_args.kwargs["rules"],
-                             ["dmcgo", "dmcnogo"])
-            self.assertEqual(sweep.call_args.kwargs["n_alpha"], 4)
-            self.assertEqual(sweep.call_args.kwargs["method"],
-                             "long_delay_endpoint")
-            base.reset_mock()
-            sweep.reset_mock()
-            sibling._run_sibling_family(
-                aname="run", save_name="save", save_dir=Path(directory),
-                family="dmcgo", method="long_delay_endpoint", model=None,
-                device=None, task_params={}, train_params={},
-                net_params={}, converted_task_params={}, W_fp=None,
-                cue_interp_n_alpha=0)
-            base.assert_called_once()
-            sweep.assert_not_called()
+                net_params={}, converted_task_params={}, W_fp=None)
+        self.assertEqual(calls, [
+            "base", ("sweep", "long_delay_endpoint", ["dmcgo", "dmcnogo"])])
+
+    def test_sweep_runner_uses_the_fixed_grid_and_budgets(self):
+        with patch.object(sibling, "extract_cue_interp_long_delay_endpoints",
+                          return_value="sweep.pkl") as endpoints, \
+                patch.object(sibling, "solve_cue_interp_fixed_points",
+                             return_value="sweep.pkl") as gradient, \
+                patch.object(sibling, "save_cue_interp_pc_projections") as save:
+            for method in ("long_delay_endpoint", "gradient"):
+                sibling._run_cue_interp(
+                    aname="run", save_dir=Path("out"), family="delaydm1",
+                    rules=list(RULES), method=method, model=None, device=None,
+                    cfg_fp={}, converted_task_params={}, W_fp=None)
+        self.assertEqual(endpoints.call_args.kwargs["n_alpha"],
+                         sibling.SIBLING_CUE_INTERP_N_ALPHA)
+        self.assertEqual(gradient.call_args.kwargs["n_alpha"],
+                         sibling.SIBLING_CUE_INTERP_N_ALPHA)
+        self.assertEqual(gradient.call_args.kwargs["steps"],
+                         sibling.SIBLING_FIXED_POINT_STEPS)
+        self.assertEqual(gradient.call_args.kwargs["lbfgs_steps"],
+                         sibling.SIBLING_CUE_INTERP_LBFGS_STEPS)
+        self.assertEqual(
+            [call.args[-1] for call in save.call_args_list],
+            ["long_delay_endpoint", "gradient"])
 
 
 class CueInterpPaperFigureTests(unittest.TestCase):
