@@ -108,6 +108,16 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
         self.assertEqual([text.get_text() for text in legend_box.get_texts()], ["Bin median, IQR"])
         self.assertEqual(axis.get_xlabel(), f"{tuning_word} correlation")
         self.assertIn("Lesion similarity", axis.get_ylabel())
+        self.assertEqual(axis.get_box_aspect(), 1)            # square axes box, shared style
+        # Round tick steps and short labels: at most two decimals, no trailing zeros.
+        figure.canvas.draw()
+        for tick_axis in (axis.xaxis, axis.yaxis):
+            labels = [label.get_text() for label in tick_axis.get_ticklabels()]
+            self.assertTrue(all(len(label.split(".")[-1]) <= 2 if "." in label else True
+                                for label in labels), labels)
+            self.assertFalse(any(label.endswith("0") and "." in label for label in labels), labels)
+        self.assertEqual([paper_plot._short_tick(v) for v in (0.4, 0.80, 1.0, -0.5, 0.0, 0.75)],
+                         ["0.4", "0.8", "1", "-0.5", "0", "0.75"])
         self.assertLessEqual(len(axis.get_yticks()), paper_plot._STAT_SCATTER_MAX_TICKS + 1)
         np.testing.assert_array_equal(points[0].get_sizes(),
                                       [paper_plot._SCATTER_POINT_STYLE["s"]])

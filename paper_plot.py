@@ -826,8 +826,16 @@ _SCATTER_POINT_STYLE = dict(color=_SCATTER_POINT_COLOR, edgecolors="k", linewidt
 _TREND_LINE_STYLE = dict(color=_TREND_LINE_COLOR, linewidth=1.2, zorder=4)
 # Dense scatters (hundreds of points, e.g. OM vs lesion) fade their dots.
 _DENSE_SCATTER_ALPHA = 0.45
-# Small panels keep a few ticks per axis.
-_STAT_SCATTER_MAX_TICKS = 4
+# Small panels keep a few ticks per axis: at most this many tick intervals.
+# Five, not four, so a 0 to 0.9 axis can take the 0.2 step (0, 0.2, ..., 0.8)
+# instead of falling back to 0 and 0.5 only once 0.25-type steps are barred.
+_STAT_SCATTER_MAX_TICKS = 5
+
+
+def _short_tick(value, _position=None):
+    """Tick label with at most two decimals and no trailing zeros: 0.4, 0.8, 1."""
+    text = f"{value:.2f}".rstrip("0").rstrip(".")
+    return "0" if text in ("-0", "") else text
 
 
 def _invisible_legend_handle():
@@ -844,9 +852,11 @@ def _stat_scatter(ax, x, y, legend_text, *, trend_line=None, xlabel="", ylabel="
     spanning the data, and the statistics text as a frameless legend above the
     axes - the only place a 2 in panel can hold it without hiding points. With
     `legend_handles` (e.g. a median connector) the text becomes the legend
-    title and the handles its entries. Spines, label sizes and tick counts are
-    set here so the figures cannot drift apart; axis limits are left to the
-    caller.
+    title and the handles its entries. Spines, label sizes, tick counts and a
+    square axes box (set_box_aspect(1): the data ranges differ between axes,
+    so the box, not the data, is kept square, and panels with legends of
+    different heights still line up) are set here so the figures cannot drift
+    apart; axis limits are left to the caller.
     """
     style = dict(_SCATTER_POINT_STYLE)
     if point_alpha is not None:
@@ -864,11 +874,16 @@ def _stat_scatter(ax, x, y, legend_text, *, trend_line=None, xlabel="", ylabel="
         _legend(ax, [_invisible_legend_handle()], [legend_text], handlelength=0,
                 handletextpad=0, **placement)
     ax.spines[["top", "right"]].set_visible(False)
+    ax.set_box_aspect(1)
     ax.set_xlabel(xlabel, fontsize=label_fontsize)
     ax.set_ylabel(ylabel, fontsize=label_fontsize)
     ax.tick_params(labelsize=7)
-    ax.xaxis.set_major_locator(mticker.MaxNLocator(_STAT_SCATTER_MAX_TICKS))
-    ax.yaxis.set_major_locator(mticker.MaxNLocator(_STAT_SCATTER_MAX_TICKS))
+    # Round tick steps only (1, 2, 5 x a power of ten: 0.2, 0.5, 2 ...), never
+    # the 0.25-type steps that put 0.75 on a correlation axis, and labels with
+    # trailing zeros dropped (0.4, 0.8, 1).
+    for axis in (ax.xaxis, ax.yaxis):
+        axis.set_major_locator(mticker.MaxNLocator(_STAT_SCATTER_MAX_TICKS, steps=[1, 2, 5, 10]))
+        axis.set_major_formatter(mticker.FuncFormatter(_short_tick))
 
 
 def _relabel_tb_name(name):
@@ -2526,7 +2541,8 @@ def plot_state_space_dist_angle():
              else f"nominal p = {p_value:.3f}")
         _stat_scatter(ax, x, y, f"r = {r_value:.2f}\n{p_str}",
                       trend_line={"slope": slope, "intercept": intercept},
-                      xlabel="Distance between initial conditions",
+                      # Two lines: the square axes box is narrower than the label.
+                      xlabel="Distance between\ninitial conditions",
                       ylabel="Angle between first step\nof trajectories (deg.)")
         # The statistics sit above the axes, so the panel title goes higher.
         ax.set_title(title, fontsize=9, pad=22)
@@ -3580,7 +3596,7 @@ def plot_om_vs_lesion():
     # Hundreds of points: fade them so the median connector stays readable.
     _stat_scatter(ax1, om_vals, lesion_diffs, f"{_rho_str}\n{_pp_str}",
                   legend_handles=[median_line], point_alpha=_DENSE_SCATTER_ALPHA,
-                  xlabel="Over-membership", ylabel="Lesion profile L1 distance")
+                  xlabel="Over-membership", ylabel="Lesion-effect\ndistance (L1)")
     ax1.set_ylim(bottom=0)
     fig1.tight_layout()
     out_path1 = _multitask_out("om_vs_lesion_scatter.png")
@@ -4264,8 +4280,10 @@ def plot_causal_vs_activity():
         _stat_scatter(ax, entry["x"], entry["y"],
                       _rank_association_label(entry["association"], unit="tasks"),
                       trend_line=entry["trend_line"],
-                      xlabel=f"Similarity: {_CAUSAL_VS_ACTIVITY_SIDE_LABELS[side].lower()}",
-                      ylabel="Similarity: lesion profiles")
+                      # Two lines each: the square axes box is about 1.1 in wide,
+                      # narrower than either label on one line.
+                      xlabel=f"Similarity:\n{_CAUSAL_VS_ACTIVITY_SIDE_LABELS[side].lower()}",
+                      ylabel="Similarity:\nlesion profiles")
         fig.tight_layout()
         _save_fig(fig, _multitask_out(f"causal_vs_activity_tasks_{side}.png"),
                   extra=f" [{LESION_ANAME}] {entry['n_tasks']} tasks")
