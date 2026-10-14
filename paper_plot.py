@@ -9142,17 +9142,20 @@ def _cue_interp_sweep_arrays(sweep, context):
     return proj, good
 
 
-# Memory clusters of the DMC sweep, for coloring its lines. The plain DMC
-# endpoint figure separates two clusters that cut across task and stimulus
-# (`sibling_delay_analysis._dmc_category_labels`): A = DMCGo stimuli 0-3 with
-# DMCNoGo stimuli 4-7, B = the complement; both encode the category that will
-# require a response. A sweep line is colored by the cluster its base trial
-# (alpha = 0) belongs to, so the swap under the sibling's cue is visible.
-# Categorical colors from c_vals (SCHEME family 4); the markers keep the alpha
-# ramp, so hue on the line and hue on the markers carry different things.
+# Line colors of the sweep figures follow the clusters of each family's plain
+# endpoint figure, while the markers keep the alpha ramp, so hue on the line
+# and hue on the markers carry different things.
+#   DMC: the plain figure separates two memory clusters that cut across task
+#   and stimulus (`sibling_delay_analysis._dmc_category_labels`): A = DMCGo
+#   stimuli 0-3 with DMCNoGo stimuli 4-7, B = the complement; both encode the
+#   category that will require a response. A line takes the cluster of its
+#   base trial (alpha = 0), categorical c_vals colors (SCHEME family 4), so
+#   the swap under the sibling's cue is visible.
+#   DelayDM: the plain figure's clusters are the stimulus directions, so a
+#   line takes its direction's rainbow color (family 1), as the endpoints do.
 _CUE_INTERP_CLUSTER_COLORS = {1: c_vals[1], 0: c_vals[2]}   # A blue, B green
 _CUE_INTERP_CLUSTER_NAMES = {1: "A", 0: "B"}
-_DMC_N_STIM = 8      # the task generator's fixed DMC stimulus locations
+_SIBLING_N_STIM = 8      # the task generator's eight stimulus directions
 
 
 def _cue_interp_sweep_groups(family, rules, base_rule, sweep):
@@ -9167,8 +9170,18 @@ def _cue_interp_sweep_groups(family, rules, base_rule, sweep):
         return None
     stim = np.asarray(sweep["stim_idx"], dtype=int)
     base_task = list(rules).index(base_rule)
-    half = max(_DMC_N_STIM, int(stim.max()) + 1) // 2
+    half = max(_SIBLING_N_STIM, int(stim.max()) + 1) // 2
     return ((base_task == 0) == (stim < half)).astype(int)
+
+
+def _cue_interp_line_colors(groups, sweep):
+    """One line color per sweep point: the memory cluster when the family has
+    clusters (`groups`), else the stimulus direction's rainbow color."""
+    if groups is not None:
+        return [_CUE_INTERP_CLUSTER_COLORS[int(label)] for label in groups]
+    stim = np.asarray(sweep["stim_idx"], dtype=int)
+    n_stim = max(_SIBLING_N_STIM, int(stim.max()) + 1)
+    return [stim_color(int(s), n_stim) for s in stim]
 
 
 def _cue_interp_cluster_handles(groups_by_sweep):
@@ -9183,23 +9196,22 @@ def _cue_interp_cluster_handles(groups_by_sweep):
             for label in present]
 
 
-def _draw_cue_interp_sweep(ax, alphas, y, good, z=None, groups=None):
+def _draw_cue_interp_sweep(ax, alphas, y, good, z=None, line_colors=None):
     """Trace every stimulus condition across alpha on `ax`.
 
-    `y` (and `z` for a 3D axes) are (n_alpha, n_points). Lines take the ramp's
-    mid tone so the markers carry the gradient, or, when `groups` gives a
-    cluster label per point, that cluster's categorical color; each alpha's
-    markers take the ramp color at that alpha, filled when converged and
-    hollow otherwise.
+    `y` (and `z` for a 3D axes) are (n_alpha, n_points). Each line takes its
+    entry of `line_colors` (cluster or stimulus direction, see
+    `_cue_interp_line_colors`), or the ramp's mid tone when none are given;
+    each alpha's markers take the ramp color at that alpha, filled when
+    converged and hollow otherwise.
     """
     t = _alpha_ramp_norm(alphas)
-    mid_col = _alpha_ramp_color(0.5)
+    if line_colors is None:
+        line_colors = [_alpha_ramp_color(0.5)] * y.shape[1]
     for s in range(y.shape[1]):
         coords = (alphas, y[:, s]) if z is None else (alphas, y[:, s], z[:, s])
-        line_col = (mid_col if groups is None
-                    else _CUE_INTERP_CLUSTER_COLORS[int(groups[s])])
-        ax.plot(*coords, "-", color=line_col, linewidth=1.1,
-                alpha=0.5 if groups is None else 0.75, zorder=2)
+        ax.plot(*coords, "-", color=line_colors[s], linewidth=1.1, alpha=0.75,
+                zorder=2)
     for ai in range(alphas.size):
         col = _alpha_ramp_color(t[ai])
         x_at = np.full(y.shape[1], alphas[ai])
@@ -9238,9 +9250,10 @@ def _render_multitask_cue_interp_2d(entry, alphas, family, method, pair,
     """x = alpha, y = one Joint Delay PC; rows are the plane's two PCs and
     columns the base rules whose stimulus is held (two for DelayDM, one for
     DMC). Limits are shared across columns per PC so the two stimulus bases
-    are directly comparable; the 3D view below uses the same plane. DMC lines
-    are colored by their base trial's memory cluster
-    (`_cue_interp_sweep_groups`)."""
+    are directly comparable; the 3D view below uses the same plane. Lines are
+    colored by the plain endpoint figure's clusters: the base trial's memory
+    cluster for DMC, the stimulus direction for DelayDM
+    (`_cue_interp_line_colors`)."""
     _ensure_out_dir()
     rules = _MULTITASK_SIBLING_FAMILIES[family] if rules is None else rules
     sweeps = entry["sweeps"]
@@ -9262,8 +9275,10 @@ def _render_multitask_cue_interp_2d(entry, alphas, family, method, pair,
             ax = axs[row, col]
             proj, good = _cue_interp_sweep_arrays(
                 sweep, f"{family}/cue-interp/{method}/{base_rule}")
-            _draw_cue_interp_sweep(ax, alphas, proj[:, :, index], good,
-                                   groups=groups_by_sweep[base_rule])
+            _draw_cue_interp_sweep(
+                ax, alphas, proj[:, :, index], good,
+                line_colors=_cue_interp_line_colors(
+                    groups_by_sweep[base_rule], sweep))
             ax.set_xlim(alphas.min() - xpad, alphas.max() + xpad)
             ax.set_ylim(*ylim)
             ax.set_xticks([alphas.min(), alphas.max()])
@@ -9293,7 +9308,8 @@ def _render_multitask_cue_interp_2d(entry, alphas, family, method, pair,
                 loc="best", handletextpad=0.4, handlelength=1.4)
     fig.get_layout_engine().set(w_pad=0.005, h_pad=0.005, hspace=0.15,
                                 wspace=0.05)
-    cluster_note = ("" if all(g is None for g in groups_by_sweep.values())
+    cluster_note = ("; lines colored by stimulus direction"
+                    if all(g is None for g in groups_by_sweep.values())
                     else "; lines colored by alpha = 0 cluster")
     _save_fig(fig, out_path,
               extra=(f"  ({method}; Joint Delay PC{pc_x}-PC{pc_y}, {plane_note}; "
@@ -9323,7 +9339,9 @@ def _render_multitask_cue_interp_3d(entry, alphas, family, method, pair,
             sweep, f"{family}/cue-interp/{method}/{base_rule}")
         _draw_cue_interp_sweep(
             ax, alphas, proj[:, :, bx], good, z=proj[:, :, by],
-            groups=_cue_interp_sweep_groups(family, rules, base_rule, sweep))
+            line_colors=_cue_interp_line_colors(
+                _cue_interp_sweep_groups(family, rules, base_rule, sweep),
+                sweep))
         ax.set_xlim(alphas.min(), alphas.max())
         ax.set_ylim(*ylim)
         ax.set_zlim(*zlim)

@@ -788,7 +788,9 @@ class CueInterpPaperFigureTests(unittest.TestCase):
         self.assertTrue(all("Cluster" in label for label in labels))
         self.assertIn("alpha = 0 cluster", save.call_args.kwargs["extra"])
 
-        # DelayDM keeps the ramp's mid tone on every line and no cluster legend.
+        # DelayDM has no memory clusters: its lines take the stimulus
+        # direction's rainbow color (stim_idx 0 and 1 in the fixture) and
+        # there is no cluster legend.
         delaydm = self._projection("long_delay_endpoint", RULES)
         with patch.object(paper_plot, "_ensure_out_dir"), \
                 patch.object(paper_plot, "SHOW_LEGEND", True), \
@@ -799,12 +801,14 @@ class CueInterpPaperFigureTests(unittest.TestCase):
                 "test")
         fig = save.call_args.args[0]
         self.addCleanup(paper_plot.plt.close, fig)
-        mid = paper_plot.mpl.colors.to_hex(paper_plot._alpha_ramp_color(0.5))
+        rainbow = {paper_plot.mpl.colors.to_hex(paper_plot.stim_color(k, 8))
+                   for k in (0, 1)}
         for ax in fig.axes:
             self.assertEqual(
                 {paper_plot.mpl.colors.to_hex(line.get_color())
-                 for line in ax.lines}, {mid})
+                 for line in ax.lines}, rainbow)
         self.assertIsNone(fig.axes[0].get_legend())
+        self.assertIn("stimulus direction", save.call_args.kwargs["extra"])
 
     def test_endpoint_plane_comes_from_the_base_endpoint_projection(self):
         with tempfile.TemporaryDirectory() as directory:
