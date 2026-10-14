@@ -16,6 +16,11 @@ Run one or both families without rerunning clustering or lesion analysis::
 
 Select ``--method long_delay_endpoint`` instead to use the final state of a
 generated very-long delay as the fixed-point proxy and save its sampled path.
+
+Both methods finish with a rule-cue interpolation sweep between the two
+sibling rules (``--cue-interp-n-alpha``; the multi-task analog of the two-task
+pro<->anti sweep), projected onto the method's joint delay basis.
+``--cue-interp-only`` adds that sweep to an already cached run.
 """
 import copy
 import gc
@@ -35,7 +40,13 @@ import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import helper
 import mpn
 import mpn_tasks
-from grad_fixed_points import solve_period_modulation_fixed_points
+from fixed_point import find_modulation_fixed_points
+from grad_fixed_points import (
+    DEFAULT_REL_TOL_UNDAMPED,
+    build_dense_stimulus_template,
+    derive_fixed_point_views,
+    solve_period_modulation_fixed_points,
+)
 from sibling_geometry import best_task_specific_pc_pair
 
 __all__ = [
@@ -43,17 +54,26 @@ __all__ = [
     "SIBLING_ANALYSIS_DIR",
     "DELAY_PCA_SCOPES",
     "SIBLING_METHODS",
+    "SIBLING_CUE_INTERP_BASE_RULES",
+    "SIBLING_CUE_INTERP_N_ALPHA",
     "SIBLING_FIXED_POINT_N_SEEDS",
     "SIBLING_FIXED_POINT_STEPS",
     "SIBLING_NORMAL_GPU_BATCH_SIZE",
     "SIBLING_NORMAL_TRIALS_PER_RULE",
     "SIBLING_LONG_DELAY_TRAJECTORY_SAMPLES",
     "build_aname",
+    "cue_channel_indices",
+    "cue_interp_alphas",
+    "cue_interp_artifact_paths",
+    "cue_interpolated_inputs",
+    "extract_cue_interp_long_delay_endpoints",
     "extract_long_delay_endpoints",
     "is_sibling_artifact",
     "run_sibling_analysis",
+    "save_cue_interp_pc_projections",
     "save_long_delay_endpoint_pc_projections",
     "save_sibling_fixed_point_pc_projections",
+    "solve_cue_interp_fixed_points",
     "stream_normal_delay_analysis",
 ]
 
@@ -96,6 +116,28 @@ SIBLING_LONG_DELAY_TRAJECTORY_SAMPLES = 51
 # Long-delay analysis uses conventional sklearn PCA with randomized SVD so
 # reproducible seeds can be compared by the family's task-specific metric.
 SIBLING_LONG_DELAY_PCA_SEEDS = tuple(range(10))
+
+# Rule-cue interpolation between the two sibling rules (the multi-task analog
+# of the two-task pro<->anti sweep). The stimulus is held at one BASE rule's
+# trials while that rule's cue channel fades out and the sibling's fades in,
+# x_alpha = x_base + alpha * (e_sibling - e_base), over N_ALPHA + 1 evenly
+# spaced alphas in [0, 1]. alpha = 0 is the base rule's own trial; alpha = 1
+# shows the base rule's stimulus under the sibling's cue, an input the network
+# never saw in training. Both sibling methods run the sweep: the long-delay
+# endpoint proxy and the gradient fixed-point solve.
+SIBLING_CUE_INTERP_N_ALPHA = 10
+# Base rules whose trials supply the stimulus. The two DelayDM rules present
+# their stimulus on different modalities, so each direction of the sweep asks
+# a different question and both are run. DMCGo and DMCNoGo share one stimulus
+# structure (aligned RNG gives identical inputs apart from the cue), so the
+# sweep from DMCGo already covers the reverse direction mirrored in alpha.
+SIBLING_CUE_INTERP_BASE_RULES = {
+    "delaydm1": ("delaydm1", "delaydm2"),
+    "dmcgo": ("dmcgo",),
+}
+# L-BFGS polishing after the Adam phase of each cue-interpolation solve; the
+# Adam budget is SIBLING_FIXED_POINT_STEPS, as for the per-rule solves.
+SIBLING_CUE_INTERP_LBFGS_STEPS = 2000
 
 # Match the multi-task plotting palette in the input/output sanity figure.
 _TRACE_COLORS = [
@@ -151,30 +193,45 @@ def _artifact_method(path):
             return "long_delay_endpoint"
         return "gradient"
     if (name.startswith("fixed_points_grad_")
+            or "_cue_interp_fixed_points" in name
             or "_delay_pc_projections" in name
             or "_delay_pc_gallery" in name):
         return "gradient"
     return None
 
 
-def _clean_stale_sibling_artifacts(save_dir, families, method=None):
+def is_cue_interp_artifact(path):
+    """Whether a sibling artifact belongs to the rule-cue interpolation sweep."""
+    return "_cue_interp_" in Path(path).name
+
+
+def _clean_stale_sibling_artifacts(save_dir, families, method=None,
+                                   cue_interp_only=False):
     """Remove selected-family outputs owned by one method plus shared files.
 
     ``method=None`` retains the legacy behavior of removing every artifact for
     the selected families. A method-specific run preserves results produced by
-    the other fixed-point method.
+    the other fixed-point method. ``cue_interp_only`` removes only that
+    method's rule-cue interpolation artifacts, leaving the base analysis (and
+    the PCA basis the sweep is projected onto) untouched.
     """
     save_dir = Path(save_dir)
     families = _validate_families(families)
     if method is not None and method not in SIBLING_METHODS:
         raise ValueError(f"unknown sibling method {method!r}; choose from "
                          f"{SIBLING_METHODS}")
-    stale = sorted(
-        path for path in save_dir.iterdir()
-        if (path.is_file()
-            and is_sibling_artifact(path, families)
-            and (method is None or _artifact_method(path) in (None, method)))
-    )
+    if cue_interp_only and method is None:
+        raise ValueError("cue_interp_only cleanup needs an explicit method")
+
+    def _stale(path):
+        if not (path.is_file() and is_sibling_artifact(path, families)):
+            return False
+        owner = _artifact_method(path)
+        if cue_interp_only:
+            return is_cue_interp_artifact(path) and owner == method
+        return method is None or owner in (None, method)
+
+    stale = sorted(path for path in save_dir.iterdir() if _stale(path))
     for path in stale:
         path.unlink()
 
@@ -191,9 +248,75 @@ def _clean_stale_sibling_artifacts(save_dir, families, method=None):
 def _run_sibling_family(*, aname, save_name, save_dir, family, method,
                         model, device,
                         task_params, train_params, net_params,
-                        converted_task_params, W_fp):
-    """Analyze one pair of sibling tasks using a loaded multi-task network."""
+                        converted_task_params, W_fp,
+                        cue_interp_n_alpha=SIBLING_CUE_INTERP_N_ALPHA,
+                        cue_interp_only=False):
+    """Analyze one pair of sibling tasks using a loaded multi-task network.
+
+    The base analysis (shared PCA bases plus the method's per-rule fixed
+    points or long-delay endpoints) runs first; the rule-cue interpolation
+    sweep then projects onto the joint basis it produced. ``cue_interp_only``
+    skips the base analysis and requires that basis to exist already, so the
+    sweep can be added to a cached run without regenerating its trials.
+    ``cue_interp_n_alpha <= 0`` disables the sweep.
+    """
     rules = list(SIBLING_FAMILIES[family])
+    if method not in SIBLING_METHODS:
+        raise ValueError(f"unknown sibling method {method!r}; choose from "
+                         f"{SIBLING_METHODS}")
+    cfg_fp = {
+        "task_params": task_params,
+        "train_params": train_params,
+        "net_params": net_params,
+    }
+    if cue_interp_only:
+        basis_path = _delay_pca_path(
+            save_dir, aname, family, rules, "joint", method)
+        if not basis_path.exists():
+            raise FileNotFoundError(
+                f"{basis_path} is missing; run --method {method} without "
+                "--cue-interp-only first so the sweep has a basis to project "
+                "onto")
+    else:
+        _run_sibling_family_base(
+            aname=aname, save_name=save_name, save_dir=save_dir,
+            family=family, rules=rules, method=method, model=model,
+            device=device, cfg_fp=cfg_fp,
+            converted_task_params=converted_task_params, W_fp=W_fp)
+    if int(cue_interp_n_alpha) > 0:
+        _run_cue_interp(
+            aname=aname, save_dir=save_dir, family=family, rules=rules,
+            method=method, model=model, device=device, cfg_fp=cfg_fp,
+            converted_task_params=converted_task_params, W_fp=W_fp,
+            n_alpha=int(cue_interp_n_alpha))
+
+
+def _run_cue_interp(*, aname, save_dir, family, rules, method, model, device,
+                    cfg_fp, converted_task_params, W_fp, n_alpha):
+    """Run the rule-cue interpolation sweep with the selected method."""
+    print(f"  [cue-interp/{family}] method={method}, "
+          f"{n_alpha + 1} alphas, base rules "
+          f"{list(SIBLING_CUE_INTERP_BASE_RULES[family])}", flush=True)
+    if method == "long_delay_endpoint":
+        sweep_path = extract_cue_interp_long_delay_endpoints(
+            aname, save_dir, family, rules, model, device,
+            converted_task_params, W_fp, layer_index=1, n_alpha=n_alpha)
+    else:
+        # Budgets are passed explicitly (as for the per-rule solves) so the
+        # module-level settings are read at call time.
+        sweep_path = solve_cue_interp_fixed_points(
+            aname, save_dir, family, rules, model, device, cfg_fp, W_fp,
+            layer_index=1, n_alpha=n_alpha,
+            steps=SIBLING_FIXED_POINT_STEPS,
+            lbfgs_steps=SIBLING_CUE_INTERP_LBFGS_STEPS)
+    save_cue_interp_pc_projections(
+        aname, save_dir, family, rules, sweep_path, method)
+
+
+def _run_sibling_family_base(*, aname, save_name, save_dir, family, rules,
+                             method, model, device, cfg_fp,
+                             converted_task_params, W_fp):
+    """Shared PCA bases plus the method's per-rule fixed points or endpoints."""
     task_params_family = copy.deepcopy(converted_task_params)
     task_params_family["rules"] = rules
     task_params_family["hp"]["batch_size_train"] = SIBLING_NORMAL_TRIALS_PER_RULE
@@ -262,15 +385,6 @@ def _run_sibling_family(*, aname, save_name, save_dir, family, method,
                 basis_scope=basis_scope)
         return
 
-    if method != "gradient":
-        raise ValueError(f"unknown sibling method {method!r}; choose from "
-                         f"{SIBLING_METHODS}")
-
-    cfg_fp = {
-        "task_params": task_params,
-        "train_params": train_params,
-        "net_params": net_params,
-    }
     solved_rules = []
     failed_rules = []
     for rule in rules:
@@ -306,12 +420,21 @@ def _run_sibling_family(*, aname, save_name, save_dir, family, method,
             "PC projection was not generated")
 
 
-def run_sibling_analysis(seed, feature, families, method):
-    """Run selected sibling analyses without clustering or lesion experiments."""
+def run_sibling_analysis(seed, feature, families, method,
+                         cue_interp_n_alpha=SIBLING_CUE_INTERP_N_ALPHA,
+                         cue_interp_only=False):
+    """Run selected sibling analyses without clustering or lesion experiments.
+
+    ``cue_interp_n_alpha`` sets the rule-cue interpolation grid (``n + 1``
+    alphas; 0 disables the sweep). ``cue_interp_only`` adds or refreshes only
+    that sweep for a run whose ``method`` analysis is already cached.
+    """
     families = _validate_families(families)
     if method not in SIBLING_METHODS:
         raise ValueError(f"unknown sibling method {method!r}; choose from "
                          f"{SIBLING_METHODS}")
+    if cue_interp_only and int(cue_interp_n_alpha) <= 0:
+        raise ValueError("cue_interp_only needs cue_interp_n_alpha > 0")
     aname = build_aname(seed, feature)
     result_path = Path("multiple_tasks") / f"param_{aname}_result.npz"
     param_path = Path("multiple_tasks") / f"param_{aname}_param.json"
@@ -328,7 +451,8 @@ def run_sibling_analysis(seed, feature, families, method):
     save_name = f"{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}"
     save_dir = SIBLING_ANALYSIS_DIR / save_name
     save_dir.mkdir(parents=True, exist_ok=True)
-    _clean_stale_sibling_artifacts(save_dir, families, method=method)
+    _clean_stale_sibling_artifacts(save_dir, families, method=method,
+                                   cue_interp_only=cue_interp_only)
 
     add_safe_globals([np.core.multiarray._reconstruct])
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
@@ -352,14 +476,18 @@ def run_sibling_analysis(seed, feature, families, method):
     for family in families:
         rules = SIBLING_FAMILIES[family]
         print(f"\n{'=' * 70}\n[sibling] family {family} "
-              f"({' + '.join(rules)}) | method={method}\n{'=' * 70}", flush=True)
+              f"({' + '.join(rules)}) | method={method}"
+              f"{' | cue-interp only' if cue_interp_only else ''}"
+              f"\n{'=' * 70}", flush=True)
         try:
             _run_sibling_family(
                 aname=aname, save_dir=save_dir, family=family, method=method,
                 save_name=save_name,
                 model=model, device=device, task_params=task_params,
                 train_params=train_params, net_params=net_params,
-                converted_task_params=converted_task_params, W_fp=W_fp)
+                converted_task_params=converted_task_params, W_fp=W_fp,
+                cue_interp_n_alpha=cue_interp_n_alpha,
+                cue_interp_only=cue_interp_only)
         except Exception as exc:
             failures.append((family, exc))
             print(f"  [{family}] family failed: {exc}")
@@ -1445,6 +1573,470 @@ def _dmc_category_labels(task_idx, stim_idx, n_stim):
                        for t, a in zip(task_idx, stim_idx)], dtype=int)
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# Rule-cue interpolation between the two sibling rules
+# ═════════════════════════════════════════════════════════════════════════════
+# The multi-task counterpart of the two-task pro<->anti sweep. There the whole
+# input of matched pro/anti trials was mixed, which amounts to mixing the cue
+# because the stimulus was identical. The DelayDM siblings present their
+# stimulus on different modalities, so mixing whole trials would also mix the
+# stimulus; here only the two one-hot cue channels move, and the stimulus is
+# held at the base rule's own trial.
+
+def cue_interp_alphas(n_alpha):
+    """``n_alpha + 1`` evenly spaced interpolation levels from 0 to 1."""
+    n_alpha = int(n_alpha)
+    if n_alpha < 1:
+        raise ValueError("cue interpolation needs at least one interval")
+    return np.linspace(0.0, 1.0, n_alpha + 1)
+
+
+def cue_channel_indices(converted_task_params, rules):
+    """Input channel of each rule's one-hot cue in the full multi-task layout.
+
+    The trial generator writes rule ``r`` at ``hp['rule_start'] +
+    hp['rules'].index(r)``, where ``hp['rules']`` is the network's complete
+    rule list even when a caller restricts the generated rules. The sweep edits
+    raw channels, so randomized inputs or stripped rule channels are refused.
+    """
+    hp = converted_task_params["hp"]
+    if converted_task_params.get("randomize_inputs"):
+        raise ValueError("cue interpolation needs raw (non-randomized) input "
+                         "channels")
+    if not hp.get("task_info", True):
+        raise ValueError("cue interpolation needs the rule-cue channels "
+                         "(task_info)")
+    all_rules = list(hp["rules"])
+    return tuple(int(hp["rule_start"]) + all_rules.index(rule)
+                 for rule in rules)
+
+
+def cue_interpolated_inputs(inputs, base_channel, target_channel, alpha,
+                            strength=1.0):
+    """``x + alpha * strength * (e_target - e_base)`` at every time step.
+
+    Works on NumPy arrays and torch tensors alike and never modifies
+    ``inputs``. At alpha = 0 the base rule's cue is intact; at alpha = 1 it has
+    been handed entirely to the target rule, while every other channel,
+    including the stimulus, is unchanged.
+    """
+    base_channel, target_channel = int(base_channel), int(target_channel)
+    if base_channel == target_channel:
+        raise ValueError("base and target cue channels must differ")
+    if not 0.0 <= float(alpha) <= 1.0:
+        raise ValueError(f"alpha must lie in [0, 1], got {alpha}")
+    shift = float(alpha) * float(strength)
+    shifted = inputs.clone() if torch.is_tensor(inputs) else np.array(
+        inputs, copy=True)
+    shifted[..., base_channel] = shifted[..., base_channel] - shift
+    shifted[..., target_channel] = shifted[..., target_channel] + shift
+    return shifted
+
+
+def _check_cue_channels(inputs, base_channel, target_channel, base_rule,
+                        target_rule, atol=1e-6):
+    """Confirm the base cue is on (1) and the target cue off (0) throughout."""
+    x = (inputs.detach().cpu().numpy() if torch.is_tensor(inputs)
+         else np.asarray(inputs))
+    base = x[..., base_channel]
+    target = x[..., target_channel]
+    if not np.allclose(base, 1.0, atol=atol):
+        raise ValueError(
+            f"{base_rule}: cue channel {base_channel} is not held at 1 in its "
+            f"own trials (range {base.min():.3g}..{base.max():.3g})")
+    if not np.allclose(target, 0.0, atol=atol):
+        raise ValueError(
+            f"{target_rule}: cue channel {target_channel} is not silent in "
+            f"{base_rule} trials (range {target.min():.3g}..{target.max():.3g})")
+
+
+def cue_interp_artifact_paths(save_dir, aname, addtask, method):
+    """(sweep pickle, PC-projection pickle) for one family and method.
+
+    The names carry the owning method's token so method-scoped cleanup keeps
+    attributing them: ``long_delay_endpoint`` for the endpoint proxy, and the
+    gradient pair ``_cue_interp_fixed_points`` /
+    ``_cue_interp_delay_pc_projections``.
+    """
+    save_dir = Path(save_dir)
+    if method == "long_delay_endpoint":
+        return (
+            save_dir / f"{addtask}_cue_interp_long_delay_endpoints_{aname}.pkl",
+            save_dir / (f"{addtask}_cue_interp_long_delay_endpoint_"
+                        f"pc_projections_{aname}.pkl"),
+        )
+    if method == "gradient":
+        return (
+            save_dir / f"{addtask}_cue_interp_fixed_points_{aname}.pkl",
+            save_dir / f"{addtask}_cue_interp_delay_pc_projections_{aname}.pkl",
+        )
+    raise ValueError(f"unknown sibling method {method!r}; choose from "
+                     f"{SIBLING_METHODS}")
+
+
+def _cue_interp_base_rules(addtask, rules, base_rules=None):
+    """Validated base rules of one family (configured unless overridden)."""
+    if base_rules is None:
+        base_rules = SIBLING_CUE_INTERP_BASE_RULES[addtask]
+    base_rules = tuple(base_rules)
+    if not base_rules:
+        raise ValueError(f"{addtask}: no base rules for the cue sweep")
+    unknown = [rule for rule in base_rules if rule not in rules]
+    if unknown:
+        raise ValueError(f"{addtask}: base rules {unknown} are not in {rules}")
+    if len(rules) != 2:
+        raise ValueError(f"expected two sibling rules, got {rules}")
+    return base_rules
+
+
+def extract_cue_interp_long_delay_endpoints(
+        aname, save_dir, addtask, rules, model, device,
+        converted_task_params, W, layer_index=1,
+        n_alpha=SIBLING_CUE_INTERP_N_ALPHA,
+        n_trials_per_rule=SIBLING_LONG_DELAY_TRIALS_PER_RULE,
+        base_rules=None):
+    """Sweep the rule cue on very-long-delay trials and keep each endpoint.
+
+    Fresh balanced long-delay trials are generated for both rules with aligned
+    RNG state, exactly as for the base endpoints. For each base rule its own
+    trials are rerun at every alpha with the cue shifted toward the sibling
+    (`cue_interpolated_inputs`), and the full-dimensional W⊙M and hidden state
+    at the end of ``delay1`` are kept per alpha. The network injects no noise,
+    so consecutive alphas differ only in the cue.
+    """
+    rules = list(rules)
+    base_rules = _cue_interp_base_rules(addtask, rules, base_rules)
+    alphas = cue_interp_alphas(n_alpha)
+    tp = copy.deepcopy(converted_task_params)
+    tp["rules"] = rules
+    tp["long_delay"] = "long"
+    tp["hp"]["batch_size_train"] = int(n_trials_per_rule)
+    data, extra = mpn_tasks.generate_trials_wrap(
+        tp, int(n_trials_per_rule), rules=rules, mode_input="random",
+        device="cpu", verbose=False, align_periods=True,
+        balanced_stimulus_directions=(addtask == "delaydm1"))
+    long_input = data[0]
+    _, trials, _ = extra
+    delay_start, delay_stop = _aligned_delay1_window(rules, trials)
+    channels = cue_channel_indices(tp, rules)
+
+    # The cue channels themselves say which rule each trial belongs to; the
+    # generator emits the rules in order, n_trials_per_rule each.
+    cue_values = long_input[:, 0, list(channels)].detach().cpu().numpy()
+    task_idx = np.argmax(cue_values, axis=1)
+    expected = np.repeat(np.arange(len(rules), dtype=int), int(n_trials_per_rule))
+    if not np.array_equal(task_idx, expected):
+        raise ValueError(f"{addtask}: unexpected aligned sibling task order")
+    stim_idx = np.concatenate([
+        np.asarray(trial.meta["stim1"], dtype=int).reshape(-1)
+        for trial in trials
+    ])
+    stimulus_magnitude = np.concatenate([
+        np.asarray(
+            trial.meta.get("stim1_strs", np.ones(int(n_trials_per_rule))),
+            dtype=float).reshape(-1)
+        for trial in trials
+    ])
+    if not (stim_idx.size == stimulus_magnitude.size == task_idx.size):
+        raise ValueError(
+            f"{addtask}: cue-sweep metadata length does not match trial count")
+
+    W = np.asarray(W, dtype=np.float32)
+    sweeps = {}
+    for base_rule in base_rules:
+        base = rules.index(base_rule)
+        target_rule = rules[1 - base]
+        selected = np.flatnonzero(task_idx == base)
+        x_base = long_input[selected].to(device)
+        _check_cue_channels(x_base, channels[base], channels[1 - base],
+                            base_rule, target_rule)
+        wm_by_alpha, hidden_by_alpha = [], []
+        for alpha in alphas:
+            x_alpha = cue_interpolated_inputs(
+                x_base, channels[base], channels[1 - base], alpha)
+            M, hidden = _run_to_delay_endpoint(
+                model, x_alpha, delay_stop, layer_index)
+            if tuple(M.shape[-2:]) != tuple(W.shape):
+                raise ValueError(f"{addtask}: endpoint M/W shapes disagree: "
+                                 f"{M.shape[-2:]} vs {W.shape}")
+            wm_by_alpha.append(
+                (M * W[None, :, :]).astype(np.float32, copy=False))
+            hidden_by_alpha.append(np.asarray(hidden, dtype=np.float32))
+            del x_alpha
+        sweeps[base_rule] = {
+            "target_rule": target_rule,
+            "base_cue_channel": int(channels[base]),
+            "target_cue_channel": int(channels[1 - base]),
+            "trial_index": selected,
+            "condition_idx": np.arange(selected.size, dtype=int),
+            "stim_idx": stim_idx[selected],
+            "stimulus_magnitude": stimulus_magnitude[selected],
+            "representations": {
+                # (n_alpha, n_trials, hidden, embed) and (n_alpha, n_trials, hidden)
+                "fixed_WM": np.stack(wm_by_alpha),
+                "fixed_hidden": np.stack(hidden_by_alpha),
+            },
+        }
+        print(f"  [{addtask}/cue-interp/{base_rule}] {alphas.size} alphas x "
+              f"{selected.size} long-delay trials, cue -> {target_rule}")
+        del x_base
+
+    artifact = {
+        "version": 1,
+        "kind": "cue_interp",
+        "method": "long_delay_endpoint",
+        "aname": aname,
+        "family": addtask,
+        "task_names": rules,
+        "alphas": alphas,
+        "base_rules": list(base_rules),
+        "cue_channels": {rule: int(ch) for rule, ch in zip(rules, channels)},
+        "cue_formula": "x_alpha = x_base + alpha * (e_target - e_base)",
+        "long_delay_setting": "long",
+        "delay_epoch": "delay1",
+        "delay_window": (int(delay_start), int(delay_stop)),
+        "delay_endpoint_index": int(delay_stop - 1),
+        "delay_steps": int(delay_stop - delay_start),
+        "delay_ms": int((delay_stop - delay_start) * tp["dt"]),
+        "balanced_stimulus_directions": addtask == "delaydm1",
+        "sweeps": sweeps,
+    }
+    out_path, _ = cue_interp_artifact_paths(
+        save_dir, aname, addtask, "long_delay_endpoint")
+    with open(out_path, "wb") as f:
+        pickle.dump(artifact, f)
+    print(f"  [{addtask}/cue-interp] saved long-delay endpoint sweep "
+          f"({artifact['delay_ms']} ms delay): {out_path}")
+    del long_input, data
+    return out_path
+
+
+def solve_cue_interp_fixed_points(
+        aname, save_dir, addtask, rules, model, device, cfg, W,
+        layer_index=1, n_alpha=SIBLING_CUE_INTERP_N_ALPHA, base_rules=None,
+        task_seed=0, steps=SIBLING_FIXED_POINT_STEPS, learning_rate=1e-3,
+        loss_tol=1e-8, lbfgs_steps=SIBLING_CUE_INTERP_LBFGS_STEPS,
+        rel_tol_undamped=DEFAULT_REL_TOL_UNDAMPED):
+    """Solve delay fixed points M* = F(M*; x_alpha) along the rule-cue sweep.
+
+    Each base rule reuses the dense-angle template of the per-rule gradient
+    solve (`build_dense_stimulus_template`: same task seed, eight directions,
+    the DelayDM magnitudes), one normal trial of the base rule replicated per
+    stimulus condition. At every alpha the cue is shifted toward the sibling,
+    the network is run to the end of ``delay1`` to seed the optimizer, and the
+    fixed point is solved under that alpha's mid-delay input. Convergence uses
+    the leak-normalized residual, as in the per-rule solve.
+    """
+    rules = list(rules)
+    base_rules = _cue_interp_base_rules(addtask, rules, base_rules)
+    alphas = cue_interp_alphas(n_alpha)
+    W = np.asarray(W, dtype=np.float32)
+    steps = int(steps)
+    sweeps = {}
+    cue_channels = None
+    for base_rule in base_rules:
+        base = rules.index(base_rule)
+        target_rule = rules[1 - base]
+        magnitudes = (DELAYDM_FP_STIM_MAGNITUDES
+                      if base_rule in ("delaydm1", "delaydm2") else (1.0,))
+        template = build_dense_stimulus_template(
+            cfg, base_rule, task_seed, SIBLING_FP_N_STIM, magnitudes,
+            device=device, periods=("longdelay",))
+        batch = template["batch"]
+        T = batch.shape[1]
+        ps, pe = template["period_win"]["longdelay"]
+        if not (0 <= ps < pe <= T):
+            raise ValueError(f"{base_rule}: invalid delay1 window {(ps, pe)} "
+                             f"for sequence length {T}")
+        channels = cue_channel_indices(template["task_params"], rules)
+        cue_channels = {rule: int(ch) for rule, ch in zip(rules, channels)}
+        _check_cue_channels(batch, channels[base], channels[1 - base],
+                            base_rule, target_rule)
+        t_seed = min(pe - 1, T - 1)
+        t_input = min((ps + pe) // 2, T - 1)
+        n_points = int(batch.shape[0])
+        print(f"  [{addtask}/cue-interp/{base_rule}] solving {n_points} fixed "
+              f"points at {alphas.size} alphas (delay1 {ps}:{pe}, seed step "
+              f"{t_seed}, input step {t_input}, cue -> {target_rule})")
+
+        collected = {key: [] for key in (
+            "fixed_WM", "fixed_hidden", "fixed_out_cos", "rel_step",
+            "rel_step_undamped", "is_fixed")}
+        rel_tol = None
+        for alpha in alphas:
+            x_alpha = cue_interpolated_inputs(
+                batch, channels[base], channels[1 - base], alpha)
+            x = torch.as_tensor(x_alpha, dtype=torch.float, device=device)
+            _, _, db = model.iterate_sequence_batch(
+                x, run_mode="track_states", save_to_cpu=True,
+                detach_saved=True)
+            init_M = np.asarray(db[f"M{layer_index}"])[:, t_seed, :, :]
+            del db, x
+            const_input = x_alpha[:, t_input, :]
+            fixed_M, _, final_speeds = find_modulation_fixed_points(
+                model, init_M, const_input, steps=steps,
+                learningRate=learning_rate,
+                printPeriod=max(steps // 20, 1), loss_tol=loss_tol,
+                lbfgs_steps=int(lbfgs_steps), device=device)
+            views = derive_fixed_point_views(
+                model, fixed_M, const_input, final_speeds, W, device,
+                rel_tol_undamped=rel_tol_undamped)
+            rel_tol = float(views["rel_tol"])
+            for key, values in collected.items():
+                values.append(np.asarray(views[key]))
+            print(f"  [{addtask}/cue-interp/{base_rule}] alpha={alpha:.2f}: "
+                  f"{int(views['is_fixed'].sum())}/{n_points} converged "
+                  f"(median normalized rel_step "
+                  f"{np.median(views['rel_step_undamped']):.2e})")
+
+        sweeps[base_rule] = {
+            "target_rule": target_rule,
+            "base_cue_channel": int(channels[base]),
+            "target_cue_channel": int(channels[1 - base]),
+            "stim_idx": np.asarray(template["stim"], dtype=int),
+            "stimulus_angle": np.asarray(template["stimulus_angle"], dtype=float),
+            "stimulus_magnitude": np.asarray(
+                template["stimulus_magnitude"], dtype=float),
+            "stim_channels": tuple(int(c) for c in template["stim_channels"]),
+            "task_seed": int(task_seed),
+            "period": (int(ps), int(pe)),
+            "t_seed": int(t_seed),
+            "t_input": int(t_input),
+            "representations": {
+                # (n_alpha, n_points, hidden, embed) and (n_alpha, n_points, hidden)
+                "fixed_WM": np.stack(collected["fixed_WM"]).astype(np.float32),
+                "fixed_hidden": np.stack(
+                    collected["fixed_hidden"]).astype(np.float32),
+            },
+            "fixed_out_cos": np.stack(
+                collected["fixed_out_cos"]).astype(np.float32),
+            "rel_step": np.stack(collected["rel_step"]).astype(float),
+            "rel_step_undamped": np.stack(
+                collected["rel_step_undamped"]).astype(float),
+            "is_fixed": np.stack(collected["is_fixed"]).astype(bool),
+            "rel_tol": rel_tol,
+            "rel_tol_undamped": float(rel_tol_undamped),
+        }
+
+    artifact = {
+        "version": 1,
+        "kind": "cue_interp",
+        "method": "gradient",
+        "aname": aname,
+        "family": addtask,
+        "task_names": rules,
+        "alphas": alphas,
+        "base_rules": list(base_rules),
+        "cue_channels": cue_channels,
+        "cue_formula": "x_alpha = x_base + alpha * (e_target - e_base)",
+        "period": "longdelay",
+        "n_interp": int(SIBLING_FP_N_STIM),
+        "steps": steps,
+        "learning_rate": float(learning_rate),
+        "loss_tol": float(loss_tol),
+        "lbfgs_steps": int(lbfgs_steps),
+        "rel_tol_undamped": float(rel_tol_undamped),
+        "sweeps": sweeps,
+    }
+    out_path, _ = cue_interp_artifact_paths(save_dir, aname, addtask, "gradient")
+    with open(out_path, "wb") as f:
+        pickle.dump(artifact, f)
+    print(f"  [{addtask}/cue-interp] saved gradient fixed-point sweep: {out_path}")
+    return out_path
+
+
+def save_cue_interp_pc_projections(aname, save_dir, addtask, rules, sweep_path,
+                                   method, basis_scope="joint"):
+    """Project a rule-cue sweep through the method's saved delay-PCA basis.
+
+    Each base rule's ``(n_alpha, n_points, features)`` endpoints or fixed
+    points become ``(n_alpha, n_points, 6)`` coordinates in the same joint
+    basis the method's base figure uses, so the sweep can be drawn in that
+    figure's plane. Convergence masks are carried along when the sweep has
+    them (gradient method). Nothing is refitted.
+    """
+    save_dir = Path(save_dir)
+    rules = list(rules)
+    basis_path = _delay_pca_path(
+        save_dir, aname, addtask, rules, basis_scope, method)
+    with open(basis_path, "rb") as f:
+        basis = pickle.load(f)
+    with open(sweep_path, "rb") as f:
+        sweep = pickle.load(f)
+    if sweep.get("kind") != "cue_interp" or sweep.get("method") != method:
+        raise ValueError(f"{sweep_path}: not a {method} rule-cue sweep")
+    if list(sweep.get("task_names", [])) != rules:
+        raise ValueError(f"{sweep_path}: expected rules {rules}, got "
+                         f"{sweep.get('task_names')}")
+    alphas = np.asarray(sweep["alphas"], dtype=float)
+
+    out = {
+        "version": 1,
+        "kind": "cue_interp",
+        "method": method,
+        "aname": aname,
+        "family": addtask,
+        "task_names": rules,
+        "basis_scope": basis_scope,
+        "pca_source": str(basis_path),
+        "pca_selection": basis.get("candidate_selection"),
+        "sweep_source": str(sweep_path),
+        "alphas": alphas,
+        "base_rules": list(sweep["base_rules"]),
+        "cue_channels": sweep.get("cue_channels"),
+        "n_components": 6,
+        "representations": {},
+    }
+    for plot_name, key in _FIXED_POINT_REPS:
+        record = basis.get("representations", {}).get(key)
+        if record is None:
+            raise KeyError(f"{basis_path}: missing PCA representation {key!r}")
+        mean = np.asarray(record["mean"], dtype=float)
+        components = np.asarray(record["components"], dtype=float)
+        if components.ndim != 2 or components.shape[0] < 6:
+            raise ValueError(f"{basis_path}: {key} needs >=6 trajectory PCs, "
+                             f"got {components.shape}")
+        components = components[:6]
+        rep_out = {
+            "explained_variance_ratio": np.asarray(
+                record.get("explained_variance_ratio", []), dtype=float)[:6],
+            "sweeps": {},
+        }
+        for base_rule, entry in sweep["sweeps"].items():
+            values = np.asarray(entry["representations"][key], dtype=float)
+            if values.ndim < 3 or values.shape[0] != alphas.size:
+                raise ValueError(
+                    f"{addtask}/{base_rule}/{key}: expected (n_alpha, n_points, "
+                    f"...) with {alphas.size} alphas, got {values.shape}")
+            n_alpha, n_points = values.shape[:2]
+            flat = values.reshape(n_alpha * n_points, -1)
+            if flat.shape[1] != mean.size:
+                raise ValueError(f"{addtask}/{base_rule}/{key}: {flat.shape[1]} "
+                                 f"features, trajectory PCA expects {mean.size}")
+            proj = ((flat - mean) @ components.T).reshape(n_alpha, n_points, 6)
+            sweep_out = {
+                "target_rule": entry["target_rule"],
+                "proj": np.asarray(proj, dtype=np.float32),
+                "stim_idx": np.asarray(entry["stim_idx"], dtype=int),
+                "stimulus_magnitude": np.asarray(
+                    entry["stimulus_magnitude"], dtype=float),
+            }
+            for optional in ("is_fixed", "rel_step_undamped", "rel_tol_undamped"):
+                if optional in entry:
+                    sweep_out[optional] = entry[optional]
+            rep_out["sweeps"][base_rule] = sweep_out
+            print(f"  [{addtask}/cue-interp/pc-projection] {plot_name}/"
+                  f"{base_rule}: {n_alpha} alphas x {n_points} points in six "
+                  f"{basis_scope} Delay PCs")
+        out["representations"][plot_name] = rep_out
+
+    _, out_path = cue_interp_artifact_paths(save_dir, aname, addtask, method)
+    with open(out_path, "wb") as f:
+        pickle.dump(out, f)
+    print(f"  Saved {basis_scope} {addtask} rule-cue sweep projections: {out_path}")
+    return out_path
+
+
 def build_arg_parser():
     import argparse
 
@@ -1465,12 +2057,27 @@ def build_arg_parser():
         help=("Fixed-point method to run. 'gradient' runs the optimizer-based "
               "solver; 'long_delay_endpoint' runs very-long-delay trials and "
               "uses the last delay state. Only the selected method is run."))
+    parser.add_argument(
+        "--cue-interp-n-alpha", type=int, default=SIBLING_CUE_INTERP_N_ALPHA,
+        metavar="N",
+        help=("Rule-cue interpolation intervals between the two sibling "
+              "rules, swept with the selected method after its base analysis "
+              f"(N + 1 alphas in [0, 1]; default {SIBLING_CUE_INTERP_N_ALPHA}; "
+              "0 disables the sweep)."))
+    parser.add_argument(
+        "--cue-interp-only", action="store_true",
+        help=("Add or refresh only the rule-cue interpolation sweep for a run "
+              "whose selected-method analysis is already cached; the base "
+              "artifacts and their PCA basis are left untouched."))
     return parser
 
 
 def main(argv=None):
     args = build_arg_parser().parse_args(argv)
-    run_sibling_analysis(args.seed, args.feature, args.families, args.method)
+    run_sibling_analysis(
+        args.seed, args.feature, args.families, args.method,
+        cue_interp_n_alpha=args.cue_interp_n_alpha,
+        cue_interp_only=args.cue_interp_only)
 
 
 if __name__ == "__main__":

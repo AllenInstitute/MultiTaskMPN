@@ -8955,6 +8955,272 @@ def plot_multitask_delaydm_fixed_point_geometry():
                 data, family, rules, plot_name, output_suffix)
 
 
+# ─── Rule-cue interpolation between the sibling rules ────────────────────────
+# The multi-task counterpart of the two-task alpha figures
+# (`twotask_interp_alpha_fixed_points_3d` / `_2d`): the stimulus is held at one
+# base rule's trials while its cue fades into the sibling's over alpha, and the
+# delay fixed point (gradient) or long-delay endpoint is traced across alpha in
+# the family's joint delay basis. Same color convention (SCHEME family 5): every
+# stimulus line takes the alpha ramp, dark at alpha=0 -> light at alpha=1, so
+# hue carries the sweep direction only; filled = converged, hollow = over the
+# residual threshold (endpoints are always filled). Read from the projections
+# that sibling_delay_analysis.save_cue_interp_pc_projections writes.
+_MULTITASK_CUE_INTERP_METHODS = ("gradient", "long_delay_endpoint")
+_MULTITASK_CUE_INTERP_PANEL_IN = 1.8      # in; matches the two-task alpha figures
+_MULTITASK_CUE_INTERP_LIMIT_PADDING = 0.12
+
+
+def _multitask_cue_interp_projection_path(run_dir, family, aname, method):
+    """Projection pickle of one family's rule-cue sweep for `method`."""
+    if method == "gradient":
+        return run_dir / f"{family}_cue_interp_delay_pc_projections_{aname}.pkl"
+    if method == "long_delay_endpoint":
+        return (run_dir / f"{family}_cue_interp_long_delay_endpoint_"
+                          f"pc_projections_{aname}.pkl")
+    raise ValueError(f"unknown sibling fixed-point method {method!r}")
+
+
+def _multitask_cue_interp_plane(family, plot_name, method, run_dir, aname):
+    """1-based PC pair the sweep is drawn in: the base figure's plane.
+
+    The gradient geometry figure uses the configured joint plane
+    (`_MULTITASK_SIBLING_PC_PLANES`). The endpoint figure draws the family's
+    best task-specific pair, read here from the cached base endpoint
+    projections; without them the default PC1-PC2 plane is used (announced).
+    Returns (pair, note) where the note names how the plane was chosen.
+    """
+    if method == "gradient":
+        return tuple(_MULTITASK_SIBLING_PC_PLANES[family][plot_name]), "configured"
+    base_path = (run_dir
+                 / f"{family}_long_delay_endpoint_pc_projections_{aname}.pkl")
+    if base_path.exists():
+        with open(base_path, "rb") as f:
+            base = pickle.load(f)
+        entry = base.get("representations", {}).get(plot_name)
+        if entry is not None:
+            try:
+                pair, _, metric_name = _best_sibling_endpoint_pc_pair(
+                    entry, family)
+                return tuple(pair), f"best {metric_name}"
+            except (KeyError, ValueError) as exc:
+                print(f"  {family}/{plot_name}: best endpoint PC pair "
+                      f"unavailable ({exc}); using the default plane.")
+    return tuple(_MULTITASK_SIBLING_ENDPOINT_DEFAULT_PC_PLANE), "default"
+
+
+def _cue_interp_sweep_arrays(sweep, context):
+    """(proj (n_alpha, n_points, n_pc), converged mask (n_alpha, n_points))."""
+    proj = np.asarray(sweep["proj"], dtype=float)
+    if proj.ndim != 3:
+        raise ValueError(f"{context}: expected (n_alpha, n_points, n_pc) "
+                         f"coordinates, got {proj.shape}")
+    good = np.asarray(
+        sweep.get("is_fixed", np.ones(proj.shape[:2], dtype=bool)), dtype=bool)
+    if good.shape != proj.shape[:2]:
+        raise ValueError(f"{context}: convergence mask {good.shape} does not "
+                         f"match coordinates {proj.shape[:2]}")
+    return proj, good
+
+
+def _draw_cue_interp_sweep(ax, alphas, y, good, z=None):
+    """Trace every stimulus condition across alpha on `ax`.
+
+    `y` (and `z` for a 3D axes) are (n_alpha, n_points). Lines take the ramp's
+    mid tone so the markers carry the gradient; each alpha's markers take the
+    ramp color at that alpha, filled when converged and hollow otherwise.
+    """
+    t = _alpha_ramp_norm(alphas)
+    line_col = _alpha_ramp_color(0.5)
+    for s in range(y.shape[1]):
+        coords = (alphas, y[:, s]) if z is None else (alphas, y[:, s], z[:, s])
+        ax.plot(*coords, "-", color=line_col, linewidth=1.1, alpha=0.5, zorder=2)
+    for ai in range(alphas.size):
+        col = _alpha_ramp_color(t[ai])
+        x_at = np.full(y.shape[1], alphas[ai])
+        for mask, style in ((good[ai], dict(color=col, edgecolor="none")),
+                            (~good[ai], dict(facecolor="none", edgecolor=col,
+                                             linewidth=0.7))):
+            if not np.any(mask):
+                continue
+            coords = ((x_at[mask], y[ai, mask]) if z is None
+                      else (x_at[mask], y[ai, mask], z[ai, mask]))
+            ax.scatter(*coords, marker="o", s=12, alpha=0.9, zorder=3, **style)
+
+
+def _cue_interp_column_title(base_rule, target_rule):
+    """Two-line panel title: whose stimulus is held, whose cue it fades to."""
+    return (f"{_TASK_DISPLAY.get(base_rule, base_rule)} stimulus\n"
+            f"→ {_TASK_DISPLAY.get(target_rule, target_rule)} cue")
+
+
+def _cue_interp_axis_limits(sweeps, index):
+    """Shared limits of one PC over every base rule's sweep."""
+    values = np.concatenate([
+        np.asarray(sweep["proj"], dtype=float)[:, :, index].ravel()
+        for sweep in sweeps.values()])
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return (-1.0, 1.0)
+    lo, hi = float(values.min()), float(values.max())
+    span = max(hi - lo, 1e-9)
+    pad = _MULTITASK_CUE_INTERP_LIMIT_PADDING * span
+    return (lo - pad, hi + pad)
+
+
+def _render_multitask_cue_interp_2d(entry, alphas, family, method, pair,
+                                    out_path, plane_note):
+    """x = alpha, y = one Joint Delay PC; rows are the plane's two PCs and
+    columns the base rules whose stimulus is held (two for DelayDM, one for
+    DMC). Limits are shared across columns per PC so the two stimulus bases
+    are directly comparable; the 3D view below uses the same plane."""
+    _ensure_out_dir()
+    sweeps = entry["sweeps"]
+    n_cols = len(sweeps)
+    first = next(iter(sweeps.values()))
+    pc_x, pc_y, bx, by = _paper_pc_indices(
+        pair, np.asarray(first["proj"])[0], f"{family}/cue-interp/{method}")
+    fig, axs = plt.subplots(
+        2, n_cols,
+        figsize=(_MULTITASK_CUE_INTERP_PANEL_IN * n_cols, 3.3),
+        sharex=True, squeeze=False, layout="constrained")
+    xpad = 0.1 * max(alphas.max() - alphas.min(), 1e-9)
+    for row, (pc, index) in enumerate(((pc_x, bx), (pc_y, by))):
+        ylim = _cue_interp_axis_limits(sweeps, index)
+        for col, (base_rule, sweep) in enumerate(sweeps.items()):
+            ax = axs[row, col]
+            proj, good = _cue_interp_sweep_arrays(
+                sweep, f"{family}/cue-interp/{method}/{base_rule}")
+            _draw_cue_interp_sweep(ax, alphas, proj[:, :, index], good)
+            ax.set_xlim(alphas.min() - xpad, alphas.max() + xpad)
+            ax.set_ylim(*ylim)
+            ax.set_xticks([alphas.min(), alphas.max()])
+            ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(3))
+            ax.tick_params(axis="x", labelsize=7)
+            ax.tick_params(axis="y", labelleft=False)
+            ax.spines[["top", "right"]].set_visible(False)
+            if col == 0:
+                ax.set_ylabel(f"Joint Delay PC{pc}", fontsize=7)
+            if row == 0:
+                ax.set_title(_cue_interp_column_title(
+                    base_rule, sweep["target_rule"]), fontsize=6.5)
+            else:
+                ax.set_xlabel(r"Rule cue $\alpha$", fontsize=8, labelpad=-2)
+    if method == "gradient":
+        handles = [
+            mpl.lines.Line2D([], [], marker="o", linestyle="None",
+                             markerfacecolor="0.3", markeredgecolor="none",
+                             markersize=4, label="Converged"),
+            mpl.lines.Line2D([], [], marker="o", linestyle="None",
+                             markerfacecolor="none", markeredgecolor="0.3",
+                             markersize=4, label="Not converged"),
+        ]
+        _legend(axs[0, 0], handles=handles, fontsize=5.5, frameon=False,
+                loc="best", handletextpad=0.2)
+    fig.get_layout_engine().set(w_pad=0.005, h_pad=0.005, hspace=0.15,
+                                wspace=0.05)
+    _save_fig(fig, out_path,
+              extra=(f"  ({method}; Joint Delay PC{pc_x}-PC{pc_y}, {plane_note}; "
+                     f"{alphas.size} alphas; bases {list(sweeps)})"))
+
+
+def _render_multitask_cue_interp_3d(entry, alphas, family, method, pair,
+                                    out_path, plane_note):
+    """3D view of `_render_multitask_cue_interp_2d`: x = alpha, y/z = the two
+    Joint Delay PCs of the same plane, one panel per base rule. Panel geometry
+    and axis styling follow the two-task alpha 3D figure so the two read as a
+    pair."""
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (enables 3d projection)
+    _ensure_out_dir()
+    sweeps = entry["sweeps"]
+    n_cols = len(sweeps)
+    first = next(iter(sweeps.values()))
+    pc_x, pc_y, bx, by = _paper_pc_indices(
+        pair, np.asarray(first["proj"])[0], f"{family}/cue-interp/{method}")
+    ylim = _cue_interp_axis_limits(sweeps, bx)
+    zlim = _cue_interp_axis_limits(sweeps, by)
+    fig = plt.figure(figsize=(_MULTITASK_CUE_INTERP_PANEL_IN * n_cols, 1.9))
+    for col, (base_rule, sweep) in enumerate(sweeps.items()):
+        ax = fig.add_subplot(1, n_cols, col + 1, projection="3d")
+        proj, good = _cue_interp_sweep_arrays(
+            sweep, f"{family}/cue-interp/{method}/{base_rule}")
+        _draw_cue_interp_sweep(ax, alphas, proj[:, :, bx], good,
+                               z=proj[:, :, by])
+        ax.set_xlim(alphas.min(), alphas.max())
+        ax.set_ylim(*ylim)
+        ax.set_zlim(*zlim)
+        ax.set_box_aspect((1, 1, 1))
+        ax.set_xlabel(r"$\alpha$", fontsize=7, labelpad=-15)
+        ax.set_ylabel(f"Delay PC{pc_x}", fontsize=7, labelpad=-17)
+        ax.set_zlabel(f"Delay PC{pc_y}", fontsize=7, labelpad=-17)
+        ax.set_xticks([alphas.min(), alphas.max()])
+        ax.set_yticklabels([])
+        ax.set_zticklabels([])
+        ax.tick_params(axis="both", labelsize=7, pad=-2)
+        ax.view_init(elev=18, azim=-60)
+        ax.grid(False)
+        for pane in (ax.xaxis, ax.yaxis, ax.zaxis):
+            pane.pane.set_visible(False)
+        ax.patch.set_alpha(0.0)
+        ax.set_title(_cue_interp_column_title(base_rule, sweep["target_rule"]),
+                     fontsize=6.5, y=0.97)
+    fig.subplots_adjust(left=0.06, right=0.98, bottom=0.02, top=0.9, wspace=0.12)
+    _save_fig(fig, out_path,
+              extra=(f"  ({method}; Joint Delay PC{pc_x}-PC{pc_y}, {plane_note}; "
+                     f"{alphas.size} alphas; bases {list(sweeps)})"))
+
+
+def plot_multitask_sibling_cue_interp():
+    """
+    Figures: the rule cue interpolated between the two sibling rules of each
+    family, for both sibling methods, in the family's joint delay basis:
+      multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_{emodulation,hidden}_{2d,3d}.png
+    The stimulus is held at a base rule's trials (both DelayDM rules in turn,
+    since they use different modalities; DMCGo alone, since DMCGo and DMCNoGo
+    share one stimulus structure) while the cue moves from the base rule
+    (alpha=0) to the sibling (alpha=1). Gradient sweeps trace TRUE delay fixed
+    points; endpoint sweeps trace the end of a very-long delay. The plane is
+    the base figure's for that method (configured for gradient, the best
+    task-specific pair for endpoints). Reads
+    two_in_multiples/{aname}/{family}_cue_interp_*pc_projections_{aname}.pkl;
+    a family or method without that cache is skipped.
+    """
+    for family in _MULTITASK_SIBLING_FAMILIES:
+        aname = _multitask_sibling_aname(family)
+        run_dir = TWO_IN_MULTIPLES_DIR / aname
+        for method in _MULTITASK_CUE_INTERP_METHODS:
+            path = _multitask_cue_interp_projection_path(
+                run_dir, family, aname, method)
+            data = _load_pkl_or_skip(
+                path,
+                _multitask_sibling_hint(family, method)
+                + " (its rule-cue sweep writes this file; add "
+                  "--cue-interp-only for a cached run).")
+            if data is None:
+                continue
+            if data.get("kind") != "cue_interp":
+                print(f"  Skipped {path.name}: not a rule-cue sweep projection.")
+                continue
+            alphas = np.asarray(data["alphas"], dtype=float)
+            for plot_name, output_suffix in (
+                    ("e_modulation", "emodulation"),
+                    ("hidden", "hidden")):
+                entry = data.get("representations", {}).get(plot_name)
+                if not entry or not entry.get("sweeps"):
+                    print(f"  Skipped {family}/{method}/{plot_name}: no sweep "
+                          "in the projection cache.")
+                    continue
+                pair, plane_note = _multitask_cue_interp_plane(
+                    family, plot_name, method, run_dir, aname)
+                stem = (f"{_MULTITASK_SIBLING_OUTPUT_NAMES[family]}_cue_interp_"
+                        f"{method}_{output_suffix}")
+                _render_multitask_cue_interp_2d(
+                    entry, alphas, family, method, pair,
+                    _multitask_out(f"{stem}_2d.png"), plane_note)
+                _render_multitask_cue_interp_3d(
+                    entry, alphas, family, method, pair,
+                    _multitask_out(f"{stem}_3d.png"), plane_note)
+
+
 def plot_two_task_interp_fixed_points(period="longdelay"):
     """
     Figure: continuous-attractor probe for the two-task network, one per task
@@ -10228,6 +10494,9 @@ FIGURES_BY_MODE = {
         # sibling_delay_analysis.py with the same solver one_task/two_task use).
         "delaydm_fixed_point_geometry":
             plot_multitask_delaydm_fixed_point_geometry,
+        # The rule cue interpolated between the sibling rules, traced in the
+        # same joint delay basis for both sibling methods.
+        "sibling_cue_interp": plot_multitask_sibling_cue_interp,
     },
     "pretraining": {
         "backbone_probe": plot_backbone_probe,

@@ -527,6 +527,145 @@ def derive_fixed_point_views(
     }
 
 
+def detect_stimulus_channels(template, fix_win, stim_win, rule=None):
+    """The active ring's (sin θ, cos θ) channel pair of one trial template.
+
+    A ring channel carries energy during the stimulus window but is ~zero
+    throughout fixation (this rejects the always-on fixation bit and the
+    constant rule-cue channels). We detect the single most energetic such
+    channel, then recover its PARTNER from the layout — low-dim rings are
+    consecutive (sin, cos) 2-blocks anchored just after the leading fixation
+    channel(s). Detecting one channel suffices because for an angle on an axis
+    (θ≈0/90/180/270°) one of sin/cos is exactly zero over the whole window.
+    `template` is (T, n_input); `fix_win` / `stim_win` are (start, stop) step
+    windows; `rule` only names the rule in error messages."""
+    fix_on, fix_off = fix_win
+    stim_on, stim_off = stim_win
+    stim_energy = (template[stim_on:stim_off] ** 2).sum(axis=0)
+    fix_max = np.abs(template[fix_on:fix_off]).max(axis=0)
+    stim_only = np.where(fix_max <= 1e-6, stim_energy, 0.0)
+    c0 = int(np.argmax(stim_only))
+    if stim_only[c0] <= 1e-9:
+        raise ValueError(
+            f"could not auto-detect a stimulus channel for rule={rule} "
+            f"(stim-only energies {np.round(stim_only, 3).tolist()}); "
+            f"pass stim_channels explicitly.")
+    on_in_fix = fix_max > 1e-6
+    n_fix = 0
+    while n_fix < on_in_fix.size and on_in_fix[n_fix]:
+        n_fix += 1
+    ring_start = n_fix + ((c0 - n_fix) // 2) * 2
+    if ring_start + 1 >= template.shape[1]:
+        raise ValueError(
+            f"stimulus ring pair ({ring_start},{ring_start+1}) out of range "
+            f"for rule={rule} (n_input={template.shape[1]}).")
+    return ring_start, ring_start + 1
+
+
+def build_dense_stimulus_template(cfg, rule, task_seed, n_interp,
+                                  stimulus_magnitude_levels=(1.0,),
+                                  device="cpu", stim_channels=None,
+                                  periods=None):
+    """Build the dense-angle input batch that one gradient solve runs on.
+
+    One normal trial of `rule` is generated with the task RNG pinned to
+    `task_seed` (so the template — stimulus modality, epoch timing — is
+    deterministic), then replicated once per (angle, magnitude) with the active
+    ring's two channels overwritten by magnitude * (sin θ, cos θ) during the
+    stimulus window. Shared by the per-period solver below and by the
+    multi-task sibling rule-cue interpolation, so both sweep identical inputs.
+
+    Returns a dict with
+      batch              : (n_points, T, n_input) float array
+      period_win         : {"longfixation"/"longstimulus"/"longdelay"/
+                            "longresponse": (start, stop)}, restricted to
+                            `periods` when given (canonical order kept)
+      stim               : angle index per point (the hue label downstream)
+      angles             : the n_interp angles on [0, 2π)
+      stimulus_angle     : angle per point
+      stimulus_magnitude : magnitude per point
+      stim_channels      : the (sin, cos) ring channels used
+      task_params        : the converted task params (carries `hp`, so a
+                            caller can read the rule-cue channel layout)
+    """
+    stimulus_magnitude_levels = np.asarray(stimulus_magnitude_levels,
+                                           dtype=float)
+    tp = copy.deepcopy(cfg["task_params"])
+    tp["long_fixation"] = tp["long_stimulus"] = tp["long_delay"] = tp["long_response"] = "normal"
+    tp, trp, npp = mpn_tasks.convert_and_init_multitask_params(
+        (tp, copy.deepcopy(cfg["train_params"]), copy.deepcopy(cfg["net_params"])))
+    npp["prefs"] = mpn_tasks.get_prefs(tp["hp"])
+    tp["hp"]["batch_size_train"] = 1
+    # Pin the task RNG so the template (stimulus modality, angle, epoch
+    # timing) is deterministic for this seed — the whole point of the sweep.
+    tp["hp"]["seed"] = int(task_seed)
+    tp["hp"]["rng"] = np.random.RandomState(int(task_seed))
+    gen_rules = [rule] if rule is not None else tp["rules"]
+    data, extra = mpn_tasks.generate_trials_wrap(
+        tp, 1, rules=gen_rules, mode_input="random", device=device)
+    _, trials, _ = extra
+    template = np.asarray(data[0].detach().cpu())[0]      # (T, n_input)
+    T = template.shape[0]
+
+    def _ep(name):
+        e = trials[0].epochs[name]
+        return (0 if e[0] is None else int(e[0]),
+                T if e[1] is None else int(e[1]))
+    fix_on, fix_off = _ep("fix1")
+    stim_on, stim_off = _ep("stim1")
+    delay_on, delay_off = _ep("delay1")
+    resp_on, resp_off = _ep("go1")
+    period_win = {
+        "longfixation": (fix_on, fix_off),
+        "longstimulus": (stim_on, stim_off),
+        "longdelay":    (delay_on, delay_off),   # = delay1, the FIRST delay
+        "longresponse": (resp_on, resp_off),
+    }
+    if periods is not None:
+        unknown = [v for v in periods if v not in period_win]
+        if unknown:
+            raise ValueError(f"unknown period(s) {unknown}; choose from "
+                             f"{list(period_win)}")
+        # Filter by iterating period_win, so the canonical
+        # fixation→stimulus→delay→response order survives whatever order the
+        # caller listed. Everything downstream — the diagonal probes, the
+        # measured input distances, the naive-probe grouping — is derived from
+        # this dict, so restricting it here restricts the whole solve.
+        keep = set(periods)
+        period_win = {v: w for v, w in period_win.items() if v in keep}
+
+    if stim_channels is not None:
+        ch_a, ch_b = int(stim_channels[0]), int(stim_channels[1])
+    else:
+        ch_a, ch_b = detect_stimulus_channels(
+            template, (fix_on, fix_off), (stim_on, stim_off), rule=rule)
+
+    # The ring's two channels hold magnitude * (sin θ, cos θ) in
+    # generator order. Keep `stim` as the ANGLE label when magnitudes are
+    # repeated, so downstream hue continues to mean stimulus direction.
+    angles = np.arange(n_interp) * (2 * np.pi / n_interp)
+    stim = np.repeat(np.arange(n_interp, dtype=int),
+                     stimulus_magnitude_levels.size)
+    point_angles = angles[stim]
+    point_magnitudes = np.tile(stimulus_magnitude_levels, n_interp)
+    n_points = int(stim.size)
+    batch = np.repeat(template[None, :, :], n_points, axis=0)
+    batch[:, stim_on:stim_off, ch_a] = (
+        point_magnitudes * np.sin(point_angles))[:, None]
+    batch[:, stim_on:stim_off, ch_b] = (
+        point_magnitudes * np.cos(point_angles))[:, None]
+    return {
+        "batch": batch,
+        "period_win": period_win,
+        "stim": stim,
+        "angles": angles,
+        "stimulus_angle": point_angles,
+        "stimulus_magnitude": point_magnitudes,
+        "stim_channels": (ch_a, ch_b),
+        "task_params": tp,
+    }
+
+
 def solve_period_modulation_fixed_points(
         aname, save_dir, net, cfg, device,
         rule=None, out_suffix="",
@@ -703,35 +842,6 @@ def solve_period_modulation_fixed_points(
 
     tag = f"[grad-fp{'/' + rule if rule else ''}]"
 
-    def _detect_stim_channels(template, fix_on, fix_off, stim_on, stim_off):
-        """The active ring's (sin θ, cos θ) channel pair. A ring channel carries
-        energy during the stimulus window but is ~zero throughout fixation (this
-        rejects the always-on fixation bit and the constant rule-cue channels).
-        We detect the single most energetic such channel, then recover its
-        PARTNER from the layout — low-dim rings are consecutive (sin, cos)
-        2-blocks anchored just after the leading fixation channel(s). Detecting
-        one channel suffices because for an angle on an axis (θ≈0/90/180/270°) one
-        of sin/cos is exactly zero over the whole window."""
-        stim_energy = (template[stim_on:stim_off] ** 2).sum(axis=0)
-        fix_max = np.abs(template[fix_on:fix_off]).max(axis=0)
-        stim_only = np.where(fix_max <= 1e-6, stim_energy, 0.0)
-        c0 = int(np.argmax(stim_only))
-        if stim_only[c0] <= 1e-9:
-            raise ValueError(
-                f"could not auto-detect a stimulus channel for rule={rule} "
-                f"(stim-only energies {np.round(stim_only, 3).tolist()}); "
-                f"pass stim_channels explicitly.")
-        on_in_fix = fix_max > 1e-6
-        n_fix = 0
-        while n_fix < on_in_fix.size and on_in_fix[n_fix]:
-            n_fix += 1
-        ring_start = n_fix + ((c0 - n_fix) // 2) * 2
-        if ring_start + 1 >= template.shape[1]:
-            raise ValueError(
-                f"stimulus ring pair ({ring_start},{ring_start+1}) out of range "
-                f"for rule={rule} (n_input={template.shape[1]}).")
-        return ring_start, ring_start + 1
-
     def _solve_one_seed(task_seed, probes=None):
         """Build the dense-angle template for a FIXED task RNG seed and solve the
         requested probes. `probes` is a list of (name, input_period, seed_source,
@@ -740,71 +850,19 @@ def solve_period_modulation_fixed_points(
         holds the pairwise period-input distances (see below).
         Deterministic in task_seed, so re-running is reproducible."""
         # ── Dense interpolated-stimulus batch (one normal trial per angle) ────
-        tp = copy.deepcopy(cfg["task_params"])
-        tp["long_fixation"] = tp["long_stimulus"] = tp["long_delay"] = tp["long_response"] = "normal"
-        tp, trp, npp = mpn_tasks.convert_and_init_multitask_params(
-            (tp, copy.deepcopy(cfg["train_params"]), copy.deepcopy(cfg["net_params"])))
-        npp["prefs"] = mpn_tasks.get_prefs(tp["hp"])
-        tp["hp"]["batch_size_train"] = 1
-        # Pin the task RNG so the template (stimulus modality, angle, epoch
-        # timing) is deterministic for this seed — the whole point of the sweep.
-        tp["hp"]["seed"] = int(task_seed)
-        tp["hp"]["rng"] = np.random.RandomState(int(task_seed))
-        gen_rules = [rule] if rule is not None else tp["rules"]
-        data, extra = mpn_tasks.generate_trials_wrap(
-            tp, 1, rules=gen_rules, mode_input="random", device=device)
-        _, trials, _ = extra
-        template = np.asarray(data[0].detach().cpu())[0]      # (T, n_input)
-        T = template.shape[0]
-
-        def _ep(name):
-            e = trials[0].epochs[name]
-            return (0 if e[0] is None else int(e[0]),
-                    T if e[1] is None else int(e[1]))
-        fix_on, fix_off = _ep("fix1")
-        stim_on, stim_off = _ep("stim1")
-        delay_on, delay_off = _ep("delay1")
-        resp_on, resp_off = _ep("go1")
-        period_win = {
-            "longfixation": (fix_on, fix_off),
-            "longstimulus": (stim_on, stim_off),
-            "longdelay":    (delay_on, delay_off),   # = delay1, the FIRST delay
-            "longresponse": (resp_on, resp_off),
-        }
-        if periods is not None:
-            unknown = [v for v in periods if v not in period_win]
-            if unknown:
-                raise ValueError(f"unknown period(s) {unknown}; choose from "
-                                 f"{list(period_win)}")
-            # Filter by iterating period_win, so the canonical
-            # fixation→stimulus→delay→response order survives whatever order the
-            # caller listed. Everything downstream — the diagonal probes, the
-            # measured input distances, the naive-probe grouping — is derived from
-            # this dict, so restricting it here restricts the whole solve.
-            keep = set(periods)
-            period_win = {v: w for v, w in period_win.items() if v in keep}
-
-        if stim_channels is not None:
-            ch_a, ch_b = int(stim_channels[0]), int(stim_channels[1])
-        else:
-            ch_a, ch_b = _detect_stim_channels(template, fix_on, fix_off,
-                                               stim_on, stim_off)
-        print(f"  {tag} seed={task_seed}: stimulus ring channels ({ch_a}, {ch_b})")
-
-        # The ring's two channels hold magnitude * (sin θ, cos θ) in
-        # generator order. Keep `stim` as the ANGLE label when magnitudes are
-        # repeated, so downstream hue continues to mean stimulus direction.
-        angles = np.arange(n_interp) * (2 * np.pi / n_interp)
-        stim = np.repeat(np.arange(n_interp, dtype=int),
-                         stimulus_magnitude_levels.size)
-        point_angles = angles[stim]
-        point_magnitudes = np.tile(stimulus_magnitude_levels, n_interp)
+        template_info = build_dense_stimulus_template(
+            cfg, rule, task_seed, n_interp, stimulus_magnitude_levels,
+            device=device, stim_channels=stim_channels, periods=periods)
+        batch = template_info["batch"]
+        T = batch.shape[1]
+        period_win = template_info["period_win"]
+        angles = template_info["angles"]
+        stim = template_info["stim"]
+        point_angles = template_info["stimulus_angle"]
+        point_magnitudes = template_info["stimulus_magnitude"]
         n_points = int(stim.size)
-        batch = np.repeat(template[None, :, :], n_points, axis=0)
-        batch[:, stim_on:stim_off, ch_a] = (
-            point_magnitudes * np.sin(point_angles))[:, None]
-        batch[:, stim_on:stim_off, ch_b] = (
-            point_magnitudes * np.cos(point_angles))[:, None]
+        ch_a, ch_b = template_info["stim_channels"]
+        print(f"  {tag} seed={task_seed}: stimulus ring channels ({ch_a}, {ch_b})")
 
         x = torch.as_tensor(batch, dtype=torch.float, device=device)
         _, _, db = net.iterate_sequence_batch(

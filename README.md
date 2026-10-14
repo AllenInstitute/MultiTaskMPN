@@ -64,6 +64,14 @@ python multiple_task/sibling_delay_analysis.py \
   --seed 921 --feature L21e4 --families delaydm1 \
   --method long_delay_endpoint
 
+# both methods end with a rule-cue interpolation sweep between the two sibling
+# rules (--cue-interp-n-alpha N gives N + 1 alphas, default 10; 0 disables it);
+# add only that sweep to a run whose method analysis is already cached
+python multiple_task/sibling_delay_analysis.py \
+  --seed 408 --feature L21e4 --families delaydm1 dmcgo \
+  --method long_delay_endpoint --cue-interp-only
+python paper_plot.py --only sibling_cue_interp
+
 # additional state-space analysis
 python multiple_task/state_space_shift.py
 # rank state-space seeds and plot the best example without clearing other figures
@@ -418,6 +426,32 @@ records the intercept and `through_origin=False`. Paper plots use these saved
 coefficients and skip legacy caches without a free-intercept fit. Reported
 `r` is Pearson correlation; `p` is the nominal OLS slope-test value, which
 assumes independent task pairs and is not adjusted for their shared tasks.
+
+`python paper_plot.py --only sibling_cue_interp` draws the multi-task analog
+of the two-task pro/anti interpolation for the two sibling families
+(`DELAYDM_ANAME`, `DMCGO_ANAME`):
+`multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_{emodulation,hidden}_{2d,3d}.png`.
+`multiple_task/sibling_delay_analysis.py` runs the sweep after each method's
+base analysis: the stimulus is held at one base rule's trials while its
+one-hot rule cue fades out and the sibling's fades in,
+`x_alpha = x_base + alpha * (e_sibling - e_base)`, over `--cue-interp-n-alpha`
++ 1 alphas (default 11). The two-task sweep mixed whole trials, which is a cue
+mix only because pro and anti share their stimulus; the DelayDM rules present
+their stimulus on different modalities, so only the cue channels move here and
+both rules serve as base in turn (`SIBLING_CUE_INTERP_BASE_RULES`), whereas
+DMCGo and DMCNoGo share one stimulus structure and DMCGo alone is swept. alpha =
+1 is an input the network never saw in training. The `long_delay_endpoint`
+sweep reruns fresh balanced long-delay trials at every alpha and keeps the
+delay-1 endpoint; the `gradient` sweep reuses the per-rule dense-angle template
+(`core.grad_fixed_points.build_dense_stimulus_template`, eight directions, the
+DelayDM magnitudes) and solves the true delay fixed point at every alpha with
+the per-rule budgets. Both are projected onto the method's joint delay basis
+(`*_cue_interp_*pc_projections_*.pkl`), so the figures sit in the base
+figure's plane: the configured plane for gradient, the best task-specific pair
+for endpoints. Colors follow the alpha ramp of SCHEME family 5 (dark at alpha =
+0, light at alpha = 1; filled = converged, hollow = not; endpoints always
+filled). `--cue-interp-only` adds the sweep to a cached run without touching
+its base artifacts, which otherwise are regenerated from new random trials.
 
 Both `pretrain/pretraining_analysis.py` and `pretrain/pretraining_post.py` write
 analysis data to `pretraining_analysis/`, pooled figures to `pretrain/fig/`, and
