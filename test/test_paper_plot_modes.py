@@ -128,9 +128,12 @@ class PaperPlotModeTests(unittest.TestCase):
                         np.testing.assert_array_equal(axis.get_xticks(), [0, 1, 2, 3])
                         expected_labels = (["Pre", "Post", "Both", "Neither"]
                                            if row_index == 0 else
-                                           ["Pre Cl.", "Post Cl.", "Both Cl.", "Neither"])
+                                           ["Pre\ncluster", "Post\ncluster", "Both\ncluster", "Neither"])
                         self.assertEqual([label.get_text() for label in axis.get_xticklabels()],
                                          expected_labels)
+                        # Upright 7 pt tick labels (two lines on the cluster row).
+                        self.assertTrue(all(label.get_rotation() == 0 and label.get_fontsize() == 7
+                                            for label in axis.get_xticklabels()))
                         self.assertEqual([text.get_text() for text in axis.texts],
                                          ["N/A"] if row_index == 0 else [])
                         bars = next(container for container in axis.containers

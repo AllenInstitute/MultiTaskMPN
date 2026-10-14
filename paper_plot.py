@@ -49,6 +49,7 @@ from scipy.cluster.hierarchy import fcluster
 from core.sibling_geometry import best_task_specific_pc_pair
 from core.state_space_geometry import task_centroid_separation
 from core.lesion_cache import load_lesion_pickle, normalize_lesion_cache, resolve_lesion_cache_path
+from core.clustering import fixed_k_col_clusters
 from pretrain.pretraining_utils import variant_addon
 
 # ─── Global style ────────────────────────────────────────────────────────────
@@ -142,6 +143,12 @@ def _save_standalone_colorbar(out_path, cmap, vmin=None, vmax=None, ticks=None,
     cbar.ax.tick_params(labelsize=labelsize)
     _save_fig(figc, out_path)
 
+
+# One size and text style for every standalone vertical colorbar (lesion
+# heatmap, OM examples), so the bars tile beside their panels identically: a
+# slim 0.13 in bar with 10 pt tick labels and an 8 pt label.
+_VERTICAL_COLORBAR_STYLE = dict(orientation="vertical", figsize=(0.7, 2.4),
+                                rect=(0.3, 0.08, 0.18, 0.84), labelsize=10, label_fontsize=8)
 
 OM_MIN_EXPECTED = 1.0
 
@@ -2597,7 +2604,9 @@ def _plot_overmembership_single(pkl_template, out_filename):
         sem = stacked.std(axis=0, ddof=1) / np.sqrt(n_experiments) if n_experiments > 1 else np.zeros_like(mean)
 
         bar_names = bar_name_lst[row_idx]
-        short_names = [n.replace("Share-", "").replace("-Cluster", " Cl.") for n in bar_names]
+        # Upright labels: one word per bar on the neuron row, two lines on the
+        # cluster row, so four 7 pt labels fit a 2.5 in panel without rotation.
+        short_names = [n.replace("Share-", "").replace("-Cluster", "\ncluster") for n in bar_names]
 
         x = np.arange(len(mean))
         if row_idx == 0:
@@ -2610,7 +2619,7 @@ def _plot_overmembership_single(pkl_template, out_filename):
                edgecolor="k", linewidth=0.5, width=0.6, zorder=2)
         ax.axhline(0, color="k", lw=0.5, zorder=0)
         ax.set_xticks(np.arange(len(short_names)))
-        ax.set_xticklabels(short_names, rotation=35, ha="right", fontsize=6)
+        ax.set_xticklabels(short_names, rotation=0, ha="center", fontsize=7)
         ax.set_xlim(-0.6, len(short_names) - 0.4)
         ax.spines[["top", "right"]].set_visible(False)
 
@@ -2663,21 +2672,379 @@ def plot_overmembership_abs_weighted():
 
 
 OVERMEMBERSHIP_EXAMPLE_FIXED_K = 20
-# Modulation cluster IDs (1-based, fixed k = 20) shown by
-# plot_overmembership_examples. They were chosen on the L2=1e-4 seed-749 run;
-# cluster numbering is not comparable across runs, so revisit them when
-# MULTITASK_L2 or the resolved ANAME changes (the figure skips, with a message,
-# when an ID is absent).
-OVERMEMBERSHIP_EXAMPLE_CLUSTERS = (3, 4)
+# How many synapse (modulation) clusters plot_overmembership_examples draws,
+# and which. With OVERMEMBERSHIP_EXAMPLE_CLUSTERS = None the examples are the
+# OVERMEMBERSHIP_EXAMPLE_N most concentrated clusters of the resolved run,
+# ranked by the highest observed/expected ratio over their well-supported
+# blocks (expected count at least OVERMEMBERSHIP_EXAMPLE_SELECT_MIN_EXPECTED;
+# ties to the larger expected count), so the choice follows MULTITASK_L2 and
+# ANAME. A tuple of 1-based fixed-k cluster IDs forces the examples in that
+# order; cluster numbers are not comparable across runs, so a forced tuple is
+# meaningful for one run only and the figure skips when an ID is absent.
+OVERMEMBERSHIP_EXAMPLE_N = 2
+OVERMEMBERSHIP_EXAMPLE_CLUSTERS = None
+# Blocks must expect at least this many synapses to rank the examples. The
+# display threshold below is 1 synapse, where a ratio of 9 is nine synapses
+# and mostly noise; at 5 expected a ratio of 6 is thirty synapses. Without
+# this, the pick is the cluster with the luckiest near-empty block.
+OVERMEMBERSHIP_EXAMPLE_SELECT_MIN_EXPECTED = 5.0
 # Blocks expecting fewer synapses than this under the label-shuffle null are
 # masked: their observed/expected ratio swings wildly with one or two synapses.
 # Shared with the OM-vs-lesion scatter (OM_MIN_EXPECTED) so both figures judge
 # block stability the same way.
 OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED = OM_MIN_EXPECTED
+# Same footprint as the lesion scatters, so the panels tile with them. The
+# heatmap labels only the input and the hidden cluster of the deciding block:
+# twenty labels per axis would be denser than the blocks they name, and the
+# figure's point is which pathway the cluster occupies.
+_OVERMEMBERSHIP_EXAMPLE_FIGSIZE = (2.0, 2.0)
+# Dot-matrix companion: the largest observed count of any example fills this
+# fraction of a cell's side (one scale for all examples); a measurable block
+# with no synapse of the cluster is a small hollow grey ring, so it is told
+# apart from an unmeasurable (blank) block.
+_OVERMEMBERSHIP_DOT_MAX_FILL = 0.85
+_OVERMEMBERSHIP_DOT_EMPTY_PT2 = 4.0
+_OVERMEMBERSHIP_DOT_REFERENCE_COUNTS = (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000)
+# The dot matrix labels at most this many input and hidden clusters per axis:
+# those holding the cluster's most significant enrichments, ranked by the
+# Poisson z of their best shown block, (observed - expected) / sqrt(expected),
+# which unlike the OM ratio is not inflated by a near-empty block. A label
+# that would overlap a more significant neighbour's is dropped, never
+# staggered onto a second row.
+_OVERMEMBERSHIP_DOT_MAX_LABELS = 3
+_OVERMEMBERSHIP_DOT_LEGEND_FIGSIZE = (0.8, 1.0)
+# Synapse-map companion: every member synapse of the example cluster as one
+# dot at its (input neuron, hidden neuron) position, neurons ordered by their
+# fixed-k cluster (unresponsive class last, shaded), colored by the sign of
+# the static weight W it modulates (a categorical distinction, SCHEME family 4;
+# the var-weighted clustering is expected to keep one sign per cluster).
+_OVERMEMBERSHIP_SYNAPSE_COLORS = {"W > 0": c_vals[1], "W < 0": c_vals[0]}
+_OVERMEMBERSHIP_SYNAPSE_PT2 = 1.8
+_OVERMEMBERSHIP_SYNAPSE_UNRESPONSIVE_SHADE = "0.94"
+# The cluster-ordered synapse map leaves the unresponsive neurons out of both
+# axes (their synapses, if any, are counted in the saved message): in the
+# L2=1e-4 runs more than half of the hidden neurons are silent, and keeping
+# them as a shaded band spends most of the panel on an empty region.
+_OVERMEMBERSHIP_SYNAPSE_DROP_UNRESPONSIVE = True
+
+
+def _ranked_om_clusters(ratios, expected, cluster_ids, skip_ids=()):
+    """Candidate synapse clusters, most concentrated first.
+
+    `ratios` and `expected` are (clusters, inputs, hiddens); a block counts
+    when `expected` is finite there (callers pass masked arrays with
+    unsupported blocks set to NaN). Each candidate is scored by the highest
+    OM over its counted blocks, ties by that block's expected count. Clusters
+    in `skip_ids` (the unresponsive class) or without a counted block are
+    left out. Returns the indices in rank order."""
+    scored = []
+    for index, cluster_id in enumerate(cluster_ids):
+        if cluster_id in skip_ids or not np.isfinite(expected[index]).any():
+            continue
+        om = np.where(np.isfinite(expected[index]), ratios[index], -np.inf)
+        block = np.unravel_index(int(np.argmax(om)), om.shape)
+        scored.append(((float(om[block]), float(expected[index][block])), index))
+    return [index for _, index in sorted(scored, key=lambda item: item[0], reverse=True)]
+
+
+def _om_significant_clusters(observed, expected, shown, max_labels=_OVERMEMBERSHIP_DOT_MAX_LABELS):
+    """Indices of the input (axis 0) and hidden (axis 1) clusters holding the
+    most significant enrichments of one synapse cluster: each cluster is
+    scored by the Poisson z of its best shown block, only positive z counts
+    (enrichment, not depletion), and at most `max_labels` are kept per side,
+    most significant first. Returns (input indices, hidden indices)."""
+    z = np.where(shown, (observed - expected) / np.sqrt(np.maximum(expected, 1e-12)), -np.inf)
+    picks = []
+    for axis in (1, 0):                      # best block per input row, per hidden column
+        best = z.max(axis=axis)
+        candidates = [int(index) for index in np.argsort(-best, kind="stable") if best[index] > 0]
+        picks.append(candidates[:max_labels])
+    return tuple(picks)
+
+
+def _non_colliding_labels(indices, names, cell_pt, which, fontsize=7):
+    """Keep, in significance order, each label whose text would not overlap
+    an already kept one: x labels collide within one label width, y labels
+    within one label height (0.65 em per character, 1.2 em line height, plus
+    2 pt clearance), with one cell spanning `cell_pt` points. Returns the kept
+    indices in axis order."""
+    if not indices:
+        return []
+    if which == "x":
+        extent_pt = 0.65 * fontsize * max(len(names[index]) for index in indices) + 2.0
+    else:
+        extent_pt = 1.2 * fontsize + 2.0
+    kept = []
+    for index in indices:
+        if all(abs(index - other) * cell_pt >= extent_pt for other in kept):
+            kept.append(index)
+    return sorted(kept)
+
+
+def _om_dot_cell_pt(n_in, n_hid, layout):
+    """Side of one dot-matrix cell in points, from the figure size and the
+    axes rectangle (`layout` has left/right/bottom/top fractions)."""
+    width_in = _OVERMEMBERSHIP_EXAMPLE_FIGSIZE[0] * (layout["right"] - layout["left"])
+    height_in = _OVERMEMBERSHIP_EXAMPLE_FIGSIZE[1] * (layout["top"] - layout["bottom"])
+    return 72.0 * min(width_in / n_in, height_in / n_hid)
+
+
+def _save_dot_size_key(out_path, references, max_area, max_observed, extra=""):
+    """The dot matrices' size key as its own small figure: one grey disc per
+    round reference count at the exact area the matrices use for it."""
+    handles = [mpl.lines.Line2D([], [], marker="o", linestyle="none", color="0.5",
+                                markersize=np.sqrt(max_area * count / max_observed),
+                                label=f"{count:d}")
+               for count in references]
+    fig = plt.figure(figsize=_OVERMEMBERSHIP_DOT_LEGEND_FIGSIZE)
+    fig.legend(handles=handles, loc="center", title="synapses", title_fontsize=6, fontsize=6,
+               frameon=False, handletextpad=0.4, labelspacing=0.6)
+    _save_fig(fig, out_path, extra=extra)
+
+
+_OM_DOT_LAYOUT = dict(left=0.2, right=0.97, bottom=0.17, top=0.9)
+
+
+def _fixed_k_neuron_labels(side, k=OVERMEMBERSHIP_EXAMPLE_FIXED_K):
+    """Fixed-k cluster label of every neuron of the unnormalized `side`
+    ("input" or "hidden") clustering, recut from the saved dendrogram by the
+    shared `fixed_k_col_clusters` (labels 1..K, the unresponsive class last).
+    Returns (labels, unresponsive label or None), or None when the cluster
+    cache is missing."""
+    try:
+        info = _load_cluster_info()
+    except FileNotFoundError:
+        return None
+    clusters, unresponsive = fixed_k_col_clusters(info[f"{side}_unnormalized"], k,
+                                                  return_unresponsive_label=True)
+    size = max(int(np.max(indices)) for indices in clusters.values() if len(indices)) + 1
+    labels = np.zeros(size, dtype=int)
+    for label, indices in clusters.items():
+        labels[np.asarray(indices, dtype=int)] = label
+    return labels, unresponsive
+
+
+def _plastic_weights():
+    """mp_layer1.W (post, pre) of ANAME's checkpoint, or None when absent."""
+    path = Path("multiple_tasks") / f"savednet_{ANAME}.pt"
+    if not path.exists():
+        return None
+    import torch
+    return torch.load(path, map_location="cpu", weights_only=False)["state_dict"]["mp_layer1.W"].numpy()
+
+
+def _synapse_cluster_members(entry, cluster_id, n_pre, expected_size):
+    """(post, pre) neuron indices of the fixed-k synapse cluster `cluster_id`.
+
+    The saved entry holds one clustering per synapse grouping G; the fixed-k
+    assignment the examples are ranked on came from one of them, identified
+    here as the grouping whose member count is closest to the assignment's
+    own size (`expected_size`, cluster share x active synapses). Flat synapse
+    indices are C-order over W's (post, pre). Returns (posts, pres, count
+    mismatch) or None when no grouping saved fixed-k labels."""
+    best = None
+    for result in entry.get("result_all_lst", ()):
+        labels = (result.get("col_labels_by_k") or {}).get(OVERMEMBERSHIP_EXAMPLE_FIXED_K)
+        if labels is None:
+            continue
+        flat = np.nonzero(np.asarray(labels) == cluster_id)[0]
+        mismatch = abs(flat.size - expected_size)
+        if best is None or mismatch < best[0]:
+            best = (mismatch, flat)
+    if best is None:
+        return None
+    flat = best[1]
+    return flat // n_pre, flat % n_pre, best[0]
+
+
+def _neuron_axis_positions(labels, unresponsive):
+    """Order neurons by fixed-k label with the unresponsive class last.
+    Returns (position of each neuron, labels in axis order)."""
+    labels = np.asarray(labels)
+    key = labels.copy()
+    if unresponsive is not None:
+        key = np.where(labels == unresponsive, labels.max() + 1, labels)
+    order = np.lexsort((np.arange(labels.size), key))
+    position = np.empty(labels.size, dtype=int)
+    position[order] = np.arange(labels.size)
+    return position, labels[order]
+
+
+def _plot_om_synapse_map(posts, pres, w_signs, input_axis, hidden_axis, labelled, title,
+                         out_path, extra="", order_by_cluster=True,
+                         drop_unresponsive=None):
+    """One synapse cluster at neuron resolution: a dot per member synapse at
+    (input neuron, hidden neuron), colored by the sign of its static weight.
+
+    `input_axis` / `hidden_axis` are (position of each neuron, labels in axis
+    order, unresponsive label) from _neuron_axis_positions: neurons are grouped
+    by fixed-k cluster, boundaries drawn as thin lines and the unresponsive
+    class shaded. `labelled` is (input cluster names, hidden cluster names),
+    most significant first, to put on the axes at the center of each
+    cluster's band (the clusters the dot matrix labels), plus U where it
+    exists; a label whose text would overlap a higher-priority one is
+    dropped. With `drop_unresponsive` (default
+    _OVERMEMBERSHIP_SYNAPSE_DROP_UNRESPONSIVE) the unresponsive neurons are
+    left out of both axes and member synapses touching them are not drawn
+    (their number goes to the saved message); the axes then hold different
+    neuron counts and are filled rather than kept square. With
+    `order_by_cluster=False` the neurons keep their index order and the axes
+    carry no cluster structure at all: no boundaries, no shading, no cluster
+    labels, just the first and last neuron index. Same footprint as the
+    other example panels; the color key is saved separately."""
+    if drop_unresponsive is None:
+        drop_unresponsive = _OVERMEMBERSHIP_SYNAPSE_DROP_UNRESPONSIVE
+    fig, axis = plt.subplots(figsize=_OVERMEMBERSHIP_EXAMPLE_FIGSIZE)
+    fig.subplots_adjust(**_OM_DOT_LAYOUT)
+    (in_pos, in_sorted, in_unres), (hid_pos, hid_sorted, hid_unres) = input_axis, hidden_axis
+    n_dropped = 0
+    if order_by_cluster and drop_unresponsive:
+        # Keep responsive neurons only: positions are re-ranked among them,
+        # sorted labels lose the U band, member synapses on U neurons go.
+        keep_in = in_sorted[in_pos] != in_unres if in_unres is not None else np.ones(in_pos.size, bool)
+        keep_hid = hid_sorted[hid_pos] != hid_unres if hid_unres is not None else np.ones(hid_pos.size, bool)
+        member_ok = keep_in[pres] & keep_hid[posts]
+        n_dropped = int((~member_ok).sum())
+        posts, pres, w_signs = posts[member_ok], pres[member_ok], w_signs[member_ok]
+        in_pos = np.argsort(np.argsort(in_pos[keep_in]))
+        hid_pos = np.argsort(np.argsort(hid_pos[keep_hid]))
+        in_sorted = in_sorted[in_sorted != in_unres] if in_unres is not None else in_sorted
+        hid_sorted = hid_sorted[hid_sorted != hid_unres] if hid_unres is not None else hid_sorted
+        in_unres = hid_unres = None
+        # Index arrays must address the reduced neuron sets.
+        pres = np.searchsorted(np.nonzero(keep_in)[0], pres)
+        posts = np.searchsorted(np.nonzero(keep_hid)[0], posts)
+    n_in, n_hid = in_pos.size, hid_pos.size
+    if not order_by_cluster:
+        in_pos, hid_pos = np.arange(n_in), np.arange(n_hid)
+    for which, sorted_labels, unresponsive in (
+            (("x", in_sorted, in_unres), ("y", hid_sorted, hid_unres)) if order_by_cluster else ()):
+        boundaries = np.nonzero(np.diff(sorted_labels))[0] + 1
+        for boundary in boundaries:
+            (axis.axvline if which == "x" else axis.axhline)(boundary, color="0.85", lw=0.4, zorder=1)
+        if unresponsive is not None and np.any(sorted_labels == unresponsive):
+            start = int(np.argmax(sorted_labels == unresponsive))
+            span = int(np.sum(sorted_labels == unresponsive))
+            if which == "x":
+                axis.axvspan(start, start + span, color=_OVERMEMBERSHIP_SYNAPSE_UNRESPONSIVE_SHADE,
+                             lw=0, zorder=0)
+            else:
+                axis.axhspan(start, start + span, color=_OVERMEMBERSHIP_SYNAPSE_UNRESPONSIVE_SHADE,
+                             lw=0, zorder=0)
+    for name, color in _OVERMEMBERSHIP_SYNAPSE_COLORS.items():
+        pick = (w_signs > 0) if name == "W > 0" else (w_signs < 0)
+        if pick.any():
+            axis.scatter(in_pos[pres[pick]] + 0.5, hid_pos[posts[pick]] + 0.5,
+                         s=_OVERMEMBERSHIP_SYNAPSE_PT2, color=color, edgecolors="none",
+                         zorder=3, label=name)
+    axis.set_xlim(0, n_in)
+    axis.set_ylim(n_hid, 0)
+    axis.set_aspect("equal" if n_in == n_hid else "auto")
+    neuron_pt = _om_dot_cell_pt(n_in, n_hid, _OM_DOT_LAYOUT)      # points per neuron
+    if not order_by_cluster:
+        axis.set_xticks([0.5, n_in - 0.5])
+        axis.set_xticklabels(["1", str(n_in)])
+        axis.set_yticks([0.5, n_hid - 0.5])
+        axis.set_yticklabels(["1", str(n_hid)])
+    for which, setter_ticks, setter_labels, sorted_labels, unresponsive, wanted in (
+            (("x", axis.set_xticks, axis.set_xticklabels, in_sorted, in_unres, labelled[0]),
+             ("y", axis.set_yticks, axis.set_yticklabels, hid_sorted, hid_unres, labelled[1]))
+            if order_by_cluster else ()):
+        # Candidate ticks in priority order: the dot matrix's labels, then U.
+        candidates = []
+        for name in wanted:
+            members = np.nonzero(sorted_labels == int(name[1:]))[0]
+            if members.size:
+                candidates.append((float(members.mean()) + 0.5, name))
+        if unresponsive is not None and np.any(sorted_labels == unresponsive):
+            candidates.append((float(np.nonzero(sorted_labels == unresponsive)[0].mean()) + 0.5, "U"))
+        extent_pt = (0.65 * 7 * max((len(name) for _, name in candidates), default=1) + 2.0
+                     if which == "x" else 1.2 * 7 + 2.0)
+        kept = []
+        for tick, name in candidates:
+            if all(abs(tick - other) * neuron_pt >= extent_pt for other, _ in kept):
+                kept.append((tick, name))
+        kept.sort()
+        setter_ticks([tick for tick, _ in kept])
+        setter_labels([name for _, name in kept])
+    axis.tick_params(axis="both", length=2, labelsize=7, labelrotation=0)
+    axis.set_title(title, fontsize=8)
+    axis.set_xlabel("Input neuron", fontsize=8)
+    axis.set_ylabel("Hidden neuron", fontsize=8)
+    axis.spines[["top", "right"]].set_visible(False)
+    if order_by_cluster and drop_unresponsive:
+        extra += (f" [unresponsive neurons left out: {n_in} input x {n_hid} hidden shown, "
+                  f"{n_dropped} member synapses on them not drawn]")
+    _save_fig(fig, out_path, extra=extra)
+
+
+def _save_synapse_sign_key(out_path):
+    """The synapse maps' color key as its own small figure."""
+    handles = [mpl.lines.Line2D([], [], marker="o", linestyle="none", color=color, markersize=3,
+                                label=name) for name, color in _OVERMEMBERSHIP_SYNAPSE_COLORS.items()]
+    fig = plt.figure(figsize=_OVERMEMBERSHIP_DOT_LEGEND_FIGSIZE)
+    fig.legend(handles=handles, loc="center", title="synapse", title_fontsize=6, fontsize=6,
+               frameon=False, handletextpad=0.4, labelspacing=0.6)
+    _save_fig(fig, out_path, extra="  (color key of the synapse maps: sign of W)")
+
+
+def _plot_om_dot_matrix(ratio, shown, observed, input_names, hidden_names, vmax, max_observed,
+                        labelled, title, out_path, extra=""):
+    """The dot-matrix view of one synapse cluster's block map.
+
+    `ratio`, `shown` and `observed` are (inputs, hiddens) over the kept
+    clusters; x is the input (pre) cluster, y the hidden (post) cluster, as in
+    the heatmap. Each shown block is a disc centered on its cell whose area is
+    proportional to `observed` (`max_observed`, shared by all examples, fills
+    _OVERMEMBERSHIP_DOT_MAX_FILL of the cell side) and whose color is OM on
+    the shared viridis scale [0, vmax]; shown blocks with no synapse are small
+    hollow grey rings; unshown blocks are blank. `labelled` is (input indices,
+    hidden indices) in significance order; those whose names would overlap a
+    more significant neighbour's are dropped (_non_colliding_labels). The
+    size key is saved separately (_save_dot_size_key)."""
+    n_in, n_hid = ratio.shape
+    fig, axis = plt.subplots(figsize=_OVERMEMBERSHIP_EXAMPLE_FIGSIZE)
+    fig.subplots_adjust(**_OM_DOT_LAYOUT)
+    cell_pt = _om_dot_cell_pt(n_in, n_hid, _OM_DOT_LAYOUT)
+    max_area = (_OVERMEMBERSHIP_DOT_MAX_FILL * cell_pt) ** 2
+    cmap = plt.get_cmap(_MULTITASK_HEATMAP_CMAP)
+    norm = mpl.colors.Normalize(vmin=0.0, vmax=vmax)
+    rows, cols = np.nonzero(shown)
+    filled = observed[rows, cols] > 0
+    if filled.any():
+        sizes = max_area * observed[rows, cols][filled] / max(max_observed, 1e-12)
+        axis.scatter(rows[filled] + 0.5, cols[filled] + 0.5, s=sizes,
+                     color=cmap(norm(ratio[rows, cols][filled])), edgecolors="none", zorder=3)
+    if (~filled).any():
+        axis.scatter(rows[~filled] + 0.5, cols[~filled] + 0.5, s=_OVERMEMBERSHIP_DOT_EMPTY_PT2,
+                     facecolors="none", edgecolors="0.6", linewidths=0.5, zorder=3)
+    axis.set_xlim(0, n_in)
+    axis.set_ylim(n_hid, 0)
+    axis.set_aspect("equal")
+    kept = {}
+    for which, setter_ticks, setter_labels, names, wanted in (
+            ("x", axis.set_xticks, axis.set_xticklabels, input_names, labelled[0]),
+            ("y", axis.set_yticks, axis.set_yticklabels, hidden_names, labelled[1])):
+        kept[which] = _non_colliding_labels(wanted, names, cell_pt, which)
+        setter_ticks([index + 0.5 for index in kept[which]])
+        setter_labels([names[index] for index in kept[which]])
+    axis.tick_params(axis="both", length=2, labelsize=7, labelrotation=0)
+    axis.set_title(title, fontsize=8)
+    axis.set_xlabel("Input cluster", fontsize=8)
+    axis.set_ylabel("Hidden cluster", fontsize=8)
+    axis.spines[["top", "right"]].set_visible(False)
+    # Kept labels, most significant first, for the synapse map's tick choice.
+    kept_names = ([input_names[i] for i in labelled[0] if i in kept["x"]],
+                  [hidden_names[j] for j in labelled[1] if j in kept["y"]])
+    labelled_text = (f"; labelled: input {', '.join(input_names[i] for i in kept['x']) or 'none'}, "
+                     f"hidden {', '.join(hidden_names[j] for j in kept['y']) or 'none'}")
+    _save_fig(fig, out_path, extra=extra + labelled_text)
+    return max_area, kept_names
 
 
 def plot_overmembership_examples():
-    """Show selected modulation clusters' input-by-hidden block enrichment.
+    """Show the most concentrated synapse clusters' input-by-hidden block
+    enrichment, one heatmap and one dot matrix per example.
 
     Reads global_assignment_fixed_k20: input, hidden and modulation use their
     fixed-k unnormalized clusterings, with variance weighting for modulation.
@@ -2686,15 +3053,41 @@ def plot_overmembership_examples():
     The null shuffles labels among surviving synapses, so expected counts are
     n_active_block * cluster_size_percent.
 
+    The examples are OVERMEMBERSHIP_EXAMPLE_CLUSTERS, or with None the
+    OVERMEMBERSHIP_EXAMPLE_N most concentrated clusters (_ranked_om_clusters),
+    so they are the clearest cases of a synapse cluster living in one
+    neuron-cluster block rather than hand-picked IDs that go stale when the
+    run changes; the saved messages name the choices and the runners-up.
     Blocks whose expected count is below OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED
     (the OM_MIN_EXPECTED threshold shared with the OM-vs-lesion scatter) are
     masked and hatched, because a ratio over a handful of expected synapses is
     unstable; zero-expectation blocks are a special case of this. Input or
-    hidden clusters with no shown block in any panel are dropped from the axes,
+    hidden clusters with no shown block are dropped from an example's axes,
     which is what removes U and very small neuron clusters. Cells carry no
-    numbers and no block is singled out; the shared viridis colorbar (the
-    multi-task heatmap colormap) gives the scale, with OM = 1 marked.
+    numbers and no block is singled out; each heatmap axis labels only the
+    cluster of the deciding block (the peak OM over well-supported blocks),
+    and the fixed k, the masking rule and the dropped clusters go to the
+    saved message rather than onto the figure.
 
+    Outputs, rank r = 1..N: `overmembership_examples_<r>` (heatmap),
+    `overmembership_examples_synapses_<r>` (the cluster at neuron
+    resolution: one dot per member synapse at its input x hidden neuron
+    position, neurons ordered by fixed-k cluster with the unresponsive class
+    shaded, dot color the sign of the static weight W; skipped with a note
+    when the checkpoint or the per-synapse labels are unavailable; color key
+    saved once as `overmembership_examples_synapses_legend`), its
+    `overmembership_examples_synapses_raw_<r>` twin with the neurons in
+    their index order and no cluster structure on the axes, and
+    `overmembership_examples_dots_<r>` (dot matrix: dot area proportional to
+    the observed number of the cluster's synapses, color still OM, so a ratio
+    over two synapses is a speck and one over thirty a disc; measurable
+    blocks with no synapse are small hollow rings, unmeasurable blocks blank;
+    up to _OVERMEMBERSHIP_DOT_MAX_LABELS input and hidden clusters labelled,
+    those with the most significant enrichment, _om_significant_clusters,
+    dropping a label that would overlap a more significant one). All examples
+    share one color scale and one dot-area scale, saved once as
+    `overmembership_examples_colorbar` (viridis, OM = 1 marked) and
+    `overmembership_examples_dots_legend` (size key).
     The full cluster cache can be several GB; run on an allocated compute node.
     """
     mod_info = _load_cluster_info_mod()
@@ -2720,43 +3113,79 @@ def plot_overmembership_examples():
             or not np.isfinite(fractions).all() or np.any(fractions <= 0)
             or not np.isclose(fractions.sum(), 1.0)):
         raise ValueError("Invalid OM example cache: counts, ratios and cluster IDs must align.")
-    panels = []
-    for cluster_id in OVERMEMBERSHIP_EXAMPLE_CLUSTERS:
-        if cluster_id not in cluster_ids:
-            print(f"  Skipped OM examples: modulation C{cluster_id} not found in {ANAME}.")
-            return
-        cluster_index = cluster_ids.index(cluster_id)
-        ratio = ratios[cluster_index]
-        expected = active * fractions[cluster_index]
-        observed = ratio * expected
-        shown = expected >= OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED
-        if not np.any(shown):
-            print(f"  Skipped OM examples: C{cluster_id} has no block with expected >= "
-                  f"{OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED:g} synapses.")
-            return
-        panels.append((cluster_id, ratio, shown, expected, observed))
-    del mod_info, entry, assignment
+    expected = active[None, :, :] * fractions[:, None, None]
+    stable = expected >= OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED
+    select_min = max(OVERMEMBERSHIP_EXAMPLE_SELECT_MIN_EXPECTED, OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED)
+    supported = expected >= select_min
+    unresponsive = assignment.get("unresponsive_mod_label")
+    skip_ids = () if unresponsive is None else (unresponsive,)
+    n_post, n_pre = (int(value) for value in entry["mod_shape"]) if "mod_shape" in entry else (None, None)
+    weights = _plastic_weights()
+    neuron_axes = None
+    if weights is not None and n_pre is not None and weights.shape == (n_post, n_pre):
+        sides = {side: _fixed_k_neuron_labels(side) for side in ("input", "hidden")}
+        if all(value is not None and value[0].size == size
+               for value, size in zip(sides.values(), (n_pre, n_post))):
+            neuron_axes = {side: (*_neuron_axis_positions(*value), value[1])
+                           for side, value in sides.items()}
+    if neuron_axes is None:
+        print("  Note: synapse maps skipped (checkpoint, cluster cache or synapse shape unavailable).")
+    del mod_info, assignment
 
-    # Shared axes: keep a neuron cluster if any panel shows one of its blocks.
-    shown_any = np.any([shown for _, _, shown, _, _ in panels], axis=0)
-    keep_input = np.nonzero(shown_any.any(axis=1))[0]
-    keep_hidden = np.nonzero(shown_any.any(axis=0))[0]
+    ranked = _ranked_om_clusters(ratios, np.where(supported, expected, np.nan), cluster_ids, skip_ids)
+    if OVERMEMBERSHIP_EXAMPLE_CLUSTERS is None:
+        chosen = ranked[:OVERMEMBERSHIP_EXAMPLE_N]
+        if not chosen:
+            print(f"  Skipped OM examples: no synapse cluster has a block with expected >= "
+                  f"{select_min:g} synapses in {ANAME}.")
+            return
+    else:
+        chosen = []
+        for cluster_id in OVERMEMBERSHIP_EXAMPLE_CLUSTERS:
+            if cluster_id not in cluster_ids:
+                print(f"  Skipped OM examples: synapse cluster C{cluster_id} not found in {ANAME}.")
+                return
+            index = cluster_ids.index(cluster_id)
+            if not stable[index].any():
+                print(f"  Skipped OM examples: C{cluster_id} has no block with expected >= "
+                      f"{OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED:g} synapses.")
+                return
+            chosen.append(index)
+    # Peak OM over well-supported blocks of every ranked candidate, for the
+    # saved messages (runners-up after the chosen examples).
+    peaks = [(float(np.max(np.where(supported[index], ratios[index], -np.inf))), cluster_ids[index])
+             for index in ranked]
+    runners = ", ".join([f"C{cid} {peak:.1f}" for peak, cid in peaks
+                         if cid not in {cluster_ids[index] for index in chosen}][:3])
 
     def _labels(indices):
         return ["U" if index == OVERMEMBERSHIP_EXAMPLE_FIXED_K else f"C{index + 1}"
                 for index in indices]
 
-    dropped = {
-        "input": _labels([i for i in range(active.shape[0]) if i not in keep_input]),
-        "hidden": _labels([j for j in range(active.shape[1]) if j not in keep_hidden]),
-    }
-
     _ensure_out_dir()
-    vmax = max(1.0, np.ceil(max(ratio[shown].max() for _, ratio, shown, _, _ in panels)))
-    fig, axes = plt.subplots(1, len(panels), figsize=(10.5, 5.2), squeeze=False)
-    fig.subplots_adjust(left=0.07, right=0.84, bottom=0.17, top=0.93, wspace=0.34)
-    colorbar_axis = fig.add_axes((0.89, 0.25, 0.016, 0.60))
-    for axis, (cluster_id, ratio, shown, expected, observed) in zip(axes[0], panels):
+    # One color scale and one dot-area scale across the examples.
+    vmax = max(1.0, float(np.ceil(max(ratios[index][stable[index]].max() for index in chosen))))
+    max_observed = max(float((ratios[index] * expected[index])[stable[index]].max()) for index in chosen)
+    max_area = None
+    synapse_maps_drawn = False
+    for rank, cluster_index in enumerate(chosen, start=1):
+        cluster_id = cluster_ids[cluster_index]
+        ratio, shown = ratios[cluster_index], stable[cluster_index]
+        keep_input = np.nonzero(shown.any(axis=1))[0]
+        keep_hidden = np.nonzero(shown.any(axis=0))[0]
+        dropped = {
+            "input": _labels([i for i in range(active.shape[0]) if i not in keep_input]),
+            "hidden": _labels([j for j in range(active.shape[1]) if j not in keep_hidden]),
+        }
+        # The deciding block: peak OM over well-supported blocks (over shown
+        # blocks for a forced cluster without one). Its two clusters are the
+        # heatmap's only axis labels, and it is named in the saved message.
+        top = np.unravel_index(int(np.argmax(np.where(supported[cluster_index], ratio, -np.inf)))
+                               if supported[cluster_index].any() else
+                               int(np.argmax(np.where(shown, ratio, -np.inf))), ratio.shape)
+        labelled = ({_labels([top[0]])[0]}, {_labels([top[1]])[0]})
+        fig, axis = plt.subplots(figsize=_OVERMEMBERSHIP_EXAMPLE_FIGSIZE)
+        fig.subplots_adjust(**_OM_DOT_LAYOUT)
         sub_ratio = ratio[np.ix_(keep_input, keep_hidden)]
         sub_shown = shown[np.ix_(keep_input, keep_hidden)]
         axis.set_facecolor("white")
@@ -2772,29 +3201,73 @@ def plot_overmembership_examples():
             axis.add_patch(mpl.patches.Rectangle(
                 (input_pos_masked, hidden_pos_masked), 1, 1, facecolor="0.94",
                 edgecolor="0.75", hatch="////", linewidth=0, zorder=1))
-        axis.set_title(f"Modulation C{cluster_id}", fontsize=10)
+        axis.set_title(f"Synapse cluster C{cluster_id}", fontsize=8)
         axis.set_xlabel("Input cluster", fontsize=8)
         axis.set_ylabel("Hidden cluster", fontsize=8)
-        axis.tick_params(axis="both", length=0, labelsize=7, labelrotation=0)
-        axis.tick_params(axis="x", labelrotation=90)
-        top = np.unravel_index(np.argmax(np.where(shown, ratio, -np.inf)), ratio.shape)
-        print(f"  Modulation C{cluster_id}: {int(sub_shown.sum())}/{sub_shown.size} blocks "
-              f"shown; max OM {ratio[top]:.2f} at input {_labels([top[0]])[0]} / hidden "
-              f"{_labels([top[1]])[0]} ({observed[top]:.0f} observed / {expected[top]:.2f} expected)")
-    colorbar = fig.colorbar(axes[0, 0].collections[0], cax=colorbar_axis)
-    colorbar.set_ticks(sorted({0., 1., vmax / 2, vmax}))
-    colorbar.set_label("OM (observed / expected)", fontsize=8)
-    colorbar.ax.tick_params(labelsize=7)
-    dropped_text = "; ".join(f"{side} {', '.join(names)}" for side, names in dropped.items() if names)
-    fig.text(0.07, 0.025,
-             f"Fixed k = {OVERMEMBERSHIP_EXAMPLE_FIXED_K}; OM = 1: random expectation; "
-             f"hatched: expected < {OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED:g} synapses"
-             + (f"; dropped (no shown block): {dropped_text}" if dropped_text else ""),
-             fontsize=7, color="0.35")
-    _save_fig(fig, _multitask_out("overmembership_examples.png"),
-              extra=(f"  ({ANAME}; fixed k={OVERMEMBERSHIP_EXAMPLE_FIXED_K}; "
-                     f"min expected={OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED:g}; "
-                     "var-weighted unnormalized modulation; unnormalized input/hidden)"))
+        input_names, hidden_names = _labels(keep_input), _labels(keep_hidden)
+        for setter_ticks, setter_labels, names, wanted in (
+                (axis.set_xticks, axis.set_xticklabels, input_names, labelled[0]),
+                (axis.set_yticks, axis.set_yticklabels, hidden_names, labelled[1])):
+            positions = [index + 0.5 for index, name in enumerate(names) if name in wanted]
+            setter_ticks(positions)
+            setter_labels([name for name in names if name in wanted])
+        axis.tick_params(axis="both", length=2, labelsize=7, labelrotation=0)
+        observed_top = ratio[top] * expected[cluster_index][top]
+        dropped_text = "; ".join(f"{side} {', '.join(names)}" for side, names in dropped.items() if names)
+        _save_fig(fig, _multitask_out(f"overmembership_examples_{rank}.png"),
+                  extra=(f"  ({ANAME}; fixed k={OVERMEMBERSHIP_EXAMPLE_FIXED_K}; "
+                         f"hatched: expected < {OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED:g} synapses; "
+                         f"var-weighted unnormalized modulation; unnormalized input/hidden) "
+                         f"example {rank}: synapse cluster C{cluster_id}: {int(sub_shown.sum())}/"
+                         f"{sub_shown.size} blocks shown; peak OM {ratio[top]:.2f} at input "
+                         f"{_labels([top[0]])[0]} / hidden {_labels([top[1]])[0]} ({observed_top:.0f} "
+                         f"observed / {expected[cluster_index][top]:.2f} expected; blocks with "
+                         f"expected >= {select_min:g} rank the examples)"
+                         + (f"; runners-up: {runners}" if runners else "")
+                         + (f"; dropped (no shown block): {dropped_text}" if dropped_text else "")))
+        sub_expected = expected[cluster_index][np.ix_(keep_input, keep_hidden)]
+        sub_observed = sub_ratio * sub_expected
+        max_area, kept_names = _plot_om_dot_matrix(
+            sub_ratio, sub_shown, sub_observed, input_names, hidden_names, vmax, max_observed,
+            _om_significant_clusters(sub_observed, sub_expected, sub_shown),
+            f"Synapse cluster C{cluster_id}", _multitask_out(f"overmembership_examples_dots_{rank}.png"),
+            extra=f"  ({ANAME}; example {rank}; dot area = observed synapses of C{cluster_id}; color = OM")
+        if neuron_axes is not None:
+            members = _synapse_cluster_members(entry, cluster_id, n_pre,
+                                               fractions[cluster_index] * active.sum())
+            if members is None:
+                print(f"  Note: synapse map of C{cluster_id} skipped (no fixed-k synapse labels saved).")
+            else:
+                posts, pres, mismatch = members
+                w_signs = np.sign(weights[posts, pres])
+                synapse_extra = (
+                    f"  ({ANAME}; example {rank}; {posts.size} synapses of C{cluster_id}, "
+                    f"{int((w_signs > 0).sum())} with W > 0, {int((w_signs < 0).sum())} with W < 0; "
+                    f"{np.unique(pres).size} input and {np.unique(posts).size} hidden neurons; "
+                    f"member count differs from the fixed-k assignment by {mismatch:.0f})")
+                _plot_om_synapse_map(
+                    posts, pres, w_signs, neuron_axes["input"], neuron_axes["hidden"], kept_names,
+                    f"Synapse cluster C{cluster_id}",
+                    _multitask_out(f"overmembership_examples_synapses_{rank}.png"), extra=synapse_extra)
+                _plot_om_synapse_map(
+                    posts, pres, w_signs, neuron_axes["input"], neuron_axes["hidden"], kept_names,
+                    f"Synapse cluster C{cluster_id}",
+                    _multitask_out(f"overmembership_examples_synapses_raw_{rank}.png"),
+                    extra=synapse_extra + " [neurons in index order]", order_by_cluster=False)
+                synapse_maps_drawn = True
+    if neuron_axes is not None and synapse_maps_drawn:
+        _save_synapse_sign_key(_multitask_out("overmembership_examples_synapses_legend.png"))
+    references = [count for count in _OVERMEMBERSHIP_DOT_REFERENCE_COUNTS if count <= max_observed][-3:]
+    if references:
+        _save_dot_size_key(_multitask_out("overmembership_examples_dots_legend.png"), references,
+                           max_area, max_observed,
+                           extra=f"  (size key shared by the {len(chosen)} dot matrices: {references})")
+    ticks = sorted({0.0, 1.0, vmax / 2, vmax})
+    _save_standalone_colorbar(
+        _multitask_out("overmembership_examples_colorbar.png"),
+        cmap=_MULTITASK_HEATMAP_CMAP, vmin=0, vmax=vmax, ticks=ticks,
+        ticklabels=[f"{tick:g}" for tick in ticks], label="OM (observed / expected)",
+        **_VERTICAL_COLORBAR_STYLE)
 
 
 # ─── Figure: Lesion heatmap ──────────────────────────────────────────────────
@@ -2913,11 +3386,7 @@ def plot_lesion_heatmap():
         ticks=_ticks,
         ticklabels=[f"{t:.0f}" for t in _ticks],
         label="Normalized effect (%)",
-        orientation="vertical",
-        figsize=(0.7, 2.4),
-        rect=(0.35, 0.08, 0.3, 0.84),
-        labelsize=10,
-        label_fontsize=8,
+        **_VERTICAL_COLORBAR_STYLE,
     )
 
 
