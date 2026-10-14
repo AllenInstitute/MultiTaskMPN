@@ -468,6 +468,33 @@ class CueInterpProjectionTests(unittest.TestCase):
                     hidden_out["explained_variance_ratio"],
                     np.arange(1, 7) / 21)
 
+    def test_dmc_projection_saves_the_base_trials_memory_cluster(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (root / "dmcgo_delay_trajectory_pca_run.pkl").open(
+                    "wb") as stream:
+                pickle.dump(self._basis(), stream)
+            sweep = self._sweep("gradient", n_points=8)
+            sweep["task_names"] = ["dmcgo", "dmcnogo"]
+            sweep["base_rules"] = ["dmcgo"]
+            sweep["sweeps"]["dmcgo"] = sweep["sweeps"].pop("delaydm1")
+            sweep["sweeps"]["dmcgo"]["target_rule"] = "dmcnogo"
+            sweep["sweeps"]["dmcgo"]["stim_idx"] = np.arange(8)
+            sweep_path, _ = sibling.cue_interp_artifact_paths(
+                root, "run", "dmcgo", "gradient")
+            with sweep_path.open("wb") as stream:
+                pickle.dump(sweep, stream)
+
+            out_path = sibling.save_cue_interp_pc_projections(
+                "run", root, "dmcgo", ("dmcgo", "dmcnogo"), sweep_path,
+                "gradient")
+            with out_path.open("rb") as stream:
+                projected = pickle.load(stream)
+        entry = projected["representations"]["hidden"]["sweeps"]["dmcgo"]
+        # DMCGo stimuli 0-3 form cluster A (label 1), 4-7 cluster B (label 0).
+        np.testing.assert_array_equal(entry["group_labels"],
+                                      [1, 1, 1, 1, 0, 0, 0, 0])
+
     def test_projection_rejects_a_sweep_of_the_other_method(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -716,6 +743,68 @@ class CueInterpPaperFigureTests(unittest.TestCase):
             ("dmcgo", "e_modulation", marker),
             ("dmcgo", "hidden", None),
         ])
+
+    def test_dmc_sweep_lines_are_colored_by_memory_cluster(self):
+        n_points = 8
+        sweep = {"target_rule": "dmcnogo", "stim_idx": np.arange(n_points),
+                 "proj": np.zeros((3, n_points, 6))}
+        rules = ("dmcgo", "dmcnogo")
+        # Derived from the base rule and stimulus when the cache has no labels.
+        np.testing.assert_array_equal(
+            paper_plot._cue_interp_sweep_groups("dmcgo", rules, "dmcgo", sweep),
+            [1, 1, 1, 1, 0, 0, 0, 0])
+        np.testing.assert_array_equal(
+            paper_plot._cue_interp_sweep_groups(
+                "dmcgo", rules, "dmcnogo", sweep),
+            [0, 0, 0, 0, 1, 1, 1, 1])
+        # Saved labels win; DelayDM has no clusters.
+        sweep["group_labels"] = np.ones(n_points, dtype=int)
+        np.testing.assert_array_equal(
+            paper_plot._cue_interp_sweep_groups("dmcgo", rules, "dmcgo", sweep),
+            np.ones(n_points))
+        self.assertIsNone(paper_plot._cue_interp_sweep_groups(
+            "delaydm1", RULES, "delaydm1", {"stim_idx": np.arange(4)}))
+
+        projection = self._projection("long_delay_endpoint", ("dmcgo",),
+                                      n_points=n_points)
+        entry = projection["representations"]["e_modulation"]
+        entry["sweeps"]["dmcgo"]["stim_idx"] = np.arange(n_points)
+        with patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(paper_plot, "SHOW_LEGEND", True), \
+                patch.object(paper_plot, "_save_fig") as save:
+            paper_plot._render_multitask_cue_interp_2d(
+                entry, projection["alphas"], "dmcgo", "long_delay_endpoint",
+                (1, 2), Path("out.png"), "test")
+        fig = save.call_args.args[0]
+        self.addCleanup(paper_plot.plt.close, fig)
+        for ax in fig.axes:
+            colors = {paper_plot.mpl.colors.to_hex(line.get_color())
+                      for line in ax.lines}
+            self.assertEqual(colors, {
+                paper_plot.mpl.colors.to_hex(c)
+                for c in paper_plot._CUE_INTERP_CLUSTER_COLORS.values()})
+        labels = [text.get_text() for text in fig.axes[0].get_legend().get_texts()]
+        self.assertEqual(len(labels), 2)
+        self.assertTrue(all("Cluster" in label for label in labels))
+        self.assertIn("alpha = 0 cluster", save.call_args.kwargs["extra"])
+
+        # DelayDM keeps the ramp's mid tone on every line and no cluster legend.
+        delaydm = self._projection("long_delay_endpoint", RULES)
+        with patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(paper_plot, "SHOW_LEGEND", True), \
+                patch.object(paper_plot, "_save_fig") as save:
+            paper_plot._render_multitask_cue_interp_2d(
+                delaydm["representations"]["hidden"], delaydm["alphas"],
+                "delaydm1", "long_delay_endpoint", (1, 2), Path("out.png"),
+                "test")
+        fig = save.call_args.args[0]
+        self.addCleanup(paper_plot.plt.close, fig)
+        mid = paper_plot.mpl.colors.to_hex(paper_plot._alpha_ramp_color(0.5))
+        for ax in fig.axes:
+            self.assertEqual(
+                {paper_plot.mpl.colors.to_hex(line.get_color())
+                 for line in ax.lines}, {mid})
+        self.assertIsNone(fig.axes[0].get_legend())
 
     def test_endpoint_plane_comes_from_the_base_endpoint_projection(self):
         with tempfile.TemporaryDirectory() as directory:

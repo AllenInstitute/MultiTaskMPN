@@ -1984,6 +1984,13 @@ def save_cue_interp_pc_projections(aname, save_dir, addtask, rules, sweep_path,
             for optional in ("is_fixed", "rel_step_undamped", "rel_tol_undamped"):
                 if optional in entry:
                     sweep_out[optional] = entry[optional]
+            if addtask == "dmcgo":
+                # The base trial's memory cluster (alpha = 0), as the plain
+                # endpoint figure defines it; the sweep swaps it at alpha = 1.
+                stim_idx = sweep_out["stim_idx"]
+                sweep_out["group_labels"] = _dmc_category_labels(
+                    np.full(stim_idx.size, rules.index(base_rule), dtype=int),
+                    stim_idx, max(SIBLING_FP_N_STIM, int(stim_idx.max()) + 1))
             rep_out["sweeps"][base_rule] = sweep_out
             print(f"  [{addtask}/cue-interp/pc-projection] {plot_name}/"
                   f"{base_rule}: {n_alpha} alphas x {n_points} points in six "

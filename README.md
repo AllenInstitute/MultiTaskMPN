@@ -450,7 +450,13 @@ the per-rule budgets. Both are projected onto the method's joint delay basis
 figure's plane: the configured plane for gradient, the best task-specific pair
 for endpoints. Colors follow the alpha ramp of SCHEME family 5 (dark at alpha =
 0, light at alpha = 1; filled = converged, hollow = not; endpoints always
-filled). When the endpoint sweep is cached, the base endpoint figure
+filled). In the DMC figures the connecting lines are colored by the base
+trial's memory cluster at alpha = 0 (cluster A = DMCGo stimuli 0-3, which the
+plain endpoint figure groups with DMCNoGo stimuli 4-7; cluster B = the
+complement), read from the `group_labels` saved in the projection cache or
+derived from the stimulus for caches written before them, so the swap of the
+two clusters under the sibling's cue is visible; DelayDM lines keep the ramp's
+mid tone. When the endpoint sweep is cached, the base endpoint figure
 (`multitask_{delaydm,dmcgo}_long_delay_endpoint_{emodulation,hidden}`) is
 saved unchanged and a second copy with the `_cue_interp` suffix
 (`..._long_delay_endpoint_{emodulation,hidden}_cue_interp`, legend
