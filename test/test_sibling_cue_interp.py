@@ -657,6 +657,81 @@ class CueInterpPaperFigureTests(unittest.TestCase):
                 self.assertEqual(n_axes, 2 if "delaydm" in name else 1)
             paper_plot.plt.close(fig)
 
+    def test_endpoint_figure_overlays_the_cached_cue_sweep(self):
+        points = np.arange(48, dtype=float).reshape(8, 6) / 100
+        base_entry = {
+            "proj": points,
+            "trajectory_proj": np.stack([2 * points, points], axis=1),
+            "task_idx": np.repeat([0, 1], 4),
+            "stim_idx": np.tile(np.arange(4), 2),
+        }
+        base_data = {"representations": {"e_modulation": base_entry,
+                                         "hidden": base_entry}}
+        n_alpha, n_points = 3, 4
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            aname = paper_plot._multitask_sibling_aname("delaydm1")
+            run_dir = root / aname
+            run_dir.mkdir(parents=True)
+            sweep_path = paper_plot._multitask_cue_interp_projection_path(
+                run_dir, "delaydm1", aname, "long_delay_endpoint")
+            with sweep_path.open("wb") as stream:
+                pickle.dump(self._projection(
+                    "long_delay_endpoint", RULES, n_alpha, n_points), stream)
+            with patch.object(paper_plot, "TWO_IN_MULTIPLES_DIR", root), \
+                    patch.object(paper_plot, "SHOW_LEGEND", True), \
+                    patch.object(paper_plot, "_ensure_out_dir"), \
+                    patch.object(paper_plot, "_best_sibling_endpoint_pc_pair",
+                                 return_value=((3, 4), 1.0, "test score")), \
+                    patch.object(paper_plot, "_save_fig") as save:
+                sweep = paper_plot._cue_interp_endpoint_overlay(
+                    "delaydm1", "e_modulation")
+                self.assertIsNotNone(sweep)
+                self.assertTrue(
+                    paper_plot._plot_multitask_long_delay_endpoint_representation(
+                        base_data, "delaydm1", RULES, "e_modulation",
+                        "emodulation", cue_sweep=sweep))
+                # Without the cache the loader yields None and the figure
+                # still renders, overlay-free.
+                (run_dir / sweep_path.name).unlink()
+                self.assertIsNone(paper_plot._cue_interp_endpoint_overlay(
+                    "delaydm1", "hidden"))
+                self.assertTrue(
+                    paper_plot._plot_multitask_long_delay_endpoint_representation(
+                        base_data, "delaydm1", RULES, "hidden", "hidden"))
+
+        figures = {Path(call.args[1]).name: call.args[0]
+                   for call in save.call_args_list}
+        self.assertEqual(set(figures), {
+            "multitask_delaydm_long_delay_endpoint_legend.png",
+            "multitask_delaydm_long_delay_endpoint_emodulation.png",
+            "multitask_delaydm_long_delay_endpoint_hidden.png"})
+        overlaid = figures["multitask_delaydm_long_delay_endpoint_emodulation.png"]
+        plain = figures["multitask_delaydm_long_delay_endpoint_hidden.png"]
+        for fig in (overlaid, plain):
+            self.addCleanup(paper_plot.plt.close, fig)
+        for ax in overlaid.axes:
+            dotted = [line for line in ax.lines if line.get_linestyle() == ":"]
+            # One dotted alpha path per sweep trial: two base rules x 4 trials.
+            self.assertEqual(len(dotted), 2 * n_points)
+            # Every alpha = 1 end is a hollow marker, drawn above the endpoints.
+            hollow = [coll for coll in ax.collections
+                      if coll.get_zorder() == 4]
+            self.assertEqual(len(hollow), 2 * n_points)
+        for ax in plain.axes:
+            self.assertFalse(
+                [line for line in ax.lines if line.get_linestyle() == ":"])
+        legend = figures["multitask_delaydm_long_delay_endpoint_legend.png"]
+        self.addCleanup(paper_plot.plt.close, legend)
+        labels = [text.get_text() for text in legend.legends[0].get_texts()]
+        self.assertEqual(len(labels), 4)
+        self.assertTrue(any("IntegrationModality1 stimulus" in label
+                            for label in labels))
+        extra = [call.kwargs.get("extra", "") for call in save.call_args_list]
+        self.assertTrue(any("cue sweep overlaid: 3 alphas" in text
+                            for text in extra))
+        self.assertTrue(any("no cue sweep" in text for text in extra))
+
     def test_endpoint_plane_comes_from_the_base_endpoint_projection(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -523,7 +523,11 @@ class PaperPlotModeTests(unittest.TestCase):
         }
         data = {"representations": {"e_modulation": entry, "hidden": entry}}
         metrics = {"translation_explained": 0.9, "geometry_r": 0.8, "n_pairs": 4}
-        with patch.object(paper_plot, "_load_pkl_or_skip", return_value=data), \
+        # An empty run directory: the endpoint figure must not pick up a
+        # rule-cue sweep cached on disk (test_sibling_cue_interp covers that).
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(paper_plot, "TWO_IN_MULTIPLES_DIR", Path(directory)), \
+                patch.object(paper_plot, "_load_pkl_or_skip", return_value=data), \
                 patch.object(paper_plot, "_sibling_alignment_metrics",
                              return_value=metrics), \
                 patch.object(paper_plot, "_best_sibling_endpoint_pc_pair",

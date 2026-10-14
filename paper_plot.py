@@ -8782,9 +8782,83 @@ def _best_sibling_endpoint_pc_pair(entry, family):
         task_idx=entry.get("task_idx"))
 
 
+# Overlay the long-delay rule-cue sweep (see plot_multitask_sibling_cue_interp)
+# on the endpoint figure when its projection cache exists. The sweep is
+# projected onto the same joint basis, so its points sit in the same plane.
+_MULTITASK_ENDPOINT_OVERLAY_CUE_INTERP = True
+
+
+def _cue_interp_endpoint_overlay(family, plot_name):
+    """(alphas, sweeps) of `family`'s long-delay rule-cue sweep, or None.
+
+    Reads the endpoint-method projection written by
+    `sibling_delay_analysis.save_cue_interp_pc_projections`; a missing or
+    foreign cache only drops the overlay, never the endpoint figure."""
+    if not _MULTITASK_ENDPOINT_OVERLAY_CUE_INTERP:
+        return None
+    aname = _multitask_sibling_aname(family)
+    path = _multitask_cue_interp_projection_path(
+        TWO_IN_MULTIPLES_DIR / aname, family, aname, "long_delay_endpoint")
+    if not path.exists():
+        print(f"  {family} long-delay {plot_name}: no rule-cue sweep cache "
+              f"({path.name}); drawing endpoints only.")
+        return None
+    with open(path, "rb") as f:
+        sweep_data = pickle.load(f)
+    entry = sweep_data.get("representations", {}).get(plot_name)
+    if sweep_data.get("kind") != "cue_interp" or not entry or not entry.get("sweeps"):
+        print(f"  {family} long-delay {plot_name}: {path.name} holds no "
+              "rule-cue sweep for this representation; drawing endpoints only.")
+        return None
+    return np.asarray(sweep_data["alphas"], dtype=float), entry["sweeps"]
+
+
+def _draw_cue_interp_endpoint_overlay(ax, alphas, sweeps, task_names, bx, by,
+                                      color_for):
+    """Overlay every sweep trial's path across alpha on one endpoint panel.
+
+    Hue stays with the stimulus direction, the panel's convention, so the cue
+    is carried by marker shape as it is for the endpoints themselves: the
+    alpha = 0 start takes the base rule's marker (small, filled; it is that
+    rule's own trial), the alpha = 1 end takes the sibling's marker, hollow,
+    because it is a cue this stimulus was never paired with in training.
+    Intermediate alphas are dots along a dotted path."""
+    for base_rule, sweep in sweeps.items():
+        base_task = task_names.index(base_rule)
+        target_task = task_names.index(sweep["target_rule"])
+        proj = np.asarray(sweep["proj"], dtype=float)      # (n_alpha, n_points, n_pc)
+        stim = np.asarray(sweep["stim_idx"], dtype=int)
+        for s in range(proj.shape[1]):
+            path = proj[:, s][:, [bx, by]]
+            finite = np.isfinite(path).all(axis=1)
+            if np.count_nonzero(finite) < 2:
+                continue
+            color = color_for(stim[s])
+            ax.plot(path[finite, 0], path[finite, 1], linestyle=":",
+                    color=color, linewidth=0.7, alpha=0.7, zorder=2)
+            if alphas.size > 2:
+                mid = path[1:-1][finite[1:-1]]
+                ax.scatter(mid[:, 0], mid[:, 1], color=color, marker=".",
+                           s=7, edgecolor="none", alpha=0.7, zorder=2)
+            start, end = path[0], path[-1]
+            if np.isfinite(start).all():
+                ax.scatter(start[0], start[1], color=color, edgecolor="none",
+                           marker=_MULTITASK_RULE_MARKERS[base_task % 2],
+                           s=12, alpha=0.85, zorder=3)
+            if np.isfinite(end).all():
+                ax.scatter(end[0], end[1], facecolor="none", edgecolor=color,
+                           marker=_MULTITASK_RULE_MARKERS[target_task % 2],
+                           s=31, linewidth=0.8, alpha=0.95, zorder=4)
+
+
 def _plot_multitask_long_delay_endpoint_representation(
-        data, family, rules, plot_name, output_suffix):
-    """Plot default PC1-PC2 beside the best long-delay endpoint PC pair."""
+        data, family, rules, plot_name, output_suffix, cue_sweep=None):
+    """Plot default PC1-PC2 beside the best long-delay endpoint PC pair.
+
+    `cue_sweep` is the family's long-delay rule-cue sweep as returned by
+    `_cue_interp_endpoint_overlay` (the caller loads it); when given, each
+    sweep trial's path across alpha is overlaid in the same plane
+    (`_draw_cue_interp_endpoint_overlay`) and the limits include its points."""
     entry = data.get("representations", {}).get(plot_name)
     if entry is None:
         print(f"  Skipped {family} long-delay {plot_name}: representation "
@@ -8822,7 +8896,24 @@ def _plot_multitask_long_delay_endpoint_representation(
     if len(task_names) != len(rules):
         task_names = list(rules)
 
+    overlay = cue_sweep
+    limit_points = projection
     n_colors = int(labels.max()) + 1
+    if overlay is not None:
+        alphas, sweeps = overlay
+        unknown = [rule for rule in sweeps if rule not in task_names]
+        if unknown:
+            print(f"  {family} long-delay {plot_name}: sweep base rules "
+                  f"{unknown} are not in {task_names}; drawing endpoints only.")
+            overlay = None
+        else:
+            sweep_points = np.concatenate([
+                np.asarray(sweep["proj"], dtype=float).reshape(
+                    -1, projection.shape[1])
+                for sweep in sweeps.values()])
+            limit_points = np.vstack([projection, sweep_points])
+            n_colors = max(n_colors, 1 + max(
+                int(np.max(sweep["stim_idx"])) for sweep in sweeps.values()))
     color_for = lambda label: stim_color(int(label), n_colors)
 
     fig, axs = plt.subplots(1, 2, figsize=(6.8, 3.0), squeeze=False)
@@ -8861,6 +8952,9 @@ def _plot_multitask_long_delay_endpoint_representation(
                         linewidth=0.25,
                         marker=_MULTITASK_RULE_MARKERS[task % 2], s=31,
                         alpha=0.88, zorder=3)
+        if overlay is not None:
+            _draw_cue_interp_endpoint_overlay(
+                ax, alphas, sweeps, task_names, bx, by, color_for)
 
         x_var = f" ({100 * evr[bx]:.1f}%)" if evr.size > bx else ""
         y_var = f" ({100 * evr[by]:.1f}%)" if evr.size > by else ""
@@ -8876,7 +8970,7 @@ def _plot_multitask_long_delay_endpoint_representation(
             if family == "delaydm1" and plot_name == "e_modulation":
                 limit_padding = _MULTITASK_DELAYDM_EMODULATION_LIMIT_PADDING
             xlim, ylim = _adaptive_pc_limits(
-                projection, bx, by, padding=limit_padding)
+                limit_points, bx, by, padding=limit_padding)
         ax.set_xlim(*xlim)
         ax.set_ylim(*ylim)
         ax.set_box_aspect(1)
@@ -8894,7 +8988,21 @@ def _plot_multitask_long_delay_endpoint_representation(
                        label=_TASK_DISPLAY.get(rule, rule))
             for task, rule in enumerate(task_names)
         ]
-        legend_fig = plt.figure(figsize=(2.0, 0.65))
+        legend_height = 0.65
+        if overlay is not None:
+            # One entry per sweep direction: the hollow end marker is the
+            # sibling's shape, so each direction needs its own handle.
+            for base_rule, sweep in sweeps.items():
+                target_task = task_names.index(sweep["target_rule"])
+                handles.append(plt.Line2D(
+                    [], [], marker=_MULTITASK_RULE_MARKERS[target_task % 2],
+                    markerfacecolor="none", markeredgecolor="0.45",
+                    color="0.45", linewidth=0.7, linestyle=":", markersize=5.5,
+                    label=(f"{_TASK_DISPLAY.get(base_rule, base_rule)} stimulus, "
+                           f"{_TASK_DISPLAY.get(sweep['target_rule'], sweep['target_rule'])} "
+                           r"cue ($\alpha$ 0 $\to$ 1)")))
+            legend_height += 0.3 * len(sweeps)
+        legend_fig = plt.figure(figsize=(2.0, legend_height))
         legend_fig.legend(handles=handles, loc="center", frameon=False,
                           fontsize=8, handletextpad=0.5)
         _save_fig(
@@ -8903,13 +9011,15 @@ def _plot_multitask_long_delay_endpoint_representation(
                 f"{_MULTITASK_SIBLING_OUTPUT_NAMES[family]}_long_delay_endpoint_"
                 "legend.png"))
     fig.tight_layout(w_pad=1.5)
+    overlay_note = ("; no cue sweep" if overlay is None else
+                    f"; cue sweep overlaid: {alphas.size} alphas, bases {list(sweeps)}")
     _save_fig(
         fig,
         _multitask_out(
             f"{_MULTITASK_SIBLING_OUTPUT_NAMES[family]}_long_delay_endpoint_"
             f"{output_suffix}.png"),
         extra=(f"  (default PC1-PC2; best PC{best_pc_x}-PC{best_pc_y}; "
-               f"metric={metric_name}; score={score:.3f})"))
+               f"metric={metric_name}; score={score:.3f}{overlay_note})"))
     return True
 
 
@@ -8952,7 +9062,8 @@ def plot_multitask_delaydm_fixed_point_geometry():
                 ("e_modulation", "emodulation"),
                 ("hidden", "hidden")):
             _plot_multitask_long_delay_endpoint_representation(
-                data, family, rules, plot_name, output_suffix)
+                data, family, rules, plot_name, output_suffix,
+                cue_sweep=_cue_interp_endpoint_overlay(family, plot_name))
 
 
 # ─── Rule-cue interpolation between the sibling rules ────────────────────────

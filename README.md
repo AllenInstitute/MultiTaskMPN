@@ -450,8 +450,15 @@ the per-rule budgets. Both are projected onto the method's joint delay basis
 figure's plane: the configured plane for gradient, the best task-specific pair
 for endpoints. Colors follow the alpha ramp of SCHEME family 5 (dark at alpha =
 0, light at alpha = 1; filled = converged, hollow = not; endpoints always
-filled). `--cue-interp-only` adds the sweep to a cached run without touching
-its base artifacts, which otherwise are regenerated from new random trials.
+filled). When the endpoint sweep is cached, the base endpoint figure
+(`multitask_{delaydm,dmcgo}_long_delay_endpoint_{emodulation,hidden}`) also
+overlays each sweep trial's path across alpha in its two planes: hue stays
+with the stimulus direction, the alpha = 0 start takes the base rule's marker
+(small, filled), the alpha = 1 end the sibling's marker, hollow, with dots at
+the intermediate alphas along a dotted path; the legend gains one entry per
+sweep direction. `--cue-interp-only` adds the sweep to a cached run without
+touching its base artifacts, which otherwise are regenerated from new random
+trials.
 
 Both `pretrain/pretraining_analysis.py` and `pretrain/pretraining_post.py` write
 analysis data to `pretraining_analysis/`, pooled figures to `pretrain/fig/`, and
