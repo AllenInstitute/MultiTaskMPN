@@ -67,7 +67,7 @@ python multiple_task/sibling_delay_analysis.py \
 # both methods end with a rule-cue interpolation sweep between the two sibling
 # rules (11 alphas, fixed by SIBLING_CUE_INTERP_N_ALPHA)
 python multiple_task/sibling_delay_analysis.py \
-  --seed 408 --feature L21e4 --families delaydm1 dmcgo \
+  --seed 921 --feature L21e4 --families delaydm1 dmcgo \
   --method long_delay_endpoint
 python paper_plot.py --only sibling_cue_interp
 

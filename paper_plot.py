@@ -405,7 +405,7 @@ _set_multitask_l2(MULTITASK_L2)
 # all four L2 cohorts.
 # DelayDM and DMCGo sibling-task probes (two_in_multiple mode) select their
 # trained runs independently of each other and of the clustering figures.
-DELAYDM_ANAME = "everything_seed408_L21e4+hidden300+batch128+angle"
+DELAYDM_ANAME = "everything_seed921_L21e4+hidden300+batch128+angle"
 DMCGO_ANAME = "everything_seed921_L21e4+hidden300+batch128+angle"
 # Produced by multiple_task/sibling_delay_analysis.py, which writes into
 # two_in_multiples/{aname}/ the artifacts the sibling geometry figures read:
@@ -9306,10 +9306,12 @@ def _render_multitask_cue_interp_2d(entry, alphas, family, method, pair,
     groups_by_sweep = {
         base_rule: _cue_interp_sweep_groups(family, rules, base_rule, sweep)
         for base_rule, sweep in sweeps.items()}
+    # No shared x axis: every panel keeps its own 0 / 1 tick labels, so a
+    # panel read on its own still shows where the sweep starts and ends.
     fig, axs = plt.subplots(
         2, n_cols,
         figsize=(_MULTITASK_CUE_INTERP_PANEL_IN * n_cols, 3.3),
-        sharex=True, squeeze=False, layout="constrained")
+        squeeze=False, layout="constrained")
     xpad = 0.1 * max(alphas.max() - alphas.min(), 1e-9)
     for row, (pc, index) in enumerate(((pc_x, bx), (pc_y, by))):
         ylim = _cue_interp_axis_limits(sweeps, index)
@@ -9329,8 +9331,9 @@ def _render_multitask_cue_interp_2d(entry, alphas, family, method, pair,
             ax.set_xlim(alphas.min() - xpad, alphas.max() + xpad)
             ax.set_ylim(*ylim)
             ax.set_xticks([alphas.min(), alphas.max()])
+            ax.set_xticklabels([f"{alphas.min():g}", f"{alphas.max():g}"])
             ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(3))
-            ax.tick_params(axis="x", labelsize=7)
+            ax.tick_params(axis="x", labelsize=7, labelbottom=True)
             ax.tick_params(axis="y", labelleft=False)
             ax.spines[["top", "right"]].set_visible(False)
             if col == 0:
