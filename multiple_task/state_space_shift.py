@@ -3,7 +3,7 @@ State space geometry analysis across tasks.
 
 Examines how the network's internal representations (hidden states, modulation
 matrices, effective modulation) are geometrically organized across tasks in
-high-dimensional space. Inspired by Fig 4C of Yang et al. (2024, Nature
+high-dimensional space. Inspired by Fig 4C of Driscoll et al. (2024, Nature
 Neuroscience), this script tests whether tasks that start from nearby initial
 conditions also produce similar dynamical trajectories.
 

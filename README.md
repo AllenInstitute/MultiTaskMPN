@@ -73,8 +73,13 @@ python paper_plot.py --only sibling_cue_interp
 
 # additional state-space analysis
 python multiple_task/state_space_shift.py
+# category structure and task-vector additivity of the saved task centroids
+python multiple_task/state_space_structure.py
 # rank state-space seeds and plot the best example without clearing other figures
 python paper_plot.py --only state_space_combined
+python paper_plot.py --only state_space_rdm
+python paper_plot.py --only state_space_rdm_example
+python paper_plot.py --only state_space_category_test
 
 # single- / two-task (train + analyze chained by the pipeline)
 python one_task/run_one_task_pipeline.py
@@ -400,13 +405,49 @@ Key data outputs: `multiple_tasks/` (checkpoints, curves),
 `multiple_tasks_perf/` and `multiple_tasks_norm/` (lesion results/plots),
 `onetask/`, `twotasks/`, `pretraining/`, `state_space/`, `paper_plot/`.
 
-The state-space workflow is `state_space_shift.py` -> `paper_plot.py`.
+The state-space workflow is `state_space_shift.py` -> `state_space_structure.py`
+-> `paper_plot.py`.
 The analysis saves original-feature task centroids, trial counts and display
 PCA together in `state_space/state_space_pca_<aname>_noise0.01.pkl`, alongside
 the existing distance-angle results. Display PCA is fitted in batches; the
 analysis otherwise retains its full-trajectory workflow and memory requirements.
 The batch analysis clears top-level files in `state_space/` before regenerating
-the four standard L2 cohorts.
+the four standard L2 cohorts, so `state_space_structure.py` has to be rerun
+after it.
+
+`python multiple_task/state_space_structure.py` reads every PCA cache and
+tests, for the hidden state, M and W ⊙ M of each run, two properties of the
+full-dimensional task centroids (nothing is recomputed from network activity,
+so it runs in seconds). (1) Category structure: the separation score S above
+against a null that shuffles the six category labels over the 15 tasks
+(10,000 permutations, seed 0, one-sided p), plus the 15 × 15 centroid distance
+matrix and its average-linkage ordering. (2) Task-vector additivity: for the
+task pairs differing in one factor (`core/state_space_geometry.py`
+`TASK_FACTOR_PAIRS`: pro to anti, delay to memory, delay to reaction,
+modality 1 to 2, context cue, match to category) the mean pairwise cosine of
+the centroid-difference vectors and the share of their variance along one
+direction, against a null that permutes which centroid belongs to which task
+(one-sided p per factor and pooled over factors). Per L2 cohort it also
+averages the runs' distance matrices after dividing each by its mean
+task-pair distance, and gives the mean matrix its own tree and category test
+plus the seed-to-seed Spearman correlation of the per-run matrices. Per-run
+results with the null arrays go to
+`state_space/state_space_structure_<aname>_noise0.01.pkl`; every run's
+statistics and the cohort means to `state_space/state_space_structure_results.pkl`.
+`paper_plot.py` draws them in `state_space` mode: `state_space_rdm` (the
+lower triangle of the L2 = `STATE_SPACE_EXAMPLE_L2` cohort's mean W ⊙ M
+matrix, ordered by its tree drawn above it, task labels on their category
+color, run count, S, p and the seed-to-seed consistency in the legend, and
+the "distance / mean distance" color scale as a separate
+`multitask_state_space_rdm_colorbar_eff_mod` figure in the style of
+`heatmap_colorbar`), `state_space_rdm_example` (the same drawing of the
+selected single run's W ⊙ M matrix in its own distance units,
+`multitask_state_space_rdm_example_eff_mod` with its own colorbar figure),
+and `state_space_category_test` (every run's S per L2 cohort for the hidden
+state and W ⊙ M, filled when p < 0.05, the range of the runs' null 95th
+percentiles as a gray band, the cohort median as a dash). The task-vector
+statistics are computed and cached but have no paper figure; raw M stays in
+the caches.
 
 Paper examples are selected within `STATE_SPACE_EXAMPLE_L2` (currently `1e-4`)
 using full-dimensional effective-modulation task centers. Same-category task
@@ -417,6 +458,12 @@ Categories follow the six paper color groups. All valid seeds are ranked and
 summarized in `paper_plot/multitask_state_space_centroid_scores.json`; missing
 high-dimensional centers are reported, never replaced with a 2D score.
 The best seed supplies all three PCA example panels, with names breaking ties.
+`python paper_plot.py --only state_space_combined_L21e2` draws the same three
+panels for the L2 = 1e-2 cohort (`STATE_SPACE_STRONG_L2`), whose category
+structure is the strongest, selecting that cohort's seed by the same
+criterion; its ranking is saved as
+`paper_plot/multitask_state_space_centroid_scores_L21e2.json` and the panels
+as `multitask_state_space_{hidden,mod,eff_mod}_L21e2.png`.
 
 Distance-angle regression uses ordinary least squares with a fitted intercept:
 `angle = intercept + slope * distance`. The existing `(r, slope, p)` tuples

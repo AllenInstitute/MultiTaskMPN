@@ -45,7 +45,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import seaborn as sns
 from pathlib import Path
-from scipy.cluster.hierarchy import fcluster
+from scipy.cluster.hierarchy import dendrogram, fcluster
 from core.sibling_geometry import (best_delaydm_sweep_pc_pair,
                                    best_task_specific_pc_pair)
 from core.state_space_geometry import task_centroid_separation
@@ -2241,8 +2241,14 @@ def _eff_mod_task_centroid_metrics(data):
     return task_centroid_separation(record["task_centroids"], categories)
 
 
-def _state_space_centroid_ranking(result_dict, pca_loader=None):
-    """Rank all valid seeds and summarize their high-dimensional separation."""
+def _l2_feature_tag(strength):
+    """The run-name feature tag of an L2 strength: 1e-4 -> 'L21e4'."""
+    return f"L21e{-int(round(np.log10(strength)))}"
+
+
+def _state_space_centroid_ranking(result_dict, pca_loader=None, strength=STATE_SPACE_EXAMPLE_L2):
+    """Rank all valid seeds of the L2 `strength` cohort and summarize their
+    high-dimensional separation."""
     if pca_loader is None:
         pca_loader = _load_state_space_pca
     rankings, skipped = [], []
@@ -2253,8 +2259,7 @@ def _state_space_centroid_ranking(result_dict, pca_loader=None):
         except (KeyError, TypeError, ValueError):
             continue
         if (not np.isfinite(l2_strength)
-                or not np.isclose(l2_strength, STATE_SPACE_EXAMPLE_L2,
-                                  rtol=1e-6, atol=0.0)):
+                or not np.isclose(l2_strength, strength, rtol=1e-6, atol=0.0)):
             continue
         try:
             data = pca_loader(aname)
@@ -2281,7 +2286,7 @@ def _state_space_centroid_ranking(result_dict, pca_loader=None):
         "criterion": "(between_distance - within_distance) / (between_distance + within_distance)",
         "space": "original effective-modulation features (W * M)",
         "weighting": "equal within-category means and equal between-category-pair means",
-        "l2": STATE_SPACE_EXAMPLE_L2,
+        "l2": strength,
         "noise_level": STATE_SPACE_NOISE_LEVEL,
         "n_candidates": len(rankings) + len(skipped),
         "n_scored": len(rankings),
@@ -2292,28 +2297,32 @@ def _state_space_centroid_ranking(result_dict, pca_loader=None):
     }
 
 
-def _best_state_space_trial(result_dict, pca_loader=None):
+def _best_state_space_trial(result_dict, pca_loader=None, strength=STATE_SPACE_EXAMPLE_L2):
     """Select maximal task-center separation; break ties by run name."""
-    report = _state_space_centroid_ranking(result_dict, pca_loader)
+    report = _state_space_centroid_ranking(result_dict, pca_loader, strength)
     if not report["rankings"]:
         return None
     best = report["rankings"][0]
     return best["aname"], best["score"]
 
 
-def _load_best_state_space_trial():
-    """Report all seed scores and select the shared example without a 2D fallback."""
+def _load_best_state_space_trial(strength=STATE_SPACE_EXAMPLE_L2):
+    """Report all seed scores of the L2 `strength` cohort and select its example
+    without a 2D fallback. The default cohort's ranking is saved as
+    state_space_centroid_scores.json, another cohort's with its feature tag
+    (state_space_centroid_scores_L21e2.json)."""
     result_dict = _load_pkl_or_skip(
         RVAL_RESULT_PATH, "Run python multiple_task/state_space_shift.py first.")
     if result_dict is None:
         return None
-    report = _state_space_centroid_ranking(result_dict)
+    report = _state_space_centroid_ranking(result_dict, strength=strength)
     _ensure_out_dir()
-    report_path = _multitask_out("state_space_centroid_scores.json")
+    suffix = "" if strength == STATE_SPACE_EXAMPLE_L2 else f"_{_l2_feature_tag(strength)}"
+    report_path = _multitask_out(f"state_space_centroid_scores{suffix}.json")
     with report_path.open("w") as stream:
         json.dump(report, stream, indent=2, allow_nan=False)
     print(f"  Task-center ranking: {report['n_scored']}/{report['n_candidates']} seeds "
-          f"at L2={STATE_SPACE_EXAMPLE_L2:.0e}; saved {report_path}")
+          f"at L2={strength:.0e}; saved {report_path}")
     for row in report["rankings"]:
         print(f"    {row['aname']}: S={row['score']:.6f}, "
               f"within={row['within_distance']:.6g}, "
@@ -2357,6 +2366,13 @@ _STATE_SPACE_LEGEND = [
 ]
 
 
+# Figure size of one state-space PCA panel. With the square axes box, the
+# two-line y label and the three-row color key above the axes this lands the
+# drawn box at about 1.6 in, the size of one `_render_multitask_cue_interp_2d`
+# subpanel (its 1.8 in column minus labels).
+_STATE_SPACE_PANEL_FIGSIZE = (2.5, 2.75)
+
+
 def _plot_state_space_panel(data, key, ylabel_prefix, out_name):
     """One context-end PCA panel as its own figure, colored PER TASK from
     _RULE_MOTIF — the single color mapping every figure shares (same colors
@@ -2367,32 +2383,43 @@ def _plot_state_space_panel(data, key, ylabel_prefix, out_name):
     pca = data["pca_results"][key]
     X_2d, ctx_rule_labels = pca["X_2d"], pca["ctx_rule_labels"]
 
-    fig, ax = plt.subplots(1, 1, figsize=(2.5, 2.4))
+    # A square panel the size of one rule-cue sweep subpanel
+    # (`_render_multitask_cue_interp_2d`, about 1.6 in), so the state-space
+    # and sweep panels can sit side by side at one scale; the figure adds the
+    # room its tick and axis labels take.
+    fig, ax = plt.subplots(1, 1, figsize=_STATE_SPACE_PANEL_FIGSIZE)
     for idx, rule in enumerate(all_rules):
         sel = ctx_rule_labels == idx
         ax.scatter(X_2d[sel, 0], X_2d[sel, 1],
                    color=_RULE_MOTIF[rule][1], alpha=0.5, s=14,
                    edgecolors="none")
 
+    ax.set_box_aspect(1)
     ax.set_xlabel("PC1", fontsize=8)
     ax.set_ylabel(f"{ylabel_prefix}\nPC2", fontsize=8)
     ax.spines[["top", "right"]].set_visible(False)
-    ax.xaxis.set_major_locator(mpl.ticker.MaxNLocator(integer=True))
-    ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(integer=True))
+    # A few round ticks per axis whatever the PC range (the ranges differ by
+    # orders of magnitude between representations and cohorts), labelled
+    # without trailing zeros, as in the association scatters.
+    for axis in (ax.xaxis, ax.yaxis):
+        axis.set_major_locator(mticker.MaxNLocator(4, steps=[1, 2, 5, 10]))
+        axis.set_major_formatter(mticker.FuncFormatter(_short_tick))
     # Each figure stands alone, so each carries the color key (routed through
     # _legend, so --no-legend still suppresses it). Handles are built from the
-    # shared color list, not the scatters, so one entry per color.
+    # shared color list, not the scatters, so one entry per color. The key sits
+    # above the axes: inside, it covered task clusters in some runs.
     handles = [mpl.lines.Line2D([0], [0], marker="o", linestyle="",
                                 color=col, alpha=0.5, markersize=4, label=lab)
                for lab, col in _STATE_SPACE_LEGEND]
-    _legend(ax, handles=handles, frameon=True, loc="best", fontsize=5,
+    _legend(ax, handles=handles, frameon=False, loc="lower left", bbox_to_anchor=(0.0, 1.0),
+            borderaxespad=0.0, ncol=2, columnspacing=0.8, handletextpad=0.3, fontsize=5,
             markerscale=1.0)
 
     fig.tight_layout()
     _save_fig(fig, _multitask_out(out_name))
 
 
-def plot_state_space_combined():
+def plot_state_space_combined(strength=STATE_SPACE_EXAMPLE_L2, suffix=""):
     """
     Figures: context-end PCA colored by task category — hidden state, raw
     modulation, and effective modulation, as THREE separate figures:
@@ -2402,12 +2429,14 @@ def plot_state_space_combined():
 
     These are separate PCA spaces whose PCs are not comparable, so each is sized
     and placed independently. Each carries its own axis labels and category
-    legend. All three use the same trial selected by high-dimensional task-center
-    separation, while ``mod`` plots M and ``eff_mod`` plots M elementwise
-    multiplied by the learned plastic weight matrix W.
+    legend. All three use the same trial, the run of the L2 `strength` cohort
+    (STATE_SPACE_EXAMPLE_L2 by default) with the best high-dimensional
+    task-center separation, while ``mod`` plots M and ``eff_mod`` plots M
+    elementwise multiplied by the learned plastic weight matrix W. `suffix` is
+    appended to the three file stems (plot_state_space_combined_l21e2).
     """
     _ensure_out_dir()
-    selected = _load_best_state_space_trial()
+    selected = _load_best_state_space_trial(strength)
     if selected is None:
         return
     aname, _, _ = selected
@@ -2417,12 +2446,29 @@ def plot_state_space_combined():
               "Run state_space_shift.py first.")
         return
 
-    for key, ylabel_prefix, out_name in (
-        ("hidden", "Hidden state", "state_space_hidden.png"),
-        ("mod", "Modulation", "state_space_mod.png"),
-        ("eff_mod", "Eff. modulation", "state_space_eff_mod.png"),
+    for key, ylabel_prefix in (
+        ("hidden", "Hidden state"),
+        ("mod", "Modulation"),
+        ("eff_mod", "Eff. modulation"),
     ):
-        _plot_state_space_panel(data, key, ylabel_prefix, out_name)
+        _plot_state_space_panel(data, key, ylabel_prefix, f"state_space_{key}{suffix}.png")
+
+
+STATE_SPACE_STRONG_L2 = 1e-2
+
+
+def plot_state_space_combined_l21e2():
+    """
+    Figures: the three context-end PCA panels of plot_state_space_combined for
+    the L2 = STATE_SPACE_STRONG_L2 (1e-2) cohort, whose category structure is
+    the strongest (state_space_category_test), from the run of that cohort
+    selected by the same task-center separation criterion:
+      multitask_state_space_hidden_L21e2.png
+      multitask_state_space_mod_L21e2.png
+      multitask_state_space_eff_mod_L21e2.png
+    The cohort's ranking is saved as state_space_centroid_scores_L21e2.json.
+    """
+    plot_state_space_combined(STATE_SPACE_STRONG_L2, f"_{_l2_feature_tag(STATE_SPACE_STRONG_L2)}")
 
 
 def _state_space_r_values_by_l2(result_dict, data_types):
@@ -2561,6 +2607,306 @@ def plot_state_space_dist_angle():
 
     fig.tight_layout()
     _save_fig(fig, _multitask_out("state_space_dist_angle.png"))
+
+
+# ─── Figure: State space structure (category test, RDM, task vectors) ───────
+# All three read the caches of multiple_task/state_space_structure.py: the
+# per-run `state_space_structure_<aname>_noise0.01.pkl` (distances, linkage,
+# null arrays) and the combined `state_space_structure_results.pkl` (every
+# run's statistics). Nothing is recomputed here.
+
+STATE_SPACE_STRUCTURE_RESULT_PATH = STATE_SPACE_DIR / "state_space_structure_results.pkl"
+_STATE_SPACE_STRUCTURE_HINT = "Run python multiple_task/state_space_structure.py first."
+# The two representations the structure figures show, as (key, title); raw M
+# stays in the caches but, as in the distance-angle figure, is not drawn.
+_STATE_SPACE_STRUCTURE_PANELS = (("hidden", "Hidden state"), ("eff_mod", "Eff. modulation"))
+# The distance-matrix figures show the effective modulation only.
+_STATE_SPACE_RDM_PANELS = (("eff_mod", "Eff. modulation"),)
+_STATE_SPACE_RDM_FIGSIZE = (3.0, 3.5)
+_STATE_SPACE_SIGNIFICANCE = 0.05
+
+
+def _load_state_space_structure(aname):
+    """Load state_space_structure.py's per-run cache, or None."""
+    path = STATE_SPACE_DIR / f"state_space_structure_{aname}_noise{STATE_SPACE_NOISE_LEVEL}.pkl"
+    if not path.exists():
+        return None
+    with path.open("rb") as stream:
+        return pickle.load(stream)
+
+
+def _permutation_p_text(p_value):
+    return "p < 0.001" if p_value < 0.001 else f"p = {p_value:.3f}"
+
+
+def _significance_marker(ax, x, y, significant, size=32):
+    """One statistic as a point: filled in the scatter blue when its saved
+    permutation p is below 0.05, hollow otherwise (the convention of every
+    per-run `_seeds` figure)."""
+    ax.scatter([x], [y], s=size, zorder=3,
+               color=_SCATTER_POINT_COLOR if significant else "white",
+               edgecolors=_SCATTER_POINT_COLOR if significant else "k", linewidths=0.6)
+
+
+def _significance_legend_handles():
+    filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color=_SCATTER_POINT_COLOR,
+                              markersize=5, label=f"permutation p < {_STATE_SPACE_SIGNIFICANCE}")
+    hollow = mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
+                              markeredgecolor="k", markersize=5,
+                              label=rf"p $\geq$ {_STATE_SPACE_SIGNIFICANCE}")
+    return [filled, hollow]
+
+
+def _plot_state_space_rdm_panel(rules, entry, legend_text, out_name, colorbar_name,
+                                colorbar_label, key):
+    """One task distance matrix (`entry`: distances, linkage, leaf_order and
+    separation, from a per-run or a cohort-mean cache), ordered by its saved
+    average-linkage tree drawn above it, with `legend_text` as the legend. The
+    matrix is symmetric, so only its lower triangle (with the zero diagonal)
+    is drawn; tick labels carry the task display names on their category
+    color. The color scale is exported as its own figure, `colorbar_name`, in
+    the style of the task-variance heatmap colorbars."""
+    rules = list(rules)
+    distances = np.asarray(entry["distances"], dtype=float)
+    fig = plt.figure(figsize=_STATE_SPACE_RDM_FIGSIZE)
+    grid = fig.add_gridspec(2, 1, height_ratios=[0.22, 1.0], hspace=0.04)
+    ax_tree = fig.add_subplot(grid[0, 0])
+    ax = fig.add_subplot(grid[1, 0])
+
+    # The dendrogram decides the leaf order on screen; the heatmap follows it,
+    # and the saved order (same scipy routine) is checked rather than trusted.
+    tree = dendrogram(np.asarray(entry["linkage"], dtype=float), ax=ax_tree, no_labels=True,
+                      color_threshold=0.0, above_threshold_color="0.35")
+    order = np.asarray(tree["leaves"], dtype=int)
+    if not np.array_equal(order, np.asarray(entry["leaf_order"], dtype=int)):
+        print(f"  Note: {key} dendrogram leaf order differs from the saved order; "
+              "the drawn tree's order is used.")
+    ax_tree.set_axis_off()
+
+    ordered = distances[np.ix_(order, order)]
+    vmax = float(ordered.max())
+    lower = np.ma.masked_where(np.triu(np.ones_like(ordered, dtype=bool), k=1), ordered)
+    cmap = plt.get_cmap(_MULTITASK_HEATMAP_CMAP).copy()
+    cmap.set_bad("none")                       # masked upper triangle stays blank
+    ax.imshow(lower, cmap=cmap, vmin=0.0, vmax=vmax, interpolation="nearest", aspect="equal")
+    names = [_TASK_DISPLAY.get(rules[index], rules[index]) for index in order]
+    ax.set_xticks(np.arange(len(order)))
+    ax.set_yticks(np.arange(len(order)))
+    ax.set_xticklabels(names, rotation=45, ha="right", rotation_mode="anchor", fontsize=5)
+    ax.set_yticklabels(names, fontsize=5)
+    ax.tick_params(length=0, pad=1.5)
+    for axis in ("x", "y"):
+        _color_motif_ticklabels(ax, [rules[index] for index in order], axis=axis)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    separation = entry["separation"]
+    _legend(ax_tree, [_invisible_legend_handle()], [legend_text], handlelength=0,
+            handletextpad=0, loc="lower left", bbox_to_anchor=(0.0, 1.0), borderaxespad=0.0,
+            fontsize=6, frameon=False)
+    _save_fig(fig, _multitask_out(out_name),
+              extra=f"  ({key}: S = {separation['score']:.4f}, "
+                    f"{_permutation_p_text(separation['p_value'])})")
+    # Each representation has its own distance scale, so each exports its own
+    # bar, at the size and placement of plot_multitask_heatmap_colorbar.
+    _save_standalone_colorbar(
+        _multitask_out(colorbar_name), cmap=_MULTITASK_HEATMAP_CMAP, vmin=0.0, vmax=vmax,
+        ticks=[0.0, vmax], ticklabels=["0", f"{vmax:.1f}"], label=colorbar_label,
+        orientation="horizontal", figsize=(1.9, 0.62), rect=(0.05, 0.62, 0.90, 0.24),
+        labelsize=8, label_fontsize=8)
+
+
+def _state_space_cohort_structure(combined, strength):
+    """The cohort-mean entry of the combined structure results for one L2
+    strength, or None (with a message) when the cache predates cohort means
+    or holds no runs of that strength."""
+    cohorts = combined.get("cohorts")
+    if cohorts is None:
+        print(f"  Skipped: structure results hold no cohort means. {_STATE_SPACE_STRUCTURE_HINT}")
+        return None
+    for saved_strength, cohort in cohorts.items():
+        if np.isclose(float(saved_strength), strength, rtol=1e-6, atol=0.0):
+            return cohort
+    print(f"  Skipped: no runs at L2={strength:.0e} in the structure results.")
+    return None
+
+
+def plot_state_space_rdm():
+    """
+    Figure: the mean 15 x 15 distance matrix between the full-dimensional
+    context-end effective-modulation (W * M) task centroids over every run of
+    the L2 = STATE_SPACE_EXAMPLE_L2 cohort:
+      multitask_state_space_rdm_eff_mod.png
+
+    Each run's matrix is divided by its mean task-pair distance before
+    averaging (state_space_structure.py), so the scale is "distance / mean
+    distance" and a run with a larger representation does not dominate. Only
+    the lower triangle of the symmetric matrix is drawn. Tasks are ordered by
+    the mean matrix's average-linkage tree drawn above it, so same-category
+    tasks that cluster appear as blocks; tick labels sit on their category
+    color. The legend reports the number of runs, the category separation S
+    of the mean matrix with its one-sided label-permutation p, and the median
+    seed-to-seed Spearman correlation of the runs' matrices (how far the mean
+    stands for every run). Each representation's color scale is exported as a
+    separate colorbar figure (multitask_state_space_rdm_colorbar_{key}.png) in
+    the style of the task-variance heatmap colorbar. The single selected run's
+    matrix is plot_state_space_rdm_example.
+    """
+    _ensure_out_dir()
+    combined = _load_pkl_or_skip(STATE_SPACE_STRUCTURE_RESULT_PATH, _STATE_SPACE_STRUCTURE_HINT)
+    if combined is None:
+        return
+    cohort = _state_space_cohort_structure(combined, STATE_SPACE_EXAMPLE_L2)
+    if cohort is None:
+        return
+    for key, title in _STATE_SPACE_RDM_PANELS:
+        if key not in cohort["representations"]:
+            print(f"  Skipped {key}: not in the cohort means.")
+            continue
+        entry = cohort["representations"][key]
+        separation, consistency = entry["separation"], entry["consistency"]
+        text = (f"{title}, mean of {cohort['n_runs']} runs at "
+                rf"$L_2 = 10^{{{int(round(np.log10(STATE_SPACE_EXAMPLE_L2)))}}}$: "
+                f"S = {separation['score']:.3f}, {_permutation_p_text(separation['p_value'])}\n"
+                rf"seed-to-seed Spearman $\rho$ median {consistency['median']:.2f} "
+                f"({consistency['min']:.2f} to {consistency['max']:.2f})")
+        _plot_state_space_rdm_panel(cohort["all_rules"], entry, text,
+                                    f"state_space_rdm_{key}.png",
+                                    f"state_space_rdm_colorbar_{key}.png",
+                                    "Distance / mean distance", key)
+
+
+def plot_state_space_rdm_example():
+    """
+    Figure: the 15 x 15 Euclidean distance matrix between the full-dimensional
+    context-end effective-modulation task centroids of the automatically
+    selected state-space trial (the run of the PCA and distance-angle figures):
+      multitask_state_space_rdm_example_eff_mod.png
+
+    Drawn like plot_state_space_rdm (lower triangle, tree-ordered, labels on
+    their category color, separate colorbar figures
+    multitask_state_space_rdm_example_colorbar_{key}.png) but from the
+    per-run cache in the run's own distance units, with that run's saved
+    category separation S and permutation p in the legend.
+    """
+    _ensure_out_dir()
+    selected = _load_best_state_space_trial()
+    if selected is None:
+        return
+    aname = selected[0]
+    structure = _load_state_space_structure(aname)
+    if structure is None:
+        print(f"  Skipped: no state-space structure cache for {aname}. "
+              f"{_STATE_SPACE_STRUCTURE_HINT}")
+        return
+    for key, title in _STATE_SPACE_RDM_PANELS:
+        if key not in structure["representations"]:
+            print(f"  Skipped {key}: not in the structure cache.")
+            continue
+        entry = structure["representations"][key]
+        separation = entry["separation"]
+        text = (f"{title}: S = {separation['score']:.3f}, "
+                f"{_permutation_p_text(separation['p_value'])}")
+        _plot_state_space_rdm_panel(structure["all_rules"], entry, text,
+                                    f"state_space_rdm_example_{key}.png",
+                                    f"state_space_rdm_example_colorbar_{key}.png",
+                                    "Centroid distance", key)
+
+
+def _state_space_runs_by_l2(runs):
+    """Group the combined structure results by the four analyzed L2 strengths,
+    skipping runs of any other strength."""
+    grouped = {strength: {} for strength in STATE_SPACE_L2_STRENGTHS}
+    for aname in sorted(runs):
+        entry = runs[aname]
+        strength = next(
+            (candidate for candidate in STATE_SPACE_L2_STRENGTHS
+             if np.isclose(float(entry["l2_info"]), candidate, rtol=1e-6, atol=0.0)),
+            None)
+        if strength is not None:
+            grouped[strength][aname] = entry
+    return grouped
+
+
+def _l2_tick_label(strength):
+    return rf"$10^{{{int(round(np.log10(strength)))}}}$"
+
+
+def plot_state_space_category_test():
+    """
+    Figure: multitask_state_space_category_test.png — the category-balanced
+    separation S of every analyzed run, per L2 cohort, for the hidden state
+    and the effective modulation.
+
+    One point per run (filled when its saved one-sided label-permutation p is
+    below 0.05), its null's 95th percentile as a gray tick behind it, and the
+    median over the cohort's runs as a dash. S near zero means the six paper
+    categories group the context-end centroids no better than a random
+    regrouping of the same sizes. Read from the combined
+    state_space_structure.py results; nothing is recomputed.
+    """
+    _ensure_out_dir()
+    combined = _load_pkl_or_skip(STATE_SPACE_STRUCTURE_RESULT_PATH, _STATE_SPACE_STRUCTURE_HINT)
+    if combined is None:
+        return
+    grouped = _state_space_runs_by_l2(combined["runs"])
+    positions = np.arange(len(STATE_SPACE_L2_STRENGTHS))
+    fig, axs = plt.subplots(1, len(_STATE_SPACE_STRUCTURE_PANELS), figsize=(4.6, 2.4),
+                            sharey=True)
+    summaries = []
+    for ax, (key, title) in zip(axs, _STATE_SPACE_STRUCTURE_PANELS):
+        ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
+        counts = []
+        for position, strength in zip(positions, STATE_SPACE_L2_STRENGTHS):
+            entries = [run["representations"][key] for run in grouped[strength].values()
+                       if key in run["representations"]]
+            scores = [entry["separation"]["score"] for entry in entries]
+            quantiles = [entry["separation"]["null_quantile_95"] for entry in entries]
+            if quantiles:
+                # The runs' null 95th percentiles nearly coincide, so one band
+                # from the lowest to the highest spans the cohort.
+                ax.fill_between([position - 0.3, position + 0.3], min(quantiles),
+                                max(quantiles), color="0.82", linewidth=0, zorder=1)
+            offsets = (np.arange(len(entries)) - (len(entries) - 1) / 2) * 0.07
+            significant = 0
+            for offset, entry in zip(offsets, entries):
+                separation = entry["separation"]
+                is_significant = separation["p_value"] < _STATE_SPACE_SIGNIFICANCE
+                significant += int(is_significant)
+                _significance_marker(ax, position + offset, separation["score"], is_significant,
+                                     size=22)
+            if scores:
+                ax.hlines(np.median(scores), position - 0.3, position + 0.3,
+                          color=_TREND_LINE_COLOR, linewidth=1.8, zorder=4)
+            counts.append(f"{significant}/{len(entries)}")
+        summaries.append(f"{key}: " + ", ".join(
+            f"L2 {strength:.0e} {count}" for strength, count in
+            zip(STATE_SPACE_L2_STRENGTHS, counts)))
+        ax.set_xticks(positions)
+        ax.set_xticklabels([f"{_l2_tick_label(strength)}\n{count}" for strength, count
+                            in zip(STATE_SPACE_L2_STRENGTHS, counts)], fontsize=7)
+        ax.set_xlim(-0.6, len(positions) - 0.4)
+        ax.set_xlabel(r"$L_2$ (runs with p < 0.05)", fontsize=8)
+        ax.set_title(title, fontsize=9, pad=4)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.tick_params(axis="y", labelsize=7)
+    axs[0].set_ylabel("Category separation S", fontsize=8)
+    band = mpl.patches.Patch(color="0.82", label="null 95th percentile (range over runs)")
+    median = mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8,
+                              label="median over runs")
+    _state_space_figure_legend(fig, _significance_legend_handles() + [band, median])
+    _save_fig(fig, _multitask_out("state_space_category_test.png"),
+              extra="  " + "; ".join(summaries))
+
+
+def _state_space_figure_legend(fig, handles):
+    """One frameless legend row across the top of a two-panel structure figure
+    (an axes legend would make tight_layout reserve its width for one panel),
+    gated by SHOW_LEGEND like every legend. Lays the figure out underneath."""
+    if SHOW_LEGEND:
+        fig.legend(handles=handles, loc="upper center", ncol=len(handles), frameon=False,
+                   fontsize=6, columnspacing=1.0, handletextpad=0.4, bbox_to_anchor=(0.5, 1.0))
+    fig.tight_layout(rect=(0, 0, 1, 0.92 if SHOW_LEGEND else 1))
 
 
 # ─── Figure: Over-membership ─────────────────────────────────────────────────
@@ -10897,8 +11243,14 @@ FIGURES_BY_MODE = {
     },
     "state_space": {
         "state_space_combined": plot_state_space_combined,
+        "state_space_combined_L21e2": plot_state_space_combined_l21e2,
         "state_space_dist_angle": plot_state_space_dist_angle,
         "state_space_r_values": plot_state_space_r_values,
+        # Category structure and task-vector additivity of the context-end
+        # task centroids, from state_space_structure.py.
+        "state_space_rdm": plot_state_space_rdm,
+        "state_space_rdm_example": plot_state_space_rdm_example,
+        "state_space_category_test": plot_state_space_category_test,
     },
     "acc_plot": {
         "l2_accuracy": plot_l2_vs_accuracy,
@@ -11094,7 +11446,7 @@ def main():
         "lesion": f"{LESION_ANAME} (L2={MULTITASK_L2} cohort; *_seeds figures over its cached seeds)",
         "state_space": (
             f"(auto-selects best high-dimensional task-center separation within L2={STATE_SPACE_EXAMPLE_L2:.0e}; "
-            "R-values split across L2 1e-5/1e-4/1e-3/1e-2 cohorts)"
+            "R-values and the category test split across L2 1e-5/1e-4/1e-3/1e-2 cohorts)"
         ),
         "acc_plot": "(aggregated across seeds)",
         "two_in_multiple": "; ".join(

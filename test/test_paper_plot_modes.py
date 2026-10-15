@@ -1,5 +1,6 @@
 """Checks for the public paper-figure mode grouping."""
 
+import copy
 import inspect
 import json
 import pickle
@@ -228,8 +229,12 @@ class PaperPlotModeTests(unittest.TestCase):
     def test_state_space_figures_have_their_own_mode(self):
         expected = {
             "state_space_combined",
+            "state_space_combined_L21e2",
             "state_space_dist_angle",
             "state_space_r_values",
+            "state_space_rdm",
+            "state_space_rdm_example",
+            "state_space_category_test",
         }
         self.assertEqual(set(paper_plot.FIGURES_BY_MODE["state_space"]), expected)
         self.assertTrue(expected.isdisjoint(
@@ -314,6 +319,33 @@ class PaperPlotModeTests(unittest.TestCase):
         self.assertAlmostEqual(report["summary"]["score"]["mean"], np.mean(scores))
         self.assertAlmostEqual(report["summary"]["score"]["std"], np.std(scores, ddof=1))
 
+    def test_state_space_strong_l2_panels_select_within_the_1e2_cohort(self):
+        good = self._state_space_pca([[0, 0, -5], [0, 0, -4], [0, 0, 4], [0, 0, 5]])
+        mixed = self._state_space_pca([[0, 0, -5], [0, 0, 4], [0, 0, -4], [0, 0, 5]])
+        result_dict = {"strong_mixed": {"l2_info": 1e-2}, "strong_good": {"l2_info": 1e-2},
+                       "weak_good": {"l2_info": 1e-4}}
+        pca_data = {"strong_mixed": mixed, "strong_good": good, "weak_good": good}
+        self.assertEqual(paper_plot._l2_feature_tag(1e-2), "L21e2")
+        self.assertEqual(paper_plot._l2_feature_tag(1e-4), "L21e4")
+        selected = paper_plot._best_state_space_trial(result_dict, pca_loader=pca_data.get,
+                                                      strength=1e-2)
+        self.assertEqual(selected[0], "strong_good")
+        report = paper_plot._state_space_centroid_ranking(result_dict, pca_loader=pca_data.get,
+                                                          strength=1e-2)
+        self.assertEqual(report["l2"], 1e-2)
+        self.assertEqual([row["aname"] for row in report["rankings"]],
+                         ["strong_good", "strong_mixed"])
+        with patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(paper_plot, "_load_best_state_space_trial",
+                             return_value=("strong_good", 0.8, {})) as selector, \
+                patch.object(paper_plot, "_load_state_space_pca", return_value=good), \
+                patch.object(paper_plot, "_plot_state_space_panel") as plot_panel:
+            paper_plot.plot_state_space_combined_l21e2()
+        selector.assert_called_once_with(1e-2)
+        self.assertEqual([call.args[3] for call in plot_panel.call_args_list],
+                         ["state_space_hidden_L21e2.png", "state_space_mod_L21e2.png",
+                          "state_space_eff_mod_L21e2.png"])
+
     def test_state_space_trial_returns_none_without_valid_centers(self):
         self.assertIsNone(paper_plot._best_state_space_trial({
             "missing": {},
@@ -378,6 +410,34 @@ class PaperPlotModeTests(unittest.TestCase):
             ],
         )
 
+    def test_state_space_panel_is_square_at_the_sweep_subpanel_size(self):
+        rules = ["fdgo", "delaydm1", "dmcgo"]
+        rng = np.random.RandomState(0)
+        data = {
+            "all_rules": rules,
+            "pca_results": {"eff_mod": {
+                "X_2d": rng.normal(size=(12, 2)),
+                "ctx_rule_labels": np.repeat(np.arange(3), 4),
+            }},
+        }
+        with patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(paper_plot, "_save_fig") as save_fig:
+            paper_plot._plot_state_space_panel(
+                data, "eff_mod", "Eff. modulation", "state_space_eff_mod.png")
+        figure = save_fig.call_args.args[0]
+        self.addCleanup(paper_plot.plt.close, figure)
+        axis = figure.axes[0]
+        self.assertEqual(axis.get_box_aspect(), 1)
+        self.assertEqual(tuple(figure.get_size_inches()),
+                         paper_plot._STATE_SPACE_PANEL_FIGSIZE)
+        # The drawn box matches a rule-cue sweep subpanel (about 1.6 in).
+        figure.canvas.draw()
+        box = axis.get_window_extent().transformed(
+            figure.dpi_scale_trans.inverted())
+        self.assertAlmostEqual(box.width, box.height, places=2)
+        self.assertGreater(box.width, 1.5)
+        self.assertLess(box.width, 1.75)
+
     def test_state_space_dist_angle_renders_saved_nonzero_intercepts(self):
         entry = {"rval_dict": {}, "scatter": {}}
         for key, intercept in (("hidden", 15.), ("eff_mod", -3.)):
@@ -418,6 +478,186 @@ class PaperPlotModeTests(unittest.TestCase):
                 paper_plot.plot_state_space_dist_angle()
             save_fig.assert_not_called()
             self.assertIn("legacy cache", output.call_args.args[0])
+
+    @staticmethod
+    def _state_space_structure(rules, centers, p_value=0.0005):
+        """A state_space_structure.py per-run cache for two representations,
+        with the tree and distances computed from `centers` and the saved
+        statistics set by hand."""
+        from core.state_space_geometry import task_centroid_distances, task_centroid_linkage
+
+        distances = task_centroid_distances(centers)
+        tree = task_centroid_linkage(distances)
+        null = np.linspace(-0.2, 0.2, 50)
+        factor_stats = {
+            "mean_cosine": 0.8, "shared_variance_fraction": 0.9, "p_value": p_value,
+            "pairwise_cosines": np.array([0.7, 0.8, 0.9]), "null": null,
+            "null_quantile_95": 0.15, "null_quantile_025": -0.18, "null_quantile_975": 0.18,
+            "pairs": [("fdgo", "fdanti"), ("delaygo", "delayanti"), ("reactgo", "reactanti")],
+        }
+        pooled = {**factor_stats, "mean_cosine": 0.5, "p_value": 0.3}
+        pooled.pop("pairwise_cosines")
+        pooled.pop("pairs")
+        representation = {
+            "distances": distances, "linkage": tree["linkage"],
+            "leaf_order": tree["leaf_order"], "linkage_method": "average",
+            "separation": {"score": 0.42, "p_value": p_value, "null": null,
+                           "null_quantile_95": 0.1},
+            "factor_vectors": {
+                "factors": {"pro to anti": dict(factor_stats),
+                            "delay to memory": {**factor_stats, "p_value": 0.4}},
+                "pooled": pooled, "skipped_factors": [],
+            },
+        }
+        return {"aname": "selected", "all_rules": list(rules), "l2_info": 1e-4,
+                "representations": {"hidden": representation,
+                                    "eff_mod": copy.deepcopy(representation)}}
+
+    def test_state_space_rdm_example_orders_the_heatmap_by_the_drawn_tree(self):
+        rules = ["fdgo", "delaydm1", "delaygo", "dmcgo"]
+        centers = np.array([[0., 0.], [10., 0.], [1., 0.], [10., 1.]])
+        structure = self._state_space_structure(rules, centers)
+        with patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(paper_plot, "_load_best_state_space_trial",
+                             return_value=("selected", 0.5, {})), \
+                patch.object(paper_plot, "_load_state_space_structure",
+                             return_value=structure) as loader, \
+                patch.object(paper_plot, "_save_fig") as save_fig:
+            paper_plot.plot_state_space_rdm_example()
+        loader.assert_called_once_with("selected")
+        # Effective modulation only, followed by its own colorbar figure.
+        self.assertEqual([Path(call.args[1]).name for call in save_fig.call_args_list],
+                         ["multitask_state_space_rdm_example_eff_mod.png",
+                          "multitask_state_space_rdm_example_colorbar_eff_mod.png"])
+        figure = save_fig.call_args_list[0].args[0]
+        for call in save_fig.call_args_list:
+            self.addCleanup(paper_plot.plt.close, call.args[0])
+        self.assertEqual(len(figure.axes), 2)          # tree and matrix, no colorbar
+        tree_axis, heat_axis = figure.axes
+        order = list(structure["representations"]["eff_mod"]["leaf_order"])
+        # Close tasks sit next to each other, and the heatmap follows the tree.
+        self.assertEqual(abs(order.index(0) - order.index(2)), 1)
+        self.assertEqual(abs(order.index(1) - order.index(3)), 1)
+        image = heat_axis.images[0].get_array()
+        distances = structure["representations"]["eff_mod"]["distances"]
+        ordered = distances[np.ix_(order, order)]
+        lower = np.tril_indices(len(order))
+        np.testing.assert_allclose(np.asarray(image)[lower], ordered[lower])
+        # Only the lower triangle is drawn: the cells above the diagonal are masked.
+        self.assertTrue(np.all(np.ma.getmaskarray(image)[np.triu_indices(len(order), 1)]))
+        self.assertFalse(np.any(np.ma.getmaskarray(image)[lower]))
+        colorbar_figure = save_fig.call_args_list[1].args[0]
+        colorbar_axis = colorbar_figure.axes[0]
+        self.assertEqual([label.get_text() for label in colorbar_axis.get_xticklabels()],
+                         ["0", f"{ordered.max():.1f}"])
+        self.assertEqual(colorbar_axis.get_xlabel(), "Centroid distance")
+        self.assertEqual([label.get_text() for label in heat_axis.get_xticklabels()],
+                         [paper_plot._TASK_DISPLAY[rules[index]] for index in order])
+        for label, index in zip(heat_axis.get_yticklabels(), order):
+            np.testing.assert_allclose(
+                paper_plot.mpl.colors.to_rgb(label.get_bbox_patch().get_facecolor()),
+                paper_plot.mpl.colors.to_rgb(paper_plot._RULE_MOTIF[rules[index]][1]))
+        legend_text = tree_axis.get_legend().get_texts()[0].get_text()
+        self.assertIn("S = 0.420", legend_text)
+        self.assertIn("p < 0.001", legend_text)
+
+    def test_state_space_rdm_draws_the_example_l2_cohort_mean(self):
+        rules = ["fdgo", "delaydm1", "delaygo", "dmcgo"]
+        structure = self._state_space_structure(rules, np.array([[0., 0.], [10., 0.],
+                                                                 [1., 0.], [10., 1.]]))
+        cohort = {"n_runs": 2, "anames": ["run_a", "run_b"], "all_rules": rules,
+                  "representations": structure["representations"]}
+        for entry in cohort["representations"].values():
+            entry["consistency"] = {"median": 0.91, "min": 0.76, "max": 0.95, "n_runs": 2}
+        combined = {"runs": {}, "cohorts": {1e-2: {"n_runs": 0}, 1e-4: cohort}}
+        with patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(paper_plot, "_load_pkl_or_skip", return_value=combined), \
+                patch.object(paper_plot, "_load_best_state_space_trial") as selector, \
+                patch.object(paper_plot, "_save_fig") as save_fig:
+            paper_plot.plot_state_space_rdm()
+        selector.assert_not_called()                    # the cohort mean needs no example run
+        self.assertEqual([Path(call.args[1]).name for call in save_fig.call_args_list],
+                         ["multitask_state_space_rdm_eff_mod.png",
+                          "multitask_state_space_rdm_colorbar_eff_mod.png"])
+        for call in save_fig.call_args_list:
+            self.addCleanup(paper_plot.plt.close, call.args[0])
+        figure = save_fig.call_args_list[0].args[0]
+        tree_axis, heat_axis = figure.axes
+        order = list(cohort["representations"]["eff_mod"]["leaf_order"])
+        ordered = cohort["representations"]["eff_mod"]["distances"][np.ix_(order, order)]
+        lower = np.tril_indices(len(order))
+        np.testing.assert_allclose(np.asarray(heat_axis.images[0].get_array())[lower],
+                                   ordered[lower])
+        legend_text = tree_axis.get_legend().get_texts()[0].get_text()
+        self.assertIn("mean of 2 runs", legend_text)
+        self.assertIn("10^{-4}", legend_text)
+        self.assertIn("S = 0.420", legend_text)
+        self.assertIn("median 0.91 (0.76 to 0.95)", legend_text)
+        colorbar_axis = save_fig.call_args_list[1].args[0].axes[0]
+        self.assertEqual(colorbar_axis.get_xlabel(), "Distance / mean distance")
+
+    def test_state_space_rdm_skips_results_without_cohort_means(self):
+        for combined in ({"runs": {}}, {"runs": {}, "cohorts": {1e-3: {"n_runs": 1}}}):
+            with self.subTest(combined=combined), \
+                    patch.object(paper_plot, "_ensure_out_dir"), \
+                    patch.object(paper_plot, "_load_pkl_or_skip", return_value=combined), \
+                    patch.object(paper_plot, "_save_fig") as save_fig, \
+                    patch("builtins.print") as output:
+                paper_plot.plot_state_space_rdm()
+            save_fig.assert_not_called()
+            self.assertIn("Skipped", output.call_args.args[0])
+
+    def test_state_space_structure_figures_skip_without_the_cache(self):
+        for figure in (paper_plot.plot_state_space_rdm_example,):
+            with self.subTest(figure=figure.__name__), \
+                    patch.object(paper_plot, "_ensure_out_dir"), \
+                    patch.object(paper_plot, "_load_best_state_space_trial",
+                                 return_value=("selected", 0.5, {})), \
+                    patch.object(paper_plot, "_load_state_space_structure", return_value=None), \
+                    patch.object(paper_plot, "_save_fig") as save_fig, \
+                    patch("builtins.print") as output:
+                figure()
+            save_fig.assert_not_called()
+            self.assertIn("state_space_structure.py", output.call_args.args[0])
+
+    def test_state_space_category_test_groups_runs_by_l2_and_counts_significance(self):
+        runs = {}
+        for index, strength in enumerate(paper_plot.STATE_SPACE_L2_STRENGTHS):
+            for seed in range(2):
+                significant = seed == 0 or index == 1
+                runs[f"everything_seed{seed}_L2{index}"] = {
+                    "l2_info": strength,
+                    "representations": {
+                        key: {"separation": {"score": 0.1 * (index + 1) + 0.05 * seed,
+                                             "p_value": 0.01 if significant else 0.5,
+                                             "null_quantile_95": 0.08}}
+                        for key in ("hidden", "mod", "eff_mod")},
+                }
+        runs["other_l2"] = {"l2_info": 3e-3, "representations": {}}
+        combined = {"runs": runs, "n_permutations": 10, "permutation_seed": 0}
+        grouped = paper_plot._state_space_runs_by_l2(runs)
+        self.assertEqual(tuple(grouped), paper_plot.STATE_SPACE_L2_STRENGTHS)
+        self.assertEqual(sum(len(entries) for entries in grouped.values()), 8)
+        with patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(paper_plot, "_load_pkl_or_skip", return_value=combined), \
+                patch.object(paper_plot, "_save_fig") as save_fig:
+            paper_plot.plot_state_space_category_test()
+        save_fig.assert_called_once()
+        figure = save_fig.call_args.args[0]
+        self.addCleanup(paper_plot.plt.close, figure)
+        self.assertEqual(Path(save_fig.call_args.args[1]).name,
+                         "multitask_state_space_category_test.png")
+        self.assertEqual(len(figure.axes), 2)
+        for axis in figure.axes:
+            counts = [label.get_text().split("\n")[1] for label in axis.get_xticklabels()]
+            self.assertEqual(counts, ["1/2", "2/2", "1/2", "1/2"])
+            points = [collection for collection in axis.collections
+                      if isinstance(collection, paper_plot.mpl.collections.PathCollection)]
+            self.assertEqual(len(points), 8)
+            filled = sum(paper_plot.mpl.colors.to_hex(collection.get_facecolors()[0])
+                         == paper_plot.mpl.colors.to_hex(paper_plot._SCATTER_POINT_COLOR)
+                         for collection in points)
+            self.assertEqual(filled, 5)
 
     def test_removed_cross_seed_summary_is_not_available(self):
         self.assertFalse(hasattr(paper_plot, "plot_cross_seed_summary"))
