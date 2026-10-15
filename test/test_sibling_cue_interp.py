@@ -833,12 +833,14 @@ class CueInterpPaperFigureTests(unittest.TestCase):
             self.assertEqual(len(bands), 2)
         self.assertIn("group means with min-max bands by stimulus direction",
                       save.call_args.kwargs["extra"])
-        # Every panel, not only the bottom row, labels the sweep ends.
+        # Every panel, not only the bottom row, labels the sweep ends, and
+        # every panel is square.
         for ax in fig.axes:
             labels = [text.get_text() for text in ax.get_xticklabels()]
             self.assertEqual(labels, ["0", "1"])
             self.assertTrue(all(text.get_visible()
                                 for text in ax.get_xticklabels()))
+            self.assertEqual(ax.get_box_aspect(), 1)
         # The mean line of stim 0 in PC1 of the first panel is the mean of its
         # two trials: proj[:, :, 0] = alpha + k with k = 0 for the first base.
         first_panel = fig.axes[0]

@@ -9308,9 +9308,12 @@ def _render_multitask_cue_interp_2d(entry, alphas, family, method, pair,
         for base_rule, sweep in sweeps.items()}
     # No shared x axis: every panel keeps its own 0 / 1 tick labels, so a
     # panel read on its own still shows where the sweep starts and ends.
+    # Square panels (box aspect 1), as in the other association figures; the
+    # figure is tall enough for two squares plus titles and the alpha label.
     fig, axs = plt.subplots(
         2, n_cols,
-        figsize=(_MULTITASK_CUE_INTERP_PANEL_IN * n_cols, 3.3),
+        figsize=(_MULTITASK_CUE_INTERP_PANEL_IN * n_cols,
+                 2 * _MULTITASK_CUE_INTERP_PANEL_IN + 0.9),
         squeeze=False, layout="constrained")
     xpad = 0.1 * max(alphas.max() - alphas.min(), 1e-9)
     for row, (pc, index) in enumerate(((pc_x, bx), (pc_y, by))):
@@ -9335,6 +9338,7 @@ def _render_multitask_cue_interp_2d(entry, alphas, family, method, pair,
             ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(3))
             ax.tick_params(axis="x", labelsize=7, labelbottom=True)
             ax.tick_params(axis="y", labelleft=False)
+            ax.set_box_aspect(1)
             ax.spines[["top", "right"]].set_visible(False)
             if col == 0:
                 ax.set_ylabel(f"Joint Delay PC{pc}", fontsize=7)
