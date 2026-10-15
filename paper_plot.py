@@ -9088,6 +9088,10 @@ def plot_multitask_delaydm_fixed_point_geometry():
 _MULTITASK_CUE_INTERP_METHODS = ("gradient", "long_delay_endpoint")
 _MULTITASK_CUE_INTERP_PANEL_IN = 1.8      # in; matches the two-task alpha figures
 _MULTITASK_CUE_INTERP_LIMIT_PADDING = 0.12
+# Families that also get the aggregated `2d_mean` view: DelayDM has eight
+# direction groups of four trials each, where the mean and band help; the two
+# DMC clusters are already legible in the per-trial `2d` view.
+_MULTITASK_CUE_INTERP_MEAN_FAMILIES = ("delaydm1",)
 
 
 def _multitask_cue_interp_projection_path(run_dir, family, aname, method):
@@ -9194,6 +9198,40 @@ def _cue_interp_cluster_handles(groups_by_sweep):
                              label=f"Cluster {_CUE_INTERP_CLUSTER_NAMES[label]} "
                                    r"at $\alpha$ = 0")
             for label in present]
+
+
+def _cue_interp_legend_handles(family, rules, method, entry):
+    """Legend entries of one family's sweep figures for `method`.
+
+    The cluster lines when the family has memory clusters (DMC), and the
+    filled / hollow convergence markers for the gradient method; the
+    stimulus-direction lines of DelayDM are documented by the stimulus
+    colorwheel instead. Empty when nothing needs explaining."""
+    groups_by_sweep = {
+        base_rule: _cue_interp_sweep_groups(family, rules, base_rule, sweep)
+        for base_rule, sweep in entry["sweeps"].items()}
+    handles = _cue_interp_cluster_handles(groups_by_sweep)
+    if method == "gradient":
+        handles += [
+            mpl.lines.Line2D([], [], marker="o", linestyle="None",
+                             markerfacecolor="0.3", markeredgecolor="none",
+                             markersize=4, label="Converged"),
+            mpl.lines.Line2D([], [], marker="o", linestyle="None",
+                             markerfacecolor="none", markeredgecolor="0.3",
+                             markersize=4, label="Not converged"),
+        ]
+    return handles
+
+
+def _save_cue_interp_legend(handles, out_path):
+    """Save the sweep figures' legend as its own small figure."""
+    if not SHOW_LEGEND or not handles:
+        return False
+    legend_fig = plt.figure(figsize=(2.0, 0.35 + 0.3 * len(handles)))
+    legend_fig.legend(handles=handles, loc="center", frameon=False,
+                      fontsize=8, handletextpad=0.5, handlelength=1.6)
+    _save_fig(legend_fig, out_path)
+    return True
 
 
 def _draw_cue_interp_sweep(ax, alphas, y, good, z=None, line_colors=None):
@@ -9347,19 +9385,8 @@ def _render_multitask_cue_interp_2d(entry, alphas, family, method, pair,
                     base_rule, sweep["target_rule"]), fontsize=6.5)
             else:
                 ax.set_xlabel(r"Rule cue $\alpha$", fontsize=8, labelpad=-2)
-    handles = _cue_interp_cluster_handles(groups_by_sweep)
-    if method == "gradient":
-        handles += [
-            mpl.lines.Line2D([], [], marker="o", linestyle="None",
-                             markerfacecolor="0.3", markeredgecolor="none",
-                             markersize=4, label="Converged"),
-            mpl.lines.Line2D([], [], marker="o", linestyle="None",
-                             markerfacecolor="none", markeredgecolor="0.3",
-                             markersize=4, label="Not converged"),
-        ]
-    if handles:
-        _legend(axs[0, 0], handles=handles, fontsize=5.5, frameon=False,
-                loc="best", handletextpad=0.4, handlelength=1.4)
+    # The legend is a separate figure (`_save_cue_interp_legend`), so the
+    # panels hold nothing but the sweep.
     fig.get_layout_engine().set(w_pad=0.005, h_pad=0.005, hspace=0.15,
                                 wspace=0.05)
     grouping = ("stimulus direction"
@@ -9426,10 +9453,15 @@ def plot_multitask_sibling_cue_interp():
     """
     Figures: the rule cue interpolated between the two sibling rules of each
     family, for both sibling methods, in the family's joint delay basis:
-      multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_{emodulation,hidden}_{2d,2d_mean,3d}.png
-    `2d` draws one line per trial, `2d_mean` one mean line per group (stimulus
-    direction for DelayDM, memory cluster for DMC) with its min-max band, and
-    `3d` the trial lines in the plane.
+      multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_{emodulation,hidden}_{2d,3d}.png
+      multitask_delaydm_cue_interp_{gradient,long_delay_endpoint}_{emodulation,hidden}_2d_mean.png
+      multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_legend.png
+    `2d` draws one line per trial, `2d_mean` (DelayDM only,
+    `_MULTITASK_CUE_INTERP_MEAN_FAMILIES`) one mean line per stimulus
+    direction with its min-max band, and `3d` the trial lines in the plane.
+    The legend is its own figure per family and method (DMC cluster lines;
+    converged / hollow markers for the gradient method), absent when the
+    sweep needs no legend.
     The stimulus is held at a base rule's trials (both DelayDM rules in turn,
     since they use different modalities; DMCGo alone, since DMCGo and DMCNoGo
     share one stimulus structure) while the cue moves from the base rule
@@ -9440,7 +9472,7 @@ def plot_multitask_sibling_cue_interp():
     two_in_multiples/{aname}/{family}_cue_interp_*pc_projections_{aname}.pkl;
     a family or method without that cache is skipped.
     """
-    for family in _MULTITASK_SIBLING_FAMILIES:
+    for family, rules in _MULTITASK_SIBLING_FAMILIES.items():
         aname = _multitask_sibling_aname(family)
         run_dir = TWO_IN_MULTIPLES_DIR / aname
         for method in _MULTITASK_CUE_INTERP_METHODS:
@@ -9456,6 +9488,7 @@ def plot_multitask_sibling_cue_interp():
                 print(f"  Skipped {path.name}: not a rule-cue sweep projection.")
                 continue
             alphas = np.asarray(data["alphas"], dtype=float)
+            legend_handles = None
             for plot_name, output_suffix in (
                     ("e_modulation", "emodulation"),
                     ("hidden", "hidden")):
@@ -9471,13 +9504,26 @@ def plot_multitask_sibling_cue_interp():
                 _render_multitask_cue_interp_2d(
                     entry, alphas, family, method, pair,
                     _multitask_out(f"{stem}_2d.png"), plane_note)
-                _render_multitask_cue_interp_2d(
-                    entry, alphas, family, method, pair,
-                    _multitask_out(f"{stem}_2d_mean.png"), plane_note,
-                    aggregate=True)
+                if family in _MULTITASK_CUE_INTERP_MEAN_FAMILIES:
+                    _render_multitask_cue_interp_2d(
+                        entry, alphas, family, method, pair,
+                        _multitask_out(f"{stem}_2d_mean.png"), plane_note,
+                        aggregate=True)
                 _render_multitask_cue_interp_3d(
                     entry, alphas, family, method, pair,
                     _multitask_out(f"{stem}_3d.png"), plane_note)
+                if legend_handles is None:
+                    legend_handles = _cue_interp_legend_handles(
+                        family, rules, method, entry)
+            # One legend per family and method, shared by both
+            # representations and all views; nothing to save when the sweep
+            # needs no explanation (DelayDM endpoints).
+            if legend_handles:
+                _save_cue_interp_legend(
+                    legend_handles,
+                    _multitask_out(
+                        f"{_MULTITASK_SIBLING_OUTPUT_NAMES[family]}_cue_interp_"
+                        f"{method}_legend.png"))
 
 
 def plot_two_task_interp_fixed_points(period="longdelay"):

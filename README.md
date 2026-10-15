@@ -429,12 +429,17 @@ assumes independent task pairs and is not adjusted for their shared tasks.
 `python paper_plot.py --only sibling_cue_interp` draws the multi-task analog
 of the two-task pro/anti interpolation for the two sibling families
 (`DELAYDM_ANAME`, `DMCGO_ANAME`):
-`multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_{emodulation,hidden}_{2d,2d_mean,3d}.png`.
-`2d` draws one line per sweep trial against alpha for each PC of the plane,
-`2d_mean` one mean line per group (stimulus direction for DelayDM, memory
-cluster for DMC) with a light band spanning the group's min to max at each
-alpha (its markers are filled only when every member converged), and `3d`
-the trial lines in the plane.
+`multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_{emodulation,hidden}_{2d,3d}.png`,
+`multitask_delaydm_cue_interp_{gradient,long_delay_endpoint}_{emodulation,hidden}_2d_mean.png`
+and `multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_legend.png`.
+`2d` draws one line per sweep trial against alpha for each PC of the plane
+(square panels, alpha ticks on every panel), `2d_mean` (DelayDM only,
+`_MULTITASK_CUE_INTERP_MEAN_FAMILIES`) one mean line per stimulus direction
+with a light band spanning the direction's min to max at each alpha (its
+markers are filled only when every member converged), and `3d` the trial
+lines in the plane. The legend is a separate figure per family and method,
+holding the DMC cluster lines and, for the gradient method, the converged /
+hollow markers; DelayDM endpoint sweeps need none.
 `multiple_task/sibling_delay_analysis.py` runs the sweep after each method's
 base analysis: the stimulus is held at one base rule's trials while its
 one-hot rule cue fades out and the sibling's fades in,

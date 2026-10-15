@@ -598,9 +598,17 @@ class CueInterpPaperFigureTests(unittest.TestCase):
                         continue   # exercise the skip path
                     path = paper_plot._multitask_cue_interp_projection_path(
                         run_dir, family, aname, method)
+                    projection = self._projection(method, base_rules)
+                    if family == "dmcgo":
+                        # Stimuli from both halves, so both memory clusters
+                        # appear in the legend.
+                        for rep in projection["representations"].values():
+                            for sweep in rep["sweeps"].values():
+                                sweep["stim_idx"] = np.array([0, 2, 4, 6])
                     with path.open("wb") as stream:
-                        pickle.dump(self._projection(method, base_rules), stream)
+                        pickle.dump(projection, stream)
             with patch.object(paper_plot, "TWO_IN_MULTIPLES_DIR", root), \
+                    patch.object(paper_plot, "SHOW_LEGEND", True), \
                     patch.object(paper_plot, "_ensure_out_dir"), \
                     patch.object(paper_plot, "_save_fig") as save, \
                     patch("builtins.print") as output:
@@ -608,25 +616,47 @@ class CueInterpPaperFigureTests(unittest.TestCase):
 
         saved = [Path(call.args[1]).name for call in save.call_args_list]
         expected = []
-        for family_name, methods in (
-                ("delaydm", ("gradient", "long_delay_endpoint")),
-                ("dmcgo", ("long_delay_endpoint",))):
+        # DelayDM gets the aggregated view; DMC does not. A legend figure
+        # follows each (family, method) that needs one: the gradient
+        # convergence markers for DelayDM, the cluster lines for DMC.
+        for family_name, methods, views in (
+                ("delaydm", ("gradient", "long_delay_endpoint"),
+                 ("2d", "2d_mean", "3d")),
+                ("dmcgo", ("long_delay_endpoint",), ("2d", "3d"))):
             for method in methods:
                 for suffix in ("emodulation", "hidden"):
-                    for view in ("2d", "2d_mean", "3d"):
+                    for view in views:
                         expected.append(
                             f"multitask_{family_name}_cue_interp_{method}_"
                             f"{suffix}_{view}.png")
+                if family_name == "dmcgo" or method == "gradient":
+                    expected.append(
+                        f"multitask_{family_name}_cue_interp_{method}_legend.png")
         self.assertEqual(saved, expected)
+        legends = {Path(call.args[1]).name: call.args[0]
+                   for call in save.call_args_list
+                   if Path(call.args[1]).stem.endswith("_legend")}
+        dmc_legend = legends["multitask_dmcgo_cue_interp_long_delay_endpoint_legend.png"]
+        self.assertEqual(
+            [text.get_text() for text in dmc_legend.legends[0].get_texts()],
+            [r"Cluster A at $\alpha$ = 0", r"Cluster B at $\alpha$ = 0"])
+        gradient_legend = legends["multitask_delaydm_cue_interp_gradient_legend.png"]
+        self.assertEqual(
+            [text.get_text() for text in gradient_legend.legends[0].get_texts()],
+            ["Converged", "Not converged"])
+        for fig in legends.values():
+            paper_plot.plt.close(fig)
         skipped = [call.args[0] for call in output.call_args_list
                    if "Skipped" in str(call.args[0])]
         self.assertTrue(any("dmcgo_cue_interp_delay_pc_projections" in text
                             for text in skipped))
-        # Every saved figure is a closed matplotlib figure with the right
-        # column count: two base rules for DelayDM, one for DMC.
+        # Every saved panel figure has the right column count: two base rules
+        # for DelayDM, one for DMC.
         for call in save.call_args_list:
             fig = call.args[0]
             name = Path(call.args[1]).name
+            if name.endswith("_legend.png"):
+                continue
             n_axes = len(fig.axes)
             if "_2d" in name:
                 self.assertEqual(n_axes, 4 if "delaydm" in name else 2)
@@ -783,10 +813,16 @@ class CueInterpPaperFigureTests(unittest.TestCase):
             self.assertEqual(colors, {
                 paper_plot.mpl.colors.to_hex(c)
                 for c in paper_plot._CUE_INTERP_CLUSTER_COLORS.values()})
-        labels = [text.get_text() for text in fig.axes[0].get_legend().get_texts()]
-        self.assertEqual(len(labels), 2)
-        self.assertTrue(all("Cluster" in label for label in labels))
+            # The legend lives in its own figure, not in the panels.
+            self.assertIsNone(ax.get_legend())
         self.assertIn("alpha = 0 cluster", save.call_args.kwargs["extra"])
+        handles = paper_plot._cue_interp_legend_handles(
+            "dmcgo", ("dmcgo", "dmcnogo"), "long_delay_endpoint", entry)
+        self.assertEqual([h.get_label() for h in handles],
+                         [r"Cluster A at $\alpha$ = 0", r"Cluster B at $\alpha$ = 0"])
+        self.assertEqual(
+            len(paper_plot._cue_interp_legend_handles(
+                "dmcgo", ("dmcgo", "dmcnogo"), "gradient", entry)), 4)
 
         # DelayDM has no memory clusters: its lines take the stimulus
         # direction's rainbow color (stim_idx 0 and 1 in the fixture) and
@@ -862,9 +898,11 @@ class CueInterpPaperFigureTests(unittest.TestCase):
         self.addCleanup(paper_plot.plt.close, fig)
         for ax in fig.axes:
             self.assertEqual(len(ax.lines), 2)
-        self.assertEqual(
-            len(fig.axes[0].get_legend().get_texts()), 2)
         self.assertIn("by alpha = 0 cluster", save.call_args.kwargs["extra"])
+        # DelayDM endpoints need no legend at all.
+        self.assertEqual(paper_plot._cue_interp_legend_handles(
+            "delaydm1", RULES, "long_delay_endpoint",
+            delaydm["representations"]["hidden"]), [])
 
     def test_endpoint_plane_comes_from_the_base_endpoint_projection(self):
         with tempfile.TemporaryDirectory() as directory:
