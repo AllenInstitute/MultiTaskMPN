@@ -9225,6 +9225,45 @@ def _draw_cue_interp_sweep(ax, alphas, y, good, z=None, line_colors=None):
             ax.scatter(*coords, marker="o", s=12, alpha=0.9, zorder=3, **style)
 
 
+def _cue_interp_group_keys(groups, sweep):
+    """Per-point group key for aggregating a sweep: the memory cluster when
+    the family has clusters, else the stimulus direction (the same grouping
+    the lines are colored by)."""
+    if groups is not None:
+        return np.asarray(groups, dtype=int)
+    return np.asarray(sweep["stim_idx"], dtype=int)
+
+
+def _draw_cue_interp_group_means(ax, alphas, y, good, keys, colors):
+    """One mean line per group across alpha with the group's min-max band.
+
+    `y` is (n_alpha, n_points); `keys` and `colors` are per point, constant
+    within a group. The band spans the group's members at each alpha (their
+    full range, since a group holds only a few trials), the mean line takes
+    the group color, and the markers on it take the alpha ramp, filled when
+    every member converged at that alpha and hollow otherwise.
+    """
+    t = _alpha_ramp_norm(alphas)
+    keys = np.asarray(keys)
+    for key in np.unique(keys):
+        members = np.flatnonzero(keys == key)
+        block = y[:, members]
+        color = colors[members[0]]
+        ax.fill_between(alphas, np.nanmin(block, axis=1),
+                        np.nanmax(block, axis=1), color=color, alpha=0.18,
+                        linewidth=0, zorder=1)
+        mean = np.nanmean(block, axis=1)
+        ax.plot(alphas, mean, "-", color=color, linewidth=1.3, alpha=0.9,
+                zorder=2)
+        all_good = good[:, members].all(axis=1)
+        for ai in range(alphas.size):
+            col = _alpha_ramp_color(t[ai])
+            style = (dict(color=col, edgecolor="none") if all_good[ai]
+                     else dict(facecolor="none", edgecolor=col, linewidth=0.7))
+            ax.scatter(alphas[ai], mean[ai], marker="o", s=12, alpha=0.9,
+                       zorder=3, **style)
+
+
 def _cue_interp_column_title(base_rule, target_rule):
     """Two-line panel title: whose stimulus is held, whose cue it fades to."""
     return (f"{_TASK_DISPLAY.get(base_rule, base_rule)} stimulus\n"
@@ -9246,14 +9285,17 @@ def _cue_interp_axis_limits(sweeps, index):
 
 
 def _render_multitask_cue_interp_2d(entry, alphas, family, method, pair,
-                                    out_path, plane_note, rules=None):
+                                    out_path, plane_note, rules=None,
+                                    aggregate=False):
     """x = alpha, y = one Joint Delay PC; rows are the plane's two PCs and
     columns the base rules whose stimulus is held (two for DelayDM, one for
     DMC). Limits are shared across columns per PC so the two stimulus bases
     are directly comparable; the 3D view below uses the same plane. Lines are
     colored by the plain endpoint figure's clusters: the base trial's memory
     cluster for DMC, the stimulus direction for DelayDM
-    (`_cue_interp_line_colors`)."""
+    (`_cue_interp_line_colors`). With `aggregate` each such group is drawn as
+    one mean line with its min-max band instead of one line per trial
+    (`_draw_cue_interp_group_means`)."""
     _ensure_out_dir()
     rules = _MULTITASK_SIBLING_FAMILIES[family] if rules is None else rules
     sweeps = entry["sweeps"]
@@ -9275,10 +9317,15 @@ def _render_multitask_cue_interp_2d(entry, alphas, family, method, pair,
             ax = axs[row, col]
             proj, good = _cue_interp_sweep_arrays(
                 sweep, f"{family}/cue-interp/{method}/{base_rule}")
-            _draw_cue_interp_sweep(
-                ax, alphas, proj[:, :, index], good,
-                line_colors=_cue_interp_line_colors(
-                    groups_by_sweep[base_rule], sweep))
+            colors = _cue_interp_line_colors(groups_by_sweep[base_rule], sweep)
+            if aggregate:
+                _draw_cue_interp_group_means(
+                    ax, alphas, proj[:, :, index], good,
+                    _cue_interp_group_keys(groups_by_sweep[base_rule], sweep),
+                    colors)
+            else:
+                _draw_cue_interp_sweep(ax, alphas, proj[:, :, index], good,
+                                       line_colors=colors)
             ax.set_xlim(alphas.min() - xpad, alphas.max() + xpad)
             ax.set_ylim(*ylim)
             ax.set_xticks([alphas.min(), alphas.max()])
@@ -9308,12 +9355,14 @@ def _render_multitask_cue_interp_2d(entry, alphas, family, method, pair,
                 loc="best", handletextpad=0.4, handlelength=1.4)
     fig.get_layout_engine().set(w_pad=0.005, h_pad=0.005, hspace=0.15,
                                 wspace=0.05)
-    cluster_note = ("; lines colored by stimulus direction"
-                    if all(g is None for g in groups_by_sweep.values())
-                    else "; lines colored by alpha = 0 cluster")
+    grouping = ("stimulus direction"
+                if all(g is None for g in groups_by_sweep.values())
+                else "alpha = 0 cluster")
+    style_note = (f"; group means with min-max bands by {grouping}" if aggregate
+                  else f"; lines colored by {grouping}")
     _save_fig(fig, out_path,
               extra=(f"  ({method}; Joint Delay PC{pc_x}-PC{pc_y}, {plane_note}; "
-                     f"{alphas.size} alphas; bases {list(sweeps)}{cluster_note})"))
+                     f"{alphas.size} alphas; bases {list(sweeps)}{style_note})"))
 
 
 def _render_multitask_cue_interp_3d(entry, alphas, family, method, pair,
@@ -9370,7 +9419,10 @@ def plot_multitask_sibling_cue_interp():
     """
     Figures: the rule cue interpolated between the two sibling rules of each
     family, for both sibling methods, in the family's joint delay basis:
-      multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_{emodulation,hidden}_{2d,3d}.png
+      multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_{emodulation,hidden}_{2d,2d_mean,3d}.png
+    `2d` draws one line per trial, `2d_mean` one mean line per group (stimulus
+    direction for DelayDM, memory cluster for DMC) with its min-max band, and
+    `3d` the trial lines in the plane.
     The stimulus is held at a base rule's trials (both DelayDM rules in turn,
     since they use different modalities; DMCGo alone, since DMCGo and DMCNoGo
     share one stimulus structure) while the cue moves from the base rule
@@ -9412,6 +9464,10 @@ def plot_multitask_sibling_cue_interp():
                 _render_multitask_cue_interp_2d(
                     entry, alphas, family, method, pair,
                     _multitask_out(f"{stem}_2d.png"), plane_note)
+                _render_multitask_cue_interp_2d(
+                    entry, alphas, family, method, pair,
+                    _multitask_out(f"{stem}_2d_mean.png"), plane_note,
+                    aggregate=True)
                 _render_multitask_cue_interp_3d(
                     entry, alphas, family, method, pair,
                     _multitask_out(f"{stem}_3d.png"), plane_note)

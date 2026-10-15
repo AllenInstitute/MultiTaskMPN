@@ -613,7 +613,7 @@ class CueInterpPaperFigureTests(unittest.TestCase):
                 ("dmcgo", ("long_delay_endpoint",))):
             for method in methods:
                 for suffix in ("emodulation", "hidden"):
-                    for view in ("2d", "3d"):
+                    for view in ("2d", "2d_mean", "3d"):
                         expected.append(
                             f"multitask_{family_name}_cue_interp_{method}_"
                             f"{suffix}_{view}.png")
@@ -809,6 +809,54 @@ class CueInterpPaperFigureTests(unittest.TestCase):
                  for line in ax.lines}, rainbow)
         self.assertIsNone(fig.axes[0].get_legend())
         self.assertIn("stimulus direction", save.call_args.kwargs["extra"])
+
+    def test_aggregated_view_draws_one_mean_line_and_band_per_group(self):
+        # DelayDM: stim_idx 0,1,0,1 -> two direction groups per panel.
+        delaydm = self._projection("long_delay_endpoint", RULES, n_points=4)
+        entry = delaydm["representations"]["hidden"]
+        with patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(paper_plot, "SHOW_LEGEND", True), \
+                patch.object(paper_plot, "_save_fig") as save:
+            paper_plot._render_multitask_cue_interp_2d(
+                entry, delaydm["alphas"], "delaydm1", "long_delay_endpoint",
+                (1, 2), Path("out.png"), "test", aggregate=True)
+        fig = save.call_args.args[0]
+        self.addCleanup(paper_plot.plt.close, fig)
+        rainbow = [paper_plot.mpl.colors.to_hex(paper_plot.stim_color(k, 8))
+                   for k in (0, 1)]
+        for ax in fig.axes:
+            self.assertEqual(
+                sorted(paper_plot.mpl.colors.to_hex(line.get_color())
+                       for line in ax.lines), sorted(rainbow))
+            bands = [coll for coll in ax.collections
+                     if isinstance(coll, paper_plot.mpl.collections.PolyCollection)]
+            self.assertEqual(len(bands), 2)
+        self.assertIn("group means with min-max bands by stimulus direction",
+                      save.call_args.kwargs["extra"])
+        # The mean line of stim 0 in PC1 of the first panel is the mean of its
+        # two trials: proj[:, :, 0] = alpha + k with k = 0 for the first base.
+        first_panel = fig.axes[0]
+        stim0 = [line for line in first_panel.lines
+                 if paper_plot.mpl.colors.to_hex(line.get_color()) == rainbow[0]][0]
+        np.testing.assert_allclose(stim0.get_ydata(), delaydm["alphas"])
+
+        # DMC: the two memory clusters, with the cluster legend.
+        dmc = self._projection("long_delay_endpoint", ("dmcgo",), n_points=8)
+        entry = dmc["representations"]["e_modulation"]
+        entry["sweeps"]["dmcgo"]["stim_idx"] = np.arange(8)
+        with patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(paper_plot, "SHOW_LEGEND", True), \
+                patch.object(paper_plot, "_save_fig") as save:
+            paper_plot._render_multitask_cue_interp_2d(
+                entry, dmc["alphas"], "dmcgo", "long_delay_endpoint", (1, 2),
+                Path("out.png"), "test", aggregate=True)
+        fig = save.call_args.args[0]
+        self.addCleanup(paper_plot.plt.close, fig)
+        for ax in fig.axes:
+            self.assertEqual(len(ax.lines), 2)
+        self.assertEqual(
+            len(fig.axes[0].get_legend().get_texts()), 2)
+        self.assertIn("by alpha = 0 cluster", save.call_args.kwargs["extra"])
 
     def test_endpoint_plane_comes_from_the_base_endpoint_projection(self):
         with tempfile.TemporaryDirectory() as directory:
