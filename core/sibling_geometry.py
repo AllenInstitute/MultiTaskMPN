@@ -5,6 +5,8 @@ import numpy as np
 
 DELAYDM_METRIC_NAME = "direction separation / within-direction dispersion"
 DMCGO_METRIC_NAME = "cross-task category balanced accuracy"
+DELAYDM_SWEEP_METRIC_NAME = ("min-over-alpha direction separation x path "
+                             "smoothness")
 
 
 def _finite_rows(points, *labels):
@@ -18,8 +20,9 @@ def _finite_rows(points, *labels):
     return points[finite], [values[finite] for values in arrays]
 
 
-def delaydm_direction_score(points, stim_idx):
-    """Between-direction centroid distance divided by within-direction spread."""
+def delaydm_direction_components(points, stim_idx):
+    """(between, within): mean nearest-competitor centroid distance across
+    stimulus directions, and mean within-direction spread about the centroid."""
     points, (stim_idx,) = _finite_rows(points, stim_idx)
     directions = np.unique(stim_idx)
     if directions.size < 2:
@@ -44,8 +47,94 @@ def delaydm_direction_score(points, stim_idx):
     # score well by separating only a subset while collapsing other directions.
     between_mean = float(np.mean(np.min(centroid_distances, axis=1)))
     within_mean = float(np.mean(within_direction))
+    return between_mean, within_mean
+
+
+def delaydm_direction_score(points, stim_idx):
+    """Between-direction centroid distance divided by within-direction spread."""
+    between_mean, within_mean = delaydm_direction_components(points, stim_idx)
     scale = max(between_mean, 1.0)
     return between_mean / max(within_mean, np.finfo(float).eps * scale)
+
+
+def path_roughness(paths, floor=0.0):
+    """Second-difference share of each path's length: 0 straight, up to 2.
+
+    ``paths`` is ``(n_alpha, n_paths, 2)``. For every path the summed norm of
+    the second differences along alpha is divided by the summed norm of the
+    first differences (its length), floored at ``floor`` so a path that
+    barely moves counts as smooth rather than as noise. Zigzags score high,
+    straight or gently curving paths low; the ratio is scale-free."""
+    paths = np.asarray(paths, dtype=float)
+    if paths.ndim != 3 or paths.shape[2] != 2:
+        raise ValueError(f"expected (n_alpha, n_paths, 2) paths, got {paths.shape}")
+    if paths.shape[0] < 3:
+        raise ValueError("path roughness needs at least three alphas")
+    steps = np.diff(paths, axis=0)
+    length = np.linalg.norm(steps, axis=2).sum(axis=0)
+    bends = np.linalg.norm(np.diff(steps, axis=0), axis=2).sum(axis=0)
+    return bends / np.maximum(length, max(float(floor), np.finfo(float).eps))
+
+
+def delaydm_sweep_score(paths, stim_idx):
+    """Score a rule-cue sweep's 2D projection for DelayDM: how well the eight
+    directions stay apart along the whole sweep, and how smoothly each trial
+    moves.
+
+    ``paths`` is ``(n_alpha, n_trials, 2)``. The separation term is the
+    endpoint ratio (`delaydm_direction_score`) evaluated at every alpha and
+    taken at its minimum, so a plane in which the directions collapse at some
+    intermediate cue scores low even if both ends look fine. The smoothness
+    term is ``1 - mean(path_roughness) / 2`` in (0, 1], with the roughness
+    floor set to the mean within-direction spread. Returns
+    ``(score, {"separation", "smoothness"})`` with
+    ``score = separation * smoothness``."""
+    paths = np.asarray(paths, dtype=float)
+    if paths.ndim != 3 or paths.shape[2] != 2:
+        raise ValueError(f"expected (n_alpha, n_trials, 2) paths, got {paths.shape}")
+    per_alpha = [delaydm_direction_components(paths[a], stim_idx)
+                 for a in range(paths.shape[0])]
+    separations = []
+    for between, within in per_alpha:
+        scale = max(between, 1.0)
+        separations.append(between / max(within, np.finfo(float).eps * scale))
+    separation = float(np.min(separations))
+    within_floor = float(np.mean([within for _, within in per_alpha]))
+    smoothness = float(1.0 - np.mean(path_roughness(paths, within_floor)) / 2.0)
+    return separation * smoothness, {"separation": separation,
+                                     "smoothness": smoothness}
+
+
+def best_delaydm_sweep_pc_pair(projections, stim_indices):
+    """The PC pair in which every base rule's sweep scores best.
+
+    ``projections`` are ``(n_alpha, n_trials, n_pc)`` arrays, one per base
+    rule, with matching ``stim_indices``; a pair's score is the minimum of
+    the base rules' `delaydm_sweep_score`, so one weak panel cannot be hidden
+    by a strong one. Returns ``((pc_x, pc_y), score, metric_name)`` with
+    1-based PCs."""
+    projections = [np.asarray(p, dtype=float) for p in projections]
+    if not projections or any(p.ndim != 3 for p in projections):
+        raise ValueError("expected (n_alpha, n_trials, n_pc) sweep projections")
+    n_pc = projections[0].shape[2]
+    if any(p.shape[2] != n_pc for p in projections) or n_pc < 2:
+        raise ValueError("sweep projections must share at least two PCs")
+    candidates = []
+    for pc_x in range(n_pc):
+        for pc_y in range(pc_x + 1, n_pc):
+            try:
+                score = min(
+                    delaydm_sweep_score(p[:, :, [pc_x, pc_y]], stim)[0]
+                    for p, stim in zip(projections, stim_indices))
+            except ValueError:
+                continue
+            if np.isfinite(score):
+                candidates.append((float(score), pc_x, pc_y))
+    if not candidates:
+        raise ValueError("cannot score any PC pair for the DelayDM sweep")
+    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+    score, pc_x, pc_y = candidates[0]
+    return (pc_x + 1, pc_y + 1), score, DELAYDM_SWEEP_METRIC_NAME
 
 
 def _nearest_centroid_balanced_accuracy(train_points, train_labels,

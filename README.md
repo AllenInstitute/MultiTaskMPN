@@ -429,17 +429,27 @@ assumes independent task pairs and is not adjusted for their shared tasks.
 `python paper_plot.py --only sibling_cue_interp` draws the multi-task analog
 of the two-task pro/anti interpolation for the two sibling families
 (`DELAYDM_ANAME`, `DMCGO_ANAME`):
-`multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_{emodulation,hidden}_{2d,3d}.png`,
-`multitask_delaydm_cue_interp_{gradient,long_delay_endpoint}_{emodulation,hidden}_2d_mean.png`
+`multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_{emodulation,hidden}_{2d,3d,plane}.png`
 and `multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_legend.png`.
 `2d` draws one line per sweep trial against alpha for each PC of the plane
-(square panels, alpha ticks on every panel), `2d_mean` (DelayDM only,
-`_MULTITASK_CUE_INTERP_MEAN_FAMILIES`) one mean line per stimulus direction
-with a light band spanning the direction's min to max at each alpha (its
-markers are filled only when every member converged), and `3d` the trial
-lines in the plane. The legend is a separate figure per family and method,
+(square panels, alpha ticks on every panel, y limits hugging each panel's own
+lines with 8% padding below and 25% above, so columns are not on a shared
+scale), `3d` the trial lines in the plane against alpha, and `plane` every
+trial's path through the
+plane from alpha = 0 to alpha = 1 without averaging (group color on the path,
+stimulus direction for DelayDM and memory cluster for DMC, alpha ramp on its
+markers), which shows the alpha = 0 and alpha = 1 configurations of the
+trials directly. The legend is a separate figure per family and method,
 holding the DMC cluster lines and, for the gradient method, the converged /
-hollow markers; DelayDM endpoint sweeps need none.
+hollow markers (DelayDM endpoint sweeps need none). `python paper_plot.py
+--sibling-one-trial-per-stimulus --only sibling_cue_interp` draws one sweep
+trial per stimulus direction instead of all of them, in `2d`, `3d`, `plane`
+and the `_cue_interp` endpoint overlays (`SIBLING_ONE_TRIAL_PER_STIMULUS`):
+the target magnitude is the one every direction can match most closely (ties
+toward 1.0) and each direction contributes its nearest trial, so the eight
+DelayDM paths are at comparable stimulus strength (DMC trials, all at
+magnitude 1, simply deduplicate). Output names are unchanged, so the option
+replaces the all-trial figures.
 `multiple_task/sibling_delay_analysis.py` runs the sweep after each method's
 base analysis: the stimulus is held at one base rule's trials while its
 one-hot rule cue fades out and the sibling's fades in,
@@ -456,14 +466,24 @@ delay-1 endpoint; the `gradient` sweep reuses the per-rule dense-angle template
 (`core.grad_fixed_points.build_dense_stimulus_template`, eight directions, the
 DelayDM magnitudes) and solves the true delay fixed point at every alpha with
 the per-rule budgets. Both are projected onto the method's joint delay basis
-(`*_cue_interp_*pc_projections_*.pkl`), so the figures sit in the base
-figure's plane: the configured plane for gradient, the best task-specific pair
-for endpoints. Colors follow the alpha ramp of SCHEME family 5 (dark at alpha =
+(`*_cue_interp_*pc_projections_*.pkl`). The DelayDM sweep figures pick their
+PC plane on the sweep itself (`core.sibling_geometry.best_delaydm_sweep_pc_pair`):
+the pair maximizing the directions' minimum separation-over-spread ratio along
+alpha times the paths' smoothness (one minus half the mean second-difference
+share of each trial's path length), scored over all trials and taken as the
+minimum over the two base rules, so a plane in which the directions merge at an
+intermediate cue or the paths zigzag is not chosen. The DMC sweep figures use
+the base figure's plane: the configured plane for gradient, the best
+task-specific endpoint pair for endpoints. Colors follow the alpha ramp of SCHEME family 5 (dark at alpha =
 0, light at alpha = 1; filled = converged, hollow = not; endpoints always
 filled). In the DMC figures the connecting lines are colored by the base
-trial's memory cluster at alpha = 0 (cluster A = DMCGo stimuli 0-3, which the
-plain endpoint figure groups with DMCNoGo stimuli 4-7; cluster B = the
-complement), read from the `group_labels` saved in the projection cache or
+trial's memory cluster at alpha = 0. The two clusters are the category the
+network must respond to: "respond to category 1" holds DMCGo trials whose
+first stimulus is in category 1 (locations 0-3, below pi) together with
+DMCNoGo trials whose first stimulus is in category 2 (locations 4-7), since
+both respond to a category-1 second stimulus; "respond to category 2" is the
+complement. The labels are read from the `group_labels` saved in the
+projection cache or
 derived from the stimulus for caches written before them, so the swap of the
 two clusters under the sibling's cue is visible; DelayDM lines are colored by
 their stimulus direction (the plain figure's clusters, SCHEME family 1), so

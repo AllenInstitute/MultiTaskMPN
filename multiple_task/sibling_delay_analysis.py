@@ -1911,9 +1911,11 @@ def save_cue_interp_pc_projections(aname, save_dir, addtask, rules, sweep_path,
 
     Each base rule's ``(n_alpha, n_points, features)`` endpoints or fixed
     points become ``(n_alpha, n_points, 6)`` coordinates in the same joint
-    basis the method's base figure uses, so the sweep can be drawn in that
-    figure's plane. Convergence masks are carried along when the sweep has
-    them (gradient method). Nothing is refitted.
+    basis the method's base figure uses, so the sweep can be drawn in any
+    plane of that basis alongside the base figure. Convergence masks are
+    carried along when the sweep has them (gradient method), and DMC sweeps
+    record each base trial's memory cluster (``group_labels``). Nothing is
+    refitted.
     """
     save_dir = Path(save_dir)
     rules = list(rules)
