@@ -77,6 +77,14 @@ python multiple_task/state_space_shift.py
 python multiple_task/state_space_structure.py
 # rank state-space seeds and plot the best example without clearing other figures
 python paper_plot.py --only state_space_combined
+# untrained controls (fresh weights, the example run's config), one per seed,
+# then rerun the structure analysis so their category tests are included
+python multiple_task/state_space_shift.py --untrained \
+  --checkpoint multiple_tasks/savednet_everything_seed921_L21e4+hidden300+batch128+angle.pt \
+  --init-seed 0 1 2 3 4 5 6 7
+python multiple_task/state_space_structure.py
+python paper_plot.py --only state_space_untrained
+python paper_plot.py --only state_space_category_vs_untrained
 python paper_plot.py --only state_space_rdm
 python paper_plot.py --only state_space_rdm_example
 python paper_plot.py --only state_space_category_test
@@ -413,7 +421,12 @@ the existing distance-angle results. Display PCA is fitted in batches; the
 analysis otherwise retains its full-trajectory workflow and memory requirements.
 The batch analysis clears top-level files in `state_space/` before regenerating
 the four standard L2 cohorts, so `state_space_structure.py` has to be rerun
-after it.
+after it; it rewrites the distance-angle results pickle after every run, so an
+interrupted batch keeps what it finished.
+`python multiple_task/state_space_shift.py --checkpoint multiple_tasks/savednet_<aname>.pt --out-dir DIR`
+analyzes only the named checkpoints and merges their entries into the results
+pickle of `DIR` (default `state_space/`) without clearing anything, which is
+how one run is tested in a scratch directory.
 
 `python multiple_task/state_space_structure.py` reads every PCA cache and
 tests, for the hidden state, M and W ⊙ M of each run, two properties of the
@@ -458,20 +471,80 @@ Categories follow the six paper color groups. All valid seeds are ranked and
 summarized in `paper_plot/multitask_state_space_centroid_scores.json`; missing
 high-dimensional centers are reported, never replaced with a 2D score.
 The best seed supplies all three PCA example panels, with names breaking ties.
-`python paper_plot.py --only state_space_combined_L21e2` draws the same three
-panels for the L2 = 1e-2 cohort (`STATE_SPACE_STRONG_L2`), whose category
-structure is the strongest, selecting that cohort's seed by the same
-criterion; its ranking is saved as
-`paper_plot/multitask_state_space_centroid_scores_L21e2.json` and the panels
-as `multitask_state_space_{hidden,mod,eff_mod}_L21e2.png`.
+Each of the three PCA figures (`multitask_state_space_{hidden,mod,eff_mod}.png`,
+`--only state_space_combined`) has two panels: on the left that selected
+L2 = 1e-4 run, on the right the run of the L2 = 1e-2 cohort
+(`STATE_SPACE_STRONG_L2`), whose category structure is the strongest,
+selected by the same criterion; that cohort's ranking is saved as
+`paper_plot/multitask_state_space_centroid_scores_L21e2.json`. The two panels
+are separate PCA spaces with their own axes, titled by their L2, under one
+color key; a figure is skipped when either cohort has no analyzed run.
+
+`python paper_plot.py --only state_space_untrained` draws the untrained
+control, `multitask_state_space_untrained.png`: the same context-end PCA of an
+untrained network, one panel per representation (hidden state, M, W ⊙ M) at
+the trained figures' panel size and colors. The network has the architecture
+and config of the selected L2 = 1e-4 example run but fresh random weights
+(seed `UNTRAINED_INIT_SEED` = 0, η at its initial value 1.0); no trained
+weight is used, and the training run's own initialization was never saved.
+It runs on the same evaluation trials, so its task separation is what the
+rule-cue inputs produce through random weights. L2 acts only during training,
+so one untrained network serves every cohort. Generate the caches first, one
+network per `--init-seed` (eight here, as many as the largest trained cohort;
+each takes about as long as one trained run):
+```bash
+python multiple_task/state_space_shift.py --untrained \
+  --checkpoint multiple_tasks/savednet_everything_seed921_L21e4+hidden300+batch128+angle.pt \
+  --init-seed 0 1 2 3 4 5 6 7
+python multiple_task/state_space_structure.py
+```
+This writes only `state_space/untrained/state_space_pca_<aname>_init<seed>_noise0.01.pkl`
+(marked `untrained`, with `init_seed` and `config_source`) and its diagnostic
+figures per seed, and runs no distance-angle analysis. The subdirectory keeps
+these caches out of the trained runs' structure glob and seed rankings, and
+the batch run's cleanup leaves it in place. The PCA figure draws the network
+of `STATE_SPACE_UNTRAINED_INIT_SEED` (0); its save message reports the
+category separation S of each representation's untrained centroids.
+
+`state_space_structure.py` gives every untrained network the same category
+and task-vector tests as a trained run (`state_space/untrained/state_space_structure_<aname>_init<seed>_noise0.01.pkl`)
+and stores their summaries under `untrained` in
+`state_space_structure_results.pkl`, apart from `runs` and the L2 `cohorts`,
+which they never enter. `python paper_plot.py --only state_space_category_vs_untrained`
+draws `multitask_state_space_category_vs_untrained.png`: the
+`state_space_category_test` figure (hidden state and W ⊙ M, one point per
+network, filled when its permutation p < 0.05, null 95th-percentile band,
+median dash) with an "Untrained" column of the example config's untrained
+networks to the left of the four L2 cohorts, set apart by a gap and a dotted
+line. It is skipped, with the commands above, until the structure results
+hold an untrained network of that config.
 
 Distance-angle regression uses ordinary least squares with a fitted intercept:
 `angle = intercept + slope * distance`. The existing `(r, slope, p)` tuples
-remain unchanged in structure, while `scatter[representation]["regression"]`
-records the intercept and `through_origin=False`. Paper plots use these saved
-coefficients and skip legacy caches without a free-intercept fit. Reported
-`r` is Pearson correlation; `p` is the nominal OLS slope-test value, which
-assumes independent task pairs and is not adjusted for their shared tasks.
+remain unchanged in structure (`r` is Pearson correlation; that `p` is the
+nominal OLS slope-test value, which assumes independent task pairs), while
+`scatter[representation]` records the intercept (`regression`,
+`through_origin=False`), the task names of every pair (`pair_rules`) and the
+reported test, `permutation`: a two-sided task-label permutation (Mantel-type)
+p of `r` from 10,000 relabelings of the 15 tasks
+(`DISTANCE_ANGLE_N_PERMUTATIONS`, seed 0), because the 105 pairs share tasks.
+Besides `hidden`, `mod` and `eff_mod`, whose first step is x[t] − x[t−1], each
+entry holds `mod_hebb` and `eff_mod_hebb`. The modulation update is
+M[t] = λ M[t−1] + η post ⊗ pre, clamped to the M bounds, so the full step
+contains −(1 − λ) M[t−1]: a component along the initial condition itself, which
+ties the step angle to the initial-condition distance without any
+task-dependent computation. The Hebbian-only step x[t] − λ x[t−1] removes it,
+with λ read from the checkpoint's `mp_layer1.lam` (saved as `retention`);
+`step_norms` records the mean trial norms of the initial condition, the full
+step and, for the modulation representations, its decay and Hebbian terms.
+`paper_plot.py` draws saved values only: `state_space_dist_angle` shows three
+panels of the selected run, the hidden state and W ⊙ M with the full first
+step and W ⊙ M with the Hebbian term only (the two W ⊙ M panels on one y
+range), each with r and the permutation p; `state_space_r_values` shows one
+bar per representation and L2 cohort, raw M included (Hebbian-only bars
+hatched, one dot per run, filled when its permutation p < 0.05). Caches
+without the permutation test or the Hebbian steps are skipped, never refitted;
+regenerate them with `state_space_shift.py`.
 
 `python paper_plot.py --only sibling_cue_interp` draws the multi-task analog
 of the two-task pro/anti interpolation for the two sibling families

@@ -354,3 +354,101 @@ def factor_vector_consistency(centroids, rules, factor_pairs=TASK_FACTOR_PAIRS,
     result["pooled"] = {"mean_cosine": pooled, "factors": factors}
     result["pooled"].update(_null_summary(pooled, null.mean(axis=1)))
     return result
+
+
+# ─── Pair-level association with a task-label permutation (Mantel) test ──────
+# The distance-angle analysis of state_space_shift.py relates two quantities
+# defined per task pair. Pairs share tasks, so the nominal OLS p of a fit over
+# the pairs assumes an independence that does not hold; the appropriate null
+# relabels the tasks (rows and columns of one matrix together), as the lesion
+# analyses do for cluster pairs (multiple_task/lesion_plot.py, Spearman).
+
+# Permutations are drawn one at a time but evaluated in blocks of this size.
+_PERMUTATION_BLOCK = 1000
+
+
+def pair_values_to_matrix(values, pairs, n_items):
+    """Symmetric (n_items x n_items) matrix from one value per unordered pair.
+
+    ``pairs`` holds the (i, j) index pair of each value. Every unordered pair
+    must appear exactly once, so the matrix is complete; the diagonal is zero.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    pairs = np.asarray(pairs, dtype=int)
+    expected = n_items * (n_items - 1) // 2
+    if (n_items < 2 or values.ndim != 1 or pairs.shape != (values.size, 2)
+            or values.size != expected or not np.all(np.isfinite(values))):
+        raise ValueError(f"Need one finite value for each of the {expected} unordered pairs.")
+    if np.any(pairs < 0) or np.any(pairs >= n_items) or np.any(pairs[:, 0] == pairs[:, 1]):
+        raise ValueError("Pair indices must name two different items.")
+    matrix = np.zeros((n_items, n_items), dtype=np.float64)
+    filled = np.zeros((n_items, n_items), dtype=bool)
+    for (first, second), value in zip(pairs, values):
+        if filled[first, second]:
+            raise ValueError(f"Pair ({first}, {second}) appears more than once.")
+        matrix[first, second] = matrix[second, first] = value
+        filled[first, second] = filled[second, first] = True
+    return matrix
+
+
+def _pearson_rows(rows, centered_reference, reference_norm):
+    """Pearson correlation of every row of ``rows`` with one centered vector."""
+    centered = rows - rows.mean(axis=-1, keepdims=True)
+    norms = np.sqrt((centered ** 2).sum(axis=-1))
+    return centered @ centered_reference / (norms * reference_norm)
+
+
+def mantel_pearson_permutation(x_matrix, y_matrix, n_permutations=10000, seed=0):
+    """Two-sided Pearson Mantel test between two symmetric pair matrices.
+
+    r is the Pearson correlation of the strict upper triangles. The null
+    permutes the item (task) labels of ``y_matrix``, rows and columns
+    together, so every pair keeps its dependence on the shared items, and
+    recomputes r. p is two-sided: the share of permutations with |r| at least
+    the observed |r|, with the observed labeling counted once. Returns the
+    observed r, p, the null correlations and the test metadata.
+    """
+    x_matrix = _validated_distance_like(x_matrix)
+    y_matrix = _validated_distance_like(y_matrix)
+    n_items = x_matrix.shape[0]
+    if y_matrix.shape != x_matrix.shape or n_items < 3:
+        raise ValueError("Mantel test needs two square matrices of one size over >= 3 items.")
+    if n_permutations < 1:
+        raise ValueError("Need at least one permutation.")
+    upper = np.triu_indices(n_items, 1)
+    x_pairs = x_matrix[upper]
+    y_pairs = y_matrix[upper]
+    if np.std(x_pairs) < 1e-12 or np.std(y_pairs) < 1e-12:
+        raise ValueError("Pair values must vary for a correlation to exist.")
+    centered_x = x_pairs - x_pairs.mean()
+    norm_x = np.sqrt((centered_x ** 2).sum())
+    observed = float(_pearson_rows(y_pairs[None, :], centered_x, norm_x)[0])
+    rng = np.random.default_rng(seed)
+    null = np.empty(n_permutations)
+    for start in range(0, n_permutations, _PERMUTATION_BLOCK):
+        count = min(_PERMUTATION_BLOCK, n_permutations - start)
+        orders = np.stack([rng.permutation(n_items) for _ in range(count)])
+        permuted = y_matrix[orders[:, upper[0]], orders[:, upper[1]]]
+        null[start:start + count] = _pearson_rows(permuted, centered_x, norm_x)
+    p_value = float((1 + np.count_nonzero(np.abs(null) >= abs(observed))) / (1 + null.size))
+    return {
+        "r": observed,
+        "p_value": p_value,
+        "null": null,
+        "null_mean": float(null.mean()),
+        "null_sd": float(null.std(ddof=1)) if null.size > 1 else float("nan"),
+        "n_permutations": int(null.size),
+        "n_items": int(n_items),
+        "seed": int(seed),
+        "sided": "two-sided",
+        "null_statistic": "Pearson r over item pairs under permuted item labels (Mantel)",
+    }
+
+
+def _validated_distance_like(matrix):
+    """A finite symmetric square matrix (any diagonal), as float64."""
+    matrix = np.asarray(matrix, dtype=np.float64)
+    if (matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]
+            or not np.all(np.isfinite(matrix)) or not np.allclose(matrix, matrix.T)):
+        raise ValueError("Need a finite symmetric square matrix.")
+    return matrix

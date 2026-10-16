@@ -154,7 +154,9 @@ class StateSpaceContextRecordTests(unittest.TestCase):
             with patch.object(state_space, "STATE_SPACE_DIR", root), \
                     patch.object(state_space, "device", torch.device("cpu")), \
                     patch.object(state_space.torch, "load", return_value={
-                        "net_params": {}, "state_dict": {"mp_layer1.W": weights}}), \
+                        "net_params": {}, "state_dict": {
+                            "mp_layer1.W": weights,
+                            "mp_layer1.lam": torch.tensor(0.99)}}), \
                     patch.object(state_space.mpn, "DeepMultiPlasticNet", return_value=model), \
                     patch.object(state_space.mpn_tasks, "convert_and_init_multitask_params",
                                  return_value=(converted, {}, {})), \
@@ -172,19 +174,49 @@ class StateSpaceContextRecordTests(unittest.TestCase):
             with (root / f"state_space_pca_{aname}_noise0.01.pkl").open("rb") as stream:
                 artifact = pickle.load(stream)
 
+        saved_names = {"hidden", "mod", "eff_mod", "mod_hebb", "eff_mod_hebb"}
         self.assertEqual(result[0], aname)
-        self.assertEqual(set(result[3]), {"hidden", "mod", "eff_mod"})
-        self.assertEqual(set(result[4]), {"hidden", "mod", "eff_mod"})
-        self.assertEqual(regression.call_count, 3)
+        self.assertEqual(set(result[3]), saved_names)
+        self.assertEqual(set(result[4]), saved_names)
+        self.assertAlmostEqual(result[7], 0.99, places=6)
+        self.assertEqual(regression.call_count, 5)
         self.assertTrue(all(call.kwargs["through_origin"] is False
                             and call.kwargs["log"] is False
                             for call in regression.call_args_list))
-        for name in ("hidden", "mod", "eff_mod"):
+        n_pairs = len(rules) * (len(rules) - 1) // 2
+        for name in saved_names:
+            scatter = result[4][name]
             self.assertEqual(result[3][name], (0.8, 1.0, 0.01))
-            self.assertEqual(result[4][name]["regression"]["intercept"], 12.0)
-            self.assertIs(result[4][name]["regression"]["through_origin"], False)
+            self.assertEqual(scatter["regression"]["intercept"], 12.0)
+            self.assertIs(scatter["regression"]["through_origin"], False)
+            self.assertEqual(len(scatter["pair_rules"]), n_pairs)
+            self.assertEqual(scatter["dists"].shape, (n_pairs,))
+            self.assertIsNone(scatter["permutation_skipped"])
+            permutation = scatter["permutation"]
+            self.assertEqual(permutation["n_permutations"],
+                             state_space.DISTANCE_ANGLE_N_PERMUTATIONS)
+            self.assertEqual(permutation["sided"], "two-sided")
+            self.assertTrue(0 < permutation["p_value"] <= 1)
+            self.assertIn("initial", scatter["step_norms"])
+        for name in ("hidden", "mod", "eff_mod"):
+            self.assertEqual(result[4][name]["step"]["kind"], state_space.STEP_FULL)
+            self.assertIsNone(result[4][name]["step"]["retention"])
+        for name, source in (("mod_hebb", "mod"), ("eff_mod_hebb", "eff_mod")):
+            step = result[4][name]["step"]
+            self.assertEqual((step["kind"], step["source"]), (state_space.STEP_HEBBIAN, source))
+            self.assertAlmostEqual(step["retention"], 0.99, places=6)
+            self.assertIn("decay_term", result[4][name]["step_norms"])
+        self.assertNotIn("decay_term", result[4]["hidden"]["step_norms"])
+        # The Hebbian step of the mocked states differs from the full step, so
+        # the two definitions give different angles for the same pairs.
+        np.testing.assert_array_equal(result[4]["mod"]["dists"], result[4]["mod_hebb"]["dists"])
+        self.assertFalse(np.allclose(result[4]["mod"]["angles_deg"],
+                                     result[4]["mod_hebb"]["angles_deg"]))
         self.assertEqual(artifact["evaluation_seed"], state_space.EVALUATION_SEED)
         self.assertEqual(artifact["rule_motif_mapping"], paper_plot._RULE_MOTIF)
+        # A trained run's cache is marked as such and records its accuracy.
+        self.assertIs(artifact["untrained"], False)
+        self.assertEqual(artifact["accuracy"], 1.0)
         for name, states in (("hidden", hidden), ("mod", modulation),
                              ("eff_mod", modulation * weights)):
             record = artifact["pca_results"][name]
@@ -263,6 +295,140 @@ class StateSpaceContextRecordTests(unittest.TestCase):
         self.assertEqual(record["X_2d"].shape, (10, 2))
         self.assertTrue(np.isfinite(record["X_2d"]).all())
         self.assertEqual(record["pca_method"], "IncrementalPCA")
+
+
+class UntrainedNetworkTests(unittest.TestCase):
+    """The untrained control: a fresh initialization of a run's architecture,
+    analyzed on the same trials and cached apart from the trained runs."""
+
+    aname = "everything_seed921_L21e4+hidden300+batch128+angle"
+
+    @staticmethod
+    def _recording_constructor(draws):
+        """A DeepMultiPlasticNet stand-in that records the NumPy and torch
+        random numbers available at construction, as the real initializer
+        draws its weights from both generators."""
+        def construct(net_params, verbose=False, forzihan=True):
+            draws.append((np.random.rand(3), torch.rand(3)))
+            model = Mock()
+            model.state_dict.return_value = {"mp_layer1.W": torch.ones(2, 2),
+                                             "mp_layer1.lam": torch.tensor(0.99)}
+            return model
+        return construct
+
+    def test_untrained_network_is_seeded_and_loads_no_weights(self):
+        checkpoint = {"net_params": {"n_neurons": [1, 2, 1]},
+                      "state_dict": {"mp_layer1.W": torch.full((2, 2), 7.0)}}
+        draws = []
+        with patch.object(state_space.mpn, "DeepMultiPlasticNet",
+                          side_effect=self._recording_constructor(draws)) as constructor:
+            first, first_state = state_space._build_network(checkpoint, untrained_init_seed=5)
+            np.random.rand(10)  # whatever ran in between, the seed fixes the weights
+            _, again_state = state_space._build_network(checkpoint, untrained_init_seed=5)
+            state_space._build_network(checkpoint, untrained_init_seed=6)
+        first.load_state_dict.assert_not_called()
+        np.testing.assert_array_equal(draws[0][0], draws[1][0])
+        self.assertTrue(torch.equal(draws[0][1], draws[1][1]))
+        self.assertFalse(np.array_equal(draws[0][0], draws[2][0]))
+        # W and lam come from the fresh network, never from the trained weights.
+        np.testing.assert_array_equal(first_state["mp_layer1.W"].numpy(), np.ones((2, 2)))
+        self.assertEqual(constructor.call_args.args[0], checkpoint["net_params"])
+
+        trained_model = Mock()
+        trained_model.load_state_dict.return_value = ([], [])
+        with patch.object(state_space.mpn, "DeepMultiPlasticNet", return_value=trained_model):
+            model, state_dict = state_space._build_network(checkpoint)
+        trained_model.load_state_dict.assert_called_once_with(checkpoint["state_dict"], strict=True)
+        self.assertIs(state_dict, checkpoint["state_dict"])
+
+    def _states(self):
+        rules = list(paper_plot._RULE_MOTIF)
+        n_trials, n_steps = 2 * len(rules), 4
+        rng = np.random.default_rng(0)
+        epochs = {rule: {"fix1": (0, 2)} for rule in rules}
+        return {
+            "aname": self.aname, "hidden_size": 300, "l2_info": 1e-4, "retention": 0.99,
+            "dt_ms": 40, "fixed_fixation_steps": 2, "accuracy": 0.1, "all_rules": rules,
+            "rule_indices": np.repeat(np.arange(len(rules)), 2),
+            "stimulus_labels": np.zeros(n_trials, dtype=int), "rules_epochs": epochs,
+            "hidden": rng.normal(size=(n_trials, n_steps, 3)),
+            "mod": rng.normal(size=(n_trials, n_steps, 4)),
+            "eff_mod": rng.normal(size=(n_trials, n_steps, 4)),
+        }
+
+    def test_eval_untrained_writes_a_marked_cache_to_the_untrained_subdirectory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(state_space, "_context_states",
+                              return_value=self._states()) as context_states, \
+                    patch.object(state_space, "_draw_context_pca_figure") as draw, \
+                    patch.object(state_space, "distance_angle_analysis") as distance_angle:
+                path = state_space.eval_untrained(root / f"savednet_{self.aname}.pt", root,
+                                                  init_seed=3)
+            self.assertEqual(context_states.call_args.kwargs, {"untrained_init_seed": 3})
+            distance_angle.assert_not_called()
+            self.assertEqual(path, root / "untrained"
+                             / f"state_space_pca_{self.aname}_init3_noise0.01.pkl")
+            self.assertEqual(state_space.untrained_file_stem(self.aname, 3),
+                             f"{self.aname}_init3")
+            self.assertTrue(all("_init3_" in call.args[3].name for call in draw.call_args_list))
+            # Only the untrained subdirectory is written: no results pickle,
+            # no top-level PCA cache for the trained readers to pick up.
+            self.assertEqual([item.name for item in root.iterdir()], ["untrained"])
+            self.assertEqual(draw.call_count, 3)
+            with path.open("rb") as stream:
+                cache = pickle.load(stream)
+        self.assertIs(cache["untrained"], True)
+        self.assertEqual(cache["init_seed"], 3)
+        self.assertEqual(cache["config_source"], self.aname)
+        self.assertEqual(cache["accuracy"], 0.1)
+        self.assertEqual(set(cache["pca_results"]), {"hidden", "mod", "eff_mod"})
+        self.assertEqual(cache["pca_results"]["mod"]["task_centroids"].shape,
+                         (len(paper_plot._RULE_MOTIF), 4))
+
+    def test_untrained_cache_is_invisible_to_structure_and_survives_cleanup(self):
+        import state_space_structure
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            untrained = root / "untrained"
+            untrained.mkdir()
+            cache = untrained / f"state_space_pca_{self.aname}_init0_noise0.01.pkl"
+            cache.write_bytes(b"x")
+            self.assertEqual(state_space_structure.pca_cache_paths(root), [])
+            state_space._clean_state_space_results(root)
+            self.assertTrue(cache.exists())
+
+    def test_cli_untrained_needs_a_checkpoint_and_owns_the_init_seed(self):
+        with patch("sys.stderr"):
+            with self.assertRaises(SystemExit):
+                state_space._parse_args(["--untrained"])
+            with self.assertRaises(SystemExit):
+                state_space._parse_args(["--checkpoint", "a.pt", "--init-seed", "4"])
+        with patch.object(state_space, "run_untrained") as run_untrained, \
+                patch.object(state_space, "run_checkpoints") as run_checkpoints, \
+                patch.object(state_space, "summarize") as summarize:
+            state_space.main(["--untrained", "--checkpoint", "a.pt", "--out-dir", "scratch"])
+            state_space.main(["--untrained", "--checkpoint", "a.pt", "--init-seed", "4", "5"])
+        self.assertEqual([call.args for call in run_untrained.call_args_list],
+                         [(["a.pt"], Path("scratch"), [state_space.UNTRAINED_INIT_SEED]),
+                          (["a.pt"], state_space.STATE_SPACE_DIR, [4, 5])])
+        run_checkpoints.assert_not_called()
+        summarize.assert_not_called()
+        with self.assertRaises(FileNotFoundError):
+            state_space.run_untrained(["missing/savednet_x.pt"])
+
+    def test_run_untrained_builds_one_network_per_seed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = Path(tmp) / f"savednet_{self.aname}.pt"
+            checkpoint.touch()
+            with patch.object(state_space, "eval_untrained",
+                              side_effect=lambda path, out, seed: f"cache{seed}") as evaluate, \
+                    patch.object(state_space, "_matches_target_cohort", return_value=True):
+                paths = state_space.run_untrained([str(checkpoint)], tmp, init_seeds=[2, 0])
+                with self.assertRaises(ValueError):
+                    state_space.run_untrained([str(checkpoint)], tmp, init_seeds=[1, 1])
+        self.assertEqual(paths, ["cache2", "cache0"])
+        self.assertEqual([call.args[2] for call in evaluate.call_args_list], [2, 0])
 
 
 if __name__ == "__main__":

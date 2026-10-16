@@ -229,12 +229,13 @@ class PaperPlotModeTests(unittest.TestCase):
     def test_state_space_figures_have_their_own_mode(self):
         expected = {
             "state_space_combined",
-            "state_space_combined_L21e2",
+            "state_space_untrained",
             "state_space_dist_angle",
             "state_space_r_values",
             "state_space_rdm",
             "state_space_rdm_example",
             "state_space_category_test",
+            "state_space_category_vs_untrained",
         }
         self.assertEqual(set(paper_plot.FIGURES_BY_MODE["state_space"]), expected)
         self.assertTrue(expected.isdisjoint(
@@ -251,7 +252,18 @@ class PaperPlotModeTests(unittest.TestCase):
                     "mod": (0.2 + index, 1.0, 0.01),
                     "eff_mod": (0.3 + index, 1.0, 0.01),
                 },
+                "scatter": {
+                    name: {"permutation": {"p_value": 0.01 * (offset + index)}}
+                    for offset, name in enumerate(("hidden", "mod", "eff_mod"), start=1)
+                },
             }
+        # A run whose cache predates the permutation test is left out, and so
+        # is a run of a strength outside the four cohorts.
+        result_dict["legacy"] = {"l2_info": 1e-4,
+                                 "rval_dict": {"hidden": (0.9, 1.0, 0.01)}}
+        result_dict["other"] = {"l2_info": 1e-6,
+                                "rval_dict": {"hidden": (0.9, 1.0, 0.01)},
+                                "scatter": {"hidden": {"permutation": {"p_value": 0.5}}}}
 
         data_types = ["hidden", "mod", "eff_mod"]
         grouped = paper_plot._state_space_r_values_by_l2(
@@ -259,10 +271,16 @@ class PaperPlotModeTests(unittest.TestCase):
 
         self.assertEqual(tuple(grouped), paper_plot.STATE_SPACE_L2_STRENGTHS)
         for index, strength in enumerate(paper_plot.STATE_SPACE_L2_STRENGTHS):
+            self.assertEqual([len(grouped[strength][dt]) for dt in data_types], [1, 1, 1])
             np.testing.assert_allclose(
-                [grouped[strength][dt][0] for dt in data_types],
+                [grouped[strength][dt][0]["r"] for dt in data_types],
                 [0.1 + index, 0.2 + index, 0.3 + index],
             )
+            np.testing.assert_allclose(
+                [grouped[strength][dt][0]["p_perm"] for dt in data_types],
+                [0.01 * (offset + index) for offset in (1, 2, 3)],
+            )
+            self.assertEqual(grouped[strength]["hidden"][0]["aname"], f"run{index}")
 
     @staticmethod
     def _state_space_pca(centers):
@@ -335,16 +353,34 @@ class PaperPlotModeTests(unittest.TestCase):
         self.assertEqual(report["l2"], 1e-2)
         self.assertEqual([row["aname"] for row in report["rankings"]],
                          ["strong_good", "strong_mixed"])
+        # The PCA figures select one run per cohort, the 1e-4 example on the
+        # left and the 1e-2 run on the right, and keep the unsuffixed names.
+        selections = {1e-4: ("weak_good", 0.8, {}), 1e-2: ("strong_good", 0.8, {})}
         with patch.object(paper_plot, "_ensure_out_dir"), \
                 patch.object(paper_plot, "_load_best_state_space_trial",
-                             return_value=("strong_good", 0.8, {})) as selector, \
-                patch.object(paper_plot, "_load_state_space_pca", return_value=good), \
-                patch.object(paper_plot, "_plot_state_space_panel") as plot_panel:
-            paper_plot.plot_state_space_combined_l21e2()
-        selector.assert_called_once_with(1e-2)
-        self.assertEqual([call.args[3] for call in plot_panel.call_args_list],
-                         ["state_space_hidden_L21e2.png", "state_space_mod_L21e2.png",
-                          "state_space_eff_mod_L21e2.png"])
+                             side_effect=selections.get) as selector, \
+                patch.object(paper_plot, "_load_state_space_pca",
+                             side_effect=pca_data.get) as loader, \
+                patch.object(paper_plot, "_plot_state_space_figure") as plot_figure:
+            paper_plot.plot_state_space_combined()
+        self.assertEqual([call.args[0] for call in selector.call_args_list], [1e-4, 1e-2])
+        self.assertEqual([call.args[0] for call in loader.call_args_list],
+                         ["weak_good", "strong_good"])
+        self.assertEqual([call.args[3] for call in plot_figure.call_args_list],
+                         ["state_space_hidden.png", "state_space_mod.png",
+                          "state_space_eff_mod.png"])
+        for call in plot_figure.call_args_list:
+            self.assertEqual([strength for strength, _ in call.args[0]], [1e-4, 1e-2])
+            self.assertEqual([data is good for _, data in call.args[0]], [True, True])
+        # Without the strong cohort nothing is drawn: a figure needs both panels.
+        with patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(paper_plot, "_load_best_state_space_trial",
+                             side_effect={1e-4: ("weak_good", 0.8, {})}.get), \
+                patch.object(paper_plot, "_load_state_space_pca", side_effect=pca_data.get), \
+                patch.object(paper_plot, "_plot_state_space_figure") as plot_figure, \
+                patch("builtins.print"):
+            paper_plot.plot_state_space_combined()
+        plot_figure.assert_not_called()
 
     def test_state_space_trial_returns_none_without_valid_centers(self):
         self.assertIsNone(paper_plot._best_state_space_trial({
@@ -398,11 +434,11 @@ class PaperPlotModeTests(unittest.TestCase):
                 patch.object(paper_plot, "_load_best_state_space_trial",
                              return_value=("selected", 0.5, {})), \
                 patch.object(paper_plot, "_load_state_space_pca", return_value=data), \
-                patch.object(paper_plot, "_plot_state_space_panel") as plot_panel:
+                patch.object(paper_plot, "_plot_state_space_figure") as plot_figure:
             paper_plot.plot_state_space_combined()
 
         self.assertEqual(
-            [call.args[1:] for call in plot_panel.call_args_list],
+            [call.args[1:] for call in plot_figure.call_args_list],
             [
                 ("hidden", "Hidden state", "state_space_hidden.png"),
                 ("mod", "Modulation", "state_space_mod.png"),
@@ -410,7 +446,7 @@ class PaperPlotModeTests(unittest.TestCase):
             ],
         )
 
-    def test_state_space_panel_is_square_at_the_sweep_subpanel_size(self):
+    def test_state_space_panels_are_square_at_the_sweep_subpanel_size(self):
         rules = ["fdgo", "delaydm1", "dmcgo"]
         rng = np.random.RandomState(0)
         data = {
@@ -422,30 +458,104 @@ class PaperPlotModeTests(unittest.TestCase):
         }
         with patch.object(paper_plot, "_ensure_out_dir"), \
                 patch.object(paper_plot, "_save_fig") as save_fig:
-            paper_plot._plot_state_space_panel(
-                data, "eff_mod", "Eff. modulation", "state_space_eff_mod.png")
+            paper_plot._plot_state_space_figure(
+                [(1e-4, data), (1e-2, data)], "eff_mod", "Eff. modulation",
+                "state_space_eff_mod.png")
         figure = save_fig.call_args.args[0]
         self.addCleanup(paper_plot.plt.close, figure)
-        axis = figure.axes[0]
-        self.assertEqual(axis.get_box_aspect(), 1)
-        self.assertEqual(tuple(figure.get_size_inches()),
-                         paper_plot._STATE_SPACE_PANEL_FIGSIZE)
-        # The drawn box matches a rule-cue sweep subpanel (about 1.6 in).
+        self.assertEqual(Path(save_fig.call_args.args[1]).name, "multitask_state_space_eff_mod.png")
+        self.assertEqual(tuple(figure.get_size_inches()), paper_plot._STATE_SPACE_FIGSIZE)
+        # One panel per cohort, titled by its L2; the representation is named
+        # once, on the left panel; one color key for the whole figure.
+        self.assertEqual(len(figure.axes), 2)
+        self.assertEqual([axis.get_title() for axis in figure.axes],
+                         [r"$L_2 = 10^{-4}$", r"$L_2 = 10^{-2}$"])
+        self.assertEqual([axis.get_ylabel() for axis in figure.axes],
+                         ["Eff. modulation\nPC2", "PC2"])
+        self.assertEqual(len(figure.legends), 1)
+        self.assertEqual([text.get_text() for text in figure.legends[0].get_texts()],
+                         [label for label, _ in paper_plot._STATE_SPACE_LEGEND])
+        # Each drawn box matches a rule-cue sweep subpanel (about 1.6 in).
         figure.canvas.draw()
-        box = axis.get_window_extent().transformed(
-            figure.dpi_scale_trans.inverted())
-        self.assertAlmostEqual(box.width, box.height, places=2)
-        self.assertGreater(box.width, 1.5)
-        self.assertLess(box.width, 1.75)
+        for axis in figure.axes:
+            self.assertEqual(axis.get_box_aspect(), 1)
+            box = axis.get_window_extent().transformed(
+                figure.dpi_scale_trans.inverted())
+            self.assertAlmostEqual(box.width, box.height, places=2)
+            self.assertGreater(box.width, 1.5)
+            self.assertLess(box.width, 1.75)
+
+    @staticmethod
+    def _untrained_cache(untrained=True):
+        rules = list(paper_plot._RULE_MOTIF)
+        rng = np.random.RandomState(1)
+        labels = np.repeat(np.arange(len(rules)), 4)
+        return {
+            "all_rules": rules, "untrained": untrained, "init_seed": 0,
+            "pca_results": {key: {
+                "X_2d": rng.normal(size=(labels.size, 2)),
+                "ctx_rule_labels": labels,
+                "task_centroids": rng.normal(size=(len(rules), 5)),
+            } for key in ("hidden", "mod", "eff_mod")},
+        }
+
+    def _draw_untrained(self, cache):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            if cache is not None:
+                with (root / "state_space_pca_run_init0_noise0.01.pkl").open("wb") as stream:
+                    pickle.dump(cache, stream)
+            with patch.object(paper_plot, "_ensure_out_dir"), \
+                    patch.object(paper_plot, "STATE_SPACE_UNTRAINED_DIR", root), \
+                    patch.object(paper_plot, "_load_best_state_space_trial",
+                                 return_value=("run", 0.1, {})), \
+                    patch.object(paper_plot, "_save_fig") as save_fig, \
+                    patch("builtins.print") as output:
+                paper_plot.plot_state_space_untrained()
+        return save_fig, output
+
+    def test_state_space_untrained_figure_has_one_panel_per_representation(self):
+        save_fig, _ = self._draw_untrained(self._untrained_cache())
+        figure = save_fig.call_args.args[0]
+        self.addCleanup(paper_plot.plt.close, figure)
+        self.assertEqual(Path(save_fig.call_args.args[1]).name,
+                         "multitask_state_space_untrained.png")
+        self.assertEqual([axis.get_title() for axis in figure.axes],
+                         ["Hidden state", "Modulation", "Eff. modulation"])
+        self.assertEqual([axis.get_ylabel() for axis in figure.axes],
+                         ["Untrained\nPC2", "PC2", "PC2"])
+        self.assertEqual(len(figure.legends), 1)
+        extra = save_fig.call_args.kwargs["extra"]
+        self.assertIn("config of run, init seed 0", extra)
+        self.assertIn("eff_mod S = ", extra)
+        # The trained PCA figures' panel size (about 1.6 in square boxes).
+        figure.canvas.draw()
+        for axis in figure.axes:
+            box = axis.get_window_extent().transformed(figure.dpi_scale_trans.inverted())
+            self.assertAlmostEqual(box.width, box.height, places=2)
+            self.assertGreater(box.width, 1.5)
+            self.assertLess(box.width, 1.75)
+
+    def test_state_space_untrained_figure_skips_missing_or_trained_caches(self):
+        for cache, reason in ((None, "no untrained-network PCA cache"),
+                              (self._untrained_cache(untrained=False), "not marked")):
+            with self.subTest(reason=reason):
+                save_fig, output = self._draw_untrained(cache)
+                save_fig.assert_not_called()
+                message = output.call_args.args[0]
+                self.assertIn(reason, message)
+                self.assertIn("state_space_shift.py --untrained --checkpoint "
+                              "multiple_tasks/savednet_run.pt --init-seed 0", message)
 
     def test_state_space_dist_angle_renders_saved_nonzero_intercepts(self):
         entry = {"rval_dict": {}, "scatter": {}}
-        for key, intercept in (("hidden", 15.), ("eff_mod", -3.)):
+        for key, intercept in (("hidden", 15.), ("eff_mod", -3.), ("eff_mod_hebb", 2.)):
             entry["rval_dict"][key] = (0.9, 2., 0.02)
             entry["scatter"][key] = {
                 "dists": np.array([2., 3., 4.]),
                 "angles_deg": np.array([4., 6., 8.]) + intercept,
                 "regression": {"through_origin": False, "intercept": intercept},
+                "permutation": {"p_value": 0.004},
             }
         with patch.object(paper_plot, "_ensure_out_dir"), \
                 patch.object(paper_plot, "_load_best_state_space_trial",
@@ -456,11 +566,15 @@ class PaperPlotModeTests(unittest.TestCase):
         save_fig.assert_called_once()
         figure = save_fig.call_args.args[0]
         self.addCleanup(paper_plot.plt.close, figure)
-        for axis, intercept in zip(figure.axes, (15., -3.)):
+        self.assertEqual(len(figure.axes), 3)
+        for axis, intercept in zip(figure.axes, (15., -3., 2.)):
             line = axis.lines[0]
             np.testing.assert_allclose(line.get_ydata(),
                                        intercept + 2 * line.get_xdata())
-            self.assertIn("nominal p", axis.get_legend().get_texts()[0].get_text())
+            legend_text = axis.get_legend().get_texts()[0].get_text()
+            # The saved task-label permutation p is reported, never the
+            # nominal OLS p of the (r, slope, p) tuple.
+            self.assertEqual(legend_text, "r = 0.90\npermutation p = 0.004")
 
     def test_state_space_dist_angle_rejects_legacy_zero_intercept_cache(self):
         for regression in ({}, {"through_origin": True, "intercept": 0.}):
@@ -658,6 +772,72 @@ class PaperPlotModeTests(unittest.TestCase):
                          == paper_plot.mpl.colors.to_hex(paper_plot._SCATTER_POINT_COLOR)
                          for collection in points)
             self.assertEqual(filled, 5)
+
+    @staticmethod
+    def _separation_summary(score, p_value):
+        return {"representations": {key: {"separation": {
+            "score": score, "p_value": p_value, "null_quantile_95": 0.08}}
+            for key in ("hidden", "mod", "eff_mod")}}
+
+    def _structure_with_untrained(self):
+        runs = {}
+        for index, strength in enumerate(paper_plot.STATE_SPACE_L2_STRENGTHS):
+            for seed in range(2):
+                runs[f"everything_seed{seed}_L2{index}"] = {
+                    "l2_info": strength, **self._separation_summary(0.1 * (index + 1), 0.01)}
+        untrained = {
+            f"run_init{seed}": {"config_source": "run", "init_seed": seed,
+                                **self._separation_summary(0.002 * seed, 0.6)}
+            for seed in range(2)}
+        # An untrained network of another run's config is not drawn.
+        untrained["other_init0"] = {"config_source": "other", "init_seed": 0,
+                                    **self._separation_summary(0.5, 0.01)}
+        return {"runs": runs, "untrained": untrained}
+
+    def _draw_category_vs_untrained(self, combined):
+        with patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(paper_plot, "_load_pkl_or_skip", return_value=combined), \
+                patch.object(paper_plot, "_load_best_state_space_trial",
+                             return_value=("run", 0.1, {})), \
+                patch.object(paper_plot, "_save_fig") as save_fig, \
+                patch("builtins.print") as output:
+            paper_plot.plot_state_space_category_vs_untrained()
+        return save_fig, output
+
+    def test_state_space_category_vs_untrained_puts_untrained_left_of_the_cohorts(self):
+        save_fig, _ = self._draw_category_vs_untrained(self._structure_with_untrained())
+        figure = save_fig.call_args.args[0]
+        self.addCleanup(paper_plot.plt.close, figure)
+        self.assertEqual(Path(save_fig.call_args.args[1]).name,
+                         "multitask_state_space_category_vs_untrained.png")
+        self.assertEqual([axis.get_title() for axis in figure.axes],
+                         ["Hidden state", "Eff. modulation"])
+        for axis in figure.axes:
+            labels = [label.get_text() for label in axis.get_xticklabels()]
+            self.assertEqual(labels[0], "Untrained\n0/2")
+            self.assertEqual([label.split("\n")[1] for label in labels[1:]], ["2/2"] * 4)
+            np.testing.assert_allclose(axis.get_xticks(), [0.0, 1.5, 2.5, 3.5, 4.5])
+            # Two untrained networks of the example config and eight trained runs.
+            points = [collection for collection in axis.collections
+                      if isinstance(collection, paper_plot.mpl.collections.PathCollection)]
+            self.assertEqual(len(points), 10)
+            dividers = [line for line in axis.lines
+                        if np.allclose(line.get_xdata(), [0.75, 0.75])]
+            self.assertEqual(len(dividers), 1)
+        self.assertIn("untrained 0/2", save_fig.call_args.kwargs["extra"])
+        self.assertIn("L2 1e-02 2/2", save_fig.call_args.kwargs["extra"])
+
+    def test_state_space_category_vs_untrained_skips_without_untrained_networks(self):
+        for untrained in ({}, {"other_init0": {"config_source": "other", "init_seed": 0,
+                                               **self._separation_summary(0.5, 0.01)}}):
+            combined = self._structure_with_untrained()
+            combined["untrained"] = untrained
+            with self.subTest(untrained=list(untrained)):
+                save_fig, output = self._draw_category_vs_untrained(combined)
+                save_fig.assert_not_called()
+                message = output.call_args.args[0]
+                self.assertIn("--untrained --checkpoint multiple_tasks/savednet_run.pt", message)
+                self.assertIn("state_space_structure.py", message)
 
     def test_removed_cross_seed_summary_is_not_available(self):
         self.assertFalse(hasattr(paper_plot, "plot_cross_seed_summary"))

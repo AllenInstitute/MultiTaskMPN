@@ -195,6 +195,57 @@ class RunAllTests(unittest.TestCase):
         self.assertIn("pooled over factors", printed)
         self.assertIn("mean RDM over 1 runs", printed)
 
+    def test_untrained_networks_are_analyzed_apart_from_the_cohorts(self):
+        aname = "everything_seed1_L21e4+hidden300+batch128+angle"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            untrained_dir = root / structure.UNTRAINED_DIR_NAME
+            untrained_dir.mkdir()
+            with (root / f"state_space_pca_{aname}_noise0.01.pkl").open("wb") as stream:
+                pickle.dump(_pca_cache(aname, 1e-4, 0), stream)
+            for init_seed in (0, 1):
+                cache = _pca_cache(aname, 1e-4, 10 + init_seed)
+                cache.update(untrained=True, init_seed=init_seed, config_source=aname)
+                path = untrained_dir / f"state_space_pca_{aname}_init{init_seed}_noise0.01.pkl"
+                with path.open("wb") as stream:
+                    pickle.dump(cache, stream)
+            # A cache in the subdirectory that is not marked untrained is skipped.
+            with (untrained_dir / "state_space_pca_unmarked_init0_noise0.01.pkl").open("wb") as stream:
+                pickle.dump(_pca_cache("unmarked", 1e-4, 5), stream)
+            with patch("builtins.print") as output:
+                combined = structure.run_all(root, n_permutations=12, seed=3)
+            per_network = structure.structure_cache_path(f"{aname}_init1", untrained_dir)
+            self.assertTrue(per_network.exists())
+            with per_network.open("rb") as stream:
+                saved = pickle.load(stream)
+
+        self.assertEqual(structure.cache_stem(
+            f"state_space_pca_{aname}_init1_noise0.01.pkl"), f"{aname}_init1")
+        # The untrained networks never join the runs or the L2 cohort means.
+        self.assertEqual(set(combined["runs"]), {aname})
+        self.assertEqual(combined["cohorts"][1e-4]["anames"], [aname])
+        self.assertEqual(set(combined["untrained"]), {f"{aname}_init0", f"{aname}_init1"})
+        entry = combined["untrained"][f"{aname}_init1"]
+        self.assertEqual((entry["init_seed"], entry["config_source"]), (1, aname))
+        self.assertEqual(entry["representations"]["hidden"]["separation"]["n_permutations"], 12)
+        self.assertTrue(saved["untrained"])
+        np.testing.assert_allclose(
+            entry["representations"]["eff_mod"]["separation"]["score"],
+            saved["representations"]["eff_mod"]["separation"]["score"])
+        printed = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
+        self.assertIn("not marked as an untrained network", printed)
+        self.assertIn("Untrained networks: 2", printed)
+
+    def test_run_all_without_untrained_networks_records_none(self):
+        aname = "everything_seed1_L21e4+hidden300+batch128+angle"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (root / f"state_space_pca_{aname}_noise0.01.pkl").open("wb") as stream:
+                pickle.dump(_pca_cache(aname, 1e-4, 0), stream)
+            with patch("builtins.print"):
+                combined = structure.run_all(root, n_permutations=5)
+        self.assertEqual(combined["untrained"], {})
+
     def test_run_all_requires_pca_caches(self):
         with tempfile.TemporaryDirectory() as directory, \
                 self.assertRaisesRegex(FileNotFoundError, "state_space_shift"):

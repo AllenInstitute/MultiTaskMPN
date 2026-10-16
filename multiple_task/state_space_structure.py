@@ -25,6 +25,12 @@ matrix gets its own tree and category test, together with the seed-to-seed
 Spearman consistency of the per-run matrices (the paper's RDM figure draws
 this cohort mean; the single-run matrix is kept as the example figure).
 
+The untrained networks of ``state_space_shift.py --untrained`` (PCA caches in
+``state_space/untrained/``, one per config and init seed) get the same
+per-network analysis. Their summaries are kept apart, under ``untrained`` in
+the combined results, and never enter the L2 cohorts or their mean matrices:
+an untrained network has no L2 strength, since L2 only acts during training.
+
 Nothing is recomputed from network activity: the centroids come from the PCA
 caches, so this runs in minutes on CPU. Run it after ``state_space_shift.py``
 (whose batch run clears the top-level ``state_space/`` files, including the
@@ -32,8 +38,11 @@ caches written here) and before ``paper_plot.py state_space``.
 
 Outputs, in ``state_space/``:
   state_space_structure_<aname>_noise0.01.pkl   per run, with the null arrays
-  state_space_structure_results.pkl              every run's summary statistics
-                                                 and the per-cohort mean matrices
+  untrained/state_space_structure_<aname>_init<seed>_noise0.01.pkl
+                                                 per untrained network, likewise
+  state_space_structure_results.pkl              every run's summary statistics,
+                                                 the per-cohort mean matrices and
+                                                 the untrained networks' summaries
 """
 from pathlib import Path
 import pickle
@@ -59,11 +68,33 @@ PERMUTATION_SEED = 0
 LINKAGE_METHOD = "average"
 SCHEMA_VERSION = 1
 COMBINED_RESULT_NAME = "state_space_structure_results.pkl"
+# Subdirectory of the untrained networks' PCA caches (state_space_shift.py
+# UNTRAINED_DIR_NAME); the per-run glob below never descends into it.
+UNTRAINED_DIR_NAME = "untrained"
+_PCA_PREFIX = "state_space_pca_"
 
 
 def pca_cache_paths(state_space_dir=STATE_SPACE_DIR, noise_level=STATE_SPACE_NOISE_LEVEL):
     """Every per-run PCA cache of the state-space analysis, sorted by name."""
-    return sorted(Path(state_space_dir).glob(f"state_space_pca_*_noise{noise_level}.pkl"))
+    return sorted(Path(state_space_dir).glob(f"{_PCA_PREFIX}*_noise{noise_level}.pkl"))
+
+
+def untrained_pca_cache_paths(state_space_dir=STATE_SPACE_DIR,
+                              noise_level=STATE_SPACE_NOISE_LEVEL):
+    """Every untrained network's PCA cache (state_space_shift.py --untrained),
+    sorted by name; empty when none was made."""
+    return pca_cache_paths(Path(state_space_dir) / UNTRAINED_DIR_NAME, noise_level)
+
+
+def cache_stem(pca_path, noise_level=STATE_SPACE_NOISE_LEVEL):
+    """The identifier between "state_space_pca_" and "_noise<level>.pkl" of a
+    PCA cache name: the aname of a run, aname + "_init<seed>" of an untrained
+    network."""
+    name = Path(pca_path).name
+    suffix = f"_noise{noise_level}.pkl"
+    if not (name.startswith(_PCA_PREFIX) and name.endswith(suffix)):
+        raise ValueError(f"Not a PCA cache name: {name}")
+    return name[len(_PCA_PREFIX):-len(suffix)]
 
 
 def structure_cache_path(aname, state_space_dir=STATE_SPACE_DIR,
@@ -204,6 +235,37 @@ def cohort_mean_structure(results, n_permutations=N_PERMUTATIONS, seed=PERMUTATI
     return cohort
 
 
+def analyze_untrained(state_space_dir=STATE_SPACE_DIR, n_permutations=N_PERMUTATIONS,
+                      seed=PERMUTATION_SEED, noise_level=STATE_SPACE_NOISE_LEVEL):
+    """``analyze_run`` for every untrained network's PCA cache: each full
+    result goes next to its cache in the untrained subdirectory, and the
+    returned {cache stem: summary} adds to ``summarize_run`` the network's
+    ``init_seed`` and ``config_source`` (the run whose config it used). A
+    cache not marked ``untrained`` is skipped with a message rather than
+    counted as an untrained network."""
+    untrained_dir = Path(state_space_dir) / UNTRAINED_DIR_NAME
+    summaries = {}
+    for path in untrained_pca_cache_paths(state_space_dir, noise_level):
+        with path.open("rb") as stream:
+            data = pickle.load(stream)
+        if data.get("untrained") is not True:
+            print(f"Skipped {path}: not marked as an untrained network.")
+            continue
+        stem = cache_stem(path, noise_level)
+        result = analyze_run(data, n_permutations=n_permutations, seed=seed)
+        result.update(untrained=True, init_seed=data.get("init_seed"),
+                      config_source=data.get("config_source", data["aname"]))
+        out_path = structure_cache_path(stem, untrained_dir, noise_level)
+        with out_path.open("wb") as stream:
+            pickle.dump(result, stream)
+        summaries[stem] = {**summarize_run(result), "init_seed": result["init_seed"],
+                           "config_source": result["config_source"]}
+        eff_mod = result["representations"]["eff_mod"]["separation"]
+        print(f"untrained {stem}: eff_mod S = {eff_mod['score']:.4f} "
+              f"({_format_p(eff_mod['p_value'])}); saved {out_path}")
+    return summaries
+
+
 def group_runs_by_l2(results):
     """aname -> run result, grouped into {l2_info: {aname: result}}."""
     grouped = {}
@@ -259,6 +321,21 @@ def print_summary(combined):
             print(f"      pooled over factors: {sum(p < 0.05 for p in pooled)}/{len(entries)} "
                   "runs with p < 0.05")
 
+    untrained = combined.get("untrained") or {}
+    if untrained:
+        print(f"\nUntrained networks: {len(untrained)}")
+        for representation in REPRESENTATIONS:
+            separations = [entry["representations"][representation]["separation"]
+                           for entry in untrained.values()
+                           if representation in entry["representations"]]
+            if not separations:
+                continue
+            scores = np.array([separation["score"] for separation in separations])
+            significant = sum(separation["p_value"] < 0.05 for separation in separations)
+            print(f"  {representation}: category separation S median {np.median(scores):.4f} "
+                  f"(range {scores.min():.4f} to {scores.max():.4f}), "
+                  f"{significant}/{len(separations)} networks with p < 0.05")
+
 
 def run_all(state_space_dir=STATE_SPACE_DIR, n_permutations=N_PERMUTATIONS,
             seed=PERMUTATION_SEED, noise_level=STATE_SPACE_NOISE_LEVEL):
@@ -278,6 +355,7 @@ def run_all(state_space_dir=STATE_SPACE_DIR, n_permutations=N_PERMUTATIONS,
         "linkage_method": LINKAGE_METHOD,
         "runs": {},
         "cohorts": {},
+        "untrained": {},
     }
     results = {}
     for path in paths:
@@ -295,6 +373,8 @@ def run_all(state_space_dir=STATE_SPACE_DIR, n_permutations=N_PERMUTATIONS,
     for strength, cohort_results in group_runs_by_l2(results).items():
         combined["cohorts"][strength] = cohort_mean_structure(
             cohort_results, n_permutations=n_permutations, seed=seed)
+    combined["untrained"] = analyze_untrained(
+        state_space_dir, n_permutations=n_permutations, seed=seed, noise_level=noise_level)
     combined_path = state_space_dir / COMBINED_RESULT_NAME
     with combined_path.open("wb") as stream:
         pickle.dump(combined, stream)
