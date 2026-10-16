@@ -357,27 +357,43 @@ class UntrainedNetworkTests(unittest.TestCase):
         }
 
     def test_eval_untrained_writes_a_marked_cache_to_the_untrained_subdirectory(self):
+        states = self._states()
+        rval_dict = {"hidden": (0.4, 1.0, 0.01)}
+        scatter_dict = {"hidden": {"permutation": {"p_value": 0.02}}}
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             with patch.object(state_space, "_context_states",
-                              return_value=self._states()) as context_states, \
+                              return_value=states) as context_states, \
                     patch.object(state_space, "_draw_context_pca_figure") as draw, \
-                    patch.object(state_space, "distance_angle_analysis") as distance_angle:
-                path = state_space.eval_untrained(root / f"savednet_{self.aname}.pt", root,
-                                                  init_seed=3)
+                    patch.object(state_space, "_distance_angle_for_states",
+                                 return_value=(rval_dict, scatter_dict)) as distance_angle:
+                stem, entry = state_space.eval_untrained(
+                    root / f"savednet_{self.aname}.pt", root, init_seed=3)
             self.assertEqual(context_states.call_args.kwargs, {"untrained_init_seed": 3})
-            distance_angle.assert_not_called()
-            self.assertEqual(path, root / "untrained"
-                             / f"state_space_pca_{self.aname}_init3_noise0.01.pkl")
-            self.assertEqual(state_space.untrained_file_stem(self.aname, 3),
-                             f"{self.aname}_init3")
+            # The distance-angle control runs on the same states, with its
+            # diagnostic figure named after the untrained network.
+            self.assertEqual(distance_angle.call_args.args,
+                             (states, root / "untrained", f"{self.aname}_init3"))
+            self.assertEqual(stem, f"{self.aname}_init3")
+            self.assertEqual(state_space.untrained_file_stem(self.aname, 3), stem)
+            path = root / "untrained" / f"state_space_pca_{self.aname}_init3_noise0.01.pkl"
             self.assertTrue(all("_init3_" in call.args[3].name for call in draw.call_args_list))
-            # Only the untrained subdirectory is written: no results pickle,
-            # no top-level PCA cache for the trained readers to pick up.
+            # Only the untrained subdirectory is written: no top-level PCA
+            # cache or results pickle for the trained readers to pick up.
             self.assertEqual([item.name for item in root.iterdir()], ["untrained"])
             self.assertEqual(draw.call_count, 3)
             with path.open("rb") as stream:
                 cache = pickle.load(stream)
+        # The results entry has a trained run's fields, the untrained marks
+        # and no L2 strength, so no cohort grouping can take it in.
+        self.assertEqual(entry["rval_dict"], rval_dict)
+        self.assertEqual(entry["scatter"], scatter_dict)
+        self.assertEqual(entry["schema_version"], state_space.DISTANCE_ANGLE_SCHEMA_VERSION)
+        self.assertEqual(entry["retention"], 0.99)
+        self.assertIsNone(entry["l2_info"])
+        self.assertEqual(entry["config_l2_info"], 1e-4)
+        self.assertEqual((entry["untrained"], entry["init_seed"], entry["config_source"]),
+                         (True, 3, self.aname))
         self.assertIs(cache["untrained"], True)
         self.assertEqual(cache["init_seed"], 3)
         self.assertEqual(cache["config_source"], self.aname)
@@ -413,22 +429,39 @@ class UntrainedNetworkTests(unittest.TestCase):
                          [(["a.pt"], Path("scratch"), [state_space.UNTRAINED_INIT_SEED]),
                           (["a.pt"], state_space.STATE_SPACE_DIR, [4, 5])])
         run_checkpoints.assert_not_called()
-        summarize.assert_not_called()
+        # The summary covers the untrained networks' own results only.
+        self.assertEqual([call.args for call in summarize.call_args_list],
+                         [(Path("scratch") / "untrained",),
+                          (state_space.STATE_SPACE_DIR / "untrained",)])
         with self.assertRaises(FileNotFoundError):
             state_space.run_untrained(["missing/savednet_x.pt"])
 
-    def test_run_untrained_builds_one_network_per_seed(self):
+    def test_run_untrained_merges_one_entry_per_seed_into_its_own_results(self):
         with tempfile.TemporaryDirectory() as tmp:
-            checkpoint = Path(tmp) / f"savednet_{self.aname}.pt"
+            root = Path(tmp)
+            checkpoint = root / f"savednet_{self.aname}.pt"
             checkpoint.touch()
+            untrained = root / "untrained"
+            untrained.mkdir()
+            results_path = untrained / state_space.RESULTS_NAME
+            with results_path.open("wb") as stream:
+                pickle.dump({"kept_init9": {"init_seed": 9}}, stream)
             with patch.object(state_space, "eval_untrained",
-                              side_effect=lambda path, out, seed: f"cache{seed}") as evaluate, \
+                              side_effect=lambda path, out, seed: (f"net_init{seed}",
+                                                                   {"init_seed": seed})
+                              ) as evaluate, \
                     patch.object(state_space, "_matches_target_cohort", return_value=True):
-                paths = state_space.run_untrained([str(checkpoint)], tmp, init_seeds=[2, 0])
+                merged = state_space.run_untrained([str(checkpoint)], root, init_seeds=[2, 0])
                 with self.assertRaises(ValueError):
-                    state_space.run_untrained([str(checkpoint)], tmp, init_seeds=[1, 1])
-        self.assertEqual(paths, ["cache2", "cache0"])
+                    state_space.run_untrained([str(checkpoint)], root, init_seeds=[1, 1])
+            with results_path.open("rb") as stream:
+                saved = pickle.load(stream)
+            # The trained runs' results pickle is never created or touched.
+            self.assertFalse((root / state_space.RESULTS_NAME).exists())
         self.assertEqual([call.args[2] for call in evaluate.call_args_list], [2, 0])
+        self.assertEqual(set(saved), {"kept_init9", "net_init2", "net_init0"})
+        self.assertEqual(saved, merged)
+        self.assertEqual(saved["net_init2"], {"init_seed": 2})
 
 
 if __name__ == "__main__":

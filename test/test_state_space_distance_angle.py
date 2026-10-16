@@ -310,16 +310,27 @@ class StateSpaceDistanceAngleFigureTests(unittest.TestCase):
                               _distance_angle_entry(with_hebb=False))
         save_fig.assert_not_called()
 
-    def test_r_values_figure_hatches_hebbian_bars_and_fills_significant_runs(self):
-        result_dict = {f"run{index}": _distance_angle_entry() for index in range(2)}
+    def _draw_r_values(self, result_dict, untrained_path, selected=("run", 0.1, {})):
         with patch.object(paper_plot, "_ensure_out_dir"), \
                 patch.object(paper_plot, "_load_pkl_or_skip", return_value=result_dict), \
-                patch.object(paper_plot, "_save_fig") as save_fig:
+                patch.object(paper_plot, "STATE_SPACE_UNTRAINED_RVAL_PATH", untrained_path), \
+                patch.object(paper_plot, "_load_best_state_space_trial", return_value=selected), \
+                patch.object(paper_plot, "_save_fig") as save_fig, \
+                patch("builtins.print") as output:
             paper_plot.plot_state_space_r_values()
         figure = save_fig.call_args.args[0]
         self.addCleanup(paper_plot.plt.close, figure)
+        return figure, save_fig, output
+
+    def test_r_values_figure_hatches_hebbian_bars_and_fills_significant_runs(self):
+        result_dict = {f"run{index}": _distance_angle_entry() for index in range(2)}
+        with tempfile.TemporaryDirectory() as tmp:
+            # Without untrained results the four cohort panels stay as they were.
+            figure, save_fig, output = self._draw_r_values(result_dict, Path(tmp) / "missing.pkl")
         self.assertEqual(Path(save_fig.call_args.args[1]).name,
                          "multitask_state_space_r_values.png")
+        self.assertEqual(len(figure.axes), len(paper_plot.STATE_SPACE_L2_STRENGTHS))
+        self.assertIn("--untrained", output.call_args_list[0].args[0])
         panel = figure.axes[list(paper_plot.STATE_SPACE_L2_STRENGTHS).index(1e-4)]
         bars = [patch_ for patch_ in panel.patches
                 if isinstance(patch_, paper_plot.mpl.patches.Rectangle)]
@@ -336,6 +347,37 @@ class StateSpaceDistanceAngleFigureTests(unittest.TestCase):
         empty = [ax for ax in figure.axes if ax is not panel]
         self.assertTrue(all(any(text.get_text() == "No data" for text in ax.texts)
                             for ax in empty))
+
+    def test_r_values_figure_adds_the_untrained_networks_as_a_first_panel(self):
+        result_dict = {f"run{index}": _distance_angle_entry() for index in range(2)}
+        untrained = {}
+        for seed, config in ((0, "run"), (1, "run"), (0, "other")):
+            entry = _distance_angle_entry()
+            entry.update(untrained=True, init_seed=seed, config_source=config, l2_info=None)
+            # Untrained r values sit 0.5 below the trained fixture's.
+            entry["rval_dict"] = {name: (r - 0.5, slope, p)
+                                  for name, (r, slope, p) in entry["rval_dict"].items()}
+            untrained[f"{config}_init{seed}"] = entry
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "untrained_results.pkl"
+            with path.open("wb") as stream:
+                pickle.dump(untrained, stream)
+            figure, _, _ = self._draw_r_values(result_dict, path)
+        self.assertEqual(len(figure.axes), len(paper_plot.STATE_SPACE_L2_STRENGTHS) + 1)
+        self.assertEqual(figure.axes[0].get_title(), "Untrained")
+        self.assertEqual(figure.axes[0].get_ylabel(), "R-value")
+        bars = [patch_ for patch_ in figure.axes[0].patches
+                if isinstance(patch_, paper_plot.mpl.patches.Rectangle)]
+        np.testing.assert_allclose([bar.get_height() for bar in bars],
+                                   [0.4, 0.3, 0.2, 0.1, 0.0], atol=1e-12)
+        # Two networks of the example run's config per bar; the other
+        # config's network is left out.
+        dots = [collection for collection in figure.axes[0].collections
+                if isinstance(collection, paper_plot.mpl.collections.PathCollection)]
+        self.assertEqual(len(dots), 10)
+        # The trained cohorts keep their panels, shifted one to the right.
+        self.assertEqual(figure.axes[1 + list(paper_plot.STATE_SPACE_L2_STRENGTHS).index(1e-4)]
+                         .get_title(), r"$L_2 = 10^{-4}$")
 
 
 if __name__ == "__main__":

@@ -46,12 +46,15 @@ directory's top-level files and analyzes the whole cohort; with
 ``--checkpoint PATH [PATH ...]`` it analyzes only those runs and merges their
 entries into the results pickle without clearing anything, and ``--out-dir``
 redirects every output (for example to test one run in a scratch directory).
-``--untrained --checkpoint PATH`` instead runs the context-end PCA on
-untrained networks with that run's architecture and config, one per
-``--init-seed`` (fresh weights, default seed ``UNTRAINED_INIT_SEED``; eta at
-its initial value), on the same evaluation trials, writing only their PCA
-caches and diagnostic figures to ``<out-dir>/untrained/`` with ``_init<seed>``
-in the names; the batch cleanup preserves that directory.
+``--untrained --checkpoint PATH`` instead runs the context-end PCA and the
+distance-angle analysis on untrained networks with that run's architecture
+and config, one per ``--init-seed`` (fresh weights, default seed
+``UNTRAINED_INIT_SEED``; eta at its initial value), on the same evaluation
+trials: the no-learning control of both analyses. Everything goes to
+``<out-dir>/untrained/``: PCA caches and diagnostic figures with
+``_init<seed>`` in the names, and the networks' own distance-angle results
+pickle (entries keyed by those stems, ``l2_info`` None); the batch cleanup
+preserves that directory.
 
 The same PCA caches retain original-feature task centroids and trial counts.
 After analysis, run ``python paper_plot.py --only state_space_combined`` to
@@ -787,10 +790,21 @@ def eval_one(netpathname, output_dir=None):
     output_dir = Path(STATE_SPACE_DIR if output_dir is None else output_dir)
     states = _context_states(netpathname)
     _save_context_pca(states, output_dir)
-    aname, all_rules = states["aname"], states["all_rules"]
+    result = _evaluation_tuple(states, *_distance_angle_for_states(
+        states, output_dir, states["aname"]))
+    # Cleanup to prevent CPU memory compounding across experiments.
+    del states
+    gc.collect()
+    return result
 
-    # Distance between initial conditions vs. angle between first steps
-    # (closer to Fig 4C of Driscoll et al.), for the full and Hebbian steps.
+
+def _distance_angle_for_states(states, output_dir, file_stem):
+    """Distance between initial conditions vs. angle between first steps
+    (closer to Fig 4C of Driscoll et al.), for the full and Hebbian steps, of
+    one ``states`` dict (``_context_states``), with its diagnostic figure in
+    ``output_dir`` named after ``file_stem``. Returns (rval_dict,
+    scatter_dict) of ``distance_angle_analysis``."""
+    all_rules = states["all_rules"]
     onset_by_rule = {idx: int(states["rules_epochs"][rule]['fix1'][1])
                      for idx, rule in enumerate(all_rules)}
     source_data = {name: states[name] for name in ("hidden", "mod", "eff_mod")}
@@ -799,50 +813,58 @@ def eval_one(netpathname, output_dir=None):
         all_rules, states["retention"])
     _draw_distance_angle_figure(
         scatter_dict, rval_dict,
-        output_dir / f"initial_condition_distance_vs_angle_{aname}_1_noise{NOISE_LEVEL}.png")
+        Path(output_dir) / f"initial_condition_distance_vs_angle_{file_stem}_1_noise{NOISE_LEVEL}.png")
     for name, entry in scatter_dict.items():
         permutation = entry["permutation"]
         text = (f"permutation p = {permutation['p_value']:.4f}" if permutation
                 else f"permutation skipped ({entry['permutation_skipped']})")
         print(f"  {name}: r = {rval_dict[name][0]:.3f}, {text}; "
               f"step norms {entry['step_norms']}")
+    return rval_dict, scatter_dict
 
-    result = (aname, states["hidden_size"], states["l2_info"], rval_dict, scatter_dict,
-              states["fixed_fixation_steps"], states["fixed_fixation_steps"] * states["dt_ms"],
-              states["retention"])
-    # Cleanup to prevent CPU memory compounding across experiments.
-    del states, source_data
-    gc.collect()
-    return result
+
+def _evaluation_tuple(states, rval_dict, scatter_dict):
+    """The (aname, hidden_size, l2_info, rval_dict, scatter_dict,
+    fixed_fixation_steps, fixed_fixation_ms, retention) tuple of eval_one."""
+    return (states["aname"], states["hidden_size"], states["l2_info"], rval_dict, scatter_dict,
+            states["fixed_fixation_steps"], states["fixed_fixation_steps"] * states["dt_ms"],
+            states["retention"])
 
 
 def eval_untrained(netpathname, output_dir=None, init_seed=UNTRAINED_INIT_SEED):
-    """Context-end PCA of an untrained network with the architecture and
-    config of the checkpoint ``netpathname``: fresh weights drawn after
-    seeding with ``init_seed``, none of the trained weights used (see
-    _build_network), run on the same evaluation trials as the trained
-    analysis.
+    """Context-end PCA and distance-angle analysis of an untrained network
+    with the architecture and config of the checkpoint ``netpathname``: fresh
+    weights drawn after seeding with ``init_seed``, none of the trained
+    weights used (see _build_network), run on the same evaluation trials as
+    the trained analysis. It is the control for both: what the rule-cue
+    inputs and the Hebbian update produce without any learning.
 
-    Only the PCA cache and its diagnostic figures are written, to
-    ``<output_dir>/untrained/`` (output_dir defaults to STATE_SPACE_DIR),
-    named ``untrained_file_stem(aname, init_seed)`` so every seed keeps its
-    own files. The
-    subdirectory keeps the untrained cache out of the trained caches' readers
+    The PCA cache and the diagnostic figures go to ``<output_dir>/untrained/``
+    (output_dir defaults to STATE_SPACE_DIR), named
+    ``untrained_file_stem(aname, init_seed)`` so every seed keeps its own
+    files. The subdirectory keeps them out of the trained caches' readers
     (state_space_structure.py's glob, paper_plot's seed rankings), and the
     batch run's cleanup, which removes top-level files only, keeps it. The
     cache is marked ``untrained`` and records ``init_seed`` and the
-    checkpoint it took its config from. Returns the cache path.
+    checkpoint it took its config from.
+
+    Returns (file stem, distance-angle results entry): the entry has the
+    fields of a trained run's (``_result_entry``) plus the same marks, with
+    ``l2_info`` set to None, since an untrained network has no L2 strength
+    (the config's is kept as ``config_l2_info``); ``run_untrained`` collects
+    the entries in the untrained subdirectory's own results pickle.
     """
     untrained_dir = Path(STATE_SPACE_DIR if output_dir is None else output_dir) / UNTRAINED_DIR_NAME
     states = _context_states(netpathname, untrained_init_seed=init_seed)
-    path = _save_context_pca(states, untrained_dir, extra={
-        "untrained": True,
-        "init_seed": int(init_seed),
-        "config_source": states["aname"],
-    }, file_stem=untrained_file_stem(states["aname"], init_seed))
+    stem = untrained_file_stem(states["aname"], init_seed)
+    marks = {"untrained": True, "init_seed": int(init_seed), "config_source": states["aname"]}
+    _save_context_pca(states, untrained_dir, extra=marks, file_stem=stem)
+    rval_dict, scatter_dict = _distance_angle_for_states(states, untrained_dir, stem)
+    _, entry = _result_entry(_evaluation_tuple(states, rval_dict, scatter_dict))
+    entry.update(marks, l2_info=None, config_l2_info=entry["l2_info"])
     del states
     gc.collect()
-    return path
+    return stem, entry
 
 
 def _result_entry(evaluation):
@@ -944,22 +966,38 @@ def _existing_checkpoints(checkpoint_paths):
     return paths
 
 
+def untrained_dir_of(output_dir=None):
+    """The untrained networks' subdirectory of ``output_dir``."""
+    return Path(STATE_SPACE_DIR if output_dir is None else output_dir) / UNTRAINED_DIR_NAME
+
+
 def run_untrained(checkpoint_paths, output_dir=None, init_seeds=(UNTRAINED_INIT_SEED,)):
     """``eval_untrained`` for each named checkpoint and each of ``init_seeds``:
     untrained networks with that run's architecture and config, one per
-    seed, written to <output_dir>/untrained/. Nothing else in ``output_dir``
-    is touched. Returns the cache paths."""
+    seed, written to <output_dir>/untrained/, whose own distance-angle
+    results pickle (RESULTS_NAME) gains one entry per network, keyed by its
+    file stem, and is rewritten after every network. Nothing else in
+    ``output_dir`` is touched. Returns the merged results."""
     paths = _existing_checkpoints(checkpoint_paths)
     seeds = [int(seed) for seed in init_seeds]
     if not seeds or len(set(seeds)) != len(seeds):
         raise ValueError(f"Need one or more distinct init seeds, got {seeds}.")
-    cache_paths = []
+    untrained_dir = untrained_dir_of(output_dir)
+    untrained_dir.mkdir(parents=True, exist_ok=True)
+    results_path = _results_path(untrained_dir)
+    result_dict = {}
+    if results_path.exists():
+        with results_path.open("rb") as f:
+            result_dict = pickle.load(f)
     for path in paths:
         if not _matches_target_cohort(path):
             print(f"Warning: {path} is outside the default state-space cohort.")
         for seed in seeds:
-            cache_paths.append(eval_untrained(path, output_dir, seed))
-    return cache_paths
+            stem, entry = eval_untrained(path, output_dir, seed)
+            result_dict[stem] = entry
+            _save_results(result_dict, untrained_dir)
+            print(f"Merged {stem} into {results_path} ({len(result_dict)} network(s))")
+    return result_dict
 
 
 def summarize(output_dir=None):
@@ -1059,9 +1097,10 @@ def _parse_args(argv=None):
         help=f"directory for every output (default: {STATE_SPACE_DIR}/)")
     parser.add_argument(
         "--untrained", action="store_true",
-        help="instead analyze an untrained network with the architecture and config of "
+        help="instead analyze untrained networks with the architecture and config of "
              "each --checkpoint (fresh weights from --init-seed, no trained weight used): "
-             f"context-end PCA only, written to <out-dir>/{UNTRAINED_DIR_NAME}/")
+             "context-end PCA and distance-angle analysis, written to "
+             f"<out-dir>/{UNTRAINED_DIR_NAME}/ with its own results pickle")
     parser.add_argument(
         "--init-seed", type=int, nargs="+", default=None, metavar="SEED",
         help=f"seeds of the untrained weights, one network per seed (default: "
@@ -1081,6 +1120,7 @@ def main(argv=None):
     output_dir = Path(args.out_dir)
     if args.untrained:
         run_untrained(args.checkpoint, output_dir, args.init_seed)
+        summarize(untrained_dir_of(output_dir))
         return
     if args.checkpoint:
         run_checkpoints(args.checkpoint, output_dir)

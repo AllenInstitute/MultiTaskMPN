@@ -498,11 +498,18 @@ python multiple_task/state_space_shift.py --untrained \
   --init-seed 0 1 2 3 4 5 6 7
 python multiple_task/state_space_structure.py
 ```
-This writes only `state_space/untrained/state_space_pca_<aname>_init<seed>_noise0.01.pkl`
-(marked `untrained`, with `init_seed` and `config_source`) and its diagnostic
-figures per seed, and runs no distance-angle analysis. The subdirectory keeps
-these caches out of the trained runs' structure glob and seed rankings, and
-the batch run's cleanup leaves it in place. The PCA figure draws the network
+This writes only to `state_space/untrained/`: per seed the PCA cache
+`state_space_pca_<aname>_init<seed>_noise0.01.pkl` (marked `untrained`, with
+`init_seed` and `config_source`) and its diagnostic figures, and the networks'
+own distance-angle results, `initial_condition_distance_vs_angle_results.pkl`
+keyed by `<aname>_init<seed>`, with the fields of a trained run's entry
+(permutation test and Hebbian-only steps included), the same marks, and
+`l2_info` None (the config's L2 kept as `config_l2_info`). This is the
+no-learning control of the distance-angle relation: the rule cue is on for the
+whole trial, so the Hebbian step carries the cue as well, and distinct cues
+could tie M distance to step angle without any training. The subdirectory
+keeps these files out of the trained runs' structure glob, seed rankings and
+R-value cohorts, and the batch run's cleanup leaves it in place. The PCA figure draws the network
 of `STATE_SPACE_UNTRAINED_INIT_SEED` (0); its save message reports the
 category separation S of each representation's untrained centroids.
 
@@ -542,7 +549,11 @@ panels of the selected run, the hidden state and W ⊙ M with the full first
 step and W ⊙ M with the Hebbian term only (the two W ⊙ M panels on one y
 range), each with r and the permutation p; `state_space_r_values` shows one
 bar per representation and L2 cohort, raw M included (Hebbian-only bars
-hatched, one dot per run, filled when its permutation p < 0.05). Caches
+hatched, one dot per run, filled when its permutation p < 0.05), preceded by
+an "Untrained" panel of the same bars when `state_space/untrained/` holds
+distance-angle results of networks built from the selected example run's
+config (one dot per init seed; without them the four cohort panels are drawn
+and the command to add the control is printed). Caches
 without the permutation test or the Hebbian steps are skipped, never refitted;
 regenerate them with `state_space_shift.py`.
 

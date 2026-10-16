@@ -2587,22 +2587,70 @@ def _state_space_r_values_by_l2(result_dict, data_types):
         )
         if strength is None:
             continue
-        for data_type in data_types:
-            if data_type not in results.get("rval_dict", {}):
-                continue
-            permutation = (results.get("scatter") or {}).get(data_type, {}).get("permutation")
-            if not permutation or "p_value" not in permutation:
-                legacy += 1
-                continue
-            grouped[strength][data_type].append({
-                "r": float(results["rval_dict"][data_type][0]),
-                "p_perm": float(permutation["p_value"]),
-                "aname": aname,
-            })
+        legacy += _add_r_value_entry(grouped[strength], aname, results, data_types)
     if legacy:
         print(f"  Skipped {legacy} run/representation entries without a saved task-label "
               "permutation test (legacy cache). Re-run multiple_task/state_space_shift.py.")
     return grouped
+
+
+def _add_r_value_entry(group, name, results, data_types):
+    """Append one results entry's saved r and permutation p to `group`
+    ({data type: [{"r", "p_perm", "aname"}]}) for each of `data_types` it
+    holds. Returns the number of data types left out because the entry has
+    no saved permutation test (legacy cache)."""
+    legacy = 0
+    for data_type in data_types:
+        if data_type not in results.get("rval_dict", {}):
+            continue
+        permutation = (results.get("scatter") or {}).get(data_type, {}).get("permutation")
+        if not permutation or "p_value" not in permutation:
+            legacy += 1
+            continue
+        group[data_type].append({
+            "r": float(results["rval_dict"][data_type][0]),
+            "p_perm": float(permutation["p_value"]),
+            "aname": name,
+        })
+    return legacy
+
+
+# The untrained networks' own distance-angle results (state_space_shift.py
+# --untrained), keyed by file stem, next to their PCA caches.
+STATE_SPACE_UNTRAINED_RVAL_PATH = STATE_SPACE_UNTRAINED_DIR / RVAL_RESULT_PATH.name
+
+
+def _untrained_r_values(data_types):
+    """{data type: [{"r", "p_perm", "aname"}]} of the untrained networks built
+    from the selected example run's config (the networks of the untrained
+    PCA and category figures), or None, with the command to run, when there
+    are none."""
+    if not STATE_SPACE_UNTRAINED_RVAL_PATH.exists():
+        print(f"  No untrained distance-angle results ({STATE_SPACE_UNTRAINED_RVAL_PATH}); "
+              "drawing the trained cohorts only. Add them with: "
+              "python multiple_task/state_space_shift.py --untrained --checkpoint "
+              "multiple_tasks/savednet_<example aname>.pt --init-seed 0 1 2 3 4 5 6 7")
+        return None
+    with STATE_SPACE_UNTRAINED_RVAL_PATH.open("rb") as stream:
+        results = pickle.load(stream)
+    selected = _load_best_state_space_trial()
+    if selected is None:
+        return None
+    aname = selected[0]
+    group = {data_type: [] for data_type in data_types}
+    legacy = 0
+    for stem in sorted(results):
+        entry = results[stem]
+        if entry.get("untrained") is True and entry.get("config_source") == aname:
+            legacy += _add_r_value_entry(group, stem, entry, data_types)
+    if not any(group.values()):
+        print(f"  No untrained distance-angle results built from {aname}'s config; drawing "
+              f"the trained cohorts only. Add them with: {_untrained_command(aname)}")
+        return None
+    if legacy:
+        print(f"  Skipped {legacy} untrained network/representation entries without a saved "
+              "permutation test.")
+    return group
 
 
 # Bars of the R-value figure: (saved name, label, color, hatched). A hatched
@@ -2618,6 +2666,38 @@ _STATE_SPACE_R_BARS = (
 _STATE_SPACE_HEBB_HATCH = "///"
 
 
+def _draw_r_value_panel(ax, runs, title, jitter):
+    """One panel of the R-value figure: per bar of _STATE_SPACE_R_BARS the
+    mean r of `runs` ({data type: [{"r", "p_perm"}]}) with the sample SD, and
+    one dot per run or network, filled when its permutation p is below 0.05.
+    Returns the lowest r drawn (0 when none)."""
+    lowest = 0.0
+    if not any(runs[name] for name, _, _, _ in _STATE_SPACE_R_BARS):
+        ax.text(0.5, 0.5, "No data", ha="center", va="center",
+                transform=ax.transAxes, color="0.4")
+    positions = np.arange(len(_STATE_SPACE_R_BARS))
+    for position, (name, _, color, hatched) in zip(positions, _STATE_SPACE_R_BARS):
+        values = np.array([run["r"] for run in runs[name]], dtype=float)
+        if values.size == 0:
+            continue
+        lowest = min(lowest, float(values.min()))
+        spread = float(values.std(ddof=1)) if values.size > 1 else 0.0
+        ax.bar(position, values.mean(), yerr=spread, capsize=4, color=color,
+               edgecolor="k", linewidth=0.6, width=0.6,
+               hatch=_STATE_SPACE_HEBB_HATCH if hatched else None)
+        for offset, run in zip(jitter.uniform(-0.12, 0.12, values.size), runs[name]):
+            significant = run["p_perm"] < _STATE_SPACE_SIGNIFICANCE
+            ax.scatter(position + offset, run["r"], s=15, zorder=5,
+                       color="k" if significant else "white",
+                       edgecolors="k", linewidths=0.6)
+    ax.set_title(title)
+    ax.set_xticks(positions)
+    ax.set_xticklabels([label for _, label, _, _ in _STATE_SPACE_R_BARS], fontsize=7)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
+    return lowest
+
+
 def plot_state_space_r_values():
     """
     Figure: multitask_state_space_r_values.png — the distance-angle r of every
@@ -2629,6 +2709,13 @@ def plot_state_space_r_values():
     the sample SD; the dots are the runs, filled when the run's saved two-sided
     task-label permutation p is below 0.05 and hollow otherwise. Nothing is
     recomputed; runs whose cache has no saved permutation test are left out.
+
+    When the untrained networks built from the selected example run's config
+    have distance-angle results (state_space_shift.py --untrained), a first
+    panel, "Untrained", draws them the same way, one dot per init seed: the
+    r that the rule-cue inputs and the Hebbian update give without any
+    learning, against which the trained cohorts are read. Without them the
+    figure keeps its four cohort panels and says how to add the control.
     """
     _ensure_out_dir()
     result_dict = _load_pkl_or_skip(RVAL_RESULT_PATH, "Run state_space_shift.py first.")
@@ -2637,38 +2724,16 @@ def plot_state_space_r_values():
 
     names = [name for name, _, _, _ in _STATE_SPACE_R_BARS]
     grouped = _state_space_r_values_by_l2(result_dict, names)
-    fig, axs = plt.subplots(1, len(STATE_SPACE_L2_STRENGTHS), figsize=(10, 3.2), sharey=True)
-    positions = np.arange(len(names))
+    panels = [(rf"$L_2 = 10^{{{int(round(np.log10(strength)))}}}$", grouped[strength])
+              for strength in STATE_SPACE_L2_STRENGTHS]
+    untrained = _untrained_r_values(names)
+    if untrained is not None:
+        panels.insert(0, ("Untrained", untrained))
+    fig, axs = plt.subplots(1, len(panels), figsize=(2.5 * len(panels), 3.2), sharey=True)
     jitter = np.random.default_rng(42)
-    lowest = 0.0
-    for panel_idx, (ax, strength) in enumerate(zip(axs, STATE_SPACE_L2_STRENGTHS)):
-        runs = grouped[strength]
-        if not any(runs[name] for name in names):
-            ax.text(0.5, 0.5, "No data", ha="center", va="center",
-                    transform=ax.transAxes, color="0.4")
-        for position, (name, _, color, hatched) in zip(positions, _STATE_SPACE_R_BARS):
-            values = np.array([run["r"] for run in runs[name]], dtype=float)
-            if values.size == 0:
-                continue
-            lowest = min(lowest, float(values.min()))
-            spread = float(values.std(ddof=1)) if values.size > 1 else 0.0
-            ax.bar(position, values.mean(), yerr=spread, capsize=4, color=color,
-                   edgecolor="k", linewidth=0.6, width=0.6,
-                   hatch=_STATE_SPACE_HEBB_HATCH if hatched else None)
-            for offset, run in zip(jitter.uniform(-0.12, 0.12, values.size), runs[name]):
-                significant = run["p_perm"] < _STATE_SPACE_SIGNIFICANCE
-                ax.scatter(position + offset, run["r"], s=15, zorder=5,
-                           color="k" if significant else "white",
-                           edgecolors="k", linewidths=0.6)
-
-        ax.set_title(rf"$L_2 = 10^{{{int(round(np.log10(strength)))}}}$")
-        ax.set_xticks(positions)
-        ax.set_xticklabels([label for _, label, _, _ in _STATE_SPACE_R_BARS], fontsize=7)
-        if panel_idx == 0:
-            ax.set_ylabel("R-value")
-        ax.spines[["top", "right"]].set_visible(False)
-        ax.yaxis.grid(True, linestyle=":", linewidth=0.5,
-                      color="0.8", zorder=0)
+    lowest = min(_draw_r_value_panel(ax, runs, title, jitter)
+                 for ax, (title, runs) in zip(axs, panels))
+    axs[0].set_ylabel("R-value")
     axs[0].set_ylim(min(0.0, lowest - 0.05), 1.05)
 
     handles = [
