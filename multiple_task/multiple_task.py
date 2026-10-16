@@ -97,18 +97,21 @@ linestyles = ["-", "--", "-."]
 # many times for robustness across seeds.
 N_TRIALS = 5
 # Fixed list of seeds, or None to draw N_TRIALS random seeds (fresh entropy each
-# run, so reruns explore different seeds).
-SEED_LIST = None
+# run, so reruns explore different seeds). The random draw does not check for
+# existing runs, so a drawn seed can overwrite a saved checkpoint of the same
+# setting; these five extend the saved L21e4 cohort (seeds 408, 664, 692, 738,
+# 749, 842, 921) and are unused by every saved multi-task run.
+SEED_LIST = [11, 42, 101, 202, 303]
 
 RULESET = 'everything'          # low_dim, all, test, everything, ...
 CHOSEN_NETWORK = "dmpn"         # mpn1, dmpn, vanilla, gru
 N_HIDDEN = 300
-ADDON_NAME = "L21e5"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appended below
+ADDON_NAME = "L21e4"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appended below
 # Multiplicative modulation bounds (min, max) for M. The historical default is
-# (-1, 1); this experiment uses (-2, 2). Non-default values are encoded in the
-# effective ADDON_NAME automatically, so this run remains distinct from the
-# existing (-1, 1) runs.
-M_BOUNDS = (-2.0, 2.0)
+# (-1, 1), which the saved L21e4 cohort used and this setting reproduces, so the
+# run names carry no bound tag. Non-default values (e.g. (-2, 2)) are encoded in
+# the effective ADDON_NAME automatically ("mb2"), keeping such runs distinct.
+M_BOUNDS = (-1.0, 1.0)
 train = True                    # whether or not to train the network
 verbose = True
 
@@ -265,8 +268,8 @@ def current_basic_params(hyp_dict):
         'valid_check': None, 
         'n_epochs_per_set': 1, 
         'weight_reg': 'L2',
-        'activity_reg': 'L2', 
-        'reg_lambda': 1e-5,
+        'activity_reg': 'L2',
+        'reg_lambda': 1e-4,
         
         'scheduler': {
             'type': 'ReduceLROnPlateau',  # or 'StepLR'
