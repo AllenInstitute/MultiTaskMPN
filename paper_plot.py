@@ -4376,20 +4376,19 @@ def plot_om_vs_lesion_seeds():
 PLASTICITY_SHARE_MOD_TYPE = "modulation_all_var_weighted_unnormalized"
 _PLASTICITY_SHARE_YLIM = (-0.6, 1.6)
 _PLASTICITY_SHARE_FIGSIZE = (4.6, 2.8)
-# Short family names for the 2 in per-run figure; the task-level figure keeps
-# the full labels below.
-_PLASTICITY_SHARE_SEED_LABELS = {"reaction": "No memory", "memory": "Memory"}
 _PLASTICITY_SHARE_FAMILY_LABELS = {"reaction": "No working memory",
                                    "memory": "Working memory"}
 
 
 def _load_plasticity_share(directory=None, aname=None):
-    """Load a saved plasticity-share cache (LESION_ANAME by default), or None with a note.
+    """Load a saved plasticity-share cache (LESION_ANAME in LESION_NORM_DIR by
+    default; the cohort figure passes each sibling run), or None with a note.
 
     lesion_plot.py computes share(task, cluster) = freeze_M effect / zero_W
-    effect on (task, synapse cluster) cells whose zero_W effect is significant,
-    the per-task medians and a one-sided task-level Mann-Whitney U (memory
-    family above the no-memory family). Nothing is recomputed here.
+    effect on (task, synapse cluster) cells whose zero_W effect is significant
+    and the per-task medians; the figure draws those values. The cache also
+    holds a task-level Mann-Whitney U test, which the figure does not report.
+    Nothing is recomputed here.
     """
     directory = LESION_NORM_DIR if directory is None else Path(directory)
     aname = LESION_ANAME if aname is None else aname
@@ -4406,7 +4405,6 @@ def _load_plasticity_share(directory=None, aname=None):
         tasks = list(saved["tasks"])
         family = [str(value) for value in saved["task_family"]]
         medians = np.asarray(saved["task_median_share"], dtype=float)
-        p_value = float(saved["mwu_p_one_sided"])
         if (share.ndim != 2 or share.shape[0] != len(tasks) or len(family) != len(tasks)
                 or medians.shape != (len(tasks),)
                 or set(family) - set(_PLASTICITY_SHARE_FAMILY_LABELS)
@@ -4423,56 +4421,44 @@ def _load_plasticity_share(directory=None, aname=None):
         print(f"  Skipped: incompatible {path.name}: {error}. Run multiple_task/lesion_plot.py again.")
         return None
     return {"share": share, "tasks": tasks, "family": family, "medians": medians,
-            "p_value": p_value, "n_cells": n_cells, "path": path}
+            "n_cells": n_cells, "path": path}
 
 
-def plot_plasticity_share():
-    """
-    Figure: plasticity share of each task's synapse-cluster dependence.
-
-    One column per task, no-working-memory tasks first. Pale points are the
-    saved share values, one per (task, synapse cluster) cell whose zero_W
-    effect was significant; the dark dash is the saved task median. Share 1
-    means freezing the plasticity of that cluster costs the task as much as
-    removing its weights; 0 means the static wiring suffices. Values beyond
-    the y-limits are drawn as hollow triangles at the edge, so no cell is
-    hidden. The legend reports the saved one-sided task-level Mann-Whitney U
-    p for memory tasks exceeding no-memory tasks; task labels carry their
-    motif colors. Everything is read from lesion_plot.py's cache for
-    LESION_ANAME and the var-weighted modulation clustering.
-    """
-    _ensure_out_dir()
-    saved = _load_plasticity_share()
-    if saved is None:
-        return
-    share, tasks, family = saved["share"], saved["tasks"], saved["family"]
+def _draw_plasticity_share_axes(ax, tasks, family, cells, medians, run_medians=None,
+                                point_alpha=0.45):
+    """Draw one plasticity-share panel: one column per task, no-working-memory
+    tasks first, `cells[i]` (the task's share values) as pale points with
+    values beyond _PLASTICITY_SHARE_YLIM as hollow triangles at the edge,
+    `medians[i]` as the red dash and, when given, `run_medians[i]` (one value
+    per run) as short gray dashes. Returns the number of clipped cells."""
     order = ([index for index, kind in enumerate(family) if kind == "reaction"]
              + [index for index, kind in enumerate(family) if kind == "memory"])
     n_no_memory = sum(kind == "reaction" for kind in family)
     low, high = _PLASTICITY_SHARE_YLIM
-
-    fig, ax = plt.subplots(1, 1, figsize=_PLASTICITY_SHARE_FIGSIZE)
     ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
     ax.axhline(1.0, color="0.6", linewidth=0.6, linestyle="--", zorder=1)
     if 0 < n_no_memory < len(order):
         ax.axvline(n_no_memory - 0.5, color="0.3", linewidth=0.8, linestyle=":", zorder=1)
     n_clipped = 0
     for position, index in enumerate(order):
-        values = share[index][np.isfinite(share[index])]
-        if values.size == 0:
-            continue
-        jitter = np.linspace(-0.18, 0.18, values.size) if values.size > 1 else np.zeros(1)
-        inside = (values >= low) & (values <= high)
-        ax.scatter(position + jitter[inside], values[inside], color=_SCATTER_POINT_COLOR,
-                   edgecolors="none", s=14, alpha=0.45, zorder=2)
-        for beyond, marker, edge in ((values > high, "^", high), (values < low, "v", low)):
-            if beyond.any():
-                n_clipped += int(beyond.sum())
-                ax.scatter(position + jitter[beyond], np.full(beyond.sum(), edge),
-                           marker=marker, facecolors="none", edgecolors=_SCATTER_POINT_COLOR,
-                           linewidths=0.6, s=16, zorder=2)
-        ax.scatter([position], [saved["medians"][index]], marker="_", s=160,
-                   color=_TREND_LINE_COLOR, linewidths=1.8, zorder=4)
+        values = np.asarray(cells[index], dtype=float)
+        if values.size:
+            jitter = np.linspace(-0.22, 0.22, values.size) if values.size > 1 else np.zeros(1)
+            inside = (values >= low) & (values <= high)
+            ax.scatter(position + jitter[inside], values[inside], color=_SCATTER_POINT_COLOR,
+                       edgecolors="none", s=14, alpha=point_alpha, zorder=2)
+            for beyond, marker, edge in ((values > high, "^", high), (values < low, "v", low)):
+                if beyond.any():
+                    n_clipped += int(beyond.sum())
+                    ax.scatter(position + jitter[beyond], np.full(beyond.sum(), edge),
+                               marker=marker, facecolors="none", edgecolors=_SCATTER_POINT_COLOR,
+                               linewidths=0.6, s=16, zorder=2)
+        if run_medians is not None and len(run_medians[index]):
+            ax.hlines(np.clip(run_medians[index], low, high), position - 0.3, position + 0.3,
+                      color="0.45", linewidth=0.7, zorder=3)
+        if np.isfinite(medians[index]):
+            ax.scatter([position], [medians[index]], marker="_", s=160, color=_TREND_LINE_COLOR,
+                       linewidths=1.8, zorder=4)
     ax.set_xticks(range(len(order)))
     ax.set_xticklabels([_TASK_DISPLAY.get(tasks[index], tasks[index]) for index in order],
                        rotation=60, ha="right", fontsize=6)
@@ -4487,17 +4473,104 @@ def plot_plasticity_share():
     ax.set_ylabel("Plasticity share\n(freeze M / zero W)", fontsize=8)
     ax.spines[["top", "right"]].set_visible(False)
     ax.tick_params(axis="y", labelsize=7)
-    p_text = ("p < 0.001" if saved["p_value"] < 0.001 else f"p = {saved['p_value']:.3f}")
-    median_handle = mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, marker="_", linestyle="none",
-                                     markersize=8, markeredgewidth=1.8, label="Task median")
+    return n_clipped
+
+
+def _plasticity_share_median_handle(label="Task median"):
+    return mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, marker="_", linestyle="none",
+                            markersize=8, markeredgewidth=1.8, label=label)
+
+
+def plot_plasticity_share():
+    """
+    Figure: plasticity share of each task's synapse-cluster dependence.
+
+    One column per task, no-working-memory tasks first. Pale points are the
+    saved share values, one per (task, synapse cluster) cell whose zero_W
+    effect was significant; the dark dash is the saved task median. Share 1
+    means freezing the plasticity of that cluster costs the task as much as
+    removing its weights; 0 means the static wiring suffices. Values beyond
+    the y-limits are drawn as hollow triangles at the edge, so no cell is
+    hidden. The figure shows the values only, with no test statistic; task
+    labels carry their motif colors. Everything is read from lesion_plot.py's
+    cache for LESION_ANAME and the var-weighted modulation clustering.
+    """
+    _ensure_out_dir()
+    saved = _load_plasticity_share()
+    if saved is None:
+        return
+    share = saved["share"]
+    cells = [row[np.isfinite(row)] for row in share]
+    fig, ax = plt.subplots(1, 1, figsize=_PLASTICITY_SHARE_FIGSIZE)
+    n_clipped = _draw_plasticity_share_axes(ax, saved["tasks"], saved["family"], cells,
+                                            saved["medians"])
     # The band below share 0 is empty for the memory tasks, so the legend sits
     # there instead of over the points at the right edge.
-    _legend(ax, handles=[median_handle], loc="lower center", fontsize=6, frameon=True,
-            title=f"memory > no memory: MWU {p_text}", title_fontsize=6)
+    _legend(ax, handles=[_plasticity_share_median_handle()], loc="lower center", fontsize=6,
+            frameon=True)
     fig.tight_layout()
     _save_fig(fig, _multitask_out("plasticity_share.png"),
-              extra=(f"  [{LESION_ANAME}] {saved['n_cells']} cells, {n_clipped} beyond "
-                     f"y-limits; MWU one-sided p={saved['p_value']:.4f}"))
+              extra=f"  [{LESION_ANAME}] {saved['n_cells']} cells, {n_clipped} beyond y-limits")
+
+
+def _plasticity_share_cohort_runs():
+    """The saved plasticity-share caches of every sibling run of LESION_ANAME
+    (same feature, any seed) that validates and lists the same tasks with the
+    same families as the first; a run with another task list is left out with
+    a note. Returns the list of loaded caches."""
+    runs = []
+    for directory in _sibling_run_dirs():
+        saved = _load_plasticity_share(directory, directory.name)
+        if saved is None:
+            continue
+        if runs and (saved["tasks"] != runs[0]["tasks"] or saved["family"] != runs[0]["family"]):
+            print(f"  Skipped {directory.name}: its task list differs from the other runs.")
+            continue
+        runs.append(saved)
+    return runs
+
+
+def plot_plasticity_share_cohort():
+    """
+    Figure: multitask_plasticity_share_cohort.png — the plasticity-share
+    figure with every sibling run of LESION_ANAME overlaid.
+
+    Same layout as plot_plasticity_share: one column per task, no-working-
+    memory tasks first, share 1 meaning that freezing a cluster's plasticity
+    costs the task as much as removing its weights. The pale points are the
+    saved significant (task, synapse cluster) cells of all runs pooled per
+    task, each short gray dash is one run's saved task median, and the red
+    dash is the median of the pooled cells. Values beyond the y-limits are
+    hollow triangles at the edge; run medians beyond them are drawn at the
+    edge. The legend title gives the run count. Only saved values are drawn;
+    the figure is skipped below two runs.
+    """
+    _ensure_out_dir()
+    runs = _plasticity_share_cohort_runs()
+    if len(runs) < 2:
+        print(f"  Skipped: {len(runs)} run(s) with saved plasticity-share caches; need >= 2.")
+        return
+    tasks, family = runs[0]["tasks"], runs[0]["family"]
+    cells, run_medians = [], []
+    for index in range(len(tasks)):
+        rows = [saved["share"][index] for saved in runs]
+        cells.append(np.concatenate([row[np.isfinite(row)] for row in rows]))
+        run_medians.append(np.array([saved["medians"][index] for saved, row in zip(runs, rows)
+                                     if np.isfinite(row).any()]))
+    medians = [float(np.median(values)) if values.size else np.nan for values in cells]
+    fig, ax = plt.subplots(1, 1, figsize=_PLASTICITY_SHARE_FIGSIZE)
+    n_clipped = _draw_plasticity_share_axes(ax, tasks, family, cells, medians, run_medians,
+                                            point_alpha=0.3)
+    run_handle = mpl.lines.Line2D([], [], color="0.45", linewidth=0.7, label="Run median")
+    # With every run pooled no band of the axes stays empty, so the legend
+    # sits outside, to the right of the axes.
+    _legend(ax, handles=[_plasticity_share_median_handle("Pooled median"), run_handle],
+            loc="upper left", bbox_to_anchor=(1.0, 1.0), borderaxespad=0.0, fontsize=6,
+            frameon=False, title=f"{len(runs)} runs", title_fontsize=6)
+    fig.tight_layout()
+    n_cells = int(sum(values.size for values in cells))
+    _save_fig(fig, _multitask_out("plasticity_share_cohort.png"),
+              extra=f"  {len(runs)} runs, {n_cells} cells, {n_clipped} beyond y-limits")
 
 
 # ─── Figure: Fixed-point PCA trajectories ────────────────────────────────────
@@ -4906,72 +4979,6 @@ def _sibling_run_dirs():
     return sorted(LESION_NORM_DIR.parent.glob(pattern))
 
 
-def _plasticity_share_family_medians(saved):
-    """Median over tasks of the saved task medians, per family."""
-    medians = {}
-    for kind in ("reaction", "memory"):
-        values = [value for value, family in zip(saved["medians"], saved["family"])
-                  if family == kind and np.isfinite(value)]
-        medians[kind] = float(np.median(values)) if values else np.nan
-    return medians
-
-
-def plot_plasticity_share_seeds():
-    """
-    Figure: plasticity share of no-memory vs memory tasks, one pair per run.
-
-    Each sibling run of LESION_ANAME contributes the median over its tasks of
-    the saved task-median shares, separately for the no-working-memory and
-    working-memory families, joined by a thin line; filled markers have a saved
-    one-sided Mann-Whitney U p below 0.05, hollow ones do not. The dash is the
-    median over runs. Only saved statistics are drawn.
-    """
-    _ensure_out_dir()
-    runs = {}
-    for directory in _sibling_run_dirs():
-        saved = _load_plasticity_share(directory, directory.name)
-        if saved is not None:
-            medians = _plasticity_share_family_medians(saved)
-            if all(np.isfinite(value) for value in medians.values()):
-                runs[directory.name] = {"medians": medians, "p_value": saved["p_value"]}
-    if len(runs) < 2:
-        print(f"  Skipped: {len(runs)} run(s) with saved plasticity-share caches; need >= 2.")
-        return
-    kinds = ("reaction", "memory")
-    positions = np.arange(len(kinds))
-    fig, ax = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
-    ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
-    ax.axhline(1.0, color="0.6", linewidth=0.6, linestyle="--", zorder=1)
-    for run_index, entry in enumerate(runs.values()):
-        offset = (run_index - (len(runs) - 1) / 2) * 0.03
-        values = [entry["medians"][kind] for kind in kinds]
-        significant = entry["p_value"] < 0.05
-        ax.plot(positions + offset, values, color="0.75", linewidth=0.6, zorder=2)
-        ax.scatter(positions + offset, values, s=32, zorder=3,
-                   color=_SCATTER_POINT_COLOR if significant else "white",
-                   edgecolors=_SCATTER_POINT_COLOR if significant else "k", linewidths=0.6)
-    for position, kind in zip(positions, kinds):
-        median = np.median([entry["medians"][kind] for entry in runs.values()])
-        ax.hlines(median, position - 0.22, position + 0.22, color=_TREND_LINE_COLOR,
-                  linewidth=1.8, zorder=4)
-    ax.set_xticks(positions)
-    ax.set_xticklabels([_PLASTICITY_SHARE_SEED_LABELS[kind] for kind in kinds], fontsize=7)
-    ax.set_xlim(-0.6, len(kinds) - 0.4)
-    ax.set_ylabel("Plasticity share\n(median over tasks)", fontsize=7)
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.tick_params(axis="y", labelsize=7)
-    filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color=_SCATTER_POINT_COLOR,
-                              markersize=5, label="MWU p < 0.05")
-    hollow = mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
-                              markeredgecolor="k", markersize=5, label=r"p $\geq$ 0.05")
-    _seeds_legend(ax, [filled, hollow], len(runs))
-    fig.tight_layout()
-    n_higher = sum(entry["medians"]["memory"] > entry["medians"]["reaction"]
-                   for entry in runs.values())
-    _save_fig(fig, _multitask_out("plasticity_share_seeds.png"),
-              extra=f"  memory > no memory in {n_higher}/{len(runs)} runs")
-
-
 # ─── Figure: Causal vs activity task organization ────────────────────────────
 
 CAUSAL_VS_ACTIVITY_SIDES = ("hidden", "input")
@@ -5130,10 +5137,13 @@ _TASK_SPECIFICITY_TYPES = ("input", "hidden", "modulation")
 _TASK_SPECIFICITY_LABELS = {"input": "Input neuron clusters", "hidden": "Hidden neuron clusters",
                             "modulation": "Synapse clusters"}
 _TASK_SPECIFICITY_COLORS = {"input": c_vals[1], "hidden": c_vals[0], "modulation": c_vals[4]}
+_TASK_SPECIFICITY_TICK_LABELS = {"input": "Input\nclusters", "hidden": "Hidden\nclusters",
+                                 "modulation": "Synapse\nclusters"}
 
 
 def _load_task_specificity():
     """Load the per-cluster impaired-task counts and their dispersion test
+    (observed variance, the mixing null's variances and the permutation p)
     from lesion_plot.py's task-specificity cache for LESION_ANAME, or None
     with a note. The cache also holds per-relation task-pair sharing
     statistics, which no paper figure draws, so they are not read."""
@@ -5150,12 +5160,18 @@ def _load_task_specificity():
         for type_name, entry in saved["types"].items():
             if type_name not in _TASK_SPECIFICITY_TYPES:
                 raise ValueError(f"unknown cluster type {type_name!r}")
-            counts = np.asarray(entry["dispersion"]["counts"], dtype=int)
-            p_disp = float(entry["dispersion"]["p_perm"])
+            dispersion = entry["dispersion"]
+            counts = np.asarray(dispersion["counts"], dtype=int)
+            p_disp = float(dispersion["p_perm"])
+            null_var = np.asarray(dispersion["null_var"], dtype=float)
             if (counts.ndim != 1 or counts.size == 0 or counts.min() < 0
-                    or counts.max() > len(tasks) or not np.isfinite(p_disp)):
-                raise ValueError(f"{type_name}: invalid impaired-task counts or dispersion p")
-            types[type_name] = {"counts": counts, "p_dispersion": p_disp}
+                    or counts.max() > len(tasks) or not np.isfinite(p_disp)
+                    or dispersion.get("side") != "greater"
+                    or null_var.ndim != 1 or null_var.size == 0
+                    or not np.isfinite(null_var).all() or np.any(null_var < 0)):
+                raise ValueError(f"{type_name}: invalid impaired-task counts or dispersion test")
+            types[type_name] = {"counts": counts, "p_dispersion": p_disp,
+                                "null_var_median": float(np.median(null_var))}
         if not types:
             raise ValueError("no cluster types saved")
     except (OSError, KeyError, TypeError, ValueError) as error:
@@ -5167,46 +5183,64 @@ def _load_task_specificity():
 def plot_task_specificity():
     """
     Figure: multitask_task_specificity_counts.png — how many tasks each
-    cluster impairs.
+    cluster impairs, one column per cluster type.
 
-    For input, hidden and synapse clusters (the unresponsive class excluded),
-    the fraction of clusters that significantly impair 0, 1, ... T tasks. The
-    legend gives the saved one-sided permutation p for the count variance
-    exceeding a null that shuffles cluster identity within each task, so a
-    small p means clusters are more specialized or hub-like than uniform
-    mixing. All statistics come from lesion_plot.py's cache.
+    For input and hidden neuron clusters and synapse clusters (the
+    unresponsive class excluded), every cluster is a dot at the number of
+    tasks whose accuracy its zero_W lesion significantly lowers; tied values
+    spread sideways, so each column reads as a dot histogram, and the dash is
+    the median. The gray band is the spread the counts would have under the
+    saved mixing null, which shuffles cluster identity within each task and so
+    keeps every task's number of impaired clusters and the mean count per
+    cluster: the mean ± one SD, the square root of the median null variance.
+    Dots that spread beyond the band mean the type holds both specialized and
+    hub-like clusters rather than a uniform mix; the tick label carries the
+    cluster count and the saved one-sided permutation p of the observed
+    variance exceeding the null. Everything comes from lesion_plot.py's
+    cache; nothing is recomputed.
     """
     _ensure_out_dir()
     saved = _load_task_specificity()
     if saved is None:
         return
     n_tasks = len(saved["tasks"])
+    types = [name for name in _TASK_SPECIFICITY_TYPES if name in saved["types"]]
     fig, ax = plt.subplots(1, 1, figsize=_TASK_SPECIFICITY_FIGSIZE)
-    for type_name in _TASK_SPECIFICITY_TYPES:
-        entry = saved["types"].get(type_name)
-        if entry is None:
-            continue
+    tick_labels, notes = [], []
+    for position, type_name in enumerate(types):
+        entry = saved["types"][type_name]
         counts = entry["counts"]
-        fraction = np.bincount(counts, minlength=n_tasks + 1) / counts.size
-        p_disp = entry["p_dispersion"]
-        p_text = "p < 0.001" if p_disp < 0.001 else f"p = {p_disp:.3f}"
-        ax.plot(np.arange(n_tasks + 1), fraction, "o-", markersize=3.5, linewidth=1.1,
-                color=_TASK_SPECIFICITY_COLORS[type_name],
-                label=f"{_TASK_SPECIFICITY_LABELS[type_name]} (n = {counts.size}; {p_text})")
-    ax.set_xlabel("Tasks impaired per cluster", fontsize=8)
-    ax.set_ylabel("Fraction of clusters", fontsize=8)
-    ax.set_xlim(-0.5, n_tasks + 0.5)
-    ax.set_ylim(bottom=0)
-    ax.xaxis.set_major_locator(mticker.MultipleLocator(3))
+        null_sd = float(np.sqrt(entry["null_var_median"]))
+        ax.fill_between([position - 0.3, position + 0.3], counts.mean() - null_sd,
+                        counts.mean() + null_sd, color="0.85", linewidth=0, zorder=1)
+        for value in np.unique(counts):
+            ties = int(np.count_nonzero(counts == value))
+            half_width = min(0.28, 0.07 * (ties - 1))
+            ax.scatter(position + np.linspace(-half_width, half_width, ties),
+                       np.full(ties, value), s=16, color=_TASK_SPECIFICITY_COLORS[type_name],
+                       edgecolors="none", alpha=0.75, zorder=3)
+        ax.hlines(np.median(counts), position - 0.3, position + 0.3, color=_TREND_LINE_COLOR,
+                  linewidth=1.8, zorder=4)
+        tick_labels.append(f"{_TASK_SPECIFICITY_TICK_LABELS[type_name]}\nn = {counts.size}\n"
+                           f"{_permutation_p_text(entry['p_dispersion'])}")
+        notes.append(f"{type_name}: median {np.median(counts):.0f} tasks, variance "
+                     f"{counts.var():.1f} vs null {entry['null_var_median']:.1f}")
+    ax.set_xticks(np.arange(len(types)))
+    ax.set_xticklabels(tick_labels, fontsize=6)
+    ax.set_xlim(-0.6, len(types) - 0.4)
+    ax.set_ylabel("Tasks impaired per cluster", fontsize=8)
+    ax.set_ylim(-0.6, n_tasks + 0.6)
+    ax.yaxis.set_major_locator(mticker.MultipleLocator(5))
     ax.spines[["top", "right"]].set_visible(False)
-    ax.tick_params(labelsize=7)
-    _legend(ax, loc="upper right", fontsize=6, frameon=True,
-            title="dispersion vs per-task shuffle", title_fontsize=6)
+    ax.tick_params(axis="y", labelsize=7)
+    median = mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8, label="median")
+    band = mpl.patches.Patch(color="0.85", label="mixing null, mean ± SD")
+    _legend(ax, handles=[median, band], loc="lower left", bbox_to_anchor=(0.0, 1.0),
+            borderaxespad=0.0, ncol=2, columnspacing=0.8, handletextpad=0.4, fontsize=6,
+            frameon=False)
     fig.tight_layout()
     _save_fig(fig, _multitask_out("task_specificity_counts.png"),
-              extra=f" [{LESION_ANAME}] " + ", ".join(
-                  f"{name}: median {np.median(entry['counts']):.0f} tasks"
-                  for name, entry in saved["types"].items()))
+              extra=f" [{LESION_ANAME}] " + "; ".join(notes))
 
 
 # ─── Figure: Transfer speed ──────────────────────────────────────────────────
@@ -11577,7 +11611,7 @@ FIGURES_BY_MODE = {
         "om_vs_lesion": plot_om_vs_lesion,
         "om_vs_lesion_seeds": plot_om_vs_lesion_seeds,
         "plasticity_share": plot_plasticity_share,
-        "plasticity_share_seeds": plot_plasticity_share_seeds,
+        "plasticity_share_cohort": plot_plasticity_share_cohort,
         "causal_vs_activity_tasks": plot_causal_vs_activity,
         "causal_vs_activity_seeds": plot_causal_vs_activity_seeds,
         "task_specificity": plot_task_specificity,

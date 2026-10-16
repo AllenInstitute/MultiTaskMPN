@@ -155,9 +155,9 @@ layout.
 The `lesion` figure mode contains `lesion_heatmap`, `lesion_cluster_sizes`,
 `cluster_corr_vs_lesion`, `cluster_corr_vs_lesion_weighted`,
 `cluster_corr_vs_lesion_seeds`, `om_vs_lesion`, `om_vs_lesion_seeds`,
-`plasticity_share`, `plasticity_share_seeds`, `causal_vs_activity_tasks`,
-`causal_vs_activity_seeds` and `task_specificity`. All but the four `_seeds`
-figures read one run,
+`plasticity_share`, `plasticity_share_cohort`, `causal_vs_activity_tasks`,
+`causal_vs_activity_seeds` and `task_specificity`. All but the three `_seeds`
+figures and `plasticity_share_cohort` read one run,
 `LESION_ANAME`, independently of `ANAME`, which selects the `multiple_tasks`
 clustering figures. These figures no longer run under `multiple_tasks`; use
 `python paper_plot.py multiple_tasks lesion` for both groups. Existing figure
@@ -178,7 +178,7 @@ The `multiple_tasks` and `lesion` figures read one L2 cohort of the
 `MULTITASK_L2` in `paper_plot.py` (currently `1e3`) or per invocation with
 `python paper_plot.py --multitask-l2 1e4 multiple_tasks lesion`. The aggregate
 figures (overmembership, `cluster_corr_vs_lesion_seeds`, `om_vs_lesion_seeds`,
-`plasticity_share_seeds`, `causal_vs_activity_seeds`) summarize every cached
+`plasticity_share_cohort`, `causal_vs_activity_seeds`) summarize every cached
 seed of that cohort. The single-run figures use the
 cohort's designated seed from `MULTITASK_DESIGNATED_SEEDS` (749 for clustering
 and 921 for lesions in the 1e4 cohort; none for 1e3) when its cache directory
@@ -291,15 +291,19 @@ For every (task, synapse cluster) cell whose zero_W effect is significant
 1 means freezing the cluster's plasticity costs the task as much as removing
 its weights, 0 means the static wiring suffices. The figure shows one column
 per task (no-working-memory tasks fdgo/fdanti/reactgo/reactanti first), the
-saved cells as pale points, the saved task median as a dash, and the saved
-one-sided task-level Mann-Whitney U p for memory tasks exceeding no-memory
-tasks; values outside the fixed y-limits appear as hollow triangles at the
-edge. The share compares two interventions and is not an exact additive partition of
-static and plastic contributions. `--only plasticity_share_seeds` reads the same
-cache for every sibling run of `LESION_ANAME` and plots, per run, the median
-over tasks of the saved task medians for the no-memory and memory families as a
-joined pair, filled when the saved Mann-Whitney p is below 0.05, with the median
-over runs as a dash.
+saved cells as pale points and the saved task median as a dash; values outside
+the fixed y-limits appear as hollow triangles at the edge. The figure shows
+the values only: the one-sided task-level Mann-Whitney U test that
+`lesion_plot.py` also saves (memory tasks exceeding no-memory tasks) is not
+reported, and the former per-run `plasticity_share_seeds` figure was removed.
+`--only plasticity_share_cohort` draws `multitask_plasticity_share_cohort_n.png`,
+the same layout with every sibling run of `LESION_ANAME` (same feature, any
+seed) overlaid: the saved significant cells of all runs pooled per task as
+pale points, each run's saved task median as a short gray dash, and the median
+of the pooled cells as the red dash; the legend title gives the run count. A
+run whose task list differs from the others is left out with a note, and the
+figure is skipped below two runs. The share compares two interventions and is
+not an exact additive partition of static and plastic contributions.
 
 `python paper_plot.py --only causal_vs_activity_tasks` draws
 `multitask_causal_vs_activity_tasks_hidden_n.png` and `..._input_n.png` from
@@ -326,11 +330,16 @@ for input and hidden neuron clusters (unnormalized clustering) and
 var-weighted zero_W synapse clusters, the unresponsive class excluded. A
 cluster "impairs" a task when its zero_W lesion effect is significant
 (one-sided z against the control repeats, BH-FDR q = 0.05, the
-causal-dependency mask). The figure shows the fraction of clusters impairing
-0 to 15 tasks, with a one-sided permutation p for the count variance exceeding
-a null that shuffles cluster identity within each task (small p: specialized
-or hub-like rather than uniformly mixed). Nothing is recomputed in
-`paper_plot.py`. The same cache still holds, per cluster type, the task-pair
+causal-dependency mask). The figure has one column per cluster type: every
+cluster is a dot at the number of tasks it impairs (ties spread sideways, a
+dot histogram), the dash is the median, and the gray band is the spread the
+counts would have under the saved mixing null, which shuffles cluster identity
+within each task and so keeps each task's number of impaired clusters and the
+mean count (mean ± one SD, the square root of the median null variance).
+Dots spreading beyond the band mean specialized and hub-like clusters rather
+than a uniform mix; the tick label gives the cluster count and the saved
+one-sided permutation p of the observed variance exceeding that null. Nothing
+is recomputed in `paper_plot.py`. The same cache still holds, per cluster type, the task-pair
 Jaccard overlap of impaired clusters grouped by the component the two tasks
 differ in (`TASK_PAIR_RELATIONS` in `lesion_plot.py`) with task-label
 permutation tests; `paper_plot.py` no longer draws those sharing figures.

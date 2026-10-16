@@ -29,10 +29,13 @@ class TaskSpecificityFigureTests(unittest.TestCase):
         relations = ["response rule", "timing", "other"]
         types = {
             "hidden": {"cluster_labels": ["h1", "h2", "h3", "h4"],
-                       "dispersion": {"counts": np.array([0, 1, 1, 5]), "p_perm": 0.01},
+                       "dispersion": {"counts": np.array([0, 1, 1, 5]), "p_perm": 0.01,
+                                      "null_var": np.array([0.5, 1.0, 1.5, 1.0]),
+                                      "side": "greater"},
                        "sharing": self.sharing(relations, [0.6, 0.5, 0.2])},
             "modulation": {"cluster_labels": ["c1", "c2", "c3"],
-                           "dispersion": {"counts": np.array([2, 2, 2]), "p_perm": 0.7},
+                           "dispersion": {"counts": np.array([2, 2, 2]), "p_perm": 0.7,
+                                          "null_var": np.full(4, 0.25), "side": "greater"},
                            "sharing": self.sharing(relations, [0.3, 0.3, 0.3])},
         }
         return {"schema_version": 1, "aname": paper_plot.LESION_ANAME, "tasks": tasks,
@@ -60,15 +63,38 @@ class TaskSpecificityFigureTests(unittest.TestCase):
         self.assertEqual(set(figures), {"multitask_task_specificity_counts.png"})
         self.assertFalse(hasattr(paper_plot, "_short_p"))
         self.assertFalse(hasattr(paper_plot, "_TASK_SHARING_RELATION_LABELS"))
-        counts_axis = figures["multitask_task_specificity_counts.png"].axes[0]
-        self.assertEqual(len(counts_axis.lines), 2)   # hidden and modulation only
-        hidden_line = counts_axis.lines[0]
-        np.testing.assert_allclose(hidden_line.get_xdata(), np.arange(7))
-        np.testing.assert_allclose(hidden_line.get_ydata(), [0.25, 0.5, 0, 0, 0, 0.25, 0])
-        legend_texts = [text.get_text() for text in counts_axis.get_legend().get_texts()]
-        self.assertIn("Hidden neuron clusters (n = 4; p = 0.010)", legend_texts)
-        self.assertIn("Synapse clusters (n = 3; p = 0.700)", legend_texts)
-        self.assertEqual(counts_axis.get_ylim()[0], 0)
+        axis = figures["multitask_task_specificity_counts.png"].axes[0]
+        # One column per saved type (hidden, modulation), each tick label
+        # naming the type, its cluster count and the saved dispersion p.
+        self.assertEqual([label.get_text() for label in axis.get_xticklabels()],
+                         ["Hidden\nclusters\nn = 4\np = 0.010",
+                          "Synapse\nclusters\nn = 3\np = 0.700"])
+        collections = paper_plot.mpl.collections
+        dots = [c for c in axis.collections if isinstance(c, collections.PathCollection)]
+        offsets = np.concatenate([c.get_offsets() for c in dots])
+        # Every cluster is one dot at its count: hidden 0, 1, 1, 5 at x = 0
+        # (the two 1s spread sideways), modulation 2, 2, 2 at x = 1.
+        self.assertEqual(len(offsets), 7)
+        self.assertEqual(sorted(offsets[np.isclose(offsets[:, 0], 0, atol=0.3), 1].tolist()),
+                         [0, 1, 1, 5])
+        self.assertEqual(sorted(offsets[np.isclose(offsets[:, 0], 1, atol=0.3), 1].tolist()),
+                         [2, 2, 2])
+        ties = offsets[np.isclose(offsets[:, 1], 1)][:, 0]
+        self.assertEqual(len(ties), 2)
+        self.assertGreater(ties.max() - ties.min(), 0)
+        # Median dashes and the mixing-null bands (mean ± sqrt(median null var)).
+        dashes = [c for c in axis.collections if isinstance(c, collections.LineCollection)]
+        self.assertEqual([c.get_segments()[0][0, 1] for c in dashes], [1.0, 2.0])
+        bands = [c for c in axis.collections if isinstance(c, collections.PolyCollection)]
+        self.assertEqual(len(bands), 2)
+        hidden_band = bands[0].get_paths()[0].vertices[:, 1]
+        np.testing.assert_allclose([hidden_band.min(), hidden_band.max()], [0.75, 2.75])
+        synapse_band = bands[1].get_paths()[0].vertices[:, 1]
+        np.testing.assert_allclose([synapse_band.min(), synapse_band.max()], [1.5, 2.5])
+        self.assertEqual(axis.get_ylabel(), "Tasks impaired per cluster")
+        self.assertGreater(axis.get_ylim()[1], 6)
+        legend_texts = [text.get_text() for text in axis.get_legend().get_texts()]
+        self.assertEqual(legend_texts, ["median", "mixing null, mean ± SD"])
         self.assertIs(paper_plot.FIGURES_BY_MODE["lesion"]["task_specificity"],
                       paper_plot.plot_task_specificity)
 
@@ -78,18 +104,21 @@ class TaskSpecificityFigureTests(unittest.TestCase):
             entry.pop("sharing")
         figures = self.render(cache)
         self.assertEqual(set(figures), {"multitask_task_specificity_counts.png"})
-        self.assertEqual(len(figures["multitask_task_specificity_counts.png"].axes[0].lines), 2)
+        axis = figures["multitask_task_specificity_counts.png"].axes[0]
+        self.assertEqual(len(axis.get_xticklabels()), 2)
 
     def test_no_legend_and_incompatible_caches(self):
         figures = self.render(self.cache(), show_legend=False)
         for figure in figures.values():
             self.assertIsNone(figure.axes[0].get_legend())
-        for problem in ("missing", "run", "type", "counts"):
+        for problem in ("missing", "run", "type", "counts", "null"):
             cache = self.cache()
             if problem == "missing":
                 cache = None
             elif problem == "run":
                 cache["aname"] = "other"
+            elif problem == "null":
+                cache["types"]["hidden"]["dispersion"].pop("null_var")
             elif problem == "type":
                 cache["types"]["synapse"] = cache["types"].pop("modulation")
             else:

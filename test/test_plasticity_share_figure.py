@@ -40,7 +40,7 @@ class PlasticityShareFigureTests(unittest.TestCase):
             paper_plot.plot_plasticity_share()
         return save
 
-    def test_draws_cells_medians_clipped_markers_and_saved_p(self):
+    def test_draws_cells_medians_and_clipped_markers_without_a_test(self):
         cache = self.cache()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -51,6 +51,9 @@ class PlasticityShareFigureTests(unittest.TestCase):
         self.addCleanup(paper_plot.plt.close, figure)
         self.assertEqual(path.name, "multitask_plasticity_share.png")
         self.assertIn("2 beyond y-limits", save.call_args.kwargs["extra"])
+        # The figure shows the values only: the cache's Mann-Whitney U test is
+        # neither drawn nor reported.
+        self.assertNotIn("MWU", save.call_args.kwargs["extra"])
         axis = figure.axes[0]
         labels = [label.get_text() for label in axis.get_xticklabels()]
         self.assertEqual(labels, ["DelayPro", "ReactPro", "MemoryPro", "ReactCategoryPro"])
@@ -67,7 +70,7 @@ class PlasticityShareFigureTests(unittest.TestCase):
         for position, value in enumerate(medians):
             self.assertTrue(np.any(np.isclose(offsets, [position, value]).all(axis=1)))
         legend = axis.get_legend()
-        self.assertIn("MWU p = 0.013", legend.get_title().get_text())
+        self.assertEqual(legend.get_title().get_text(), "")
         self.assertEqual([text.get_text() for text in legend.get_texts()], ["Task median"])
         texts = [text.get_text() for text in axis.texts]
         self.assertIn("No working memory", texts)
@@ -101,61 +104,103 @@ class PlasticityShareFigureTests(unittest.TestCase):
                 self.render(root).assert_not_called()
 
 
-class PlasticityShareSeedsTests(PlasticityShareFigureTests):
-    def test_seed_summary_joins_runs_and_marks_significance(self):
+class RemovedSeedsFigureTests(unittest.TestCase):
+    def test_plasticity_share_seeds_figure_is_gone(self):
+        self.assertNotIn("plasticity_share_seeds", paper_plot.FIGURES_BY_MODE["lesion"])
+        self.assertFalse(hasattr(paper_plot, "plot_plasticity_share_seeds"))
+
+
+class PlasticityShareCohortTests(PlasticityShareFigureTests):
+    """The overlay of every sibling run's saved cells and task medians."""
+
+    def write_runs(self, base, specs):
+        """One sibling run directory per (seed, share matrix) in `specs`."""
         import re
+        for seed, share in specs.items():
+            aname = re.sub(r"seed\d+", f"seed{seed}", paper_plot.LESION_ANAME)
+            cache = self.cache()
+            cache["share"] = np.asarray(share, dtype=float)
+            cache["sig_zero_w"] = np.isfinite(cache["share"])
+            cache["task_median_share"] = np.array([np.nanmedian(row) if np.isfinite(row).any()
+                                                   else np.nan for row in cache["share"]])
+            run_dir = base / aname
+            run_dir.mkdir()
+            with (run_dir / f"plasticity_share_var-weighted-unnormalized_{aname}.pkl").open("wb") as f:
+                pickle.dump(cache, f)
+
+    def render_cohort(self, root):
+        with patch.object(paper_plot, "LESION_NORM_DIR", root), \
+                patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(paper_plot, "_save_fig") as save, \
+                patch("scipy.stats.mannwhitneyu", side_effect=AssertionError("No retesting")):
+            paper_plot.plot_plasticity_share_cohort()
+        return save
+
+    def test_cohort_overlays_cells_run_medians_and_pooled_medians(self):
+        nan = np.nan
+        specs = {
+            11: [[0.1, 0.3, nan], [0.2, nan, nan], [0.9, 1.1, nan], [0.8, 1.0, nan]],
+            22: [[0.5, nan, nan], [0.4, 0.6, nan], [1.3, nan, nan], [nan, nan, nan]],
+            33: [[0.0, 0.2, 0.4], [nan, nan, nan], [2.5, 0.7, nan], [0.6, nan, nan]],
+        }
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             root = base / paper_plot.LESION_ANAME
             root.mkdir()
-            specs = {11: (0.2, 0.9, 0.01), 22: (0.5, 0.4, 0.6), 33: (0.1, 0.8, 0.02)}
-            for seed, (no_memory, memory, p_value) in specs.items():
-                aname = re.sub(r"seed\d+", f"seed{seed}", paper_plot.LESION_ANAME)
-                cache = self.cache()
-                cache["task_median_share"] = np.array([no_memory, no_memory, memory, memory])
-                cache["share"] = np.array([[no_memory] * 3, [no_memory] * 3,
-                                           [memory] * 3, [memory] * 3])
-                cache["mwu_p_one_sided"] = p_value
-                run_dir = base / aname
-                run_dir.mkdir()
-                with (run_dir / f"plasticity_share_var-weighted-unnormalized_{aname}.pkl").open("wb") as f:
-                    pickle.dump(cache, f)
-            with patch.object(paper_plot, "LESION_NORM_DIR", root), \
-                    patch.object(paper_plot, "_ensure_out_dir"), \
-                    patch.object(paper_plot, "_save_fig") as save:
-                paper_plot.plot_plasticity_share_seeds()
+            self.write_runs(base, specs)
+            save = self.render_cohort(root)
         save.assert_called_once()
         figure, path = save.call_args.args[:2]
         self.addCleanup(paper_plot.plt.close, figure)
-        self.assertEqual(path.name, "multitask_plasticity_share_seeds.png")
-        self.assertIn("memory > no memory in 2/3 runs", save.call_args.kwargs["extra"])
+        self.assertEqual(path.name, "multitask_plasticity_share_cohort.png")
+        self.assertIn("3 runs, 15 cells, 1 beyond y-limits", save.call_args.kwargs["extra"])
         axis = figure.axes[0]
-        points = [c for c in axis.collections
-                  if isinstance(c, paper_plot.mpl.collections.PathCollection)]
-        self.assertEqual(len(points), 3)   # one scatter (two markers) per run
-        filled = sum(np.allclose(c.get_facecolors()[0][:3], paper_plot.mpl.colors.to_rgb("#3182ce"))
-                     for c in points)
-        self.assertEqual(filled, 2)
-        self.assertEqual(len(axis.lines), 2 + 3)   # reference lines at 0 and 1, one join per run
-        medians = [c for c in axis.collections
-                   if isinstance(c, paper_plot.mpl.collections.LineCollection)]
-        values = sorted(float(seg[0][1]) for c in medians for seg in c.get_segments())
-        self.assertEqual(values, [0.2, 0.8])
-        self.assertEqual([label.get_text() for label in axis.get_xticklabels()],
-                         ["No memory", "Memory"])
-        self.assertIs(paper_plot.FIGURES_BY_MODE["lesion"]["plasticity_share_seeds"],
-                      paper_plot.plot_plasticity_share_seeds)
+        collections = paper_plot.mpl.collections
+        points = [c for c in axis.collections if isinstance(c, collections.PathCollection)]
+        offsets = np.concatenate([c.get_offsets() for c in points])
+        # 15 pooled cells (the 2.5 clipped to the upper limit) plus 4 pooled medians.
+        self.assertEqual(len(offsets), 15 + 4)
+        high = paper_plot._PLASTICITY_SHARE_YLIM[1]
+        self.assertEqual(int(np.sum(offsets[:, 1] == high)), 1)
+        # Task order: reaction tasks first (fdgo, reactgo), then delaygo, dmcgo.
+        pooled = {0: np.median([0.1, 0.3, 0.5, 0.0, 0.2, 0.4]), 1: np.median([0.2, 0.4, 0.6]),
+                  2: np.median([0.9, 1.1, 1.3, 2.5, 0.7]), 3: np.median([0.8, 1.0, 0.6])}
+        for position, value in pooled.items():
+            self.assertTrue(np.any(np.isclose(offsets, [position, value]).all(axis=1)))
+        # One gray dash per run that has cells for the task: 3, 2, 3, 2.
+        dashes = [c for c in axis.collections if isinstance(c, collections.LineCollection)]
+        counts = [len(c.get_segments()) for c in dashes]
+        self.assertEqual(counts, [3, 2, 3, 2])
+        legend = axis.get_legend()
+        self.assertEqual(legend.get_title().get_text(), "3 runs")
+        self.assertEqual([text.get_text() for text in legend.get_texts()],
+                         ["Pooled median", "Run median"])
+        self.assertIs(paper_plot.FIGURES_BY_MODE["lesion"]["plasticity_share_cohort"],
+                      paper_plot.plot_plasticity_share_cohort)
 
-    def test_seed_summary_needs_two_runs(self):
+    def test_cohort_needs_two_runs_and_drops_runs_with_other_tasks(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / paper_plot.LESION_ANAME
             root.mkdir()
             self.write(root, self.cache())
-            with patch.object(paper_plot, "LESION_NORM_DIR", root), \
-                    patch.object(paper_plot, "_ensure_out_dir"), \
-                    patch.object(paper_plot, "_save_fig") as save:
-                paper_plot.plot_plasticity_share_seeds()
-            save.assert_not_called()
+            self.render_cohort(root).assert_not_called()
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / paper_plot.LESION_ANAME
+            root.mkdir()
+            self.write_runs(base, {11: self.cache()["share"], 22: self.cache()["share"]})
+            other = base / paper_plot.LESION_ANAME.replace("seed", "seed9")
+            other.mkdir()
+            cache = self.cache()
+            cache["tasks"] = ["fdgo", "reactgo", "delaygo", "dmsgo"]
+            with (other / f"plasticity_share_var-weighted-unnormalized_{other.name}.pkl").open("wb") as f:
+                pickle.dump(cache, f)
+            with patch("builtins.print") as output:
+                save = self.render_cohort(root)
+        save.assert_called_once()
+        self.assertIn("2 runs", save.call_args.kwargs["extra"])
+        printed = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
+        self.assertIn("task list differs", printed)
 
 
 if __name__ == "__main__":
