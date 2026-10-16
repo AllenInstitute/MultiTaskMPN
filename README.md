@@ -156,8 +156,8 @@ The `lesion` figure mode contains `lesion_heatmap`, `lesion_cluster_sizes`,
 `cluster_corr_vs_lesion`, `cluster_corr_vs_lesion_weighted`,
 `cluster_corr_vs_lesion_seeds`, `om_vs_lesion`, `om_vs_lesion_seeds`,
 `plasticity_share`, `plasticity_share_cohort`, `causal_vs_activity_tasks`,
-`causal_vs_activity_seeds` and `task_specificity`. All but the three `_seeds`
-figures and `plasticity_share_cohort` read one run,
+`causal_vs_activity_seeds`, `task_specificity` and `task_sharing_cohort`. All
+but the three `_seeds` and two `_cohort` figures read one run,
 `LESION_ANAME`, independently of `ANAME`, which selects the `multiple_tasks`
 clustering figures. These figures no longer run under `multiple_tasks`; use
 `python paper_plot.py multiple_tasks lesion` for both groups. Existing figure
@@ -178,8 +178,8 @@ The `multiple_tasks` and `lesion` figures read one L2 cohort of the
 `MULTITASK_L2` in `paper_plot.py` (currently `1e3`) or per invocation with
 `python paper_plot.py --multitask-l2 1e4 multiple_tasks lesion`. The aggregate
 figures (overmembership, `cluster_corr_vs_lesion_seeds`, `om_vs_lesion_seeds`,
-`plasticity_share_cohort`, `causal_vs_activity_seeds`) summarize every cached
-seed of that cohort. The single-run figures use the
+`plasticity_share_cohort`, `causal_vs_activity_seeds`, `task_sharing_cohort`)
+summarize every cached seed of that cohort. The single-run figures use the
 cohort's designated seed from `MULTITASK_DESIGNATED_SEEDS` (749 for clustering
 and 921 for lesions in the 1e4 cohort; none for 1e3) when its cache directory
 holds pickles; otherwise `paper_plot` picks the cached seed covering the most of
@@ -339,10 +339,20 @@ mean count (mean ± one SD, the square root of the median null variance).
 Dots spreading beyond the band mean specialized and hub-like clusters rather
 than a uniform mix; the tick label gives the cluster count and the saved
 one-sided permutation p of the observed variance exceeding that null. Nothing
-is recomputed in `paper_plot.py`. The same cache still holds, per cluster type, the task-pair
-Jaccard overlap of impaired clusters grouped by the component the two tasks
-differ in (`TASK_PAIR_RELATIONS` in `lesion_plot.py`) with task-label
-permutation tests; `paper_plot.py` no longer draws those sharing figures.
+is recomputed in `paper_plot.py`. The same cache holds, per cluster type, the
+task-pair Jaccard overlap of impaired clusters grouped by the component the
+two tasks differ in (`TASK_PAIR_RELATIONS` in `lesion_plot.py`) with one-sided
+task-label permutation tests. `python paper_plot.py --only task_sharing_cohort`
+draws them at the cohort level, `multitask_task_sharing_cohort_n.png`: one
+panel per cluster type and one column per relation (plus the pooled "All
+related" column), each sibling run of `LESION_ANAME` a point at its excess
+sharing, the saved mean Jaccard of the relation's pairs minus that of the
+unrelated pairs, filled when the run's saved permutation p is below 0.05,
+with the median over runs as a dash and, above each column, the one-sided
+Wilcoxon signed-rank p of the runs' excess being above zero. Runs whose
+cluster types or relation lists disagree are left out with a note; the
+figure is skipped below two runs. The former per-run sharing figures were
+removed.
 
 On a compute node, regenerate the post-processing cache and then the paper figure:
 ```bash

@@ -127,5 +127,132 @@ class TaskSpecificityFigureTests(unittest.TestCase):
                 self.assertEqual(self.render(cache), {})
 
 
+class TaskSharingCohortTests(TaskSpecificityFigureTests):
+    """The per-run excess sharing of impaired clusters, over sibling runs."""
+
+    def run_cache(self, aname, hidden_means, modulation_means, p_rule=0.02):
+        """A task-specificity cache for run `aname` whose sharing means are
+        (response rule, timing, other) per type; "related" is their mean."""
+        cache = self.cache()
+        cache["aname"] = aname
+        for type_name, means in (("hidden", hidden_means), ("modulation", modulation_means)):
+            sharing = self.sharing(["response rule", "timing", "other"], list(means))
+            sharing["by_relation"]["response rule"]["p_perm"] = p_rule
+            sharing["by_relation"]["related"]["mean"] = float(np.mean(means[:2]))
+            sharing["by_relation"]["other"]["p_perm"] = np.nan
+            cache["types"][type_name]["sharing"] = sharing
+        return cache
+
+    def write_runs(self, base, specs):
+        import re
+        for seed, (hidden, modulation, p_rule) in specs.items():
+            aname = re.sub(r"seed\d+", f"seed{seed}", paper_plot.LESION_ANAME)
+            run_dir = base / aname
+            run_dir.mkdir()
+            with (run_dir / f"task_specificity_{aname}.pkl").open("wb") as f:
+                pickle.dump(self.run_cache(aname, hidden, modulation, p_rule), f)
+
+    def render_cohort(self, root):
+        with patch.object(paper_plot, "LESION_NORM_DIR", root), \
+                patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(paper_plot, "_save_fig") as save, \
+                patch("builtins.print") as output:
+            paper_plot.plot_task_sharing_cohort()
+        return save, output
+
+    def test_cohort_draws_excess_sharing_per_run_relation_and_type(self):
+        from scipy.stats import wilcoxon
+
+        specs = {11: ((0.6, 0.5, 0.2), (0.7, 0.7, 0.6), 0.02),
+                 22: ((0.5, 0.3, 0.3), (0.8, 0.5, 0.6), 0.30),
+                 33: ((0.4, 0.4, 0.1), (0.9, 0.6, 0.7), 0.01)}
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / paper_plot.LESION_ANAME
+            root.mkdir()
+            self.write_runs(base, specs)
+            save, _ = self.render_cohort(root)
+        save.assert_called_once()
+        figure, path = save.call_args.args[:2]
+        self.addCleanup(paper_plot.plt.close, figure)
+        self.assertEqual(path.name, "multitask_task_sharing_cohort.png")
+        # One panel per saved type, titled; the bottom panel carries the
+        # column labels: the pooled column, then the relations.
+        self.assertEqual([axis.get_title(loc="left") for axis in figure.axes],
+                         ["Hidden neuron clusters", "Synapse clusters"])
+        self.assertEqual([label.get_text() for label in figure.axes[-1].get_xticklabels()],
+                         ["All\nrelated", "Response\nrule", "Timing"])
+        collections = paper_plot.mpl.collections
+        hidden_axis = figure.axes[0]
+        dots = [c for c in hidden_axis.collections if isinstance(c, collections.PathCollection)]
+        offsets = np.concatenate([c.get_offsets() for c in dots])
+        self.assertEqual(len(offsets), 3 * 3)        # 3 columns x 3 runs
+        # Excess = relation mean - other mean per run: response rule 0.4, 0.2, 0.3.
+        rule = sorted(offsets[np.isclose(offsets[:, 0], 1, atol=0.3), 1].round(6).tolist())
+        self.assertEqual(rule, [0.2, 0.3, 0.4])
+        # Filled when the run's saved relation p < 0.05: seeds 11 and 33 for
+        # the response rule.
+        rule_dots = [c for c in dots if np.isclose(c.get_offsets()[0][0], 1, atol=0.3)]
+        filled = sum(np.allclose(c.get_facecolors()[0][:3],
+                                 paper_plot.mpl.colors.to_rgb(
+                                     paper_plot._TASK_SPECIFICITY_COLORS["hidden"]))
+                     for c in rule_dots)
+        self.assertEqual(filled, 2)
+        dashes = [c for c in hidden_axis.collections if isinstance(c, collections.LineCollection)]
+        np.testing.assert_allclose([c.get_segments()[0][0, 1] for c in dashes],
+                                   [np.median([0.35, 0.1, 0.3]), 0.3, 0.2])
+        # Column texts carry the one-sided cohort Wilcoxon p of excess > 0.
+        expected = wilcoxon([0.4, 0.2, 0.3], alternative="greater").pvalue
+        texts = [text.get_text() for text in hidden_axis.texts]
+        self.assertEqual(len(texts), 3)
+        self.assertEqual(texts[1], paper_plot._short_p(expected))
+        self.assertEqual(paper_plot._short_p(0.0004), "p<.001")
+        self.assertEqual(paper_plot._short_p(0.004), "p=.004")
+        self.assertEqual(paper_plot._short_p(0.54), "p=.54")
+        self.assertEqual(len(figure.legends), 1)
+        self.assertIn("3 runs", save.call_args.kwargs["extra"])
+        self.assertIn("response rule 3/3 > 0, 2 significant", save.call_args.kwargs["extra"])
+        self.assertIs(paper_plot.FIGURES_BY_MODE["lesion"]["task_sharing_cohort"],
+                      paper_plot.plot_task_sharing_cohort)
+
+    def test_cohort_needs_two_runs_and_drops_disagreeing_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / paper_plot.LESION_ANAME
+            root.mkdir()
+            self.write_runs(base, {11: ((0.6, 0.5, 0.2), (0.7, 0.7, 0.6), 0.02)})
+            save, output = self.render_cohort(root)
+        save.assert_not_called()
+        self.assertIn("need >= 2", output.call_args.args[0])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / paper_plot.LESION_ANAME
+            root.mkdir()
+            self.write_runs(base, {11: ((0.6, 0.5, 0.2), (0.7, 0.7, 0.6), 0.02),
+                                   22: ((0.5, 0.3, 0.3), (0.8, 0.5, 0.6), 0.30)})
+            # A run whose sharing test is not the task-label permutation is
+            # incompatible; one with other relation groups disagrees.
+            bad = self.run_cache("bad", (0.1, 0.1, 0.1), (0.1, 0.1, 0.1))
+            bad["types"]["hidden"]["sharing"]["permutation_unit"] = "point"
+            bad_dir = base / paper_plot.LESION_ANAME.replace("seed", "seed8")
+            bad_dir.mkdir()
+            bad["aname"] = bad_dir.name
+            with (bad_dir / f"task_specificity_{bad_dir.name}.pkl").open("wb") as f:
+                pickle.dump(bad, f)
+            odd = self.run_cache("odd", (0.1, 0.1, 0.1), (0.1, 0.1, 0.1))
+            odd_dir = base / paper_plot.LESION_ANAME.replace("seed", "seed9")
+            odd_dir.mkdir()
+            odd["aname"] = odd_dir.name
+            odd["types"]["hidden"]["sharing"]["relations"] = ["timing", "response rule", "other"]
+            with (odd_dir / f"task_specificity_{odd_dir.name}.pkl").open("wb") as f:
+                pickle.dump(odd, f)
+            save, output = self.render_cohort(root)
+        save.assert_called_once()
+        self.assertIn("2 runs", save.call_args.kwargs["extra"])
+        printed = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
+        self.assertIn("incompatible", printed)
+        self.assertIn("relations differ", printed)
+
+
 if __name__ == "__main__":
     unittest.main()

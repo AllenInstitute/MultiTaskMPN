@@ -4573,6 +4573,173 @@ def plot_plasticity_share_cohort():
               extra=f"  {len(runs)} runs, {n_cells} cells, {n_clipped} beyond y-limits")
 
 
+# ─── Figure: Task-pair sharing of impaired clusters, over runs ──────────────
+
+# Display names of lesion_plot.TASK_PAIR_RELATIONS, the task component the
+# two tasks of a pair differ in; "related" pools every such pair.
+_TASK_SHARING_RELATION_LABELS = {
+    "related": "All\nrelated", "response rule": "Response\nrule", "timing": "Timing",
+    "modality": "Modality", "context cue": "Context\ncue",
+    "integration family": "Integration\nfamily", "match/category family": "Match /\ncategory",
+}
+_TASK_SHARING_FIGSIZE = (4.2, 5.4)
+
+
+def _short_p(p_value):
+    """Compact p text for tight column annotations: 'p<.001', 'p=.004', 'p=.54'."""
+    if not np.isfinite(p_value):
+        return "p=n/a"
+    if p_value < 0.001:
+        return "p<.001"
+    digits = 3 if p_value < 0.01 else 2
+    return "p=" + f"{p_value:.{digits}f}".lstrip("0")
+
+
+def _load_task_sharing(directory, aname):
+    """The saved task-pair sharing statistics of run `aname` from its
+    task-specificity cache in `directory`: {cluster type: {"relations":
+    [...], "mean": {relation: mean Jaccard}, "p_perm": {relation: p}}},
+    where the means and one-sided task-label permutation p cover every
+    relation, the pooled "related" pairs and the reference "other" pairs
+    (whose p is undefined). None, silently, when the run has no cache; None
+    with a note when the cache is incompatible."""
+    path = resolve_lesion_cache_path(Path(directory) / f"task_specificity_{aname}.pkl")
+    if not path.exists():
+        return None
+    try:
+        saved = load_lesion_pickle(path)
+        if saved.get("schema_version") != 1 or saved.get("aname") != aname:
+            raise ValueError("cache schema or run does not match")
+        types = {}
+        for type_name, entry in saved["types"].items():
+            if type_name not in _TASK_SPECIFICITY_TYPES:
+                raise ValueError(f"unknown cluster type {type_name!r}")
+            sharing = entry["sharing"]
+            if (sharing.get("permutation_unit") != "task_label"
+                    or sharing.get("side") != "greater"):
+                raise ValueError(f"{type_name}: sharing test is not the task-label permutation")
+            relations = [name for name in sharing["relations"] if name != "other"]
+            if not relations or "other" not in sharing["relations"]:
+                raise ValueError(f"{type_name}: sharing has no relation groups or no reference")
+            means, p_values = {}, {}
+            for name in relations + ["other", "related"]:
+                rel = sharing["by_relation"][name]
+                means[name] = float(rel["mean"])
+                p_values[name] = float(rel["p_perm"])
+            if not all(np.isfinite(value) for value in means.values()):
+                raise ValueError(f"{type_name}: non-finite mean sharing")
+            types[type_name] = {"relations": relations, "mean": means, "p_perm": p_values}
+        if not types:
+            raise ValueError("no cluster types saved")
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        print(f"  Skipped {aname}: incompatible {path.name} ({error}). "
+              "Run multiple_task/lesion_plot.py again.")
+        return None
+    return types
+
+
+def _task_sharing_runs():
+    """{aname: _load_task_sharing(...)} over the sibling runs of LESION_ANAME
+    whose caches validate and agree with the first run on the cluster types
+    and relation lists; a disagreeing run is left out with a note."""
+    runs = {}
+    for directory in _sibling_run_dirs():
+        types = _load_task_sharing(directory, directory.name)
+        if types is None:
+            continue
+        if runs:
+            first = next(iter(runs.values()))
+            if (set(types) != set(first)
+                    or any(types[name]["relations"] != first[name]["relations"] for name in first)):
+                print(f"  Skipped {directory.name}: its cluster types or relations differ "
+                      "from the other runs.")
+                continue
+        runs[directory.name] = types
+    return runs
+
+
+def plot_task_sharing_cohort():
+    """
+    Figure: multitask_task_sharing_cohort.png — do tasks that differ in one
+    component depend on the same clusters? Every sibling run of LESION_ANAME,
+    one panel per cluster type.
+
+    For each run and relation (the component the two tasks of a pair differ
+    in, lesion_plot.TASK_PAIR_RELATIONS; "All related" pools them), the point
+    is the excess sharing: the run's saved mean Jaccard overlap of impaired
+    clusters over the relation's task pairs minus that over the unrelated
+    ("other") pairs, so zero means related pairs share no more than unrelated
+    ones and the panels are comparable although synapse clusters are shared
+    far more than neuron clusters. A point is filled when the run's saved
+    one-sided task-label permutation p for that relation is below 0.05. The
+    dash is the median over runs, and the small text above each column is the
+    cohort-level test, a one-sided Wilcoxon signed-rank p of the runs' excess
+    sharing being above zero (computed here from the saved per-run means, as
+    in the other cohort figures). The dotted line separates the pooled
+    column from the relations. Skipped below two runs.
+    """
+    _ensure_out_dir()
+    runs = _task_sharing_runs()
+    if len(runs) < 2:
+        print(f"  Skipped: {len(runs)} run(s) with saved task-sharing caches; need >= 2.")
+        return
+    first = next(iter(runs.values()))
+    type_names = [name for name in _TASK_SPECIFICITY_TYPES if name in first]
+    columns = ["related"] + first[type_names[0]]["relations"]
+    fig, axs = plt.subplots(len(type_names), 1, figsize=_TASK_SHARING_FIGSIZE,
+                            sharex=True, sharey=True)
+    axs = np.atleast_1d(axs)
+    offsets = (np.arange(len(runs)) - (len(runs) - 1) / 2) * 0.06
+    summaries = []
+    for ax, type_name in zip(axs, type_names):
+        color = _TASK_SPECIFICITY_COLORS[type_name]
+        ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
+        ax.axvline(0.5, color="0.3", linewidth=0.8, linestyle=":", zorder=1)
+        parts = []
+        for position, name in enumerate(columns):
+            excess = np.array([types[type_name]["mean"][name] - types[type_name]["mean"]["other"]
+                               for types in runs.values()])
+            p_values = np.array([types[type_name]["p_perm"][name] for types in runs.values()])
+            for offset, value, p_value in zip(offsets, excess, p_values):
+                significant = p_value < 0.05
+                ax.scatter([position + offset], [value], s=18, zorder=3,
+                           color=color if significant else "white",
+                           edgecolors=color if significant else "k", linewidths=0.6)
+            ax.hlines(np.median(excess), position - 0.3, position + 0.3,
+                      color=_TREND_LINE_COLOR, linewidth=1.8, zorder=4)
+            p_cohort, _ = _wilcoxon_vs_zero(excess, alternative="greater")
+            ax.text(position, 0.98, _short_p(p_cohort), ha="center", va="top", fontsize=5,
+                    color="0.3", transform=mpl.transforms.blended_transform_factory(
+                        ax.transData, ax.transAxes))
+            parts.append(f"{name} {int(np.sum(excess > 0))}/{len(runs)} > 0, "
+                         f"{int(np.sum(p_values < 0.05))} significant, "
+                         f"Wilcoxon p = {p_cohort:.3f}")
+        summaries.append(f"{type_name}: " + "; ".join(parts))
+        ax.set_title(_TASK_SPECIFICITY_LABELS[type_name], fontsize=8, loc="left")
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.tick_params(axis="y", labelsize=7)
+    axs[-1].set_xticks(np.arange(len(columns)))
+    axs[-1].set_xticklabels([_TASK_SHARING_RELATION_LABELS.get(name, name) for name in columns],
+                            fontsize=6)
+    axs[-1].set_xlim(-0.6, len(columns) - 0.4)
+    # Room above the points for the column p texts, the zero line always shown.
+    low, high = axs[0].get_ylim()
+    axs[0].set_ylim(min(low, -0.05), high + 0.18 * (high - low))
+    axs[len(axs) // 2].set_ylabel("Excess shared impaired clusters\n(Jaccard, related - other pairs)",
+                                  fontsize=8)
+    filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color="0.3", markersize=5,
+                              label="run, permutation p < 0.05")
+    hollow = mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
+                              markeredgecolor="k", markersize=5, label=r"p $\geq$ 0.05")
+    median = mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8,
+                              label="median over runs")
+    # One legend across the top of the stacked panels (shared with the
+    # two-panel state-space figures, which lay out the same way).
+    _state_space_figure_legend(fig, [filled, hollow, median], ncol=3, top=0.95)
+    _save_fig(fig, _multitask_out("task_sharing_cohort.png"),
+              extra=f"  {len(runs)} runs; " + " | ".join(summaries))
+
+
 # ─── Figure: Fixed-point PCA trajectories ────────────────────────────────────
 
 # ─── Figure: Input weight correlation ────────────────────────────────────────
@@ -11615,6 +11782,7 @@ FIGURES_BY_MODE = {
         "causal_vs_activity_tasks": plot_causal_vs_activity,
         "causal_vs_activity_seeds": plot_causal_vs_activity_seeds,
         "task_specificity": plot_task_specificity,
+        "task_sharing_cohort": plot_task_sharing_cohort,
     },
     "state_space": {
         "state_space_combined": plot_state_space_combined,
