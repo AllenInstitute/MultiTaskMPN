@@ -19,6 +19,7 @@ from pretrain import (
     pretraining_post,
     pretraining_utils,
 )
+import seed_selection
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "pretrain" / "pretraining.py"
@@ -28,20 +29,21 @@ def load_producer():
     tree = ast.parse(SOURCE.read_text())
     constants = {
         "DT_MS", "M_TIME_SCALE", "LEGACY_M_LAMBDA", "M_BOUNDS",
-        "RULES_DICT", "RULES_DICT_FREQUENCY", "OUT_DIR", "SEED_POOL",
+        "RULES_DICT", "RULES_DICT_FREQUENCY", "OUT_DIR",
         "N_TRIALS", "SEED_LIST", "PRETRAIN_RULESET",
     }
     functions = {
         "_feature_with_bounds", "_feature_with_lambda", "_current_basic_params",
         "_build_experiment_hyp_dicts", "_build_file_tag",
-        "_completed_seeds", "_pick_new_seeds",
+        "_completed_seeds",
     }
     nodes = [node for node in tree.body
              if (isinstance(node, ast.FunctionDef) and node.name in functions)
              or (isinstance(node, ast.Assign)
                  and any(isinstance(target, ast.Name) and target.id in constants
                          for target in node.targets))]
-    namespace = {"np": np, "copy": copy, "re": re, "random": random, "Path": Path}
+    namespace = {"np": np, "copy": copy, "re": re, "random": random, "Path": Path,
+                 "seeds_matching": seed_selection.seeds_matching}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), "exec"), namespace)  # noqa: S102
     return namespace
 
@@ -182,17 +184,17 @@ class PretrainingSeedBookkeepingTests(unittest.TestCase):
         self.assertEqual(completed("L21e3lam0.9", "fdgo_delaygo", Path(directory) / "missing"), [])
 
     def test_new_seeds_avoid_completed_ones_and_stay_in_pool(self):
-        pick = self.producer["_pick_new_seeds"]
-        pool = set(self.producer["SEED_POOL"])
+        pick = seed_selection.draw_new_seeds
+        pool = set(seed_selection.SEED_POOL)
         completed = list(range(1, 996))
         for _ in range(5):
-            chosen = pick(5, completed, random.Random(0))
+            chosen = pick(5, completed, rng=random.Random(0))
             self.assertEqual(sorted(chosen), [996, 997, 998, 999, 1000])
-        chosen = pick(5, [123, 558, 580, 892, 936], random.Random(1))
+        chosen = pick(5, [123, 558, 580, 892, 936], rng=random.Random(1))
         self.assertEqual(len(set(chosen)), 5)
         self.assertTrue(set(chosen) <= pool - {123, 558, 580, 892, 936})
         with self.assertRaises(ValueError):
-            pick(6, completed, random.Random(0))
+            pick(6, completed, rng=random.Random(0))
 
 
 if __name__ == "__main__":

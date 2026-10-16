@@ -30,11 +30,11 @@ the two never collide or get analyzed by the wrong script):
   {ruleset}_seed{seed}_{addon}{reg_tag}+hidden{hidden}+batch{batch}+{acc_measure}
 
 Usage:
-    python one_task/one_task_rnn.py            # N_TRIALS seeds
-    python one_task/one_task_rnn.py --seeds 1 2 3
+    python one_task/one_task_rnn.py               # N_TRIALS seeds new to this setting
+    python one_task/one_task_rnn.py --n-trials 3
+    python one_task/one_task_rnn.py --seed 1 2 3  # explicit seeds (saved ones refused)
 """
 import gc
-import random
 import json
 from pathlib import Path
 
@@ -45,6 +45,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
+from seed_selection import choose_seeds
 import networks as nets
 import net_helpers
 import mpn_tasks
@@ -56,6 +57,10 @@ if torch.cuda.is_available():
 
 # ─── Experiment-wide configuration ───────────────────────────────────────────
 N_TRIALS = 1
+# Fixed list of seeds, or None to draw N_TRIALS seeds that have no saved or
+# started run of the current setting (core/seed_selection.py), so every
+# invocation adds new trials to the cohort without overwriting a checkpoint.
+# Both can be overridden on the command line: --n-trials N, --seed S [S ...].
 SEED_LIST = None
 
 RULESET = 'delaygo'
@@ -194,14 +199,9 @@ def current_basic_params(hyp_dict):
     return task_params, train_params, net_params
 
 
-def run_trial(seed, more_stimulus=False):
-    """Train one RNN on the chosen single task and save its checkpoint + the
-    lean trace bundle one_task_rnn_analysis.py needs."""
-    print(f"\n{'='*70}\nTrial seed = {seed}\n{'='*70}")
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-
-    hyp_dict = {
+def _hyp_dict(more_stimulus):
+    """The experiment description run_trial trains from."""
+    return {
         'task_type': 'multitask',
         'mode_for_all': "random_batch",
         'ruleset': RULESET,
@@ -211,16 +211,42 @@ def run_trial(seed, more_stimulus=False):
         'more_stimulus': more_stimulus,
     }
 
+
+def run_name(seed, hyp_dict, train_params, net_params):
+    """Identifier a run is saved under (see the module docstring): ruleset,
+    seed, addon, the L2 tag of the multi-task convention (reg_lambda 1e-4 ->
+    "L21e4": L2 + mantissa + |exponent|), hidden size, batch count, accuracy
+    measure, and "+morestimulus" for the denser 64-direction ring so those
+    runs do not collide with the default 8-direction ones."""
+    n_hidden = net_params['n_neurons'][1]
+    mantissa, exponent = f"{train_params['reg_lambda']:.0e}".split("e")
+    reg_tag = f"L2{mantissa}e{abs(int(exponent))}"
+    stim_tag = "+morestimulus" if hyp_dict.get('more_stimulus') else ""
+    return (f"{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}{reg_tag}+"
+            f"hidden{n_hidden}+batch{train_params['n_batches']}+{net_params['acc_measure']}"
+            f"{stim_tag}")
+
+
+def setting_run_name(more_stimulus=False):
+    """`run_name(seed)` of the configured setting, built the way run_trial
+    builds it, for scanning the saved runs."""
+    hyp_dict = _hyp_dict(more_stimulus)
+    _, train_params, net_params = current_basic_params(hyp_dict)
+    return lambda seed: run_name(seed, hyp_dict, train_params, net_params)
+
+
+def run_trial(seed, more_stimulus=False):
+    """Train one RNN on the chosen single task and save its checkpoint + the
+    lean trace bundle one_task_rnn_analysis.py needs."""
+    print(f"\n{'='*70}\nTrial seed = {seed}\n{'='*70}")
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    hyp_dict = _hyp_dict(more_stimulus)
+
     task_params, train_params, net_params = current_basic_params(hyp_dict)
 
-    n_hidden = net_params['n_neurons'][1]
-    _rl = train_params['reg_lambda']
-    _mant, _exp = f"{_rl:.0e}".split("e")
-    reg_tag = f"L2{_mant}e{abs(int(_exp))}"
-    stim_tag = "+morestimulus" if hyp_dict.get('more_stimulus') else ""
-    aname = (f"{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}{reg_tag}+"
-             f"hidden{n_hidden}+batch{train_params['n_batches']}+"
-             f"{net_params['acc_measure']}{stim_tag}")
+    aname = run_name(seed, hyp_dict, train_params, net_params)
     print(f"aname: {aname}")
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -390,20 +416,18 @@ def run_trial(seed, more_stimulus=False):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--seeds", type=int, nargs="+", default=None,
-                        help="Explicit seeds to train (default: SEED_LIST, or "
-                             f"{N_TRIALS} random ones).")
+    parser.add_argument("--n-trials", type=int, default=N_TRIALS,
+                        help=f"number of new seeds to draw (default {N_TRIALS})")
+    parser.add_argument("--seed", "--seeds", type=int, nargs="+", default=SEED_LIST,
+                        help="explicit seeds instead of a draw; a seed with a saved "
+                             "checkpoint of this setting is refused")
     parser.add_argument("--more-stimulus", action="store_true",
                         help="Train on 64 ring directions instead of 8; tags the "
                              "aname with 'morestimulus'.")
     args = parser.parse_args()
 
-    if args.seeds:
-        seeds = list(args.seeds)
-    elif SEED_LIST is not None:
-        seeds = list(SEED_LIST)
-    else:
-        seeds = random.Random().sample(range(1, 1000), N_TRIALS)
+    seeds = choose_seeds(args.n_trials, args.seed, OUT_DIR,
+                         setting_run_name(args.more_stimulus))
 
     print(f"Running {len(seeds)} RNN trial(s): seeds={seeds}")
     anames = []

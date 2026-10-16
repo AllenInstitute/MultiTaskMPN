@@ -20,7 +20,6 @@ Outputs (under ./onetask/):
   where {reg_tag} encodes reg_lambda, e.g. 1e-4 -> "L21e4".
 """
 import gc
-import random
 import json
 from pathlib import Path
 
@@ -28,6 +27,7 @@ import numpy as np
 import torch
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
+from seed_selection import choose_seeds
 import networks as nets
 import net_helpers
 import mpn_tasks
@@ -41,7 +41,10 @@ if torch.cuda.is_available():
 # ─── Experiment-wide configuration ───────────────────────────────────────────
 # Number of independent trials (different random seeds) to train.
 N_TRIALS = 3
-# Fixed list of seeds, or None to draw N_TRIALS random seeds.
+# Fixed list of seeds, or None to draw N_TRIALS seeds that have no saved or
+# started run of the current setting (core/seed_selection.py), so every
+# invocation adds new trials to the cohort without overwriting a checkpoint.
+# Both can be overridden on the command line: --n-trials N, --seed S [S ...].
 SEED_LIST = None
 
 RULESET = 'delaygo'
@@ -182,6 +185,42 @@ OUT_DIR = Path("onetask")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _hyp_dict(more_stimulus):
+    """The experiment description run_trial trains from."""
+    return {
+        'task_type': 'multitask',
+        'mode_for_all': "random_batch",
+        'ruleset': RULESET,
+        'run_mode': 'minimal',
+        'chosen_network': CHOSEN_NETWORK,
+        'addon_name': ADDON_NAME,
+        'more_stimulus': more_stimulus,
+    }
+
+
+def run_name(seed, hyp_dict, train_params, net_params):
+    """Identifier a run is saved under (see the module docstring): ruleset,
+    seed, addon, the L2 tag of the multi-task convention (reg_lambda 1e-4 ->
+    "L21e4": L2 + mantissa + |exponent|), hidden size, batch count, accuracy
+    measure, and "+morestimulus" for the denser 64-direction ring so those
+    runs do not collide with the default 8-direction ones."""
+    n_hidden = net_params['n_neurons'][1]
+    mantissa, exponent = f"{train_params['reg_lambda']:.0e}".split("e")
+    reg_tag = f"L2{mantissa}e{abs(int(exponent))}"
+    stim_tag = "+morestimulus" if hyp_dict.get('more_stimulus') else ""
+    return (f"{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}{reg_tag}+"
+            f"hidden{n_hidden}+batch{train_params['n_batches']}+{net_params['acc_measure']}"
+            f"{stim_tag}")
+
+
+def setting_run_name(more_stimulus=False):
+    """`run_name(seed)` of the configured setting, built the way run_trial
+    builds it, for scanning the saved runs."""
+    hyp_dict = _hyp_dict(more_stimulus)
+    _, train_params, net_params = current_basic_params(hyp_dict)
+    return lambda seed: run_name(seed, hyp_dict, train_params, net_params)
+
+
 def run_trial(seed, more_stimulus=False):
     """Train one independent network on the chosen single task and save its
     per-stage traces / checkpoint. Each trial uses its own random seed.
@@ -192,31 +231,12 @@ def run_trial(seed, more_stimulus=False):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    hyp_dict = {
-        'task_type': 'multitask',
-        'mode_for_all': "random_batch",
-        'ruleset': RULESET,
-        'run_mode': 'minimal',
-        'chosen_network': CHOSEN_NETWORK,
-        'addon_name': ADDON_NAME,
-        'more_stimulus': more_stimulus,
-    }
+    hyp_dict = _hyp_dict(more_stimulus)
 
     task_params, train_params, net_params = current_basic_params(hyp_dict)
 
     # Shared identifier (see module docstring).
-    n_hidden = net_params['n_neurons'][1]
-    # Regularization tag, matching the multi-task convention: reg_lambda=1e-4
-    # -> "L21e4" (L2 + mantissa + |exponent|, e.g. 1e-2 -> L21e2).
-    _rl = train_params['reg_lambda']
-    _mant, _exp = f"{_rl:.0e}".split("e")
-    reg_tag = f"L2{_mant}e{abs(int(_exp))}"
-    # Tag runs trained on the denser (64-direction) ring so they don't collide
-    # with the default 8-direction runs.
-    stim_tag = "+morestimulus" if hyp_dict.get('more_stimulus') else ""
-    aname = (f"{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}{reg_tag}+"
-             f"hidden{n_hidden}+batch{train_params['n_batches']}+{net_params['acc_measure']}"
-             f"{stim_tag}")
+    aname = run_name(seed, hyp_dict, train_params, net_params)
     print(f"aname: {aname}")
 
     # Persist hyperparameters before training so a crash still leaves a record.
@@ -474,13 +494,15 @@ if __name__ == "__main__":
                         help="Train on 64 ring directions (a denser ring) "
                              "instead of the default 8; tags the aname with "
                              "'morestimulus'.")
+    parser.add_argument("--n-trials", type=int, default=N_TRIALS,
+                        help=f"number of new seeds to draw (default {N_TRIALS})")
+    parser.add_argument("--seed", "--seeds", type=int, nargs="+", default=SEED_LIST,
+                        help="explicit seeds instead of a draw; a seed with a saved "
+                             "checkpoint of this setting is refused")
     args = parser.parse_args()
 
-    if SEED_LIST is not None:
-        seeds = list(SEED_LIST)
-    else:
-        rng = random.Random()  # unseeded: draw fresh distinct seeds each run
-        seeds = rng.sample(range(1, 1000), N_TRIALS)
+    seeds = choose_seeds(args.n_trials, args.seed, OUT_DIR,
+                         setting_run_name(args.more_stimulus))
 
     print(f"Running {len(seeds)} independent trials: seeds={seeds}"
           f"{' (more_stimulus: 64 ring dirs)' if args.more_stimulus else ''}")

@@ -30,7 +30,6 @@ Outputs (one self-contained subfolder per trial: ./twotasks/{aname}/):
 import gc
 import time
 import copy
-import random
 import json
 import pickle
 from pathlib import Path
@@ -43,6 +42,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
+from seed_selection import choose_seeds
 import networks as nets
 import net_helpers
 import mpn_tasks
@@ -56,7 +56,10 @@ if torch.cuda.is_available():
 # ─── Experiment-wide configuration ───────────────────────────────────────────
 # Number of independent trials (different random seeds) to train.
 N_TRIALS = 5
-# Fixed list of seeds, or None to draw N_TRIALS random seeds.
+# Fixed list of seeds, or None to draw N_TRIALS seeds that have no saved or
+# started run of the current setting (core/seed_selection.py), so every
+# invocation adds new trials to the cohort without overwriting a checkpoint.
+# Both can be overridden on the command line: --n-trials N, --seed S [S ...].
 SEED_LIST = None
 
 RULESET = 'delaygofamily'      # go/anti pair, e.g. [delaygo, delayanti]
@@ -246,17 +249,9 @@ OUT_DIR = Path("twotasks")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def run_trial(seed, more_stimulus=False):
-    """Train one independent two-task network and save its full training bundle
-    plus a checkpoint that two_task_analysis.py can rebuild and run.
-
-    more_stimulus: if True, train on 64 ring directions (a denser ring) instead
-    of the default 8, and tag the run's aname with 'morestimulus'."""
-    print(f"\n{'='*70}\nTrial seed = {seed}\n{'='*70}")
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-
-    hyp_dict = {
+def _hyp_dict(more_stimulus):
+    """The experiment description run_trial trains from."""
+    return {
         'task_type': 'multitask',
         'mode_for_all': "random_batch",
         'ruleset': RULESET,
@@ -267,11 +262,36 @@ def run_trial(seed, more_stimulus=False):
         'more_stimulus': more_stimulus,
     }
 
+
+def run_name(seed, hyp_dict):
+    """Identifier a run is saved under: ruleset, seed, addon (with the hidden
+    size) and "+morestimulus" for the denser 64-direction ring, so those runs
+    do not collide with the default 8-direction ones."""
+    stim_tag = "+morestimulus" if hyp_dict.get('more_stimulus') else ""
+    return f"{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}{stim_tag}"
+
+
+def setting_run_name(more_stimulus=False):
+    """`run_name(seed)` of the configured setting, for scanning the saved runs."""
+    hyp_dict = _hyp_dict(more_stimulus)
+    return lambda seed: run_name(seed, hyp_dict)
+
+
+def run_trial(seed, more_stimulus=False):
+    """Train one independent two-task network and save its full training bundle
+    plus a checkpoint that two_task_analysis.py can rebuild and run.
+
+    more_stimulus: if True, train on 64 ring directions (a denser ring) instead
+    of the default 8, and tag the run's aname with 'morestimulus'."""
+    print(f"\n{'='*70}\nTrial seed = {seed}\n{'='*70}")
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    hyp_dict = _hyp_dict(more_stimulus)
+
     task_params, train_params, net_params = current_basic_params(hyp_dict)
 
-    # Tag denser-ring (64-direction) runs so they don't collide with default ones.
-    stim_tag = "+morestimulus" if hyp_dict.get('more_stimulus') else ""
-    aname = f"{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}{stim_tag}"
+    aname = run_name(seed, hyp_dict)
     print(f"aname: {aname}")
 
     # All outputs for this trial (param, loss curve, checkpoint, bundle) go in a
@@ -532,13 +552,15 @@ if __name__ == "__main__":
                         help="Train on 64 ring directions (a denser ring) "
                              "instead of the default 8; tags the aname with "
                              "'morestimulus'.")
+    parser.add_argument("--n-trials", type=int, default=N_TRIALS,
+                        help=f"number of new seeds to draw (default {N_TRIALS})")
+    parser.add_argument("--seed", "--seeds", type=int, nargs="+", default=SEED_LIST,
+                        help="explicit seeds instead of a draw; a seed with a saved "
+                             "checkpoint of this setting is refused")
     args = parser.parse_args()
 
-    if SEED_LIST is not None:
-        seeds = list(SEED_LIST)
-    else:
-        rng = random.Random()  # fresh entropy each run -> different seed pool
-        seeds = rng.sample(range(1, 1000), N_TRIALS)
+    seeds = choose_seeds(args.n_trials, args.seed, OUT_DIR,
+                         setting_run_name(args.more_stimulus), per_run_directory=True)
 
     print(f"Running {len(seeds)} independent trials: seeds={seeds}"
           f"{' (more_stimulus: 64 ring dirs)' if args.more_stimulus else ''}")

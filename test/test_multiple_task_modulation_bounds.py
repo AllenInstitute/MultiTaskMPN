@@ -62,17 +62,23 @@ class MultipleTaskModulationBoundsTests(unittest.TestCase):
             node for node in tree.body
             if isinstance(node, ast.FunctionDef) and node.name == "run_trial"
         )
+        hyp_dict = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_hyp_dict"
+        )
         self.assertIn("'m_bounds': _normalize_m_bounds(M_BOUNDS)",
                       ast.unparse(current_params))
         self.assertIn("run_addon_name = _addon_name_with_bounds(ADDON_NAME)",
                       ast.unparse(run_trial))
+        self.assertIn("hyp_dict = _hyp_dict(run_addon_name)", ast.unparse(run_trial))
         self.assertIn("'addon_name': run_addon_name + f'+hidden{N_HIDDEN}'",
-                      ast.unparse(run_trial))
+                      ast.unparse(hyp_dict))
 
     def test_selected_run_reproduces_the_saved_l21e4_cohort(self):
         """The script is set to extend the saved L21e4 cohort: its dimensions,
-        L2 strength and default (-1, 1) bounds, with fixed seeds that no saved
-        run uses, so no checkpoint of that cohort can be overwritten."""
+        L2 strength and default (-1, 1) bounds, drawing seeds new to that
+        setting (SEED_LIST None; core/seed_selection.py guards against
+        overwriting a checkpoint, see test_training_seed_growth)."""
         tree = ast.parse(SOURCE.read_text())
         assignments = {
             target.id: ast.literal_eval(node.value)
@@ -86,12 +92,10 @@ class MultipleTaskModulationBoundsTests(unittest.TestCase):
             "N_HIDDEN": 300,
             "ADDON_NAME": "L21e4",
             "M_BOUNDS": (-1.0, 1.0),
-            "SEED_LIST": [11, 42, 101, 202, 303],
+            "SEED_LIST": None,
         })
         self.assertEqual(
             self.helpers["_addon_name_with_bounds"]("L21e4", assignments["M_BOUNDS"]), "L21e4")
-        saved_cohort = {408, 664, 692, 738, 749, 842, 921}
-        self.assertTrue(saved_cohort.isdisjoint(assignments["SEED_LIST"]))
 
         current_params = next(
             node for node in tree.body

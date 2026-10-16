@@ -13,9 +13,9 @@ Set linear_embed and N_HIDDEN to change dimensions; ADDON_NAME is only a
 base label. For example, L21e4proj300bottleneck100 labels proj=300,
 bottleneck=100 with L2=1e-4. Non-default modulation bounds are appended to
 this base label automatically (for example, ``mb2`` for ``(-2, 2)``). The
-existing L21e4bottleneck100 label omits the default proj300. run_trial appends
-+hidden{N_HIDDEN}+batch{n_batches}+{acc_measure}; keep this legacy hidden
-suffix for readers, with hidden meaning bottleneck, not proj.
+existing L21e4bottleneck100 label omits the default proj300. _hyp_dict and
+full_addon_name append +hidden{N_HIDDEN}+batch{n_batches}+{acc_measure}; keep
+this legacy hidden suffix for readers, with hidden meaning bottleneck, not proj.
 Input/output endpoints in n_neurons start as placeholders and are filled by
 convert_and_init_multitask_params from the task encoding and ruleset.
 """
@@ -27,7 +27,7 @@ convert_and_init_multitask_params from the task encoding and ruleset.
 import sys
 import time
 import gc
-import random
+import argparse
 import copy 
 from mpl_toolkits.mplot3d import Axes3D
 import plotly.graph_objects as go
@@ -67,6 +67,7 @@ from scipy.cluster.hierarchy import dendrogram
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 from run_logging import tee_output
+from seed_selection import choose_seeds
 import networks as nets  # Contains RNNs
 import net_helpers
 import mpn_tasks
@@ -96,12 +97,11 @@ linestyles = ["-", "--", "-."]
 # parameter setting. Mirrors two_task.py so the multi-task net can be trained
 # many times for robustness across seeds.
 N_TRIALS = 5
-# Fixed list of seeds, or None to draw N_TRIALS random seeds (fresh entropy each
-# run, so reruns explore different seeds). The random draw does not check for
-# existing runs, so a drawn seed can overwrite a saved checkpoint of the same
-# setting; these five extend the saved L21e4 cohort (seeds 408, 664, 692, 738,
-# 749, 842, 921) and are unused by every saved multi-task run.
-SEED_LIST = [11, 42, 101, 202, 303]
+# Fixed list of seeds, or None to draw N_TRIALS seeds that have no saved or
+# started run of the current setting (core/seed_selection.py), so every
+# invocation adds new trials to the cohort without overwriting a checkpoint.
+# Both can be overridden on the command line: --n-trials N, --seed S [S ...].
+SEED_LIST = None
 
 RULESET = 'everything'          # low_dim, all, test, everything, ...
 CHOSEN_NETWORK = "dmpn"         # mpn1, dmpn, vanilla, gru
@@ -227,6 +227,42 @@ n_hidden = N_HIDDEN
 # for coding
 if CHOSEN_NETWORK in ("gru", "vanilla"):
     mpn_depth = 1
+
+
+# ─── Run naming ──────────────────────────────────────────────────────────────
+OUT_DIR = Path("multiple_tasks")
+
+
+def _hyp_dict(run_addon_name):
+    """The experiment description run_trial trains from; its addon name is
+    completed by full_addon_name once the parameters are built."""
+    return {
+        'task_type': 'multitask',          # int, NeuroGym, multitask
+        'mode_for_all': "random_batch",
+        'ruleset': RULESET,
+        'run_mode': 'minimal',             # minimal, debug
+        'chosen_network': CHOSEN_NETWORK,
+        'addon_name': run_addon_name + f"+hidden{N_HIDDEN}",
+    }
+
+
+def full_addon_name(hyp_dict, train_params, net_params):
+    """The addon with the batch count and accuracy measure appended."""
+    return hyp_dict['addon_name'] + f"+batch{train_params['n_batches']}+{net_params['acc_measure']}"
+
+
+def run_name(seed, addon_name):
+    """Identifier a run is saved under: `<ruleset>_seed<seed>_<full addon>`."""
+    return f"{RULESET}_seed{seed}_{addon_name}"
+
+
+def setting_run_name():
+    """`run_name(seed)` of the configured setting, built the way run_trial
+    builds it, for scanning the saved runs."""
+    hyp_dict = _hyp_dict(_addon_name_with_bounds(ADDON_NAME))
+    _, train_params, net_params = current_basic_params(hyp_dict)
+    addon_name = full_addon_name(hyp_dict, train_params, net_params)
+    return lambda seed: run_name(seed, addon_name)
 
 
 def current_basic_params(hyp_dict):
@@ -359,19 +395,13 @@ def run_trial(seed):
     print(f"Modulation bounds: {_normalize_m_bounds(M_BOUNDS)}; "
           f"effective ADDON_NAME: {run_addon_name}")
 
-    hyp_dict = {
-        'task_type': 'multitask',          # int, NeuroGym, multitask
-        'mode_for_all': "random_batch",
-        'ruleset': RULESET,
-        'run_mode': 'minimal',             # minimal, debug
-        'chosen_network': CHOSEN_NETWORK,
-        'addon_name': run_addon_name + f"+hidden{N_HIDDEN}",
-    }
+    hyp_dict = _hyp_dict(run_addon_name)
 
     task_params, train_params, net_params = current_basic_params(hyp_dict)
     # add batch information to the parameters
     print(f"Accuracy Measure: {net_params['acc_measure']}")
-    hyp_dict['addon_name'] += f"+batch{train_params['n_batches']}+{net_params['acc_measure']}"
+    hyp_dict['addon_name'] = full_addon_name(hyp_dict, train_params, net_params)
+    aname = run_name(seed, hyp_dict['addon_name'])
 
     # save the setting result
     config = {
@@ -380,7 +410,7 @@ def run_trial(seed):
         "net_params": net_params,
     }
 
-    out_path = Path(f"./multiple_tasks/param_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}_param.json")
+    out_path = Path(f"./multiple_tasks/param_{aname}_param.json")
     with out_path.open("w") as f:
         json.dump(config, f, indent=4, default=helper.as_jsonable)
 
@@ -604,15 +634,13 @@ def run_trial(seed):
                         xs=xs)
 
     # save the network information
-    netpathname = f"./multiple_tasks/savednet_{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}.pt"
+    netpathname = f"./multiple_tasks/savednet_{aname}.pt"
     save_dict = {
         "state_dict": net.state_dict(),  # trained result
         "net_params": net_params,        # network parameter
     }
     torch.save(save_dict, netpathname)
     print("Network parameter saving is done")
-
-    aname = f"{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}"
 
     # Free this trial's large objects before returning. The __main__ loop also
     # runs a finally-block cleanup (figures + gc + CUDA cache) on every trial, so
@@ -636,15 +664,11 @@ def run_trial(seed):
 
 
 # ─── Run K independent trials (same params, different seeds) ──────────────────
-def main():
-    Path("multiple_tasks").mkdir(parents=True, exist_ok=True)
-
-    if SEED_LIST is not None:
-        seeds = list(SEED_LIST)
-    else:
-        rng = random.Random()  # fresh entropy each run -> different seed pool
-        seeds = rng.sample(range(1, 1000), N_TRIALS)
-
+def main(n_trials=N_TRIALS, seeds=SEED_LIST):
+    """Train `seeds`, or `n_trials` seeds new to the current setting (see
+    core/seed_selection.py), and write the manifest of this invocation's runs."""
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    seeds = choose_seeds(n_trials, seeds, OUT_DIR, setting_run_name())
     print(f"Running {len(seeds)} independent trials: seeds={seeds}")
     anames = []
     for seed in seeds:
@@ -674,15 +698,25 @@ def main():
 
     # Manifest of the runs produced THIS invocation (mirrors two_task.py), so a
     # pipeline can analyze exactly what was just trained.
-    manifest_path = Path("multiple_tasks") / "last_run_anames.txt"
+    manifest_path = OUT_DIR / "last_run_anames.txt"
     with manifest_path.open("w") as mf:
         mf.write("\n".join(anames) + ("\n" if anames else ""))
     print(f"Wrote manifest: {manifest_path}")
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Train multi-task networks under the setting configured in this file. "
+                    "Without --seed, N_TRIALS seeds new to that setting are drawn, so every "
+                    "invocation grows the cohort. Run from the repository root.")
+    parser.add_argument("--n-trials", type=int, default=N_TRIALS,
+                        help=f"number of new seeds to draw (default {N_TRIALS})")
+    parser.add_argument("--seed", type=int, nargs="+", default=SEED_LIST,
+                        help="explicit seeds instead of a draw; a seed with a saved checkpoint "
+                             "of this setting is refused")
+    args = parser.parse_args()
     with tee_output("multiple_task"):
-        main()
+        main(n_trials=args.n_trials, seeds=args.seed)
 
 
 

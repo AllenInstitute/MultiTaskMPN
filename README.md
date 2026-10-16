@@ -45,12 +45,22 @@ small `_bootstrap.py` shim that puts `core/` on `sys.path`, so flat imports
 ## Workflow
 
 Each experiment family follows **train → analyze**, with multi-task adding
-clustering and lesion/pruning. Hyperparameters (`hidden`, `batch`, `seed`,
-regularization `feature`) are set inside each training script.
+clustering and lesion/pruning. Hyperparameters (`hidden`, `batch`,
+regularization `feature`) are set inside each training script; seeds are
+drawn per run or given on the command line (see below).
 
 ```bash
-# multi-task: train, analyze (clustering), lesion, lesion plots
+# multi-task: train, analyze (clustering), lesion, lesion plots. Every training
+# script (one_task, one_task_rnn, two_task, multiple_task, pretraining) grows
+# its cohort the same way (core/seed_selection.py): a run adds N_TRIALS seeds
+# new to the setting configured in the script, never redrawing a seed with a
+# saved checkpoint or a started run, so rerun it to add trials; --n-trials N
+# changes the count and --seed S [S ...] trains explicit seeds (refused when
+# their checkpoint exists). The runs just trained are listed in the output
+# directory's last_run_anames.txt, which the pipelines read.
 python multiple_task/multiple_task.py
+python multiple_task/multiple_task.py --n-trials 3
+python multiple_task/multiple_task.py --seed 11 42
 python multiple_task/run_pipeline.py --seed 749 --feature L21e4
 # several seeds of one cohort, run in the given order
 python multiple_task/run_pipeline.py --feature L21e3 --seed 299 365 487 501 934
@@ -94,7 +104,8 @@ python paper_plot.py --only state_space_rdm
 python paper_plot.py --only state_space_rdm_example
 python paper_plot.py --only state_space_category_test
 
-# single- / two-task (train + analyze chained by the pipeline)
+# single- / two-task (train + analyze chained by the pipeline; the training
+# scripts take --n-trials / --seed as above, plus --more-stimulus)
 python one_task/run_one_task_pipeline.py
 python two_task/run_two_task_pipeline.py
 
