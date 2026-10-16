@@ -441,6 +441,7 @@ def mantel_pearson_permutation(x_matrix, y_matrix, n_permutations=10000, seed=0)
         "n_items": int(n_items),
         "seed": int(seed),
         "sided": "two-sided",
+        "statistic": "pearson",
         "null_statistic": "Pearson r over item pairs under permuted item labels (Mantel)",
     }
 
@@ -452,3 +453,32 @@ def _validated_distance_like(matrix):
             or not np.all(np.isfinite(matrix)) or not np.allclose(matrix, matrix.T)):
         raise ValueError("Need a finite symmetric square matrix.")
     return matrix
+
+
+def _rank_pair_matrix(matrix):
+    """The symmetric matrix whose pair values are the ranks (ties averaged)
+    of ``matrix``'s strict upper-triangle values; zero diagonal."""
+    from scipy.stats import rankdata
+
+    matrix = _validated_distance_like(matrix)
+    upper = np.triu_indices(matrix.shape[0], 1)
+    ranked = np.zeros_like(matrix)
+    ranked[upper] = rankdata(matrix[upper])
+    return ranked + ranked.T
+
+
+def mantel_spearman_permutation(x_matrix, y_matrix, n_permutations=10000, seed=0):
+    """Two-sided Spearman Mantel test between two symmetric pair matrices.
+
+    Spearman rho is Pearson r on the ranks of the pair values, and relabeling
+    the items only permutes the set of unordered pairs, so the permuted
+    matrix's pair ranks are the permuted ranks: the test is
+    ``mantel_pearson_permutation`` on the two rank matrices (same null, same
+    RNG stream). Returns rho under ``"rho"`` with the test metadata.
+    """
+    result = mantel_pearson_permutation(_rank_pair_matrix(x_matrix), _rank_pair_matrix(y_matrix),
+                                        n_permutations=n_permutations, seed=seed)
+    result["rho"] = result.pop("r")
+    result["statistic"] = "spearman"
+    result["null_statistic"] = "Spearman rho over item pairs under permuted item labels (Mantel)"
+    return result

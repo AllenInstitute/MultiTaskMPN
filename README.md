@@ -75,6 +75,11 @@ python paper_plot.py --only sibling_cue_interp
 python multiple_task/state_space_shift.py
 # category structure and task-vector additivity of the saved task centroids
 python multiple_task/state_space_structure.py
+# context-end task distance vs lesion-profile similarity, for runs that also
+# have lesion_plot.py caches
+python multiple_task/state_space_vs_lesion.py
+python paper_plot.py --only state_space_vs_lesion
+python paper_plot.py --only state_space_vs_lesion_seeds
 # rank state-space seeds and plot the best example without clearing other figures
 python paper_plot.py --only state_space_combined
 # untrained controls (fresh weights, the example run's config), one per seed,
@@ -156,8 +161,9 @@ The `lesion` figure mode contains `lesion_heatmap`, `lesion_cluster_sizes`,
 `cluster_corr_vs_lesion`, `cluster_corr_vs_lesion_weighted`,
 `cluster_corr_vs_lesion_seeds`, `om_vs_lesion`, `om_vs_lesion_seeds`,
 `plasticity_share`, `plasticity_share_cohort`, `causal_vs_activity_tasks`,
-`causal_vs_activity_seeds`, `task_specificity` and `task_sharing_cohort`. All
-but the three `_seeds` and two `_cohort` figures read one run,
+`causal_vs_activity_seeds`, `task_specificity`, `task_sharing_cohort`,
+`state_space_vs_lesion` and `state_space_vs_lesion_seeds`. All but the four
+`_seeds` and two `_cohort` figures read one run,
 `LESION_ANAME`, independently of `ANAME`, which selects the `multiple_tasks`
 clustering figures. These figures no longer run under `multiple_tasks`; use
 `python paper_plot.py multiple_tasks lesion` for both groups. Existing figure
@@ -178,8 +184,8 @@ The `multiple_tasks` and `lesion` figures read one L2 cohort of the
 `MULTITASK_L2` in `paper_plot.py` (currently `1e3`) or per invocation with
 `python paper_plot.py --multitask-l2 1e4 multiple_tasks lesion`. The aggregate
 figures (overmembership, `cluster_corr_vs_lesion_seeds`, `om_vs_lesion_seeds`,
-`plasticity_share_cohort`, `causal_vs_activity_seeds`, `task_sharing_cohort`)
-summarize every cached seed of that cohort. The single-run figures use the
+`plasticity_share_cohort`, `causal_vs_activity_seeds`, `task_sharing_cohort`,
+`state_space_vs_lesion_seeds`) summarize every cached seed of that cohort. The single-run figures use the
 cohort's designated seed from `MULTITASK_DESIGNATED_SEEDS` (749 for clustering
 and 921 for lesions in the 1e4 cohort; none for 1e3) when its cache directory
 holds pickles; otherwise `paper_plot` picks the cached seed covering the most of
@@ -354,6 +360,44 @@ cluster types or relation lists disagree are left out with a note; the
 figure is skipped below two runs. The former per-run sharing figures were
 removed.
 
+`python multiple_task/state_space_vs_lesion.py` links the state-space and
+lesion analyses over the task pairs. For every run with both a state-space
+structure cache (`state_space/state_space_structure_<aname>_noise0.01.pkl`)
+and lesion caches (`multiple_tasks_norm/<aname>/`), it relates the Euclidean
+distance between the two tasks' full-dimensional context-end centroids (hidden
+state and W ⊙ M, the saved distance matrices) to the similarity of their
+lesion-effect profiles: for neuron clusters the saved `causal_similarity` of
+`causal_vs_activity_tasksim_hidden_<aname>.pkl` (Pearson correlation of the
+random-minus-lesion effects over all unnormalized input and hidden neuron
+clusters, the causal-vs-activity matrix), for synapse clusters the Pearson
+correlation of the var-weighted zero_W effects in
+`normalized_lesion_effects_<aname>.pkl` over the synapse clusters without the
+unresponsive class, whose label is read from the lesion pickle in
+`multiple_tasks_perf/` (the class holds most synapses, so its size-matched
+random control collapses the network and its effect is near −0.8 for every
+task). Each (representation, cluster type) pair gets a two-sided Spearman
+task-label permutation (Mantel) test (10,000 permutations, seed 0;
+`core.state_space_geometry.mantel_spearman_permutation`), a negative rho
+meaning that tasks whose context-end states lie closer depend on more similar
+clusters. Nothing is recomputed from network activity, so it runs in seconds;
+the results go to `state_space/state_space_vs_lesion_results.pkl` (one entry
+per run with the pair coordinates, the tests with their null arrays and the
+L2), which the state-space batch run clears like every top-level file there,
+so rerun it after `state_space_structure.py` or `lesion_plot.py`.
+`python paper_plot.py --only state_space_vs_lesion` draws
+`multitask_state_space_vs_lesion_n.png` for `LESION_ANAME`: a 2 × 2 grid
+with one row per representation (hidden-state and W ⊙ M centroid distance)
+and one column per cluster type (neuron clusters, synapse clusters), one
+point per task pair, x the centroid distance, y the lesion-profile
+similarity, each panel's saved rho and permutation p in its legend and no
+fitted line (the statistic is a rank correlation). `--only state_space_vs_lesion_seeds` draws
+`multitask_state_space_vs_lesion_seeds_n.png`: per cluster type, every
+sibling run's rho for the hidden-state and the W ⊙ M distance, filled when
+its saved permutation p is below 0.05, the median over runs as a dash and
+under each tick the two-sided Wilcoxon signed-rank p of the runs' rhos
+against zero, computed in `paper_plot.py` from the saved per-run rhos; it is
+skipped below two runs with results.
+
 On a compute node, regenerate the post-processing cache and then the paper figure:
 ```bash
 python multiple_task/lesion_plot.py --seed 921 --feature L21e4
@@ -440,7 +484,9 @@ Key data outputs: `multiple_tasks/` (checkpoints, curves),
 `onetask/`, `twotasks/`, `pretraining/`, `state_space/`, `paper_plot/`.
 
 The state-space workflow is `state_space_shift.py` -> `state_space_structure.py`
--> `paper_plot.py`.
+-> `paper_plot.py`, with `state_space_vs_lesion.py` after
+`state_space_structure.py` for the runs that also have lesion caches (see the
+`lesion` figures above).
 The analysis saves original-feature task centroids, trial counts and display
 PCA together in `state_space/state_space_pca_<aname>_noise0.01.pkl`, alongside
 the existing distance-angle results. Display PCA is fitted in batches; the

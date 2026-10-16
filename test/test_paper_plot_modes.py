@@ -174,6 +174,8 @@ class PaperPlotModeTests(unittest.TestCase):
             "causal_vs_activity_seeds": paper_plot.plot_causal_vs_activity_seeds,
             "task_specificity": paper_plot.plot_task_specificity,
             "task_sharing_cohort": paper_plot.plot_task_sharing_cohort,
+            "state_space_vs_lesion": paper_plot.plot_state_space_vs_lesion,
+            "state_space_vs_lesion_seeds": paper_plot.plot_state_space_vs_lesion_seeds,
         }
         self.assertEqual(paper_plot.FIGURES_BY_MODE["lesion"], expected)
         self.assertTrue(set(expected).isdisjoint(
