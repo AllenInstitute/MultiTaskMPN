@@ -4201,21 +4201,25 @@ def _saved_om_rank_association(entry):
 OM_LESION_MODE = "zero_W"
 
 
-def _load_om_lesion_scatter():
-    """Load the saved OM_LESION_MODE scatter, Spearman test and bin medians, without fitting."""
+def _load_om_lesion_scatter(run_dir=None, aname=None):
+    """Load the saved OM_LESION_MODE scatter, Spearman test and bin medians,
+    without fitting, of run `aname` from its post-processing directory
+    `run_dir` (default: LESION_ANAME in LESION_NORM_DIR)."""
+    run_dir = LESION_NORM_DIR if run_dir is None else Path(run_dir)
+    aname = LESION_ANAME if aname is None else aname
     tag = "var-weighted-unnormalized"
     mode_tag = OM_LESION_MODE.replace("_", "-")
-    candidates = ((f"om_vs_lesion_diff_{tag}_combined_unnorm_{LESION_ANAME}.pkl", True),
-                  (f"om_vs_lesion_diff_{tag}_{mode_tag}_unnorm_{LESION_ANAME}.pkl", False))
+    candidates = ((f"om_vs_lesion_diff_{tag}_combined_unnorm_{aname}.pkl", True),
+                  (f"om_vs_lesion_diff_{tag}_{mode_tag}_unnorm_{aname}.pkl", False))
     for filename, combined in candidates:
-        path = resolve_lesion_cache_path(LESION_NORM_DIR / filename)
+        path = resolve_lesion_cache_path(run_dir / filename)
         if not path.exists():
             continue
         try:
             saved = load_lesion_pickle(path)
             base_key = saved["base_key"] if combined else saved["mod_type_key"]
             if (base_key != "modulation_all_var_weighted_unnormalized"
-                    or saved["variant"] != "unnorm" or saved.get("aname", LESION_ANAME) != LESION_ANAME):
+                    or saved["variant"] != "unnorm" or saved.get("aname", aname) != aname):
                 raise ValueError("OM cache belongs to a different run or variant")
             if saved.get("y_definition") != "task-profile L1/T: mean_t |mod_effect(t) - combined_effect(t)|":
                 raise ValueError("OM cache does not describe task-profile L1/T distance")
@@ -4253,7 +4257,8 @@ def _load_om_lesion_scatter():
                     "min_expected": min_expected, "path": path, "mode": OM_LESION_MODE}
         except (OSError, KeyError, TypeError, ValueError) as error:
             print(f"  Note: incompatible {path.name}: {error}.")
-    print("  Skipped: no complete saved OM scatter/statistics. Run multiple_task/lesion_plot.py again.")
+    print(f"  Skipped: no complete saved OM scatter/statistics for {aname}. "
+          "Run multiple_task/lesion_plot.py again.")
     return None
 
 
@@ -4294,6 +4299,76 @@ def plot_om_vs_lesion():
     print(f"  om_vs_lesion_scatter [{saved['mode']}]: Spearman rho={rho:.2f}, p_perm={p_perm:.3f} "
             f"({saved['n_perm']} saved permutations, {saved['n_clusters']} clusters, "
             f"min_expected={saved['min_expected']:g}; {saved['path'].name})")
+
+
+def _om_lesion_seed_runs():
+    """{aname: saved OM_LESION_MODE association} of every sibling run of
+    LESION_ANAME (same feature, any seed) whose OM cache validates and holds
+    a defined rho and permutation p; incomplete, legacy or undefined caches
+    are left out with the loader's note."""
+    runs = {}
+    for directory in _sibling_run_dirs():
+        saved = _load_om_lesion_scatter(directory, directory.name)
+        if saved is None:
+            continue
+        if not (np.isfinite(saved["rho"]) and np.isfinite(saved["p_perm"])):
+            print(f"  Skipped {directory.name}: undefined saved OM rank statistics.")
+            continue
+        runs[directory.name] = saved
+    return runs
+
+
+def plot_om_vs_lesion_seeds():
+    """
+    Figure: multitask_om_vs_lesion_seeds.png — the OM-vs-lesion Spearman rho
+    of every sibling run of LESION_ANAME, the cohort view of
+    plot_om_vs_lesion.
+
+    Each run contributes one point, the saved rho between a synapse cluster's
+    over-membership in an (input, hidden) neuron-cluster block and the L1/T
+    distance between its lesion profile and that block's combined lesion
+    profile (OM_LESION_MODE, zero_W, as in the single-run scatter); filled
+    markers have a saved one-sided (negative) modulation-cluster-footprint
+    permutation p below 0.05, hollow ones do not. The dash is the median over
+    runs. Because the per-run test is one-sided, the cohort-level test in the
+    legend title is the one-sided Wilcoxon signed-rank p of the runs' rhos
+    being below zero. Only saved per-run statistics are drawn; the save
+    message counts the runs with negative and with significant rho.
+    """
+    _ensure_out_dir()
+    runs = _om_lesion_seed_runs()
+    if len(runs) < 2:
+        print(f"  Skipped: {len(runs)} run(s) with a saved OM-vs-lesion association; need >= 2.")
+        return
+    rhos = np.array([saved["rho"] for saved in runs.values()], dtype=float)
+    fig, ax = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
+    ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
+    offsets = (np.arange(len(runs)) - (len(runs) - 1) / 2) * 0.03
+    significant = 0
+    for offset, saved in zip(offsets, runs.values()):
+        is_significant = saved["p_perm"] < 0.05
+        significant += int(is_significant)
+        ax.scatter([offset], [saved["rho"]], s=32, zorder=3,
+                   color=_SCATTER_POINT_COLOR if is_significant else "white",
+                   edgecolors=_SCATTER_POINT_COLOR if is_significant else "k", linewidths=0.6)
+    ax.hlines(np.median(rhos), -0.22, 0.22, color=_TREND_LINE_COLOR, linewidth=1.8, zorder=4)
+    p_value, p_text = _wilcoxon_vs_zero(rhos, alternative="less")
+    ax.set_xticks([0])
+    ax.set_xticklabels(["Synapse clusters"], fontsize=7)
+    ax.set_xlim(-0.6, 0.6)
+    ax.set_ylabel(r"Spearman $\rho$" + "\n(OM vs lesion distance)", fontsize=7)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.tick_params(axis="y", labelsize=7)
+    filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color=_SCATTER_POINT_COLOR,
+                              markersize=5, label="permutation p < 0.05")
+    hollow = mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
+                              markeredgecolor="k", markersize=5, label=r"p $\geq$ 0.05")
+    _seeds_legend(ax, [filled, hollow], len(runs),
+                  note="Wilcoxon signed-rank,\n" + rf"$\rho$ < 0 (one-sided): {p_text}")
+    fig.tight_layout()
+    _save_fig(fig, _multitask_out("om_vs_lesion_seeds.png"),
+              extra=(f"  {int(np.sum(rhos < 0))}/{len(runs)} rho < 0, {significant} significant, "
+                     f"one-sided Wilcoxon p = {p_value:.3f}"))
 
 
 # ─── Figure: Plasticity share ────────────────────────────────────────────────
@@ -4735,16 +4810,18 @@ def _cluster_corr_seed_runs(sides=_CLUSTER_CORR_SEED_SIDES):
     return runs
 
 
-def _wilcoxon_vs_zero(values):
-    """Two-sided Wilcoxon signed-rank p of per-run statistics against zero,
-    the cohort-level test of the per-run figures; NaN below two runs or when
-    every value is zero. Returns (p, legend text)."""
+def _wilcoxon_vs_zero(values, alternative="two-sided"):
+    """Wilcoxon signed-rank p of per-run statistics against zero, the
+    cohort-level test of the per-run figures: two-sided by default, or
+    `alternative` ("less", "greater") when the per-run test is itself
+    directional. NaN below two runs or when every value is zero. Returns
+    (p, legend text)."""
     from scipy.stats import wilcoxon
 
     values = np.asarray(values, dtype=float)
     if values.size < 2 or np.all(values == 0):
         return np.nan, "p = n/a"
-    p_value = float(wilcoxon(values).pvalue)
+    p_value = float(wilcoxon(values, alternative=alternative).pvalue)
     return p_value, ("p < 0.001" if p_value < 0.001 else f"p = {p_value:.3f}")
 
 
@@ -5047,29 +5124,19 @@ def plot_causal_vs_activity_seeds():
                                      for side, count in n_positive.items()))
 
 
-# ─── Figure: Task specificity and compositional sharing ──────────────────────
+# ─── Figure: Task specificity ────────────────────────────────────────────────
 
 _TASK_SPECIFICITY_TYPES = ("input", "hidden", "modulation")
 _TASK_SPECIFICITY_LABELS = {"input": "Input neuron clusters", "hidden": "Hidden neuron clusters",
                             "modulation": "Synapse clusters"}
 _TASK_SPECIFICITY_COLORS = {"input": c_vals[1], "hidden": c_vals[0], "modulation": c_vals[4]}
-_TASK_SHARING_RELATION_LABELS = {
-    "response rule": "Response\nrule", "timing": "Timing", "modality": "Modality",
-    "context cue": "Context\ncue", "integration family": "Integration\nfamily",
-    "match/category family": "Match /\ncategory", "other": "Other",
-}
-
-
-def _short_p(p_value):
-    """Compact permutation-p text: 'p<.001', 'p=.004' or 'p=.54'."""
-    if p_value < 0.001:
-        return "p<.001"
-    digits = 3 if p_value < 0.01 else 2
-    return "p=" + f"{p_value:.{digits}f}".lstrip("0")
 
 
 def _load_task_specificity():
-    """Load lesion_plot.py's task-specificity cache for LESION_ANAME, or None with a note."""
+    """Load the per-cluster impaired-task counts and their dispersion test
+    from lesion_plot.py's task-specificity cache for LESION_ANAME, or None
+    with a note. The cache also holds per-relation task-pair sharing
+    statistics, which no paper figure draws, so they are not read."""
     path = resolve_lesion_cache_path(LESION_NORM_DIR / f"task_specificity_{LESION_ANAME}.pkl")
     if not path.exists():
         print(f"  Skipped: {path.name} not found. Run multiple_task/lesion_plot.py first.")
@@ -5085,21 +5152,10 @@ def _load_task_specificity():
                 raise ValueError(f"unknown cluster type {type_name!r}")
             counts = np.asarray(entry["dispersion"]["counts"], dtype=int)
             p_disp = float(entry["dispersion"]["p_perm"])
-            sharing = entry["sharing"]
             if (counts.ndim != 1 or counts.size == 0 or counts.min() < 0
-                    or counts.max() > len(tasks) or not np.isfinite(p_disp)
-                    or sharing.get("permutation_unit") != "task_label"
-                    or sharing.get("side") != "greater"):
-                raise ValueError(f"{type_name}: invalid counts or sharing statistics")
-            relations = list(sharing["relations"])
-            by_relation = {}
-            for name in relations + ["related"]:
-                rel = sharing["by_relation"][name]
-                values = np.asarray(rel["values"], dtype=float)
-                by_relation[name] = {"values": values[np.isfinite(values)],
-                                     "mean": float(rel["mean"]), "p_perm": float(rel["p_perm"])}
-            types[type_name] = {"counts": counts, "p_dispersion": p_disp,
-                                "relations": relations, "by_relation": by_relation}
+                    or counts.max() > len(tasks) or not np.isfinite(p_disp)):
+                raise ValueError(f"{type_name}: invalid impaired-task counts or dispersion p")
+            types[type_name] = {"counts": counts, "p_dispersion": p_disp}
         if not types:
             raise ValueError("no cluster types saved")
     except (OSError, KeyError, TypeError, ValueError) as error:
@@ -5110,20 +5166,15 @@ def _load_task_specificity():
 
 def plot_task_specificity():
     """
-    Figures: how many tasks each cluster impairs, and which task pairs share clusters.
+    Figure: multitask_task_specificity_counts.png — how many tasks each
+    cluster impairs.
 
-    `task_specificity_counts`: for input, hidden and synapse clusters (the
-    unresponsive class excluded), the fraction of clusters that significantly
-    impair 0, 1, ... T tasks. The legend gives the saved one-sided permutation
-    p for the count variance exceeding a null that shuffles cluster identity
-    within each task, so a small p means clusters are more specialized or
-    hub-like than uniform mixing.
-
-    `task_sharing_relations_<type>`: for every task pair, the Jaccard overlap
-    of the clusters the two tasks depend on, grouped by the task component the
-    pair differs in; pale points are pairs, the dash the median, and the small
-    p above each group is the saved task-label permutation p for that group's
-    mean exceeding chance. All statistics come from lesion_plot.py's cache.
+    For input, hidden and synapse clusters (the unresponsive class excluded),
+    the fraction of clusters that significantly impair 0, 1, ... T tasks. The
+    legend gives the saved one-sided permutation p for the count variance
+    exceeding a null that shuffles cluster identity within each task, so a
+    small p means clusters are more specialized or hub-like than uniform
+    mixing. All statistics come from lesion_plot.py's cache.
     """
     _ensure_out_dir()
     saved = _load_task_specificity()
@@ -5156,49 +5207,6 @@ def plot_task_specificity():
               extra=f" [{LESION_ANAME}] " + ", ".join(
                   f"{name}: median {np.median(entry['counts']):.0f} tasks"
                   for name, entry in saved["types"].items()))
-
-    for type_name, entry in saved["types"].items():
-        relations = entry["relations"]
-        fig, ax = plt.subplots(1, 1, figsize=(3.6, 2.8))
-        tick_labels = []
-        for position, name in enumerate(relations):
-            rel = entry["by_relation"][name]
-            values = rel["values"]
-            label = _TASK_SHARING_RELATION_LABELS.get(name, name)
-            # Per-group permutation p travels with the tick label, so the
-            # legend never covers it; 'other' is the reference group.
-            if name != "other" and np.isfinite(rel["p_perm"]):
-                label += "\n" + _short_p(rel["p_perm"])
-            tick_labels.append(label)
-            if values.size == 0:
-                continue
-            jitter = np.linspace(-0.18, 0.18, values.size) if values.size > 1 else np.zeros(1)
-            ax.scatter(position + jitter, values, color=_TASK_SPECIFICITY_COLORS[type_name],
-                       edgecolors="none", s=14, alpha=0.45, zorder=2)
-            ax.scatter([position], [np.median(values)], marker="_", s=160, color=_TREND_LINE_COLOR,
-                       linewidths=1.8, zorder=4)
-        ax.set_xticks(range(len(relations)))
-        ax.set_xticklabels(tick_labels, fontsize=6)
-        ax.set_xlim(-0.6, len(relations) - 0.4)
-        ax.set_ylim(-0.03, 1.08)
-        ax.set_yticks([0, 0.5, 1.0])
-        ax.set_ylabel("Shared impaired clusters\n(Jaccard)", fontsize=8)
-        ax.set_title(_TASK_SPECIFICITY_LABELS[type_name], fontsize=8, loc="left")
-        ax.spines[["top", "right"]].set_visible(False)
-        ax.tick_params(axis="y", labelsize=7)
-        related = entry["by_relation"]["related"]
-        p_text = "p < 0.001" if related["p_perm"] < 0.001 else f"p = {related['p_perm']:.3f}"
-        median_handle = mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, marker="_", linestyle="none",
-                                         markersize=8, markeredgewidth=1.8, label="Median")
-        # Anchored above the axes (right of the left-aligned title) so the box
-        # never covers pairs near Jaccard 1.
-        _legend(ax, handles=[median_handle], loc="lower right", bbox_to_anchor=(1.0, 1.0),
-                borderaxespad=0.0, fontsize=6, frameon=True,
-                title=f"related pairs vs shuffle: {p_text}", title_fontsize=6)
-        fig.tight_layout()
-        _save_fig(fig, _multitask_out(f"task_sharing_relations_{type_name}.png"),
-                  extra=(f" [{LESION_ANAME}] related mean {related['mean']:.2f}, "
-                         f"other mean {entry['by_relation']['other']['mean']:.2f}"))
 
 
 # ─── Figure: Transfer speed ──────────────────────────────────────────────────
@@ -11567,6 +11575,7 @@ FIGURES_BY_MODE = {
         "cluster_corr_vs_lesion_weighted": plot_cluster_corr_vs_lesion_weighted,
         "cluster_corr_vs_lesion_seeds": plot_cluster_corr_vs_lesion_seeds,
         "om_vs_lesion": plot_om_vs_lesion,
+        "om_vs_lesion_seeds": plot_om_vs_lesion_seeds,
         "plasticity_share": plot_plasticity_share,
         "plasticity_share_seeds": plot_plasticity_share_seeds,
         "causal_vs_activity_tasks": plot_causal_vs_activity,

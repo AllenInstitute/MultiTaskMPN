@@ -154,9 +154,10 @@ layout.
 
 The `lesion` figure mode contains `lesion_heatmap`, `lesion_cluster_sizes`,
 `cluster_corr_vs_lesion`, `cluster_corr_vs_lesion_weighted`,
-`cluster_corr_vs_lesion_seeds`, `om_vs_lesion`, `plasticity_share`,
-`plasticity_share_seeds`, `causal_vs_activity_tasks`, `causal_vs_activity_seeds`
-and `task_specificity`. All but the three `_seeds` figures read one run,
+`cluster_corr_vs_lesion_seeds`, `om_vs_lesion`, `om_vs_lesion_seeds`,
+`plasticity_share`, `plasticity_share_seeds`, `causal_vs_activity_tasks`,
+`causal_vs_activity_seeds` and `task_specificity`. All but the four `_seeds`
+figures read one run,
 `LESION_ANAME`, independently of `ANAME`, which selects the `multiple_tasks`
 clustering figures. These figures no longer run under `multiple_tasks`; use
 `python paper_plot.py multiple_tasks lesion` for both groups. Existing figure
@@ -176,8 +177,9 @@ The `multiple_tasks` and `lesion` figures read one L2 cohort of the
 `everything_seed*_L2<l2>+hidden300+batch128+angle` runs, selected by
 `MULTITASK_L2` in `paper_plot.py` (currently `1e3`) or per invocation with
 `python paper_plot.py --multitask-l2 1e4 multiple_tasks lesion`. The aggregate
-figures (overmembership, `plasticity_share_seeds`, `causal_vs_activity_seeds`)
-summarize every cached seed of that cohort. The single-run figures use the
+figures (overmembership, `cluster_corr_vs_lesion_seeds`, `om_vs_lesion_seeds`,
+`plasticity_share_seeds`, `causal_vs_activity_seeds`) summarize every cached
+seed of that cohort. The single-run figures use the
 cohort's designated seed from `MULTITASK_DESIGNATED_SEEDS` (749 for clustering
 and 921 for lesions in the 1e4 cohort; none for 1e3) when its cache directory
 holds pickles; otherwise `paper_plot` picks the cached seed covering the most of
@@ -271,7 +273,15 @@ Up to five quantile bins provide median OM/L1 points and counts; tied OM values
 stay together. The median connector is descriptive and is not forced to decrease.
 `paper_plot.py` only reads these values, draws pale scatter points and the saved
 median connector, and starts the L1 axis at zero. Pearson-only caches are skipped,
-not silently reused.
+not silently reused. `python paper_plot.py --only om_vs_lesion_seeds` draws the
+cohort view, `multitask_om_vs_lesion_seeds_n.png`: one point per sibling run of
+`LESION_ANAME` (same feature, any seed), the saved zero_W Spearman rho of that
+run's OM scatter, filled when its saved one-sided permutation p is below 0.05,
+with the median over runs as a dash. Because the per-run test is one-sided
+(negative association), the legend title carries the one-sided Wilcoxon
+signed-rank p of the runs' rhos being below zero; the other `_seeds` figures
+keep their two-sided test. Runs whose OM cache is missing, legacy or has an
+undefined rho are left out with a note.
 
 `python paper_plot.py --only plasticity_share` draws
 `multitask_plasticity_share_n.png` from `plasticity_share_var-weighted-unnormalized_<aname>.pkl`.
@@ -311,22 +321,19 @@ figures need `schema_version=2` caches written
 by the current `lesion_plot.py`.
 
 `python paper_plot.py --only task_specificity` draws
-`multitask_task_specificity_counts_n.png` and one
-`multitask_task_sharing_relations_<type>_n.png` per cluster type (input and
-hidden neuron clusters from the unnormalized clustering, var-weighted zero_W
-synapse clusters; the unresponsive class excluded) from
-`task_specificity_<aname>.pkl`. A cluster "impairs" a task when its zero_W
-lesion effect is significant (one-sided z against the control repeats, BH-FDR
-q = 0.05, the causal-dependency mask). The counts figure shows the fraction of
-clusters impairing 0 to 15 tasks, with a one-sided permutation p for the count
-variance exceeding a null that shuffles cluster identity within each task
-(small p: specialized or hub-like rather than uniformly mixed). The sharing
-figures show, per task pair, the Jaccard overlap of impaired clusters grouped
-by the component the two tasks differ in (`TASK_PAIR_RELATIONS` in
-`lesion_plot.py`: response rule, timing, modality, context cue, integration
-family, match/category family, other), with a task-label permutation p per
-group and for all related pairs pooled. Nothing is recomputed in
-`paper_plot.py`.
+`multitask_task_specificity_counts_n.png` from `task_specificity_<aname>.pkl`
+for input and hidden neuron clusters (unnormalized clustering) and
+var-weighted zero_W synapse clusters, the unresponsive class excluded. A
+cluster "impairs" a task when its zero_W lesion effect is significant
+(one-sided z against the control repeats, BH-FDR q = 0.05, the
+causal-dependency mask). The figure shows the fraction of clusters impairing
+0 to 15 tasks, with a one-sided permutation p for the count variance exceeding
+a null that shuffles cluster identity within each task (small p: specialized
+or hub-like rather than uniformly mixed). Nothing is recomputed in
+`paper_plot.py`. The same cache still holds, per cluster type, the task-pair
+Jaccard overlap of impaired clusters grouped by the component the two tasks
+differ in (`TASK_PAIR_RELATIONS` in `lesion_plot.py`) with task-label
+permutation tests; `paper_plot.py` no longer draws those sharing figures.
 
 On a compute node, regenerate the post-processing cache and then the paper figure:
 ```bash

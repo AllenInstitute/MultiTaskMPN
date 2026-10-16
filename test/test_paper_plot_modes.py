@@ -167,6 +167,7 @@ class PaperPlotModeTests(unittest.TestCase):
             "cluster_corr_vs_lesion_weighted": paper_plot.plot_cluster_corr_vs_lesion_weighted,
             "cluster_corr_vs_lesion_seeds": paper_plot.plot_cluster_corr_vs_lesion_seeds,
             "om_vs_lesion": paper_plot.plot_om_vs_lesion,
+            "om_vs_lesion_seeds": paper_plot.plot_om_vs_lesion_seeds,
             "plasticity_share": paper_plot.plot_plasticity_share,
             "plasticity_share_seeds": paper_plot.plot_plasticity_share_seeds,
             "causal_vs_activity_tasks": paper_plot.plot_causal_vs_activity,

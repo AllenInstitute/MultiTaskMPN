@@ -54,11 +54,12 @@ class TaskSpecificityFigureTests(unittest.TestCase):
             self.addCleanup(paper_plot.plt.close, figure)
         return figures
 
-    def test_counts_and_sharing_figures_use_saved_values(self):
+    def test_counts_figure_uses_saved_values(self):
         figures = self.render(self.cache())
-        self.assertEqual(set(figures), {"multitask_task_specificity_counts.png",
-                                        "multitask_task_sharing_relations_hidden.png",
-                                        "multitask_task_sharing_relations_modulation.png"})
+        # Only the counts figure: the task-pair sharing figures were removed.
+        self.assertEqual(set(figures), {"multitask_task_specificity_counts.png"})
+        self.assertFalse(hasattr(paper_plot, "_short_p"))
+        self.assertFalse(hasattr(paper_plot, "_TASK_SHARING_RELATION_LABELS"))
         counts_axis = figures["multitask_task_specificity_counts.png"].axes[0]
         self.assertEqual(len(counts_axis.lines), 2)   # hidden and modulation only
         hidden_line = counts_axis.lines[0]
@@ -68,35 +69,27 @@ class TaskSpecificityFigureTests(unittest.TestCase):
         self.assertIn("Hidden neuron clusters (n = 4; p = 0.010)", legend_texts)
         self.assertIn("Synapse clusters (n = 3; p = 0.700)", legend_texts)
         self.assertEqual(counts_axis.get_ylim()[0], 0)
-
-        sharing_axis = figures["multitask_task_sharing_relations_hidden.png"].axes[0]
-        self.assertEqual([label.get_text() for label in sharing_axis.get_xticklabels()],
-                         ["Response\nrule\np=.02", "Timing\np=.02", "Other"])
-        self.assertEqual(paper_plot._short_p(0.0004), "p<.001")
-        self.assertEqual(paper_plot._short_p(0.004), "p=.004")
-        self.assertEqual(paper_plot._short_p(0.54), "p=.54")
-        offsets = np.concatenate([c.get_offsets() for c in sharing_axis.collections])
-        # three pair points plus one median per relation
-        self.assertEqual(len(offsets), 3 * 4)
-        self.assertTrue(np.any(np.isclose(offsets, [0, 0.6]).all(axis=1)))
-        self.assertEqual(len(sharing_axis.texts), 0)   # p values live in the tick labels
-        self.assertIn("p = 0.004", sharing_axis.get_legend().get_title().get_text())
-        self.assertEqual(sharing_axis.get_title(loc="left"), "Hidden neuron clusters")
         self.assertIs(paper_plot.FIGURES_BY_MODE["lesion"]["task_specificity"],
                       paper_plot.plot_task_specificity)
+
+    def test_counts_do_not_depend_on_the_sharing_statistics(self):
+        cache = self.cache()
+        for entry in cache["types"].values():
+            entry.pop("sharing")
+        figures = self.render(cache)
+        self.assertEqual(set(figures), {"multitask_task_specificity_counts.png"})
+        self.assertEqual(len(figures["multitask_task_specificity_counts.png"].axes[0].lines), 2)
 
     def test_no_legend_and_incompatible_caches(self):
         figures = self.render(self.cache(), show_legend=False)
         for figure in figures.values():
             self.assertIsNone(figure.axes[0].get_legend())
-        for problem in ("missing", "run", "unit", "type", "counts"):
+        for problem in ("missing", "run", "type", "counts"):
             cache = self.cache()
             if problem == "missing":
                 cache = None
             elif problem == "run":
                 cache["aname"] = "other"
-            elif problem == "unit":
-                cache["types"]["hidden"]["sharing"]["permutation_unit"] = "point"
             elif problem == "type":
                 cache["types"]["synapse"] = cache["types"].pop("modulation")
             else:

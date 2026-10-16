@@ -155,5 +155,82 @@ class OmLesionScatterTests(unittest.TestCase):
         self.assertIsNone(figure.axes[0].get_legend())
         self.assertEqual(figure.axes[0].get_ylim()[0], 0)
 
+class OmLesionSeedsTests(unittest.TestCase):
+    """The cohort view reads every sibling run's saved OM association."""
+
+    scatter = OmLesionScatterTests()
+
+    def run_dir(self, root, seed, rho=None, p_perm=None, legacy=False):
+        """A sibling run directory holding a combined OM cache for that run."""
+        aname = f"everything_seed{seed}_L21e4+hidden300+batch128+angle"
+        directory = root / aname
+        directory.mkdir()
+        cache = self.scatter.cache(True)
+        cache["aname"] = aname
+        association = cache["mode_data"][MODE]["association"]
+        if rho is not None:
+            association.update(rho=rho, p_perm=p_perm)
+        if legacy:
+            cache.pop("schema_version")
+        path = directory / f"om_vs_lesion_diff_var-weighted-unnormalized_combined_unnorm_{aname}.pkl"
+        with path.open("wb") as stream:
+            pickle.dump(cache, stream)
+        return directory
+
+    def draw(self, directories):
+        with patch.object(paper_plot, "_sibling_run_dirs", return_value=directories), \
+                patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(paper_plot, "_save_fig") as save, \
+                patch("builtins.print") as output, \
+                patch.object(lesion_plot, "_om_scatter_summary",
+                             side_effect=AssertionError("Must use saved statistics")):
+            paper_plot.plot_om_vs_lesion_seeds()
+        return save, output
+
+    def test_one_point_per_run_with_a_one_sided_cohort_test(self):
+        from scipy.stats import wilcoxon
+
+        rhos, p_values = [-0.6, -0.3, -0.1], [0.01, 0.2, 0.4]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directories = [self.run_dir(root, seed, rho, p)
+                           for seed, (rho, p) in enumerate(zip(rhos, p_values))]
+            # A legacy cache is left out rather than drawn.
+            directories.append(self.run_dir(root, 9, legacy=True))
+            save, output = self.draw(directories)
+        figure, path = save.call_args.args[:2]
+        self.addCleanup(paper_plot.plt.close, figure)
+        self.assertEqual(path.name, "multitask_om_vs_lesion_seeds.png")
+        axis = figure.axes[0]
+        points = [collection for collection in axis.collections
+                  if isinstance(collection, paper_plot.mpl.collections.PathCollection)]
+        np.testing.assert_allclose([point.get_offsets()[0][1] for point in points], rhos)
+        filled = [paper_plot.mpl.colors.to_hex(point.get_facecolors()[0])
+                  == paper_plot.mpl.colors.to_hex(paper_plot._SCATTER_POINT_COLOR)
+                  for point in points]
+        self.assertEqual(filled, [True, False, False])
+        dashes = [collection for collection in axis.collections
+                  if isinstance(collection, paper_plot.mpl.collections.LineCollection)]
+        np.testing.assert_allclose(dashes[0].get_segments()[0][:, 1], [-0.3, -0.3])
+        expected_p = wilcoxon(rhos, alternative="less").pvalue
+        title = axis.get_legend().get_title().get_text()
+        self.assertIn("3 runs", title)
+        self.assertIn("one-sided", title)
+        self.assertIn(f"p = {expected_p:.3f}", title)
+        self.assertEqual([tick.get_text() for tick in axis.get_xticklabels()],
+                         ["Synapse clusters"])
+        self.assertIn(f"3/3 rho < 0, 1 significant, one-sided Wilcoxon p = {expected_p:.3f}",
+                      save.call_args.kwargs["extra"])
+        printed = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
+        self.assertIn("everything_seed9_L21e4", printed)
+
+    def test_fewer_than_two_runs_are_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            save, output = self.draw([self.run_dir(root, 1, -0.5, 0.01)])
+        save.assert_not_called()
+        self.assertIn("need >= 2", output.call_args.args[0])
+
+
 if __name__ == "__main__":
     unittest.main()
