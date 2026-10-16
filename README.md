@@ -477,6 +477,41 @@ and G=300 grouping, but the unnormalized cells are log-scaled from a 1e-4 floor
 colorbar, `multitask_clustered_modulation_abs_weighted_colorbar_n.png`, instead
 of sharing `heatmap_colorbar`.
 
+## Synapse tuning vs endpoint clusters
+
+`python multiple_task/synapse_variance_decomposition.py` asks how much of a
+synapse's task tuning is the cluster identity of its two endpoint neurons.
+For every run with `cluster_info_<aname>.pkl` and `cluster_info_mod_<aname>.pkl`
+(`--seed N --feature TAG` for one run, `--seed all --feature TAG` for a
+cohort, no arguments for every run), it takes the active synapses of the
+var-weighted clustering (the unresponsive synapse class excluded, as the
+over-membership analysis does), their task-period features in two versions,
+`magnitude` = `log1p(|W|·Var(M))` (primary; the sign of W is a per-synapse
+attribute, not tuning: the signed clustering gives sign-pure clusters and the
+sign alone accounts for about a fifth of the signed variance) and `signed` =
+`signed_log1p(W·Var(M))` (what the clustering saw), and reports the share of
+the total sum of squares explained by least-squares fits of: the presynaptic
+(input) neuron's cluster, the postsynaptic (hidden) neuron's cluster, both
+additively, the pre × post block (interaction = block − additive), the
+data-driven synapse clusters themselves (reference), the joint (block,
+synapse cluster) cells (`synapse_beyond_block` = joint − block, the
+structure the synapse clusters hold beyond the endpoint identity), and, at
+the neuron level, the pre neuron, the post neuron and both additively (the
+strongest endpoint model without an interaction). Two label sets are used
+per version: `fixed_k20` (the lesion convention, k = 20 plus the
+unresponsive class, G = 300 grouping) and `tolerance` (the analysis figures'
+tolerance-selected clusterings). Nulls (1,000 permutations, seed 0,
+one-sided p): the cluster models permute the cluster labels over the neurons
+(same cluster sizes, so the specific clusters are tested against arbitrary
+groupings), the synapse model permutes the synapse labels, the beyond-block
+model permutes them within each block (which removes the mechanical gain of
+the extra cells), and the neuron-level models permute the synapse positions.
+Per run the result goes to
+`multiple_tasks_analysis/<aname>/synapse_variance_decomposition_<aname>.pkl`
+(every R², null array and p, the sign-of-W share and the group counts);
+the run prints a per-cohort summary of the medians. Nothing is recomputed
+from network activity; a run takes a few minutes on a compute node.
+
 Key data outputs: `multiple_tasks/` (checkpoints, curves),
 `multiple_tasks_analysis/` (per-run analysis figures, cluster info),
 `two_in_multiples/` (sibling-task delay/fixed-point analysis),
