@@ -70,7 +70,7 @@ if not getattr(_Figure.savefig, "_logs_path", False):
     _savefig_logged._logs_path = True
     _Figure.savefig = _savefig_logged
 
-# Data lives at repo root (scripts are run from there); see README "Workflow".
+# Data lives at repo root (scripts are run from there); see README "Quick start".
 MULTI_DIR = Path("multiple_tasks_analysis")
 OUT_DIR = Path("multiple_tasks_diagnosis")
 
