@@ -64,6 +64,15 @@ python multiple_task/multiple_task.py --seed 11 42
 python multiple_task/run_pipeline.py --seed 749 --feature L21e4
 # several seeds of one cohort, run in the given order
 python multiple_task/run_pipeline.py --feature L21e3 --seed 299 365 487 501 934
+# every checkpoint of a cohort that has no pipeline outputs yet (rerun after
+# more training). A run counts as completed when all three steps wrote their
+# last file: cluster_info and cluster_info_mod, lesion_prune_results, and the
+# two lesion_interaction pickles; a run missing any is redone from step 1.
+# --skip-completed needs --feature or --seed; to spread a cohort over nodes,
+# give each process its own --seed list (two bare runs would pick the same
+# checkpoints). Each run takes about an hour of clustering plus four to six
+# hours of lesions.
+python multiple_task/run_pipeline.py --feature L21e4 --skip-completed
 
 # optional sibling-task geometry only (does not rerun clustering or lesions)
 python multiple_task/sibling_delay_analysis.py \
