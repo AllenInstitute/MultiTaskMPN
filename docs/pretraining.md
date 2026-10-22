@@ -12,11 +12,11 @@ python pretrain/pretraining_analysis.py --feature L21e3lam0.9
 python pretrain/pretraining_post.py --feature L21e3lam0.9
 
 # pretraining: Relevant and Irrelevant motifs only
-python paper_plot.py pretraining --pretraining-groups motifs
+python figures/paper_plot.py pretraining --pretraining-groups motifs
 # pretraining: motifs plus DelayAnti and DelayPro (default)
-python paper_plot.py pretraining --pretraining-groups all
+python figures/paper_plot.py pretraining --pretraining-groups all
 # pretraining: the runs trained with lambda = 0.9 (m_time_scale 400 ms)
-python paper_plot.py pretraining --pretraining-lambda 0.9
+python figures/paper_plot.py pretraining --pretraining-lambda 0.9
 ```
 
 `--pretraining-groups {motifs,all}` controls the conditions shown in every
@@ -26,7 +26,7 @@ only Relevant/Irrelevant motifs; `all` also includes the DelayAnti/DelayPro
 single-task controls and remains the default. The selection applies to both
 combined and per-seed caches, including the CVE self-reference, and can be
 combined with `--pretraining-bound mod2`, `--no-legend`, or `--only`, for example:
-`python paper_plot.py --only learning_trajectory --pretraining-groups motifs`.
+`python figures/paper_plot.py --only learning_trajectory --pretraining-groups motifs`.
 Other experiment modes are unaffected. Output filenames are unchanged, so
 running the other group selection replaces the same figure; `--only` preserves
 unrelated figures, while mode runs clear the top-level `paper_plot/` outputs (see [docs/multitask_analysis.md](multitask_analysis.md)).
@@ -45,7 +45,7 @@ all cached seeds of the selected variant, and the run banner prints the
 selected lambda, `m_time_scale` and feature string. Output filenames do not
 encode the variant, so rendering another selection replaces the same figures.
 
-`python paper_plot.py --only learning_trajectory_linear` exports
+`python figures/paper_plot.py --only learning_trajectory_linear` exports
 `learning_trajectory_linear_n.png`: the same seed and mean curves as
 `learning_trajectory_n.png`, with a linear iteration axis instead of a log axis.
 Both are included in `pretraining` mode and honor the group/bound options.

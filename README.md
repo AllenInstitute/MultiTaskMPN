@@ -55,7 +55,8 @@ through a small `_bootstrap.py` shim.
 | `multiple_task/` | Multi-task training, clustering analysis, lesions, state space, pipeline |
 | `pretrain/` | Pretraining → post-training transfer experiment and analysis |
 | `flex_task/` | Flexible-task (RNN/MPN) training and analysis |
-| `paper_plot.py` | Publication figures |
+| `figures/` | Publication figures (`paper_plot.py`) and schematic cartoons (`cartoon.py`) |
+| `biology/` | Biological reference figures: MICrONS connectivity, Allen Synaptic Physiology dynamics |
 | `docs/` | Per-analysis documentation (see [Documentation](#documentation)) |
 | `test/` | Unit tests (`python -m unittest discover -s test`) |
 
@@ -94,10 +95,10 @@ python pretrain/pretraining_analysis.py --feature L21e3lam0.9
 python pretrain/pretraining_post.py --feature L21e3lam0.9
 
 # Paper figures: everything, one mode, or one figure
-python paper_plot.py
-python paper_plot.py multiple_tasks lesion --multitask-l2 1e4
-python paper_plot.py pretraining --pretraining-lambda 0.9
-python paper_plot.py --only state_space_vs_lesion
+python figures/paper_plot.py
+python figures/paper_plot.py multiple_tasks lesion --multitask-l2 1e4
+python figures/paper_plot.py pretraining --pretraining-lambda 0.9
+python figures/paper_plot.py --only state_space_vs_lesion
 ```
 
 ## Outputs

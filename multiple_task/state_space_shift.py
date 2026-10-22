@@ -57,7 +57,7 @@ pickle (entries keyed by those stems, ``l2_info`` None); the batch cleanup
 preserves that directory.
 
 The same PCA caches retain original-feature task centroids and trial counts.
-After analysis, run ``python paper_plot.py --only state_space_combined`` to
+After analysis, run ``python figures/paper_plot.py --only state_space_combined`` to
 rank L2=1e-4 seeds by category-balanced high-dimensional centroid separation,
 save the per-seed ranking/summary, and display the best seed's PCA panels.
 Display PCA is incremental; quantitative scoring uses the full task centers.

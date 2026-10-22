@@ -71,7 +71,7 @@ multiple_tasks_norm/
 paper_plot/
 
 # Cartoon figures (incl. the mouse.png reference the silhouette is traced from)
-# and the recorded traces biology.py writes beside them
+# and the recorded traces the biology/ scripts write beside them
 cartoon_plot/
 
 # Biological data (MICrONS / functional scans — tens of GB of .nc and .feather).

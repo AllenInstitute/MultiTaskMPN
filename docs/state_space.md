@@ -19,7 +19,7 @@ python multiple_task/sibling_delay_analysis.py \
 python multiple_task/sibling_delay_analysis.py \
   --seed 921 --feature L21e4 --families delaydm1 dmcgo \
   --method long_delay_endpoint
-python paper_plot.py --only sibling_cue_interp
+python figures/paper_plot.py --only sibling_cue_interp
 
 # additional state-space analysis
 python multiple_task/state_space_shift.py
@@ -28,21 +28,21 @@ python multiple_task/state_space_structure.py
 # context-end task distance vs lesion-profile similarity, for runs that also
 # have lesion_plot.py caches
 python multiple_task/state_space_vs_lesion.py
-python paper_plot.py --only state_space_vs_lesion
-python paper_plot.py --only state_space_vs_lesion_seeds
+python figures/paper_plot.py --only state_space_vs_lesion
+python figures/paper_plot.py --only state_space_vs_lesion_seeds
 # rank state-space seeds and plot the best example without clearing other figures
-python paper_plot.py --only state_space_combined
+python figures/paper_plot.py --only state_space_combined
 # untrained controls (fresh weights, the example run's config), one per seed,
 # then rerun the structure analysis so their category tests are included
 python multiple_task/state_space_shift.py --untrained \
   --checkpoint multiple_tasks/savednet_everything_seed921_L21e4+hidden300+batch128+angle.pt \
   --init-seed 0 1 2 3 4 5 6 7
 python multiple_task/state_space_structure.py
-python paper_plot.py --only state_space_untrained
-python paper_plot.py --only state_space_category_vs_untrained
-python paper_plot.py --only state_space_rdm
-python paper_plot.py --only state_space_rdm_example
-python paper_plot.py --only state_space_category_test
+python figures/paper_plot.py --only state_space_untrained
+python figures/paper_plot.py --only state_space_category_vs_untrained
+python figures/paper_plot.py --only state_space_rdm
+python figures/paper_plot.py --only state_space_rdm_example
+python figures/paper_plot.py --only state_space_category_test
 
 ```
 
@@ -115,7 +115,7 @@ selected by the same criterion; that cohort's ranking is saved as
 are separate PCA spaces with their own axes, titled by their L2, under one
 color key; a figure is skipped when either cohort has no analyzed run.
 
-`python paper_plot.py --only state_space_untrained` draws the untrained
+`python figures/paper_plot.py --only state_space_untrained` draws the untrained
 control, `multitask_state_space_untrained.png`: the same context-end PCA of an
 untrained network, one panel per representation (hidden state, M, W ⊙ M) at
 the trained figures' panel size and colors. The network has the architecture
@@ -152,7 +152,7 @@ category separation S of each representation's untrained centroids.
 and task-vector tests as a trained run (`state_space/untrained/state_space_structure_<aname>_init<seed>_noise0.01.pkl`)
 and stores their summaries under `untrained` in
 `state_space_structure_results.pkl`, apart from `runs` and the L2 `cohorts`,
-which they never enter. `python paper_plot.py --only state_space_category_vs_untrained`
+which they never enter. `python figures/paper_plot.py --only state_space_category_vs_untrained`
 draws `multitask_state_space_category_vs_untrained.png`: the
 `state_space_category_test` figure (hidden state and W ⊙ M, one point per
 network, filled when its permutation p < 0.05, null 95th-percentile band,
@@ -192,7 +192,7 @@ and the command to add the control is printed). Caches
 without the permutation test or the Hebbian steps are skipped, never refitted;
 regenerate them with `state_space_shift.py`.
 
-`python paper_plot.py --only sibling_cue_interp` draws the multi-task analog
+`python figures/paper_plot.py --only sibling_cue_interp` draws the multi-task analog
 of the two-task pro/anti interpolation for the two sibling families
 (`DELAYDM_ANAME`, `DMCGO_ANAME`):
 `multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_{emodulation,hidden}_{2d,3d,plane}.png`
@@ -207,7 +207,7 @@ stimulus direction for DelayDM and memory cluster for DMC, alpha ramp on its
 markers), which shows the alpha = 0 and alpha = 1 configurations of the
 trials directly. The legend is a separate figure per family and method,
 holding the DMC cluster lines and, for the gradient method, the converged /
-hollow markers (DelayDM endpoint sweeps need none). `python paper_plot.py
+hollow markers (DelayDM endpoint sweeps need none). `python figures/paper_plot.py
 --sibling-one-trial-per-stimulus --only sibling_cue_interp` draws one sweep
 trial per stimulus direction instead of all of them, in `2d`, `3d`, `plane`
 and the `_cue_interp` endpoint overlays (`SIBLING_ONE_TRIAL_PER_STIMULUS`):

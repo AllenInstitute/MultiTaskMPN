@@ -16,26 +16,26 @@ Figures are grouped into modes by the experiment they depend on:
     two_task         two-task network (cross-task / cross-period PCA)
 
 Usage:
-    python paper_plot.py                       # generate every mode
-    python paper_plot.py all                   # same as above
-    python paper_plot.py one_task              # only the one-task figures
-    python paper_plot.py multiple_tasks        # clustering and network structure
-    python paper_plot.py lesion                # only the lesion figures
-    python paper_plot.py --multitask-l2 1e4 multiple_tasks lesion
-                                                # both from the L2=1e-4 cohort
-                                                # (default cohort: MULTITASK_L2)
-    python paper_plot.py state_space            # only the state-space figures
-    python paper_plot.py acc_plot              # only the accuracy figures
-    python paper_plot.py two_in_multiple       # only the two-in-multiple figures
-    python paper_plot.py pretraining           # only the pretraining figures
-    python paper_plot.py pretraining --pretraining-bound mod2
-                                                # pretraining with M in [-2, 2]
-    python paper_plot.py pretraining --pretraining-groups motifs
-                                                # Relevant / Irrelevant only
-    python paper_plot.py pretraining --pretraining-groups all
-                                                # also DelayAnti / DelayPro (default)
-    python paper_plot.py two_task              # only the two-task figures
-    python paper_plot.py --only input          # generate a single figure
+    python figures/paper_plot.py                       # generate every mode
+    python figures/paper_plot.py all                   # same as above
+    python figures/paper_plot.py one_task              # only the one-task figures
+    python figures/paper_plot.py multiple_tasks        # clustering and network structure
+    python figures/paper_plot.py lesion                # only the lesion figures
+    python figures/paper_plot.py --multitask-l2 1e4 multiple_tasks lesion
+                                                        # both from the L2=1e-4 cohort
+                                                        # (default cohort: MULTITASK_L2)
+    python figures/paper_plot.py state_space            # only the state-space figures
+    python figures/paper_plot.py acc_plot              # only the accuracy figures
+    python figures/paper_plot.py two_in_multiple       # only the two-in-multiple figures
+    python figures/paper_plot.py pretraining           # only the pretraining figures
+    python figures/paper_plot.py pretraining --pretraining-bound mod2
+                                                        # pretraining with M in [-2, 2]
+    python figures/paper_plot.py pretraining --pretraining-groups motifs
+                                                        # Relevant / Irrelevant only
+    python figures/paper_plot.py pretraining --pretraining-groups all
+                                                        # also DelayAnti / DelayPro (default)
+    python figures/paper_plot.py two_task              # only the two-task figures
+    python figures/paper_plot.py --only input          # generate a single figure
 """
 import pickle
 import json
@@ -46,6 +46,8 @@ import matplotlib.ticker as mticker
 import seaborn as sns
 from pathlib import Path
 from scipy.cluster.hierarchy import dendrogram, fcluster
+
+import _bootstrap  # noqa: F401  (puts the repository root on sys.path)
 from core.sibling_geometry import (best_delaydm_sweep_pc_pair,
                                    best_task_specific_pc_pair)
 from core.state_space_geometry import task_centroid_separation

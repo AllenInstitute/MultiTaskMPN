@@ -8,7 +8,7 @@ softplus and sigmoid is the non-zero output at zero input, i.e. the constant
 background (offset) in the plastic layer's presynaptic embedding.
 
 This analysis loads every matching checkpoint and must be run manually on a
-compute node. Its JSON output is consumed by ``paper_plot.py acc_plot``.
+compute node. Its JSON output is consumed by ``figures/paper_plot.py acc_plot``.
 """
 
 import argparse

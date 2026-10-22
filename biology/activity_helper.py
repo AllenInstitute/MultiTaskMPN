@@ -5,9 +5,9 @@ Functional half of the MICrONS dataset: reading a two-photon scan and choosing
 what to look at in it.
 
 Everything here is data access and selection — no plotting, no matplotlib. The
-figures that use it live in `biology.py` at the repository root, which imports
-this module by putting `biology/` on `sys.path` (the `_bootstrap.py` idiom the
-experiment directories use for `core/`). Its structural counterpart is
+figures that use it live in `biology.py` beside it, which imports this module
+directly (running a script puts its own directory on `sys.path`). Its structural
+counterpart is
 `connectivity_helper.py`; the two share no state, only this directory.
 
 One scan is stored as netCDF (`functional_session_{session}_scan_{scan}.nc`). Per

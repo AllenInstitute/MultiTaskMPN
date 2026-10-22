@@ -16,8 +16,8 @@ under `./microns_v1dd/sven/`; here they sit directly in this directory):
 
 `l2it_connectivity` is the entry point: it turns those into a square, directed
 connectivity matrix over the proofread cells of one type. No plotting lives here;
-`biology.py` at the repository root imports this module by putting `biology/` on
-`sys.path` (the `_bootstrap.py` idiom the experiment directories use for `core/`).
+`biology.py` beside it imports this module directly (running a script puts its own
+directory on `sys.path`).
 """
 import time
 from pathlib import Path

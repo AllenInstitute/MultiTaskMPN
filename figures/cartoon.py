@@ -19,7 +19,7 @@ trace that tells the zero_W and freeze_M synapse interventions apart).
 
 One exception to "synthetic": `plot_synaptic_train_amplitudes` redraws MEASURED
 Allen Synaptic Physiology recordings (extracted by
-`biology_fast_synaptic_waveforms.py` into `cartoon_plot/`) in the layout of
+`biology/biology_fast_synaptic_waveforms.py` into `cartoon_plot/`) in the layout of
 Campagnola et al. 2022, Science 375, eabj5861, Fig. 4A. It is a biological
 reference beside the cartoons, not a claim about our networks, and must be
 captioned as data.
@@ -31,11 +31,11 @@ for the color families; the ten units here are a plain categorical distinction, 
 they use `c_vals` and never the stimulus rainbow.
 
 Usage:
-    python cartoon.py                  # writes into cartoon_plot/
-    python cartoon.py --out-dir /tmp   # somewhere else
-    python cartoon.py --figure mouse   # just the mouse silhouette
-    python cartoon.py --figure synaptic   # measured PSP trains (Fig. 4A layout)
-    python cartoon.py --figure lesion     # neuron / synapse-cluster lesion schematic
+    python figures/cartoon.py                  # writes into cartoon_plot/
+    python figures/cartoon.py --out-dir /tmp   # somewhere else
+    python figures/cartoon.py --figure mouse   # just the mouse silhouette
+    python figures/cartoon.py --figure synaptic   # measured PSP trains (Fig. 4A layout)
+    python figures/cartoon.py --figure lesion     # neuron / synapse-cluster lesion schematic
 """
 import argparse
 import json
@@ -50,6 +50,7 @@ from matplotlib.patches import Polygon
 
 # Style, palette and savers come from the real figure module so the two agree by
 # construction. Importing it also applies its global rcParams.
+import _bootstrap  # noqa: F401  (puts the repository root on sys.path for paper_plot)
 import paper_plot as pp
 from paper_plot import (c_vals, _ONETASK_PERIOD_COLORS,
                        _add_period_strip, _save_fig)
@@ -534,7 +535,7 @@ def plot_mouse_shape(out_dir=OUT_DIR, style="gradient", margin=8):
 # PSP amplitude; under them, in black, that pulse's trial-mean PSP waveform
 # (-1 to 8 ms after the spike). `plot_synaptic_train_amplitudes` draws the
 # same elements for the paper's own three example pairs
-# (biology_fast_synaptic_waveforms.py), all dots in one grey (the paper also
+# (biology/biology_fast_synaptic_waveforms.py), all dots in one grey (the paper also
 # colors pulses 1 and 8 by a variability metric; that encoding is dropped
 # here), with two departures from the paper's layout: only a subset of pulses is
 # drawn (SYNAPTIC_PULSES, default 1, 4, 6, 10, 12: early, mid and late
@@ -614,7 +615,7 @@ def load_synaptic_trial_amplitudes(path=None):
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(
-            f"{path} not found; run biology_fast_synaptic_waveforms.py first.")
+            f"{path} not found; run biology/biology_fast_synaptic_waveforms.py first.")
     with path.open(encoding="utf-8") as stream:
         data = json.load(stream)
 

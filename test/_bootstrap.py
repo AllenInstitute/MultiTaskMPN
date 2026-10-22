@@ -9,6 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 for module_dir in (
     REPO_ROOT,
     REPO_ROOT / "core",
+    REPO_ROOT / "figures",
     REPO_ROOT / "multiple_task",
     REPO_ROOT / "pretrain",
 ):

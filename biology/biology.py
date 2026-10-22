@@ -3,7 +3,7 @@
 """Draw a directed subnetwork of fully proofread MICrONS BC neurons.
 
 This is intentionally the only analysis in this file. It reuses the connectome
-loader in ``biology/connectivity_helper.py`` and restricts both ends of every
+loader in ``connectivity_helper.py`` beside it and restricts both ends of every
 displayed connection to basket cells (BC) whose axon and dendrite are both
 proofread. A deterministic connected core keeps the network legible while every
 node and edge shown still comes from the measured connectome.
@@ -11,7 +11,7 @@ node and edge shown still comes from the measured connectome.
 Run on the compute node with the project environment::
 
     conda activate mpn
-    python biology.py
+    python biology/biology.py
 
 The default outputs are ``cartoon_plot/biology_connectivity_network.png`` and
 ``cartoon_plot/biology_connectivity_network_legend.png``.
@@ -25,7 +25,10 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import FancyArrowPatch
 import numpy as np
 
-_HELPERS = Path(__file__).resolve().parent / "biology"
+# The helper modules sit beside this script. Running it puts this directory on
+# sys.path already; the shim keeps the import working when the module is
+# imported from elsewhere (a notebook or a test run from the repository root).
+_HELPERS = Path(__file__).resolve().parent
 if str(_HELPERS) not in sys.path:
     sys.path.insert(0, str(_HELPERS))
 

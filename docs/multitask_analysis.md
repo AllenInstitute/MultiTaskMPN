@@ -45,7 +45,7 @@ The `lesion` figure mode contains `lesion_heatmap`, `lesion_cluster_sizes`,
 `_seeds` and two `_cohort` figures read one run,
 `LESION_ANAME`, independently of `ANAME`, which selects the `multiple_tasks`
 clustering figures. These figures no longer run under `multiple_tasks`; use
-`python paper_plot.py multiple_tasks lesion` for both groups. Existing figure
+`python figures/paper_plot.py multiple_tasks lesion` for both groups. Existing figure
 names and `--only FIGURE` commands are unchanged. The historical `leison`
 spelling is now `lesion` in commands, module names, output names and cache keys:
 use `multiple_task/lesion.py`, `multiple_task/lesion_plot.py` and the `lesion`
@@ -61,7 +61,7 @@ figures.
 The `multiple_tasks` and `lesion` figures read one L2 cohort of the
 `everything_seed*_L2<l2>+hidden300+batch128+angle` runs, selected by
 `MULTITASK_L2` in `paper_plot.py` (currently `1e3`) or per invocation with
-`python paper_plot.py --multitask-l2 1e4 multiple_tasks lesion`. The aggregate
+`python figures/paper_plot.py --multitask-l2 1e4 multiple_tasks lesion`. The aggregate
 figures (overmembership, `cluster_corr_vs_lesion_seeds`, `om_vs_lesion_seeds`,
 `plasticity_share_cohort`, `causal_vs_activity_seeds`, `task_sharing_cohort`,
 `state_space_vs_lesion_seeds`) summarize every cached seed of that cohort. The single-run figures use the
@@ -75,7 +75,7 @@ functions. Empty directories and pickles of other runs do not count as cached
 data. Missing or incompatible individual caches still use the existing per-figure
 checks rather than switching seeds per figure.
 
-`python paper_plot.py --only cluster_corr_vs_lesion` draws the four input/hidden
+`python figures/paper_plot.py --only cluster_corr_vs_lesion` draws the four input/hidden
 scatter figures and three modulation figures:
 `multitask_cluster_corr_vs_lesion_modulation_norm_zero_W_n.png`,
 `multitask_cluster_corr_vs_lesion_modulation_var_weighted_unnorm_zero_W_n.png`
@@ -124,7 +124,7 @@ computed in `paper_plot.py` from the saved per-run rhos (nothing below the run
 level is recomputed). Like every lesion figure it describes the one cohort
 selected by `--multitask-l2`; render it once per cohort to compare them.
 
-`python paper_plot.py --only cluster_corr_vs_lesion_weighted` draws the separate
+`python figures/paper_plot.py --only cluster_corr_vs_lesion_weighted` draws the separate
 **Var(WM)** comparison from `LESION_ANAME`, exporting only
 `multitask_cluster_corr_vs_lesion_modulation_weighted_unnorm_zero_W_n.png`.
 The upstream `modulation_all_weighted_unnormalized`
@@ -158,7 +158,7 @@ Up to five quantile bins provide median OM/L1 points and counts; tied OM values
 stay together. The median connector is descriptive and is not forced to decrease.
 `paper_plot.py` only reads these values, draws pale scatter points and the saved
 median connector, and starts the L1 axis at zero. Pearson-only caches are skipped,
-not silently reused. `python paper_plot.py --only om_vs_lesion_seeds` draws the
+not silently reused. `python figures/paper_plot.py --only om_vs_lesion_seeds` draws the
 cohort view, `multitask_om_vs_lesion_seeds_n.png`: one point per sibling run of
 `LESION_ANAME` (same feature, any seed), the saved zero_W Spearman rho of that
 run's OM scatter, filled when its saved one-sided permutation p is below 0.05,
@@ -168,7 +168,7 @@ signed-rank p of the runs' rhos being below zero; the other `_seeds` figures
 keep their two-sided test. Runs whose OM cache is missing, legacy or has an
 undefined rho are left out with a note.
 
-`python paper_plot.py --only plasticity_share` draws
+`python figures/paper_plot.py --only plasticity_share` draws
 `multitask_plasticity_share_n.png` from `plasticity_share_var-weighted-unnormalized_<aname>.pkl`.
 For every (task, synapse cluster) cell whose zero_W effect is significant
 (one-sided BH-FDR q = 0.05 against the stored random-control repeats),
@@ -190,7 +190,7 @@ run whose task list differs from the others is left out with a note, and the
 figure is skipped below two runs. The share compares two interventions and is
 not an exact additive partition of static and plastic contributions.
 
-`python paper_plot.py --only causal_vs_activity_tasks` draws
+`python figures/paper_plot.py --only causal_vs_activity_tasks` draws
 `multitask_causal_vs_activity_tasks_hidden_n.png` and `..._input_n.png` from
 `causal_vs_activity_tasksim_<side>_<aname>.pkl`: one point per task pair, x the
 Pearson correlation of the two tasks' period-averaged raw (unnormalized) task
@@ -209,7 +209,7 @@ activity vector is not used: it also makes the input side correlate. Both
 figures need `schema_version=2` caches written
 by the current `lesion_plot.py`.
 
-`python paper_plot.py --only task_specificity` draws
+`python figures/paper_plot.py --only task_specificity` draws
 `multitask_task_specificity_counts_n.png` from `task_specificity_<aname>.pkl`
 for input and hidden neuron clusters (unnormalized clustering) and
 var-weighted zero_W synapse clusters, the unresponsive class excluded. A
@@ -227,7 +227,7 @@ one-sided permutation p of the observed variance exceeding that null. Nothing
 is recomputed in `paper_plot.py`. The same cache holds, per cluster type, the
 task-pair Jaccard overlap of impaired clusters grouped by the component the
 two tasks differ in (`TASK_PAIR_RELATIONS` in `lesion_plot.py`) with one-sided
-task-label permutation tests. `python paper_plot.py --only task_sharing_cohort`
+task-label permutation tests. `python figures/paper_plot.py --only task_sharing_cohort`
 draws them at the cohort level, `multitask_task_sharing_cohort_n.png`: one
 panel per cluster type and one column per relation (plus the pooled "All
 related" column), each sibling run of `LESION_ANAME` a point at its excess
@@ -263,7 +263,7 @@ the results go to `state_space/state_space_vs_lesion_results.pkl` (one entry
 per run with the pair coordinates, the tests with their null arrays and the
 L2), which the state-space batch run clears like every top-level file there,
 so rerun it after `state_space_structure.py` or `lesion_plot.py`.
-`python paper_plot.py --only state_space_vs_lesion` draws
+`python figures/paper_plot.py --only state_space_vs_lesion` draws
 `multitask_state_space_vs_lesion_n.png` for `LESION_ANAME`: a 2 × 2 grid
 with one row per representation (hidden-state and W ⊙ M centroid distance)
 and one column per cluster type (neuron clusters, synapse clusters), one
@@ -280,7 +280,7 @@ skipped below two runs with results.
 On a compute node, regenerate the post-processing cache and then the paper figure:
 ```bash
 python multiple_task/lesion_plot.py --seed 921 --feature L21e4
-python paper_plot.py --only om_vs_lesion
+python figures/paper_plot.py --only om_vs_lesion
 ```
 Use `--seed all` in the first command to update every matching run's OM results.
 This reuses completed lesion experiments, but clears and regenerates the selected

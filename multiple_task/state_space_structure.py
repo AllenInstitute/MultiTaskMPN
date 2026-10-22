@@ -34,7 +34,7 @@ an untrained network has no L2 strength, since L2 only acts during training.
 Nothing is recomputed from network activity: the centroids come from the PCA
 caches, so this runs in minutes on CPU. Run it after ``state_space_shift.py``
 (whose batch run clears the top-level ``state_space/`` files, including the
-caches written here) and before ``paper_plot.py state_space``.
+caches written here) and before ``figures/paper_plot.py state_space``.
 
 Outputs, in ``state_space/``:
   state_space_structure_<aname>_noise0.01.pkl   per run, with the null arrays
