@@ -286,7 +286,9 @@ one-step residual ||F(M) - M|| / (||M|| (1 - lambda)) is at most
 record `settle_ms`, `endpoint_delay_ms`, each trial's `rel_step_undamped` and
 `is_fixed`, and the projected trajectories run from delay onset to the
 settled endpoint. A trial still above the criterion at the cap is drawn
-hollow in the sweep figures and the PC-pair galleries; in the endpoint figure,
+hollow in the sweep figures and the PC-pair galleries (the automatic run
+selection below skips such runs, so in `paper_plot.py` this happens only for a
+pinned run); in the endpoint figure,
 where hollow markers already mean the sweep's alpha = 1 end, its count is
 printed with the saved figure instead. Endpoint caches written before
 settling (endpoint version 2, sweep version 1) hold the unsettled end-of-trial
