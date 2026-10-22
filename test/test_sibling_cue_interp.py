@@ -617,16 +617,15 @@ class CueInterpPaperFigureTests(unittest.TestCase):
 
         saved = [Path(call.args[1]).name for call in save.call_args_list]
         expected = []
-        # Per representation: the two trial views against alpha and the
-        # plane. A legend figure follows each (family, method) that needs one
-        # (the gradient convergence markers for DelayDM, the cluster lines
-        # for DMC).
+        # Per representation: the two trial views against alpha. A legend
+        # figure follows each (family, method) that needs one (the gradient
+        # convergence markers for DelayDM, the cluster lines for DMC).
         for family_name, methods in (
                 ("delaydm", ("gradient", "long_delay_endpoint")),
                 ("dmcgo", ("long_delay_endpoint",))):
             for method in methods:
                 for suffix in ("emodulation", "hidden"):
-                    for view in ("2d", "3d", "plane"):
+                    for view in ("2d", "3d"):
                         expected.append(
                             f"multitask_{family_name}_cue_interp_{method}_"
                             f"{suffix}_{view}.png")
@@ -879,55 +878,6 @@ class CueInterpPaperFigureTests(unittest.TestCase):
         self.assertEqual(paper_plot._cue_interp_legend_handles(
             "delaydm1", RULES, "long_delay_endpoint", entry), [])
 
-    def test_plane_view_draws_every_trial_path(self):
-        # DelayDM: four trials per panel (stim_idx 0,1,0,1), no averaging:
-        # PC1 = alpha + k, PC2 = trial index / 10.
-        delaydm = self._projection("long_delay_endpoint", RULES, n_points=4)
-        entry = delaydm["representations"]["hidden"]
-        with patch.object(paper_plot, "_ensure_out_dir"), \
-                patch.object(paper_plot, "SHOW_LEGEND", True), \
-                patch.object(paper_plot, "_save_fig") as save:
-            paper_plot._render_multitask_cue_interp_plane(
-                entry, delaydm["alphas"], "delaydm1", "long_delay_endpoint",
-                (1, 2), Path("out.png"), "test")
-        fig = save.call_args.args[0]
-        self.addCleanup(paper_plot.plt.close, fig)
-        self.assertEqual(len(fig.axes), 2)
-        rainbow = [paper_plot.mpl.colors.to_hex(paper_plot.stim_color(k, 8))
-                   for k in (0, 1)]
-        for k, ax in enumerate(fig.axes):
-            self.assertEqual(len(ax.lines), 4)
-            self.assertEqual(
-                [paper_plot.mpl.colors.to_hex(line.get_color())
-                 for line in ax.lines], rainbow * 2)
-            for s, line in enumerate(ax.lines):
-                np.testing.assert_allclose(line.get_xdata(), delaydm["alphas"] + k)
-                np.testing.assert_allclose(
-                    line.get_ydata(), np.full(delaydm["alphas"].size, s / 10))
-            # One alpha-ramp scatter per alpha (all trials converged).
-            self.assertEqual(len(ax.collections), delaydm["alphas"].size)
-            self.assertEqual(ax.get_box_aspect(), 1)
-            self.assertEqual(ax.get_xlabel(), "Joint Delay PC1")
-        self.assertIn("4 trial paths per panel", save.call_args.kwargs["extra"])
-
-        # DMC: eight trial paths in the two cluster colors.
-        dmc = self._projection("long_delay_endpoint", ("dmcgo",), n_points=8)
-        entry = dmc["representations"]["e_modulation"]
-        entry["sweeps"]["dmcgo"]["stim_idx"] = np.arange(8)
-        with patch.object(paper_plot, "_ensure_out_dir"), \
-                patch.object(paper_plot, "SHOW_LEGEND", True), \
-                patch.object(paper_plot, "_save_fig") as save:
-            paper_plot._render_multitask_cue_interp_plane(
-                entry, dmc["alphas"], "dmcgo", "long_delay_endpoint", (1, 2),
-                Path("out.png"), "test")
-        fig = save.call_args.args[0]
-        self.addCleanup(paper_plot.plt.close, fig)
-        self.assertEqual(
-            {paper_plot.mpl.colors.to_hex(line.get_color())
-             for line in fig.axes[0].lines},
-            {paper_plot.mpl.colors.to_hex(c)
-             for c in paper_plot._CUE_INTERP_CLUSTER_COLORS.values()})
-
     def test_one_trial_per_stimulus_matches_magnitudes_across_directions(self):
         stim = np.array([0, 0, 0, 1, 1, 1, 2, 2, 2])
         magnitude = np.array([0.7, 1.1, 1.3, 0.9, 1.0, 1.4, 0.8, 1.2, 1.5])
@@ -964,11 +914,12 @@ class CueInterpPaperFigureTests(unittest.TestCase):
             self.assertEqual(view["one_trial_target_magnitude"], 1.0)
             with patch.object(paper_plot, "_ensure_out_dir"), \
                     patch.object(paper_plot, "_save_fig") as save:
-                paper_plot._render_multitask_cue_interp_plane(
+                paper_plot._render_multitask_cue_interp_2d(
                     entry, projection["alphas"], "delaydm1", "gradient",
                     (1, 2), Path("out.png"), "test")
             fig = save.call_args.args[0]
             self.addCleanup(paper_plot.plt.close, fig)
+            self.assertEqual(len(fig.axes), 4)
             for ax in fig.axes:
                 self.assertEqual(len(ax.lines), 2)
             self.assertIn("one trial per stimulus, magnitude ≈ 1, 1",

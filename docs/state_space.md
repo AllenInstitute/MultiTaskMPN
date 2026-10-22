@@ -195,21 +195,17 @@ regenerate them with `state_space_shift.py`.
 `python figures/paper_plot.py --only sibling_cue_interp` draws the multi-task analog
 of the two-task pro/anti interpolation for the two sibling families
 (`DELAYDM_ANAME`, `DMCGO_ANAME`):
-`multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_{emodulation,hidden}_{2d,3d,plane}.png`
+`multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_{emodulation,hidden}_{2d,3d}.png`
 and `multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_legend.png`.
 `2d` draws one line per sweep trial against alpha for each PC of the plane
 (square panels, alpha ticks on every panel, y limits hugging each panel's own
 lines with 8% padding below and 25% above, so columns are not on a shared
-scale), `3d` the trial lines in the plane against alpha, and `plane` every
-trial's path through the
-plane from alpha = 0 to alpha = 1 without averaging (group color on the path,
-stimulus direction for DelayDM and memory cluster for DMC, alpha ramp on its
-markers), which shows the alpha = 0 and alpha = 1 configurations of the
-trials directly. The legend is a separate figure per family and method,
+scale) and `3d` the trial lines in the plane against alpha. The legend is a
+separate figure per family and method,
 holding the DMC cluster lines and, for the gradient method, the converged /
 hollow markers (DelayDM endpoint sweeps need none). `python figures/paper_plot.py
 --sibling-one-trial-per-stimulus --only sibling_cue_interp` draws one sweep
-trial per stimulus direction instead of all of them, in `2d`, `3d`, `plane`
+trial per stimulus direction instead of all of them, in `2d`, `3d`
 and the `_cue_interp` endpoint overlays (`SIBLING_ONE_TRIAL_PER_STIMULUS`):
 the target magnitude is the one every direction can match most closely (ties
 toward 1.0) and each direction contributes its nearest trial, so the eight
