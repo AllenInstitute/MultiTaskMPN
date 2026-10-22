@@ -1121,7 +1121,10 @@ class PaperPlotModeTests(unittest.TestCase):
         self.assertLess(figure.axes[1].get_xlim()[1], 10.0)
         self.assertLess(figure.axes[1].get_ylim()[1], 10.0)
 
-    def test_dmcgo_emodulation_uses_explicit_axis_limits(self):
+    def test_dmcgo_emodulation_frames_its_own_endpoints(self):
+        # No hand-tuned limits (they fitted one cache and went stale when it
+        # was regenerated): DMC e_modulation is framed around the drawn points
+        # like every panel.
         group_labels = np.tile(np.repeat([0, 1], 4), 2)
         points = np.zeros((group_labels.size, 6), dtype=float)
         points[:, 2] = np.where(group_labels == 0, -0.2, 0.2)
@@ -1140,24 +1143,20 @@ class PaperPlotModeTests(unittest.TestCase):
         with patch.object(paper_plot, "_save_fig") as save_fig, \
                 patch.object(
                     paper_plot, "_best_sibling_endpoint_pc_pair",
-                    return_value=((3, 4), 1.0, "cross-task category balanced accuracy")), \
-                patch.object(paper_plot, "_adaptive_pc_limits") as adaptive_limits:
+                    return_value=((3, 4), 1.0, "cross-task category balanced accuracy")):
             rendered = paper_plot._plot_multitask_long_delay_endpoint_representation(
                 data, "dmcgo", ("dmcgo", "dmcnogo"),
                 "e_modulation", "emodulation")
 
         self.assertTrue(rendered)
-        adaptive_limits.assert_not_called()
         figure = save_fig.call_args.args[0]
         for call in save_fig.call_args_list:
             self.addCleanup(paper_plot.plt.close, call.args[0])
         self.assertIsNone(figure.axes[0].get_legend())
         self.assertIsNone(figure.axes[1].get_legend())
-        expected_limits = (
-            ((-5.2, 5.2), (-0.55, 0.75)),
-            ((-0.52, 0.52), (-0.29, 0.49)),
-        )
-        for axis, (expected_xlim, expected_ylim) in zip(figure.axes, expected_limits):
+        for axis, (bx, by) in zip(figure.axes, ((0, 1), (2, 3))):
+            expected_xlim, expected_ylim = paper_plot._adaptive_pc_limits(
+                points, bx, by, padding=paper_plot._MULTITASK_ENDPOINT_LIMIT_PADDING)
             np.testing.assert_allclose(axis.get_xlim(), expected_xlim)
             np.testing.assert_allclose(axis.get_ylim(), expected_ylim)
 

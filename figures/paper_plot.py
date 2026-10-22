@@ -9530,10 +9530,6 @@ _MULTITASK_SIBLING_ENDPOINT_DEFAULT_PC_PLANE = (1, 2)
 _MULTITASK_RULE_MARKERS = ("s", "^")
 _MULTITASK_ENDPOINT_LIMIT_PADDING = 0.13
 _MULTITASK_DELAYDM_EMODULATION_LIMIT_PADDING = 0.18
-_MULTITASK_DMCGO_EMODULATION_LIMITS = {
-    (1, 2): ((-5.2, 5.2), (-0.55, 0.75)),
-    (3, 4): ((-0.52, 0.52), (-0.29, 0.49)),
-}
 
 
 def _multitask_sibling_aname(family):
@@ -10025,17 +10021,11 @@ def _plot_multitask_long_delay_endpoint_representation(
         y_var = f" ({100 * evr[by]:.1f}%)" if evr.size > by else ""
         ax.set_xlabel(f"Joint Delay PC{pc_x}{x_var}")
         ax.set_ylabel(f"Joint Delay PC{pc_y}{y_var}")
-        limits = None
-        if family == "dmcgo" and plot_name == "e_modulation":
-            limits = _MULTITASK_DMCGO_EMODULATION_LIMITS.get((pc_x, pc_y))
-        if limits is not None:
-            xlim, ylim = limits
-        else:
-            limit_padding = _MULTITASK_ENDPOINT_LIMIT_PADDING
-            if family == "delaydm1" and plot_name == "e_modulation":
-                limit_padding = _MULTITASK_DELAYDM_EMODULATION_LIMIT_PADDING
-            xlim, ylim = _adaptive_pc_limits(
-                limit_points, bx, by, padding=limit_padding)
+        limit_padding = _MULTITASK_ENDPOINT_LIMIT_PADDING
+        if family == "delaydm1" and plot_name == "e_modulation":
+            limit_padding = _MULTITASK_DELAYDM_EMODULATION_LIMIT_PADDING
+        xlim, ylim = _adaptive_pc_limits(
+            limit_points, bx, by, padding=limit_padding)
         ax.set_xlim(*xlim)
         ax.set_ylim(*ylim)
         ax.set_box_aspect(1)
