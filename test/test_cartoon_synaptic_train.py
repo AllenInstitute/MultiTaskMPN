@@ -87,13 +87,14 @@ class SynapticTrainFigureTests(unittest.TestCase):
     def waveform_lines(axis):
         return [line for line in axis.lines if line.get_color() == "black" and line.get_zorder() == 100]
 
-    @staticmethod
-    def break_strokes(axis):
-        return [line for line in axis.lines if line.get_zorder() == 200]
-
     def test_default_draws_selected_pulses_in_slots_labeled_with_real_time(self):
         path = self.root / "amps.json"
         data = write_full_format(path)
+        # One depressing-row dot above that row's tick top: the range must
+        # follow it instead of clipping it.
+        depressing = next(entry for entry in data["connections"] if entry["group"] == "depressing")
+        depressing["trial_amplitude_mv"]["0"][0] = 1.3
+        path.write_text(json.dumps(data))
         save_fig = self.render(path)
         names = [call.args[1].name for call in save_fig.call_args_list]
         self.assertEqual(names, ["cartoon_synaptic_train_amplitudes.png"])
@@ -106,17 +107,8 @@ class SynapticTrainFigureTests(unittest.TestCase):
         self.assertEqual(len(figure.axes), 3)
         shown = [0, 3, 5, 9, 11]                      # 0-based pulses of SYNAPTIC_PULSES
         by_group = {entry["group"]: entry for entry in data["connections"]}
-        # Dots above a row's fixed top are clipped; the message counts them (the
-        # three tops differ, so each row's note is identifiable by its top).
-        for group, entry in by_group.items():
-            top = cartoon.SYNAPTIC_YLIM_TOP[group]
-            n_above = sum(int(np.sum(np.asarray(entry["trial_amplitude_mv"][str(p)]) > top))
-                          for p in shown)
-            if n_above:
-                self.assertIn(f"{group} {n_above} dot(s) above {top:g} mV clipped", extra)
-            else:
-                self.assertNotIn(f"above {top:g} mV clipped", extra)
-        grey = paper_plot.mpl.colors.to_rgba(cartoon._SYNAPTIC_DOT_COLOR)
+        self.assertNotIn("clipped", extra)
+        grey =paper_plot.mpl.colors.to_rgba(cartoon._SYNAPTIC_DOT_COLOR)
         half_width_slots = cartoon.SYNAPTIC_SWARM_HALF_WIDTH_MS / INTERVAL_MS
         # Paper row order, and no in-axes labels: the caption names the rows.
         for axis, group in zip(figure.axes, ("depressing", "facilitating", "pseudolinear")):
@@ -140,20 +132,25 @@ class SynapticTrainFigureTests(unittest.TestCase):
                 np.testing.assert_allclose(line.get_xdata(), index + centered)
                 np.testing.assert_allclose(line.get_ydata(),
                                            np.abs(entry["mean_waveform_mv"][str(pulse)]))
-            # Fixed row range, ticked at 0 and the top only.
+            # Ticked at 0 and the row's fixed top; the range pads below zero and
+            # reaches past the top when a dot does, so none is cut off.
             top = cartoon.SYNAPTIC_YLIM_TOP[group]
-            np.testing.assert_allclose(axis.get_ylim(), (-cartoon.SYNAPTIC_YLIM_PAD * top, top))
+            pad = cartoon.SYNAPTIC_YLIM_PAD * top
+            dots = max(max(entry["trial_amplitude_mv"][str(p)]) for p in shown)
+            waves = max(float(np.abs(entry["mean_waveform_mv"][str(p)]).max()) for p in shown)
+            np.testing.assert_allclose(axis.get_ylim(), (-pad, max(top, dots, waves) + pad))
             np.testing.assert_allclose(axis.get_yticks(), [0.0, top])
+            if group == "depressing":
+                self.assertGreater(dots, top)      # the overshooting dot exercised the extension
         last = figure.axes[-1]
         self.assertEqual([label.get_text() for label in last.get_xticklabels()],
                          ["0", "60", "100", "410", "450"])
         self.assertEqual(last.get_xlabel(), "Time after first presynaptic spike (ms)")
-        # Every neighboring pair skips pulses, so each of the four gaps gets a
-        # two-stroke break glyph on the bottom axis only.
-        self.assertEqual(len(self.break_strokes(last)), 8)
-        self.assertEqual(len(self.break_strokes(figure.axes[0])), 0)
+        # No break glyph: the uneven gaps are carried by the tick labels alone,
+        # so the bottom axes holds nothing but its waveforms.
+        self.assertEqual(len(last.lines), len(self.waveform_lines(last)))
 
-    def test_all_twelve_pulses_break_the_axis_only_at_the_recovery_interval(self):
+    def test_all_twelve_pulses_label_the_recovery_interval_in_real_time(self):
         path = self.root / "amps.json"
         write_full_format(path)
         save_fig = self.render(path, pulses=range(1, 13))
@@ -166,7 +163,7 @@ class SynapticTrainFigureTests(unittest.TestCase):
         self.assertEqual([label.get_text() for label in last.get_xticklabels()],
                          [f"{p * INTERVAL_MS:g}" for p in range(8)]
                          + [f"{7 * INTERVAL_MS + 250.0 + k * INTERVAL_MS:g}" for k in range(4)])
-        self.assertEqual(len(self.break_strokes(last)), 2)
+        self.assertEqual(len(last.lines), len(self.waveform_lines(last)))
         self.assertEqual(cartoon.synaptic_pulse_time_ms(8, 50.0, 250.0), 390.0)
         for bad in ((0,), (13,), ()):
             with self.assertRaises(ValueError):

@@ -540,13 +540,14 @@ def plot_mouse_shape(out_dir=OUT_DIR, style="gradient", margin=8):
 # drawn (SYNAPTIC_PULSES, default 1, 4, 6, 10, 12: early, mid and late
 # induction plus two recovery pulses), one slot each, and the x axis is
 # labeled with each pulse's real time after the first presynaptic spike
-# (SCHEME.md: trial time in ms) with a break glyph wherever skipped pulses
-# or the recovery interval separate neighbors. Within a slot one unit spans
+# (SCHEME.md: trial time in ms); the uneven time gaps between slots are
+# left to the tick labels, with no break glyph. Within a slot one unit spans
 # one 20 ms inter-pulse interval, and - as in the paper - each mean waveform
 # is centered on its pulse's dot column rather than placed at its absolute
 # latency (a PSP peaks 3-4 ms after the spike, which would otherwise shift
-# every trace right of its dots). Rows take fixed y ranges (SYNAPTIC_YLIM_TOP)
-# with ticks at 0 and the top only.
+# every trace right of its dots). Rows are ticked at 0 and a fixed top
+# (SYNAPTIC_YLIM_TOP) but their range follows the data past that top, so no
+# dot is clipped.
 #
 # Data file, preferred: biology_fast_synaptic_trial_amplitudes.json (all 12
 # pulses; the database's fitted amplitude and baseline-fit noise of every
@@ -562,9 +563,10 @@ SYNAPTIC_GROUP_ORDER = ("depressing", "facilitating", "pseudolinear")
 SYNAPTIC_PULSES = (1, 4, 6, 10, 12)       # 1-based pulses drawn by default
 SYNAPTIC_N_INDUCTION = 8                  # pulses before the recovery interval
 SYNAPTIC_SWARM_HALF_WIDTH_MS = 7.0        # max swarm half-width around a pulse, in ms
-# Fixed y range per row (mV): 0 to this, ticked at 0 and the top; the small pad
-# below zero keeps failures scattered just under 0 visible. Dots beyond the top
-# are clipped, as in the paper; their count goes to the saved message.
+# Tick top per row (mV): the row is ticked at 0 and this value. Its range runs
+# from SYNAPTIC_YLIM_PAD of the top below zero (keeps failures scattered just
+# under 0 visible) to the same pad above the top or above the highest dot or
+# waveform, whichever is higher - the top is a reference, not a clip.
 SYNAPTIC_YLIM_TOP = {"depressing": 1.0, "facilitating": 2.0, "pseudolinear": 5.0}
 SYNAPTIC_YLIM_PAD = 0.08
 _SYNAPTIC_MARKER_PT = 2.1                 # dot diameter in points (paper: 3.2, on a 6 in panel)
@@ -720,17 +722,6 @@ def synaptic_pulse_time_ms(pulse, frequency_hz, recovery_ms,
     return (n_induction - 1) * interval + float(recovery_ms) + (pulse - n_induction) * interval
 
 
-def _draw_axis_break(ax, x, gap=0.012, half_height=0.07, tilt=0.5):
-    """Two short slanted strokes through the bottom spine at data x, the usual
-    glyph for an interrupted axis. Offsets are axes fractions so the glyph keeps
-    its size whatever the data range."""
-    x_frac = ax.transAxes.inverted().transform(ax.transData.transform((x, 0.0)))[0]
-    for dx in (-gap, gap):
-        ax.plot([x_frac + dx - tilt * gap, x_frac + dx + tilt * gap],
-                [-half_height, half_height], transform=ax.transAxes, color="black",
-                lw=0.8, clip_on=False, zorder=200)
-
-
 def plot_synaptic_train_amplitudes(out_dir=OUT_DIR, data_path=None,
                                    pulses=SYNAPTIC_PULSES):
     """
@@ -742,17 +733,17 @@ def plot_synaptic_train_amplitudes(out_dir=OUT_DIR, data_path=None,
     1-based `pulses` (default SYNAPTIC_PULSES = 1, 4, 6, 10, 12) each get one
     slot along x; the slot's tick is labeled with the pulse's real time after
     the first presynaptic spike in ms (20 ms per pulse at 50 Hz, plus the
-    recovery interval before pulse 9), and a break glyph on the bottom axis
-    marks every place where skipped pulses or the recovery interval separate
-    two neighboring slots. Inside a slot one unit is one inter-pulse interval;
-    each pulse's trial-mean PSP waveform (-1 to 8 ms after its spike) is drawn
-    in black with its time window centered on the slot, as the paper does,
-    under a beeswarm of grey dots, one per trial's amplitude, centered on the
-    slot too - so trace and dots line up and the waveform's absolute latency
-    is not represented. All dots share one grey; the paper's variability
-    coloring of pulses 1 and 8 is not reproduced. Rows use the fixed y ranges
-    of SYNAPTIC_YLIM_TOP (0 to 1, 2 and 5 mV), ticked at 0 and the top, with
-    dots beyond the top clipped and counted in the saved message.
+    recovery interval before pulse 9); the uneven gaps between slots are left
+    to those labels, with no break glyph. Inside a slot one unit is one
+    inter-pulse interval; each pulse's trial-mean PSP waveform (-1 to 8 ms
+    after its spike) is drawn in black with its time window centered on the
+    slot, as the paper does, under a beeswarm of grey dots, one per trial's
+    amplitude, centered on the slot too - so trace and dots line up and the
+    waveform's absolute latency is not represented. All dots share one grey;
+    the paper's variability coloring of pulses 1 and 8 is not reproduced. Rows
+    are ticked at 0 and the fixed tops of SYNAPTIC_YLIM_TOP (1, 2 and 5 mV);
+    each row's range extends past its top to the highest dot or waveform, so
+    nothing is clipped.
 
     Legacy metadata (five pulses, no waveforms) draws a mean dash per pulse;
     the saved message says so. Reads `load_synaptic_trial_amplitudes(data_path)`.
@@ -783,27 +774,29 @@ def plot_synaptic_train_amplitudes(out_dir=OUT_DIR, data_path=None,
     axes = np.atleast_1d(axes)
     fig.subplots_adjust(left=0.16, right=0.99, top=0.98, bottom=margin / height,
                         hspace=_SYNAPTIC_HSPACE)
-    n_clipped = {}
     for ax, group in zip(axes, groups):
         conn = by_group[group]
         sign = conn["sign"]
         pulses = [pulse for pulse in shown if pulse in conn["amplitudes"]]
         amplitudes = {p: sign * conn["amplitudes"][p] for p in pulses}
         waveforms = conn["waveforms"]
-        # Limits first: the swarm is laid out in display space.
+        # Limits first: the swarm is laid out in display space. The range
+        # follows the data, so no dot or waveform is clipped.
         ax.set_xlim(-0.5, len(shown) - 0.5)
+        high = max(float(v.max()) for v in amplitudes.values())
+        if waveforms is not None:
+            high = max(high, max(float(np.abs(waveforms[p][1]).max()) for p in pulses))
         top = SYNAPTIC_YLIM_TOP.get(group)
         if top is None:
             low = min(float(v.min()) for v in amplitudes.values())
-            high = max(float(v.max()) for v in amplitudes.values())
-            if waveforms is not None:
-                high = max(high, max(float(np.abs(waveforms[p][1]).max()) for p in pulses))
-            pad = 0.08 * max(high - min(low, 0.0), 1e-6)
+            pad = SYNAPTIC_YLIM_PAD * max(high - min(low, 0.0), 1e-6)
             ax.set_ylim(min(low, 0.0) - pad, high + pad)
         else:
-            ax.set_ylim(-SYNAPTIC_YLIM_PAD * top, top)
+            # Ticks at 0 and the row's fixed top; the top bounds the range only
+            # when nothing reaches above it.
+            pad = SYNAPTIC_YLIM_PAD * top
+            ax.set_ylim(-pad, max(top, high) + pad)
             ax.set_yticks([0.0, top])
-            n_clipped[group] = int(sum(int(np.sum(v > top)) for v in amplitudes.values()))
         for pulse in pulses:
             values = amplitudes[pulse]
             ax.scatter(_swarm_x(ax, slot[pulse], values,
@@ -831,20 +824,13 @@ def plot_synaptic_train_amplitudes(out_dir=OUT_DIR, data_path=None,
     last.set_xticks([slot[pulse] for pulse in shown])
     last.set_xticklabels([f"{times[pulse]:g}" for pulse in shown])
     last.set_xlabel("Time after first presynaptic spike (ms)", fontsize=7, labelpad=2)
-    # Interrupted-axis glyphs between slots that are not consecutive in time.
-    for earlier, later in zip(shown[:-1], shown[1:]):
-        if later - earlier > 1 or later == SYNAPTIC_N_INDUCTION:
-            _draw_axis_break(last, (slot[earlier] + slot[later]) / 2.0)
     fig.supylabel("PSP amplitude (mV)", fontsize=7, x=0.01)
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = ", ".join(f"{group}: {by_group[group]['classes'] or '?'}" for group in groups)
     pulse_text = ", ".join(f"{p + 1} ({times[p]:g} ms)" for p in shown)
-    clipped_text = "; ".join(f"{group} {n} dot(s) above {SYNAPTIC_YLIM_TOP[group]:g} mV clipped"
-                             for group, n in n_clipped.items() if n)
     detail = (f"pulses {pulse_text} at {frequency_hz:g} Hz; rows top to bottom {rows}; "
-              + (f"{clipped_text}; " if clipped_text else "")
               + f"amplitude = {data['statistic']}; "
               + ("mean waveforms" if data["connections"][0]["waveforms"] else "mean dashes (legacy)"))
     _save(fig, out_dir / "cartoon_synaptic_train_amplitudes.png",
