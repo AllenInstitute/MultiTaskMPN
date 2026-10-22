@@ -753,8 +753,8 @@ _PHASE_COLORS = {
 # _PERIOD_LABEL_COLORS), and every one clears 5:1 black-text contrast (the new dark
 # members are the low ends at 6.1:1 stim2 and 10.1:1 delay2; the pastels sit at
 # 10.7-17.3:1). And the cluster strip shares the figure, so each is kept >= ~26
-# CIELAB from every `_CLUSTER_COLORS` entry (34.7 stim2 vs the mauve, 35.4 delay2
-# vs the moss green) and from the stimulus rainbow (26.6 stim2, 29.9 delay2).
+# CIELAB from every `_CLUSTER_COLORS` entry (the closest is 39.9, delay1 vs the
+# sand block) and from the stimulus rainbow (26.6 stim2, 29.9 delay2).
 #
 # NB stim1 and delay1 are also `_ONETASK_PERIOD_COLORS[1:3]`, the Stimulus and Memory
 # blocks of the one-task / two-task period bars (and cartoon.py's period strip, which
@@ -1091,11 +1091,20 @@ _MULTITASK_HEATMAP_CLABEL = "Normalized variance"
 
 # ─── Cluster (neuron-class) strip colors ──────────────────────────────────────
 # The multi-task heatmaps mark each contiguous row/column cluster with a barcode
-# block. Alternating light and dark gray is sufficient to show every boundary and
-# keeps categorical color from competing with the heatmap's quantitative scale.
+# block. Two alternating tones are enough to show every boundary and keep
+# categorical color from competing with the heatmap's quantitative scale.
+#
+# The tones are a light/dark BROWN pair (ColorBrewer BrBG ends), not gray: the
+# Response tick labels sit on the light gray `_PHASE_COLORS["go1"]`, and the
+# earlier light-gray block (#bdbdbd) was only 12 CIELAB from that label as
+# drawn, so a gray block read as "Response". Brown is a hue nothing else in these
+# figures uses (phase labels are purple/green/gray, the heatmap is viridis):
+#   * sand is >= 39.9 CIELAB from every phase color (delay1), brown >= 70.0 (go1);
+#   * >= 49.7 from every viridis color, so a block never reads as a heatmap cell;
+#   * the pair is 44.1 apart, as far as the two grays were (43.9).
 _CLUSTER_COLORS = [
-    "#bdbdbd",   # light gray
-    "#4d4d4d",   # dark gray
+    "#dfc27d",   # sand
+    "#8c510a",   # dark brown
 ]
 
 
