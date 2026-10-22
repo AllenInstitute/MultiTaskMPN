@@ -394,7 +394,6 @@ class CueInterpProjectionTests(unittest.TestCase):
                 }
                 for key in ("fixed_hidden", "fixed_WM")
             },
-            "candidate_selection": {"strategy": "test"},
         }
 
     def _sweep(self, method, n_alpha=3, n_points=4):
@@ -447,8 +446,7 @@ class CueInterpProjectionTests(unittest.TestCase):
                 self.assertEqual(projected["kind"], "cue_interp")
                 self.assertEqual(projected["method"], method)
                 self.assertEqual(projected["basis_scope"], "joint")
-                self.assertEqual(projected["pca_selection"],
-                                 {"strategy": "test"})
+                self.assertEqual(projected["pca_source"], str(root / basis_name))
                 np.testing.assert_allclose(projected["alphas"], [0, 0.5, 1])
                 hidden_out = projected["representations"]["hidden"]
                 entry = hidden_out["sweeps"]["delaydm1"]

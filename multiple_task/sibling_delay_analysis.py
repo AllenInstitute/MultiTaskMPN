@@ -5,8 +5,8 @@ The supported families are DelayDM1/DelayDM2 and DMCGo/DMCNoGo inside a trained
 sibling trials, and fits shared delay-trajectory PCA bases. ``--method`` then
 selects either gradient fixed-point solving or very-long-delay settling
 endpoints. Gradient analysis uses IncrementalPCA, while long-delay analysis
-selects among randomized-PCA candidates with family-specific endpoint metrics;
-their method-specific bases are stored separately. All outputs are isolated
+uses one conventional PCA fit with randomized SVD at a fixed seed; their
+method-specific bases are stored separately. All outputs are isolated
 under ``two_in_multiples/{aname}/``.
 
 Run one or both families without rerunning clustering or lesion analysis::
@@ -47,7 +47,6 @@ from grad_fixed_points import (
     derive_fixed_point_views,
     solve_period_modulation_fixed_points,
 )
-from sibling_geometry import best_task_specific_pc_pair
 
 __all__ = [
     "SIBLING_FAMILIES",
@@ -113,9 +112,12 @@ SIBLING_LONG_DELAY_TRIALS_PER_DIRECTION = 4
 SIBLING_LONG_DELAY_TRIALS_PER_RULE = (
     SIBLING_FP_N_STIM * SIBLING_LONG_DELAY_TRIALS_PER_DIRECTION)
 SIBLING_LONG_DELAY_TRAJECTORY_SAMPLES = 51
-# Long-delay analysis uses conventional sklearn PCA with randomized SVD so
-# reproducible seeds can be compared by the family's task-specific metric.
-SIBLING_LONG_DELAY_PCA_SEEDS = tuple(range(10))
+# Long-delay analysis uses conventional sklearn PCA with randomized SVD at one
+# fixed seed. Ten seeds used to be fitted and the best-scoring one kept, but
+# on every saved basis (28 files, both representations) all ten gave the same
+# components (same signs, elements within 5e-5) and the same best PC pair, so
+# the sweep only re-fitted one basis ten times.
+SIBLING_LONG_DELAY_PCA_SEED = 0
 
 # Rule-cue interpolation between the two sibling rules (the multi-task analog
 # of the two-task pro<->anti sweep). The stimulus is held at one BASE rule's
@@ -314,7 +316,7 @@ def _run_sibling_family_base(*, aname, save_name, save_dir, family, rules,
         norm_input, norm_output, norm_mask, norm_trials, norm_task_arr, W_fp,
         layer_index=1, gpu_batch_size=SIBLING_NORMAL_GPU_BATCH_SIZE,
         n_components=6,
-        pca_strategy=("randomized_candidates"
+        pca_strategy=("randomized"
                       if method == "long_delay_endpoint" else "incremental"))
     print(f"  [acc] {family} (normal delay, both tasks): {acc_all:.3f}")
     for task_i, task_name in enumerate(rules):
@@ -612,22 +614,18 @@ def _write_effective_modulation(destination, start, modulation, W,
     return int(samples.shape[0])
 
 
-def _fit_randomized_pca_candidates(samples, n_components, seeds):
-    """Fit reproducible conventional-PCA candidates using randomized SVD."""
-    candidates = []
-    for seed in seeds:
-        pca = PCA(
-            n_components=int(n_components), svd_solver="randomized",
-            random_state=int(seed), copy=True)
-        pca.fit(samples)
-        record = _pca_record(
-            pca, samples.shape[0],
-            f"PCA(svd_solver=randomized, random_state={int(seed)})")
-        record["random_seed"] = int(seed)
-        candidates.append(record)
-        del pca
-        gc.collect()
-    return candidates
+def _fit_randomized_pca(samples, n_components):
+    """Fit one reproducible conventional PCA using randomized SVD."""
+    pca = PCA(
+        n_components=int(n_components), svd_solver="randomized",
+        random_state=SIBLING_LONG_DELAY_PCA_SEED, copy=True)
+    pca.fit(samples)
+    record = _pca_record(
+        pca, samples.shape[0],
+        f"PCA(svd_solver=randomized, random_state={SIBLING_LONG_DELAY_PCA_SEED})")
+    del pca
+    gc.collect()
+    return record
 
 
 def stream_normal_delay_analysis(
@@ -636,14 +634,14 @@ def stream_normal_delay_analysis(
         layer_index=1, gpu_batch_size=SIBLING_NORMAL_GPU_BATCH_SIZE,
         pca_chunk_samples=128, n_components=6,
         pca_strategy="incremental"):
-    """Evaluate normal-delay trials and fit the requested PCA candidates.
+    """Evaluate normal-delay trials and fit the requested PCA bases.
 
     Inputs, labels, and masks remain on CPU. Each configured trial batch is
     moved to the GPU, and only delay-period hidden/M states are copied back.
     ``incremental`` immediately updates bounded-memory IncrementalPCA models.
-    ``randomized_candidates`` writes W⊙M to temporary memory-mapped matrices
-    and fits ten conventional PCA candidates sequentially; this avoids keeping
-    the multi-gigabyte effective-modulation matrix in RAM.
+    ``randomized`` writes W⊙M to temporary memory-mapped matrices and fits one
+    conventional PCA with randomized SVD; this avoids keeping the
+    multi-gigabyte effective-modulation matrix in RAM.
     """
     delay_start, delay_stop = _aligned_delay1_window(rules, norm_trials)
     task_idx = np.asarray(norm_task, dtype=int)
@@ -658,14 +656,14 @@ def stream_normal_delay_analysis(
 
     W = np.asarray(W, dtype=np.float32)
     n_components = int(n_components)
-    if pca_strategy not in ("incremental", "randomized_candidates"):
+    if pca_strategy not in ("incremental", "randomized"):
         raise ValueError(f"unknown PCA strategy {pca_strategy!r}")
 
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
     timepoints_per_trial = int(delay_stop - delay_start)
     fitters = {}
-    candidate_stores = {}
+    sample_stores = {}
     temporary_store = None
     if pca_strategy == "incremental":
         for basis_scope in DELAY_PCA_SCOPES:
@@ -687,7 +685,7 @@ def stream_normal_delay_analysis(
                 for index in scope["fit_rule_indices"])
             n_scope_samples = n_scope_trials * timepoints_per_trial
             wm_path = temporary_root / f"{basis_scope}_effective_modulation.dat"
-            candidate_stores[basis_scope] = {
+            sample_stores[basis_scope] = {
                 "hidden_chunks": [],
                 "fixed_WM": np.memmap(
                     wm_path, mode="w+", dtype=np.float32,
@@ -769,7 +767,7 @@ def stream_normal_delay_analysis(
                     fitter["fixed_WM"], modulation_selected, W,
                     chunk_samples=pca_chunk_samples)
             else:
-                store = candidate_stores[basis_scope]
+                store = sample_stores[basis_scope]
                 store["hidden_chunks"].append(
                     np.asarray(hidden_samples, dtype=np.float32).copy())
                 written = _write_effective_modulation(
@@ -799,36 +797,25 @@ def stream_normal_delay_analysis(
                     f"IncrementalPCA(chunk_samples={pca_chunk_samples}, "
                     f"gpu_batch_size={gpu_batch_size})"),
             }
-            pca_candidates = None
             wm_samples = fitter["wm_samples"]
             fit_summary = f"PCA chunks={fitter['wm_chunks']}"
         else:
-            store = candidate_stores[basis_scope]
+            store = sample_stores[basis_scope]
             if store["offset"] != store["n_samples"]:
                 raise RuntimeError(
                     f"{addtask}/{basis_scope}: wrote {store['offset']} PCA "
                     f"samples, expected {store['n_samples']}")
             store["fixed_WM"].flush()
             hidden_samples = np.concatenate(store["hidden_chunks"], axis=0)
-            pca_candidates = {
-                "fixed_hidden": _fit_randomized_pca_candidates(
-                    hidden_samples, n_components,
-                    SIBLING_LONG_DELAY_PCA_SEEDS),
-                "fixed_WM": _fit_randomized_pca_candidates(
-                    store["fixed_WM"], n_components,
-                    SIBLING_LONG_DELAY_PCA_SEEDS),
-            }
-            # The endpoint-based selection happens after long-delay endpoints
-            # exist. Seed 0 is only a temporary placeholder until then.
             representations = {
-                key: candidates[0]
-                for key, candidates in pca_candidates.items()
+                "fixed_hidden": _fit_randomized_pca(hidden_samples, n_components),
+                "fixed_WM": _fit_randomized_pca(store["fixed_WM"], n_components),
             }
             wm_samples = store["n_samples"]
             fit_summary = (
-                f"PCA candidates={len(SIBLING_LONG_DELAY_PCA_SEEDS)}")
+                f"randomized PCA random_state={SIBLING_LONG_DELAY_PCA_SEED}")
         artifact = {
-            "version": 6 if pca_candidates is not None else 4,
+            "version": 4 if pca_strategy == "incremental" else 7,
             "aname": aname,
             "family": addtask,
             "rules": list(rules),
@@ -845,8 +832,6 @@ def stream_normal_delay_analysis(
             "pca_strategy": pca_strategy,
             "representations": representations,
         }
-        if pca_candidates is not None:
-            artifact["pca_candidates"] = pca_candidates
         method = ("gradient" if pca_strategy == "incremental"
                   else "long_delay_endpoint")
         out_path = _delay_pca_path(
@@ -859,7 +844,7 @@ def stream_normal_delay_analysis(
         print(f"  Saved {basis_scope} delay-trajectory PCA basis: {out_path}")
 
     if temporary_store is not None:
-        for store in candidate_stores.values():
+        for store in sample_stores.values():
             store["fixed_WM"]._mmap.close()
         temporary_store.cleanup()
 
@@ -982,66 +967,6 @@ def _run_long_delay_projected_trajectory(
     return endpoint_M, endpoint_hidden, projected, sample_indices
 
 
-def _select_endpoint_pca_candidates(
-        aname, save_dir, addtask, rules, endpoint_values, *, stim_idx,
-        task_idx, group_labels=None):
-    """Select and activate the PCA seed with the best task-specific score."""
-    selected_bases = {}
-    for basis_scope in DELAY_PCA_SCOPES:
-        basis_path = _delay_pca_path(
-            save_dir, aname, addtask, rules, basis_scope,
-            "long_delay_endpoint")
-        with basis_path.open("rb") as stream:
-            basis = pickle.load(stream)
-        all_candidates = basis.get("pca_candidates")
-        if not all_candidates:
-            selected_bases[basis_scope] = basis
-            continue
-        candidate_counts = {
-            len(candidates) for candidates in all_candidates.values()
-        }
-        if len(candidate_counts) != 1:
-            raise ValueError(
-                f"{basis_path}: PCA representations have unequal seed counts")
-        n_seed_candidates = candidate_counts.pop()
-
-        selection = {}
-        for representation, values in endpoint_values.items():
-            flattened = np.asarray(values, dtype=float).reshape(
-                values.shape[0], -1)
-            scored = []
-            for candidate in all_candidates[representation]:
-                mean = np.asarray(candidate["mean"], dtype=float)
-                components = np.asarray(candidate["components"], dtype=float)
-                projection = (flattened - mean) @ components.T
-                pair, score, metric_name = best_task_specific_pc_pair(
-                    projection, addtask, stim_idx=stim_idx,
-                    group_labels=group_labels, task_idx=task_idx)
-                scored.append((score, int(candidate["random_seed"]), pair,
-                               candidate))
-            scored.sort(key=lambda item: (-item[0], item[1]))
-            score, seed, pair, selected = scored[0]
-            basis["representations"][representation] = selected
-            selection[representation] = {
-                "random_seed": seed,
-                "best_pc_pair": pair,
-                "task_specific_score": score,
-            }
-            print(f"  [{addtask}/delay-pca/{basis_scope}/{representation}] "
-                  f"selected seed={seed}, PC{pair[0]}-PC{pair[1]}, "
-                  f"{metric_name}={score:.4f}")
-        basis["candidate_selection"] = {
-            "strategy": "maximum endpoint task-specific score",
-            "metric": metric_name,
-            "n_seeds": n_seed_candidates,
-            "representations": selection,
-        }
-        with basis_path.open("wb") as stream:
-            pickle.dump(basis, stream)
-        selected_bases[basis_scope] = basis
-    return selected_bases
-
-
 def extract_long_delay_endpoints(
         aname, save_dir, addtask, rules, model, device,
         converted_task_params, W, layer_index=1,
@@ -1103,46 +1028,28 @@ def extract_long_delay_endpoints(
                     f"{rule}: unbalanced long-delay directions {counts.tolist()}")
             direction_counts[rule] = counts.tolist()
 
-    W = np.asarray(W, dtype=np.float32)
-    long_input_device = long_input.to(device)
-    torch_rng_state = torch.random.get_rng_state()
-    cuda_rng_state = (
-        torch.cuda.get_rng_state(long_input_device.device)
-        if long_input_device.is_cuda else None
-    )
-    numpy_rng_state = np.random.get_state()
-    M, hidden = _run_to_delay_endpoint(
-        model, long_input_device, delay_stop, layer_index)
-    if tuple(M.shape[-2:]) != tuple(W.shape):
-        raise ValueError(f"{addtask}: endpoint M/W shapes disagree: "
-                         f"{M.shape[-2:]} vs {W.shape}")
-    effective_M = (M * W[None, :, :]).astype(np.float32, copy=False)
-
     group_labels = None
     if addtask == "dmcgo":
         group_labels = _dmc_category_labels(
             task_idx, stim_idx, int(stim_idx.max()) + 1)
     elif addtask != "delaydm1":
-        raise ValueError(
-            f"no endpoint PCA task-specific metric for {addtask!r}")
-    selected_bases = _select_endpoint_pca_candidates(
-        aname, save_dir, addtask, rules,
-        {"fixed_hidden": hidden, "fixed_WM": effective_M},
-        stim_idx=stim_idx, task_idx=task_idx, group_labels=group_labels)
-    trajectory_basis = selected_bases["joint"]
+        raise ValueError(f"no long-delay endpoint analysis for {addtask!r}")
+
+    W = np.asarray(W, dtype=np.float32)
+    long_input_device = long_input.to(device)
     basis_path = _delay_pca_path(
         save_dir, aname, addtask, rules, "joint", "long_delay_endpoint")
-    # Replay exactly the same stochastic forward pass now that the winning PCA
-    # basis is known. This keeps the saved endpoint and projected trajectory on
-    # the same realization even when the network injects recurrent noise.
-    torch.random.set_rng_state(torch_rng_state)
-    if cuda_rng_state is not None:
-        torch.cuda.set_rng_state(cuda_rng_state, long_input_device.device)
-    np.random.set_state(numpy_rng_state)
+    with basis_path.open("rb") as stream:
+        trajectory_basis = pickle.load(stream)
+    # One forward pass gives both the endpoint and its projected trajectory, so
+    # the two always come from the same realization of any recurrent noise.
     M, hidden, projected_trajectories, trajectory_sample_indices = (
         _run_long_delay_projected_trajectory(
             model, long_input_device, delay_start, delay_stop, layer_index,
             W, trajectory_basis))
+    if tuple(M.shape[-2:]) != tuple(W.shape):
+        raise ValueError(f"{addtask}: endpoint M/W shapes disagree: "
+                         f"{M.shape[-2:]} vs {W.shape}")
     effective_M = (M * W[None, :, :]).astype(np.float32, copy=False)
 
     artifact = {
@@ -1231,7 +1138,6 @@ def save_long_delay_endpoint_pc_projections(
         "task_names": list(rules),
         "basis_scope": basis_scope,
         "pca_source": str(basis_path),
-        "pca_selection": basis.get("candidate_selection"),
         "endpoint_source": str(endpoint_path),
         "delay_window": tuple(endpoints["delay_window"]),
         "delay_steps": int(endpoints["delay_steps"]),
@@ -1941,7 +1847,6 @@ def save_cue_interp_pc_projections(aname, save_dir, addtask, rules, sweep_path,
         "task_names": rules,
         "basis_scope": basis_scope,
         "pca_source": str(basis_path),
-        "pca_selection": basis.get("candidate_selection"),
         "sweep_source": str(sweep_path),
         "alphas": alphas,
         "base_rules": list(sweep["base_rules"]),

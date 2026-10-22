@@ -235,7 +235,7 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
         self.assertEqual(sibling.SIBLING_NORMAL_TRIALS_PER_RULE, 100)
         self.assertEqual(sibling.SIBLING_NORMAL_GPU_BATCH_SIZE, 200)
 
-    def test_randomized_pca_strategy_saves_ten_seed_candidates(self):
+    def test_randomized_pca_strategy_fits_one_seeded_basis(self):
         class FakeModel:
             acc_measure = "angle"
 
@@ -269,74 +269,22 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
                 np.repeat([0, 1], n_trials // 2),
                 np.ones((2, 3), dtype=np.float32), gpu_batch_size=4,
                 pca_chunk_samples=8, n_components=2,
-                pca_strategy="randomized_candidates")
+                pca_strategy="randomized")
 
             with (Path(directory)
                   / "delaydm1_long_delay_endpoint_delay_trajectory_pca_run.pkl"
                   ).open("rb") as stream:
                 artifact = pickle.load(stream)
-            self.assertEqual(artifact["version"], 6)
-            self.assertEqual(artifact["pca_strategy"], "randomized_candidates")
-            self.assertEqual(
-                [record["random_seed"]
-                 for record in artifact["pca_candidates"]["fixed_hidden"]],
-                list(range(10)),
-            )
-            self.assertEqual(
-                len(artifact["pca_candidates"]["fixed_WM"]), 10)
-
-    def test_task_specific_score_selects_and_activates_best_pca_seed(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            identity = np.eye(6, dtype=np.float32)
-            candidates = []
-            for seed, scale in ((0, 1.0), (1, 2.0)):
-                candidates.append({
-                    "mean": np.zeros(6, dtype=np.float32),
-                    "components": scale * identity,
-                    "random_seed": seed,
-                })
-            for suffix in ("", "_delaydm1_only"):
-                artifact = {
-                    "representations": {
-                        "fixed_hidden": candidates[0],
-                        "fixed_WM": candidates[0],
-                    },
-                    "pca_candidates": {
-                        "fixed_hidden": candidates,
-                        "fixed_WM": candidates,
-                    },
-                }
-                with (
-                    root
-                    / ("delaydm1_long_delay_endpoint_delay_trajectory_pca"
-                       f"{suffix}_run.pkl")
-                ).open("wb") as stream:
-                    pickle.dump(artifact, stream)
-
-            values = np.tile(np.arange(1, 7, dtype=np.float32), (8, 1))
-            scorer = lambda projection, family, **labels: (
-                (1, 2), float(projection[0, 0]), "task-specific test metric")
-            with patch.object(
-                    sibling, "best_task_specific_pc_pair",
-                    side_effect=scorer):
-                selected = sibling._select_endpoint_pca_candidates(
-                    "run", root, "delaydm1", ("delaydm1", "delaydm2"),
-                    {"fixed_hidden": values, "fixed_WM": values},
-                    stim_idx=np.repeat([0, 1], 4),
-                    task_idx=np.tile([0, 1], 4))
-
-            for basis in selected.values():
+            self.assertEqual(artifact["version"], 7)
+            self.assertEqual(artifact["pca_strategy"], "randomized")
+            self.assertNotIn("pca_candidates", artifact)
+            for key in ("fixed_hidden", "fixed_WM"):
+                record = artifact["representations"][key]
                 self.assertEqual(
-                    basis["candidate_selection"]["n_seeds"], 2)
-                self.assertEqual(
-                    basis["candidate_selection"]["representations"]
-                    ["fixed_hidden"]["random_seed"], 1)
-                self.assertEqual(
-                    basis["representations"]["fixed_WM"]["random_seed"], 1)
-                self.assertEqual(
-                    basis["candidate_selection"]["metric"],
-                    "task-specific test metric")
+                    record["method"],
+                    "PCA(svd_solver=randomized, random_state="
+                    f"{sibling.SIBLING_LONG_DELAY_PCA_SEED})")
+                self.assertEqual(record["components"].shape[0], 2)
 
     def test_aligned_delay_window_validation(self):
         trials = [SimpleNamespace(epochs={"delay1": (4, 12)}),
