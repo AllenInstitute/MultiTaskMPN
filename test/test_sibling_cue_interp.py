@@ -608,7 +608,7 @@ class CueInterpPaperFigureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for family, base_rules in (("delaydm1", RULES), ("dmcgo", ("dmcgo",))):
-                aname = paper_plot._multitask_sibling_aname(family, "sweep e_modulation")
+                aname = paper_plot._multitask_sibling_aname(family, "e_modulation")
                 run_dir = root / aname
                 run_dir.mkdir(parents=True, exist_ok=True)
                 for method in paper_plot._MULTITASK_CUE_INTERP_METHODS:
@@ -695,7 +695,7 @@ class CueInterpPaperFigureTests(unittest.TestCase):
         n_alpha, n_points = 3, 4
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            aname = paper_plot._multitask_sibling_aname("delaydm1", "endpoint e_modulation")
+            aname = paper_plot._multitask_sibling_aname("delaydm1", "e_modulation")
             run_dir = root / aname
             run_dir.mkdir(parents=True)
             sweep_path = paper_plot._multitask_cue_interp_projection_path(
@@ -996,53 +996,6 @@ class CueInterpPaperFigureTests(unittest.TestCase):
             self.assertEqual(
                 pair, paper_plot._MULTITASK_SIBLING_PC_PLANES["dmcgo"]["hidden"])
             self.assertEqual(note, "configured")
-
-    def test_delaydm_plane_is_chosen_on_the_sweep_itself(self):
-        # Sweeps whose PC3-PC4 plane separates the directions along the whole
-        # sweep with tight, straight paths: PC3 holds the direction, PC4 a
-        # smooth drift with small within-direction offsets. PC1 drifts too
-        # but zigzags and is noisy, PC2, PC5 and PC6 are noise, so every
-        # other plane is either less separated or less smooth.
-        n_alpha, n_points = 6, 8
-        alphas = np.linspace(0, 1, n_alpha)
-        stim = np.repeat(np.arange(4), 2)
-        rng = np.random.RandomState(1)
-        noise = rng.normal(scale=0.5, size=(n_alpha, n_points, 6))
-        proj = noise.astype(np.float32)
-        proj[:, :, 0] += (alphas + np.where(np.arange(n_alpha) % 2, 1.0, 0.0))[:, None]
-        proj[:, :, 2] = 4.0 * stim[None, :]
-        proj[:, :, 3] = alphas[:, None] + np.tile([-0.05, 0.05], 4)[None, :]
-        entry = {"sweeps": {
-            base: {"target_rule": target, "proj": proj.copy(),
-                   "stim_idx": stim, "stimulus_magnitude": np.ones(n_points)}
-            for base, target in (("delaydm1", "delaydm2"),
-                                 ("delaydm2", "delaydm1"))}}
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for method in ("gradient", "long_delay_endpoint"):
-                pair, note = paper_plot._multitask_cue_interp_plane(
-                    "delaydm1", "e_modulation", method, root, "run",
-                    entry=entry)
-                self.assertEqual(pair, (3, 4))
-                self.assertIn("direction separation x path smoothness", note)
-            # DMC keeps the base figure's plane even when its sweeps are given.
-            pair, note = paper_plot._multitask_cue_interp_plane(
-                "dmcgo", "e_modulation", "gradient", root, "run", entry=entry)
-            self.assertEqual(
-                pair, paper_plot._MULTITASK_SIBLING_PC_PLANES["dmcgo"]["e_modulation"])
-            self.assertEqual(note, "configured")
-            # A sweep that cannot be scored (one trial per direction) falls
-            # back to the base figure's plane instead of failing.
-            single = {"sweeps": {"delaydm1": {
-                "target_rule": "delaydm2", "proj": proj[:, ::2],
-                "stim_idx": stim[::2], "stimulus_magnitude": np.ones(4)}}}
-            with patch("builtins.print") as output:
-                pair, note = paper_plot._multitask_cue_interp_plane(
-                    "delaydm1", "e_modulation", "long_delay_endpoint", root,
-                    "run", entry=single)
-            self.assertEqual(
-                pair, paper_plot._MULTITASK_SIBLING_ENDPOINT_DEFAULT_PC_PLANE)
-            self.assertIn("falling back", output.call_args.args[0])
 
 
 if __name__ == "__main__":

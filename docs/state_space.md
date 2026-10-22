@@ -195,8 +195,8 @@ regenerate them with `state_space_shift.py`.
 
 `python figures/paper_plot.py --only sibling_cue_interp` draws the multi-task analog
 of the two-task pro/anti interpolation for the two sibling families (each
-figure's run chosen automatically unless `DELAYDM_ANAME` / `DMCGO_ANAME` pin
-one; see the end of this file):
+representation's run chosen automatically unless `DELAYDM_ANAME` /
+`DMCGO_ANAME` pin one; see the end of this file):
 `multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_{emodulation,hidden}_{2d,3d}.png`
 and `multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_legend.png`.
 `2d` draws one line per sweep trial against alpha for each PC of the plane
@@ -234,15 +234,10 @@ reruns the base rule's trials at every alpha and keeps the settled endpoint
 (`core.grad_fixed_points.build_dense_stimulus_template`, eight directions, the
 DelayDM magnitudes) and solves the true delay fixed point at every alpha with
 the per-rule budgets. Both are projected onto the method's joint delay basis
-(`*_cue_interp_*pc_projections_*.pkl`). The DelayDM sweep figures pick their
-PC plane on the sweep itself (`core.sibling_geometry.best_delaydm_sweep_pc_pair`):
-the pair maximizing the directions' minimum separation-over-spread ratio along
-alpha times the paths' smoothness (one minus half the mean second-difference
-share of each trial's path length), scored over all trials and taken as the
-minimum over the two base rules, so a plane in which the directions merge at an
-intermediate cue or the paths zigzag is not chosen. The DMC sweep figures use
-the base figure's plane: the configured plane for gradient, the best
-task-specific endpoint pair for endpoints. Colors follow the alpha ramp of
+(`*_cue_interp_*pc_projections_*.pkl`). The sweep figures use the base
+figure's plane: the configured plane for gradient, and for endpoints the pair
+that best separates the fixed points (see the end of this file). Colors
+follow the alpha ramp of
 SCHEME family 5 (dark at alpha = 0, light at alpha = 1; filled = converged,
 hollow = not, for both methods). In the DMC figures the connecting lines are
 colored by the base trial's memory cluster at alpha = 0. The two clusters are
@@ -294,32 +289,32 @@ printed with the saved figure instead. Endpoint caches written before
 settling (endpoint version 2, sweep version 1) hold the unsettled end-of-trial
 state; rerun the analysis to replace them.
 
-**The example runs are chosen per figure.** The sibling figures are
-illustrations, so with `DELAYDM_ANAME` / `DMCGO_ANAME` = None (the default)
-`paper_plot.py` gives every figure the cached run of the `SIBLING_L2` cohort
-(L2 = 1e-4) that draws it most legibly, chosen independently of the other
-figures; a run name in either constant pins every figure of that family to
-one run instead. The four panels of a family are the endpoint figure and the
-rule-cue sweep figure of each representation (hidden, e_modulation). Every
-run under `two_in_multiples/` is scored on each panel with the metric that
-panel already picks its PC plane with, and the panel takes the run with the
-highest score (ties to the lowest seed): the best endpoint pair (DMC's
-cross-task balanced accuracy rescaled to 2 (accuracy - 0.5), so chance is 0)
-or, for the DelayDM sweeps, the best sweep pair. The DMC sweep is drawn in
-its endpoint plane and has no score of its own, so it follows the endpoint
-panel of its representation and shows the same run. A panel's run serves
-all its views: the endpoint figure and its `_cue_interp` overlay (the
-overlaid sweep shares that run's basis), the sweep's `2d` and `3d` views,
-and the gradient-method figures of the same representation, which have no
-score of their own. The figures of one family can therefore show different
-networks. Runs with a missing endpoint or sweep cache, a cache written
-before settling, or any point above the fixed-point criterion are skipped.
-Every run's panel scores and each panel's ranking are printed when the
-figures first need them and saved as
+**The PC pair and the example runs are chosen by fixed-point separation.**
+Each long-delay endpoint figure draws the default PC1-PC2 plane beside the
+pair of its six joint delay PCs that best separates the fixed points
+(`core.sibling_geometry.best_task_specific_pc_pair`): every pair is scored by
+the mean distance from each group's centroid to the nearest other group's
+centroid divided by the mean distance of the fixed points from their own
+group's centroid, with both sibling tasks' fixed points pooled. The groups
+are the stimulus directions for DelayDM and the response categories for DMC
+("respond to category 1 / 2", the memory clusters the sweep lines are colored
+by). The rule-cue sweep figures of a representation use the same plane. The
+sibling figures are illustrations, so with `DELAYDM_ANAME` / `DMCGO_ANAME` =
+None (the default) each representation (hidden, e_modulation) also takes its
+own run: the cached run of the `SIBLING_L2` cohort (L2 = 1e-4) with the
+highest best-pair score, ties to the lowest seed; a run name in either
+constant pins every figure of that family to one run instead. A
+representation's run serves all its figures: the endpoint figure and its
+`_cue_interp` overlay, the sweep's `2d` and `3d` views and the
+gradient-method figures, so the hidden and e_modulation figures of one family
+can show different networks. Runs with a missing endpoint or sweep cache, a
+cache written before settling, or any point above the fixed-point criterion
+are skipped. Every run's scores and each representation's ranking are printed
+when the figures first need them and saved as
 `multitask_sibling_run_scores_{delaydm,dmcgo}.json` in `paper_plot/`; with no
-scorable run the figures print their usual "Skipped" messages. Because each
-panel favors its most legible run, the figures show the best case of the
-cohort, not a typical run; the saved rankings give the spread across runs.
-The endpoint figures' axis limits follow the drawn points
-(`_adaptive_pc_limits`) for every run.
+scorable run the figures print their usual "Skipped" messages. Because the
+plane and the run are both picked for legibility on the drawn fixed points,
+the figures show the best case of the cohort, not a typical run; the saved
+rankings give the spread across runs. The endpoint figures' axis limits
+follow the drawn points (`_adaptive_pc_limits`) for every run.
 

@@ -1074,18 +1074,12 @@ class PaperPlotModeTests(unittest.TestCase):
 
         self.assertEqual(pair, (3, 4))
         self.assertGreater(score, 0.9)
-        self.assertEqual(
-            metric, "direction separation / within-direction dispersion")
+        self.assertEqual(metric, paper_plot.DELAYDM_METRIC_NAME)
 
-        dmc_entry = {
-            "proj": points,
-            "group_labels": labels % 2,
-            "task_idx": np.tile([0, 1], labels.size // 2),
-        }
+        dmc_entry = {"proj": points, "group_labels": labels % 2}
         _, _, dmc_metric = paper_plot._best_sibling_endpoint_pc_pair(
             dmc_entry, "dmcgo")
-        self.assertEqual(
-            dmc_metric, "cross-task category balanced accuracy")
+        self.assertEqual(dmc_metric, paper_plot.DMCGO_METRIC_NAME)
 
     def test_long_delay_endpoint_figure_has_default_and_best_pc_panels(self):
         labels = np.repeat(np.arange(4), 4)
@@ -1156,7 +1150,7 @@ class PaperPlotModeTests(unittest.TestCase):
         with patch.object(paper_plot, "_save_fig") as save_fig, \
                 patch.object(
                     paper_plot, "_best_sibling_endpoint_pc_pair",
-                    return_value=((3, 4), 1.0, "cross-task category balanced accuracy")):
+                    return_value=((3, 4), 1.0, paper_plot.DMCGO_METRIC_NAME)):
             rendered = paper_plot._plot_multitask_long_delay_endpoint_representation(
                 data, "dmcgo", ("dmcgo", "dmcnogo"),
                 "e_modulation", "emodulation")

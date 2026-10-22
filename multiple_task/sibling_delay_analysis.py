@@ -1355,8 +1355,9 @@ def _save_pc_pair_gallery(save_dir, aname, addtask, artifact_suffix,
 
     The gallery itself computes no score, highlights no panel, and writes no
     selected-plane metadata. ``paper_plot.py`` uses an explicit plane for the
-    gradient method and task-specific automatic selection for long-delay
-    endpoints.
+    gradient method and, for long-delay endpoints, the pair that best
+    separates the fixed points (``core.sibling_geometry``: stimulus directions
+    for DelayDM, response categories for DMC).
     """
     proj = np.asarray(entry["proj"], dtype=float)
     if proj.ndim != 2 or proj.shape[1] != 6:
