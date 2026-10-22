@@ -111,7 +111,7 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
                 "--families", "delaydm1",
             ])
 
-    def test_long_delay_endpoint_tracks_only_the_last_delay_frame(self):
+    def test_long_delay_endpoint_tracks_only_the_last_delay_frames(self):
         class FakeModel:
             def __init__(self):
                 self.calls = []
@@ -131,15 +131,84 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
                 return None, None, db
 
         model = FakeModel()
-        modulation, hidden = sibling._run_to_delay_endpoint(
-            model, torch.zeros(4, 9, 5), delay_stop=6, layer_index=1)
+        modulation, hidden, residual, n_settle = (
+            sibling._run_to_settled_endpoint(
+                model, torch.zeros(4, 9, 5), delay_stop=6, layer_index=1,
+                leak=0.5, max_settle_steps=0))
 
+        # The last two delay frames give the residual; no settling allowed.
         self.assertEqual(model.calls, [
             (0, "minimal"), (1, "minimal"), (2, "minimal"),
-            (3, "minimal"), (4, "minimal"), (5, "track_states"),
+            (3, "minimal"), (4, "track_states"), (5, "track_states"),
         ])
         np.testing.assert_array_equal(modulation, np.full((4, 2, 3), 5.0))
         np.testing.assert_array_equal(hidden, np.full((4, 2), 6.0))
+        # ||M5 - M4|| / ||M4|| / leak = (1 / 4) / 0.5.
+        np.testing.assert_allclose(residual, np.full(4, 0.5))
+        self.assertEqual(n_settle, 0)
+
+    def test_settling_runs_on_the_last_delay_input_until_the_criterion(self):
+        class SettlingModel:
+            """M approaches 1 as 1 + 0.5 ** seq_idx; hidden is seq_idx."""
+
+            def __init__(self):
+                self.inputs = []
+
+            def reset_state(self, B=1):
+                self.batch_size = B
+
+            def network_step(self, current_input, run_mode="minimal", seq_idx=None):
+                self.inputs.append((seq_idx, float(current_input[0, 0])))
+                db = None
+                if run_mode == "track_states":
+                    db = {
+                        "M1": torch.full((self.batch_size, 2, 3),
+                                         1.0 + 0.5 ** seq_idx),
+                        "hidden1": torch.full(
+                            (self.batch_size, 6), float(seq_idx)),
+                    }
+                return None, None, db
+
+        inputs = torch.arange(6, dtype=torch.float)[None, :, None].repeat(2, 1, 4)
+        # With leak 0.5 the residual after step t is 0.5**(t-1) / (1 + 0.5**(t-1)),
+        # first at most 1e-2 at t = 8: five settling steps past the last delay
+        # step, t = 3.
+        model = SettlingModel()
+        modulation, hidden, residual, n_settle = (
+            sibling._run_to_settled_endpoint(
+                model, inputs, delay_stop=4, layer_index=1, leak=0.5,
+                max_settle_steps=50))
+        self.assertEqual(n_settle, 5)
+        np.testing.assert_allclose(modulation, np.full((2, 2, 3), 1 + 0.5 ** 8))
+        np.testing.assert_array_equal(hidden, np.full((2, 6), 8.0))
+        self.assertTrue(np.all(residual <= sibling.DEFAULT_REL_TOL_UNDAMPED))
+        # Settling repeats the last delay input (3) at the next sequence indices.
+        self.assertEqual(model.inputs[4:], [(t, 3.0) for t in range(4, 9)])
+
+        # The cap stops it early and the residual says so.
+        modulation, _, residual, n_settle = sibling._run_to_settled_endpoint(
+            SettlingModel(), inputs, delay_stop=4, layer_index=1, leak=0.5,
+            max_settle_steps=2)
+        self.assertEqual(n_settle, 2)
+        np.testing.assert_allclose(modulation, np.full((2, 2, 3), 1 + 0.5 ** 5))
+        self.assertTrue(np.all(residual > sibling.DEFAULT_REL_TOL_UNDAMPED))
+
+        # The projected trajectory runs from delay onset to the settled end.
+        identity = np.eye(6, dtype=np.float32)
+        basis = {"representations": {
+            key: {"mean": np.zeros(6, dtype=np.float32), "components": identity}
+            for key in ("fixed_hidden", "fixed_WM")}}
+        modulation, _, trajectories, sample_indices, residual, n_settle = (
+            sibling._run_long_delay_projected_trajectory(
+                SettlingModel(), inputs, 1, 4, 1,
+                np.ones((2, 3), dtype=np.float32), basis, leak=0.5,
+                max_settle_steps=50, max_samples=20))
+        self.assertEqual(n_settle, 5)
+        np.testing.assert_array_equal(sample_indices, np.arange(1, 9))
+        np.testing.assert_allclose(
+            trajectories["fixed_WM"][0, :, 0], 1 + 0.5 ** np.arange(1, 9))
+        np.testing.assert_allclose(
+            trajectories["fixed_WM"][0, -1, 0], modulation[0, 0, 0])
 
     def test_long_delay_trajectory_is_projected_during_forward_pass(self):
         class FakeModel:
@@ -163,11 +232,13 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
                   "components": identity}
             for key in ("fixed_hidden", "fixed_WM")
         }}
-        modulation, hidden, trajectories, sample_indices = (
+        modulation, hidden, trajectories, sample_indices, _, n_settle = (
             sibling._run_long_delay_projected_trajectory(
                 FakeModel(), torch.zeros(2, 8, 4), 2, 7, 1,
-                np.ones((2, 3), dtype=np.float32), basis, max_samples=3))
+                np.ones((2, 3), dtype=np.float32), basis, leak=1.0,
+                max_settle_steps=0, max_samples=3))
 
+        self.assertEqual(n_settle, 0)
         np.testing.assert_array_equal(sample_indices, [2, 4, 6])
         np.testing.assert_array_equal(modulation, np.full((2, 2, 3), 6.0))
         np.testing.assert_array_equal(hidden, np.full((2, 6), 7.0))
@@ -384,6 +455,29 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
             np.testing.assert_array_equal(
                 projected["representations"]["hidden"]["trajectory_time_ms"],
                 [0, 2000, 3960])
+            # An endpoint cache from before settling ends with the trial's delay.
+            self.assertEqual(projected["settle_ms"], 0)
+            self.assertEqual(projected["endpoint_delay_ms"], 4000)
+            self.assertNotIn("is_fixed", projected["representations"]["hidden"])
+
+            # A settled cache carries its settling time and convergence flags.
+            endpoints.update(settle_ms=1200, endpoint_delay_ms=5200,
+                             is_fixed=np.array([True, True, False, True]),
+                             rel_step_undamped=np.array([1e-3, 2e-3, 0.5, 4e-3]))
+            with endpoint_path.open("wb") as stream:
+                pickle.dump(endpoints, stream)
+            with patch.object(sibling, "_save_pc_pair_gallery",
+                              return_value=root / "gallery.png"):
+                output_path = sibling.save_long_delay_endpoint_pc_projections(
+                    aname, root, family, rules, endpoint_path)
+            with output_path.open("rb") as stream:
+                projected = pickle.load(stream)
+            self.assertEqual(projected["settle_ms"], 1200)
+            self.assertEqual(projected["endpoint_delay_ms"], 5200)
+            for plot_name in ("hidden", "e_modulation"):
+                np.testing.assert_array_equal(
+                    projected["representations"][plot_name]["is_fixed"],
+                    [True, True, False, True])
 
 
 if __name__ == "__main__":

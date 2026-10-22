@@ -10078,13 +10078,20 @@ def _plot_multitask_long_delay_endpoint_representation(
     fig.tight_layout(w_pad=1.5)
     overlay_note = ("" if overlay is None else
                     f"; cue sweep overlaid: {alphas.size} alphas, bases {list(sweeps)}")
+    # Hollow markers here already mean the sweep's alpha = 1 end, so endpoints
+    # left above the residual criterion are reported rather than drawn hollow.
+    unsettled = int(np.sum(~np.asarray(
+        entry.get("is_fixed", np.ones(projection.shape[0], bool)), dtype=bool)))
+    unsettled_note = ("" if unsettled == 0 else
+                      f"; {unsettled} endpoints above the fixed-point criterion")
     _save_fig(
         fig,
         _multitask_out(
             f"{_MULTITASK_SIBLING_OUTPUT_NAMES[family]}_long_delay_endpoint_"
             f"{output_suffix}{name_suffix}.png"),
         extra=(f"  (default PC1-PC2; best PC{best_pc_x}-PC{best_pc_y}; "
-               f"metric={metric_name}; score={score:.3f}{overlay_note})"))
+               f"metric={metric_name}; score={score:.3f}{overlay_note}"
+               f"{unsettled_note})"))
     return True
 
 
@@ -10144,7 +10151,9 @@ def plot_multitask_delaydm_fixed_point_geometry():
 # delay fixed point (gradient) or long-delay endpoint is traced across alpha in
 # the family's joint delay basis. The markers take the alpha ramp (SCHEME
 # family 5), dark at alpha=0 -> light at alpha=1, filled = converged, hollow =
-# over the residual threshold (endpoints are always filled); the connecting
+# over the residual threshold (long-delay endpoints settle until they meet it,
+# so they are hollow only past the settling cap; caches written before
+# settling carry no mask and draw filled); the connecting
 # lines carry the plain endpoint figure's grouping instead (see
 # `_cue_interp_line_colors`). Read from the projections that
 # sibling_delay_analysis.save_cue_interp_pc_projections writes.
@@ -10352,14 +10361,17 @@ def _cue_interp_legend_handles(family, rules, method, entry):
     """Legend entries of one family's sweep figures for `method`.
 
     The cluster lines when the family has memory clusters (DMC), and the
-    filled / hollow convergence markers for the gradient method; the
+    filled / hollow convergence markers for the gradient method, or for an
+    endpoint sweep with a point left above the residual criterion; the
     stimulus-direction lines of DelayDM are documented by the stimulus
     colorwheel instead. Empty when nothing needs explaining."""
     groups_by_sweep = {
         base_rule: _cue_interp_sweep_groups(family, rules, base_rule, sweep)
         for base_rule, sweep in entry["sweeps"].items()}
     handles = _cue_interp_cluster_handles(groups_by_sweep)
-    if method == "gradient":
+    unconverged = any(not np.all(sweep.get("is_fixed", True))
+                      for sweep in entry["sweeps"].values())
+    if method == "gradient" or unconverged:
         handles += [
             mpl.lines.Line2D([], [], marker="o", linestyle="None",
                              markerfacecolor="0.3", markeredgecolor="none",
@@ -10577,7 +10589,8 @@ def plot_multitask_sibling_cue_interp():
     since they use different modalities; DMCGo alone, since DMCGo and DMCNoGo
     share one stimulus structure) while the cue moves from the base rule
     (alpha=0) to the sibling (alpha=1). Gradient sweeps trace TRUE delay fixed
-    points; endpoint sweeps trace the end of a very-long delay. The plane
+    points solved by optimization; endpoint sweeps trace each trial's long
+    delay settled to the same residual criterion. The plane
     comes from `_multitask_cue_interp_plane`: chosen on the sweep itself for
     DelayDM, the base figure's plane for DMC. With
     SIBLING_ONE_TRIAL_PER_STIMULUS every view shows one trial per stimulus

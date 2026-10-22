@@ -1194,6 +1194,33 @@ class PaperPlotModeTests(unittest.TestCase):
             np.testing.assert_allclose(axis.get_ylim(), expected_ylim)
         self.assertLess(figure.axes[1].get_ylim()[1], 10.0)
 
+    def test_endpoint_figure_reports_endpoints_left_unsettled(self):
+        group_labels = np.tile(np.repeat([0, 1], 4), 2)
+        points = np.zeros((group_labels.size, 6), dtype=float)
+        points[:, 3] = np.where(group_labels == 0, -4.0, 4.0)
+        points[:, 3] += np.tile([-0.05, 0.05], group_labels.size // 2)
+        entry = {
+            "proj": points,
+            "trajectory_proj": np.stack([10.0 * points, points], axis=1),
+            "task_idx": np.repeat([0, 1], group_labels.size // 2),
+            "stim_idx": np.tile(np.arange(8), 2),
+            "group_labels": group_labels,
+            "task_names": ["dmcgo", "dmcnogo"],
+        }
+        notes = []
+        # Caches written before settling carry no flags; settled ones do.
+        for is_fixed in (None, np.arange(points.shape[0]) >= 2):
+            if is_fixed is not None:
+                entry["is_fixed"] = is_fixed
+            with patch.object(paper_plot, "_save_fig") as save_fig:
+                paper_plot._plot_multitask_long_delay_endpoint_representation(
+                    {"representations": {"hidden": entry}}, "dmcgo",
+                    ("dmcgo", "dmcnogo"), "hidden", "hidden")
+            self.addCleanup(paper_plot.plt.close, save_fig.call_args.args[0])
+            notes.append(save_fig.call_args.kwargs["extra"])
+        self.assertNotIn("fixed-point criterion", notes[0])
+        self.assertIn("; 2 endpoints above the fixed-point criterion", notes[1])
+
     def test_dmcgo_endpoints_color_by_stimulus_in_both_representations(self):
         stim_idx = np.tile(np.arange(8), 2)
         task_idx = np.repeat([0, 1], 8)

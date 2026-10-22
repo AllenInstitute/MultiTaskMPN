@@ -3,10 +3,10 @@
 The supported families are DelayDM1/DelayDM2 and DMCGo/DMCNoGo inside a trained
 ``everything`` multi-task network. This module loads the run, generates aligned
 sibling trials, and fits shared delay-trajectory PCA bases. ``--method`` then
-selects either gradient fixed-point solving or very-long-delay settling
-endpoints. Gradient analysis uses IncrementalPCA, while long-delay analysis
-uses one conventional PCA fit with randomized SVD at a fixed seed; their
-method-specific bases are stored separately. All outputs are isolated
+selects either gradient fixed-point solving or long-delay trials settled to
+their fixed points. Gradient analysis uses IncrementalPCA, while long-delay
+analysis uses one conventional PCA fit with randomized SVD at a fixed seed;
+their method-specific bases are stored separately. All outputs are isolated
 under ``two_in_multiples/{aname}/``.
 
 Run one or both families without rerunning clustering or lesion analysis::
@@ -14,8 +14,9 @@ Run one or both families without rerunning clustering or lesion analysis::
     python multiple_task/sibling_delay_analysis.py \
     --seed 749 --feature L21e4 --families delaydm1 --method gradient
 
-Select ``--method long_delay_endpoint`` instead to use the final state of a
-generated very-long delay as the fixed-point proxy and save its sampled path.
+Select ``--method long_delay_endpoint`` instead to run generated long-delay
+trials, keep each one running on its delay input until it meets the gradient
+solver's fixed-point criterion, and save that endpoint with its sampled path.
 
 Both methods finish with a rule-cue interpolation sweep between the two
 sibling rules (``SIBLING_CUE_INTERP_N_ALPHA`` + 1 alphas; the multi-task
@@ -43,6 +44,7 @@ import mpn_tasks
 from fixed_point import find_modulation_fixed_points
 from grad_fixed_points import (
     DEFAULT_REL_TOL_UNDAMPED,
+    _decay_factor,
     build_dense_stimulus_template,
     derive_fixed_point_views,
     solve_period_modulation_fixed_points,
@@ -105,7 +107,7 @@ SIBLING_FIXED_POINT_STEPS = 200000
 # CPU and only this many are transferred to the GPU at once.
 SIBLING_NORMAL_TRIALS_PER_RULE = 100
 SIBLING_NORMAL_GPU_BATCH_SIZE = 200
-# Long-delay trials for the settling-endpoint proxy: 32 per sibling rule. DelayDM
+# Long-delay trials for the settled endpoints: 32 per sibling rule. DelayDM
 # is direction-balanced, four amplitude/coherence realizations at each of eight
 # directions; the DMC generator draws its directions at random, so DMC trials
 # are not balanced. Aligned RNG state makes every local trial a matched
@@ -114,6 +116,15 @@ SIBLING_LONG_DELAY_TRIALS_PER_DIRECTION = 4
 SIBLING_LONG_DELAY_TRIALS_PER_RULE = (
     SIBLING_FP_N_STIM * SIBLING_LONG_DELAY_TRIALS_PER_DIRECTION)
 SIBLING_LONG_DELAY_TRAJECTORY_SAMPLES = 51
+# The trials' own long delay (DelayDM 5 s, DMC 10 s) is too short for the
+# modulation to settle: tau_M is 4 s at lambda = 0.99, and on seed 921 no
+# endpoint met the fixed-point criterion at the end of the trial (normalized
+# residual 0.24 for DelayDM, 0.04 for DMC). After the trial's delay the network
+# therefore keeps running on the delay's constant input until every trial's
+# leak-normalized one-step residual ||F(M) - M|| / (||M|| (1 - lambda)) is at
+# most DEFAULT_REL_TOL_UNDAMPED, the gradient solver's criterion, or until this
+# cap; trials still above it are saved with is_fixed False.
+SIBLING_LONG_DELAY_MAX_SETTLE_MS = 100000
 # Long-delay analysis uses conventional sklearn PCA with randomized SVD at one
 # fixed seed. Ten seeds used to be fitted and the best-scoring one kept, but
 # on every saved basis (28 files, both representations) all ten gave the same
@@ -131,8 +142,8 @@ SIBLING_LONG_DELAY_PCA_SEED = 0
 # stimulus on its own modality. DMCGo and DMCNoGo share one stimulus
 # structure, so for DMC alpha = 1 is an ordinary, trained DMCNoGo input for the
 # same stimulus (its long-delay endpoint lands on DMCNoGo's own endpoint). Both
-# sibling methods run the sweep: the long-delay endpoint proxy and the gradient
-# fixed-point solve. The grid is fixed here (no CLI option), matching the
+# sibling methods run the sweep: the settled long-delay endpoints and the
+# gradient fixed-point solve. The grid is fixed here (no CLI option), matching the
 # two-task sweep's 0.0, 0.1, ..., 1.0.
 SIBLING_CUE_INTERP_N_ALPHA = 10
 # Base rules whose trials supply the stimulus. The two DelayDM rules present
@@ -519,6 +530,15 @@ def _tracked_numpy(value):
     return np.asarray(value)
 
 
+def _tracked_tensor(value):
+    """One tracked-state entry as a single tensor, kept on its device."""
+    if isinstance(value, (list, tuple)):
+        return torch.cat([_tracked_tensor(v) for v in value], dim=-1)
+    if torch.is_tensor(value):
+        return value
+    return torch.as_tensor(np.asarray(value))
+
+
 def _pca_record(pca, n_samples, method):
     """Portable PCA parameters consumed by paper_plot.py (no sklearn pickle)."""
     return {
@@ -861,49 +881,105 @@ def stream_normal_delay_analysis(
     return acc_weighted / acc_count, per_task_acc, preview_output
 
 
-def _run_to_delay_endpoint(model, inputs, delay_stop, layer_index):
-    """Run through delay1 while retaining only its final full-dimensional state."""
-    if not (1 <= int(delay_stop) <= inputs.shape[1]):
+def _modulation_leak(model, layer_index):
+    """1 - lambda of the plastic layer, the scale of its one-step residual."""
+    return _decay_factor(model.mp_layers[layer_index - 1])[1]
+
+
+def _rel_step_undamped(previous_M, M, leak):
+    """Per-trial ||F(M) - M|| / ||M|| / (1 - lambda) from two consecutive steps
+    under one input: the leak-normalized residual the gradient solver judges
+    its fixed points by (`grad_fixed_points.convergence_from_rel_step`)."""
+    n = M.shape[0]
+    step = (M - previous_M).reshape(n, -1).norm(dim=1)
+    size = previous_M.reshape(n, -1).norm(dim=1).clamp_min(1e-12)
+    return (step / size).detach().cpu().numpy().astype(float) / float(leak)
+
+
+def _settle_on_constant_input(model, constant_input, seq_idx, db, previous_M,
+                              layer_index, leak, rel_tol_undamped,
+                              max_settle_steps, on_step=None):
+    """Keep stepping on the delay's constant input until every trial is a
+    fixed point.
+
+    ``db`` holds the tracked states of the trial's last delay step (sequence
+    index ``seq_idx``) and ``previous_M`` the modulation one step earlier, so
+    a batch that already meets the criterion settles in zero steps. Trials
+    that converge early keep stepping with the rest, which leaves a fixed
+    point in place. ``on_step(db)`` sees every settling step. Returns the
+    last step's db, the per-trial normalized residual there, and the number
+    of settling steps.
+    """
+    M = _tracked_tensor(db[f"M{layer_index}"]).clone()
+    residual = _rel_step_undamped(previous_M, M, leak)
+    n_steps = 0
+    while np.any(residual > rel_tol_undamped) and n_steps < int(max_settle_steps):
+        n_steps += 1
+        _, _, db = model.network_step(
+            constant_input, run_mode="track_states", seq_idx=seq_idx + n_steps)
+        # Cloned so a model that updates its modulation in place cannot make
+        # two consecutive states alias and fake a zero residual.
+        previous_M, M = M, _tracked_tensor(db[f"M{layer_index}"]).clone()
+        residual = _rel_step_undamped(previous_M, M, leak)
+        if on_step is not None:
+            on_step(db)
+    return db, residual, n_steps
+
+
+def _run_to_settled_endpoint(model, inputs, delay_stop, layer_index, *, leak,
+                             max_settle_steps,
+                             rel_tol_undamped=DEFAULT_REL_TOL_UNDAMPED):
+    """Run through delay1, settle on its last input, and keep the end state.
+
+    Only the last two delay frames and the settling frames are tracked, and
+    only the current and previous modulation are held, so memory does not
+    grow with the delay or the settling time. Returns (M, hidden, per-trial
+    normalized residual, settling steps); see `_settle_on_constant_input`.
+    """
+    delay_stop = int(delay_stop)
+    if not (2 <= delay_stop <= inputs.shape[1]):
         raise ValueError(f"delay stop {delay_stop} outside sequence length "
                          f"{inputs.shape[1]}")
     model.reset_state(B=inputs.shape[0])
-    endpoint_db = None
+    db = previous_M = None
     with torch.no_grad():
-        for seq_idx in range(int(delay_stop)):
-            track = seq_idx == int(delay_stop) - 1
-            _, _, db = model.network_step(
+        for seq_idx in range(delay_stop):
+            track = seq_idx >= delay_stop - 2
+            _, _, step_db = model.network_step(
                 inputs[:, seq_idx, :],
                 run_mode="track_states" if track else "minimal",
                 seq_idx=seq_idx)
             if track:
-                endpoint_db = db
-    if endpoint_db is None:
-        raise RuntimeError("long-delay run did not capture its endpoint")
-    modulation = _tracked_numpy(endpoint_db[f"M{layer_index}"]).astype(
+                if db is not None:
+                    previous_M = _tracked_tensor(db[f"M{layer_index}"]).clone()
+                db = step_db
+        db, residual, n_settle = _settle_on_constant_input(
+            model, inputs[:, delay_stop - 1, :], delay_stop - 1, db, previous_M,
+            layer_index, leak, rel_tol_undamped, max_settle_steps)
+    modulation = _tracked_numpy(db[f"M{layer_index}"]).astype(
         np.float32, copy=True)
-    hidden = _tracked_numpy(endpoint_db[f"hidden{layer_index}"]).astype(
+    hidden = _tracked_numpy(db[f"hidden{layer_index}"]).astype(
         np.float32, copy=True)
-    return modulation, hidden
+    return modulation, hidden, residual, n_settle
 
 
 def _run_long_delay_projected_trajectory(
-        model, inputs, delay_start, delay_stop, layer_index, W, basis,
+        model, inputs, delay_start, delay_stop, layer_index, W, basis, *,
+        leak, max_settle_steps, rel_tol_undamped=DEFAULT_REL_TOL_UNDAMPED,
         max_samples=SIBLING_LONG_DELAY_TRAJECTORY_SAMPLES):
-    """Run a long delay and retain sparse six-PC trajectories plus its endpoint.
+    """Run a long delay, settle it, and keep six-PC trajectories plus the end.
 
-    Projection happens immediately on the compute device. Only the resulting
-    six coordinates are copied to CPU, so memory does not scale as
-    ``delay_steps × batch × hidden × embedding``.
+    Every frame from delay onset to the settled end is projected immediately
+    on the compute device and only its six coordinates are copied to CPU, so
+    memory does not scale as ``frames × batch × hidden × embedding``. The
+    trajectory keeps ``max_samples`` frames evenly spaced over the whole span,
+    so it ends on the settled endpoint. Returns (M, hidden, trajectories,
+    sample indices, per-trial normalized residual, settling steps); sample
+    indices past ``delay_stop - 1`` are settling steps.
     """
-    if not (0 <= delay_start < delay_stop <= inputs.shape[1]):
+    if not (0 <= delay_start < delay_stop - 1 < inputs.shape[1]):
         raise ValueError(f"invalid delay window {(delay_start, delay_stop)} "
                          f"for sequence length {inputs.shape[1]}")
-    n_delay_steps = int(delay_stop - delay_start)
-    n_samples = min(max(2, int(max_samples)), n_delay_steps)
-    relative_indices = np.unique(np.rint(
-        np.linspace(0, n_delay_steps - 1, n_samples)).astype(int))
-    sample_indices = delay_start + relative_indices
-    sample_set = set(sample_indices.tolist())
 
     projectors = {}
     for key in ("fixed_hidden", "fixed_WM"):
@@ -922,68 +998,74 @@ def _run_long_delay_projected_trajectory(
 
     W_device = torch.as_tensor(
         np.asarray(W, dtype=np.float32), device=inputs.device)
+    frames = {"fixed_hidden": [], "fixed_WM": []}
+
+    def project(db):
+        hidden_state = _tracked_tensor(db[f"hidden{layer_index}"]).to(inputs.device)
+        modulation_state = _tracked_tensor(db[f"M{layer_index}"]).to(inputs.device)
+        hidden_mean, hidden_components = projectors["fixed_hidden"]
+        hidden_projection = (
+            hidden_state.reshape(hidden_state.shape[0], -1) - hidden_mean
+        ) @ hidden_components.T
+        wm_mean, wm_components = projectors["fixed_WM"]
+        effective = (modulation_state * W_device[None, :, :]).reshape(
+            modulation_state.shape[0], -1)
+        wm_projection = (effective - wm_mean) @ wm_components.T
+        for key, projection in (("fixed_hidden", hidden_projection),
+                                ("fixed_WM", wm_projection)):
+            frames[key].append(projection.detach().cpu().numpy().astype(
+                np.float32, copy=False))
+
     model.reset_state(B=inputs.shape[0])
-    projected = {"fixed_hidden": [], "fixed_WM": []}
-    endpoint_M = endpoint_hidden = None
+    db = previous_M = None
     with torch.no_grad():
         for seq_idx in range(int(delay_stop)):
-            track = seq_idx in sample_set
-            _, _, db = model.network_step(
+            track = seq_idx >= delay_start
+            _, _, step_db = model.network_step(
                 inputs[:, seq_idx, :],
                 run_mode="track_states" if track else "minimal",
                 seq_idx=seq_idx)
             if not track:
                 continue
-            hidden_state = db[f"hidden{layer_index}"]
-            modulation_state = db[f"M{layer_index}"]
-            if not torch.is_tensor(hidden_state):
-                hidden_state = torch.as_tensor(
-                    _tracked_numpy(hidden_state), device=inputs.device)
-            if not torch.is_tensor(modulation_state):
-                modulation_state = torch.as_tensor(
-                    _tracked_numpy(modulation_state), device=inputs.device)
+            project(step_db)
+            if db is not None:
+                previous_M = _tracked_tensor(db[f"M{layer_index}"]).clone()
+            db = step_db
+        db, residual, n_settle = _settle_on_constant_input(
+            model, inputs[:, int(delay_stop) - 1, :], int(delay_stop) - 1, db,
+            previous_M, layer_index, leak, rel_tol_undamped, max_settle_steps,
+            on_step=project)
 
-            hidden_mean, hidden_components = projectors["fixed_hidden"]
-            hidden_projection = (
-                hidden_state.reshape(hidden_state.shape[0], -1) - hidden_mean
-            ) @ hidden_components.T
-            wm_mean, wm_components = projectors["fixed_WM"]
-            effective = (modulation_state * W_device[None, :, :]).reshape(
-                modulation_state.shape[0], -1)
-            wm_projection = (effective - wm_mean) @ wm_components.T
-            projected["fixed_hidden"].append(
-                hidden_projection.detach().cpu().numpy().astype(
-                    np.float32, copy=False))
-            projected["fixed_WM"].append(
-                wm_projection.detach().cpu().numpy().astype(
-                    np.float32, copy=False))
-
-            if seq_idx == int(delay_stop) - 1:
-                endpoint_M = _tracked_numpy(modulation_state).astype(
-                    np.float32, copy=True)
-                endpoint_hidden = _tracked_numpy(hidden_state).astype(
-                    np.float32, copy=True)
-
-    if endpoint_M is None or endpoint_hidden is None:
-        raise RuntimeError("long-delay trajectory did not capture its endpoint")
-    projected = {
-        key: np.stack(values, axis=1)
-        for key, values in projected.items()
-    }
-    return endpoint_M, endpoint_hidden, projected, sample_indices
+    n_frames = len(frames["fixed_hidden"])
+    n_samples = min(max(2, int(max_samples)), n_frames)
+    relative_indices = np.unique(np.rint(
+        np.linspace(0, n_frames - 1, n_samples)).astype(int))
+    projected = {key: np.stack(values, axis=1)[:, relative_indices]
+                 for key, values in frames.items()}
+    endpoint_M = _tracked_numpy(db[f"M{layer_index}"]).astype(
+        np.float32, copy=True)
+    endpoint_hidden = _tracked_numpy(db[f"hidden{layer_index}"]).astype(
+        np.float32, copy=True)
+    return (endpoint_M, endpoint_hidden, projected,
+            delay_start + relative_indices, residual, n_settle)
 
 
 def extract_long_delay_endpoints(
         aname, save_dir, addtask, rules, model, device,
         converted_task_params, W, layer_index=1,
         n_trials_per_rule=SIBLING_LONG_DELAY_TRIALS_PER_RULE):
-    """Use the end of a generated very-long ``delay1`` as a fixed-point proxy.
+    """Settle generated long-delay trials to their delay fixed points.
 
     This is deliberately a second method, not a replacement for the gradient
-    solve. Sibling rules are generated with aligned RNG state and equal local
-    trial order, so ``condition_idx`` matches the same natural trial across the
-    two rules. Full-dimensional state is retained only at the endpoint; up to
-    51 delay frames are retained as compact six-PC trajectories.
+    solve: instead of optimizing for M* = F(M*), each trial runs through its
+    long ``delay1`` and then keeps stepping on the delay's constant input until
+    the leak-normalized residual meets the gradient solver's criterion
+    (SIBLING_LONG_DELAY_MAX_SETTLE_MS caps it; see that constant). Sibling
+    rules are generated with aligned RNG state and equal local trial order, so
+    ``condition_idx`` matches the same natural trial across the two rules.
+    Full-dimensional state is retained only at the settled endpoint; up to 51
+    frames from delay onset to that endpoint are retained as compact six-PC
+    trajectories.
     """
     rules = list(rules)
     tp = copy.deepcopy(converted_task_params)
@@ -1046,19 +1128,24 @@ def extract_long_delay_endpoints(
         save_dir, aname, addtask, rules, "joint", "long_delay_endpoint")
     with basis_path.open("rb") as stream:
         trajectory_basis = pickle.load(stream)
+    dt = tp["dt"]
+    max_settle_steps = int(round(SIBLING_LONG_DELAY_MAX_SETTLE_MS / dt))
     # One forward pass gives both the endpoint and its projected trajectory, so
     # the two always come from the same realization of any recurrent noise.
-    M, hidden, projected_trajectories, trajectory_sample_indices = (
-        _run_long_delay_projected_trajectory(
-            model, long_input_device, delay_start, delay_stop, layer_index,
-            W, trajectory_basis))
+    (M, hidden, projected_trajectories, trajectory_sample_indices,
+     rel_step_undamped, n_settle) = _run_long_delay_projected_trajectory(
+        model, long_input_device, delay_start, delay_stop, layer_index,
+        W, trajectory_basis, leak=_modulation_leak(model, layer_index),
+        max_settle_steps=max_settle_steps)
     if tuple(M.shape[-2:]) != tuple(W.shape):
         raise ValueError(f"{addtask}: endpoint M/W shapes disagree: "
                          f"{M.shape[-2:]} vs {W.shape}")
     effective_M = (M * W[None, :, :]).astype(np.float32, copy=False)
+    is_fixed = rel_step_undamped <= DEFAULT_REL_TOL_UNDAMPED
+    delay_steps = int(delay_stop - delay_start)
 
     artifact = {
-        "version": 2,
+        "version": 3,
         "method": "long_delay_endpoint",
         "aname": aname,
         "family": addtask,
@@ -1066,9 +1153,17 @@ def extract_long_delay_endpoints(
         "long_delay_setting": "long",
         "delay_epoch": "delay1",
         "delay_window": (int(delay_start), int(delay_stop)),
-        "delay_endpoint_index": int(delay_stop - 1),
-        "delay_steps": int(delay_stop - delay_start),
-        "delay_ms": int((delay_stop - delay_start) * tp["dt"]),
+        "delay_endpoint_index": int(delay_stop - 1 + n_settle),
+        "delay_steps": delay_steps,
+        "delay_ms": int(delay_steps * dt),
+        # Settling after the trial's own delay, on the delay's constant input.
+        "settle_steps": int(n_settle),
+        "settle_ms": int(n_settle * dt),
+        "max_settle_ms": int(max_settle_steps * dt),
+        "endpoint_delay_ms": int((delay_steps + n_settle) * dt),
+        "rel_step_undamped": rel_step_undamped,
+        "is_fixed": is_fixed,
+        "rel_tol_undamped": float(DEFAULT_REL_TOL_UNDAMPED),
         "trajectory_basis_scope": "joint",
         "trajectory_pca_source": str(basis_path),
         "trajectory_sample_indices": np.asarray(
@@ -1076,7 +1171,7 @@ def extract_long_delay_endpoints(
         "trajectory_delay_steps": np.asarray(
             trajectory_sample_indices - delay_start, dtype=int),
         "trajectory_time_ms": np.asarray(
-            (trajectory_sample_indices - delay_start) * tp["dt"], dtype=int),
+            (trajectory_sample_indices - delay_start) * dt, dtype=int),
         "task_idx": task_idx,
         "condition_idx": condition_idx,
         "stim_idx": stim_idx,
@@ -1099,9 +1194,14 @@ def extract_long_delay_endpoints(
     with open(out_path, "wb") as f:
         pickle.dump(artifact, f)
     print(f"  [{addtask}/long-delay-endpoint] saved {task_idx.size} endpoints "
-          f"and {trajectory_sample_indices.size}-step projected trajectories "
-          f"from delay1 step {delay_stop - 1} ({artifact['delay_ms']} ms): "
-          f"{out_path}")
+          f"and {trajectory_sample_indices.size}-step projected trajectories: "
+          f"{artifact['delay_ms']} ms delay + {artifact['settle_ms']} ms "
+          f"settling, {int(is_fixed.sum())}/{is_fixed.size} fixed (max "
+          f"normalized residual {rel_step_undamped.max():.2e}): {out_path}")
+    if not is_fixed.all():
+        print(f"  WARNING [{addtask}/long-delay-endpoint] "
+              f"{int((~is_fixed).sum())} endpoints still above the fixed-point "
+              f"criterion after the {artifact['max_settle_ms']} ms settling cap.")
     del long_input_device, long_input, data
     return out_path
 
@@ -1147,6 +1247,10 @@ def save_long_delay_endpoint_pc_projections(
         "delay_window": tuple(endpoints["delay_window"]),
         "delay_steps": int(endpoints["delay_steps"]),
         "delay_ms": int(endpoints["delay_ms"]),
+        # Endpoints saved before settling existed end with the trial's delay.
+        "settle_ms": int(endpoints.get("settle_ms", 0)),
+        "endpoint_delay_ms": int(endpoints.get(
+            "endpoint_delay_ms", endpoints["delay_ms"])),
         "n_components": 6,
         "representations": {},
     }
@@ -1172,6 +1276,9 @@ def save_long_delay_endpoint_pc_projections(
             "explained_variance_ratio": np.asarray(
                 record.get("explained_variance_ratio", []), dtype=float)[:6],
         }
+        for optional in ("is_fixed", "rel_step_undamped"):
+            if optional in endpoints:
+                rep_out[optional] = np.asarray(endpoints[optional])
         if (basis_scope == endpoints.get("trajectory_basis_scope")
                 and endpoint_key in endpoints.get("projected_trajectories", {})):
             trajectory = np.asarray(
@@ -1257,9 +1364,9 @@ def _save_pc_pair_gallery(save_dir, aname, addtask, artifact_suffix,
                          f"six PCs, got {proj.shape}")
     task_idx = np.asarray(entry["task_idx"], dtype=int)
     stim_idx = np.asarray(entry["stim_idx"], dtype=int)
-    # Gradient-solver projections may carry a convergence mask. Long-delay
-    # settling endpoints intentionally do not: every generated endpoint is
-    # shown, so the default is an all-filled mask.
+    # Gradient fixed points and settled long-delay endpoints carry a
+    # convergence mask (hollow = still above the residual criterion). Endpoint
+    # caches written before settling have none and draw every point filled.
     is_fixed = np.asarray(
         entry.get("is_fixed", np.ones(proj.shape[0], dtype=bool)), dtype=bool)
     task_names = list(entry["task_names"])
@@ -1529,7 +1636,7 @@ def cue_interp_artifact_paths(save_dir, aname, addtask, method):
     """(sweep pickle, PC-projection pickle) for one family and method.
 
     The names carry the owning method's token so method-scoped cleanup keeps
-    attributing them: ``long_delay_endpoint`` for the endpoint proxy, and the
+    attributing them: ``long_delay_endpoint`` for the settled endpoints, and the
     gradient pair ``_cue_interp_fixed_points`` /
     ``_cue_interp_delay_pc_projections``.
     """
@@ -1570,14 +1677,16 @@ def extract_cue_interp_long_delay_endpoints(
         n_alpha=SIBLING_CUE_INTERP_N_ALPHA,
         n_trials_per_rule=SIBLING_LONG_DELAY_TRIALS_PER_RULE,
         base_rules=None):
-    """Sweep the rule cue on very-long-delay trials and keep each endpoint.
+    """Sweep the rule cue on long-delay trials and keep each settled endpoint.
 
     Fresh long-delay trials are generated for both rules with aligned RNG
     state, exactly as for the base endpoints (direction-balanced for DelayDM,
-    random directions for DMC). For each base rule its own
-    trials are rerun at every alpha with the cue shifted toward the sibling
-    (`cue_interpolated_inputs`), and the full-dimensional W⊙M and hidden state
-    at the end of ``delay1`` are kept per alpha. The network injects no noise,
+    random directions for DMC). For each base rule its own trials are rerun at
+    every alpha with the cue shifted toward the sibling
+    (`cue_interpolated_inputs`) and settled on that alpha's delay input as the
+    base endpoints are (SIBLING_LONG_DELAY_MAX_SETTLE_MS); the full-dimensional
+    W⊙M and hidden state there are kept per alpha, with each point's
+    normalized residual and convergence flag. The network injects no noise,
     so consecutive alphas differ only in the cue.
     """
     rules = list(rules)
@@ -1618,6 +1727,9 @@ def extract_cue_interp_long_delay_endpoints(
             f"{addtask}: cue-sweep metadata length does not match trial count")
 
     W = np.asarray(W, dtype=np.float32)
+    dt = tp["dt"]
+    leak = _modulation_leak(model, layer_index)
+    max_settle_steps = int(round(SIBLING_LONG_DELAY_MAX_SETTLE_MS / dt))
     sweeps = {}
     for base_rule in base_rules:
         base = rules.index(base_rule)
@@ -1627,18 +1739,24 @@ def extract_cue_interp_long_delay_endpoints(
         _check_cue_channels(x_base, channels[base], channels[1 - base],
                             base_rule, target_rule)
         wm_by_alpha, hidden_by_alpha = [], []
+        residual_by_alpha, settle_by_alpha = [], []
         for alpha in alphas:
             x_alpha = cue_interpolated_inputs(
                 x_base, channels[base], channels[1 - base], alpha)
-            M, hidden = _run_to_delay_endpoint(
-                model, x_alpha, delay_stop, layer_index)
+            M, hidden, residual, n_settle = _run_to_settled_endpoint(
+                model, x_alpha, delay_stop, layer_index, leak=leak,
+                max_settle_steps=max_settle_steps)
             if tuple(M.shape[-2:]) != tuple(W.shape):
                 raise ValueError(f"{addtask}: endpoint M/W shapes disagree: "
                                  f"{M.shape[-2:]} vs {W.shape}")
             wm_by_alpha.append(
                 (M * W[None, :, :]).astype(np.float32, copy=False))
             hidden_by_alpha.append(np.asarray(hidden, dtype=np.float32))
+            residual_by_alpha.append(residual)
+            settle_by_alpha.append(n_settle)
             del x_alpha
+        rel_step_undamped = np.stack(residual_by_alpha)       # (n_alpha, n_trials)
+        is_fixed = rel_step_undamped <= DEFAULT_REL_TOL_UNDAMPED
         sweeps[base_rule] = {
             "target_rule": target_rule,
             "base_cue_channel": int(channels[base]),
@@ -1652,13 +1770,23 @@ def extract_cue_interp_long_delay_endpoints(
                 "fixed_WM": np.stack(wm_by_alpha),
                 "fixed_hidden": np.stack(hidden_by_alpha),
             },
+            "settle_ms": np.asarray(settle_by_alpha, dtype=int) * int(dt),
+            "rel_step_undamped": rel_step_undamped,
+            "is_fixed": is_fixed,
+            "rel_tol_undamped": float(DEFAULT_REL_TOL_UNDAMPED),
         }
         print(f"  [{addtask}/cue-interp/{base_rule}] {alphas.size} alphas x "
-              f"{selected.size} long-delay trials, cue -> {target_rule}")
+              f"{selected.size} long-delay trials, cue -> {target_rule}; "
+              f"settled {min(settle_by_alpha) * dt}-{max(settle_by_alpha) * dt} "
+              f"ms, {int(is_fixed.sum())}/{is_fixed.size} fixed")
+        if not is_fixed.all():
+            print(f"  WARNING [{addtask}/cue-interp/{base_rule}] "
+                  f"{int((~is_fixed).sum())} endpoints still above the "
+                  f"fixed-point criterion after the settling cap.")
         del x_base
 
     artifact = {
-        "version": 1,
+        "version": 2,
         "kind": "cue_interp",
         "method": "long_delay_endpoint",
         "aname": aname,
@@ -1671,9 +1799,11 @@ def extract_cue_interp_long_delay_endpoints(
         "long_delay_setting": "long",
         "delay_epoch": "delay1",
         "delay_window": (int(delay_start), int(delay_stop)),
-        "delay_endpoint_index": int(delay_stop - 1),
         "delay_steps": int(delay_stop - delay_start),
-        "delay_ms": int((delay_stop - delay_start) * tp["dt"]),
+        "delay_ms": int((delay_stop - delay_start) * dt),
+        # Each alpha settles for its own time (sweeps[...]["settle_ms"]).
+        "max_settle_ms": int(max_settle_steps * dt),
+        "rel_tol_undamped": float(DEFAULT_REL_TOL_UNDAMPED),
         "balanced_stimulus_directions": addtask == "delaydm1",
         "sweeps": sweeps,
     }
@@ -1682,7 +1812,7 @@ def extract_cue_interp_long_delay_endpoints(
     with open(out_path, "wb") as f:
         pickle.dump(artifact, f)
     print(f"  [{addtask}/cue-interp] saved long-delay endpoint sweep "
-          f"({artifact['delay_ms']} ms delay): {out_path}")
+          f"({artifact['delay_ms']} ms delay, then settled): {out_path}")
     del long_input, data
     return out_path
 
@@ -1829,7 +1959,8 @@ def save_cue_interp_pc_projections(aname, save_dir, addtask, rules, sweep_path,
     points become ``(n_alpha, n_points, 6)`` coordinates in the same joint
     basis the method's base figure uses, so the sweep can be drawn in any
     plane of that basis alongside the base figure. Convergence masks are
-    carried along when the sweep has them (gradient method), and DMC sweeps
+    carried along when the sweep has them (gradient fixed points, settled
+    long-delay endpoints), and DMC sweeps
     record each base trial's memory cluster (``group_labels``). Nothing is
     refitted.
     """
@@ -1939,8 +2070,9 @@ def build_arg_parser():
     parser.add_argument(
         "--method", required=True, choices=SIBLING_METHODS,
         help=("Fixed-point method to run. 'gradient' runs the optimizer-based "
-              "solver; 'long_delay_endpoint' runs very-long-delay trials and "
-              "uses the last delay state. Only the selected method is run."))
+              "solver; 'long_delay_endpoint' runs long-delay trials and keeps "
+              "them on the delay input until they settle to a fixed point. "
+              "Only the selected method is run."))
     return parser
 
 

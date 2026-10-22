@@ -203,7 +203,8 @@ class CueInterpEndpointSweepTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(sibling.mpn_tasks, "generate_trials_wrap",
-                             side_effect=fake_generate):
+                             side_effect=fake_generate), \
+                patch.object(sibling, "_modulation_leak", return_value=0.01):
             out_path = sibling.extract_cue_interp_long_delay_endpoints(
                 "run", directory, "delaydm1", RULES, model,
                 torch.device("cpu"), _task_params(),
@@ -252,6 +253,11 @@ class CueInterpEndpointSweepTests(unittest.TestCase):
                                           np.arange(n_per_rule) % 2)
             np.testing.assert_allclose(
                 sweep["stimulus_magnitude"], 0.5 + 0.1 * np.arange(n_per_rule))
+            # The fake's state is constant on a constant input: every alpha is
+            # already a fixed point at the end of the delay, so none settles.
+            self.assertEqual(sweep["is_fixed"].shape, (3, n_per_rule))
+            self.assertTrue(sweep["is_fixed"].all())
+            np.testing.assert_array_equal(sweep["settle_ms"], [0, 0, 0])
 
     def test_endpoint_sweep_rejects_a_misordered_rule_batch(self):
         n_per_rule, time_steps = 2, 5
@@ -872,9 +878,17 @@ class CueInterpPaperFigureTests(unittest.TestCase):
         self.assertGreater(top, pad)
         np.testing.assert_allclose(fig.axes[0].get_ylim(), (-pad, 1 + top))
         np.testing.assert_allclose(fig.axes[1].get_ylim(), (1 - pad, 2 + top))
-        # DelayDM endpoints need no legend at all.
+        # DelayDM endpoints need no legend at all...
         self.assertEqual(paper_plot._cue_interp_legend_handles(
             "delaydm1", RULES, "long_delay_endpoint", entry), [])
+        # ...unless one stayed above the residual criterion and is drawn hollow.
+        settled = np.ones((3, 4), dtype=bool)
+        settled[-1, 0] = False
+        entry["sweeps"]["delaydm1"]["is_fixed"] = settled
+        self.assertEqual(
+            [handle.get_label() for handle in paper_plot._cue_interp_legend_handles(
+                "delaydm1", RULES, "long_delay_endpoint", entry)],
+            ["Converged", "Not converged"])
 
     def test_one_trial_per_stimulus_matches_magnitudes_across_directions(self):
         stim = np.array([0, 0, 0, 1, 1, 1, 2, 2, 2])

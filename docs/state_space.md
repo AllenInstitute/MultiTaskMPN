@@ -9,7 +9,8 @@ Context-end task geometry of the multi-task runs (`state_space_shift.py`,
 python multiple_task/sibling_delay_analysis.py \
   --seed 921 --feature L21e4 --families delaydm1 --method gradient
 
-# alternatively, use the end of a generated very-long delay
+# alternatively, run long-delay trials and keep each on its delay input until
+# it settles to a fixed point (the gradient solver's residual criterion)
 python multiple_task/sibling_delay_analysis.py \
   --seed 921 --feature L21e4 --families delaydm1 \
   --method long_delay_endpoint
@@ -227,8 +228,8 @@ presents its stimulus on its own modality); for DMC it is an ordinary, trained
 DMCNoGo input for the same stimulus, and its long-delay endpoint lands on
 DMCNoGo's own endpoint. The `long_delay_endpoint` sweep draws one fresh set of
 long-delay trials (direction-balanced for DelayDM, random directions for DMC),
-reruns the base rule's trials at every alpha and keeps the delay-1 endpoint;
-the `gradient` sweep reuses the per-rule dense-angle template
+reruns the base rule's trials at every alpha and keeps the settled endpoint
+(see below); the `gradient` sweep reuses the per-rule dense-angle template
 (`core.grad_fixed_points.build_dense_stimulus_template`, eight directions, the
 DelayDM magnitudes) and solves the true delay fixed point at every alpha with
 the per-rule budgets. Both are projected onto the method's joint delay basis
@@ -240,10 +241,11 @@ share of each trial's path length), scored over all trials and taken as the
 minimum over the two base rules, so a plane in which the directions merge at an
 intermediate cue or the paths zigzag is not chosen. The DMC sweep figures use
 the base figure's plane: the configured plane for gradient, the best
-task-specific endpoint pair for endpoints. Colors follow the alpha ramp of SCHEME family 5 (dark at alpha =
-0, light at alpha = 1; filled = converged, hollow = not; endpoints always
-filled). In the DMC figures the connecting lines are colored by the base
-trial's memory cluster at alpha = 0. The two clusters are the category the
+task-specific endpoint pair for endpoints. Colors follow the alpha ramp of
+SCHEME family 5 (dark at alpha = 0, light at alpha = 1; filled = converged,
+hollow = not, for both methods). In the DMC figures the connecting lines are
+colored by the base trial's memory cluster at alpha = 0. The two clusters are
+the category the
 network must respond to: "respond to category 1" holds DMCGo trials whose
 first stimulus is in category 1 (locations 0-3, below pi) together with
 DMCNoGo trials whose first stimulus is in category 2 (locations 4-7), since
@@ -266,4 +268,26 @@ along a dotted path; that legend gains one entry per sweep direction. The
 sweep always runs together with the method's base
 analysis, so rerunning a family regenerates its base artifacts from new random
 trials as well.
+
+**Long-delay endpoints are settled to fixed points.** The trials' own long
+delay (DelayDM 5 s, DMC 10 s) is too short for the modulation to converge:
+tau_M is 4 s at lambda = 0.99, and on seed 921 none of the 64 endpoints per
+family met the gradient solver's criterion at the end of the trial (median
+normalized residual 0.24 for DelayDM, 0.04 for DMC). Run past that delay on
+the same input, the DelayDM W⊙M endpoints still moved 67% of their spread and
+the direction separation of the e_modulation endpoint plane fell from 1.18 to
+0.13; DMC moved under 10% and kept its geometry. Both the base endpoints and
+every alpha of the endpoint sweep therefore keep running on the delay's
+constant input after the trial's delay until every trial's leak-normalized
+one-step residual ||F(M) - M|| / (||M|| (1 - lambda)) is at most
+`DEFAULT_REL_TOL_UNDAMPED` (1e-2), the gradient solver's criterion, with
+`SIBLING_LONG_DELAY_MAX_SETTLE_MS` (100 s) as the cap. The endpoint caches
+record `settle_ms`, `endpoint_delay_ms`, each trial's `rel_step_undamped` and
+`is_fixed`, and the projected trajectories run from delay onset to the
+settled endpoint. A trial still above the criterion at the cap is drawn
+hollow in the sweep figures and the PC-pair galleries; in the endpoint figure,
+where hollow markers already mean the sweep's alpha = 1 end, its count is
+printed with the saved figure instead. Endpoint caches written before
+settling (endpoint version 2, sweep version 1) hold the unsettled end-of-trial
+state; rerun the analysis to replace them.
 
