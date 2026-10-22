@@ -149,6 +149,36 @@ class SynapticTrainFigureTests(unittest.TestCase):
         # No break glyph: the uneven gaps are carried by the tick labels alone,
         # so the bottom axes holds nothing but its waveforms.
         self.assertEqual(len(last.lines), len(self.waveform_lines(last)))
+        # The key is saved beside the figure as its own file.
+        self.assertTrue((self.root / "cartoon_synaptic_train_amplitudes_legend.png").is_file())
+
+    @staticmethod
+    def legend_entries(line_kinds):
+        figure = cartoon._synaptic_legend_figure(line_kinds)
+        legend = figure.legends[0]
+        entries = [(text.get_text(), line) for text, line in zip(legend.get_texts(), legend.get_lines())]
+        paper_plot.plt.close(figure)
+        return entries
+
+    def test_legend_names_the_dot_and_the_trial_mean_mark(self):
+        grey = paper_plot.mpl.colors.to_rgba(cartoon._SYNAPTIC_DOT_COLOR)
+        (dot_label, dot), (line_label, line) = self.legend_entries(("waveform",))
+        self.assertEqual(dot_label, "Single-trial PSP amplitude")
+        self.assertEqual(dot.get_marker(), "o")
+        self.assertEqual(dot.get_linestyle(), "None")
+        np.testing.assert_allclose(paper_plot.mpl.colors.to_rgba(dot.get_markerfacecolor()), grey)
+        self.assertEqual(line_label, "Trial-mean PSP waveform")
+        self.assertEqual(line.get_color(), "black")
+        # The legacy file draws a mean-amplitude dash, and the key says so.
+        self.assertEqual([label for label, _ in self.legend_entries(("dash",))],
+                         ["Single-trial PSP amplitude", "Trial-mean PSP amplitude"])
+
+    def test_legacy_render_saves_the_dash_key(self):
+        path = self.root / "legacy.json"
+        write_legacy_format(path)
+        with patch.object(cartoon, "_save_synaptic_legend") as save_legend:
+            self.render(path, pulses=(1, 4, 8, 9, 12))
+        save_legend.assert_called_once_with(self.root, ["dash"])
 
     def test_all_twelve_pulses_label_the_recovery_interval_in_real_time(self):
         path = self.root / "amps.json"

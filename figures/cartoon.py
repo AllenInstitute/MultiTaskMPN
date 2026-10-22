@@ -46,6 +46,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 from matplotlib.colors import to_rgb
+from matplotlib.lines import Line2D
 from matplotlib.patches import Polygon
 
 # Style, palette and savers come from the real figure module so the two agree by
@@ -578,6 +579,12 @@ _SYNAPTIC_MARKER_PT = 2.1                 # dot diameter in points (paper: 3.2, 
 _SYNAPTIC_FIGSIZE = (2.5, 0.55, 0.42)
 _SYNAPTIC_HSPACE = 0.15
 _SYNAPTIC_DOT_COLOR = (0.7, 0.7, 0.7)     # the paper's grey, for every dot
+# The figure's key, saved as its own file (`_save_synaptic_legend`): what one
+# dot is, and what the black mark under each swarm is - the trial-mean
+# waveform, or the legacy file's mean-amplitude dash.
+_SYNAPTIC_DOT_LABEL = "Single-trial PSP amplitude"
+_SYNAPTIC_LINE_LABELS = {"waveform": "Trial-mean PSP waveform",
+                         "dash": "Trial-mean PSP amplitude"}
 
 
 def _parse_pulse_label(label):
@@ -723,6 +730,34 @@ def synaptic_pulse_time_ms(pulse, frequency_hz, recovery_ms,
     return (n_induction - 1) * interval + float(recovery_ms) + (pulse - n_induction) * interval
 
 
+def _synaptic_legend_figure(line_kinds=("waveform",)):
+    """The PSP-train figure's key as a standalone figure, laid out like
+    biology.py's connectivity legend: a grey dot for one trial's amplitude,
+    then one black line per kind of trial-mean mark the rows draw
+    ("waveform" or the legacy "dash", see _SYNAPTIC_LINE_LABELS)."""
+    handles = [Line2D([], [], marker="o", linestyle="none", markersize=7,
+                      markerfacecolor=_SYNAPTIC_DOT_COLOR,
+                      markeredgecolor=_SYNAPTIC_DOT_COLOR, label=_SYNAPTIC_DOT_LABEL)]
+    handles += [Line2D([], [], color="black", linewidth=1.5, label=_SYNAPTIC_LINE_LABELS[kind])
+                for kind in line_kinds]
+    fig = plt.figure(figsize=(2.8, 1.2))
+    fig.legend(handles=handles, loc="center", ncol=1, frameon=False, fontsize=11,
+               handlelength=1.6, handletextpad=0.65, labelspacing=0.5)
+    return fig
+
+
+def _save_synaptic_legend(out_dir, line_kinds=("waveform",)):
+    """Save `_synaptic_legend_figure` beside the figure it explains, as
+    biology.py saves its connectivity legend (transparent, 600 dpi), so the
+    two keys match wherever they are placed. Returns the path."""
+    fig = _synaptic_legend_figure(line_kinds)
+    path = Path(out_dir) / "cartoon_synaptic_train_amplitudes_legend.png"
+    fig.savefig(path, dpi=600, bbox_inches="tight", pad_inches=0.02, transparent=True)
+    plt.close(fig)
+    print(f"Saved: {path}")
+    return path
+
+
 def plot_synaptic_train_amplitudes(out_dir=OUT_DIR, data_path=None,
                                    pulses=SYNAPTIC_PULSES):
     """
@@ -744,10 +779,13 @@ def plot_synaptic_train_amplitudes(out_dir=OUT_DIR, data_path=None,
     the paper's variability coloring of pulses 1 and 8 is not reproduced. Rows
     are ticked at 0 and the fixed tops of SYNAPTIC_YLIM_TOP (1, 2 and 5 mV);
     each row's range extends past its top to the highest dot or waveform, so
-    nothing is clipped.
+    nothing is clipped. The key (grey dot = one trial's amplitude, black line
+    = trial-mean waveform) is saved separately as
+    cartoon_synaptic_train_amplitudes_legend.png.
 
     Legacy metadata (five pulses, no waveforms) draws a mean dash per pulse;
-    the saved message says so. Reads `load_synaptic_trial_amplitudes(data_path)`.
+    the saved message and the key say so. Reads
+    `load_synaptic_trial_amplitudes(data_path)`.
     """
     requested = sorted({int(pulse) - 1 for pulse in pulses})
     if not requested or requested[0] < 0 or requested[-1] > 11:
@@ -775,12 +813,16 @@ def plot_synaptic_train_amplitudes(out_dir=OUT_DIR, data_path=None,
     axes = np.atleast_1d(axes)
     fig.subplots_adjust(left=0.16, right=0.99, top=0.98, bottom=margin / height,
                         hspace=_SYNAPTIC_HSPACE)
+    line_kinds = []                  # the trial-mean marks drawn, for the key
     for ax, group in zip(axes, groups):
         conn = by_group[group]
         sign = conn["sign"]
         pulses = [pulse for pulse in shown if pulse in conn["amplitudes"]]
         amplitudes = {p: sign * conn["amplitudes"][p] for p in pulses}
         waveforms = conn["waveforms"]
+        kind = "waveform" if waveforms is not None else "dash"
+        if kind not in line_kinds:
+            line_kinds.append(kind)
         # Limits first: the swarm is laid out in display space. The range
         # follows the data, so no dot or waveform is clipped.
         ax.set_xlim(-0.5, len(shown) - 0.5)
@@ -836,6 +878,7 @@ def plot_synaptic_train_amplitudes(out_dir=OUT_DIR, data_path=None,
               + ("mean waveforms" if data["connections"][0]["waveforms"] else "mean dashes (legacy)"))
     _save(fig, out_dir / "cartoon_synaptic_train_amplitudes.png",
           extra=f"  (MEASURED: {data['path'].name}; {detail})")
+    _save_synaptic_legend(out_dir, line_kinds)
 
 
 # ─── Lesion schematic: neurons, synapse clusters, two synapse interventions ──
