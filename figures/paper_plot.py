@@ -1059,11 +1059,7 @@ def _compute_order_from_labels(linkage, labels):
     leaf_order = leaves_list(linkage)
 
     labels = np.asarray(labels)
-    n = len(labels)
-
-    # Map from linkage leaf order (active neurons only) to full array
     unique_labels = np.unique(labels)
-    active_mask = labels <= labels.max()  # all are active in this context
 
     # Build order: group by cluster, within each cluster use dendrogram order
     ordered = []
@@ -1212,22 +1208,18 @@ def _plot_clustered_variance(
         rl_full = _recut_labels(result["row_linkage"], row_k_override, result["row_tol_labels"],
                                 result.get("row_unresponsive_mask"))
         row_order = _compute_order_from_labels(result["row_linkage"], rl_full)
-        row_k = row_k_override
     else:
         rl_full = np.asarray(result["row_tol_labels"])
         row_order = result["row_order"]
-        row_k = result["row_tol_k"]
 
     # Determine col labels and order
     if col_k_override is not None:
         cl_full = _recut_labels(result["col_linkage"], col_k_override, result["col_tol_labels"],
                                 result.get("col_unresponsive_mask"))
         col_order = _compute_order_from_labels(result["col_linkage"], cl_full)
-        col_k = col_k_override
     else:
         cl_full = np.asarray(result["col_tol_labels"])
         col_order = result["col_order"]
-        col_k = result["col_tol_k"]
 
     ordered = cell_vars[np.ix_(row_order, col_order)]
 
