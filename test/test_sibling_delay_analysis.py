@@ -297,6 +297,15 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not aligned"):
             sibling._aligned_delay1_window(("delaydm1", "delaydm2"), trials)
 
+    def test_dmc_category_split_holds_when_top_direction_is_not_drawn(self):
+        # Directions 0-3 lie below pi (category 1), 4-7 above. A random DMC
+        # draw without direction 7 must still split between 3 and 4.
+        stim_idx = np.array([0, 3, 4, 6, 0, 3, 4, 6])
+        task_idx = np.repeat([0, 1], 4)
+        np.testing.assert_array_equal(
+            sibling._dmc_category_labels(task_idx, stim_idx),
+            [1, 1, 0, 0, 0, 0, 1, 1])
+
     def test_long_delay_endpoints_project_into_saved_delay_basis(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

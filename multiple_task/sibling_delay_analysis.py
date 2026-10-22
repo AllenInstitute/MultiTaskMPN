@@ -105,9 +105,11 @@ SIBLING_FIXED_POINT_STEPS = 200000
 # CPU and only this many are transferred to the GPU at once.
 SIBLING_NORMAL_TRIALS_PER_RULE = 100
 SIBLING_NORMAL_GPU_BATCH_SIZE = 200
-# Balanced long-delay trials for the settling-endpoint proxy. Each sibling rule
-# receives four amplitude/coherence realizations at each of eight directions.
-# Aligned RNG state makes every local trial a matched cross-task condition.
+# Long-delay trials for the settling-endpoint proxy: 32 per sibling rule. DelayDM
+# is direction-balanced, four amplitude/coherence realizations at each of eight
+# directions; the DMC generator draws its directions at random, so DMC trials
+# are not balanced. Aligned RNG state makes every local trial a matched
+# cross-task condition.
 SIBLING_LONG_DELAY_TRIALS_PER_DIRECTION = 4
 SIBLING_LONG_DELAY_TRIALS_PER_RULE = (
     SIBLING_FP_N_STIM * SIBLING_LONG_DELAY_TRIALS_PER_DIRECTION)
@@ -124,10 +126,14 @@ SIBLING_LONG_DELAY_PCA_SEED = 0
 # trials while that rule's cue channel fades out and the sibling's fades in,
 # x_alpha = x_base + alpha * (e_sibling - e_base), over N_ALPHA + 1 evenly
 # spaced alphas in [0, 1]. alpha = 0 is the base rule's own trial; alpha = 1
-# shows the base rule's stimulus under the sibling's cue, an input the network
-# never saw in training. Both sibling methods run the sweep: the long-delay
-# endpoint proxy and the gradient fixed-point solve. The grid is fixed here
-# (no CLI option), matching the two-task sweep's 0.0, 0.1, ..., 1.0.
+# shows the base rule's stimulus under the sibling's cue. For DelayDM that is
+# an input the network never saw in training, since each rule presents its
+# stimulus on its own modality. DMCGo and DMCNoGo share one stimulus
+# structure, so for DMC alpha = 1 is an ordinary, trained DMCNoGo input for the
+# same stimulus (its long-delay endpoint lands on DMCNoGo's own endpoint). Both
+# sibling methods run the sweep: the long-delay endpoint proxy and the gradient
+# fixed-point solve. The grid is fixed here (no CLI option), matching the
+# two-task sweep's 0.0, 0.1, ..., 1.0.
 SIBLING_CUE_INTERP_N_ALPHA = 10
 # Base rules whose trials supply the stimulus. The two DelayDM rules present
 # their stimulus on different modalities, so each direction of the sweep asks
@@ -1030,8 +1036,7 @@ def extract_long_delay_endpoints(
 
     group_labels = None
     if addtask == "dmcgo":
-        group_labels = _dmc_category_labels(
-            task_idx, stim_idx, int(stim_idx.max()) + 1)
+        group_labels = _dmc_category_labels(task_idx, stim_idx)
     elif addtask != "delaydm1":
         raise ValueError(f"no long-delay endpoint analysis for {addtask!r}")
 
@@ -1405,9 +1410,7 @@ def save_sibling_fixed_point_pc_projections(
                 record.get("explained_variance_ratio", []), dtype=float)[:6],
         }
         if addtask == "dmcgo":
-            n_stim = int(stim_idx.max()) + 1
-            rep_out["group_labels"] = _dmc_category_labels(
-                task_idx, stim_idx, n_stim)
+            rep_out["group_labels"] = _dmc_category_labels(task_idx, stim_idx)
         gallery_path = _save_pc_pair_gallery(
             save_dir, aname, addtask, artifact_suffix, basis_scope,
             plot_name, rep_out)
@@ -1425,15 +1428,21 @@ def save_sibling_fixed_point_pc_projections(
     return out_path
 
 
-def _dmc_category_labels(task_idx, stim_idx, n_stim):
-    """DMC category label per solved fixed point, pooled across the two rules.
+def _dmc_category_labels(task_idx, stim_idx):
+    """DMC category label per fixed point or endpoint, pooled across the two rules.
 
     The split cuts across task and stimulus identity:
         Group A: task0 stim {0..n/2-1} + task1 stim {n/2..n-1}
         Group B: task0 stim {n/2..n-1} + task1 stim {0..n/2-1}
     Thus group A iff (task == 0) == (stim < n_stim/2). A separating plane
     encodes remembered category rather than stimulus identity or task cue.
+
+    n_stim is the generator's SIBLING_FP_N_STIM directions, not the largest
+    index drawn: DMC trials draw their directions at random, so a sample can
+    miss the top direction, and splitting at half its maximum would put
+    direction 3 (0.80 pi, category 1) on the wrong side of the boundary.
     """
+    n_stim = max(SIBLING_FP_N_STIM, int(np.max(stim_idx)) + 1)
     half = n_stim // 2
     return np.asarray([int((t == 0) == (a < half))
                        for t, a in zip(task_idx, stim_idx)], dtype=int)
@@ -1563,8 +1572,9 @@ def extract_cue_interp_long_delay_endpoints(
         base_rules=None):
     """Sweep the rule cue on very-long-delay trials and keep each endpoint.
 
-    Fresh balanced long-delay trials are generated for both rules with aligned
-    RNG state, exactly as for the base endpoints. For each base rule its own
+    Fresh long-delay trials are generated for both rules with aligned RNG
+    state, exactly as for the base endpoints (direction-balanced for DelayDM,
+    random directions for DMC). For each base rule its own
     trials are rerun at every alpha with the cue shifted toward the sibling
     (`cue_interpolated_inputs`), and the full-dimensional W⊙M and hidden state
     at the end of ``delay1`` are kept per alpha. The network injects no noise,
@@ -1897,7 +1907,7 @@ def save_cue_interp_pc_projections(aname, save_dir, addtask, rules, sweep_path,
                 stim_idx = sweep_out["stim_idx"]
                 sweep_out["group_labels"] = _dmc_category_labels(
                     np.full(stim_idx.size, rules.index(base_rule), dtype=int),
-                    stim_idx, max(SIBLING_FP_N_STIM, int(stim_idx.max()) + 1))
+                    stim_idx)
             rep_out["sweeps"][base_rule] = sweep_out
             print(f"  [{addtask}/cue-interp/pc-projection] {plot_name}/"
                   f"{base_rule}: {n_alpha} alphas x {n_points} points in six "

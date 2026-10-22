@@ -221,10 +221,14 @@ two-task sweep uses the same grid). The two-task sweep mixed whole trials, which
 mix only because pro and anti share their stimulus; the DelayDM rules present
 their stimulus on different modalities, so only the cue channels move here and
 both rules serve as base in turn (`SIBLING_CUE_INTERP_BASE_RULES`), whereas
-DMCGo and DMCNoGo share one stimulus structure and DMCGo alone is swept. alpha =
-1 is an input the network never saw in training. The `long_delay_endpoint`
-sweep reruns fresh balanced long-delay trials at every alpha and keeps the
-delay-1 endpoint; the `gradient` sweep reuses the per-rule dense-angle template
+DMCGo and DMCNoGo share one stimulus structure and DMCGo alone is swept. For
+DelayDM, alpha = 1 is an input the network never saw in training (each rule
+presents its stimulus on its own modality); for DMC it is an ordinary, trained
+DMCNoGo input for the same stimulus, and its long-delay endpoint lands on
+DMCNoGo's own endpoint. The `long_delay_endpoint` sweep draws one fresh set of
+long-delay trials (direction-balanced for DelayDM, random directions for DMC),
+reruns the base rule's trials at every alpha and keeps the delay-1 endpoint;
+the `gradient` sweep reuses the per-rule dense-angle template
 (`core.grad_fixed_points.build_dense_stimulus_template`, eight directions, the
 DelayDM magnitudes) and solves the true delay fixed point at every alpha with
 the per-rule budgets. Both are projected onto the method's joint delay basis

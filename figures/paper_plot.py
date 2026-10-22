@@ -9879,8 +9879,12 @@ def _draw_cue_interp_endpoint_overlay(ax, alphas, sweeps, task_names, bx, by,
     is carried by marker shape as it is for the endpoints themselves: the
     alpha = 0 start takes the base rule's marker (small, filled; it is that
     rule's own trial), the alpha = 1 end takes the sibling's marker, hollow,
-    because it is a cue this stimulus was never paired with in training.
-    Intermediate alphas are dots along a dotted path."""
+    marking where the sweep ends rather than an endpoint of the sibling's own
+    trials. For DelayDM that end is an input never seen in training (each
+    rule presents its stimulus on its own modality); for DMC it is an
+    ordinary DMCNoGo input for the same stimulus, so the hollow marker lands
+    on DMCNoGo's own endpoint. Intermediate alphas are dots along a dotted
+    path."""
     for base_rule, sweep in sweeps.items():
         base_task = task_names.index(base_rule)
         target_task = task_names.index(sweep["target_rule"])
