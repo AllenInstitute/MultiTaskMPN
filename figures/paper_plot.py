@@ -408,10 +408,11 @@ _set_multitask_l2(MULTITASK_L2)
 # all four L2 cohorts.
 # DelayDM and DMCGo sibling-task probes (two_in_multiple mode) select their
 # trained runs independently of each other and of the clustering figures.
-# With None a family's run is chosen automatically: the cached SIBLING_L2 run
-# whose figures score best (`_select_sibling_run`; these figures are
-# illustrations, so the most legible run is shown and the whole ranking is
-# printed and saved). A run name pins that family's run instead.
+# With None each figure of a family takes its own run automatically: the
+# cached SIBLING_L2 run that scores best on that figure (`_select_sibling_runs`;
+# these figures are illustrations, so the most legible run is shown and the
+# whole ranking is printed and saved). A run name pins every figure of that
+# family to one run instead.
 SIBLING_L2 = "1e4"
 DELAYDM_ANAME = None
 DMCGO_ANAME = None
@@ -9542,25 +9543,32 @@ def _pinned_sibling_aname(family):
     return {"delaydm1": DELAYDM_ANAME, "dmcgo": DMCGO_ANAME}[family]
 
 
-def _multitask_sibling_aname(family):
-    """Return the training run of one sibling-task family: the pinned run,
-    or with None the automatic selection, resolved once per family."""
+def _multitask_sibling_aname(family, panel):
+    """Return the training run behind one sibling-family panel
+    (`_SIBLING_PANELS`, e.g. "endpoint hidden"): the family's pinned run, or
+    with None the run selected for that panel (resolved once per family)."""
     pinned = _pinned_sibling_aname(family)
     if pinned is not None:
         return pinned
     if family not in _SIBLING_SELECTED_RUNS:
-        _SIBLING_SELECTED_RUNS[family] = _select_sibling_run(family)
-    return _SIBLING_SELECTED_RUNS[family]
+        _SIBLING_SELECTED_RUNS[family] = _select_sibling_runs(family)
+    return _SIBLING_SELECTED_RUNS[family][panel]
 
 
-# ─── Automatic choice of the sibling example run ─────────────────────────────
-# The sibling figures illustrate one network, so with DELAYDM_ANAME /
-# DMCGO_ANAME = None the run that draws them most legibly is shown: every
-# cached SIBLING_L2 run is scored on the panels its figures draw, and the
-# whole ranking is printed and saved beside the figures. All of a family's
-# figures (endpoint hidden / e_modulation, rule-cue sweep) come from one run.
+# ─── Automatic choice of the sibling example runs ────────────────────────────
+# The sibling figures are illustrations, so with DELAYDM_ANAME / DMCGO_ANAME =
+# None every panel shows the cached SIBLING_L2 run that draws it most legibly,
+# chosen on its own: each figure (endpoint or rule-cue sweep, per
+# representation) takes its highest-scoring run, so a family's figures can
+# come from different networks. The whole ranking is printed and saved beside
+# the figures. A panel's run serves all its views: the endpoint figure and its
+# `_cue_interp` overlay (the overlaid sweep shares that run's basis), the
+# sweep's 2d and 3d views, and the gradient-method figures of the same
+# representation, which have no score of their own.
 _SIBLING_SELECTED_RUNS = {}
 _SIBLING_SCORED_REPRESENTATIONS = ("hidden", "e_modulation")
+_SIBLING_PANELS = tuple(f"{kind} {plot_name}" for kind in ("endpoint", "sweep")
+                        for plot_name in _SIBLING_SCORED_REPRESENTATIONS)
 
 
 def _require_sibling_converged(is_fixed, context):
@@ -9625,20 +9633,28 @@ def _sibling_run_components(family, aname):
     return components
 
 
-def _sibling_run_ranking(family):
-    """Score every cached SIBLING_L2 run of `family` and rank them, best first.
+def _sibling_panel_metric(family, panel):
+    """The score that ranks `panel`: its own, or for a DMC sweep (drawn in its
+    endpoint plane, with no score of its own) the endpoint panel's, so the DMC
+    sweep of a representation shows the same run as its endpoints."""
+    kind, plot_name = panel.split(" ", 1)
+    if kind == "sweep" and family == "dmcgo":
+        return f"endpoint {plot_name}"
+    return panel
 
-    A run's score is the geometric mean of its panel scores
-    (`_sibling_run_components`): it does not depend on each metric's scale,
-    and one weak panel pulls the run down instead of being averaged away.
-    Ties go to the lowest seed. Runs that cannot be scored are listed with
-    the reason.
+
+def _sibling_run_ranking(family):
+    """Score every cached SIBLING_L2 run of `family` and rank them per panel.
+
+    Each panel of `_SIBLING_PANELS` ranks the runs by its own score
+    (`_sibling_panel_metric` of `_sibling_run_components`), best first, ties
+    to the lowest seed. Runs that cannot be scored are listed with the reason.
     """
     import re
 
     pattern = re.compile(r"everything_seed(\d+)_" + re.escape(
         f"{multitask_feature(SIBLING_L2)}{_MULTITASK_RUN_SUFFIX}"))
-    rankings, skipped = [], []
+    runs, skipped = [], []
     for run_dir in TWO_IN_MULTIPLES_DIR.glob(multitask_aname("*", SIBLING_L2)):
         match = pattern.fullmatch(run_dir.name)
         if match is None or not run_dir.is_dir():
@@ -9650,30 +9666,38 @@ def _sibling_run_ranking(family):
                 pickle.UnpicklingError) as exc:
             skipped.append({"aname": run_dir.name, "seed": seed, "reason": str(exc)})
             continue
-        values = np.asarray(list(components.values()), dtype=float)
-        rankings.append({"aname": run_dir.name, "seed": seed,
-                         "score": float(np.prod(values) ** (1.0 / values.size)),
-                         "components": components})
-    rankings.sort(key=lambda row: (-row["score"], row["seed"]))
+        runs.append({"aname": run_dir.name, "seed": seed, "components": components})
+    runs.sort(key=lambda row: row["seed"])
     skipped.sort(key=lambda row: row["seed"])
+    panels = {}
+    for panel in _SIBLING_PANELS:
+        metric = _sibling_panel_metric(family, panel)
+        ranked = sorted(runs, key=lambda row: (-row["components"][metric], row["seed"]))
+        panels[panel] = {
+            "metric": metric,
+            "best_aname": ranked[0]["aname"] if ranked else None,
+            "ranking": [{"seed": row["seed"], "score": row["components"][metric]}
+                        for row in ranked],
+        }
     return {
         "family": family,
         "cohort": multitask_feature(SIBLING_L2),
-        "criterion": "geometric mean of the panel scores",
-        "n_candidates": len(rankings) + len(skipped),
-        "best_aname": rankings[0]["aname"] if rankings else None,
-        "rankings": rankings,
+        "criterion": "each panel takes its highest-scoring run",
+        "n_candidates": len(runs) + len(skipped),
+        "panels": panels,
+        "runs": runs,
         "skipped": skipped,
     }
 
 
-def _select_sibling_run(family):
-    """Rank `family`'s cached runs, report the ranking and return the best.
+def _select_sibling_runs(family):
+    """Rank `family`'s cached runs per panel, report the rankings and return
+    {panel: run}.
 
-    The ranking is printed and saved as
+    The rankings are printed and saved as
     multitask_sibling_run_scores_{delaydm,dmcgo}.json. With no scorable run
-    the cohort's seed-0 name is returned, so the figures print their usual
-    "Skipped" messages.
+    every panel gets the cohort's seed-0 name, so the figures print their
+    usual "Skipped" messages.
     """
     report = _sibling_run_ranking(family)
     _ensure_out_dir()
@@ -9681,37 +9705,38 @@ def _select_sibling_run(family):
         f"sibling_run_scores_{_MULTITASK_SIBLING_OUTPUT_NAMES[family]}.json")
     with report_path.open("w") as stream:
         json.dump(report, stream, indent=2, allow_nan=False)
-    print(f"  {family} sibling run: {len(report['rankings'])}/"
+    print(f"  {family} sibling runs: {len(report['runs'])}/"
           f"{report['n_candidates']} cached {report['cohort']} runs scored "
           f"({report['criterion']}); saved {report_path}")
-    for row in report["rankings"]:
-        panels = ", ".join(f"{name} {value:.3f}"
+    for row in report["runs"]:
+        scores = ", ".join(f"{name} {value:.3f}"
                            for name, value in row["components"].items())
-        print(f"    seed {row['seed']}: {row['score']:.3f} ({panels})")
+        print(f"    seed {row['seed']}: {scores}")
     for row in report["skipped"]:
         print(f"    Skipped seed {row['seed']}: {row['reason']}")
-    if not report["rankings"]:
+    if not report["runs"]:
         print(f"  {family}: no scorable {report['cohort']} run under "
               f"{TWO_IN_MULTIPLES_DIR}/. Run: python "
               "multiple_task/sibling_delay_analysis.py --seed <seed> "
               f"--feature {report['cohort']} --families {family} "
               "--method long_delay_endpoint")
-        return multitask_aname(0, SIBLING_L2)
-    best = report["rankings"][0]
-    print(f"  {family} sibling run selected automatically: {best['aname']} "
-          f"(score {best['score']:.3f})")
-    return best["aname"]
+        return {panel: multitask_aname(0, SIBLING_L2) for panel in _SIBLING_PANELS}
+    for panel, choice in report["panels"].items():
+        best = choice["ranking"][0]
+        print(f"  {family} {panel} run selected automatically: seed {best['seed']} "
+              f"({choice['metric']} {best['score']:.3f})")
+    return {panel: choice["best_aname"] for panel, choice in report["panels"].items()}
 
 
-def _multitask_sibling_hint(family, method="gradient"):
-    """Reconstruct the upstream command for the family's sibling run (pinned
-    or automatically selected)."""
+def _multitask_sibling_hint(family, method="gradient", aname=None):
+    """Reconstruct the upstream command for one sibling run: `aname`, or by
+    default the family's pinned run (a generic hint when none is pinned)."""
     import re as _re
 
+    if aname is None:
+        aname = _pinned_sibling_aname(family) or ""
     match = _re.fullmatch(
-        r"everything_seed(\d+)_(.+)\+hidden\d+\+batch\d+\+angle",
-        _multitask_sibling_aname(family),
-    )
+        r"everything_seed(\d+)_(.+)\+hidden\d+\+batch\d+\+angle", aname)
     if match is None:
         return "Run multiple_task/sibling_delay_analysis.py first."
     if method not in ("gradient", "long_delay_endpoint"):
@@ -9795,9 +9820,10 @@ def _condensed_euclidean(x):
     return np.sqrt(sq)[np.triu_indices(x.shape[0], 1)]
 
 
-def _sibling_alignment_metrics(family, rules, rep_key="fixed_WM",
+def _sibling_alignment_metrics(family, rules, aname, rep_key="fixed_WM",
                                probe="longdelay"):
-    """Quantify sibling-task translation and geometry before PCA.
+    """Quantify sibling-task translation and geometry before PCA, from the
+    gradient fixed points of run `aname`.
 
     Translation explained is the fraction of the mean squared paired
     cross-task displacement accounted for by one shared displacement vector.
@@ -9805,12 +9831,11 @@ def _sibling_alignment_metrics(family, rules, rep_key="fixed_WM",
     matrices and is therefore translation invariant. These metrics are computed
     before PCA; the trajectory-PC panels below only visualize them.
     """
-    aname = _multitask_sibling_aname(family)
     run_dir = TWO_IN_MULTIPLES_DIR / aname
     records = []
     for rule in rules:
         path = run_dir / f"fixed_points_grad_{aname}_{rule}.pkl"
-        data = _load_pkl_or_skip(path, _multitask_sibling_hint(family))
+        data = _load_pkl_or_skip(path, _multitask_sibling_hint(family, aname=aname))
         if data is None:
             return None
         entry = data.get("results", {}).get(probe)
@@ -9865,9 +9890,10 @@ def _plot_multitask_sibling_fixed_point_geometry_representation(
     plane. Panel B subtracts only the mean paired modality displacement from
     modality 2. It never refits PCA and performs no rotation or scaling.
     Quantitative annotations are computed in the corresponding original
-    high-dimensional representation, before PCA.
+    high-dimensional representation, before PCA. `data` is the gradient
+    projection cache of the run behind this representation's endpoint panel.
     """
-    aname = _multitask_sibling_aname(family)
+    aname = _multitask_sibling_aname(family, f"endpoint {plot_name}")
     pc_label = "Joint Delay"
     path = (TWO_IN_MULTIPLES_DIR / aname
             / f"{family}_delay_pc_projections_{aname}.pkl")
@@ -9901,7 +9927,7 @@ def _plot_multitask_sibling_fixed_point_geometry_representation(
     aligned = projection.copy()
     aligned[task_idx == 1] -= translation
     metrics = _sibling_alignment_metrics(
-        family, rules, rep_key=rep_key, probe="longdelay")
+        family, rules, aname, rep_key=rep_key, probe="longdelay")
     if metrics is None:
         return False
 
@@ -10013,11 +10039,12 @@ def _cue_interp_endpoint_overlay(family, plot_name):
     """(alphas, sweeps) of `family`'s long-delay rule-cue sweep, or None.
 
     Reads the endpoint-method projection written by
-    `sibling_delay_analysis.save_cue_interp_pc_projections`; a missing or
+    `sibling_delay_analysis.save_cue_interp_pc_projections` from the run of
+    the `plot_name` endpoint panel, whose basis the sweep shares; a missing or
     foreign cache only drops the overlay, never the endpoint figure."""
     if not _MULTITASK_ENDPOINT_OVERLAY_CUE_INTERP:
         return None
-    aname = _multitask_sibling_aname(family)
+    aname = _multitask_sibling_aname(family, f"endpoint {plot_name}")
     path = _multitask_cue_interp_projection_path(
         TWO_IN_MULTIPLES_DIR / aname, family, aname, "long_delay_endpoint")
     if not path.exists():
@@ -10095,7 +10122,9 @@ def _plot_multitask_long_delay_endpoint_representation(
     if "trajectory_proj" not in entry:
         print(f"  Skipped {family} long-delay {plot_name}: projected delay "
               "trajectories are not available. Regenerate with "
-              f"{_multitask_sibling_hint(family, 'long_delay_endpoint')}")
+              + _multitask_sibling_hint(
+                  family, "long_delay_endpoint",
+                  aname=_multitask_sibling_aname(family, f"endpoint {plot_name}")))
         return False
     try:
         pair, score, metric_name = _best_sibling_endpoint_pc_pair(
@@ -10258,20 +10287,25 @@ def plot_multitask_delaydm_fixed_point_geometry():
     Produces effective-modulation and hidden-state figures for each family.
     All use their own family's joint delay-trajectory PCA only for
     visualization; quantitative metrics use the original high-dimensional
-    representation.
+    representation. Each representation reads the run of its endpoint panel
+    (`_multitask_sibling_aname`); a run's cache is loaded once however many
+    representations use it.
     """
     for family, rules in _MULTITASK_SIBLING_FAMILIES.items():
-        aname = _multitask_sibling_aname(family)
-        run_dir = TWO_IN_MULTIPLES_DIR / aname
-        path = run_dir / f"{family}_delay_pc_projections_{aname}.pkl"
-        data = _load_pkl_or_skip(path, _multitask_sibling_hint(family))
-        if data is None:
-            continue
+        loaded = {}
         for plot_name, rep_key, output_suffix in (
                 ("e_modulation", "fixed_WM", "emodulation"),
                 ("hidden", "fixed_hidden", "hidden")):
+            aname = _multitask_sibling_aname(family, f"endpoint {plot_name}")
+            if aname not in loaded:
+                path = (TWO_IN_MULTIPLES_DIR / aname
+                        / f"{family}_delay_pc_projections_{aname}.pkl")
+                loaded[aname] = _load_pkl_or_skip(
+                    path, _multitask_sibling_hint(family, aname=aname))
+            if loaded[aname] is None:
+                continue
             rendered = _plot_multitask_sibling_fixed_point_geometry_representation(
-                data, family, rules, plot_name, rep_key, output_suffix)
+                loaded[aname], family, rules, plot_name, rep_key, output_suffix)
             if rendered is False:
                 break
 
@@ -10279,17 +10313,20 @@ def plot_multitask_delaydm_fixed_point_geometry():
     # for the gradient fixed-point geometry above. Missing endpoint artifacts
     # skip only these panels so gradient-only runs remain fully supported.
     for family, rules in _MULTITASK_SIBLING_FAMILIES.items():
-        aname = _multitask_sibling_aname(family)
-        run_dir = TWO_IN_MULTIPLES_DIR / aname
-        path = (run_dir
-                / f"{family}_long_delay_endpoint_pc_projections_{aname}.pkl")
-        data = _load_pkl_or_skip(
-            path, _multitask_sibling_hint(family, "long_delay_endpoint"))
-        if data is None:
-            continue
+        loaded = {}
         for plot_name, output_suffix in (
                 ("e_modulation", "emodulation"),
                 ("hidden", "hidden")):
+            aname = _multitask_sibling_aname(family, f"endpoint {plot_name}")
+            if aname not in loaded:
+                path = (TWO_IN_MULTIPLES_DIR / aname
+                        / f"{family}_long_delay_endpoint_pc_projections_{aname}.pkl")
+                loaded[aname] = _load_pkl_or_skip(
+                    path, _multitask_sibling_hint(
+                        family, "long_delay_endpoint", aname=aname))
+            data = loaded[aname]
+            if data is None:
+                continue
             # The plain figure first, then, when the rule-cue sweep is
             # cached, a second copy with the sweep overlaid (`_cue_interp`).
             _plot_multitask_long_delay_endpoint_representation(
@@ -10751,30 +10788,37 @@ def plot_multitask_sibling_cue_interp():
     comes from `_multitask_cue_interp_plane`: chosen on the sweep itself for
     DelayDM, the base figure's plane for DMC. With
     SIBLING_ONE_TRIAL_PER_STIMULUS every view shows one trial per stimulus
-    direction. Reads
-    two_in_multiples/{aname}/{family}_cue_interp_*pc_projections_{aname}.pkl;
-    a family or method without that cache is skipped.
+    direction. Each representation reads the run of its sweep panel
+    (`_multitask_sibling_aname`) from
+    two_in_multiples/{aname}/{family}_cue_interp_*pc_projections_{aname}.pkl,
+    loaded once per run; a representation or method without that cache is
+    skipped.
     """
     for family, rules in _MULTITASK_SIBLING_FAMILIES.items():
-        aname = _multitask_sibling_aname(family)
-        run_dir = TWO_IN_MULTIPLES_DIR / aname
         for method in _MULTITASK_CUE_INTERP_METHODS:
-            path = _multitask_cue_interp_projection_path(
-                run_dir, family, aname, method)
-            data = _load_pkl_or_skip(
-                path,
-                _multitask_sibling_hint(family, method)
-                + " (its rule-cue sweep writes this file).")
-            if data is None:
-                continue
-            if data.get("kind") != "cue_interp":
-                print(f"  Skipped {path.name}: not a rule-cue sweep projection.")
-                continue
-            alphas = np.asarray(data["alphas"], dtype=float)
-            legend_handles = None
+            loaded = {}
+            legend_handles = {}
             for plot_name, output_suffix in (
                     ("e_modulation", "emodulation"),
                     ("hidden", "hidden")):
+                aname = _multitask_sibling_aname(family, f"sweep {plot_name}")
+                run_dir = TWO_IN_MULTIPLES_DIR / aname
+                path = _multitask_cue_interp_projection_path(
+                    run_dir, family, aname, method)
+                if aname not in loaded:
+                    loaded[aname] = _load_pkl_or_skip(
+                        path,
+                        _multitask_sibling_hint(family, method, aname=aname)
+                        + " (its rule-cue sweep writes this file).")
+                    if (loaded[aname] is not None
+                            and loaded[aname].get("kind") != "cue_interp"):
+                        print(f"  Skipped {path.name}: not a rule-cue sweep "
+                              "projection.")
+                        loaded[aname] = None
+                data = loaded[aname]
+                if data is None:
+                    continue
+                alphas = np.asarray(data["alphas"], dtype=float)
                 entry = data.get("representations", {}).get(plot_name)
                 if not entry or not entry.get("sweeps"):
                     print(f"  Skipped {family}/{method}/{plot_name}: no sweep "
@@ -10790,15 +10834,15 @@ def plot_multitask_sibling_cue_interp():
                 _render_multitask_cue_interp_3d(
                     entry, alphas, family, method, pair,
                     _multitask_out(f"{stem}_3d.png"), plane_note)
-                if legend_handles is None:
-                    legend_handles = _cue_interp_legend_handles(
-                        family, rules, method, entry)
+                for handle in _cue_interp_legend_handles(family, rules, method, entry):
+                    legend_handles.setdefault(handle.get_label(), handle)
             # One legend per family and method, shared by both
-            # representations and all views; nothing to save when the sweep
+            # representations (whose runs may differ, so it holds every entry
+            # either needs) and all views; nothing to save when the sweep
             # needs no explanation (DelayDM endpoints).
             if legend_handles:
                 _save_cue_interp_legend(
-                    legend_handles,
+                    list(legend_handles.values()),
                     _multitask_out(
                         f"{_MULTITASK_SIBLING_OUTPUT_NAMES[family]}_cue_interp_"
                         f"{method}_legend.png"))
@@ -12273,8 +12317,8 @@ def main():
         "two_in_multiple": "; ".join(
             f"{family}: "
             + (_pinned_sibling_aname(family)
-               or f"best-scoring cached {multitask_feature(SIBLING_L2)} run "
-                  "(ranked when its figures run)")
+               or f"best-scoring cached {multitask_feature(SIBLING_L2)} run per "
+                  "panel (ranked when its figures run)")
             for family in _MULTITASK_SIBLING_FAMILIES
         ),
         "two_task": TWOTASK_ANAME,

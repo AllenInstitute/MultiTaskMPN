@@ -608,7 +608,7 @@ class CueInterpPaperFigureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for family, base_rules in (("delaydm1", RULES), ("dmcgo", ("dmcgo",))):
-                aname = paper_plot._multitask_sibling_aname(family)
+                aname = paper_plot._multitask_sibling_aname(family, "sweep e_modulation")
                 run_dir = root / aname
                 run_dir.mkdir(parents=True, exist_ok=True)
                 for method in paper_plot._MULTITASK_CUE_INTERP_METHODS:
@@ -695,7 +695,7 @@ class CueInterpPaperFigureTests(unittest.TestCase):
         n_alpha, n_points = 3, 4
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            aname = paper_plot._multitask_sibling_aname("delaydm1")
+            aname = paper_plot._multitask_sibling_aname("delaydm1", "endpoint e_modulation")
             run_dir = root / aname
             run_dir.mkdir(parents=True)
             sweep_path = paper_plot._multitask_cue_interp_projection_path(

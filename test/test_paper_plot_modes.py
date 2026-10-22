@@ -937,7 +937,7 @@ class PaperPlotModeTests(unittest.TestCase):
                     patch.object(paper_plot, "DMCGO_ANAME", runs["dmcgo"]), \
                     patch.object(paper_plot, "_load_pkl_or_skip",
                                  side_effect=data) as load:
-                metrics = paper_plot._sibling_alignment_metrics(family, rules)
+                metrics = paper_plot._sibling_alignment_metrics(family, rules, aname)
                 self.assertEqual(metrics["n_pairs"], 3)
                 self.assertEqual(
                     [call.args[0] for call in load.call_args_list],

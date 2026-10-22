@@ -1,4 +1,4 @@
-"""Tests for the automatic choice of the sibling-family example run."""
+"""Tests for the automatic per-panel choice of the sibling-family example runs."""
 
 import json
 import pickle
@@ -28,10 +28,14 @@ def _ring(stim, separation):
     return separation * np.column_stack([np.cos(angles), np.sin(angles)])
 
 
-def _delaydm_caches(rng, separation, endpoint_fixed=True, sweep_fixed=True):
-    """(endpoint entry, sweeps) of a DelayDM run whose directions sit
-    `separation` apart; `*_fixed` False marks one point unconverged and None
-    drops the convergence mask (a cache written before settling)."""
+def _delaydm_caches(rng, separation, sweep_separation=None, endpoint_fixed=True,
+                    sweep_fixed=True):
+    """(endpoint entry, sweeps) of a DelayDM run whose endpoint directions sit
+    `separation` apart and sweep directions `sweep_separation` (default the
+    same); `*_fixed` False marks one point unconverged and None drops the
+    convergence mask (a cache written before settling)."""
+    if sweep_separation is None:
+        sweep_separation = separation
     stim = np.tile(np.repeat(np.arange(N_DIRECTIONS), 2), 2)
     proj = rng.normal(scale=0.1, size=(stim.size, 6))
     proj[:, :2] += _ring(stim, separation)
@@ -45,7 +49,7 @@ def _delaydm_caches(rng, separation, endpoint_fixed=True, sweep_fixed=True):
     sweep_stim = np.repeat(np.arange(N_DIRECTIONS), 2)
     for base_rule, target_rule in (("delaydm1", "delaydm2"), ("delaydm2", "delaydm1")):
         sweep_proj = rng.normal(scale=0.1, size=(N_ALPHA, sweep_stim.size, 6))
-        sweep_proj[:, :, :2] += _ring(sweep_stim, separation)
+        sweep_proj[:, :, :2] += _ring(sweep_stim, sweep_separation)
         sweep_proj[:, :, 2] += np.linspace(0.0, 1.0, N_ALPHA)[:, None]
         sweep = {"proj": sweep_proj, "stim_idx": sweep_stim,
                  "target_rule": target_rule}
@@ -116,29 +120,34 @@ class SiblingRunSelectionTests(unittest.TestCase):
         return json.loads(
             (self.out / f"multitask_sibling_run_scores_{name}.json").read_text())
 
-    def test_best_scoring_run_is_selected_once_and_the_ranking_saved(self):
-        self._write_run("delaydm1", _aname(3), _delaydm_caches(self.rng, 0.5))
-        self._write_run("delaydm1", _aname(7), _delaydm_caches(self.rng, 3.0))
+    def test_each_panel_takes_its_own_best_run_from_one_ranking(self):
+        # Seed 3 has the clearer endpoints, seed 7 the clearer sweeps.
+        self._write_run("delaydm1", _aname(3),
+                        _delaydm_caches(self.rng, 3.0, sweep_separation=0.5))
+        self._write_run("delaydm1", _aname(7),
+                        _delaydm_caches(self.rng, 0.5, sweep_separation=3.0))
         # A better run of another L2 cohort is never a candidate.
         self._write_run("delaydm1", _aname(1, "1e3"), _delaydm_caches(self.rng, 9.0))
         with patch.object(paper_plot, "_sibling_run_ranking",
                           wraps=paper_plot._sibling_run_ranking) as ranking:
-            self.assertEqual(paper_plot._multitask_sibling_aname("delaydm1"), _aname(7))
-            self.assertEqual(paper_plot._multitask_sibling_aname("delaydm1"), _aname(7))
+            selected = {panel: paper_plot._multitask_sibling_aname("delaydm1", panel)
+                        for panel in paper_plot._SIBLING_PANELS}
         ranking.assert_called_once_with("delaydm1")
+        self.assertEqual(selected, {
+            "endpoint hidden": _aname(3), "endpoint e_modulation": _aname(3),
+            "sweep hidden": _aname(7), "sweep e_modulation": _aname(7)})
 
         report = self._report("delaydm")
-        self.assertEqual([row["seed"] for row in report["rankings"]], [7, 3])
-        self.assertEqual(report["best_aname"], _aname(7))
-        best = report["rankings"][0]
-        self.assertEqual(sorted(best["components"]),
-                         ["endpoint e_modulation", "endpoint hidden",
-                          "sweep e_modulation", "sweep hidden"])
-        components = np.asarray(list(best["components"].values()))
-        self.assertAlmostEqual(best["score"], float(np.prod(components) ** 0.25))
+        self.assertEqual([row["seed"] for row in report["runs"]], [3, 7])
+        self.assertEqual(sorted(report["runs"][0]["components"]),
+                         sorted(paper_plot._SIBLING_PANELS))
+        for panel, seeds in (("endpoint hidden", [3, 7]), ("sweep hidden", [7, 3])):
+            choice = report["panels"][panel]
+            self.assertEqual(choice["metric"], panel)
+            self.assertEqual([row["seed"] for row in choice["ranking"]], seeds)
         messages = [str(call.args[0]) for call in self.output.call_args_list]
-        self.assertTrue(any(f"selected automatically: {_aname(7)}" in text
-                            for text in messages))
+        self.assertTrue(any("delaydm1 sweep hidden run selected automatically: seed 7"
+                            in text for text in messages))
 
     def test_runs_that_are_unconverged_unsettled_or_incomplete_are_skipped(self):
         self._write_run("delaydm1", _aname(3), _delaydm_caches(self.rng, 0.5))
@@ -148,7 +157,9 @@ class SiblingRunSelectionTests(unittest.TestCase):
                         _delaydm_caches(self.rng, 3.0, sweep_fixed=None))
         self._write_run("delaydm1", _aname(11), _delaydm_caches(self.rng, 3.0),
                         with_sweep=False)
-        self.assertEqual(paper_plot._multitask_sibling_aname("delaydm1"), _aname(3))
+        for panel in paper_plot._SIBLING_PANELS:
+            self.assertEqual(paper_plot._multitask_sibling_aname("delaydm1", panel),
+                             _aname(3))
 
         reasons = {row["seed"]: row["reason"]
                    for row in self._report("delaydm")["skipped"]}
@@ -157,33 +168,42 @@ class SiblingRunSelectionTests(unittest.TestCase):
         self.assertIn("predate settling", reasons[9])
         self.assertIn("cue_interp", reasons[11])
 
-    def test_one_weak_panel_is_not_averaged_away(self):
-        for seed in (3, 7):
+    def test_dmc_sweep_panels_follow_their_endpoint_panels(self):
+        for seed in (3, 7, 9):
             (self.root / _aname(seed)).mkdir()
         components = {
             _aname(3): {"endpoint hidden": 1.0, "endpoint e_modulation": 0.0},
             _aname(7): {"endpoint hidden": 0.4, "endpoint e_modulation": 0.4},
+            # Ties seed 3 everywhere; the lower seed wins.
+            _aname(9): {"endpoint hidden": 1.0, "endpoint e_modulation": 0.0},
         }
         with patch.object(paper_plot, "_sibling_run_components",
                           side_effect=lambda family, aname: components[aname]):
-            report = paper_plot._sibling_run_ranking("dmcgo")
-        self.assertEqual([row["seed"] for row in report["rankings"]], [7, 3])
-        self.assertEqual(report["rankings"][1]["score"], 0.0)
+            selected = paper_plot._select_sibling_runs("dmcgo")
+        self.assertEqual(selected, {
+            "endpoint hidden": _aname(3), "sweep hidden": _aname(3),
+            "endpoint e_modulation": _aname(7), "sweep e_modulation": _aname(7)})
+        self.assertEqual(self._report("dmcgo")["panels"]["sweep hidden"]["metric"],
+                         "endpoint hidden")
 
     def test_dmc_accuracy_is_rescaled_so_chance_is_zero(self):
         self._write_run("dmcgo", _aname(5), _dmc_caches(self.rng))
         self.assertEqual(paper_plot._sibling_run_components("dmcgo", _aname(5)),
                          {"endpoint hidden": 1.0, "endpoint e_modulation": 1.0})
 
-    def test_a_pinned_run_is_used_without_ranking(self):
+    def test_a_pinned_run_serves_every_panel_without_ranking(self):
         with patch.object(paper_plot, "DMCGO_ANAME", "pinned_run"), \
                 patch.object(paper_plot, "_sibling_run_ranking") as ranking:
-            self.assertEqual(paper_plot._multitask_sibling_aname("dmcgo"), "pinned_run")
+            for panel in paper_plot._SIBLING_PANELS:
+                self.assertEqual(paper_plot._multitask_sibling_aname("dmcgo", panel),
+                                 "pinned_run")
         ranking.assert_not_called()
 
-    def test_without_a_scorable_run_the_seed_zero_name_is_returned(self):
-        self.assertEqual(paper_plot._multitask_sibling_aname("dmcgo"), _aname(0))
-        self.assertEqual(self._report("dmcgo")["rankings"], [])
+    def test_without_a_scorable_run_every_panel_gets_the_seed_zero_name(self):
+        for panel in paper_plot._SIBLING_PANELS:
+            self.assertEqual(paper_plot._multitask_sibling_aname("dmcgo", panel),
+                             _aname(0))
+        self.assertEqual(self._report("dmcgo")["runs"], [])
         messages = [str(call.args[0]) for call in self.output.call_args_list]
         self.assertTrue(any("no scorable L21e4 run" in text for text in messages))
 
