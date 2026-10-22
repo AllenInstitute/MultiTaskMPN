@@ -408,8 +408,13 @@ _set_multitask_l2(MULTITASK_L2)
 # all four L2 cohorts.
 # DelayDM and DMCGo sibling-task probes (two_in_multiple mode) select their
 # trained runs independently of each other and of the clustering figures.
-DELAYDM_ANAME = "everything_seed921_L21e4+hidden300+batch128+angle"
-DMCGO_ANAME = "everything_seed921_L21e4+hidden300+batch128+angle"
+# With None a family's run is chosen automatically: the cached SIBLING_L2 run
+# whose figures score best (`_select_sibling_run`; these figures are
+# illustrations, so the most legible run is shown and the whole ranking is
+# printed and saved). A run name pins that family's run instead.
+SIBLING_L2 = "1e4"
+DELAYDM_ANAME = None
+DMCGO_ANAME = None
 # Rule-cue sweep figures (sibling_cue_interp and the `_cue_interp` endpoint
 # overlays): draw every sweep trial (False), or one trial per stimulus
 # direction at a magnitude matched across the directions (True; see
@@ -9532,13 +9537,175 @@ _MULTITASK_ENDPOINT_LIMIT_PADDING = 0.13
 _MULTITASK_DELAYDM_EMODULATION_LIMIT_PADDING = 0.18
 
 
-def _multitask_sibling_aname(family):
-    """Return the configured training run for one sibling-task family."""
+def _pinned_sibling_aname(family):
+    """The run DELAYDM_ANAME / DMCGO_ANAME pins for `family`, or None."""
     return {"delaydm1": DELAYDM_ANAME, "dmcgo": DMCGO_ANAME}[family]
 
 
+def _multitask_sibling_aname(family):
+    """Return the training run of one sibling-task family: the pinned run,
+    or with None the automatic selection, resolved once per family."""
+    pinned = _pinned_sibling_aname(family)
+    if pinned is not None:
+        return pinned
+    if family not in _SIBLING_SELECTED_RUNS:
+        _SIBLING_SELECTED_RUNS[family] = _select_sibling_run(family)
+    return _SIBLING_SELECTED_RUNS[family]
+
+
+# ─── Automatic choice of the sibling example run ─────────────────────────────
+# The sibling figures illustrate one network, so with DELAYDM_ANAME /
+# DMCGO_ANAME = None the run that draws them most legibly is shown: every
+# cached SIBLING_L2 run is scored on the panels its figures draw, and the
+# whole ranking is printed and saved beside the figures. All of a family's
+# figures (endpoint hidden / e_modulation, rule-cue sweep) come from one run.
+_SIBLING_SELECTED_RUNS = {}
+_SIBLING_SCORED_REPRESENTATIONS = ("hidden", "e_modulation")
+
+
+def _require_sibling_converged(is_fixed, context):
+    """Raise unless a saved convergence mask exists and is all True."""
+    if is_fixed is None:
+        raise ValueError(f"{context} predate settling (no is_fixed mask); rerun "
+                         "multiple_task/sibling_delay_analysis.py")
+    mask = np.asarray(is_fixed, dtype=bool)
+    if not mask.all():
+        raise ValueError(f"{context}: {int((~mask).sum())}/{mask.size} points "
+                         "above the fixed-point criterion")
+
+
+def _sibling_run_components(family, aname):
+    """Panel scores of one cached run of `family`, keyed by panel.
+
+    Each panel is scored by the metric its figure picks its PC plane with, so
+    a run is judged on the plane actually drawn: each representation's
+    long-delay endpoints (`_best_sibling_endpoint_pc_pair`; DMC's balanced
+    accuracy rescaled so chance is 0 and perfect decoding 1) and, for DelayDM,
+    each representation's rule-cue sweep (`best_delaydm_sweep_pc_pair`; the
+    DMC sweep is drawn in its endpoint plane and adds no score of its own).
+    Raises ValueError when a cache is missing, predates settling or holds a
+    point above the fixed-point criterion, so such a run is never shown.
+    """
+    run_dir = TWO_IN_MULTIPLES_DIR / aname
+    paths = {
+        "endpoint": (run_dir
+                     / f"{family}_long_delay_endpoint_pc_projections_{aname}.pkl"),
+        "sweep": _multitask_cue_interp_projection_path(
+            run_dir, family, aname, "long_delay_endpoint"),
+    }
+    caches = {}
+    for kind, path in paths.items():
+        if not path.exists():
+            raise ValueError(f"no {path.name}")
+        with path.open("rb") as stream:
+            caches[kind] = pickle.load(stream)
+    if caches["sweep"].get("kind") != "cue_interp":
+        raise ValueError(f"{paths['sweep'].name} is not a rule-cue sweep projection")
+
+    components = {}
+    for plot_name in _SIBLING_SCORED_REPRESENTATIONS:
+        entry = caches["endpoint"].get("representations", {}).get(plot_name)
+        sweeps = (caches["sweep"].get("representations", {})
+                  .get(plot_name, {}).get("sweeps"))
+        if entry is None or not sweeps:
+            raise ValueError(f"no {plot_name} endpoints or rule-cue sweep")
+        _require_sibling_converged(entry.get("is_fixed"), f"{plot_name} endpoints")
+        for base_rule, sweep in sweeps.items():
+            _require_sibling_converged(sweep.get("is_fixed"),
+                                       f"{plot_name} sweep points from {base_rule}")
+        score = _best_sibling_endpoint_pc_pair(entry, family)[1]
+        if family == "dmcgo":
+            score = max(0.0, 2.0 * (score - 0.5))
+        components[f"endpoint {plot_name}"] = float(score)
+        if family == "delaydm1":
+            components[f"sweep {plot_name}"] = float(best_delaydm_sweep_pc_pair(
+                [np.asarray(sweep["proj"], dtype=float) for sweep in sweeps.values()],
+                [np.asarray(sweep["stim_idx"], dtype=int) for sweep in sweeps.values()],
+            )[1])
+    return components
+
+
+def _sibling_run_ranking(family):
+    """Score every cached SIBLING_L2 run of `family` and rank them, best first.
+
+    A run's score is the geometric mean of its panel scores
+    (`_sibling_run_components`): it does not depend on each metric's scale,
+    and one weak panel pulls the run down instead of being averaged away.
+    Ties go to the lowest seed. Runs that cannot be scored are listed with
+    the reason.
+    """
+    import re
+
+    pattern = re.compile(r"everything_seed(\d+)_" + re.escape(
+        f"{multitask_feature(SIBLING_L2)}{_MULTITASK_RUN_SUFFIX}"))
+    rankings, skipped = [], []
+    for run_dir in TWO_IN_MULTIPLES_DIR.glob(multitask_aname("*", SIBLING_L2)):
+        match = pattern.fullmatch(run_dir.name)
+        if match is None or not run_dir.is_dir():
+            continue
+        seed = int(match.group(1))
+        try:
+            components = _sibling_run_components(family, run_dir.name)
+        except (KeyError, ValueError, OSError, EOFError,
+                pickle.UnpicklingError) as exc:
+            skipped.append({"aname": run_dir.name, "seed": seed, "reason": str(exc)})
+            continue
+        values = np.asarray(list(components.values()), dtype=float)
+        rankings.append({"aname": run_dir.name, "seed": seed,
+                         "score": float(np.prod(values) ** (1.0 / values.size)),
+                         "components": components})
+    rankings.sort(key=lambda row: (-row["score"], row["seed"]))
+    skipped.sort(key=lambda row: row["seed"])
+    return {
+        "family": family,
+        "cohort": multitask_feature(SIBLING_L2),
+        "criterion": "geometric mean of the panel scores",
+        "n_candidates": len(rankings) + len(skipped),
+        "best_aname": rankings[0]["aname"] if rankings else None,
+        "rankings": rankings,
+        "skipped": skipped,
+    }
+
+
+def _select_sibling_run(family):
+    """Rank `family`'s cached runs, report the ranking and return the best.
+
+    The ranking is printed and saved as
+    multitask_sibling_run_scores_{delaydm,dmcgo}.json. With no scorable run
+    the cohort's seed-0 name is returned, so the figures print their usual
+    "Skipped" messages.
+    """
+    report = _sibling_run_ranking(family)
+    _ensure_out_dir()
+    report_path = _multitask_out(
+        f"sibling_run_scores_{_MULTITASK_SIBLING_OUTPUT_NAMES[family]}.json")
+    with report_path.open("w") as stream:
+        json.dump(report, stream, indent=2, allow_nan=False)
+    print(f"  {family} sibling run: {len(report['rankings'])}/"
+          f"{report['n_candidates']} cached {report['cohort']} runs scored "
+          f"({report['criterion']}); saved {report_path}")
+    for row in report["rankings"]:
+        panels = ", ".join(f"{name} {value:.3f}"
+                           for name, value in row["components"].items())
+        print(f"    seed {row['seed']}: {row['score']:.3f} ({panels})")
+    for row in report["skipped"]:
+        print(f"    Skipped seed {row['seed']}: {row['reason']}")
+    if not report["rankings"]:
+        print(f"  {family}: no scorable {report['cohort']} run under "
+              f"{TWO_IN_MULTIPLES_DIR}/. Run: python "
+              "multiple_task/sibling_delay_analysis.py --seed <seed> "
+              f"--feature {report['cohort']} --families {family} "
+              "--method long_delay_endpoint")
+        return multitask_aname(0, SIBLING_L2)
+    best = report["rankings"][0]
+    print(f"  {family} sibling run selected automatically: {best['aname']} "
+          f"(score {best['score']:.3f})")
+    return best["aname"]
+
+
 def _multitask_sibling_hint(family, method="gradient"):
-    """Reconstruct the upstream command for the configured sibling run."""
+    """Reconstruct the upstream command for the family's sibling run (pinned
+    or automatically selected)."""
     import re as _re
 
     match = _re.fullmatch(
@@ -12101,8 +12268,13 @@ def main():
             "distance-angle p is the saved task-label permutation p)"
         ),
         "acc_plot": "(aggregated across seeds)",
+        # The automatic sibling selection scans every cached run, so it is
+        # left to the figures that need it rather than run for this summary.
         "two_in_multiple": "; ".join(
-            f"{family}: {_multitask_sibling_aname(family)}"
+            f"{family}: "
+            + (_pinned_sibling_aname(family)
+               or f"best-scoring cached {multitask_feature(SIBLING_L2)} run "
+                  "(ranked when its figures run)")
             for family in _MULTITASK_SIBLING_FAMILIES
         ),
         "two_task": TWOTASK_ANAME,

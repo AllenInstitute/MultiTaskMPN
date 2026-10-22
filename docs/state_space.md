@@ -194,8 +194,9 @@ without the permutation test or the Hebbian steps are skipped, never refitted;
 regenerate them with `state_space_shift.py`.
 
 `python figures/paper_plot.py --only sibling_cue_interp` draws the multi-task analog
-of the two-task pro/anti interpolation for the two sibling families
-(`DELAYDM_ANAME`, `DMCGO_ANAME`):
+of the two-task pro/anti interpolation for the two sibling families (one run
+per family, chosen automatically unless `DELAYDM_ANAME` / `DMCGO_ANAME` pin
+it; see the end of this file):
 `multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_{emodulation,hidden}_{2d,3d}.png`
 and `multitask_{delaydm,dmcgo}_cue_interp_{gradient,long_delay_endpoint}_legend.png`.
 `2d` draws one line per sweep trial against alpha for each PC of the plane
@@ -290,4 +291,27 @@ where hollow markers already mean the sweep's alpha = 1 end, its count is
 printed with the saved figure instead. Endpoint caches written before
 settling (endpoint version 2, sweep version 1) hold the unsettled end-of-trial
 state; rerun the analysis to replace them.
+
+**The example run is chosen automatically.** The sibling figures are
+illustrations of one network, so with `DELAYDM_ANAME` / `DMCGO_ANAME` = None
+(the default) `paper_plot.py` shows, for each family, the cached run of the
+`SIBLING_L2` cohort (L2 = 1e-4) whose figures read best; a run name in either
+constant pins that family instead. Every run under `two_in_multiples/` is
+scored on the panels its figures draw, with the metric each figure already
+picks its PC plane with: the best endpoint pair of each representation
+(hidden, e_modulation; DMC's cross-task balanced accuracy rescaled to
+2 (accuracy - 0.5), so chance is 0) and, for DelayDM, the best sweep pair of
+each representation. The run's score is the geometric mean of those panel
+scores, which does not depend on each metric's scale and lets one weak panel
+pull the run down; ties go to the lowest seed. All of a family's figures
+(both representations, endpoint and rule-cue sweep) come from its one
+selected run. Runs with a missing endpoint or sweep cache, a cache written
+before settling, or any point above the fixed-point criterion are skipped.
+The ranking is printed when the figures first need the run and saved as
+`multitask_sibling_run_scores_{delaydm,dmcgo}.json` in `paper_plot/`; with no
+scorable run the figures print their usual "Skipped" messages. Because the
+selection favors the most legible run, the figures show the best case of the
+cohort, not a typical run; the saved ranking gives the spread across runs.
+The endpoint figures' axis limits follow the drawn points
+(`_adaptive_pc_limits`) for every run.
 

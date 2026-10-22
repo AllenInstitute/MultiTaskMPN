@@ -15,6 +15,19 @@ import paper_plot
 import sibling_delay_analysis as sibling
 
 
+# Pin the sibling runs: with DELAYDM_ANAME / DMCGO_ANAME = None paper_plot
+# ranks every run cached under two_in_multiples/, which these tests must not
+# read (test_sibling_run_selection covers that selection).
+PINNED_SIBLING_RUN = "everything_seed921_L21e4+hidden300+batch128+angle"
+
+
+def setUpModule():
+    for name in ("DELAYDM_ANAME", "DMCGO_ANAME"):
+        patcher = patch.object(paper_plot, name, PINNED_SIBLING_RUN)
+        patcher.start()
+        unittest.addModuleCleanup(patcher.stop)
+
+
 RULES = ("delaydm1", "delaydm2")
 ALL_RULES = ["fdgo", "delaydm1", "dmcgo", "delaydm2", "dmcnogo"]
 RULE_START = 5
