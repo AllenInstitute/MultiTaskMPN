@@ -12,9 +12,13 @@ Each diagnostic is a small function registered in ``DIAGNOSES`` via
 ``@_register``; new checks can be added without touching the driver. Every
 registered diagnostic is run over the discovered experiments, its summary is
 printed, and all results are saved to
-``multiple_tasks_diagnosis/diagnosis_{feature}[_seed{seed}].{pkl,json}``.
-The output directory is cleared at the start of each run. All requested
-same-cluster diagnostics are drawn in one figure, with one task pair per row.
+``multiple_tasks_diagnosis/diagnosis_{tag}.{pkl,json}``, with the tag
+``{feature}[_seed{seed}]``. A run replaces the earlier results of its own tag
+only, so the cohorts' results sit side by side (``paper_plot.py`` reads
+``diagnosis_{feature}.pkl`` for its ``sibling_row_cluster_sharing`` figure).
+All requested same-cluster diagnostics are drawn in one figure
+(``same_cluster_diagnoses_{tag}.png``), one task pair per row and one trial
+phase per column.
 
 Cluster data read per experiment (all under ``multiple_tasks_analysis/{aname}/``):
   - input / hidden  : ``cluster_info_{aname}.pkl`` →
@@ -27,12 +31,28 @@ Row labels are indexed by ``tb_break_name`` entries of the form
 ``"{rule}-{phase}"`` (e.g. ``"dmcgo-delay1"``), where the phase is one of
 stim1 / stim2 / delay1 / delay2 / go1.
 
-Current diagnostics:
-  category_delay_same_cluster
-      For the category tasks ReactCategoryPro (dmcgo) and ReactCategoryAnti
-      (dmcnogo), the fraction of experiments that place their delay-period
-      (delay1) rows in the SAME row cluster — reported separately for the
-      input, hidden, and modulation representations.
+Current diagnostics, each a pair of sibling tasks: for every trial phase both
+tasks have, the fraction of experiments that place the two tasks' rows in the
+SAME row cluster, reported separately for the input, hidden and modulation
+representations (`diagnose_pair_same_cluster`):
+  category_same_cluster
+      ReactCategoryPro (dmcgo) vs ReactCategoryAnti (dmcnogo).
+  context_modality_same_cluster
+      ContextIntModality1 (contextdelaydm1) vs ContextIntModality2
+      (contextdelaydm2).
+  integration_modality_same_cluster
+      IntegrationModality1 (delaydm1) vs IntegrationModality2 (delaydm2).
+The representations have different numbers of row clusters (on the L21e4
+runs about 9 input, 6 hidden and 13 modulation clusters for 49 rows), and
+rows of one phase can cluster together whatever the task, so the percentages
+are only read against the chance level of that representation and phase:
+the fraction of pairs of rows of the phase from two different tasks that
+share a cluster, per experiment (`_same_phase_chance`). On the L21e4 runs it
+ranges from about 7% (modulation, Memory 1) to 100% (input and hidden in
+both memory periods, where every task's row falls in one cluster). The number
+of experiments in which a pair shares a cluster is tested against those
+chance levels with an exact two-sided Poisson-binomial test
+(`_poisson_binomial_p`).
 
 Usage:
     python multiple_task/multiple_task_diagnosis.py --feature L21e4
@@ -43,7 +63,6 @@ import re
 import json
 import pickle
 import argparse
-import shutil
 from pathlib import Path
 
 import numpy as np
@@ -107,23 +126,34 @@ _PHASE_DISPLAY = {
     "go1": "Response",
 }
 
-# Per-representation bar colors (matches the categorical palette elsewhere).
+# Per-representation bar colors, those of paper_plot's task-specificity and
+# sibling_row_cluster_sharing figures (_TASK_SPECIFICITY_COLORS), so the
+# diagnostic and the paper figure of one result agree.
 _REP_COLORS = {
     "input": "#3182ce",       # blue
     "hidden": "#e53e3e",      # red
-    "modulation": "#38a169",  # green
+    "modulation": "#d53f8c",  # pink
 }
 
 
-def _clear_output_dir():
-    """Remove every previous diagnosis result before starting a new run."""
-    if OUT_DIR.exists():
-        for path in OUT_DIR.iterdir():
-            if path.is_dir() and not path.is_symlink():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
+# Saved-result layout: 2 adds each representation's chance level and the
+# test against it (paper_plot reads only this version).
+RESULT_VERSION = 2
+# Prefixes of the files one run writes, each followed by "{tag}.{suffix}".
+_OUTPUT_PREFIXES = ("diagnosis_", "same_cluster_diagnoses_")
+
+
+def _clear_previous_results(tag):
+    """Remove the earlier results of `tag` (diagnosis_{tag}.pkl/json and
+    same_cluster_diagnoses_{tag}.png); other tags' files are kept. Returns the
+    removed file names."""
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    removed = []
+    for prefix in _OUTPUT_PREFIXES:
+        for path in sorted(OUT_DIR.glob(f"{prefix}{tag}.*")):
+            path.unlink()
+            removed.append(path.name)
+    return removed
 
 
 # ─── Experiment discovery & loading ──────────────────────────────────────────
@@ -212,6 +242,39 @@ def _row_label(rep_data, session_name):
     return int(rep_data["row_labels"][idx[0]])
 
 
+def _same_phase_chance(rep_data, phase):
+    """Chance that two tasks' rows of `phase` share a row cluster in one
+    experiment's representation: the fraction of pairs of rows of `phase` from
+    two different tasks that carry the same label (NaN with fewer than two
+    such rows). It is the baseline a sibling pair's sharing is read against,
+    per phase, since rows of one phase can cluster together regardless of the
+    task."""
+    names = [str(name).rsplit("-", 1) for name in rep_data["tb_break_name"]]
+    in_phase = np.array([len(parts) == 2 and parts[1] == phase for parts in names])
+    rules = np.array([parts[0] for parts in names])[in_phase]
+    labels = np.asarray(rep_data["row_labels"])[in_phase]
+    pairs = np.triu(rules[:, None] != rules[None, :], k=1)
+    if not pairs.any():
+        return float("nan")
+    return float((labels[:, None] == labels[None, :])[pairs].mean())
+
+
+def _poisson_binomial_p(n_same, chances):
+    """Exact two-sided p of `n_same` experiments sharing a cluster when each
+    shares independently with its own probability in `chances` (a
+    Poisson-binomial count): the summed probability of every count no more
+    likely than the observed one. NaN when a chance is undefined."""
+    chances = np.asarray(chances, dtype=float)
+    if chances.size == 0 or not np.all(np.isfinite(chances)):
+        return float("nan")
+    if not 0 <= n_same <= chances.size:
+        raise ValueError(f"{n_same} sharing experiments out of {chances.size}")
+    pmf = np.array([1.0])
+    for chance in chances:
+        pmf = np.convolve(pmf, [1.0 - chance, chance])
+    return float(min(1.0, pmf[pmf <= pmf[n_same] * (1.0 + 1e-7)].sum()))
+
+
 # ─── Diagnostic registry ─────────────────────────────────────────────────────
 
 DIAGNOSES = {}
@@ -227,12 +290,17 @@ def _register(name):
 
 def _same_cluster_fraction(experiments, session_a, session_b, reps=("input", "hidden", "modulation")):
     """Per representation, the fraction of experiments whose `session_a` and
-    `session_b` rows share the same row cluster.
+    `session_b` rows (two tasks of one '{rule}-{phase}' phase) share the same
+    row cluster, against chance.
 
-    Returns {rep: {pct_same_cluster, n_same, n_total, detail: [...]}}.
-    Experiments missing a representation or either session row are skipped for
-    that representation (and counted only in the representations where present).
+    Returns {rep: {pct_same_cluster, n_same, n_total, chance_mean,
+    expected_same, p_vs_chance, detail: [...]}}: each experiment's chance
+    level is `_same_phase_chance` of that phase, `expected_same` their sum and
+    `p_vs_chance` the two-sided `_poisson_binomial_p` of n_same. Experiments
+    missing a representation or either session row are skipped for that
+    representation (and counted only in the representations where present).
     """
+    phase = session_a.rsplit("-", 1)[-1]
     per_rep = {}
     for rep in reps:
         n_same, n_total, detail = 0, 0, []
@@ -246,12 +314,17 @@ def _same_cluster_fraction(experiments, session_a, session_b, reps=("input", "hi
             same = (la == lb)
             n_total += 1
             n_same += int(same)
-            detail.append({"aname": aname, "label_a": la, "label_b": lb, "same": same})
+            detail.append({"aname": aname, "label_a": la, "label_b": lb, "same": same,
+                           "chance": _same_phase_chance(data[rep], phase)})
         pct = (100.0 * n_same / n_total) if n_total else float("nan")
+        chances = [entry["chance"] for entry in detail]
         per_rep[rep] = {
             "pct_same_cluster": pct,
             "n_same": n_same,
             "n_total": n_total,
+            "chance_mean": float(np.mean(chances)) if chances else float("nan"),
+            "expected_same": float(np.sum(chances)) if chances else float("nan"),
+            "p_vs_chance": _poisson_binomial_p(n_same, chances),
             "detail": detail,
         }
     return per_rep
@@ -277,9 +350,11 @@ def diagnose_pair_same_cluster(experiments, rule_a, rule_b):
     Each contributes one clustered row per trial phase present in the analysis
     (stim1 / stim2 / delay1 / delay2 / go1). For every phase both tasks share,
     this reports — per representation (input, hidden, modulation) — the fraction
-    of experiments in which the two rows land in the SAME row cluster.
+    of experiments in which the two rows land in the SAME row cluster, with its
+    chance level and the test against it (`_same_cluster_fraction`).
 
-    Returns a result dict consumable by _print_result and plot_pair_same_cluster.
+    Returns a result dict consumable by _print_result and
+    plot_combined_same_cluster.
     """
     a_disp = _TASK_DISPLAY.get(rule_a, rule_a)
     b_disp = _TASK_DISPLAY.get(rule_b, rule_b)
@@ -323,112 +398,97 @@ def diagnose_integration_modality_same_cluster(experiments):
     return diagnose_pair_same_cluster(experiments, "delaydm1", "delaydm2")
 
 
-# ─── Figure registry ─────────────────────────────────────────────────────────
+# ─── Figure ──────────────────────────────────────────────────────────────────
 
-# Diagnostic name -> plotter(result, out_path). A diagnostic gets a figure by
-# registering here; the driver calls the plotter after computing the result.
-PLOTTERS = {}
-
-
-def _register_plot(name):
-    """Register a plotter for the diagnostic `name`."""
-    def deco(fn):
-        PLOTTERS[name] = fn
-        return fn
-    return deco
+# Panel size (inches) of the combined figure, and the y-axis top: the head
+# room above 100% keeps each bar's n_same/n_total label clear of the panel
+# above it and of the column header.
+_PANEL_W_IN, _PANEL_H_IN = 1.2, 1.25
+_Y_TOP = 118
 
 
-def _draw_same_cluster_bars(ax, per_rep, phase):
-    """Draw one trial-phase panel shared by individual and combined figures."""
+# The chance-level dash drawn across each bar (`_same_phase_chance`).
+_CHANCE_COLOR = "0.25"
+
+
+def _draw_same_cluster_bars(ax, per_rep):
+    """One trial-phase panel: a bar per representation with the same-cluster
+    %, labelled n_same/n_total ("n/a" when no experiment has both rows), and a
+    dash at the representation's mean chance level. The representations are
+    told apart by color (the figure legend), so the panel has no x tick
+    labels."""
     reps = list(per_rep)
-    pcts = [per_rep[r]["pct_same_cluster"] for r in reps]
-    colors = [_REP_COLORS.get(r, "#718096") for r in reps]
     xs = np.arange(len(reps))
-    ax.bar(xs, pcts, color=colors, edgecolor="k", linewidth=0.5, alpha=0.85)
-    for x, rep, pct in zip(xs, reps, pcts):
+    pcts = np.array([per_rep[r]["pct_same_cluster"] for r in reps], dtype=float)
+    heights = np.nan_to_num(pcts)
+    ax.bar(xs, heights, width=0.75, color=[_REP_COLORS.get(r, "#718096") for r in reps],
+           edgecolor="k", linewidth=0.5, alpha=0.85)
+    for x, rep, pct, height in zip(xs, reps, pcts, heights):
         stats = per_rep[rep]
-        if np.isfinite(pct):
-            ax.text(x, pct + 2, f"{stats['n_same']}/{stats['n_total']}",
-                    ha="center", va="bottom", fontsize=7)
-    ax.set_xticks(xs)
-    ax.set_xticklabels(reps, rotation=30, ha="right", fontsize=8)
-    ax.set_title(_PHASE_DISPLAY.get(phase, phase), fontsize=10)
-    ax.set_ylim(0, 105)
+        label = (f"{stats['n_same']}/{stats['n_total']}" if np.isfinite(pct)
+                 else "n/a")
+        chance = 100 * stats.get("chance_mean", float("nan"))
+        if np.isfinite(chance):
+            ax.hlines(chance, x - 0.375, x + 0.375, color=_CHANCE_COLOR,
+                      linewidth=1.4, zorder=3)
+        # Above the bar or its chance dash, whichever is higher.
+        ax.text(x, np.nanmax([height, chance]) + 3, label, ha="center", va="bottom",
+                fontsize=6)
+    ax.set_xticks([])
+    ax.set_xlim(-0.6, len(reps) - 0.4)
+    ax.set_ylim(0, _Y_TOP)
+    ax.set_yticks([0, 50, 100])
+    ax.spines["left"].set_bounds(0, 100)
     ax.spines[["top", "right"]].set_visible(False)
 
 
-@_register_plot("category_same_cluster")
-@_register_plot("context_modality_same_cluster")
-@_register_plot("integration_modality_same_cluster")
-def plot_pair_same_cluster(result, out_path):
-    """One subfigure per trial phase; each a barplot of the same-cluster % over
-    representations (input / hidden / modulation). Pair-agnostic: the task pair
-    is taken from the result's rule_a_display / rule_b_display."""
-    per_phase = result["per_phase"]
-    phases = result.get("phases") or list(per_phase)
-    if not phases:
-        print("  [plot] no phases to plot; skipping figure.")
-        return
+def plot_combined_same_cluster(results, out_path, title="Task-pair row-cluster sharing"):
+    """All task-pair diagnostics in one table-like figure.
 
-    n = len(phases)
-    fig, axes = plt.subplots(1, n, figsize=(2.6 * n, 3.0), sharey=True, squeeze=False)
-    axes = axes[0]
-
-    a_disp = result.get("rule_a_display", result.get("rule_a", "A"))
-    b_disp = result.get("rule_b_display", result.get("rule_b", "B"))
-
-    for ax, phase in zip(axes, phases):
-        _draw_same_cluster_bars(ax, per_phase[phase], phase)
-
-    axes[0].set_ylabel("Same-cluster experiments (%)", fontsize=9)
-    fig.suptitle(f"{a_disp} vs {b_disp}: same row cluster", fontsize=11)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-
-
-def plot_combined_same_cluster(results, out_path):
-    """Combine all requested task-pair diagnostics into one multi-row figure.
-
-    Each diagnostic occupies one row. Its trial phases run left-to-right using
-    the same panels as the former standalone figures; unused trailing cells are
-    hidden when task pairs have different numbers of phases.
+    A row per task pair, named on its left, and a column per trial phase in
+    canonical order, headed on the top row, so one phase sits in the same
+    column on every row; a pair without that phase leaves its cell empty.
+    The y axis is the % of experiments whose two rows share a row cluster,
+    labelled on the left column only; the dash across each bar is that
+    representation's chance level in that phase. One legend below the panels
+    gives the representation colors and the chance dash.
     """
-    plot_items = [(name, result) for name, result in results.items()
-                  if name in PLOTTERS and result.get("phases")]
+    plot_items = [result for result in results.values() if result.get("phases")]
     if not plot_items:
         print("  [plot] no same-cluster diagnostics to combine; skipping figure.")
         return
+    phases = [phase for phase in _PHASE_DISPLAY
+              if any(phase in result["phases"] for result in plot_items)]
 
-    n_rows = len(plot_items)
-    n_phase_cols = max(len(result["phases"]) for _, result in plot_items)
-    fig = plt.figure(figsize=(1.6 + 2.35 * n_phase_cols, 2.8 * n_rows))
-    grid = fig.add_gridspec(
-        n_rows, n_phase_cols + 1,
-        width_ratios=[1.35] + [1.0] * n_phase_cols,
-        hspace=0.55, wspace=0.35,
-    )
-
-    for row, (_, result) in enumerate(plot_items):
-        label_ax = fig.add_subplot(grid[row, 0])
-        label_ax.axis("off")
+    n_rows, n_cols = len(plot_items), len(phases)
+    fig, axes = plt.subplots(
+        n_rows, n_cols, sharey=True, squeeze=False, layout="constrained",
+        figsize=(1.6 + _PANEL_W_IN * n_cols, 0.7 + _PANEL_H_IN * n_rows))
+    for row, result in enumerate(plot_items):
+        for col, phase in enumerate(phases):
+            ax = axes[row, col]
+            if row == 0:
+                ax.set_title(_PHASE_DISPLAY[phase], fontsize=9)
+            if phase in result["per_phase"]:
+                _draw_same_cluster_bars(ax, result["per_phase"][phase])
+            else:
+                ax.axis("off")
         a_disp = result.get("rule_a_display", result.get("rule_a", "A"))
         b_disp = result.get("rule_b_display", result.get("rule_b", "B"))
-        label_ax.text(1.0, 0.5, f"{a_disp}\nvs\n{b_disp}",
-                      ha="right", va="center", fontsize=10)
+        axes[row, 0].set_ylabel(f"{a_disp}\nvs\n{b_disp}", rotation=0,
+                                ha="right", va="center", fontsize=8, labelpad=6)
+    for ax in axes.flat:
+        ax.tick_params(axis="y", labelsize=7)
 
-        phases = result["phases"]
-        for col in range(n_phase_cols):
-            ax = fig.add_subplot(grid[row, col + 1])
-            if col >= len(phases):
-                ax.axis("off")
-                continue
-            phase = phases[col]
-            _draw_same_cluster_bars(ax, result["per_phase"][phase], phase)
-            if col == 0:
-                ax.set_ylabel("Same-cluster\nexperiments (%)", fontsize=9)
-
-    fig.suptitle("Task-pair row-cluster sharing", fontsize=12, y=0.995)
+    handles = [plt.Rectangle((0, 0), 1, 1, facecolor=color, edgecolor="k",
+                             linewidth=0.5, alpha=0.85, label=rep)
+               for rep, color in _REP_COLORS.items()]
+    handles.append(plt.Line2D([], [], color=_CHANCE_COLOR, linewidth=1.4,
+                              label="chance (two tasks' rows of the phase)"))
+    fig.legend(handles=handles, loc="outside lower center", ncol=len(handles),
+               frameon=False, fontsize=8, handlelength=1.2, columnspacing=1.2)
+    fig.suptitle(f"{title}\n% of experiments whose two task rows share a row cluster",
+                 fontsize=10)
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
@@ -441,24 +501,19 @@ def _print_per_rep(per_rep, indent="    "):
         pct = stats["pct_same_cluster"]
         pct_str = "  n/a" if not np.isfinite(pct) else f"{pct:5.1f}%"
         print(f"{indent}{rep:<11s}: {pct_str}  "
-              f"({stats['n_same']}/{stats['n_total']} experiments)")
+              f"({stats['n_same']}/{stats['n_total']} experiments; chance "
+              f"{100 * stats['chance_mean']:.0f}%, expected "
+              f"{stats['expected_same']:.1f}, p = {stats['p_vs_chance']:.2g})")
 
 
 def _print_result(name, result):
     """Human-readable summary of a diagnostic result to stdout."""
     print(f"\n=== {name} ===")
     print(f"  {result.get('description', '')}")
-    # Per-phase form (session-resolved): one block per phase.
-    per_phase = result.get("per_phase")
-    if per_phase:
-        for phase, per_rep in per_phase.items():
-            print(f"  [{_PHASE_DISPLAY.get(phase, phase)}]")
-            _print_per_rep(per_rep, indent="      ")
-        return
-    # Flat form: a single {rep: stats} mapping.
-    per_rep = result.get("per_representation")
-    if per_rep:
-        _print_per_rep(per_rep)
+    # One block per trial phase.
+    for phase, per_rep in result.get("per_phase", {}).items():
+        print(f"  [{_PHASE_DISPLAY.get(phase, phase)}]")
+        _print_per_rep(per_rep, indent="      ")
 
 
 def _json_safe(obj):
@@ -483,8 +538,11 @@ def main(feature="L21e4", seed=None, which=None):
 
     which : optional list of diagnostic names to run (default: all registered).
     """
-    _clear_output_dir()
-    print(f"Cleared previous diagnosis results from {OUT_DIR}/")
+    tag = feature if feature else "all"
+    if seed is not None:
+        tag += f"_seed{seed}"
+    removed = _clear_previous_results(tag)
+    print(f"Cleared {len(removed)} previous {tag} result file(s) from {OUT_DIR}/")
 
     anames = _discover_anames(feature, seed)
     print(f"Discovered {len(anames)} experiment(s) "
@@ -509,10 +567,6 @@ def main(feature="L21e4", seed=None, which=None):
         raise SystemExit(f"Unknown diagnostic(s): {unknown}. "
                          f"Available: {list(DIAGNOSES)}")
 
-    tag = feature if feature else "all"
-    if seed is not None:
-        tag += f"_seed{seed}"
-
     results = {}
     for name in to_run:
         results[name] = DIAGNOSES[name](experiments)
@@ -520,12 +574,16 @@ def main(feature="L21e4", seed=None, which=None):
 
     # One combined figure: one requested task-pair diagnostic per row.
     fig_path = OUT_DIR / f"same_cluster_diagnoses_{tag}.png"
-    plot_combined_same_cluster(results, fig_path)
+    plot_combined_same_cluster(
+        results, fig_path,
+        title=f"Task-pair row-cluster sharing ({tag}, {len(experiments)} experiments)")
 
     # Save results (pkl keeps full detail incl. numpy; json is a portable copy).
     payload = {
+        "version": RESULT_VERSION,
         "feature": feature,
         "seed": seed,
+        "mod_g_index": MOD_G_INDEX,
         "experiments": [a for a, _ in experiments],
         "results": results,
     }

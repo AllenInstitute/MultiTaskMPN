@@ -199,7 +199,7 @@ class PaperPlotModeTests(unittest.TestCase):
             "overmembership_norm", "overmembership_unnorm",
             "overmembership_weighted", "overmembership_var_weighted",
             "overmembership_abs_weighted", "overmembership_examples",
-            "input_weight_correlation",
+            "input_weight_correlation", "sibling_row_cluster_sharing",
         })
         for name, function in expected.items():
             self.assertIs(paper_plot.ALL_FIGURES[name], function)

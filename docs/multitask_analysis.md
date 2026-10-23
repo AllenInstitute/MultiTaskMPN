@@ -391,3 +391,45 @@ Per run the result goes to
 the run prints a per-cohort summary of the medians. Nothing is recomputed
 from network activity; a run takes a few minutes on a compute node.
 
+
+## Sibling-task row-cluster sharing
+
+`multiple_task/multiple_task_diagnosis.py` asks whether two sibling tasks
+land in the same row cluster of the task-variance clustering, the rows of the
+clustered input, hidden and modulation heatmaps (input/hidden
+`*_normalized`, modulation `modulation_all_normalized` with the G=300
+grouping). It reads only the saved `cluster_info*` pickles of every clustered
+run of one cohort, so it takes a few minutes on a CPU node:
+
+```bash
+python multiple_task/multiple_task_diagnosis.py --feature L21e4
+python figures/paper_plot.py --only sibling_row_cluster_sharing --multitask-l2 1e4
+```
+
+Three pairs are checked: ReactCategoryPro vs ReactCategoryAnti (dmcgo/dmcnogo),
+ContextIntModality1 vs 2 and IntegrationModality1 vs 2, in every trial phase
+both tasks have. For each pair, phase and representation the result is the
+number of runs whose two rows share a row cluster. Each count is read against
+a chance level: the fraction of pairs of rows of that phase from two
+different tasks that share a cluster in that run and representation,
+averaged over the runs (`_same_phase_chance`), with an exact two-sided
+Poisson-binomial test over the runs' own chance levels
+(`_poisson_binomial_p`). The chance level matters: on the L21e4 runs every
+memory-period row of every task falls in one input and one hidden cluster
+(chance 100%), so sharing in the memory periods is not specific to the
+sibling pair, while the modulation chance stays between about 7% and 20%.
+The script writes `multiple_tasks_diagnosis/diagnosis_<tag>.{pkl,json}` and
+its own figure `same_cluster_diagnoses_<tag>.png` (tag `<feature>` or
+`<feature>_seed<seed>`), replacing earlier files of the same tag only, so the
+cohorts' results sit side by side. Results written before the chance levels
+(no `version` 2) are not read by `paper_plot.py`.
+
+`paper_plot.py --only sibling_row_cluster_sharing` (`multiple_tasks` mode)
+draws `multitask_sibling_row_cluster_sharing.png` from
+`diagnosis_<MULTITASK_L2 feature>.pkl`: a row per task pair, a column per
+phase (headers on the heatmap phase colors, a pair without the phase leaves
+its cell empty), a bar per representation in the task-specificity colors
+(input blue, hidden red, synapses pink) giving the % of runs, a dark dash at
+the chance level, and n/N above each bar, starred when the count differs from
+chance (p < 0.05). It is skipped, with the command to run, when the cohort's
+result is missing or predates the chance levels.
