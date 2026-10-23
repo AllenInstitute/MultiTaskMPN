@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 
 import _bootstrap  # noqa: F401
 import paper_plot
+from core.sibling_geometry import remove_task_offsets
 
 
 # Pin the sibling runs: with DELAYDM_ANAME / DMCGO_ANAME = None paper_plot
@@ -989,17 +990,23 @@ class PaperPlotModeTests(unittest.TestCase):
                     family = ("delaydm1" if "delaydm" in output_path.name
                               else "dmcgo")
                     legend = figure.legends[0]
+                    # Task markers, then for DMC the response categories its
+                    # endpoints are colored by (DelayDM's stimulus colors are
+                    # keyed by the colorwheel).
+                    categories = (["Respond to category 1", "Respond to category 2"]
+                                  if family == "dmcgo" else [])
                     self.assertEqual(
                         [text.get_text() for text in legend.get_texts()],
                         [paper_plot._TASK_DISPLAY[rule]
-                         for rule in paper_plot._MULTITASK_SIBLING_FAMILIES[family]],
+                         for rule in paper_plot._MULTITASK_SIBLING_FAMILIES[family]]
+                        + categories,
                     )
                     self.assertEqual(
-                        [line.get_marker() for line in legend.get_lines()],
+                        [line.get_marker() for line in legend.get_lines()][:2],
                         list(paper_plot._MULTITASK_RULE_MARKERS),
                     )
                     self.assertEqual(
-                        [line.get_linestyle() for line in legend.get_lines()],
+                        [line.get_linestyle() for line in legend.get_lines()][:2],
                         ["-", "--"],
                     )
                     continue
@@ -1067,7 +1074,8 @@ class PaperPlotModeTests(unittest.TestCase):
         offsets = np.tile(np.array([[-0.05, 0.0], [0.05, 0.0],
                                     [0.0, -0.05], [0.0, 0.05]]), (4, 1))
         points[:, 2:4] = centers[labels] + offsets
-        entry = {"proj": points, "stim_idx": labels}
+        entry = {"proj": points, "stim_idx": labels,
+                 "task_idx": np.tile([0, 1], labels.size // 2)}
 
         pair, score, metric = paper_plot._best_sibling_endpoint_pc_pair(
             entry, "delaydm1")
@@ -1090,12 +1098,16 @@ class PaperPlotModeTests(unittest.TestCase):
         offsets = np.tile(np.array([[-0.05, 0.0], [0.05, 0.0],
                                     [0.0, -0.05], [0.0, 0.05]]), (4, 1))
         points[:, 2:4] = centers[labels] + offsets
+        # Both tasks see every direction; DelayDM2 sits 20 units away on PC3,
+        # a task-wide translation the selected panel removes.
+        task_idx = np.tile([0, 1], labels.size // 2)
+        points[task_idx == 1, 2] += 20.0
         trajectories = np.stack(
             [100.0 * points, 10.0 * points, points], axis=1)
         data = {"representations": {"e_modulation": {
             "proj": points,
             "trajectory_proj": trajectories,
-            "task_idx": np.repeat([0, 1], labels.size // 2),
+            "task_idx": task_idx,
             "stim_idx": labels,
             "task_names": ["delaydm1", "delaydm2"],
             "explained_variance_ratio": np.arange(6, 0, -1) / 21,
@@ -1117,11 +1129,15 @@ class PaperPlotModeTests(unittest.TestCase):
         self.assertTrue(figure.axes[1].get_ylabel().startswith("Joint Delay PC4"))
         self.assertEqual(figure.axes[0].get_title(), "")
         self.assertEqual(figure.axes[1].get_title(), "")
+        # The selected panel is task-aligned, the default one raw.
+        self.assertNotIn("task-aligned", figure.axes[0].get_xlabel())
+        self.assertIn("task-aligned", figure.axes[1].get_xlabel())
+        self.assertIn("task-aligned", figure.axes[1].get_ylabel())
         # The first trajectory sample is ~400 units away, but axes are framed
-        # automatically around the ~4-unit endpoints with the expanded
-        # DelayDM effective-modulation margin.
+        # automatically around the ~4-unit aligned endpoints with the
+        # expanded DelayDM effective-modulation margin.
         expected_xlim, expected_ylim = paper_plot._adaptive_pc_limits(
-            points, 2, 3,
+            remove_task_offsets(points, task_idx), 2, 3,
             padding=paper_plot._MULTITASK_DELAYDM_EMODULATION_LIMIT_PADDING)
         np.testing.assert_allclose(figure.axes[1].get_xlim(), expected_xlim)
         np.testing.assert_allclose(figure.axes[1].get_ylim(), expected_ylim)
@@ -1227,25 +1243,32 @@ class PaperPlotModeTests(unittest.TestCase):
         self.assertNotIn("fixed-point criterion", notes[0])
         self.assertIn("; 2 endpoints above the fixed-point criterion", notes[1])
 
-    def test_dmcgo_endpoints_color_by_stimulus_in_both_representations(self):
+    def test_dmcgo_endpoints_color_by_response_category_in_both_representations(self):
         stim_idx = np.tile(np.arange(8), 2)
         task_idx = np.repeat([0, 1], 8)
+        group_labels = (stim_idx // 4 + task_idx) % 2
         points = np.arange(96, dtype=float).reshape(16, 6) / 1000
         entry = {
             "proj": points,
             "trajectory_proj": np.stack([2 * points, points], axis=1),
             "task_idx": task_idx,
             "stim_idx": stim_idx,
-            "group_labels": (stim_idx // 4 + task_idx) % 2,
+            "group_labels": group_labels,
             "task_names": ["dmcgo", "dmcnogo"],
         }
-        expected_colors = np.asarray([
-            paper_plot.mpl.colors.to_rgb(paper_plot.stim_color(int(stim), 8))
-            for stim in stim_idx
-        ])
+
+        def rgb(label):
+            return paper_plot.mpl.colors.to_rgb(
+                paper_plot._CUE_INTERP_CLUSTER_COLORS[int(label)])
+
+        # One trajectory (line and start dot) per trial, then one endpoint
+        # scatter per task and category, in the sweep figures' colors.
+        trial_colors = np.asarray([rgb(label) for label in group_labels])
+        endpoint_colors = np.asarray([rgb(label) for _task in (0, 1)
+                                      for label in (0, 1)])
         expected_legend = [
             paper_plot._TASK_DISPLAY[rule] for rule in entry["task_names"]
-        ]
+        ] + ["Respond to category 1", "Respond to category 2"]
         for plot_name, suffix in (("e_modulation", "emodulation"),
                                   ("hidden", "hidden")):
             with self.subTest(representation=plot_name), \
@@ -1273,13 +1296,46 @@ class PaperPlotModeTests(unittest.TestCase):
                     np.testing.assert_allclose([
                         paper_plot.mpl.colors.to_rgb(line.get_color())
                         for line in axis.lines
-                    ], expected_colors)
-                    self.assertEqual(len(axis.collections), 2 * stim_idx.size)
+                    ], trial_colors)
+                    self.assertEqual(len(axis.collections), stim_idx.size + 4)
                     np.testing.assert_allclose([
                         collection.get_facecolors()[0, :3]
                         for collection in axis.collections
-                    ], np.tile(expected_colors, (2, 1)))
+                    ], np.vstack([trial_colors, endpoint_colors]))
                     self.assertIsNone(axis.get_legend())
+
+    def test_gradient_geometry_colors_dmc_by_response_category(self):
+        task_idx = np.repeat([0, 1], 8)
+        stim_idx = np.tile(np.arange(8), 2)
+        entry = {
+            "proj": np.random.RandomState(0).normal(size=(16, 6)),
+            "task_idx": task_idx,
+            "stim_idx": stim_idx,
+            "group_labels": ((task_idx == 0) == (stim_idx < 4)).astype(int),
+            "task_names": ["dmcgo", "dmcnogo"],
+        }
+        metrics = {"translation_explained": 0.5, "geometry_r": 0.5, "n_pairs": 8}
+        with patch.object(paper_plot, "SHOW_LEGEND", True), \
+                patch.object(paper_plot, "_sibling_alignment_metrics",
+                             return_value=metrics), \
+                patch.object(paper_plot, "_save_fig") as save_fig:
+            rendered = paper_plot._plot_multitask_sibling_fixed_point_geometry_representation(
+                {"representations": {"hidden": entry}}, "dmcgo",
+                ("dmcgo", "dmcnogo"), "hidden", "fixed_hidden", "hidden")
+        self.assertTrue(rendered)
+        figure = save_fig.call_args.args[0]
+        self.addCleanup(paper_plot.plt.close, figure)
+        cluster_colors = {paper_plot.mpl.colors.to_hex(color)
+                          for color in paper_plot._CUE_INTERP_CLUSTER_COLORS.values()}
+        for axis in figure.axes:
+            # One scatter per task and category, in the sweep figures' colors.
+            self.assertEqual(len(axis.collections), 4)
+            self.assertEqual({paper_plot.mpl.colors.to_hex(c.get_facecolors()[0])
+                              for c in axis.collections}, cluster_colors)
+        self.assertEqual(
+            [text.get_text() for text in figure.axes[0].get_legend().get_texts()],
+            [paper_plot._TASK_DISPLAY[rule] for rule in entry["task_names"]]
+            + ["Respond to category 1", "Respond to category 2"])
 
     def test_missing_long_delay_endpoint_does_not_skip_gradient_plots(self):
         loaded = {"representations": {}}

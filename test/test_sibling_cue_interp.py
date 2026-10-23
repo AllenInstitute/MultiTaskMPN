@@ -11,6 +11,7 @@ import _bootstrap  # noqa: F401
 import numpy as np
 import torch
 
+import mpn_tasks
 import paper_plot
 import sibling_delay_analysis as sibling
 
@@ -682,6 +683,41 @@ class CueInterpPaperFigureTests(unittest.TestCase):
                 self.assertEqual(n_axes, 2 if "delaydm" in name else 1)
             paper_plot.plt.close(fig)
 
+    def test_dmc_endpoint_overlay_colors_each_path_by_its_alpha0_cluster(self):
+        # DMCGo stimuli 0 and 2 form response cluster 1, 4 and 6 cluster 0;
+        # the cache has no saved labels, so they are derived from the stimuli.
+        points = np.arange(48, dtype=float).reshape(8, 6) / 100
+        task_idx = np.repeat([0, 1], 4)
+        stim_idx = np.tile([0, 2, 4, 6], 2)
+        base_entry = {
+            "proj": points,
+            "trajectory_proj": np.stack([2 * points, points], axis=1),
+            "task_idx": task_idx, "stim_idx": stim_idx,
+            "group_labels": ((task_idx == 0) == (stim_idx < 4)).astype(int),
+        }
+        sweep = self._projection("long_delay_endpoint", ("dmcgo",))[
+            "representations"]["hidden"]["sweeps"]["dmcgo"]
+        sweep["stim_idx"] = np.array([0, 2, 4, 6])
+        cue_sweep = (np.linspace(0, 1, 3), {"dmcgo": sweep})
+        with patch.object(paper_plot, "SHOW_LEGEND", False), \
+                patch.object(paper_plot, "_best_sibling_endpoint_pc_pair",
+                             return_value=((3, 4), 1.0, "test score")), \
+                patch.object(paper_plot, "_save_fig") as save:
+            self.assertTrue(
+                paper_plot._plot_multitask_long_delay_endpoint_representation(
+                    {"representations": {"hidden": base_entry}}, "dmcgo",
+                    ("dmcgo", "dmcnogo"), "hidden", "hidden", cue_sweep=cue_sweep))
+        fig = save.call_args.args[0]
+        self.addCleanup(paper_plot.plt.close, fig)
+        expected = [paper_plot.mpl.colors.to_hex(
+                        paper_plot._CUE_INTERP_CLUSTER_COLORS[label])
+                    for label in (1, 1, 0, 0)]
+        for ax in fig.axes:
+            dotted = [line for line in ax.lines if line.get_linestyle() == ":"]
+            self.assertEqual(
+                [paper_plot.mpl.colors.to_hex(line.get_color()) for line in dotted],
+                expected)
+
     def test_endpoint_figure_overlays_the_cached_cue_sweep(self):
         points = np.arange(48, dtype=float).reshape(8, 6) / 100
         base_entry = {
@@ -843,6 +879,47 @@ class CueInterpPaperFigureTests(unittest.TestCase):
             len(paper_plot._cue_interp_legend_handles(
                 "dmcgo", ("dmcgo", "dmcnogo"), "gradient", entry)), 4)
 
+    def test_dmc_category_colorwheel_follows_the_task_categories(self):
+        n_stim = paper_plot._SIBLING_N_STIM
+        locations = paper_plot._DMC_STIMULUS_LOCATIONS
+        # Location k is direction k, and the task's category (location < pi)
+        # is the half split the DMC cluster labels use (direction < 4).
+        np.testing.assert_array_equal(
+            mpn_tasks.get_clostest_pref_idx(
+                locations, 2 * np.pi * np.arange(n_stim) / n_stim),
+            np.arange(n_stim))
+        np.testing.assert_array_equal(locations < np.pi,
+                                      np.arange(n_stim) < n_stim // 2)
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(paper_plot, "OUT_DIR", Path(directory)), \
+                patch.object(paper_plot, "_save_fig") as save:
+            paper_plot.plot_onetask_stimulus_colorwheel()
+        for call in save.call_args_list:
+            self.addCleanup(paper_plot.plt.close, call.args[0])
+        # One call saves the plain wheel and its DMC category companion.
+        self.assertEqual(
+            [Path(call.args[1]).name for call in save.call_args_list],
+            ["onetask_stimulus_colorwheel.png",
+             "onetask_stimulus_colorwheel_dmc_category.png"])
+        ax = save.call_args_list[1].args[0].axes[0]
+        to_hex = paper_plot.mpl.colors.to_hex
+        colors = {label: to_hex(color) for label, color
+                  in paper_plot._CUE_INTERP_CLUSTER_COLORS.items()}
+        # The upper arc is category 1 in its cluster color, the lower one
+        # category 2, each labelled in that color.
+        arcs = [line for line in ax.lines if line.get_linestyle() == "-"]
+        self.assertEqual(len(arcs), 2)
+        for line in arcs:
+            label = 1 if np.mean(line.get_ydata()) > 0 else 0
+            self.assertEqual(to_hex(line.get_color()), colors[label])
+        self.assertEqual({text.get_text(): to_hex(text.get_color())
+                          for text in ax.texts},
+                         {"Category 1": colors[1], "Category 2": colors[0]})
+        # Eight dots, none on the boundary.
+        dots = np.vstack([coll.get_offsets() for coll in ax.collections])
+        self.assertEqual(len(dots), n_stim)
+        self.assertTrue(np.all(np.abs(dots[:, 1]) > 0.1))
+
         # DelayDM has no memory clusters: its lines take the stimulus
         # direction's rainbow color (stim_idx 0 and 1 in the fixture) and
         # there is no cluster legend.
@@ -920,15 +997,94 @@ class CueInterpPaperFigureTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             paper_plot._one_trial_per_stimulus(np.array([0, 1]), np.ones(3))
 
+    def test_one_trial_per_stimulus_picks_only_allowed_trials(self):
+        stim = np.array([0, 0, 0, 1, 1, 1, 2, 2, 2])
+        magnitude = np.array([0.7, 1.1, 1.35, 0.9, 1.0, 1.4, 0.8, 1.2, 1.6])
+        # Direction 1 may only use 1.4, so the target moves to 1.35, which
+        # every direction matches within 0.15 (1.35, 1.4, 1.2).
+        allowed = np.array([1, 1, 1, 0, 0, 1, 1, 1, 1], dtype=bool)
+        indices, target = paper_plot._one_trial_per_stimulus(
+            stim, magnitude, allowed)
+        self.assertEqual(target, 1.35)
+        np.testing.assert_array_equal(indices, [2, 5, 7])
+        with self.assertRaises(ValueError):
+            paper_plot._one_trial_per_stimulus(
+                stim, magnitude, np.array([1, 1, 1, 0, 0, 0, 1, 1, 1], dtype=bool))
+        with self.assertRaises(ValueError):
+            paper_plot._one_trial_per_stimulus(stim, magnitude, np.ones(3, bool))
+
+    def test_attractor_switch_score_ignores_the_common_motion(self):
+        # Every trial drifts one unit per alpha along PC1 (the cue's common
+        # motion); PC2 holds the trials 0-3 apart, and trial 2 hops 0.5 up at
+        # the third step; PC3 is flat.
+        n_alpha = 5
+        proj = np.zeros((n_alpha, 4, 3))
+        proj[:, :, 0] = np.arange(n_alpha)[:, None]
+        proj[:, :, 1] = np.arange(4)[None, :]
+        proj[3:, 2, 1] += 0.5
+        scores = paper_plot._cue_interp_attractor_switch_scores(proj)
+        np.testing.assert_allclose(scores, [0.0, 0.0, 0.5 / 3.0, 0.0])
+        with self.assertRaises(ValueError):
+            paper_plot._cue_interp_attractor_switch_scores(proj[:1])
+
+    @staticmethod
+    def _hopping_sweep():
+        """Six trials, two per direction, on one PC spanning 0-10 over four
+        alphas: trial 0 hops 2 (score 0.2), trial 2 hops 3 (0.3) and trial 3
+        hops 1.5 (0.15), each at its own step so the common motion stays
+        zero; the rest stay put. By magnitude alone trials 0, 2 and 4 would
+        be drawn."""
+        proj = np.tile(np.arange(0.0, 12.0, 2.0)[None, :, None], (4, 1, 1))
+        proj[1:, 0, 0] += 2.0
+        proj[2:, 2, 0] += 3.0
+        proj[3:, 3, 0] += 1.5
+        return {"target_rule": "delaydm2", "proj": proj,
+                "stim_idx": np.array([0, 0, 1, 1, 2, 2]),
+                "stimulus_magnitude": np.array([1.0, 0.9, 1.0, 1.2, 1.0, 1.0]),
+                "is_fixed": np.ones((4, 6), dtype=bool)}
+
+    def test_attractor_stable_trials_keep_the_smoothest_when_none_stays(self):
+        allowed, fallback = paper_plot._attractor_stable_trials(
+            self._hopping_sweep())
+        # Direction 1 has no trial under the threshold and keeps trial 3,
+        # the smaller hop.
+        np.testing.assert_array_equal(allowed, [0, 1, 0, 1, 1, 1])
+        self.assertEqual(fallback, [1])
+
+    def test_avoid_attractor_switches_option_redraws_the_delaydm_view(self):
+        sweep = self._hopping_sweep()
+        with patch.object(paper_plot, "SIBLING_ONE_TRIAL_PER_STIMULUS", True):
+            plain = paper_plot._cue_interp_sweep_view(sweep, "delaydm1")
+        np.testing.assert_array_equal(plain["proj"][0, :, 0], [0.0, 4.0, 8.0])
+        self.assertNotIn("attractor_switch_fallback", plain)
+        # The option implies the one-trial view on its own.
+        with patch.object(paper_plot, "SIBLING_AVOID_ATTRACTOR_SWITCHES", True):
+            view = paper_plot._cue_interp_sweep_view(sweep, "delaydm1")
+            dmc = paper_plot._cue_interp_sweep_view(sweep, "dmcgo")
+        # Trials 1, 3 and 4: the allowed trials matched at magnitude 1.0.
+        np.testing.assert_array_equal(view["proj"][0, :, 0], [2.0, 6.0, 8.0])
+        np.testing.assert_array_equal(view["stimulus_magnitude"], [0.9, 1.2, 1.0])
+        self.assertEqual(view["one_trial_target_magnitude"], 1.0)
+        self.assertEqual(view["attractor_switch_fallback"], [1])
+        self.assertEqual(view["is_fixed"].shape, (4, 3))
+        self.assertEqual(
+            paper_plot._cue_interp_view_note({"delaydm1": view}),
+            "; one trial per stimulus, magnitude ≈ 1; trials switching "
+            "attractor avoided (none stays, smoothest drawn: delaydm1 "
+            "direction 1)")
+        # DMC is never filtered: its large step is the cluster swap.
+        np.testing.assert_array_equal(dmc["proj"], plain["proj"])
+        self.assertNotIn("attractor_switch_fallback", dmc)
+
     def test_one_trial_option_subsets_the_drawn_sweeps(self):
         projection = self._projection("gradient", RULES, n_points=4)
         entry = projection["representations"]["hidden"]
         sweep = entry["sweeps"]["delaydm1"]
         sweep["stimulus_magnitude"] = np.array([0.8, 1.2, 1.0, 1.0])
         # Off by default: the sweep is drawn as is.
-        self.assertIs(paper_plot._cue_interp_sweep_view(sweep), sweep)
+        self.assertIs(paper_plot._cue_interp_sweep_view(sweep, "delaydm1"), sweep)
         with patch.object(paper_plot, "SIBLING_ONE_TRIAL_PER_STIMULUS", True):
-            view = paper_plot._cue_interp_sweep_view(sweep)
+            view = paper_plot._cue_interp_sweep_view(sweep, "delaydm1")
             # stim 0 -> trial 2 (magnitude 1.0), stim 1 -> trial 3 (1.0).
             self.assertEqual(view["proj"].shape, (3, 2, 6))
             np.testing.assert_array_equal(view["stim_idx"], [0, 1])
@@ -967,6 +1123,43 @@ class CueInterpPaperFigureTests(unittest.TestCase):
                 patch("builtins.print"):
             paper_plot.main()
         self.assertTrue(paper_plot.SIBLING_ONE_TRIAL_PER_STIMULUS)
+
+    def test_cli_option_avoids_attractor_switches_in_the_one_trial_view(self):
+        self.assertFalse(paper_plot.SIBLING_AVOID_ATTRACTOR_SWITCHES)
+        self.assertFalse(paper_plot.SIBLING_ONE_TRIAL_PER_STIMULUS)
+        for name in ("SIBLING_AVOID_ATTRACTOR_SWITCHES",
+                     "SIBLING_ONE_TRIAL_PER_STIMULUS"):
+            self.addCleanup(setattr, paper_plot, name, False)
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(paper_plot, "FIGURES_BY_MODE",
+                             {"two_in_multiple": {"dummy": Mock()}}), \
+                patch.object(paper_plot, "ALL_FIGURES", {"dummy": Mock()}), \
+                patch.object(paper_plot, "OUT_DIR", Path(directory)), \
+                patch.object(paper_plot, "_set_pretraining_bound"), \
+                patch("sys.argv", ["paper_plot.py", "--only", "dummy",
+                                   "--sibling-avoid-attractor-switches"]), \
+                patch("builtins.print"):
+            paper_plot.main()
+        self.assertTrue(paper_plot.SIBLING_AVOID_ATTRACTOR_SWITCHES)
+        self.assertTrue(paper_plot.SIBLING_ONE_TRIAL_PER_STIMULUS)
+
+    def test_cli_option_switches_the_dmc_kept_pc_to_every_alpha(self):
+        self.assertFalse(paper_plot.SIBLING_DMC_KEEP_AT_EVERY_ALPHA)
+        self.addCleanup(setattr, paper_plot, "SIBLING_DMC_KEEP_AT_EVERY_ALPHA",
+                        False)
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(paper_plot, "FIGURES_BY_MODE",
+                             {"two_in_multiple": {"dummy": Mock()}}), \
+                patch.object(paper_plot, "ALL_FIGURES", {"dummy": Mock()}), \
+                patch.object(paper_plot, "OUT_DIR", Path(directory)), \
+                patch.object(paper_plot, "_set_pretraining_bound"), \
+                patch("sys.argv", ["paper_plot.py", "--only", "dummy",
+                                   "--sibling-dmc-keep-every-alpha"]), \
+                patch("builtins.print"):
+            paper_plot.main()
+        self.assertTrue(paper_plot.SIBLING_DMC_KEEP_AT_EVERY_ALPHA)
+        self.assertEqual(paper_plot._dmc_sweep_metric_name(),
+                         paper_plot.DMC_SWEEP_KEEP_EVERY_ALPHA_METRIC_NAME)
 
     def test_endpoint_plane_comes_from_the_base_endpoint_projection(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1021,12 +1214,6 @@ class CueInterpPaperFigureTests(unittest.TestCase):
                     entry=entry)
                 self.assertIn(3, pair)
                 self.assertIn(paper_plot.SWEEP_METRIC_NAME, note)
-            # DMC keeps the base figure's plane even when its sweeps are given.
-            pair, note = paper_plot._multitask_cue_interp_plane(
-                "dmcgo", "e_modulation", "gradient", root, "run", entry=entry)
-            self.assertEqual(
-                pair, paper_plot._MULTITASK_SIBLING_PC_PLANES["dmcgo"]["e_modulation"])
-            self.assertEqual(note, "configured")
             # A sweep that cannot be scored (one trial per direction) falls
             # back to the base figure's plane instead of failing.
             single = {"sweeps": {"delaydm1": {
@@ -1039,6 +1226,28 @@ class CueInterpPaperFigureTests(unittest.TestCase):
             self.assertEqual(
                 pair, paper_plot._MULTITASK_SIBLING_ENDPOINT_DEFAULT_PC_PLANE)
             self.assertIn("falling back", output.call_args.args[0])
+
+    def test_dmc_plane_pairs_the_kept_pc_with_the_swapped_pc(self):
+        # DMCGo stimuli 0-3 form response cluster 1 at alpha = 0. PC3 keeps
+        # the clusters apart in the same order, PC5 swaps them, the other PCs
+        # are noise; the plane puts the kept PC first, for both methods, and
+        # derives the clusters from the stimuli when none are saved.
+        n_alpha = 5
+        stim = np.tile(np.arange(8), 2)
+        sign = np.where(stim < 4, 1.0, -1.0)
+        rng = np.random.RandomState(2)
+        proj = rng.normal(scale=0.05, size=(n_alpha, stim.size, 6))
+        proj[:, :, 2] += sign[None, :]
+        proj[:, :, 4] += (1.0 - 2.0 * np.linspace(0, 1, n_alpha))[:, None] * sign[None, :]
+        entry = {"sweeps": {"dmcgo": {
+            "target_rule": "dmcnogo", "proj": proj, "stim_idx": stim,
+            "stimulus_magnitude": np.ones(stim.size)}}}
+        with tempfile.TemporaryDirectory() as directory:
+            for method in ("gradient", "long_delay_endpoint"):
+                pair, note = paper_plot._multitask_cue_interp_plane(
+                    "dmcgo", "hidden", method, Path(directory), "run", entry=entry)
+                self.assertEqual(pair, (3, 5))
+                self.assertIn(paper_plot.DMC_SWEEP_METRIC_NAME, note)
 
 
 if __name__ == "__main__":

@@ -48,9 +48,11 @@ from pathlib import Path
 from scipy.cluster.hierarchy import dendrogram, fcluster
 
 import _bootstrap  # noqa: F401  (puts the repository root on sys.path)
-from core.sibling_geometry import (DELAYDM_METRIC_NAME, DMCGO_METRIC_NAME,
-                                   SWEEP_METRIC_NAME, best_sweep_pc_pair,
-                                   best_task_specific_pc_pair)
+from core.sibling_geometry import (DELAYDM_METRIC_NAME, DMC_SWEEP_METRIC_NAME,
+                                   DMC_SWEEP_KEEP_EVERY_ALPHA_METRIC_NAME,
+                                   DMCGO_METRIC_NAME, SWEEP_METRIC_NAME,
+                                   best_dmc_sweep_pc_pair, best_sweep_pc_pair,
+                                   best_task_specific_pc_pair, task_offsets)
 from core.state_space_geometry import task_centroid_separation
 from core.lesion_cache import load_lesion_pickle, normalize_lesion_cache, resolve_lesion_cache_path
 from core.clustering import fixed_k_col_clusters
@@ -422,6 +424,22 @@ DMCGO_ANAME = None
 # direction at a magnitude matched across the directions (True; see
 # `_one_trial_per_stimulus`). `--sibling-one-trial-per-stimulus` sets it.
 SIBLING_ONE_TRIAL_PER_STIMULUS = False
+# One-trial view of the DelayDM rule-cue sweeps: any trial (False), or, for
+# each stimulus direction, preferably a trial whose endpoint stays on one
+# attractor along the sweep (True; implies the one-trial view, see
+# `_attractor_stable_trials`). The settled DelayDM endpoints form a discrete
+# set of attractors, and a trial near a basin boundary hops to a neighboring
+# one as the cue moves, which draws as a jump. This is a selection for
+# legibility, so the caption must say so. DMC sweeps are never filtered: their
+# large step is the response-cluster swap the figures show.
+# `--sibling-avoid-attractor-switches` sets it.
+SIBLING_AVOID_ATTRACTOR_SWITCHES = False
+# DMC rule-cue sweep figures: the top-row PC keeps the response clusters apart
+# in the same order at both ends of the sweep (False), or at every alpha
+# (True), which gives a cleaner top row but can leave a smaller swap on the
+# bottom row (see `core.sibling_geometry.dmc_sweep_axis_scores`). It changes
+# the DMC sweep figures' plane and run. `--sibling-dmc-keep-every-alpha` sets it.
+SIBLING_DMC_KEEP_AT_EVERY_ALPHA = False
 # Produced by multiple_task/sibling_delay_analysis.py, which writes into
 # two_in_multiples/{aname}/ the artifacts the sibling figures read. Gradient
 # method:
@@ -6859,7 +6877,8 @@ def plot_onetask_stimulus_colorwheel():
     figures. Each of the N ring stimulus directions (angle = 2*pi*k/N) is drawn
     as a dot on the unit circle in its c_vals[k] color — the same mapping used
     to color trajectories/rings by stimulus. A pure legend/illustration; uses no
-    saved data.
+    saved data. Also saves the DMC category companion
+    (`_plot_dmc_category_colorwheel`).
     """
     _ensure_out_dir()
     n = ONETASK_N_STIM
@@ -6886,6 +6905,42 @@ def plot_onetask_stimulus_colorwheel():
     fig.tight_layout()
     out_path = OUT_DIR / "onetask_stimulus_colorwheel.png"
     _save_fig(fig, out_path)
+    _plot_dmc_category_colorwheel()
+
+
+def _plot_dmc_category_colorwheel():
+    """
+    Illustration: the DMC stimulus categories on the stimulus colorwheel
+    (onetask_stimulus_colorwheel_dmc_category.png). The eight DMC locations
+    (`_DMC_STIMULUS_LOCATIONS`) keep their direction colors; the guide circle
+    is split into the two categories in the DMC figures' category colors
+    (`_CUE_INTERP_CLUSTER_COLORS`): the upper half (location < pi) is
+    category 1, which a DMCGo trial responds to as "category 1", the lower
+    half category 2. The dashed line is the category boundary through 0 and
+    pi. Uses no saved data.
+    """
+    _ensure_out_dir()
+    fig, ax = plt.subplots(1, 1, figsize=(2.6, 2.9))
+    ax.plot([-1.15, 1.15], [0.0, 0.0], "--", color="0.5", lw=0.8, zorder=0)
+    for label, name, (start, stop), y, va in (
+            (1, "Category 1", (0.0, np.pi), 1.2, "bottom"),
+            (0, "Category 2", (np.pi, 2 * np.pi), -1.2, "top")):
+        theta = np.linspace(start, stop, 100)
+        ax.plot(np.cos(theta), np.sin(theta), "-", lw=4.0,
+                color=_CUE_INTERP_CLUSTER_COLORS[label], solid_capstyle="butt",
+                zorder=1)
+        ax.text(0.0, y, name, ha="center", va=va, fontsize=8,
+                color=_CUE_INTERP_CLUSTER_COLORS[label])
+    for k, loc in enumerate(_DMC_STIMULUS_LOCATIONS):
+        ax.scatter(np.cos(loc), np.sin(loc), color=stim_color(k, _SIBLING_N_STIM),
+                   s=180, edgecolors="k", linewidths=0.5, zorder=3)
+    ax.set_xlim(-1.3, 1.3)
+    ax.set_ylim(-1.5, 1.5)
+    ax.set_aspect("equal")
+    ax.axis("off")
+
+    fig.tight_layout()
+    _save_fig(fig, OUT_DIR / "onetask_stimulus_colorwheel_dmc_category.png")
 
 
 def plot_onetask_show():
@@ -9555,24 +9610,47 @@ def _multitask_sibling_aname(family, plot_name, figure="endpoint"):
 # separate best in their best PC pair, chosen on its own. The endpoint figure
 # of each representation is scored on its endpoints
 # (`_best_sibling_endpoint_pc_pair`: stimulus directions for DelayDM, response
-# categories for DMC, both tasks pooled); the DelayDM rule-cue sweep on the
-# sweep's fixed points at every alpha (`best_sweep_pc_pair`). The DMC sweep
-# follows its endpoint figure: its point is the swap of the two response
-# clusters under the sibling's cue, which a separable-at-every-alpha score
-# would select against. Figures of one family can therefore come from
-# different networks. The endpoint figure's run also serves its `_cue_interp`
-# overlay (the overlaid sweep shares that run's basis) and the gradient-method
-# geometry figures; the sweep figure's run serves its 2d and 3d views. The
-# whole ranking is printed and saved beside the figures.
+# categories for DMC, both tasks pooled) and the rule-cue sweep figure on the
+# sweep's own fixed points (`_sibling_sweep_pc_pair`). Figures of one family
+# can therefore come from different networks. The endpoint figure's run also
+# serves its `_cue_interp` overlay (the overlaid sweep shares that run's basis)
+# and the gradient-method geometry figures; the sweep figure's run serves its
+# 2d and 3d views. The whole ranking is printed and saved beside the figures.
 _SIBLING_SELECTED_RUNS = {}
 _SIBLING_REPRESENTATIONS = ("hidden", "e_modulation")
 _SIBLING_FIGURES = ("endpoint", "sweep")
 
 
-def _sibling_ranking_figure(family, figure):
-    """The figure whose scores rank the runs for `figure`: its own, except the
-    DMC sweep, which follows its endpoint figure."""
-    return "endpoint" if family == "dmcgo" and figure == "sweep" else figure
+def _dmc_sweep_metric_name():
+    """Name of the DMC sweep score under SIBLING_DMC_KEEP_AT_EVERY_ALPHA."""
+    return (DMC_SWEEP_KEEP_EVERY_ALPHA_METRIC_NAME if SIBLING_DMC_KEEP_AT_EVERY_ALPHA
+            else DMC_SWEEP_METRIC_NAME)
+
+
+def _sibling_sweep_pc_pair(family, sweeps):
+    """((pc_x, pc_y), score, metric_name) of the plane a rule-cue sweep is
+    drawn in, chosen on the sweep's own fixed points.
+
+    DelayDM: the pair whose fixed points stay best separated by stimulus
+    direction at every alpha (`best_sweep_pc_pair`). DMC: the PC on which the
+    response clusters keep their order from alpha = 0 to 1 beside the PC on
+    which they swap under the sibling's cue (`best_dmc_sweep_pc_pair`; the
+    kept PC at both ends, or at every alpha with
+    SIBLING_DMC_KEEP_AT_EVERY_ALPHA), so each row of the figure shows the
+    clusters: what was seen is kept, the response flips. `sweeps` maps each
+    base rule to its sweep.
+    """
+    projections = [np.asarray(sweep["proj"], dtype=float) for sweep in sweeps.values()]
+    if family == "dmcgo":
+        rules = _MULTITASK_SIBLING_FAMILIES[family]
+        return best_dmc_sweep_pc_pair(
+            projections,
+            [_cue_interp_sweep_groups(family, rules, base_rule, sweep)
+             for base_rule, sweep in sweeps.items()],
+            keep_at_every_alpha=SIBLING_DMC_KEEP_AT_EVERY_ALPHA)
+    return best_sweep_pc_pair(
+        projections,
+        [np.asarray(sweep["stim_idx"], dtype=int) for sweep in sweeps.values()])
 
 
 def _require_sibling_converged(is_fixed, context):
@@ -9587,12 +9665,11 @@ def _require_sibling_converged(is_fixed, context):
 
 
 def _sibling_run_scores(family, aname):
-    """{figure: {representation: best-pair separation}} of one cached run.
+    """{figure: {representation: best-pair score}} of one cached run.
 
     Each figure is scored with the metric it picks its PC pair with, on the
-    fixed points it draws: "endpoint" by `_best_sibling_endpoint_pc_pair` and,
-    for DelayDM, "sweep" by `best_sweep_pc_pair` on the long-delay rule-cue
-    sweep (the DMC sweep has no score of its own, `_sibling_ranking_figure`).
+    fixed points it draws: "endpoint" by `_best_sibling_endpoint_pc_pair`,
+    "sweep" by `_sibling_sweep_pc_pair` on the long-delay rule-cue sweep.
     Raises ValueError when a cache is missing, predates settling or holds a
     point above the fixed-point criterion, so such a run is never shown.
     """
@@ -9612,8 +9689,7 @@ def _sibling_run_scores(family, aname):
     if caches["sweep"].get("kind") != "cue_interp":
         raise ValueError(f"{paths['sweep'].name} is not a rule-cue sweep projection")
 
-    scores = {figure: {} for figure in _SIBLING_FIGURES
-              if _sibling_ranking_figure(family, figure) == figure}
+    scores = {figure: {} for figure in _SIBLING_FIGURES}
     for plot_name in _SIBLING_REPRESENTATIONS:
         entry = caches["endpoint"].get("representations", {}).get(plot_name)
         sweeps = (caches["sweep"].get("representations", {})
@@ -9626,11 +9702,7 @@ def _sibling_run_scores(family, aname):
                                        f"{plot_name} sweep points from {base_rule}")
         scores["endpoint"][plot_name] = float(
             _best_sibling_endpoint_pc_pair(entry, family)[1])
-        if "sweep" in scores:
-            scores["sweep"][plot_name] = float(best_sweep_pc_pair(
-                [np.asarray(sweep["proj"], dtype=float) for sweep in sweeps.values()],
-                [np.asarray(sweep["stim_idx"], dtype=int) for sweep in sweeps.values()],
-            )[1])
+        scores["sweep"][plot_name] = float(_sibling_sweep_pc_pair(family, sweeps)[1])
     return scores
 
 
@@ -9659,24 +9731,23 @@ def _sibling_run_ranking(family):
     skipped.sort(key=lambda row: row["seed"])
     choices = {}
     for figure in _SIBLING_FIGURES:
-        ranked_by = _sibling_ranking_figure(family, figure)
         for plot_name in _SIBLING_REPRESENTATIONS:
             ranked = sorted(runs, key=lambda row: (
-                -row["scores"][ranked_by][plot_name], row["seed"]))
+                -row["scores"][figure][plot_name], row["seed"]))
             choices[f"{figure} {plot_name}"] = {
-                "ranked_by": ranked_by,
                 "best_aname": ranked[0]["aname"] if ranked else None,
                 "ranking": [{"seed": row["seed"],
-                             "score": row["scores"][ranked_by][plot_name]}
+                             "score": row["scores"][figure][plot_name]}
                             for row in ranked],
             }
-    endpoint_metric = DMCGO_METRIC_NAME if family == "dmcgo" else DELAYDM_METRIC_NAME
+    dmc = family == "dmcgo"
     return {
         "family": family,
         "cohort": multitask_feature(SIBLING_L2),
-        "metrics": {"endpoint": f"best-pair {endpoint_metric}",
-                    "sweep": ("follows the endpoint figure" if family == "dmcgo"
-                              else f"best-pair {SWEEP_METRIC_NAME}")},
+        "metrics": {
+            "endpoint": "best-pair " + (DMCGO_METRIC_NAME if dmc else DELAYDM_METRIC_NAME),
+            "sweep": "best-pair " + (_dmc_sweep_metric_name() if dmc else SWEEP_METRIC_NAME),
+        },
         "n_candidates": len(runs) + len(skipped),
         "choices": choices,
         "runs": runs,
@@ -9720,10 +9791,8 @@ def _select_sibling_runs(family):
         return {key: multitask_aname(0, SIBLING_L2) for key in report["choices"]}
     for key, choice in report["choices"].items():
         best = choice["ranking"][0]
-        follows = ("" if key.startswith(choice["ranked_by"])
-                   else f", following the {choice['ranked_by']} figure")
         print(f"  {family} {key} run selected automatically: seed {best['seed']} "
-              f"(score {best['score']:.3f}{follows})")
+              f"(score {best['score']:.3f})")
     return {key: choice["best_aname"] for key, choice in report["choices"].items()}
 
 
@@ -9902,7 +9971,6 @@ def _plot_multitask_sibling_fixed_point_geometry_representation(
 
     projection = np.asarray(entry["proj"], dtype=float)
     task_idx = np.asarray(entry["task_idx"], dtype=int)
-    stim_idx = np.asarray(entry["stim_idx"], dtype=int)
     first_idx, second_idx = _matched_delaydm_projection_indices(entry)
     if first_idx.size < 3:
         print(f"  Skipped {family}: only {first_idx.size} matched fixed-point "
@@ -9931,7 +9999,10 @@ def _plot_multitask_sibling_fixed_point_geometry_representation(
         return False
 
     task_names = list(entry.get("task_names", rules))
-    n_stim = int(stim_idx.max()) + 1
+    # Colored as the endpoint and sweep figures are: DelayDM by stimulus
+    # direction, DMC by response category.
+    labels, _ = _sibling_fixed_point_color_labels(family, entry)
+    color_for = _sibling_color_for(family, int(labels.max()) + 1)
     fig, axs = plt.subplots(1, 2, figsize=(6.2, 2.75), squeeze=False)
     panels = (projection, aligned)
     for panel_index, (ax, shown) in enumerate(zip(axs[0], panels)):
@@ -9945,10 +10016,9 @@ def _plot_multitask_sibling_fixed_point_geometry_representation(
 
         for task, rule in enumerate(task_names):
             sel_task = task_idx == task
-            for stim in np.unique(stim_idx[sel_task]):
-                sel = sel_task & (stim_idx == stim)
-                color = stim_color(int(stim), n_stim)
-                ax.scatter(shown[sel, bx], shown[sel, by], color=color,
+            for label in np.unique(labels[sel_task]):
+                sel = sel_task & (labels == label)
+                ax.scatter(shown[sel, bx], shown[sel, by], color=color_for(label),
                            edgecolor="white", linewidth=0.25,
                            marker=_MULTITASK_RULE_MARKERS[task % 2],
                            s=31, alpha=0.88, zorder=3)
@@ -9993,6 +10063,7 @@ def _plot_multitask_sibling_fixed_point_geometry_representation(
                           color="none", markersize=5.5,
                           label=_TASK_DISPLAY.get(rule, rule))
                for t, rule in enumerate(task_names)]
+    handles += _sibling_category_handles(family, labels)
     _legend(axs[0, 0], handles=handles, frameon=False, fontsize=6.5,
             loc="best", handletextpad=0.3)
     fig.tight_layout(w_pad=1.5)
@@ -10009,24 +10080,72 @@ def _plot_multitask_sibling_fixed_point_geometry_representation(
     return True
 
 
-def _sibling_endpoint_cluster_labels(family, entry):
-    """Return stimulus labels used for color in sibling-family plots."""
-    if family in ("delaydm1", "dmcgo"):
-        if "stim_idx" not in entry:
-            raise KeyError(f"{family} endpoint projection has no stim_idx labels")
-        return np.asarray(entry["stim_idx"], dtype=int), "stimulus direction"
-    raise ValueError(f"no long-delay clustering criterion for {family!r}")
+def _sibling_fixed_point_color_labels(family, entry):
+    """(labels, name) that color the fixed points of a sibling projection
+    (long-delay endpoints or gradient fixed points), matching the lines of the
+    rule-cue sweep figures: the stimulus direction for DelayDM, the response
+    category for DMC ("respond to category 1 / 2", the saved `group_labels`,
+    or derived from task and stimulus as
+    `sibling_delay_analysis._dmc_category_labels` derives them)."""
+    if family not in ("delaydm1", "dmcgo"):
+        raise ValueError(f"no long-delay clustering criterion for {family!r}")
+    if "stim_idx" not in entry:
+        raise KeyError(f"{family} endpoint projection has no stim_idx labels")
+    stim = np.asarray(entry["stim_idx"], dtype=int)
+    if family == "delaydm1":
+        return stim, "stimulus direction"
+    if "group_labels" in entry:
+        return np.asarray(entry["group_labels"], dtype=int), "response category"
+    task = np.asarray(entry["task_idx"], dtype=int)
+    half = max(_SIBLING_N_STIM, int(stim.max()) + 1) // 2
+    return ((task == 0) == (stim < half)).astype(int), "response category"
+
+
+def _sibling_color_for(family, n_colors):
+    """label -> color of the sibling fixed-point figures: the response
+    cluster's color for DMC (`_CUE_INTERP_CLUSTER_COLORS`), the stimulus
+    rainbow over `n_colors` directions for DelayDM."""
+    if family == "dmcgo":
+        return lambda label: _CUE_INTERP_CLUSTER_COLORS[int(label)]
+    return lambda label: stim_color(int(label), n_colors)
+
+
+def _sibling_category_handles(family, labels):
+    """Legend lines for the response categories coloring a DMC figure, in the
+    sweep figures' order and colors; none for DelayDM, whose stimulus colors
+    are keyed by the stimulus colorwheel."""
+    if family != "dmcgo":
+        return []
+    categories = sorted({int(label) for label in np.unique(labels)}, reverse=True)
+    return [plt.Line2D([], [], color=_CUE_INTERP_CLUSTER_COLORS[label],
+                       linewidth=1.4, label=_CUE_INTERP_CLUSTER_NAMES[label])
+            for label in categories]
+
+
+def _sibling_sweep_color_labels(family, rules, base_rule, sweep):
+    """Per-trial labels coloring a sweep overlaid on the endpoint figure: the
+    trial's response cluster at alpha = 0 for DMC
+    (`_cue_interp_sweep_groups`), its stimulus direction for DelayDM."""
+    groups = _cue_interp_sweep_groups(family, rules, base_rule, sweep)
+    return np.asarray(sweep["stim_idx"], dtype=int) if groups is None else groups
 
 
 def _best_sibling_endpoint_pc_pair(entry, family):
-    """Select the six-PC pair that best separates the fixed points: by
-    stimulus direction for DelayDM, by response category for DMC
-    (`best_task_specific_pc_pair`, both sibling tasks pooled)."""
+    """Select the six-PC pair that best separates the fixed points, both
+    sibling tasks pooled (`best_task_specific_pc_pair`): by stimulus direction
+    for DelayDM once each task's mean is removed, by response category for
+    DMC."""
     projection = np.asarray(entry["proj"], dtype=float)
     return best_task_specific_pc_pair(
         projection, family,
         stim_idx=entry.get("stim_idx"),
-        group_labels=entry.get("group_labels"))
+        group_labels=entry.get("group_labels"),
+        task_idx=entry.get("task_idx"))
+
+
+# Families whose endpoint figure draws its selected plane task-aligned (each
+# task's mean removed), the coordinates its PC pair is scored in.
+_SIBLING_TASK_ALIGNED_FAMILIES = ("delaydm1",)
 
 
 # Overlay the long-delay rule-cue sweep (see plot_multitask_sibling_cue_interp)
@@ -10058,15 +10177,18 @@ def _cue_interp_endpoint_overlay(family, plot_name):
         print(f"  {family} long-delay {plot_name}: {path.name} holds no "
               "rule-cue sweep for this representation; drawing endpoints only.")
         return None
-    return np.asarray(sweep_data["alphas"], dtype=float), _cue_interp_sweeps(entry)
+    return (np.asarray(sweep_data["alphas"], dtype=float),
+            _cue_interp_sweeps(entry, family))
 
 
 def _draw_cue_interp_endpoint_overlay(ax, alphas, sweeps, task_names, bx, by,
-                                      color_for):
+                                      color_for, sweep_labels, offsets=None):
     """Overlay every sweep trial's path across alpha on one endpoint panel.
 
-    Hue stays with the stimulus direction, the panel's convention, so the cue
-    is carried by marker shape as it is for the endpoints themselves: the
+    Hue follows the panel's convention, `color_for` of each trial's entry in
+    `sweep_labels` (base rule -> labels, `_sibling_sweep_color_labels`: the
+    stimulus direction for DelayDM, the alpha = 0 response cluster for DMC),
+    so the cue is carried by marker shape as it is for the endpoints: the
     alpha = 0 start takes the base rule's marker (small, filled; it is that
     rule's own trial), the alpha = 1 end takes the sibling's marker, hollow,
     marking where the sweep ends rather than an endpoint of the sibling's own
@@ -10074,18 +10196,22 @@ def _draw_cue_interp_endpoint_overlay(ax, alphas, sweeps, task_names, bx, by,
     rule presents its stimulus on its own modality); for DMC it is an
     ordinary DMCNoGo input for the same stimulus, so the hollow marker lands
     on DMCNoGo's own endpoint. Intermediate alphas are dots along a dotted
-    path."""
+    path. On a task-aligned panel `offsets` (task -> mean endpoint, as
+    `task_offsets` returns) shifts each path by its base task's offset, the
+    frame its alpha = 0 start shares with that task's endpoints."""
     for base_rule, sweep in sweeps.items():
         base_task = task_names.index(base_rule)
         target_task = task_names.index(sweep["target_rule"])
         proj = np.asarray(sweep["proj"], dtype=float)      # (n_alpha, n_points, n_pc)
-        stim = np.asarray(sweep["stim_idx"], dtype=int)
+        if offsets is not None:
+            proj = proj - offsets[base_task]
+        labels = sweep_labels[base_rule]
         for s in range(proj.shape[1]):
             path = proj[:, s][:, [bx, by]]
             finite = np.isfinite(path).all(axis=1)
             if np.count_nonzero(finite) < 2:
                 continue
-            color = color_for(stim[s])
+            color = color_for(labels[s])
             ax.plot(path[finite, 0], path[finite, 1], linestyle=":",
                     color=color, linewidth=0.7, alpha=0.7, zorder=2)
             if alphas.size > 2:
@@ -10107,6 +10233,12 @@ def _plot_multitask_long_delay_endpoint_representation(
         data, family, rules, plot_name, output_suffix, cue_sweep=None):
     """Plot default PC1-PC2 beside the best long-delay endpoint PC pair.
 
+    Endpoints and trajectories are colored as the sweep figures' lines are
+    (`_sibling_fixed_point_color_labels`): DelayDM by stimulus direction, DMC
+    by response category (`_CUE_INTERP_CLUSTER_COLORS`); marker shape and
+    trajectory line style give the task. For DelayDM the best pair is scored
+    and drawn task-aligned, each task's mean endpoint removed, so the same
+    stimulus of both tasks overlaps; PC1-PC2 stays raw and shows the offset.
     `cue_sweep` is the family's long-delay rule-cue sweep as returned by
     `_cue_interp_endpoint_overlay` (the caller loads it); when given, each
     sweep trial's path across alpha is overlaid in the same plane
@@ -10136,7 +10268,7 @@ def _plot_multitask_long_delay_endpoint_representation(
     projection = np.asarray(entry["proj"], dtype=float)
     trajectories = np.asarray(entry["trajectory_proj"], dtype=float)
     task_idx = np.asarray(entry["task_idx"], dtype=int)
-    labels, _ = _sibling_endpoint_cluster_labels(family, entry)
+    labels, _ = _sibling_fixed_point_color_labels(family, entry)
     if (task_idx.shape != labels.shape
             or trajectories.ndim != 3
             or trajectories.shape[0] != projection.shape[0]
@@ -10154,7 +10286,6 @@ def _plot_multitask_long_delay_endpoint_representation(
         task_names = list(rules)
 
     overlay = cue_sweep
-    limit_points = projection
     n_colors = int(labels.max()) + 1
     if overlay is not None:
         alphas, sweeps = overlay
@@ -10164,25 +10295,41 @@ def _plot_multitask_long_delay_endpoint_representation(
                   f"{unknown} are not in {task_names}; drawing endpoints only.")
             overlay = None
         else:
-            sweep_points = np.concatenate([
-                np.asarray(sweep["proj"], dtype=float).reshape(
-                    -1, projection.shape[1])
-                for sweep in sweeps.values()])
-            limit_points = np.vstack([projection, sweep_points])
+            sweep_labels = {
+                base_rule: _sibling_sweep_color_labels(family, rules, base_rule, sweep)
+                for base_rule, sweep in sweeps.items()}
             n_colors = max(n_colors, 1 + max(
-                int(np.max(sweep["stim_idx"])) for sweep in sweeps.values()))
-    color_for = lambda label: stim_color(int(label), n_colors)
+                int(np.max(trial_labels)) for trial_labels in sweep_labels.values()))
+    color_for = _sibling_color_for(family, n_colors)
 
     fig, axs = plt.subplots(1, 2, figsize=(6.8, 3.0), squeeze=False)
     trajectory_linestyles = ("-", "--")
     evr = np.asarray(entry.get("explained_variance_ratio", []), dtype=float)
+    # The selected plane of a task-aligned family is drawn as it is scored,
+    # each task's mean endpoint removed (paths and the sweep shifted with
+    # their task); the default PC1-PC2 plane keeps the raw coordinates, which
+    # show the task offset itself.
+    aligned = family in _SIBLING_TASK_ALIGNED_FAMILIES
+    offsets = task_offsets(projection, task_idx) if aligned else None
     panel_specs = (
-        (axs[0, 0], default_pc_x, default_pc_y, default_bx, default_by),
-        (axs[0, 1], best_pc_x, best_pc_y, best_bx, best_by),
+        (axs[0, 0], default_pc_x, default_pc_y, default_bx, default_by, None),
+        (axs[0, 1], best_pc_x, best_pc_y, best_bx, best_by, offsets),
     )
-    for ax, pc_x, pc_y, bx, by in panel_specs:
+    for ax, pc_x, pc_y, bx, by, panel_offsets in panel_specs:
+        shift = (np.zeros_like(projection) if panel_offsets is None
+                 else np.stack([panel_offsets[task] for task in task_idx]))
+        points = projection - shift
+        paths = trajectories - shift[:, None, :]
+        limit_points = points
+        if overlay is not None:
+            limit_points = np.vstack([points] + [
+                (np.asarray(sweep["proj"], dtype=float)
+                 - (0.0 if panel_offsets is None
+                    else panel_offsets[task_names.index(base_rule)])
+                 ).reshape(-1, projection.shape[1])
+                for base_rule, sweep in sweeps.items()])
         for trial_index in range(projection.shape[0]):
-            path = trajectories[trial_index][:, [bx, by]]
+            path = paths[trial_index][:, [bx, by]]
             finite = np.isfinite(path).all(axis=1)
             if np.count_nonzero(finite) < 2:
                 continue
@@ -10197,26 +10344,28 @@ def _plot_multitask_long_delay_endpoint_representation(
                 color=color_for(labels[trial_index]), edgecolor="none",
                 marker=".", s=8, alpha=0.35, zorder=2)
 
-        finite_endpoints = np.isfinite(projection[:, [bx, by]]).all(axis=1)
+        finite_endpoints = np.isfinite(points[:, [bx, by]]).all(axis=1)
         for task, rule in enumerate(task_names):
             for label in np.unique(labels[task_idx == task]):
                 selected = ((task_idx == task) & (labels == label)
                             & finite_endpoints)
                 if np.any(selected):
                     ax.scatter(
-                        projection[selected, bx], projection[selected, by],
+                        points[selected, bx], points[selected, by],
                         color=color_for(label), edgecolor="white",
                         linewidth=0.25,
                         marker=_MULTITASK_RULE_MARKERS[task % 2], s=31,
                         alpha=0.88, zorder=3)
         if overlay is not None:
             _draw_cue_interp_endpoint_overlay(
-                ax, alphas, sweeps, task_names, bx, by, color_for)
+                ax, alphas, sweeps, task_names, bx, by, color_for, sweep_labels,
+                offsets=panel_offsets)
 
         x_var = f" ({100 * evr[bx]:.1f}%)" if evr.size > bx else ""
         y_var = f" ({100 * evr[by]:.1f}%)" if evr.size > by else ""
-        ax.set_xlabel(f"Joint Delay PC{pc_x}{x_var}")
-        ax.set_ylabel(f"Joint Delay PC{pc_y}{y_var}")
+        aligned_note = "" if panel_offsets is None else ", task-aligned"
+        ax.set_xlabel(f"Joint Delay PC{pc_x}{x_var}{aligned_note}")
+        ax.set_ylabel(f"Joint Delay PC{pc_y}{y_var}{aligned_note}")
         limit_padding = _MULTITASK_ENDPOINT_LIMIT_PADDING
         if family == "delaydm1" and plot_name == "e_modulation":
             limit_padding = _MULTITASK_DELAYDM_EMODULATION_LIMIT_PADDING
@@ -10239,7 +10388,9 @@ def _plot_multitask_long_delay_endpoint_representation(
                        label=_TASK_DISPLAY.get(rule, rule))
             for task, rule in enumerate(task_names)
         ]
-        legend_height = 0.65
+        category_handles = _sibling_category_handles(family, labels)
+        handles += category_handles
+        legend_height = 0.65 + 0.3 * len(category_handles)
         if overlay is not None:
             # One entry per sweep direction: the hollow end marker is the
             # sibling's shape, so each direction needs its own handle.
@@ -10263,7 +10414,8 @@ def _plot_multitask_long_delay_endpoint_representation(
                 f"legend{name_suffix}.png"))
     fig.tight_layout(w_pad=1.5)
     overlay_note = ("" if overlay is None else
-                    f"; cue sweep overlaid: {alphas.size} alphas, bases {list(sweeps)}")
+                    f"; cue sweep overlaid: {alphas.size} alphas, bases {list(sweeps)}"
+                    f"{_cue_interp_view_note(sweeps)}")
     # Hollow markers here already mean the sweep's alpha = 1 end, so endpoints
     # left above the residual criterion are reported rather than drawn hollow.
     unsettled = int(np.sum(~np.asarray(
@@ -10275,7 +10427,8 @@ def _plot_multitask_long_delay_endpoint_representation(
         _multitask_out(
             f"{_MULTITASK_SIBLING_OUTPUT_NAMES[family]}_long_delay_endpoint_"
             f"{output_suffix}{name_suffix}.png"),
-        extra=(f"  (default PC1-PC2; best PC{best_pc_x}-PC{best_pc_y}; "
+        extra=(f"  (default PC1-PC2; best PC{best_pc_x}-PC{best_pc_y}"
+               f"{', task-aligned' if aligned else ''}; "
                f"metric={metric_name}; score={score:.3f}{overlay_note}"
                f"{unsettled_note})"))
     return True
@@ -10372,10 +10525,12 @@ def _multitask_cue_interp_plane(family, plot_name, method, run_dir, aname,
                                 entry=None):
     """1-based PC pair the sweep is drawn in.
 
-    DelayDM chooses the plane on the sweep itself when `entry` (the
-    representation's sweeps) is given: the pair whose fixed points stay best
-    separated by stimulus direction at every alpha (`best_sweep_pc_pair`).
-    Otherwise, and for DMC, the base figure's plane is used: the configured
+    The plane is chosen on the sweep itself when `entry` (the
+    representation's sweeps) is given (`_sibling_sweep_pc_pair`: for DelayDM
+    the pair whose fixed points stay best separated by stimulus direction at
+    every alpha, for DMC the PC on which the response clusters keep their
+    order beside the PC on which they swap, in that row order). When the
+    sweep cannot be scored, the base figure's plane is used: the configured
     joint plane for the gradient method (`_MULTITASK_SIBLING_PC_PLANES`) and,
     for the endpoint method, the pair that best separates the run's fixed
     points (`_best_sibling_endpoint_pc_pair`), read from its cached base
@@ -10383,12 +10538,9 @@ def _multitask_cue_interp_plane(family, plot_name, method, run_dir, aname,
     missing (announced). Returns (pair, note) where the note names how the
     plane was chosen.
     """
-    if family == "delaydm1" and entry and entry.get("sweeps"):
-        sweeps = list(entry["sweeps"].values())
+    if entry and entry.get("sweeps"):
         try:
-            pair, score, metric_name = best_sweep_pc_pair(
-                [np.asarray(sweep["proj"], dtype=float) for sweep in sweeps],
-                [np.asarray(sweep["stim_idx"], dtype=int) for sweep in sweeps])
+            pair, score, metric_name = _sibling_sweep_pc_pair(family, entry["sweeps"])
             return tuple(pair), f"best {metric_name} = {score:.3f}"
         except ValueError as exc:
             print(f"  {family}/{plot_name}: sweep-based PC pair unavailable "
@@ -10412,23 +10564,32 @@ def _multitask_cue_interp_plane(family, plot_name, method, run_dir, aname,
     return tuple(_MULTITASK_SIBLING_ENDPOINT_DEFAULT_PC_PLANE), "default"
 
 
-def _one_trial_per_stimulus(stim_idx, magnitude):
+def _one_trial_per_stimulus(stim_idx, magnitude, allowed=None):
     """Indices of one trial per stimulus direction at matched magnitudes.
 
     The target magnitude is the trials' own value that every direction can
     match most closely (smallest worst-case deviation, ties broken toward
     1.0); each direction then contributes its trial nearest that target
-    (lowest index on ties). Returns (indices in direction order, target).
-    DMC trials all have magnitude 1, so this simply deduplicates them."""
+    (lowest index on ties). Only `allowed` trials (a boolean mask, default
+    every trial) are candidates, and every direction needs one. Returns
+    (indices in direction order, target). DMC trials all have magnitude 1,
+    so this simply deduplicates them."""
     stim = np.asarray(stim_idx, dtype=int)
     magnitude = np.asarray(magnitude, dtype=float)
     if stim.shape != magnitude.shape or stim.size == 0:
         raise ValueError("stimulus indices and magnitudes must be non-empty "
                          "and of equal length")
+    allowed = (np.ones(stim.shape, dtype=bool) if allowed is None
+               else np.asarray(allowed, dtype=bool))
+    if allowed.shape != stim.shape:
+        raise ValueError(f"allowed mask {allowed.shape} does not match the "
+                         f"{stim.size} trials")
     directions = np.unique(stim)
+    if not all(np.any(allowed[stim == d]) for d in directions):
+        raise ValueError("every stimulus direction needs an allowed trial")
     best = None
-    for target in np.unique(magnitude):
-        worst = max(float(np.min(np.abs(magnitude[stim == d] - target)))
+    for target in np.unique(magnitude[allowed]):
+        worst = max(float(np.min(np.abs(magnitude[(stim == d) & allowed] - target)))
                     for d in directions)
         key = (worst, abs(float(target) - 1.0))
         if best is None or key < best[0]:
@@ -10436,19 +10597,77 @@ def _one_trial_per_stimulus(stim_idx, magnitude):
     target = best[1]
     chosen = []
     for d in directions:
-        members = np.flatnonzero(stim == d)
+        members = np.flatnonzero((stim == d) & allowed)
         chosen.append(int(members[np.argmin(np.abs(magnitude[members] - target))]))
     return np.asarray(chosen, dtype=int), target
 
 
-def _cue_interp_sweep_view(sweep):
+# A sweep trial switches attractor when, between two consecutive alphas, it
+# moves away from the common motion of all trials by more than this fraction
+# of a PC's span over the sweep (in any of the six cached PCs). On the
+# 2026-10-22 seed 62 hidden sweep the trials it flags score 0.10-0.28 and all
+# hop in the full hidden space too; the rest score 0.008-0.1.
+_SIBLING_ATTRACTOR_SWITCH_FRACTION = 0.1
+# Families whose one-trial view honors SIBLING_AVOID_ATTRACTOR_SWITCHES.
+_SIBLING_ATTRACTOR_SWITCH_FAMILIES = ("delaydm1",)
+
+
+def _cue_interp_attractor_switch_scores(proj):
+    """Each sweep trial's largest departure from the common motion.
+
+    `proj` is (n_alpha, n_points, n_pc). Between consecutive alphas the
+    median step over all trials is the motion the cue gives every endpoint;
+    what a trial moves beyond it, per PC, is divided by that PC's span over
+    the sweep (the y range of a `2d` panel). A trial that stays on its
+    attractor scores near zero; one that hops to a neighboring attractor
+    scores its jump as a fraction of the panel. Returns (n_points,)."""
+    proj = np.asarray(proj, dtype=float)
+    if proj.ndim != 3 or proj.shape[0] < 2:
+        raise ValueError(f"expected (n_alpha >= 2, n_points, n_pc) sweep "
+                         f"coordinates, got {proj.shape}")
+    steps = np.diff(proj, axis=0)
+    departure = steps - np.median(steps, axis=1, keepdims=True)
+    span = proj.max(axis=(0, 1)) - proj.min(axis=(0, 1))
+    span = np.where(span > 0, span, 1.0)   # a flat PC has no departure either
+    return (np.abs(departure) / span).max(axis=(0, 2))
+
+
+def _attractor_stable_trials(sweep):
+    """(allowed mask, fallback directions) for the one-trial view.
+
+    A trial is allowed when its `_cue_interp_attractor_switch_scores` value is
+    at most _SIBLING_ATTRACTOR_SWITCH_FRACTION. A direction whose every trial
+    switches keeps its smoothest one and is listed as a fallback."""
+    scores = _cue_interp_attractor_switch_scores(sweep["proj"])
+    stim = np.asarray(sweep["stim_idx"], dtype=int)
+    if stim.shape != scores.shape:
+        raise ValueError(f"{stim.size} stimulus indices for {scores.size} "
+                         "sweep trials")
+    allowed = scores <= _SIBLING_ATTRACTOR_SWITCH_FRACTION
+    fallback = []
+    for d in np.unique(stim):
+        members = np.flatnonzero(stim == d)
+        if not np.any(allowed[members]):
+            allowed[members[np.argmin(scores[members])]] = True
+            fallback.append(int(d))
+    return allowed, fallback
+
+
+def _cue_interp_sweep_view(sweep, family):
     """The sweep as drawn: every trial, or, with SIBLING_ONE_TRIAL_PER_STIMULUS,
-    one trial per stimulus direction at a matched magnitude. The view is a
+    one trial per stimulus direction at a matched magnitude. With
+    SIBLING_AVOID_ATTRACTOR_SWITCHES (which implies the one-trial view) a
+    `family` in _SIBLING_ATTRACTOR_SWITCH_FAMILIES picks only among trials
+    that stay on one attractor (`_attractor_stable_trials`). The view is a
     shallow copy with the per-point arrays subset."""
-    if not SIBLING_ONE_TRIAL_PER_STIMULUS:
+    if not (SIBLING_ONE_TRIAL_PER_STIMULUS or SIBLING_AVOID_ATTRACTOR_SWITCHES):
         return sweep
+    allowed = fallback = None
+    if (SIBLING_AVOID_ATTRACTOR_SWITCHES
+            and family in _SIBLING_ATTRACTOR_SWITCH_FAMILIES):
+        allowed, fallback = _attractor_stable_trials(sweep)
     indices, target = _one_trial_per_stimulus(
-        sweep["stim_idx"], sweep["stimulus_magnitude"])
+        sweep["stim_idx"], sweep["stimulus_magnitude"], allowed)
     view = dict(sweep)
     view["proj"] = np.asarray(sweep["proj"])[:, indices]
     for key in ("stim_idx", "stimulus_magnitude", "group_labels"):
@@ -10458,23 +10677,35 @@ def _cue_interp_sweep_view(sweep):
         if key in sweep:
             view[key] = np.asarray(sweep[key])[:, indices]
     view["one_trial_target_magnitude"] = target
+    if fallback is not None:
+        view["attractor_switch_fallback"] = fallback
     return view
 
 
-def _cue_interp_sweeps(entry):
+def _cue_interp_sweeps(entry, family):
     """`entry["sweeps"]` with `_cue_interp_sweep_view` applied to each."""
-    return {base_rule: _cue_interp_sweep_view(sweep)
+    return {base_rule: _cue_interp_sweep_view(sweep, family)
             for base_rule, sweep in entry["sweeps"].items()}
 
 
 def _cue_interp_view_note(sweeps):
-    """Saved-message note when the sweeps show one trial per stimulus."""
+    """Saved-message note when the sweeps show one trial per stimulus,
+    naming the directions left without a trial that stays on one attractor."""
     targets = [sweep["one_trial_target_magnitude"] for sweep in sweeps.values()
                if "one_trial_target_magnitude" in sweep]
     if not targets:
         return ""
-    return ("; one trial per stimulus, magnitude ≈ "
+    note = ("; one trial per stimulus, magnitude ≈ "
             + ", ".join(f"{t:g}" for t in targets))
+    if any("attractor_switch_fallback" in sweep for sweep in sweeps.values()):
+        note += "; trials switching attractor avoided"
+        kept = [f"{base_rule} direction "
+                + ", ".join(str(d) for d in sweep["attractor_switch_fallback"])
+                for base_rule, sweep in sweeps.items()
+                if sweep.get("attractor_switch_fallback")]
+        if kept:
+            note += f" (none stays, smoothest drawn: {'; '.join(kept)})"
+    return note
 
 
 def _cue_interp_sweep_arrays(sweep, context):
@@ -10511,6 +10742,11 @@ _CUE_INTERP_CLUSTER_COLORS = {1: c_vals[1], 0: c_vals[2]}   # blue, green
 _CUE_INTERP_CLUSTER_NAMES = {1: "Respond to category 1",
                              0: "Respond to category 2"}
 _SIBLING_N_STIM = 8      # the task generator's eight stimulus directions
+# The eight DMC stimulus locations (`core.mpn_tasks.dmc_`), offset from the
+# ring directions 2 pi k / 8 so none lies on the category boundary at 0 / pi;
+# location k maps to direction index k, and location < pi is category 1.
+_DMC_STIMULUS_LOCATIONS = np.array(
+    [0.05, 0.30, 0.55, 0.80, 1.05, 1.30, 1.55, 1.80]) * np.pi
 
 
 def _cue_interp_sweep_groups(family, rules, base_rule, sweep):
@@ -10660,7 +10896,7 @@ def _render_multitask_cue_interp_2d(entry, alphas, family, method, pair,
     (`_cue_interp_line_colors`)."""
     _ensure_out_dir()
     rules = _MULTITASK_SIBLING_FAMILIES[family] if rules is None else rules
-    sweeps = _cue_interp_sweeps(entry)
+    sweeps = _cue_interp_sweeps(entry, family)
     n_cols = len(sweeps)
     first = next(iter(sweeps.values()))
     pc_x, pc_y, bx, by = _paper_pc_indices(
@@ -10725,7 +10961,7 @@ def _render_multitask_cue_interp_3d(entry, alphas, family, method, pair,
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (enables 3d projection)
     _ensure_out_dir()
     rules = _MULTITASK_SIBLING_FAMILIES[family] if rules is None else rules
-    sweeps = _cue_interp_sweeps(entry)
+    sweeps = _cue_interp_sweeps(entry, family)
     n_cols = len(sweeps)
     first = next(iter(sweeps.values()))
     pc_x, pc_y, bx, by = _paper_pc_indices(
@@ -10784,12 +11020,15 @@ def plot_multitask_sibling_cue_interp():
     share one stimulus structure) while the cue moves from the base rule
     (alpha=0) to the sibling (alpha=1). Gradient sweeps trace TRUE delay fixed
     points solved by optimization; endpoint sweeps trace each trial's long
-    delay settled to the same residual criterion. The plane comes from
-    `_multitask_cue_interp_plane`: chosen on the sweep itself for DelayDM,
-    the base figure's plane for DMC. With SIBLING_ONE_TRIAL_PER_STIMULUS
-    every view shows one trial per stimulus direction. Each representation
-    reads the run selected for its sweep figure (`_multitask_sibling_aname`)
-    from
+    delay settled to the same residual criterion. The plane is chosen on the
+    sweep itself (`_multitask_cue_interp_plane`); for DMC its first PC keeps
+    the response clusters' order along the sweep and its second swaps them,
+    so the `2d` rows read "what was seen" and "what to respond to". With
+    SIBLING_ONE_TRIAL_PER_STIMULUS every view shows one trial per stimulus
+    direction, and with SIBLING_AVOID_ATTRACTOR_SWITCHES the DelayDM views
+    prefer trials that stay on one attractor along the sweep. Each
+    representation reads the run selected for its sweep figure
+    (`_multitask_sibling_aname`) from
     two_in_multiples/{aname}/{family}_cue_interp_*pc_projections_{aname}.pkl,
     loaded once per run; a representation or method without that cache is
     skipped.
@@ -12252,6 +12491,25 @@ def main():
              "direction, at a magnitude matched across the directions, "
              "instead of every sweep trial. Output names are unchanged.",
     )
+    parser.add_argument(
+        "--sibling-avoid-attractor-switches",
+        action="store_true",
+        help="Implies --sibling-one-trial-per-stimulus. For each DelayDM "
+             "stimulus direction prefer a sweep trial whose endpoint stays on "
+             "one attractor along alpha; a direction without one keeps its "
+             "smoothest trial. A selection for legibility, to be stated in "
+             "the caption. DMC sweeps are unchanged; output names are "
+             "unchanged.",
+    )
+    parser.add_argument(
+        "--sibling-dmc-keep-every-alpha",
+        action="store_true",
+        help="In the DMC rule-cue sweep figures choose the top-row PC that "
+             "keeps the response clusters apart in the same order at every "
+             "alpha, instead of at the two ends of the sweep only. Changes "
+             "the DMC sweep figures' plane and run; output names are "
+             "unchanged.",
+    )
     args = parser.parse_args()
 
     bad_modes = [m for m in args.mode if m not in valid_modes]
@@ -12271,11 +12529,17 @@ def main():
 
     # Apply the legend toggle globally; every figure routes through _legend(),
     # which reads this module-level flag.
-    global SHOW_LEGEND, SIBLING_ONE_TRIAL_PER_STIMULUS
+    global SHOW_LEGEND, SIBLING_ONE_TRIAL_PER_STIMULUS, SIBLING_DMC_KEEP_AT_EVERY_ALPHA
+    global SIBLING_AVOID_ATTRACTOR_SWITCHES
     if args.no_legend:
         SHOW_LEGEND = False
     if args.sibling_one_trial_per_stimulus:
         SIBLING_ONE_TRIAL_PER_STIMULUS = True
+    if args.sibling_avoid_attractor_switches:
+        SIBLING_AVOID_ATTRACTOR_SWITCHES = True
+        SIBLING_ONE_TRIAL_PER_STIMULUS = True
+    if args.sibling_dmc_keep_every_alpha:
+        SIBLING_DMC_KEEP_AT_EVERY_ALPHA = True
 
     # Resolve the set of figures to generate.
     if args.only is not None:
