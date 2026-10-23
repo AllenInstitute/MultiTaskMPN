@@ -2925,6 +2925,18 @@ def _permutation_p_text(p_value):
     return "p < 0.001" if p_value < 0.001 else f"p = {p_value:.3f}"
 
 
+def _run_offsets(n_runs, step, half_width):
+    """x offsets that set the per-run points of one column side by side:
+    `step` apart and centered, but never wider than +-`half_width` (the
+    column's median dash), so a large cohort packs its points closer instead
+    of spilling into the neighboring columns. The order is the runs' order,
+    which carries no meaning."""
+    if n_runs < 2:
+        return np.zeros(n_runs)
+    step = min(step, 2 * half_width / (n_runs - 1))
+    return (np.arange(n_runs) - (n_runs - 1) / 2) * step
+
+
 def _significance_marker(ax, x, y, significant, size=32):
     """One statistic as a point: filled in the scatter blue when its saved
     permutation p is below 0.05, hollow otherwise (the convention of every
@@ -3156,7 +3168,7 @@ def _draw_separation_column(ax, position, runs, key):
         # from the lowest to the highest spans the column.
         ax.fill_between([position - 0.3, position + 0.3], min(quantiles),
                         max(quantiles), color="0.82", linewidth=0, zorder=1)
-    offsets = (np.arange(len(entries)) - (len(entries) - 1) / 2) * 0.07
+    offsets = _run_offsets(len(entries), 0.07, 0.3)
     significant = 0
     for offset, entry in zip(offsets, entries):
         separation = entry["separation"]
@@ -4371,7 +4383,7 @@ def plot_om_vs_lesion_seeds():
     rhos = np.array([saved["rho"] for saved in runs.values()], dtype=float)
     fig, ax = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
     ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
-    offsets = (np.arange(len(runs)) - (len(runs) - 1) / 2) * 0.03
+    offsets = _run_offsets(len(runs), 0.03, 0.22)
     significant = 0
     for offset, saved in zip(offsets, runs.values()):
         is_significant = saved["p_perm"] < 0.05
@@ -4717,7 +4729,7 @@ def plot_task_sharing_cohort():
     fig, axs = plt.subplots(len(type_names), 1, figsize=_TASK_SHARING_FIGSIZE,
                             sharex=True, sharey=True)
     axs = np.atleast_1d(axs)
-    offsets = (np.arange(len(runs)) - (len(runs) - 1) / 2) * 0.06
+    offsets = _run_offsets(len(runs), 0.06, 0.3)
     summaries = []
     for ax, type_name in zip(axs, type_names):
         color = _TASK_SPECIFICITY_COLORS[type_name]
@@ -4884,7 +4896,7 @@ def plot_state_space_vs_lesion_seeds():
         return
     fig, axs = plt.subplots(1, len(_SSL_CLUSTER_TYPES), figsize=(3.8, 2.3), sharey=True)
     positions = np.arange(len(_SSL_REPRESENTATIONS))
-    offsets = (np.arange(len(entries)) - (len(entries) - 1) / 2) * 0.05
+    offsets = _run_offsets(len(entries), 0.05, 0.3)
     summaries = []
     for ax, (cluster_type, title) in zip(axs, _SSL_CLUSTER_TYPES):
         ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)

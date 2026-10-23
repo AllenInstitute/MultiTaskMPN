@@ -33,10 +33,12 @@ python figures/paper_plot.py --only state_space_vs_lesion
 python figures/paper_plot.py --only state_space_vs_lesion_seeds
 # rank state-space seeds and plot the best example without clearing other figures
 python figures/paper_plot.py --only state_space_combined
-# untrained controls (fresh weights, the example run's config), one per seed,
-# then rerun the structure analysis so their category tests are included
+# untrained controls (fresh weights, the selected L2 = 1e-4 example run's
+# config; seed 202 on the 2026-10-23 caches, printed by paper_plot when the
+# control is missing), one per seed, then rerun the structure analysis so
+# their category tests are included
 python multiple_task/state_space_shift.py --untrained \
-  --checkpoint multiple_tasks/savednet_everything_seed921_L21e4+hidden300+batch128+angle.pt \
+  --checkpoint multiple_tasks/savednet_everything_seed202_L21e4+hidden300+batch128+angle.pt \
   --init-seed 0 1 2 3 4 5 6 7
 python multiple_task/state_space_structure.py
 python figures/paper_plot.py --only state_space_untrained
@@ -126,11 +128,15 @@ weight is used, and the training run's own initialization was never saved.
 It runs on the same evaluation trials, so its task separation is what the
 rule-cue inputs produce through random weights. L2 acts only during training,
 so one untrained network serves every cohort. Generate the caches first, one
-network per `--init-seed` (eight here, as many as the largest trained cohort;
-each takes about as long as one trained run):
+network per `--init-seed` (eight here; each takes about as long as one
+trained run), from the selected example run's checkpoint. That run is
+re-ranked whenever the cohort's caches change (seed 921 among the first
+seven L2 = 1e-4 runs, seed 202 among the 25 analyzed on 2026-10-23), and
+the untrained figures only read controls built from the current one; when
+they are missing, the skipped figures print the command:
 ```bash
 python multiple_task/state_space_shift.py --untrained \
-  --checkpoint multiple_tasks/savednet_everything_seed921_L21e4+hidden300+batch128+angle.pt \
+  --checkpoint multiple_tasks/savednet_everything_seed202_L21e4+hidden300+batch128+angle.pt \
   --init-seed 0 1 2 3 4 5 6 7
 python multiple_task/state_space_structure.py
 ```

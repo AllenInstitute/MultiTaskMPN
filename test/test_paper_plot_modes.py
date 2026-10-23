@@ -791,6 +791,25 @@ class PaperPlotModeTests(unittest.TestCase):
                          for collection in points)
             self.assertEqual(filled, 5)
 
+    def test_run_offsets_keep_a_large_cohort_inside_its_column(self):
+        # A small cohort keeps the step; a large one packs into +-half_width.
+        np.testing.assert_allclose(paper_plot._run_offsets(3, 0.07, 0.3), [-0.07, 0.0, 0.07])
+        packed = paper_plot._run_offsets(25, 0.07, 0.3)
+        np.testing.assert_allclose([packed.min(), packed.max()], [-0.3, 0.3])
+        np.testing.assert_allclose(np.diff(packed), 0.6 / 24)
+        self.assertEqual(paper_plot._run_offsets(1, 0.07, 0.3).tolist(), [0.0])
+        self.assertEqual(paper_plot._run_offsets(0, 0.07, 0.3).size, 0)
+        # 25 runs at x = 1 stay inside the column's gray band and median dash
+        # instead of reaching the neighboring columns at 0 and 2.
+        figure, axis = paper_plot.plt.subplots()
+        self.addCleanup(paper_plot.plt.close, figure)
+        runs = [self._separation_summary(0.1 + 0.001 * seed, 0.5) for seed in range(25)]
+        self.assertEqual(paper_plot._draw_separation_column(axis, 1.0, runs, "hidden"), "0/25")
+        xs = [collection.get_offsets()[0][0] for collection in axis.collections
+              if isinstance(collection, paper_plot.mpl.collections.PathCollection)]
+        self.assertEqual(len(xs), 25)
+        self.assertLessEqual(max(abs(x - 1.0) for x in xs), 0.3 + 1e-9)
+
     @staticmethod
     def _separation_summary(score, p_value):
         return {"representations": {key: {"separation": {
