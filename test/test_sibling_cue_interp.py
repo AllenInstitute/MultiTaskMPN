@@ -608,7 +608,7 @@ class CueInterpPaperFigureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for family, base_rules in (("delaydm1", RULES), ("dmcgo", ("dmcgo",))):
-                aname = paper_plot._multitask_sibling_aname(family, "e_modulation")
+                aname = paper_plot._multitask_sibling_aname(family, "e_modulation", "sweep")
                 run_dir = root / aname
                 run_dir.mkdir(parents=True, exist_ok=True)
                 for method in paper_plot._MULTITASK_CUE_INTERP_METHODS:
@@ -996,6 +996,49 @@ class CueInterpPaperFigureTests(unittest.TestCase):
             self.assertEqual(
                 pair, paper_plot._MULTITASK_SIBLING_PC_PLANES["dmcgo"]["hidden"])
             self.assertEqual(note, "configured")
+
+    def test_delaydm_plane_is_chosen_on_the_sweep_itself(self):
+        # Every PC carries noise. PC1 separates the directions widely but
+        # merges them at one intermediate alpha; PC3 separates them less but
+        # at every alpha, so the chosen plane holds PC3 for both methods.
+        n_alpha, n_points = 6, 8
+        stim = np.repeat(np.arange(4), 2)
+        rng = np.random.RandomState(1)
+        proj = rng.normal(scale=0.1, size=(n_alpha, n_points, 6))
+        proj[:, :, 0] += 8.0 * stim[None, :] * np.where(
+            np.arange(n_alpha) == 3, 0.0, 1.0)[:, None]
+        proj[:, :, 2] += 2.0 * stim[None, :]
+        entry = {"sweeps": {
+            base: {"target_rule": target, "proj": proj.copy(),
+                   "stim_idx": stim, "stimulus_magnitude": np.ones(n_points)}
+            for base, target in (("delaydm1", "delaydm2"),
+                                 ("delaydm2", "delaydm1"))}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for method in ("gradient", "long_delay_endpoint"):
+                pair, note = paper_plot._multitask_cue_interp_plane(
+                    "delaydm1", "e_modulation", method, root, "run",
+                    entry=entry)
+                self.assertIn(3, pair)
+                self.assertIn(paper_plot.SWEEP_METRIC_NAME, note)
+            # DMC keeps the base figure's plane even when its sweeps are given.
+            pair, note = paper_plot._multitask_cue_interp_plane(
+                "dmcgo", "e_modulation", "gradient", root, "run", entry=entry)
+            self.assertEqual(
+                pair, paper_plot._MULTITASK_SIBLING_PC_PLANES["dmcgo"]["e_modulation"])
+            self.assertEqual(note, "configured")
+            # A sweep that cannot be scored (one trial per direction) falls
+            # back to the base figure's plane instead of failing.
+            single = {"sweeps": {"delaydm1": {
+                "target_rule": "delaydm2", "proj": proj[:, ::2],
+                "stim_idx": stim[::2], "stimulus_magnitude": np.ones(4)}}}
+            with patch("builtins.print") as output:
+                pair, note = paper_plot._multitask_cue_interp_plane(
+                    "delaydm1", "e_modulation", "long_delay_endpoint", root,
+                    "run", entry=single)
+            self.assertEqual(
+                pair, paper_plot._MULTITASK_SIBLING_ENDPOINT_DEFAULT_PC_PLANE)
+            self.assertIn("falling back", output.call_args.args[0])
 
 
 if __name__ == "__main__":

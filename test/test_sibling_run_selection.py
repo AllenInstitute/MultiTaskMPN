@@ -1,4 +1,4 @@
-"""Tests for the automatic per-representation choice of the sibling example runs."""
+"""Tests for the automatic per-figure choice of the sibling example runs."""
 
 import json
 import pickle
@@ -43,14 +43,15 @@ def _delaydm_entry(rng, separation, fixed=True):
     return entry
 
 
-def _sweeps(rng, base_rules, fixed=True):
-    """Rule-cue sweeps of each base rule (unscored, but their cache and
-    convergence decide whether a run can be shown)."""
+def _sweeps(rng, base_rules, fixed=True, separation=1.0):
+    """Rule-cue sweeps of each base rule whose directions sit `separation`
+    apart at every alpha; `fixed` as for `_delaydm_entry`."""
     sweeps = {}
+    stim = np.repeat(np.arange(N_DIRECTIONS), 2)
     for base_rule, target_rule in base_rules:
-        sweep = {"proj": rng.normal(size=(N_ALPHA, 8, 6)),
-                 "stim_idx": np.repeat(np.arange(N_DIRECTIONS), 2),
-                 "target_rule": target_rule}
+        proj = rng.normal(scale=0.1, size=(N_ALPHA, stim.size, 6))
+        proj[:, :, :2] += _ring(stim, separation)
+        sweep = {"proj": proj, "stim_idx": stim, "target_rule": target_rule}
         if fixed is not None:
             sweep["is_fixed"] = np.full((N_ALPHA, 8), bool(fixed))
         sweeps[base_rule] = sweep
@@ -115,40 +116,50 @@ class SiblingRunSelectionTests(unittest.TestCase):
                                              for rep in REPRESENTATIONS}},
                         stream)
 
-    def _write_delaydm(self, seed, hidden, e_modulation, endpoint_fixed=True,
-                       sweep_fixed=True, with_sweep=True):
+    def _write_delaydm(self, seed, hidden, e_modulation, sweep=1.0,
+                       endpoint_fixed=True, sweep_fixed=True, with_sweep=True):
         entries = {"hidden": _delaydm_entry(self.rng, hidden, endpoint_fixed),
                    "e_modulation": _delaydm_entry(self.rng, e_modulation)}
-        sweeps = _sweeps(self.rng, DELAYDM_BASES, sweep_fixed) if with_sweep else None
+        sweeps = (_sweeps(self.rng, DELAYDM_BASES, sweep_fixed, sweep)
+                  if with_sweep else None)
         self._write_run("delaydm1", _aname(seed), entries, sweeps)
 
     def _report(self, name):
         return json.loads(
             (self.out / f"multitask_sibling_run_scores_{name}.json").read_text())
 
-    def test_each_representation_takes_its_own_best_run_from_one_ranking(self):
-        self._write_delaydm(3, hidden=3.0, e_modulation=0.5)
-        self._write_delaydm(7, hidden=0.5, e_modulation=3.0)
+    def _selected(self, family):
+        return {f"{figure} {rep}": paper_plot._multitask_sibling_aname(family, rep, figure)
+                for figure in paper_plot._SIBLING_FIGURES for rep in REPRESENTATIONS}
+
+    def test_each_figure_takes_its_own_best_run_from_one_ranking(self):
+        # Seed 3 has the clearer hidden endpoints, seed 7 the clearer
+        # e_modulation endpoints and the clearer sweeps.
+        self._write_delaydm(3, hidden=3.0, e_modulation=0.5, sweep=0.5)
+        self._write_delaydm(7, hidden=0.5, e_modulation=3.0, sweep=3.0)
         # A better run of another L2 cohort is never a candidate.
         self._write_run("delaydm1", _aname(1, "1e3"),
                         {rep: _delaydm_entry(self.rng, 9.0) for rep in REPRESENTATIONS},
-                        _sweeps(self.rng, DELAYDM_BASES))
+                        _sweeps(self.rng, DELAYDM_BASES, separation=9.0))
         with patch.object(paper_plot, "_sibling_run_ranking",
                           wraps=paper_plot._sibling_run_ranking) as ranking:
-            selected = {rep: paper_plot._multitask_sibling_aname("delaydm1", rep)
-                        for rep in REPRESENTATIONS}
+            selected = self._selected("delaydm1")
         ranking.assert_called_once_with("delaydm1")
-        self.assertEqual(selected, {"hidden": _aname(3), "e_modulation": _aname(7)})
+        self.assertEqual(selected, {
+            "endpoint hidden": _aname(3), "endpoint e_modulation": _aname(7),
+            "sweep hidden": _aname(7), "sweep e_modulation": _aname(7)})
 
         report = self._report("delaydm")
         self.assertEqual([row["seed"] for row in report["runs"]], [3, 7])
-        self.assertEqual(sorted(report["runs"][0]["scores"]), sorted(REPRESENTATIONS))
-        self.assertEqual(
-            [row["seed"] for row in report["representations"]["hidden"]["ranking"]],
-            [3, 7])
-        self.assertIn("stimulus-direction separation", report["criterion"])
+        self.assertEqual(sorted(report["runs"][0]["scores"]), ["endpoint", "sweep"])
+        for key, seeds in (("endpoint hidden", [3, 7]), ("sweep hidden", [7, 3])):
+            choice = report["choices"][key]
+            self.assertEqual(choice["ranked_by"], key.split()[0])
+            self.assertEqual([row["seed"] for row in choice["ranking"]], seeds)
+        self.assertIn("stimulus-direction separation", report["metrics"]["endpoint"])
+        self.assertIn("minimum over alpha", report["metrics"]["sweep"])
         messages = [str(call.args[0]) for call in self.output.call_args_list]
-        self.assertTrue(any("delaydm1 e_modulation run selected automatically: seed 7"
+        self.assertTrue(any("delaydm1 sweep hidden run selected automatically: seed 7"
                             in text for text in messages))
 
     def test_runs_that_are_unconverged_unsettled_or_incomplete_are_skipped(self):
@@ -156,9 +167,7 @@ class SiblingRunSelectionTests(unittest.TestCase):
         self._write_delaydm(7, hidden=3.0, e_modulation=3.0, endpoint_fixed=False)
         self._write_delaydm(9, hidden=3.0, e_modulation=3.0, sweep_fixed=None)
         self._write_delaydm(11, hidden=3.0, e_modulation=3.0, with_sweep=False)
-        for rep in REPRESENTATIONS:
-            self.assertEqual(paper_plot._multitask_sibling_aname("delaydm1", rep),
-                             _aname(3))
+        self.assertEqual(set(self._selected("delaydm1").values()), {_aname(3)})
 
         reasons = {row["seed"]: row["reason"]
                    for row in self._report("delaydm")["skipped"]}
@@ -167,18 +176,24 @@ class SiblingRunSelectionTests(unittest.TestCase):
         self.assertIn("predate settling", reasons[9])
         self.assertIn("cue_interp", reasons[11])
 
-    def test_ties_go_to_the_lowest_seed(self):
+    def test_dmc_sweeps_follow_their_endpoint_figures_and_ties_go_low(self):
         for seed in (3, 7, 9):
             (self.root / _aname(seed)).mkdir()
         scores = {
-            _aname(3): {"hidden": 1.0, "e_modulation": 0.2},
-            _aname(7): {"hidden": 0.4, "e_modulation": 0.4},
-            _aname(9): {"hidden": 1.0, "e_modulation": 0.2},
+            _aname(3): {"endpoint": {"hidden": 1.0, "e_modulation": 0.2}},
+            _aname(7): {"endpoint": {"hidden": 0.4, "e_modulation": 0.4}},
+            # Ties seed 3 everywhere; the lower seed wins.
+            _aname(9): {"endpoint": {"hidden": 1.0, "e_modulation": 0.2}},
         }
         with patch.object(paper_plot, "_sibling_run_scores",
                           side_effect=lambda family, aname: scores[aname]):
             selected = paper_plot._select_sibling_runs("dmcgo")
-        self.assertEqual(selected, {"hidden": _aname(3), "e_modulation": _aname(7)})
+        self.assertEqual(selected, {
+            "endpoint hidden": _aname(3), "sweep hidden": _aname(3),
+            "endpoint e_modulation": _aname(7), "sweep e_modulation": _aname(7)})
+        report = self._report("dmcgo")
+        self.assertEqual(report["choices"]["sweep hidden"]["ranked_by"], "endpoint")
+        self.assertEqual(report["metrics"]["sweep"], "follows the endpoint figure")
 
     def test_dmc_runs_are_ranked_by_response_category_separation(self):
         dmc_bases = (("dmcgo", "dmcnogo"),)
@@ -187,24 +202,18 @@ class SiblingRunSelectionTests(unittest.TestCase):
                 "dmcgo", _aname(seed),
                 {rep: _dmc_entry(self.rng, by_response) for rep in REPRESENTATIONS},
                 _sweeps(self.rng, dmc_bases))
-        for rep in REPRESENTATIONS:
-            self.assertEqual(paper_plot._multitask_sibling_aname("dmcgo", rep),
-                             _aname(7))
-        ranking = self._report("dmcgo")["representations"]["hidden"]["ranking"]
+        self.assertEqual(set(self._selected("dmcgo").values()), {_aname(7)})
+        ranking = self._report("dmcgo")["choices"]["endpoint hidden"]["ranking"]
         self.assertGreater(ranking[0]["score"], 5 * ranking[1]["score"])
 
-    def test_a_pinned_run_serves_every_representation_without_ranking(self):
+    def test_a_pinned_run_serves_every_figure_without_ranking(self):
         with patch.object(paper_plot, "DMCGO_ANAME", "pinned_run"), \
                 patch.object(paper_plot, "_sibling_run_ranking") as ranking:
-            for rep in REPRESENTATIONS:
-                self.assertEqual(paper_plot._multitask_sibling_aname("dmcgo", rep),
-                                 "pinned_run")
+            self.assertEqual(set(self._selected("dmcgo").values()), {"pinned_run"})
         ranking.assert_not_called()
 
-    def test_without_a_scorable_run_every_representation_gets_seed_zero(self):
-        for rep in REPRESENTATIONS:
-            self.assertEqual(paper_plot._multitask_sibling_aname("dmcgo", rep),
-                             _aname(0))
+    def test_without_a_scorable_run_every_figure_gets_seed_zero(self):
+        self.assertEqual(set(self._selected("dmcgo").values()), {_aname(0)})
         self.assertEqual(self._report("dmcgo")["runs"], [])
         messages = [str(call.args[0]) for call in self.output.call_args_list]
         self.assertTrue(any("no scorable L21e4 run" in text for text in messages))
