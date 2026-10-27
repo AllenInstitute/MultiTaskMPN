@@ -479,17 +479,18 @@ def print_result(payload):
 
 # ─── One run ─────────────────────────────────────────────────────────────────
 
-def _evaluation_trials(seed, feature):
-    """The run's config and its evaluation trials: (task_params_c, inputs,
-    outputs, masks, trials per task, task index per trial)."""
+def _evaluation_trials(seed, feature, trial_seed=EVALUATION_SEED):
+    """The run's config and its evaluation trials, drawn with `trial_seed`:
+    (task_params_c, inputs, outputs, masks, trials per task, task index per
+    trial)."""
     with (CHECKPOINT_DIR / f"param_{run_name(seed, feature)}_param.json").open() as stream:
         raw = json.load(stream)
-    np.random.seed(EVALUATION_SEED)
-    torch.manual_seed(EVALUATION_SEED)
+    np.random.seed(trial_seed)
+    torch.manual_seed(trial_seed)
     task_params_c, _, _ = mpn_tasks.convert_and_init_multitask_params(
         (raw["task_params"], raw["train_params"], raw["net_params"]))
     task_params_c["hp"]["batch_size_train"] = TRIALS_PER_TASK
-    task_params_c["hp"]["rng"] = np.random.RandomState(EVALUATION_SEED)
+    task_params_c["hp"]["rng"] = np.random.RandomState(trial_seed)
     (inputs, outputs, masks), (_, trials, rule_indices) = mpn_tasks.generate_trials_wrap(
         task_params_c, TRIALS_PER_TASK, rules=task_params_c["rules"], mode_input="random",
         device="cpu", verbose=False, long_all=False)
