@@ -41,6 +41,14 @@ chance is at least UNSPECIFIC_CHANCE (the two memory periods in input and
 hidden) are left out and counted. The same check also runs over every task
 of the runs (`summarize_same_task_all`), the per-task view of the paper.
 
+The same-period check is its mirror over every task (`summarize_same_period_all`):
+for every phase and every two tasks with a row of it, whether the two rows
+share a row cluster, against the chance that a row of the one task and a row
+of the other from two different phases share one (`_cross_period_chance`), so
+how alike the two tasks are anyway is controlled for. Cells are pooled per
+phase and over the phases and tested as above, and cells at chance of at
+least UNSPECIFIC_CHANCE are left out and counted.
+
 The organization check puts the two questions on one scale for every task's
 rows (`summarize_organization`): per run and representation, the fold
 enrichment of two rows of one period from different tasks, and of two rows
@@ -106,8 +114,9 @@ UNSPECIFIC_CHANCE = 0.95
 SIGNIFICANCE = 0.05
 
 # Saved-result layout of this script: 2 adds the same-task check, 3 its
-# all-task version and the organization check (paper_plot reads only 3).
-RESULT_VERSION = 3
+# all-task version and the organization check, 4 the same-period check
+# (paper_plot reads only 4).
+RESULT_VERSION = 4
 # Prefixes of the files one run writes, each followed by "{tag}.{suffix}".
 _OUTPUT_PREFIXES = ("sibling_row_sharing_", "sibling_row_sharing_pairs_",
                     "sibling_row_sharing_summary_", "sibling_row_sharing_same_task_")
@@ -276,24 +285,24 @@ def summarize_same_task(experiments):
     stats and counted."""
     rules = [rule for pairs in PAIR_GROUPS.values() for pair in pairs for rule in pair]
     cells = _same_task_cells(experiments, rules)
-    return {group: _same_task_entry(cells, [rule for pair in pairs for rule in pair])
+    return {group: _cell_entry(cells, [rule for pair in pairs for rule in pair], "tasks")
             for group, pairs in PAIR_GROUPS.items()}
 
 
-def _same_task_entry(cells, rules):
-    """The same-task stats of `rules` from `_same_task_cells` output: per task
-    and pooled over `rules`, cells at chance >= UNSPECIFIC_CHANCE left out and
-    counted."""
-    entry = {"pooled": {}, "tasks": {}, "n_unspecific_cells": {}}
+def _cell_entry(cells, keys, by):
+    """The stats of `keys` (tasks or phases) from `_same_task_cells` or
+    `_same_period_cells` output: per key under `by` and pooled over `keys`,
+    cells at chance >= UNSPECIFIC_CHANCE left out and counted."""
+    entry = {"pooled": {}, by: {}, "n_unspecific_cells": {}}
     for rep in REPRESENTATIONS:
         pooled, n_unspecific = [], 0
-        for rule in rules:
-            specific = [cell for cell in cells[rep][rule]
+        for key in keys:
+            specific = [cell for cell in cells[rep][key]
                         if not cell["chance"] >= UNSPECIFIC_CHANCE]
-            n_unspecific += len(cells[rep][rule]) - len(specific)
+            n_unspecific += len(cells[rep][key]) - len(specific)
             stats = _summarize_cells(specific)
             if stats is not None:
-                entry["tasks"].setdefault(rule, {})[rep] = stats
+                entry[by].setdefault(key, {})[rep] = stats
             pooled += specific
         stats = _summarize_cells(pooled)
         if stats is not None:
@@ -313,11 +322,65 @@ def _present_rules(experiments):
 
 
 def summarize_same_task_all(experiments):
-    """The same-task check over every task of the runs (`_same_task_entry`),
-    not only the sibling pairs'; a task with one clustered phase has no
-    cells."""
+    """The same-task check over every task of the runs (`_cell_entry`), not
+    only the sibling pairs'; a task with one clustered phase has no cells."""
     rules = _present_rules(experiments)
-    return _same_task_entry(_same_task_cells(experiments, rules), rules)
+    return _cell_entry(_same_task_cells(experiments, rules), rules, "tasks")
+
+
+def _cross_period_chance(rep_data, rule_a, rule_b):
+    """Chance that two tasks' rows of one phase share a row cluster in one
+    experiment's representation: the fraction of pairs of a `rule_a` row and
+    a `rule_b` row of two different phases that carry the same label (NaN
+    without such a pair). It is the baseline the two tasks' rows of one phase
+    are read against, as `_cross_phase_chance` is for one task's rows of two
+    phases, so how alike the two tasks are anyway is controlled for."""
+    rules, phases = _split_row_names(rep_data["tb_break_name"])
+    labels = np.asarray(rep_data["row_labels"])
+    in_a, in_b = rules == rule_a, rules == rule_b
+    pairs = phases[in_a][:, None] != phases[in_b][None, :]
+    if not pairs.any():
+        return float("nan")
+    return float((labels[in_a][:, None] == labels[in_b][None, :])[pairs].mean())
+
+
+def _same_period_cells(experiments, phases):
+    """{rep: {phase: [cell, ...]}}: one cell per run, phase and pair of tasks
+    with a row of the phase, with whether the two rows share a row cluster and
+    the chance of that task pair (`_cross_period_chance`)."""
+    cells = {rep: {phase: [] for phase in phases} for rep in REPRESENTATIONS}
+    for aname, data in experiments:
+        for rep in REPRESENTATIONS:
+            if rep not in data:
+                continue
+            row_rules, row_phases = _split_row_names(data[rep]["tb_break_name"])
+            labels = np.asarray(data[rep]["row_labels"])
+            chances = {}
+            for phase in phases:
+                rows = np.flatnonzero(row_phases == phase)
+                for k, i in enumerate(rows):
+                    for j in rows[k + 1:]:
+                        rules = tuple(sorted((str(row_rules[i]), str(row_rules[j]))))
+                        if rules not in chances:
+                            chances[rules] = _cross_period_chance(data[rep], *rules)
+                        cells[rep][phase].append({
+                            "aname": aname, "rules": list(rules),
+                            "same": bool(labels[i] == labels[j]),
+                            "chance": chances[rules]})
+    return cells
+
+
+def summarize_same_period_all(experiments):
+    """{"pooled": {rep: stats}, "periods": {phase: {rep: stats}},
+    "n_unspecific_cells": {rep: count}}: whether two different tasks' rows of
+    one phase share a row cluster more often than the same two tasks' rows of
+    two different phases, per phase of the runs (in diag._PHASE_DISPLAY
+    order) and pooled over them (`_cell_entry`): the per-phase view of the
+    organization check's period class."""
+    present = {str(phase) for _, data in experiments for rep_data in data.values()
+               for phase in _split_row_names(rep_data["tb_break_name"])[1]}
+    phases = [phase for phase in diag._PHASE_DISPLAY if phase in present]
+    return _cell_entry(_same_period_cells(experiments, phases), phases, "periods")
 
 
 # Row-pair classes of the organization check: two rows of one period from
@@ -628,6 +691,22 @@ def _print_same_task(same_task):
                 print(f"      {_stats_line(rep, stats)}")
 
 
+def _print_same_period(same_period):
+    """The pooled same-period lines, then one line per phase and
+    representation."""
+    print("\n=== Same phase, two tasks ===")
+    left_out = ", ".join(f"{rep} {count}" for rep, count
+                         in same_period["n_unspecific_cells"].items() if count)
+    print("  all phases" + (f" (cells at chance >= {100 * UNSPECIFIC_CHANCE:.0f}% left out: "
+                            f"{left_out})" if left_out else ""))
+    for rep, stats in same_period["pooled"].items():
+        print(f"      {_stats_line(rep, stats)}")
+    for phase, by_rep in same_period["periods"].items():
+        print(f"    {diag._PHASE_DISPLAY.get(phase, phase)}")
+        for rep, stats in by_rep.items():
+            print(f"      {_stats_line(rep, stats)}")
+
+
 def _print_organization(organization):
     """Per representation, the median enrichment of each class and its test
     against 1, then the paired tests between representations."""
@@ -680,6 +759,8 @@ def main(feature="L21e4", seed=None, untrained=False):
     _print_same_task(same_task)
     same_task_all = summarize_same_task_all(experiments)
     _print_same_task({"All tasks": same_task_all})
+    same_period_all = summarize_same_period_all(experiments)
+    _print_same_period(same_period_all)
     organization = summarize_organization(experiments)
     _print_organization(organization)
 
@@ -707,6 +788,7 @@ def main(feature="L21e4", seed=None, untrained=False):
         "summary": summary,
         "same_task": same_task,
         "same_task_all": same_task_all,
+        "same_period_all": same_period_all,
         "organization": organization,
     }
     pkl_path = OUT_DIR / f"sibling_row_sharing_{tag}.pkl"

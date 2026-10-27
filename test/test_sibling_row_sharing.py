@@ -169,6 +169,39 @@ class SameTaskTests(unittest.TestCase):
         self.assertEqual(axes[0].get_xlim(), axes[1].get_xlim())
 
 
+class SamePeriodTests(unittest.TestCase):
+    def setUp(self):
+        self.same_period = sharing.summarize_same_period_all(_experiments())
+
+    def test_cross_period_chance_counts_only_two_different_phases(self):
+        rep_data = {"tb_break_name": np.array(["a-stim1", "b-stim1", "a-go1", "b-go1"]),
+                    "row_labels": np.array([0, 1, 1, 2])}
+        # (a-stim1, b-go1) apart, (a-go1, b-stim1) together; the two tasks'
+        # rows of one phase, also apart, do not count.
+        self.assertEqual(sharing._cross_period_chance(rep_data, "a", "b"), 0.5)
+        self.assertTrue(np.isnan(sharing._cross_period_chance(rep_data, "a", "c")))
+
+    def test_every_phase_counts_its_task_pairs_against_their_chance(self):
+        # Memory 1: DMC go/nogo and DelayDM 1/2, six pairs, all in one cluster;
+        # Response: six tasks, 15 pairs, only DelayPro/DelayAnti together.
+        # No two tasks share rows of two different phases: chance 0.
+        periods = self.same_period["periods"]
+        self.assertEqual(list(periods), ["stim1", "stim2", "delay1", "delay2", "go1"])
+        memory = periods["delay1"]["input"]
+        self.assertEqual((memory["n_same"], memory["n_total"], memory["chance_mean"]),
+                         (36, 36, 0.0))
+        self.assertLess(memory["p_excess"], sharing.SIGNIFICANCE)
+        response = periods["go1"]["modulation"]
+        self.assertEqual((response["n_same"], response["n_total"]), (6, 90))
+        self.assertLess(response["p_excess"], sharing.SIGNIFICANCE)
+        stimulus = periods["stim1"]["hidden"]
+        self.assertEqual((stimulus["n_same"], stimulus["p_excess"]), (0, 1.0))
+        pooled = self.same_period["pooled"]["input"]
+        self.assertEqual((pooled["n_same"], pooled["n_total"]), (48, 228))
+        self.assertEqual(self.same_period["n_unspecific_cells"],
+                         {"input": 0, "hidden": 0, "modulation": 0})
+
+
 def _organized_experiment():
     """Four tasks with three phases each: input and hidden rows clustered by
     phase, modulation rows by task."""
@@ -267,6 +300,7 @@ class DriverTests(unittest.TestCase):
                              ["version"], sharing.RESULT_VERSION)
             self.assertEqual(set(payload["same_task"]), {"Pro / anti", "Modality"})
             self.assertIn("dmcgo", payload["same_task_all"]["tasks"])
+            self.assertIn("delay1", payload["same_period_all"]["periods"])
             self.assertEqual(set(payload["organization"]["representations"]),
                              {"input", "hidden", "modulation"})
             for name in ("sibling_row_sharing_pairs_L21e4.png",
@@ -338,6 +372,7 @@ class PaperFigureTests(unittest.TestCase):
                 [(f"run{seed}", _organized_experiment()) for seed in range(6)]),
             "same_task_all": sharing.summarize_same_task_all(
                 [(f"run{seed}", _task_experiment()) for seed in range(6)]),
+            "same_period_all": sharing.summarize_same_period_all(_experiments()),
         }
 
     def _untrained_payload(self):
@@ -435,17 +470,42 @@ class PaperFigureTests(unittest.TestCase):
         self.assertEqual([text.get_text() for text in ax.texts], ["*"] * 3)
         self.assertIn("no period pairs", save.call_args.kwargs["extra"])
 
+    def test_untrained_networks_get_a_hollow_twin_of_every_bar(self):
+        for plot in (paper_plot.plot_row_cluster_same_task,
+                     paper_plot.plot_row_cluster_same_period):
+            with self.subTest(plot=plot.__name__):
+                save, _ = self._render(plot, self._payload(), untrained=self._untrained_payload())
+                save.assert_called_once()
+                bars = save.call_args.args[0].axes[0].patches
+                hollow = [bar for bar in bars if np.allclose(bar.get_facecolor()[:3], 1.0)]
+                self.assertEqual(len(hollow), len(bars) // 2)
+                self.assertIn("6 untrained networks", save.call_args.kwargs["extra"])
+
+    def test_same_period_bars_per_period_with_stars_on_the_excess(self):
+        save, _ = self._render(paper_plot.plot_row_cluster_same_period, self._payload())
+        save.assert_called_once()
+        self.assertEqual(Path(save.call_args.args[1]).name,
+                         "multitask_row_cluster_same_period.png")
+        ax = save.call_args.args[0].axes[0]
+        self.assertEqual([tick.get_text() for tick in ax.get_xticklabels()],
+                         ["Stimulus 1", "Stimulus 2", "Memory 1", "Memory 2", "Response"])
+        # Both memory periods and the response share beyond chance (0), in
+        # every representation; the stimulus periods never share.
+        self.assertEqual([text.get_text() for text in ax.texts], ["*"] * 9)
+        self.assertEqual(len(ax.patches), 15)
+
     def test_skips_a_missing_or_older_result(self):
         for plot in (paper_plot.plot_row_cluster_organization,
-                     paper_plot.plot_row_cluster_same_task):
+                     paper_plot.plot_row_cluster_same_task,
+                     paper_plot.plot_row_cluster_same_period):
             save, printed = self._render(plot, None)
             save.assert_not_called()
             self.assertIn("sibling_row_sharing.py --feature", str(printed.call_args_list))
             payload = self._payload()
-            payload["version"] = 2
+            payload["version"] = 3
             save, printed = self._render(plot, payload)
             save.assert_not_called()
-            self.assertIn("is not a version-3", str(printed.call_args_list))
+            self.assertIn("is not a version-4", str(printed.call_args_list))
 
 
 if __name__ == "__main__":

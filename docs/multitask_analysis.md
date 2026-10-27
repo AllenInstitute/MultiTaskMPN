@@ -428,9 +428,11 @@ python multiple_task/sibling_row_sharing.py --feature L21e4
 # their row-cluster organization
 python multiple_task/untrained_clustering.py --feature L21e4 --seed 749 --init-seed 0 1 2 3 4
 python multiple_task/sibling_row_sharing.py --feature L21e4 --untrained
-# paper figures: rows grouped by period or by task, and the per-task view
+# paper figures: rows grouped by period or by task, and the per-task and
+# per-period views
 python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_organization
 python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_same_task
+python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_same_period
 ```
 
 Three pairs are checked: ReactCategoryPro vs ReactCategoryAnti (dmcgo/dmcnogo),
@@ -506,12 +508,27 @@ representations (paired Wilcoxon). On the 25 L21e4 runs the medians are, for
 period and task, input 1.85x and 0.90x, hidden 1.57x and 0.95x, synapses
 1.10x and 3.51x, and every pair of representations differs (p <= 7.5e-5).
 The same-task check is also run over every task (`same_task_all`; ReactPro
-and ReactAnti have one clustered period and so no cells). Result version 3
-holds both.
+and ReactAnti have one clustered period and so no cells). Its mirror, the
+same-period check (`same_period_all`), asks for every phase and every two
+tasks with a row of it whether the two rows share a row cluster, against the
+chance that a row of the one task and a row of the other from two different
+phases share one (`_cross_period_chance`, so how alike the two tasks are
+anyway is controlled for), pooled per phase and tested the same way; cells at
+chance of at least 95% are left out (on the L21e4 runs 118 input, 92 hidden
+and 445 synapse cells: task pairs whose rows sit in one cluster in every
+period). On the 25 L21e4 runs the period grouping of input and hidden is
+mostly the memory periods: every two tasks' Memory 1 and Memory 2 rows share
+a cluster (input 100%, hidden 99-100%, chance 18-31%), because nothing in the
+input varies there. Stimulus rows share more than chance but far less
+(input 32% and 39% against 15% and 22%, hidden 32% and 46% against 21% and
+31%), and Response rows hardly (input 13% against 16%, below chance; hidden
+27% against 21%). Synapse rows share 2-20% against 4-8% in every period. The
+untrained networks show the same pattern (memory 100%, stimulus 38-55%,
+response 20-25%). Result version 4 holds all three checks.
 
-`paper_plot.py` (`multiple_tasks` mode) draws two figures from
+`paper_plot.py` (`multiple_tasks` mode) draws three figures from
 `multiple_tasks_diagnosis/sibling_row_sharing_<MULTITASK_L2 feature>.pkl`,
-skipped with the command to run when it is missing or older than version 3:
+skipped with the command to run when it is missing or older than version 4:
 `multitask_row_cluster_organization.png`, the two enrichments side by side
 (same period, different task; same task, different period), one point per
 run in the representation colors, the median as a red dash, chance (1) as a
@@ -522,7 +539,10 @@ panel: for every task with two clustered periods, three bars giving the % of
 its (run, period pair) cells in one row cluster, a dash at the
 period-combination chance of the same-task check (a stricter baseline than
 the organization figure's) and a star where the per-run excess differs from
-zero in either direction.
+zero in either direction; and `multitask_row_cluster_same_period.png`, the
+per-period view of its left panel: for every period, three bars giving the %
+of its (run, task pair) cells in one row cluster with the task-pair chance
+of the same-period check, the period labels in the heatmap phase colors.
 
 The untrained control asks whether training makes this organization or the
 architecture alone does, for instance because M, with its 4 s memory, keeps
@@ -543,9 +563,11 @@ network of seed 749's config is not degenerate: hidden std 0.12 (trained
 late in long trials, as in the trained network (`modulation_feedback.py`). The
 organization figure draws the untrained networks, hollow with a gray median,
 right of the trained runs in each representation's column, with the
-two-sided Mann-Whitney p of trained against untrained above the column; it
-draws the trained runs alone, with the commands to run, while the untrained
-result is missing.
+two-sided Mann-Whitney p of trained against untrained above the column. The
+per-task and per-period figures give every trained bar a hollow twin on its
+right with the untrained networks' % and chance (a Wilcoxon star over the
+networks needs at least six of them). All three draw the trained runs alone,
+with the commands to run, while the untrained result is missing.
 
 ## Modulation feedback and saturation
 
