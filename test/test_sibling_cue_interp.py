@@ -208,6 +208,9 @@ class CueInterpEndpointSweepTests(unittest.TestCase):
         ]
         model = CueChannelModel(channels)
         generated = {}
+        # The fixture has no stimulus ring, so the DelayDM magnitude levels
+        # are applied by a stand-in (see test_sibling_delay_analysis).
+        applied = np.tile([0.6, 0.6, 1.4, 1.4], 2)
 
         def fake_generate(tp, n_batches, **kwargs):
             generated["tp"] = tp
@@ -218,6 +221,8 @@ class CueInterpEndpointSweepTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(sibling.mpn_tasks, "generate_trials_wrap",
                              side_effect=fake_generate), \
+                patch.object(sibling, "_apply_long_delay_stimulus_magnitudes",
+                             return_value=applied) as apply_levels, \
                 patch.object(sibling, "_modulation_leak", return_value=0.01):
             out_path = sibling.extract_cue_interp_long_delay_endpoints(
                 "run", directory, "delaydm1", RULES, model,
@@ -244,6 +249,11 @@ class CueInterpEndpointSweepTests(unittest.TestCase):
         self.assertEqual(
             artifact["cue_channels"],
             {"delaydm1": channels[0], "delaydm2": channels[1]})
+        # The sweep reruns the base endpoints' trials at the same levels.
+        self.assertEqual(apply_levels.call_args.args[-1],
+                         sibling.DELAYDM_FP_STIM_MAGNITUDES)
+        self.assertEqual(artifact["stimulus_magnitude_levels"],
+                         list(sibling.DELAYDM_FP_STIM_MAGNITUDES))
 
         for base_rule, target_rule, base_channel in (
                 ("delaydm1", "delaydm2", 0), ("delaydm2", "delaydm1", 1)):
@@ -265,8 +275,8 @@ class CueInterpEndpointSweepTests(unittest.TestCase):
                 wm[:, :, 0, 2], np.tile(np.arange(n_per_rule), (3, 1)))
             np.testing.assert_array_equal(sweep["stim_idx"],
                                           np.arange(n_per_rule) % 2)
-            np.testing.assert_allclose(
-                sweep["stimulus_magnitude"], 0.5 + 0.1 * np.arange(n_per_rule))
+            np.testing.assert_allclose(sweep["stimulus_magnitude"],
+                                       applied[:n_per_rule])
             # The fake's state is constant on a constant input: every alpha is
             # already a fixed point at the end of the delay, so none settles.
             self.assertEqual(sweep["is_fixed"].shape, (3, n_per_rule))
@@ -739,7 +749,9 @@ class CueInterpPaperFigureTests(unittest.TestCase):
             with sweep_path.open("wb") as stream:
                 pickle.dump(self._projection(
                     "long_delay_endpoint", RULES, n_alpha, n_points), stream)
+            # Every sweep trial drawn, so each one's path can be counted.
             with patch.object(paper_plot, "TWO_IN_MULTIPLES_DIR", root), \
+                    patch.object(paper_plot, "SIBLING_ONE_TRIAL_PER_STIMULUS", False), \
                     patch.object(paper_plot, "SHOW_LEGEND", True), \
                     patch.object(paper_plot, "_ensure_out_dir"), \
                     patch.object(paper_plot, "_best_sibling_endpoint_pc_pair",
@@ -782,6 +794,10 @@ class CueInterpPaperFigureTests(unittest.TestCase):
             hollow = [coll for coll in ax.collections
                       if coll.get_zorder() == 4]
             self.assertEqual(len(hollow), 2 * n_points)
+            # The alpha = 0 start is not marked again: it is the trial's own
+            # endpoint, already drawn.
+            self.assertFalse([coll for coll in ax.collections
+                              if 12 in coll.get_sizes()])
         for ax in plain.axes:
             self.assertFalse(
                 [line for line in ax.lines if line.get_linestyle() == ":"])
@@ -997,21 +1013,47 @@ class CueInterpPaperFigureTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             paper_plot._one_trial_per_stimulus(np.array([0, 1]), np.ones(3))
 
-    def test_one_trial_per_stimulus_picks_only_allowed_trials(self):
+    def test_one_trial_per_stimulus_weighs_switches_against_magnitudes(self):
         stim = np.array([0, 0, 0, 1, 1, 1, 2, 2, 2])
-        magnitude = np.array([0.7, 1.1, 1.35, 0.9, 1.0, 1.4, 0.8, 1.2, 1.6])
-        # Direction 1 may only use 1.4, so the target moves to 1.35, which
-        # every direction matches within 0.15 (1.35, 1.4, 1.2).
-        allowed = np.array([1, 1, 1, 0, 0, 1, 1, 1, 1], dtype=bool)
-        indices, target = paper_plot._one_trial_per_stimulus(
-            stim, magnitude, allowed)
+        magnitude = np.array([0.7, 1.1, 1.35, 0.9, 1.0, 1.4, 0.75, 1.2, 1.6])
+        self.assertEqual(paper_plot._SIBLING_SMOOTHNESS_WEIGHT, 2.0)
+        self.assertEqual(paper_plot._SIBLING_ATTRACTOR_SWITCH_FRACTION, 0.1)
+        # Direction 1's trials at 0.9 and 1.0 score 0.02, drift below the
+        # switch threshold, which costs nothing: target 1.1, every direction
+        # within 0.1 (1.1, 1.0, 1.2).
+        small = np.array([0, 0, 0, 0.02, 0.02, 0, 0, 0, 0])
+        indices, target = paper_plot._one_trial_per_stimulus(stim, magnitude, small)
+        self.assertEqual(target, 1.1)
+        np.testing.assert_array_equal(indices, [1, 4, 7])
+        # A jump (0.2, cost 0.4) is not worth the closer match: direction 1
+        # takes its trial at 1.4 and the target moves to 1.35, within 0.15
+        # (1.35, 1.4, 1.2).
+        large = np.array([0, 0, 0, 0.2, 0.2, 0, 0, 0, 0])
+        indices, target = paper_plot._one_trial_per_stimulus(stim, magnitude, large)
         self.assertEqual(target, 1.35)
         np.testing.assert_array_equal(indices, [2, 5, 7])
         with self.assertRaises(ValueError):
-            paper_plot._one_trial_per_stimulus(
-                stim, magnitude, np.array([1, 1, 1, 0, 0, 0, 1, 1, 1], dtype=bool))
-        with self.assertRaises(ValueError):
-            paper_plot._one_trial_per_stimulus(stim, magnitude, np.ones(3, bool))
+            paper_plot._one_trial_per_stimulus(stim, magnitude, np.zeros(3))
+
+    def test_one_trial_per_stimulus_keeps_1_on_the_magnitude_grid(self):
+        # Every direction has a trial at every level, as on the DelayDM grid.
+        levels = np.array([0.6, 0.8, 1.0, 1.2, 1.4])
+        stim = np.repeat([0, 1, 2], levels.size)
+        magnitude = np.tile(levels, 3)
+        # Drift below the switch threshold, smallest at 0.8: it does not pull
+        # the target off 1.0.
+        drift = np.tile([0.02, 0.0, 0.05, 0.03, 0.04], 3)
+        indices, target = paper_plot._one_trial_per_stimulus(stim, magnitude, drift)
+        self.assertEqual(target, 1.0)
+        np.testing.assert_array_equal(magnitude[indices], [1.0, 1.0, 1.0])
+        # Jumps do: with one at 1.0 in direction 1 and one at 1.2 in
+        # direction 2, the target moves to 0.8, where every direction stays.
+        jump = drift.copy()
+        jump[levels.size + 2] = 0.15
+        jump[2 * levels.size + 3] = 0.15
+        indices, target = paper_plot._one_trial_per_stimulus(stim, magnitude, jump)
+        self.assertEqual(target, 0.8)
+        np.testing.assert_array_equal(magnitude[indices], [0.8, 0.8, 0.8])
 
     def test_attractor_switch_score_ignores_the_common_motion(self):
         # Every trial drifts one unit per alpha along PC1 (the cue's common
@@ -1043,46 +1085,65 @@ class CueInterpPaperFigureTests(unittest.TestCase):
                 "stimulus_magnitude": np.array([1.0, 0.9, 1.0, 1.2, 1.0, 1.0]),
                 "is_fixed": np.ones((4, 6), dtype=bool)}
 
-    def test_attractor_stable_trials_keep_the_smoothest_when_none_stays(self):
-        allowed, fallback = paper_plot._attractor_stable_trials(
-            self._hopping_sweep())
-        # Direction 1 has no trial under the threshold and keeps trial 3,
-        # the smaller hop.
-        np.testing.assert_array_equal(allowed, [0, 1, 0, 1, 1, 1])
-        self.assertEqual(fallback, [1])
-
-    def test_avoid_attractor_switches_option_redraws_the_delaydm_view(self):
+    def test_one_trial_view_of_delaydm_weighs_attractor_switches(self):
         sweep = self._hopping_sweep()
         with patch.object(paper_plot, "SIBLING_ONE_TRIAL_PER_STIMULUS", True):
-            plain = paper_plot._cue_interp_sweep_view(sweep, "delaydm1")
-        np.testing.assert_array_equal(plain["proj"][0, :, 0], [0.0, 4.0, 8.0])
-        self.assertNotIn("attractor_switch_fallback", plain)
-        # The option implies the one-trial view on its own.
-        with patch.object(paper_plot, "SIBLING_AVOID_ATTRACTOR_SWITCHES", True):
             view = paper_plot._cue_interp_sweep_view(sweep, "delaydm1")
             dmc = paper_plot._cue_interp_sweep_view(sweep, "dmcgo")
-        # Trials 1, 3 and 4: the allowed trials matched at magnitude 1.0.
+        # Weighed, the target moves to 1.2 and trials 1, 3 and 4 are drawn:
+        # direction 0 keeps its trial that stays (0.3 off) over its jump
+        # (cost 0.2 off + 0.4), and direction 1, whose trials both jump,
+        # keeps trial 3, the smaller jump.
         np.testing.assert_array_equal(view["proj"][0, :, 0], [2.0, 6.0, 8.0])
         np.testing.assert_array_equal(view["stimulus_magnitude"], [0.9, 1.2, 1.0])
-        self.assertEqual(view["one_trial_target_magnitude"], 1.0)
-        self.assertEqual(view["attractor_switch_fallback"], [1])
+        self.assertEqual(view["one_trial_target_magnitude"], 1.2)
+        np.testing.assert_allclose(view["attractor_switch_scores"], [0.0, 0.15, 0.0])
         self.assertEqual(view["is_fixed"].shape, (4, 3))
         self.assertEqual(
             paper_plot._cue_interp_view_note({"delaydm1": view}),
-            "; one trial per stimulus, magnitude ≈ 1; trials switching "
-            "attractor avoided (none stays, smoothest drawn: delaydm1 "
-            "direction 1)")
-        # DMC is never filtered: its large step is the cluster swap.
-        np.testing.assert_array_equal(dmc["proj"], plain["proj"])
-        self.assertNotIn("attractor_switch_fallback", dmc)
+            "; one trial per stimulus, magnitude ≈ 1.2; largest attractor "
+            "switch drawn 0.15, 1 of 3 drawn trials above 0.1")
+        # DMC is not scored, as its large step is the cluster swap: the
+        # magnitudes alone draw trials 0, 2 and 4.
+        np.testing.assert_array_equal(dmc["proj"][0, :, 0], [0.0, 4.0, 8.0])
+        self.assertNotIn("attractor_switch_scores", dmc)
+        self.assertEqual(paper_plot._cue_interp_view_note({"dmcgo": dmc}),
+                         "; one trial per stimulus, magnitude ≈ 1")
+
+    def test_drawn_legibility_follows_the_current_view(self):
+        sweeps = {"delaydm1": self._hopping_sweep()}
+        # Every trial drawn: trial 2 jumps furthest (0.3). The direction means
+        # span 8 of the panel's 10 at alpha 0 and 7 after trial 0's jump.
+        with patch.object(paper_plot, "SIBLING_ONE_TRIAL_PER_STIMULUS", False):
+            legible = paper_plot._cue_interp_drawn_legibility(
+                sweeps, "delaydm1", (1,))
+            flat = dict(sweeps["delaydm1"], proj=np.tile(
+                np.linspace(0.0, 5.0, 4)[:, None, None], (1, 6, 1)))
+            # Directions that sit on one line have no spread, however well
+            # the separation ratio would score them.
+            self.assertEqual(paper_plot._cue_interp_drawn_legibility(
+                {"delaydm1": flat}, "delaydm1", (1,))["direction_spread"], 0.0)
+        self.assertAlmostEqual(legible["largest_attractor_switch"], 0.3)
+        self.assertAlmostEqual(legible["direction_spread"], 0.7)
+        # One trial per direction draws trials 1, 3 and 4 (2, 6 -> 7.5, 8):
+        # trial 3's 0.15 jump, directions spanning the whole panel.
+        with patch.object(paper_plot, "SIBLING_ONE_TRIAL_PER_STIMULUS", True):
+            legible = paper_plot._cue_interp_drawn_legibility(
+                sweeps, "delaydm1", (1,))
+        self.assertAlmostEqual(legible["largest_attractor_switch"], 0.15)
+        self.assertAlmostEqual(legible["direction_spread"], 1.0)
+        self.assertIsNone(paper_plot._cue_interp_drawn_legibility(sweeps, "dmcgo", (1,)))
 
     def test_one_trial_option_subsets_the_drawn_sweeps(self):
         projection = self._projection("gradient", RULES, n_points=4)
         entry = projection["representations"]["hidden"]
         sweep = entry["sweeps"]["delaydm1"]
         sweep["stimulus_magnitude"] = np.array([0.8, 1.2, 1.0, 1.0])
-        # Off by default: the sweep is drawn as is.
-        self.assertIs(paper_plot._cue_interp_sweep_view(sweep, "delaydm1"), sweep)
+        # With the option off the sweep is drawn as is.
+        with patch.object(paper_plot, "SIBLING_ONE_TRIAL_PER_STIMULUS", False):
+            self.assertIs(paper_plot._cue_interp_sweep_view(sweep, "delaydm1"), sweep)
+        # On by default.
+        self.assertTrue(paper_plot.SIBLING_ONE_TRIAL_PER_STIMULUS)
         with patch.object(paper_plot, "SIBLING_ONE_TRIAL_PER_STIMULUS", True):
             view = paper_plot._cue_interp_sweep_view(sweep, "delaydm1")
             # stim 0 -> trial 2 (magnitude 1.0), stim 1 -> trial 3 (1.0).
@@ -1108,40 +1169,25 @@ class CueInterpPaperFigureTests(unittest.TestCase):
         # The entry itself is untouched by the view.
         self.assertEqual(sweep["proj"].shape, (3, 4, 6))
 
-    def test_cli_option_turns_on_one_trial_per_stimulus(self):
-        self.assertFalse(paper_plot.SIBLING_ONE_TRIAL_PER_STIMULUS)
-        self.addCleanup(setattr, paper_plot, "SIBLING_ONE_TRIAL_PER_STIMULUS",
-                        False)
-        with tempfile.TemporaryDirectory() as directory, \
-                patch.object(paper_plot, "FIGURES_BY_MODE",
-                             {"two_in_multiple": {"dummy": Mock()}}), \
-                patch.object(paper_plot, "ALL_FIGURES", {"dummy": Mock()}), \
-                patch.object(paper_plot, "OUT_DIR", Path(directory)), \
-                patch.object(paper_plot, "_set_pretraining_bound"), \
-                patch("sys.argv", ["paper_plot.py", "--only", "dummy",
-                                   "--sibling-one-trial-per-stimulus"]), \
-                patch("builtins.print"):
-            paper_plot.main()
+    def test_cli_option_toggles_one_trial_per_stimulus(self):
         self.assertTrue(paper_plot.SIBLING_ONE_TRIAL_PER_STIMULUS)
-
-    def test_cli_option_avoids_attractor_switches_in_the_one_trial_view(self):
-        self.assertFalse(paper_plot.SIBLING_AVOID_ATTRACTOR_SWITCHES)
-        self.assertFalse(paper_plot.SIBLING_ONE_TRIAL_PER_STIMULUS)
-        for name in ("SIBLING_AVOID_ATTRACTOR_SWITCHES",
-                     "SIBLING_ONE_TRIAL_PER_STIMULUS"):
-            self.addCleanup(setattr, paper_plot, name, False)
-        with tempfile.TemporaryDirectory() as directory, \
-                patch.object(paper_plot, "FIGURES_BY_MODE",
-                             {"two_in_multiple": {"dummy": Mock()}}), \
-                patch.object(paper_plot, "ALL_FIGURES", {"dummy": Mock()}), \
-                patch.object(paper_plot, "OUT_DIR", Path(directory)), \
-                patch.object(paper_plot, "_set_pretraining_bound"), \
-                patch("sys.argv", ["paper_plot.py", "--only", "dummy",
-                                   "--sibling-avoid-attractor-switches"]), \
-                patch("builtins.print"):
-            paper_plot.main()
-        self.assertTrue(paper_plot.SIBLING_AVOID_ATTRACTOR_SWITCHES)
-        self.assertTrue(paper_plot.SIBLING_ONE_TRIAL_PER_STIMULUS)
+        self.addCleanup(setattr, paper_plot, "SIBLING_ONE_TRIAL_PER_STIMULUS", True)
+        # Without the option the module default stands; the --no- form turns
+        # it off and the plain form back on.
+        for flags, expected in (([], True),
+                                (["--no-sibling-one-trial-per-stimulus"], False),
+                                (["--sibling-one-trial-per-stimulus"], True)):
+            with self.subTest(flags=flags), \
+                    tempfile.TemporaryDirectory() as directory, \
+                    patch.object(paper_plot, "FIGURES_BY_MODE",
+                                 {"two_in_multiple": {"dummy": Mock()}}), \
+                    patch.object(paper_plot, "ALL_FIGURES", {"dummy": Mock()}), \
+                    patch.object(paper_plot, "OUT_DIR", Path(directory)), \
+                    patch.object(paper_plot, "_set_pretraining_bound"), \
+                    patch("sys.argv", ["paper_plot.py", "--only", "dummy", *flags]), \
+                    patch("builtins.print"):
+                paper_plot.main()
+            self.assertIs(paper_plot.SIBLING_ONE_TRIAL_PER_STIMULUS, expected)
 
     def test_cli_option_switches_the_dmc_kept_pc_to_every_alpha(self):
         self.assertFalse(paper_plot.SIBLING_DMC_KEEP_AT_EVERY_ALPHA)

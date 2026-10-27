@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 import _bootstrap  # noqa: F401
+import mpn_tasks
 import numpy as np
 import sibling_delay_analysis as sibling
 import torch
@@ -478,6 +479,85 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
                 np.testing.assert_array_equal(
                     projected["representations"][plot_name]["is_fixed"],
                     [True, True, False, True])
+
+
+LEVELS = sibling.DELAYDM_FP_STIM_MAGNITUDES
+
+
+def _aligned_delaydm_trials(n_per_rule):
+    """Long-delay DelayDM1 and DelayDM2 trials from one generator state, as
+    `generate_trials_wrap(align_periods=True)` draws them: channels are
+    fixation, fixation-off, then the modality 1 and modality 2 rings."""
+    config = {"dt": 40, "rng": np.random.RandomState(5), "n_eachring": 8,
+              "in_out_mode": "low_dim", "fixate_off": True, "n_input": 6,
+              "n_output": 3, "loss_type": "lsq", "sigma_x": 0.0, "alpha": 0.2,
+              "get_meta": True}
+    state = config["rng"].get_state()
+    trials = []
+    for stim_mod in (1, 2):
+        config["rng"].set_state(state)
+        trials.append(mpn_tasks.delaydm_(
+            config, "random", stim_mod, False, True, "long", "normal",
+            "normal", "normal", False, batch_size=n_per_rule,
+            balanced_stim1=True))
+    inputs = torch.as_tensor(np.concatenate(
+        [trial.x.transpose(1, 0, 2) for trial in trials]))
+    task_idx = np.repeat([0, 1], n_per_rule)
+    stim_idx = np.concatenate([trial.meta["stim1"] for trial in trials])
+    return inputs, trials, task_idx, stim_idx
+
+
+class LongDelayMagnitudeLevelTests(unittest.TestCase):
+    RULES = ("delaydm1", "delaydm2")
+
+    def test_delaydm_runs_one_trial_per_direction_and_level(self):
+        self.assertEqual(sibling.SIBLING_LONG_DELAY_STIM_MAGNITUDES,
+                         {"delaydm1": (0.6, 0.8, 1.0, 1.2, 1.4)})
+        self.assertEqual(sibling._long_delay_trials_per_rule("delaydm1"), 40)
+        self.assertEqual(sibling._long_delay_trials_per_rule("dmcgo"),
+                         sibling.SIBLING_LONG_DELAY_TRIALS_PER_RULE)
+
+    def test_levels_overwrite_only_each_rules_stim1_ring(self):
+        inputs, trials, task_idx, stim_idx = _aligned_delaydm_trials(40)
+        generated = inputs.clone()
+        magnitude = sibling._apply_long_delay_stimulus_magnitudes(
+            inputs, trials, self.RULES, task_idx, stim_idx, LEVELS)
+        # Aligned siblings: the same direction and level per local trial.
+        np.testing.assert_allclose(magnitude[:40], magnitude[40:])
+        for task, ring in ((0, (2, 3)), (1, (4, 5))):
+            members = task_idx == task
+            pairs = {(int(d), float(m)) for d, m in
+                     zip(stim_idx[members], magnitude[members])}
+            self.assertEqual(pairs, {(d, m) for d in range(8) for m in LEVELS})
+            stim_on, stim_off = trials[task].epochs["stim1"]
+            # The ring is found from the data, not from the leading fixation
+            # channels, which the silent fixation-off channel would miscount.
+            self.assertEqual(sibling._stimulus_ring_channels(
+                generated[members].numpy(), (0, stim_on), (stim_on, stim_off),
+                self.RULES[task]), ring)
+            angles = 2 * np.pi * stim_idx[members] / 8
+            expected = magnitude[members][:, None] * np.stack(
+                [np.sin(angles), np.cos(angles)], axis=1)
+            np.testing.assert_allclose(
+                inputs[members][:, stim_on:stim_off][:, :, list(ring)].numpy(),
+                np.repeat(expected[:, None, :], stim_off - stim_on, axis=1),
+                atol=1e-6)
+            changed = (inputs[members] != generated[members]).numpy()
+            outside = changed.copy()
+            outside[:, stim_on:stim_off, ring[0]:ring[1] + 1] = False
+            self.assertFalse(outside.any())
+
+    def test_a_ring_that_does_not_hold_the_generated_stimulus_raises(self):
+        inputs, trials, task_idx, stim_idx = _aligned_delaydm_trials(40)
+        trials[0].meta["stim1_strs"] = trials[0].meta["stim1_strs"] + 0.5
+        with self.assertRaisesRegex(ValueError, "do not hold"):
+            sibling._apply_long_delay_stimulus_magnitudes(
+                inputs, trials, self.RULES, task_idx, stim_idx, LEVELS)
+        # Four trials per direction cannot take five levels.
+        inputs, trials, task_idx, stim_idx = _aligned_delaydm_trials(32)
+        with self.assertRaisesRegex(ValueError, "magnitude levels"):
+            sibling._apply_long_delay_stimulus_magnitudes(
+                inputs, trials, self.RULES, task_idx, stim_idx, LEVELS)
 
 
 if __name__ == "__main__":

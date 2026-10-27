@@ -107,14 +107,17 @@ SIBLING_FIXED_POINT_STEPS = 200000
 # CPU and only this many are transferred to the GPU at once.
 SIBLING_NORMAL_TRIALS_PER_RULE = 100
 SIBLING_NORMAL_GPU_BATCH_SIZE = 200
-# Long-delay trials for the settled endpoints: 32 per sibling rule. DelayDM
-# is direction-balanced, four amplitude/coherence realizations at each of eight
-# directions; the DMC generator draws its directions at random, so DMC trials
-# are not balanced. Aligned RNG state makes every local trial a matched
-# cross-task condition.
-SIBLING_LONG_DELAY_TRIALS_PER_DIRECTION = 4
-SIBLING_LONG_DELAY_TRIALS_PER_RULE = (
-    SIBLING_FP_N_STIM * SIBLING_LONG_DELAY_TRIALS_PER_DIRECTION)
+# Long-delay trials for the settled endpoints and their rule-cue sweep.
+# DelayDM is direction-balanced and gives each of the eight directions one
+# trial at every level of its family's SIBLING_LONG_DELAY_STIM_MAGNITUDES (the
+# gradient solve's DELAYDM_FP_STIM_MAGNITUDES), 8 x 5 = 40 per rule, in place
+# of the generator's random amplitude/coherence draws
+# (`_apply_long_delay_stimulus_magnitudes`). The DMC generator draws its
+# directions at random at magnitude 1, so DMC keeps
+# SIBLING_LONG_DELAY_TRIALS_PER_RULE unbalanced trials. Aligned RNG state makes
+# every local trial a matched cross-task condition.
+SIBLING_LONG_DELAY_STIM_MAGNITUDES = {"delaydm1": DELAYDM_FP_STIM_MAGNITUDES}
+SIBLING_LONG_DELAY_TRIALS_PER_RULE = 32
 SIBLING_LONG_DELAY_TRAJECTORY_SAMPLES = 51
 # The trials' own long delay (DelayDM 5 s, DMC 10 s) is too short for the
 # modulation to settle: tau_M is 4 s at lambda = 0.99, and on seed 921 no
@@ -1050,10 +1053,97 @@ def _run_long_delay_projected_trajectory(
             delay_start + relative_indices, residual, n_settle)
 
 
+def _long_delay_trials_per_rule(addtask):
+    """Long-delay trials per sibling rule: one per direction and magnitude
+    level for a family with SIBLING_LONG_DELAY_STIM_MAGNITUDES, else
+    SIBLING_LONG_DELAY_TRIALS_PER_RULE."""
+    levels = SIBLING_LONG_DELAY_STIM_MAGNITUDES.get(addtask)
+    if levels is None:
+        return SIBLING_LONG_DELAY_TRIALS_PER_RULE
+    return SIBLING_FP_N_STIM * len(levels)
+
+
+def _stimulus_ring_channels(rule_inputs, fix_window, stim_window, rule):
+    """(sin, cos) input channels of one rule's stimulus ring.
+
+    They are the two channels that carry input during ``stim1`` and none
+    during ``fix1`` across all of `rule_inputs` (trials, time, channels); with
+    eight directions neither is silent in every trial, so both channels are
+    read from the data rather than one channel plus the layout, as
+    `grad_fixed_points.detect_stimulus_channels` must for its single trial."""
+    (fix_on, fix_off), (stim_on, stim_off) = fix_window, stim_window
+    during_stimulus = np.abs(rule_inputs[:, stim_on:stim_off]).max(axis=(0, 1))
+    during_fixation = np.abs(rule_inputs[:, fix_on:fix_off]).max(axis=(0, 1))
+    ring = np.flatnonzero((during_stimulus > 1e-6) & (during_fixation <= 1e-6))
+    if ring.size != 2 or ring[1] != ring[0] + 1:
+        raise ValueError(f"{rule}: expected one two-channel stimulus ring in "
+                         f"stim1, found channels {ring.tolist()}")
+    return int(ring[0]), int(ring[1])
+
+
+def _apply_long_delay_stimulus_magnitudes(inputs, trials, rules, task_idx,
+                                          stim_idx, levels):
+    """Give every direction of each rule one long-delay trial per magnitude.
+
+    The DelayDM generator writes ``stim1`` as strength * (sin θ, cos θ) on the
+    rule's stimulus ring (`mpn_tasks.Trial.add`), the strength drawn at random.
+    Here a direction's trials, in trial order, take `levels` instead: during
+    ``stim1`` the ring's two channels (`_stimulus_ring_channels`) are
+    overwritten with level * (sin θ, cos θ), the input the generator writes
+    for a stimulus of that strength. Each trial's generated ``stim1`` is first
+    checked against its strength * (sin θ, cos θ), so a wrong ring raises
+    instead of being overwritten. Later epochs (``stim2``, the response) are
+    left as generated; a settled ``delay1`` endpoint never reaches them.
+    ``inputs`` (trials, time, channels) is changed in place; returns each
+    trial's magnitude.
+    """
+    levels = np.asarray(levels, dtype=float)
+    stim_idx = np.asarray(stim_idx, dtype=int)
+    task_idx = np.asarray(task_idx, dtype=int)
+    magnitude = np.empty(stim_idx.size, dtype=float)
+    for task, (rule, trial) in enumerate(zip(rules, trials)):
+        members = np.flatnonzero(task_idx == task)
+        fix_on, fix_off = trial.epochs["fix1"]
+        stim_on, stim_off = trial.epochs["stim1"]
+        if any(np.ndim(edge) for edge in (fix_on, fix_off, stim_on, stim_off)):
+            raise ValueError(f"{rule}: magnitude levels need aligned scalar "
+                             "fix1 and stim1 windows")
+        fix_on = 0 if fix_on is None else int(fix_on)
+        stim_on, stim_off = int(stim_on), int(stim_off)
+        rows = torch.as_tensor(members)
+        ring = _stimulus_ring_channels(
+            inputs[rows].detach().cpu().numpy(), (fix_on, int(fix_off)),
+            (stim_on, stim_off), rule)
+
+        stim = stim_idx[members]
+        angles = 2 * np.pi * stim / SIBLING_FP_N_STIM
+        direction = np.stack([np.sin(angles), np.cos(angles)], axis=1)
+        strengths = np.asarray(trial.meta["stim1_strs"], dtype=float).reshape(-1)
+        generated = inputs[rows, stim_on:stim_off][:, :, list(ring)]
+        if not np.allclose(generated.detach().cpu().numpy(),
+                           (strengths[:, None] * direction)[:, None, :],
+                           atol=1e-5):
+            raise ValueError(f"{rule}: stim1 channels {ring} do not hold the "
+                             "generated strength * (sin, cos)")
+
+        for d in np.unique(stim):
+            same_direction = members[stim == d]
+            if same_direction.size != levels.size:
+                raise ValueError(f"{rule}: direction {d} has "
+                                 f"{same_direction.size} long-delay trials for "
+                                 f"{levels.size} magnitude levels")
+            magnitude[same_direction] = levels
+        values = torch.as_tensor(magnitude[members][:, None] * direction,
+                                 dtype=inputs.dtype)
+        for column, channel in enumerate(ring):
+            inputs[rows, stim_on:stim_off, channel] = (
+                values[:, column:column + 1].expand(-1, stim_off - stim_on))
+    return magnitude
+
+
 def extract_long_delay_endpoints(
         aname, save_dir, addtask, rules, model, device,
-        converted_task_params, W, layer_index=1,
-        n_trials_per_rule=SIBLING_LONG_DELAY_TRIALS_PER_RULE):
+        converted_task_params, W, layer_index=1, n_trials_per_rule=None):
     """Settle generated long-delay trials to their delay fixed points.
 
     This is deliberately a second method, not a replacement for the gradient
@@ -1065,9 +1155,15 @@ def extract_long_delay_endpoints(
     ``condition_idx`` matches the same natural trial across the two rules.
     Full-dimensional state is retained only at the settled endpoint; up to 51
     frames from delay onset to that endpoint are retained as compact six-PC
-    trajectories.
+    trajectories. A family with SIBLING_LONG_DELAY_STIM_MAGNITUDES (DelayDM)
+    runs one trial per direction and level (`_long_delay_trials_per_rule`,
+    `_apply_long_delay_stimulus_magnitudes`); ``n_trials_per_rule`` None
+    takes that count.
     """
     rules = list(rules)
+    if n_trials_per_rule is None:
+        n_trials_per_rule = _long_delay_trials_per_rule(addtask)
+    magnitude_levels = SIBLING_LONG_DELAY_STIM_MAGNITUDES.get(addtask)
     tp = copy.deepcopy(converted_task_params)
     tp["rules"] = rules
     tp["long_delay"] = "long"
@@ -1115,6 +1211,9 @@ def extract_long_delay_endpoints(
                 raise ValueError(
                     f"{rule}: unbalanced long-delay directions {counts.tolist()}")
             direction_counts[rule] = counts.tolist()
+    if magnitude_levels is not None:
+        stimulus_magnitude = _apply_long_delay_stimulus_magnitudes(
+            long_input, trials, rules, task_idx, stim_idx, magnitude_levels)
 
     group_labels = None
     if addtask == "dmcgo":
@@ -1145,7 +1244,8 @@ def extract_long_delay_endpoints(
     delay_steps = int(delay_stop - delay_start)
 
     artifact = {
-        "version": 3,
+        # Version 4: DelayDM trials at fixed magnitude levels, one per direction.
+        "version": 4,
         "method": "long_delay_endpoint",
         "aname": aname,
         "family": addtask,
@@ -1176,6 +1276,9 @@ def extract_long_delay_endpoints(
         "condition_idx": condition_idx,
         "stim_idx": stim_idx,
         "stimulus_magnitude": stimulus_magnitude,
+        # None: the generator's own magnitudes (random for DelayDM, 1 for DMC).
+        "stimulus_magnitude_levels": (None if magnitude_levels is None
+                                      else [float(v) for v in magnitude_levels]),
         "balanced_stimulus_directions": addtask == "delaydm1",
         "representations": {
             "fixed_M": M,
@@ -1675,14 +1778,16 @@ def _cue_interp_base_rules(addtask, rules, base_rules=None):
 def extract_cue_interp_long_delay_endpoints(
         aname, save_dir, addtask, rules, model, device,
         converted_task_params, W, layer_index=1,
-        n_alpha=SIBLING_CUE_INTERP_N_ALPHA,
-        n_trials_per_rule=SIBLING_LONG_DELAY_TRIALS_PER_RULE,
+        n_alpha=SIBLING_CUE_INTERP_N_ALPHA, n_trials_per_rule=None,
         base_rules=None):
     """Sweep the rule cue on long-delay trials and keep each settled endpoint.
 
     Fresh long-delay trials are generated for both rules with aligned RNG
-    state, exactly as for the base endpoints (direction-balanced for DelayDM,
-    random directions for DMC). For each base rule its own trials are rerun at
+    state, exactly as for the base endpoints (direction-balanced at the
+    family's SIBLING_LONG_DELAY_STIM_MAGNITUDES levels for DelayDM, random
+    directions for DMC; ``n_trials_per_rule`` None takes
+    `_long_delay_trials_per_rule`), so alpha = 0 reruns the base endpoints'
+    trials. For each base rule its own trials are rerun at
     every alpha with the cue shifted toward the sibling
     (`cue_interpolated_inputs`) and settled on that alpha's delay input as the
     base endpoints are (SIBLING_LONG_DELAY_MAX_SETTLE_MS); the full-dimensional
@@ -1693,6 +1798,9 @@ def extract_cue_interp_long_delay_endpoints(
     rules = list(rules)
     base_rules = _cue_interp_base_rules(addtask, rules, base_rules)
     alphas = cue_interp_alphas(n_alpha)
+    if n_trials_per_rule is None:
+        n_trials_per_rule = _long_delay_trials_per_rule(addtask)
+    magnitude_levels = SIBLING_LONG_DELAY_STIM_MAGNITUDES.get(addtask)
     tp = copy.deepcopy(converted_task_params)
     tp["rules"] = rules
     tp["long_delay"] = "long"
@@ -1726,6 +1834,9 @@ def extract_cue_interp_long_delay_endpoints(
     if not (stim_idx.size == stimulus_magnitude.size == task_idx.size):
         raise ValueError(
             f"{addtask}: cue-sweep metadata length does not match trial count")
+    if magnitude_levels is not None:
+        stimulus_magnitude = _apply_long_delay_stimulus_magnitudes(
+            long_input, trials, rules, task_idx, stim_idx, magnitude_levels)
 
     W = np.asarray(W, dtype=np.float32)
     dt = tp["dt"]
@@ -1787,7 +1898,8 @@ def extract_cue_interp_long_delay_endpoints(
         del x_base
 
     artifact = {
-        "version": 2,
+        # Version 3: DelayDM trials at fixed magnitude levels, one per direction.
+        "version": 3,
         "kind": "cue_interp",
         "method": "long_delay_endpoint",
         "aname": aname,
@@ -1806,6 +1918,8 @@ def extract_cue_interp_long_delay_endpoints(
         "max_settle_ms": int(max_settle_steps * dt),
         "rel_tol_undamped": float(DEFAULT_REL_TOL_UNDAMPED),
         "balanced_stimulus_directions": addtask == "delaydm1",
+        "stimulus_magnitude_levels": (None if magnitude_levels is None
+                                      else [float(v) for v in magnitude_levels]),
         "sweeps": sweeps,
     }
     out_path, _ = cue_interp_artifact_paths(

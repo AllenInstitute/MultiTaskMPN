@@ -421,19 +421,16 @@ DELAYDM_ANAME = None
 DMCGO_ANAME = None
 # Rule-cue sweep figures (sibling_cue_interp and the `_cue_interp` endpoint
 # overlays): draw every sweep trial (False), or one trial per stimulus
-# direction at a magnitude matched across the directions (True; see
-# `_one_trial_per_stimulus`). `--sibling-one-trial-per-stimulus` sets it.
-SIBLING_ONE_TRIAL_PER_STIMULUS = False
-# One-trial view of the DelayDM rule-cue sweeps: any trial (False), or, for
-# each stimulus direction, preferably a trial whose endpoint stays on one
-# attractor along the sweep (True; implies the one-trial view, see
-# `_attractor_stable_trials`). The settled DelayDM endpoints form a discrete
-# set of attractors, and a trial near a basin boundary hops to a neighboring
-# one as the cue moves, which draws as a jump. This is a selection for
-# legibility, so the caption must say so. DMC sweeps are never filtered: their
-# large step is the response-cluster swap the figures show.
-# `--sibling-avoid-attractor-switches` sets it.
-SIBLING_AVOID_ATTRACTOR_SWITCHES = False
+# direction (True, the default; see `_one_trial_per_stimulus`), at a
+# magnitude matched across the directions and, for DelayDM, weighed against
+# how far the trial's endpoint jumps along the sweep (jumps above
+# _SIBLING_ATTRACTOR_SWITCH_FRACTION only). The settled DelayDM endpoints
+# form a discrete set of attractors, and a trial near a basin boundary hops to a
+# neighboring one as the cue moves, which draws as a jump; DMC sweeps are not
+# scored, since their large step is the response-cluster swap the figures
+# show. This is a selection for legibility, so the caption must say so.
+# `--no-sibling-one-trial-per-stimulus` draws every trial instead.
+SIBLING_ONE_TRIAL_PER_STIMULUS = True
 # DMC rule-cue sweep figures: the top-row PC keeps the response clusters apart
 # in the same order at both ends of the sweep (False), or at every alpha
 # (True), which gives a cleaner top row but can leave a smaller swap on the
@@ -9764,8 +9761,13 @@ def _multitask_sibling_aname(family, plot_name, figure="endpoint"):
 # of each representation is scored on its endpoints
 # (`_best_sibling_endpoint_pc_pair`: stimulus directions for DelayDM, response
 # categories for DMC, both tasks pooled) and the rule-cue sweep figure on the
-# sweep's own fixed points (`_sibling_sweep_pc_pair`). Figures of one family
-# can therefore come from different networks. The endpoint figure's run also
+# sweep's own fixed points (`_sibling_sweep_pc_pair`). A DelayDM sweep figure
+# weighs that score by how smoothly its drawn trials follow the cue and ranks
+# last the runs whose drawn directions collapse onto one line
+# (`_cue_interp_drawn_legibility`, `_sibling_sweep_ranked_score`): the score
+# is a ratio to the spread within a direction, so a run whose trials all land
+# on one attractor can score well while drawing nothing apart. Figures of one
+# family can therefore come from different networks. The endpoint figure's run also
 # serves its `_cue_interp` overlay (the overlaid sweep shares that run's basis)
 # and the gradient-method geometry figures; the sweep figure's run serves its
 # 2d and 3d views. The whole ranking is printed and saved beside the figures.
@@ -9818,11 +9820,14 @@ def _require_sibling_converged(is_fixed, context):
 
 
 def _sibling_run_scores(family, aname):
-    """{figure: {representation: best-pair score}} of one cached run.
+    """({figure: {representation: best-pair score}},
+    {representation: sweep legibility}) of one cached run.
 
     Each figure is scored with the metric it picks its PC pair with, on the
     fixed points it draws: "endpoint" by `_best_sibling_endpoint_pc_pair`,
-    "sweep" by `_sibling_sweep_pc_pair` on the long-delay rule-cue sweep.
+    "sweep" by `_sibling_sweep_pc_pair` on the long-delay rule-cue sweep; the
+    sweep's drawn trials in that pair's panels also get their legibility
+    (`_cue_interp_drawn_legibility`, None for DMC).
     Raises ValueError when a cache is missing, predates settling or holds a
     point above the fixed-point criterion, so such a run is never shown.
     """
@@ -9843,6 +9848,7 @@ def _sibling_run_scores(family, aname):
         raise ValueError(f"{paths['sweep'].name} is not a rule-cue sweep projection")
 
     scores = {figure: {} for figure in _SIBLING_FIGURES}
+    legibility = {}
     for plot_name in _SIBLING_REPRESENTATIONS:
         entry = caches["endpoint"].get("representations", {}).get(plot_name)
         sweeps = (caches["sweep"].get("representations", {})
@@ -9855,14 +9861,44 @@ def _sibling_run_scores(family, aname):
                                        f"{plot_name} sweep points from {base_rule}")
         scores["endpoint"][plot_name] = float(
             _best_sibling_endpoint_pc_pair(entry, family)[1])
-        scores["sweep"][plot_name] = float(_sibling_sweep_pc_pair(family, sweeps)[1])
-    return scores
+        pair, sweep_score, _ = _sibling_sweep_pc_pair(family, sweeps)
+        scores["sweep"][plot_name] = float(sweep_score)
+        legibility[plot_name] = _cue_interp_drawn_legibility(sweeps, family, pair)
+    return scores, legibility
+
+
+def _sibling_sweep_ranked_score(score, legibility):
+    """A sweep figure's best-pair `score` weighed by the smoothness of its
+    drawn trials: times min(1, _SIBLING_ATTRACTOR_SWITCH_FRACTION / largest
+    drawn switch score), so a run whose drawn lines jump no further than
+    the switch threshold keeps its score. `legibility` None (DMC) leaves the
+    score as is."""
+    if legibility is None:
+        return score
+    largest = legibility["largest_attractor_switch"]
+    if largest <= _SIBLING_ATTRACTOR_SWITCH_FRACTION:
+        return score
+    return score * _SIBLING_ATTRACTOR_SWITCH_FRACTION / largest
+
+
+def _sibling_run_rank_key(row, figure, plot_name):
+    """Sort key of one scored run for one figure, best first: a DelayDM sweep
+    figure ranks the runs whose drawn directions collapse
+    (direction spread below _SIBLING_MIN_DIRECTION_SPREAD) after the rest
+    and orders each group by `_sibling_sweep_ranked_score`; every other
+    figure by its score. Ties go to the lowest seed."""
+    score = row["scores"][figure][plot_name]
+    legibility = row["sweep_legibility"][plot_name] if figure == "sweep" else None
+    if legibility is None:
+        return (False, -score, row["seed"])
+    return (legibility["direction_spread"] < _SIBLING_MIN_DIRECTION_SPREAD,
+            -_sibling_sweep_ranked_score(score, legibility), row["seed"])
 
 
 def _sibling_run_ranking(family):
     """Score every cached SIBLING_L2 run of `family` and rank them for every
-    figure and representation, best first, ties to the lowest seed. Runs that
-    cannot be scored are listed with the reason."""
+    figure and representation (`_sibling_run_rank_key`). Runs that cannot be
+    scored are listed with the reason."""
     import re
 
     pattern = re.compile(r"everything_seed(\d+)_" + re.escape(
@@ -9874,32 +9910,49 @@ def _sibling_run_ranking(family):
             continue
         seed = int(match.group(1))
         try:
-            scores = _sibling_run_scores(family, run_dir.name)
+            scores, legibility = _sibling_run_scores(family, run_dir.name)
         except (KeyError, ValueError, OSError, EOFError,
                 pickle.UnpicklingError) as exc:
             skipped.append({"aname": run_dir.name, "seed": seed, "reason": str(exc)})
             continue
-        runs.append({"aname": run_dir.name, "seed": seed, "scores": scores})
+        runs.append({"aname": run_dir.name, "seed": seed, "scores": scores,
+                     "sweep_legibility": legibility})
     runs.sort(key=lambda row: row["seed"])
     skipped.sort(key=lambda row: row["seed"])
     choices = {}
     for figure in _SIBLING_FIGURES:
         for plot_name in _SIBLING_REPRESENTATIONS:
-            ranked = sorted(runs, key=lambda row: (
-                -row["scores"][figure][plot_name], row["seed"]))
+            ranked = sorted(runs, key=lambda row: _sibling_run_rank_key(
+                row, figure, plot_name))
+            ranking = []
+            for row in ranked:
+                entry = {"seed": row["seed"],
+                         "score": row["scores"][figure][plot_name]}
+                legible = row["sweep_legibility"][plot_name]
+                if figure == "sweep" and legible is not None:
+                    entry.update(legible)
+                    entry["ranked_score"] = _sibling_sweep_ranked_score(
+                        entry["score"], legible)
+                ranking.append(entry)
             choices[f"{figure} {plot_name}"] = {
                 "best_aname": ranked[0]["aname"] if ranked else None,
-                "ranking": [{"seed": row["seed"],
-                             "score": row["scores"][figure][plot_name]}
-                            for row in ranked],
+                "ranking": ranking,
             }
     dmc = family == "dmcgo"
+    smoothness = ""
+    if family in _SIBLING_ATTRACTOR_SWITCH_FAMILIES:
+        smoothness = (
+            f" x min(1, {_SIBLING_ATTRACTOR_SWITCH_FRACTION:g} / largest drawn "
+            "attractor switch); runs whose drawn directions span less than "
+            f"{_SIBLING_MIN_DIRECTION_SPREAD:g} of a panel last")
     return {
         "family": family,
         "cohort": multitask_feature(SIBLING_L2),
         "metrics": {
             "endpoint": "best-pair " + (DMCGO_METRIC_NAME if dmc else DELAYDM_METRIC_NAME),
-            "sweep": "best-pair " + (_dmc_sweep_metric_name() if dmc else SWEEP_METRIC_NAME),
+            "sweep": ("best-pair "
+                      + (_dmc_sweep_metric_name() if dmc else SWEEP_METRIC_NAME)
+                      + smoothness),
         },
         "n_candidates": len(runs) + len(skipped),
         "choices": choices,
@@ -9932,7 +9985,13 @@ def _select_sibling_runs(family):
         scores = ", ".join(f"{figure} {plot_name} {value:.3f}"
                            for figure, by_rep in row["scores"].items()
                            for plot_name, value in by_rep.items())
-        print(f"    seed {row['seed']}: {scores}")
+        legibility = "".join(
+            f"; sweep {plot_name} largest switch "
+            f"{legible['largest_attractor_switch']:.2f}, direction spread "
+            f"{legible['direction_spread']:.3f}"
+            for plot_name, legible in row["sweep_legibility"].items()
+            if legible is not None)
+        print(f"    seed {row['seed']}: {scores}{legibility}")
     for row in report["skipped"]:
         print(f"    Skipped seed {row['seed']}: {row['reason']}")
     if not report["runs"]:
@@ -9944,8 +10003,11 @@ def _select_sibling_runs(family):
         return {key: multitask_aname(0, SIBLING_L2) for key in report["choices"]}
     for key, choice in report["choices"].items():
         best = choice["ranking"][0]
+        ranked = ("" if "ranked_score" not in best else
+                  f", {best['ranked_score']:.3f} weighed by its largest drawn "
+                  f"switch {best['largest_attractor_switch']:.2f}")
         print(f"  {family} {key} run selected automatically: seed {best['seed']} "
-              f"(score {best['score']:.3f})")
+              f"(score {best['score']:.3f}{ranked})")
     return {key: choice["best_aname"] for key, choice in report["choices"].items()}
 
 
@@ -10341,17 +10403,20 @@ def _draw_cue_interp_endpoint_overlay(ax, alphas, sweeps, task_names, bx, by,
     Hue follows the panel's convention, `color_for` of each trial's entry in
     `sweep_labels` (base rule -> labels, `_sibling_sweep_color_labels`: the
     stimulus direction for DelayDM, the alpha = 0 response cluster for DMC),
-    so the cue is carried by marker shape as it is for the endpoints: the
-    alpha = 0 start takes the base rule's marker (small, filled; it is that
-    rule's own trial), the alpha = 1 end takes the sibling's marker, hollow,
-    marking where the sweep ends rather than an endpoint of the sibling's own
-    trials. For DelayDM that end is an input never seen in training (each
-    rule presents its stimulus on its own modality); for DMC it is an
-    ordinary DMCNoGo input for the same stimulus, so the hollow marker lands
-    on DMCNoGo's own endpoint. Intermediate alphas are dots along a dotted
-    path. On a task-aligned panel `offsets` (task -> mean endpoint, as
-    `task_offsets` returns) shifts each path by its base task's offset, the
-    frame its alpha = 0 start shares with that task's endpoints."""
+    so the cue is carried by marker shape as it is for the endpoints. The
+    alpha = 0 start gets no marker of its own: the sweep reruns the base
+    rule's endpoint trials (same generator state, unchanged input at
+    alpha = 0), so each path starts on that trial's endpoint, already drawn,
+    up to the drift between the two runs' settle times. The alpha = 1 end
+    takes the sibling's marker, hollow, marking where the sweep ends rather
+    than an endpoint of the sibling's own trials. For
+    DelayDM that end is an input never seen in training (each rule presents
+    its stimulus on its own modality); for DMC it is an ordinary DMCNoGo
+    input for the same stimulus, so the hollow marker lands on DMCNoGo's own
+    endpoint. Intermediate alphas are dots along a dotted path. On a
+    task-aligned panel `offsets` (task -> mean endpoint, as `task_offsets`
+    returns) shifts each path by its base task's offset, the frame its
+    alpha = 0 start shares with that task's endpoints."""
     for base_rule, sweep in sweeps.items():
         base_task = task_names.index(base_rule)
         target_task = task_names.index(sweep["target_rule"])
@@ -10371,11 +10436,7 @@ def _draw_cue_interp_endpoint_overlay(ax, alphas, sweeps, task_names, bx, by,
                 mid = path[1:-1][finite[1:-1]]
                 ax.scatter(mid[:, 0], mid[:, 1], color=color, marker=".",
                            s=7, edgecolor="none", alpha=0.7, zorder=2)
-            start, end = path[0], path[-1]
-            if np.isfinite(start).all():
-                ax.scatter(start[0], start[1], color=color, edgecolor="none",
-                           marker=_MULTITASK_RULE_MARKERS[base_task % 2],
-                           s=12, alpha=0.85, zorder=3)
+            end = path[-1]
             if np.isfinite(end).all():
                 ax.scatter(end[0], end[1], facecolor="none", edgecolor=color,
                            marker=_MULTITASK_RULE_MARKERS[target_task % 2],
@@ -10717,41 +10778,47 @@ def _multitask_cue_interp_plane(family, plot_name, method, run_dir, aname,
     return tuple(_MULTITASK_SIBLING_ENDPOINT_DEFAULT_PC_PLANE), "default"
 
 
-def _one_trial_per_stimulus(stim_idx, magnitude, allowed=None):
-    """Indices of one trial per stimulus direction at matched magnitudes.
+def _one_trial_per_stimulus(stim_idx, magnitude, switch_scores=None):
+    """Indices of one trial per stimulus direction at matched magnitudes,
+    preferring trials that stay on one attractor along the sweep.
 
-    The target magnitude is the trials' own value that every direction can
-    match most closely (smallest worst-case deviation, ties broken toward
-    1.0); each direction then contributes its trial nearest that target
-    (lowest index on ties). Only `allowed` trials (a boolean mask, default
-    every trial) are candidates, and every direction needs one. Returns
-    (indices in direction order, target). DMC trials all have magnitude 1,
-    so this simply deduplicates them."""
+    Against a target magnitude a trial costs its distance from the target
+    plus, if it switches attractor (score above
+    _SIBLING_ATTRACTOR_SWITCH_FRACTION), _SIBLING_SMOOTHNESS_WEIGHT times its
+    attractor-switch score (`switch_scores`, from
+    `_cue_interp_attractor_switch_scores`; none counts as 0). A score at or
+    below the threshold is drift, not a jump, and costs nothing: on the
+    DelayDM magnitude grid every direction has a trial at every level, and
+    letting that drift break the tie between exact matches would move the
+    target off 1.0. The target is the trials' own magnitude at which the
+    costliest direction pays least for its cheapest trial (ties broken toward
+    1.0); each direction then contributes its cheapest trial (lowest index on
+    ties). Returns (indices in direction order, target). Without switch
+    scores the magnitudes alone decide; DMC trials all have magnitude 1 and
+    are not scored, so this simply deduplicates them."""
     stim = np.asarray(stim_idx, dtype=int)
     magnitude = np.asarray(magnitude, dtype=float)
     if stim.shape != magnitude.shape or stim.size == 0:
         raise ValueError("stimulus indices and magnitudes must be non-empty "
                          "and of equal length")
-    allowed = (np.ones(stim.shape, dtype=bool) if allowed is None
-               else np.asarray(allowed, dtype=bool))
-    if allowed.shape != stim.shape:
-        raise ValueError(f"allowed mask {allowed.shape} does not match the "
-                         f"{stim.size} trials")
-    directions = np.unique(stim)
-    if not all(np.any(allowed[stim == d]) for d in directions):
-        raise ValueError("every stimulus direction needs an allowed trial")
+    penalty = np.zeros(stim.shape)
+    if switch_scores is not None:
+        scores = np.asarray(switch_scores, dtype=float)
+        if scores.shape != stim.shape:
+            raise ValueError(f"{scores.size} switch scores for {stim.size} trials")
+        penalty = np.where(scores > _SIBLING_ATTRACTOR_SWITCH_FRACTION,
+                           _SIBLING_SMOOTHNESS_WEIGHT * scores, 0.0)
+    members = [np.flatnonzero(stim == d) for d in np.unique(stim)]
     best = None
-    for target in np.unique(magnitude[allowed]):
-        worst = max(float(np.min(np.abs(magnitude[(stim == d) & allowed] - target)))
-                    for d in directions)
+    for target in np.unique(magnitude):
+        worst = max(float(np.min(np.abs(magnitude[m] - target) + penalty[m]))
+                    for m in members)
         key = (worst, abs(float(target) - 1.0))
         if best is None or key < best[0]:
             best = (key, float(target))
     target = best[1]
-    chosen = []
-    for d in directions:
-        members = np.flatnonzero((stim == d) & allowed)
-        chosen.append(int(members[np.argmin(np.abs(magnitude[members] - target))]))
+    chosen = [int(m[np.argmin(np.abs(magnitude[m] - target) + penalty[m])])
+              for m in members]
     return np.asarray(chosen, dtype=int), target
 
 
@@ -10759,10 +10826,33 @@ def _one_trial_per_stimulus(stim_idx, magnitude, allowed=None):
 # moves away from the common motion of all trials by more than this fraction
 # of a PC's span over the sweep (in any of the six cached PCs). On the
 # 2026-10-22 seed 62 hidden sweep the trials it flags score 0.10-0.28 and all
-# hop in the full hidden space too; the rest score 0.008-0.1.
+# hop in the full hidden space too; the rest score 0.008-0.1. On the magnitude
+# grid caches (2026-10-26) it flags 11/40 and 22/40 of that sweep's trials,
+# which depart from the common motion by 0.08-0.29 in the full hidden space
+# against a median of 0.05-0.08 for the rest.
 _SIBLING_ATTRACTOR_SWITCH_FRACTION = 0.1
-# Families whose one-trial view honors SIBLING_AVOID_ATTRACTOR_SWITCHES.
+# How much a switching trial's attractor-switch score costs in the one-trial
+# view against its magnitude's distance from the target
+# (`_one_trial_per_stimulus`; scores at or below
+# _SIBLING_ATTRACTOR_SWITCH_FRACTION cost nothing): a jump just over a tenth
+# of a PC's span weighs as much as a magnitude 0.2 off. On the seed 62 hidden
+# sweep of the magnitude grid caches (2026-10-26), where a DelayDM2 direction
+# has no trial that stays, the magnitudes alone draw jumps of 0.21 and 0.24
+# (DelayDM1 and DelayDM2 bases), 1 draws 0.14 and 0.19, and 2 leaves DelayDM1
+# without a switching trial (largest score 0.09) and DelayDM2 at 0.19, every
+# direction within 0.2 of its target.
+_SIBLING_SMOOTHNESS_WEIGHT = 2.0
+# Families whose sweeps are scored for attractor switches: the one-trial view
+# weighs them and the sweep figure's run ranking weighs and checks the drawn
+# trials (`_cue_interp_drawn_legibility`). DMC is not, as every trial takes
+# the response-cluster swap.
 _SIBLING_ATTRACTOR_SWITCH_FAMILIES = ("delaydm1",)
+# A DelayDM sweep run whose drawn direction means span less than this
+# fraction of a `2d` panel's range is ranked after every other run: its
+# directions draw as one line. On the magnitude grid caches (2026-10-26) the
+# one-trial hidden sweeps of seeds 177, 42 and 510 span under 0.01 (every
+# drawn trial on one attractor) and seed 62 0.91.
+_SIBLING_MIN_DIRECTION_SPREAD = 0.05
 
 
 def _cue_interp_attractor_switch_scores(proj):
@@ -10785,42 +10875,19 @@ def _cue_interp_attractor_switch_scores(proj):
     return (np.abs(departure) / span).max(axis=(0, 2))
 
 
-def _attractor_stable_trials(sweep):
-    """(allowed mask, fallback directions) for the one-trial view.
-
-    A trial is allowed when its `_cue_interp_attractor_switch_scores` value is
-    at most _SIBLING_ATTRACTOR_SWITCH_FRACTION. A direction whose every trial
-    switches keeps its smoothest one and is listed as a fallback."""
-    scores = _cue_interp_attractor_switch_scores(sweep["proj"])
-    stim = np.asarray(sweep["stim_idx"], dtype=int)
-    if stim.shape != scores.shape:
-        raise ValueError(f"{stim.size} stimulus indices for {scores.size} "
-                         "sweep trials")
-    allowed = scores <= _SIBLING_ATTRACTOR_SWITCH_FRACTION
-    fallback = []
-    for d in np.unique(stim):
-        members = np.flatnonzero(stim == d)
-        if not np.any(allowed[members]):
-            allowed[members[np.argmin(scores[members])]] = True
-            fallback.append(int(d))
-    return allowed, fallback
-
-
 def _cue_interp_sweep_view(sweep, family):
     """The sweep as drawn: every trial, or, with SIBLING_ONE_TRIAL_PER_STIMULUS,
-    one trial per stimulus direction at a matched magnitude. With
-    SIBLING_AVOID_ATTRACTOR_SWITCHES (which implies the one-trial view) a
-    `family` in _SIBLING_ATTRACTOR_SWITCH_FAMILIES picks only among trials
-    that stay on one attractor (`_attractor_stable_trials`). The view is a
+    one trial per stimulus direction (`_one_trial_per_stimulus`). For a
+    `family` in _SIBLING_ATTRACTOR_SWITCH_FAMILIES that choice weighs each
+    trial's attractor-switch score against its magnitude, and the view keeps
+    the drawn trials' scores (`attractor_switch_scores`). The view is a
     shallow copy with the per-point arrays subset."""
-    if not (SIBLING_ONE_TRIAL_PER_STIMULUS or SIBLING_AVOID_ATTRACTOR_SWITCHES):
+    if not SIBLING_ONE_TRIAL_PER_STIMULUS:
         return sweep
-    allowed = fallback = None
-    if (SIBLING_AVOID_ATTRACTOR_SWITCHES
-            and family in _SIBLING_ATTRACTOR_SWITCH_FAMILIES):
-        allowed, fallback = _attractor_stable_trials(sweep)
+    scores = (_cue_interp_attractor_switch_scores(sweep["proj"])
+              if family in _SIBLING_ATTRACTOR_SWITCH_FAMILIES else None)
     indices, target = _one_trial_per_stimulus(
-        sweep["stim_idx"], sweep["stimulus_magnitude"], allowed)
+        sweep["stim_idx"], sweep["stimulus_magnitude"], scores)
     view = dict(sweep)
     view["proj"] = np.asarray(sweep["proj"])[:, indices]
     for key in ("stim_idx", "stimulus_magnitude", "group_labels"):
@@ -10830,9 +10897,43 @@ def _cue_interp_sweep_view(sweep, family):
         if key in sweep:
             view[key] = np.asarray(sweep[key])[:, indices]
     view["one_trial_target_magnitude"] = target
-    if fallback is not None:
-        view["attractor_switch_fallback"] = fallback
+    if scores is not None:
+        view["attractor_switch_scores"] = scores[indices]
     return view
+
+
+def _cue_interp_drawn_legibility(sweeps, family, pair):
+    """How legible the `2d` panels of `sweeps` ({base rule: sweep}) are in
+    the 1-based PC `pair`, over the trials the current view draws
+    (`_cue_interp_sweep_view`), or None for a family whose sweeps are not
+    scored for attractor switches (DMC).
+
+    Returns {"largest_attractor_switch": the largest drawn
+    `_cue_interp_attractor_switch_scores` value, each trial scored against
+    its whole sweep; "direction_spread": per panel (base rule x PC) the
+    median over alpha of the range of the drawn direction means over the
+    panel's range, smallest over the panels}. A spread near 0 means the
+    directions draw as one line, however well the separation ratio scores
+    them."""
+    if family not in _SIBLING_ATTRACTOR_SWITCH_FAMILIES:
+        return None
+    largest, spread = 0.0, np.inf
+    for sweep in sweeps.values():
+        view = _cue_interp_sweep_view(sweep, family)
+        scores = view.get("attractor_switch_scores")
+        if scores is None:   # every trial is drawn
+            scores = _cue_interp_attractor_switch_scores(sweep["proj"])
+        largest = max(largest, float(np.max(scores)))
+        proj = np.asarray(view["proj"], dtype=float)
+        stim = np.asarray(view["stim_idx"], dtype=int)
+        for pc in pair:
+            y = proj[:, :, pc - 1]
+            means = np.stack([y[:, stim == d].mean(axis=1) for d in np.unique(stim)],
+                             axis=1)
+            span = float(y.max() - y.min())
+            apart = means.max(axis=1) - means.min(axis=1)
+            spread = min(spread, float(np.median(apart / span)) if span > 0 else 0.0)
+    return {"largest_attractor_switch": largest, "direction_spread": spread}
 
 
 def _cue_interp_sweeps(entry, family):
@@ -10842,22 +10943,23 @@ def _cue_interp_sweeps(entry, family):
 
 
 def _cue_interp_view_note(sweeps):
-    """Saved-message note when the sweeps show one trial per stimulus,
-    naming the directions left without a trial that stays on one attractor."""
+    """Saved-message note when the sweeps show one trial per stimulus: the
+    target magnitudes and, where the trials were scored for attractor
+    switches, the largest drawn score and how many drawn trials switch."""
     targets = [sweep["one_trial_target_magnitude"] for sweep in sweeps.values()
                if "one_trial_target_magnitude" in sweep]
     if not targets:
         return ""
     note = ("; one trial per stimulus, magnitude ≈ "
             + ", ".join(f"{t:g}" for t in targets))
-    if any("attractor_switch_fallback" in sweep for sweep in sweeps.values()):
-        note += "; trials switching attractor avoided"
-        kept = [f"{base_rule} direction "
-                + ", ".join(str(d) for d in sweep["attractor_switch_fallback"])
-                for base_rule, sweep in sweeps.items()
-                if sweep.get("attractor_switch_fallback")]
-        if kept:
-            note += f" (none stays, smoothest drawn: {'; '.join(kept)})"
+    scores = [np.asarray(sweep["attractor_switch_scores"], dtype=float)
+              for sweep in sweeps.values() if "attractor_switch_scores" in sweep]
+    if scores:
+        drawn = np.concatenate(scores)
+        n_switching = int(np.sum(drawn > _SIBLING_ATTRACTOR_SWITCH_FRACTION))
+        note += (f"; largest attractor switch drawn {drawn.max():.2f}, "
+                 f"{n_switching} of {drawn.size} drawn trials above "
+                 f"{_SIBLING_ATTRACTOR_SWITCH_FRACTION:g}")
     return note
 
 
@@ -11177,9 +11279,9 @@ def plot_multitask_sibling_cue_interp():
     sweep itself (`_multitask_cue_interp_plane`); for DMC its first PC keeps
     the response clusters' order along the sweep and its second swaps them,
     so the `2d` rows read "what was seen" and "what to respond to". With
-    SIBLING_ONE_TRIAL_PER_STIMULUS every view shows one trial per stimulus
-    direction, and with SIBLING_AVOID_ATTRACTOR_SWITCHES the DelayDM views
-    prefer trials that stay on one attractor along the sweep. Each
+    SIBLING_ONE_TRIAL_PER_STIMULUS (on by default) every view shows one trial
+    per stimulus direction, which for DelayDM weighs matched magnitudes
+    against trials that stay on one attractor along the sweep. Each
     representation reads the run selected for its sweep figure
     (`_multitask_sibling_aname`) from
     two_in_multiples/{aname}/{family}_cue_interp_*pc_projections_{aname}.pkl,
@@ -12639,21 +12741,17 @@ def main():
     )
     parser.add_argument(
         "--sibling-one-trial-per-stimulus",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="In the rule-cue sweep figures (sibling_cue_interp and the "
              "_cue_interp endpoint overlays) draw one trial per stimulus "
-             "direction, at a magnitude matched across the directions, "
-             "instead of every sweep trial. Output names are unchanged.",
-    )
-    parser.add_argument(
-        "--sibling-avoid-attractor-switches",
-        action="store_true",
-        help="Implies --sibling-one-trial-per-stimulus. For each DelayDM "
-             "stimulus direction prefer a sweep trial whose endpoint stays on "
-             "one attractor along alpha; a direction without one keeps its "
-             "smoothest trial. A selection for legibility, to be stated in "
-             "the caption. DMC sweeps are unchanged; output names are "
-             "unchanged.",
+             "direction instead of every sweep trial, at a magnitude matched "
+             "across the directions and, for DelayDM, weighed against how far "
+             "the trial jumps to another attractor along alpha (switch scores "
+             "above 0.1 only; default: on, "
+             "SIBLING_ONE_TRIAL_PER_STIMULUS). A selection for legibility, to "
+             "be stated in the caption. The --no- form draws every trial. "
+             "Output names are unchanged.",
     )
     parser.add_argument(
         "--sibling-dmc-keep-every-alpha",
@@ -12684,14 +12782,10 @@ def main():
     # Apply the legend toggle globally; every figure routes through _legend(),
     # which reads this module-level flag.
     global SHOW_LEGEND, SIBLING_ONE_TRIAL_PER_STIMULUS, SIBLING_DMC_KEEP_AT_EVERY_ALPHA
-    global SIBLING_AVOID_ATTRACTOR_SWITCHES
     if args.no_legend:
         SHOW_LEGEND = False
-    if args.sibling_one_trial_per_stimulus:
-        SIBLING_ONE_TRIAL_PER_STIMULUS = True
-    if args.sibling_avoid_attractor_switches:
-        SIBLING_AVOID_ATTRACTOR_SWITCHES = True
-        SIBLING_ONE_TRIAL_PER_STIMULUS = True
+    if args.sibling_one_trial_per_stimulus is not None:
+        SIBLING_ONE_TRIAL_PER_STIMULUS = args.sibling_one_trial_per_stimulus
     if args.sibling_dmc_keep_every_alpha:
         SIBLING_DMC_KEEP_AT_EVERY_ALPHA = True
 

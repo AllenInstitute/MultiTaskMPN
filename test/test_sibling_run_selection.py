@@ -43,15 +43,24 @@ def _delaydm_entry(rng, separation, fixed=True):
     return entry
 
 
-def _sweeps(rng, base_rules, fixed=True, separation=1.0):
+def _sweeps(rng, base_rules, fixed=True, separation=1.0, jump=0.0, drift=0.0):
     """Rule-cue sweeps of each base rule whose directions sit `separation`
-    apart at every alpha; `fixed` as for `_delaydm_entry`."""
+    apart at every alpha; `fixed` as for `_delaydm_entry`. Every trial keeps
+    its offset along the sweep, so none switches attractor unless `jump`
+    moves trial 0 that far along PC6, off the directions' plane, at the last
+    alpha. `drift` moves every trial that far along PC1 and PC2 over the
+    sweep, which the separation ratio ignores but which squeezes the
+    directions together in each drawn panel."""
     sweeps = {}
     stim = np.repeat(np.arange(N_DIRECTIONS), 2)
     for base_rule, target_rule in base_rules:
-        proj = rng.normal(scale=0.1, size=(N_ALPHA, stim.size, 6))
+        offsets = rng.normal(scale=0.1, size=(stim.size, 6))
+        proj = np.repeat(offsets[None], N_ALPHA, axis=0)
         proj[:, :, :2] += _ring(stim, separation)
-        sweep = {"proj": proj, "stim_idx": stim, "target_rule": target_rule}
+        proj[:, :, :2] += drift * np.linspace(0.0, 1.0, N_ALPHA)[:, None, None]
+        proj[-1, 0, 5] += jump
+        sweep = {"proj": proj, "stim_idx": stim, "target_rule": target_rule,
+                 "stimulus_magnitude": np.ones(stim.size)}
         if fixed is not None:
             sweep["is_fixed"] = np.full((N_ALPHA, 8), bool(fixed))
         sweeps[base_rule] = sweep
@@ -132,10 +141,11 @@ class SiblingRunSelectionTests(unittest.TestCase):
                         stream)
 
     def _write_delaydm(self, seed, hidden, e_modulation, sweep=1.0,
-                       endpoint_fixed=True, sweep_fixed=True, with_sweep=True):
+                       endpoint_fixed=True, sweep_fixed=True, with_sweep=True,
+                       jump=0.0, drift=0.0):
         entries = {"hidden": _delaydm_entry(self.rng, hidden, endpoint_fixed),
                    "e_modulation": _delaydm_entry(self.rng, e_modulation)}
-        sweeps = (_sweeps(self.rng, DELAYDM_BASES, sweep_fixed, sweep)
+        sweeps = (_sweeps(self.rng, DELAYDM_BASES, sweep_fixed, sweep, jump, drift)
                   if with_sweep else None)
         self._write_run("delaydm1", _aname(seed), entries, sweeps)
 
@@ -176,6 +186,47 @@ class SiblingRunSelectionTests(unittest.TestCase):
         self.assertTrue(any("delaydm1 sweep hidden run selected automatically: seed 7"
                             in text for text in messages))
 
+    def test_a_sweep_figure_weighs_separation_by_smooth_legible_lines(self):
+        # Seed 3 separates its sweep directions better, but in each sweep
+        # one trial jumps to another attractor at the last alpha; seed 7 is
+        # smooth; seed 9 separates best by the ratio, but a common drift
+        # squeezes its directions onto one line in every drawn panel.
+        self._write_delaydm(3, hidden=3.0, e_modulation=3.0, sweep=3.0, jump=2.0)
+        self._write_delaydm(7, hidden=0.5, e_modulation=0.5, sweep=1.0)
+        self._write_delaydm(9, hidden=0.5, e_modulation=0.5, sweep=9.0, drift=1e4)
+        # Every sweep trial drawn first, the jumping one included.
+        with patch.object(paper_plot, "SIBLING_ONE_TRIAL_PER_STIMULUS", False):
+            selected = self._selected("delaydm1")
+        self.assertEqual(selected, {
+            "endpoint hidden": _aname(3), "endpoint e_modulation": _aname(3),
+            "sweep hidden": _aname(7), "sweep e_modulation": _aname(7)})
+        report = self._report("delaydm")
+        ranking = report["choices"]["sweep hidden"]["ranking"]
+        self.assertEqual([row["seed"] for row in ranking], [7, 3, 9])
+        by_seed = {row["seed"]: row for row in ranking}
+        self.assertGreater(by_seed[9]["score"], by_seed[3]["score"])
+        self.assertGreater(by_seed[3]["score"], by_seed[7]["score"])
+        # Seed 7 keeps its score; seed 3's is cut by its jump.
+        self.assertEqual(by_seed[7]["ranked_score"], by_seed[7]["score"])
+        self.assertAlmostEqual(
+            by_seed[3]["ranked_score"],
+            by_seed[3]["score"] * 0.1 / by_seed[3]["largest_attractor_switch"])
+        self.assertLess(by_seed[9]["direction_spread"],
+                        paper_plot._SIBLING_MIN_DIRECTION_SPREAD)
+        self.assertGreater(by_seed[7]["direction_spread"], 0.5)
+        self.assertNotIn("ranked_score",
+                         report["choices"]["endpoint hidden"]["ranking"][0])
+        self.assertIn("largest drawn attractor switch", report["metrics"]["sweep"])
+        # One trial per direction leaves the jumping trial out, so seed 3
+        # keeps its score and wins; seed 9 still draws one line.
+        paper_plot._SIBLING_SELECTED_RUNS.clear()
+        with patch.object(paper_plot, "SIBLING_ONE_TRIAL_PER_STIMULUS", True):
+            self.assertEqual(
+                paper_plot._multitask_sibling_aname("delaydm1", "hidden", "sweep"),
+                _aname(3))
+        ranking = self._report("delaydm")["choices"]["sweep hidden"]["ranking"]
+        self.assertEqual([row["seed"] for row in ranking], [3, 7, 9])
+
     def test_runs_that_are_unconverged_unsettled_or_incomplete_are_skipped(self):
         self._write_delaydm(3, hidden=0.5, e_modulation=0.5)
         self._write_delaydm(7, hidden=3.0, e_modulation=3.0, endpoint_fixed=False)
@@ -202,8 +253,9 @@ class SiblingRunSelectionTests(unittest.TestCase):
             _aname(9): {"endpoint": {"hidden": 1.0, "e_modulation": 0.2},
                         "sweep": {"hidden": 0.3, "e_modulation": 0.9}},
         }
+        legibility = {"hidden": None, "e_modulation": None}
         with patch.object(paper_plot, "_sibling_run_scores",
-                          side_effect=lambda family, aname: scores[aname]):
+                          side_effect=lambda family, aname: (scores[aname], legibility)):
             selected = paper_plot._select_sibling_runs("dmcgo")
         self.assertEqual(selected, {
             "endpoint hidden": _aname(3), "endpoint e_modulation": _aname(7),
@@ -230,6 +282,11 @@ class SiblingRunSelectionTests(unittest.TestCase):
         ranking = report["choices"]["endpoint hidden"]["ranking"]
         self.assertGreater(ranking[0]["score"], 5 * ranking[1]["score"])
         self.assertIn("kept and a swapped PC", report["metrics"]["sweep"])
+        # DMC sweeps are not scored for attractor switches: every trial
+        # takes the response-cluster swap.
+        self.assertNotIn("attractor switch", report["metrics"]["sweep"])
+        self.assertNotIn("ranked_score",
+                         report["choices"]["sweep hidden"]["ranking"][0])
 
     def test_a_pinned_run_serves_every_figure_without_ranking(self):
         with patch.object(paper_plot, "DMCGO_ANAME", "pinned_run"), \

@@ -211,42 +211,62 @@ lines with 8% padding below and 25% above, so columns are not on a shared
 scale) and `3d` the trial lines in the plane against alpha. The legend is a
 separate figure per family and method,
 holding the DMC cluster lines and, for the gradient method, the converged /
-hollow markers (DelayDM endpoint sweeps need none). `python figures/paper_plot.py
---sibling-one-trial-per-stimulus --only sibling_cue_interp` draws one sweep
-trial per stimulus direction instead of all of them, in `2d`, `3d`
-and the `_cue_interp` endpoint overlays (`SIBLING_ONE_TRIAL_PER_STIMULUS`):
-the target magnitude is the one every direction can match most closely (ties
-toward 1.0) and each direction contributes its nearest trial, so the eight
-DelayDM paths are at comparable stimulus strength (DMC trials, all at
-magnitude 1, simply deduplicate). Output names are unchanged, so the option
-replaces the all-trial figures.
-`--sibling-avoid-attractor-switches` (implies the one-trial view;
-`SIBLING_AVOID_ATTRACTOR_SWITCHES`) also makes each DelayDM direction prefer
-a trial that stays on one attractor along the sweep. The settled DelayDM
-endpoints are a discrete set of attractors, not a ring: on the seed 62 hidden
-sweep the 32 trials of a base rule land on 7-16 distinct endpoints per alpha
-(full 300-d hidden state, tolerance 0.01), shared across neighboring
-directions, and they have mostly collapsed onto them 2.4 s into the delay. As
+hollow markers (DelayDM endpoint sweeps need none). By default the sweeps
+draw one trial per stimulus direction instead of all of them, in `2d`, `3d`
+and the `_cue_interp` endpoint overlays (`SIBLING_ONE_TRIAL_PER_STIMULUS`,
+True; `--sibling-one-trial-per-stimulus` states it explicitly).
+`python figures/paper_plot.py --no-sibling-one-trial-per-stimulus --only
+sibling_cue_interp` draws every sweep trial instead; output names are the
+same either way, so each run replaces the other's figures.
+Each trial is chosen by two things at once, its stimulus magnitude and how
+smoothly its endpoint follows the cue (`_one_trial_per_stimulus`): against a
+target magnitude a trial costs its distance from the target plus, if it
+switches attractor (score above 0.1), `_SIBLING_SMOOTHNESS_WEIGHT` (2) times
+its attractor-switch score (below), the target is the trials' own magnitude
+at which the costliest direction pays least for its cheapest trial (ties
+toward 1.0), and each direction draws its cheapest trial. A jump just over a
+tenth of a PC's span therefore weighs as much as a magnitude 0.2 off target.
+A score at or below 0.1 is drift, not a jump, and costs nothing. Counting it
+let the drift choose among exact matches on the magnitude grid, where every
+direction has a trial at every level (a seed 42 test run drew 0.6 or 0.8 in
+all four sweeps). Uncounted, the target leaves 1.0 only when a direction's
+trial at 1.0 jumps: over the 100 DelayDM sweeps of the grid caches (25 runs,
+two representations, two base rules) 28 draw 1.0, against 21 with the drift
+counted, and the figure runs draw 0.8 and 0.6 (seed 62 hidden) and 1.0 and
+0.8 (seed 42 e_modulation). DMC trials, all at magnitude 1 and not scored for
+switches, simply deduplicate. The DelayDM trials need the score because their
+settled endpoints are a discrete set of attractors, not a ring: on the seed
+62 hidden sweep of the grid caches the 40 trials of a base rule land on 11-24
+distinct endpoints per alpha (full 300-d hidden state, tolerance 0.01), and
+28-82% of the trials share theirs with a trial of another direction; on the
+pre-grid caches they had mostly collapsed onto them 2.4 s into the delay. As
 the cue moves the basin boundaries, a trial near one hops to a neighboring
-attractor between two alphas, a full-space step of 0.13-0.26 against a median
-of 0.04, which draws as a jump. The score
+attractor between two alphas, which draws as a jump. The score
 (`_cue_interp_attractor_switch_scores`) works in the six cached PCs: per
 consecutive alpha pair, a trial's step minus the median step of all trials
 (the common motion the cue gives every endpoint), per PC, over that PC's span
 across the sweep; a trial whose largest value exceeds 0.1
 (`_SIBLING_ATTRACTOR_SWITCH_FRACTION`) switches. The six-PC norm alone does not
-work, since the common drift dominates it; the per-PC score flags 6/32 and
-10/32 trials on seed 62, all of them trials that also hop in the full space.
-The target magnitude is then re-chosen among the allowed trials, so the drawn
-magnitudes match less closely (seed 62: 0.96 and 0.80, worst deviation 0.17 and
-0.27, against 1.11 within 0.06), and each base rule chooses on its own. A
-direction whose every trial switches keeps its smoothest trial (seed 62:
-direction 0 in both columns), which the saved message names. DMC sweeps are
-never filtered (`_SIBLING_ATTRACTOR_SWITCH_FAMILIES`), since their large step,
-taken by every trial at the same alpha, is the response-cluster swap the
-figures show. This is a selection for legibility, so the caption must state
-it, e.g. "one trial per stimulus direction; trials whose endpoint switches to
-a neighboring attractor along the sweep were excluded where possible".
+work, since the common drift dominates it. On seed 62 the per-PC score flags
+11/40 and 22/40 trials, which depart from the common motion by 0.08-0.29 in
+the full hidden space (median 0.16-0.17) against a median of 0.05-0.08 for
+the rest (pre-grid: 6/32 and 10/32, every one of them also hopping in the
+full space). It also catches runs whose whole population changes attractor:
+on seed 753 every hidden trial of both base rules switches, DelayDM1's
+between alpha 0 and 0.5 and DelayDM2's mostly between alpha 0.8 and 1.0,
+each at its own alpha and mostly along hidden PC4 or PC6. Each base rule
+chooses its target on its own. On the seed 62 hidden sweep, where a DelayDM2
+direction has no trial that stays, the magnitudes alone draw jumps of 0.21
+and 0.24 (DelayDM1 and DelayDM2 bases), weight 1 draws 0.14 and 0.19, and 2
+leaves DelayDM1 without a switching trial (largest score 0.09) and DelayDM2
+at 0.19, every direction within 0.2 of its target. The saved message gives the
+target magnitudes, the largest drawn score and how many drawn trials exceed
+0.1. DMC sweeps are not scored (`_SIBLING_ATTRACTOR_SWITCH_FAMILIES`), since
+their large step, taken by every trial at the same alpha, is the
+response-cluster swap the figures show. This is a selection for legibility,
+so the caption must state it, e.g. "one trial per stimulus direction, matched
+in stimulus strength and preferring trials whose endpoint stays on one
+attractor along the sweep".
 `multiple_task/sibling_delay_analysis.py` runs the sweep after each method's
 base analysis: the stimulus is held at one base rule's trials while its
 one-hot rule cue fades out and the sibling's fades in,
@@ -260,10 +280,10 @@ DMCGo and DMCNoGo share one stimulus structure and DMCGo alone is swept. For
 DelayDM, alpha = 1 is an input the network never saw in training (each rule
 presents its stimulus on its own modality); for DMC it is an ordinary, trained
 DMCNoGo input for the same stimulus, and its long-delay endpoint lands on
-DMCNoGo's own endpoint. The `long_delay_endpoint` sweep draws one fresh set of
-long-delay trials (direction-balanced for DelayDM, random directions for DMC),
-reruns the base rule's trials at every alpha and keeps the settled endpoint
-(see below); the `gradient` sweep reuses the per-rule dense-angle template
+DMCNoGo's own endpoint. The `long_delay_endpoint` sweep draws the base
+endpoints' long-delay trials again (for DelayDM every direction at each
+magnitude level, for DMC random directions; see below), reruns the base
+rule's trials at every alpha and keeps the settled endpoint; the `gradient` sweep reuses the per-rule dense-angle template
 (`core.grad_fixed_points.build_dense_stimulus_template`, eight directions, the
 DelayDM magnitudes) and solves the true delay fixed point at every alpha with
 the per-rule budgets. Both are projected onto the method's joint delay basis
@@ -290,7 +310,7 @@ projection cache or
 derived from the stimulus for caches written before them, so the swap of the
 two clusters under the sibling's cue is visible; DelayDM lines are colored by
 their stimulus direction (the plain figure's clusters, SCHEME family 1), so
-each direction's four trials can be followed across alpha. The long-delay
+each direction's trials can be followed across alpha. The long-delay
 endpoint figures (`multitask_{delaydm,dmcgo}_long_delay_endpoint_{emodulation,hidden}`)
 use the same colors for their endpoints and trajectories, the stimulus
 direction for DelayDM and the response category for DMC (blue "respond to
@@ -305,17 +325,24 @@ and a second copy with the `_cue_interp` suffix
 `..._long_delay_endpoint_legend_cue_interp`) overlays each sweep trial's path
 across alpha in the same two planes: hue follows the endpoints (the stimulus
 direction for DelayDM, the trial's alpha = 0 cluster for DMC),
-the alpha = 0 start takes the base rule's marker (small, filled), the alpha =
-1 end the sibling's marker, hollow, with dots at the intermediate alphas
-along a dotted path; that legend gains one entry per sweep direction. The
+each path starts on its trial's own endpoint (the sweep reruns the base
+rule's endpoint trials, and at alpha = 0 their input is unchanged, so the
+start differs from that endpoint only by the slow drift between the two
+settle times: the base endpoints settle both tasks together, the sweep each
+base rule alone. On the grid caches that is at most 0.3% of the endpoint
+range in the figure runs, 5% in the worst of the 25, so the start is not
+marked again), and the alpha = 1 end takes
+the sibling's marker, hollow, with dots at the intermediate alphas along a
+dotted path; that legend gains one entry per sweep direction. The
 sweep always runs together with the method's base
 analysis, so rerunning a family regenerates its base artifacts from new random
 trials as well.
 
 **Long-delay endpoints are settled to fixed points.** The trials' own long
 delay (DelayDM 5 s, DMC 10 s) is too short for the modulation to converge:
-tau_M is 4 s at lambda = 0.99, and on seed 921 none of the 64 endpoints per
-family met the gradient solver's criterion at the end of the trial (median
+tau_M is 4 s at lambda = 0.99, and on seed 921 (2026-10-22, pre-grid) none
+of the 64 endpoints per family met the gradient solver's criterion at the
+end of the trial (median
 normalized residual 0.24 for DelayDM, 0.04 for DMC). Run past that delay on
 the same input, the DelayDM W⊙M endpoints still moved 67% of their spread and
 the direction separation of the e_modulation endpoint plane fell from 1.18 to
@@ -336,6 +363,42 @@ printed with the saved figure instead. Endpoint caches written before
 settling (endpoint version 2, sweep version 1) hold the unsettled end-of-trial
 state; rerun the analysis to replace them.
 
+**DelayDM long-delay trials sit on a fixed magnitude grid.** Each DelayDM rule
+runs 40 long-delay trials: the eight directions, balanced, each at every level
+of `DELAYDM_FP_STIM_MAGNITUDES` (0.6, 0.8, 1.0, 1.2, 1.4), the levels the
+gradient solve uses (`SIBLING_LONG_DELAY_STIM_MAGNITUDES`,
+`_long_delay_trials_per_rule`). The generator draws stim1's strength at random
+(mean 0.8-1.2 plus or minus a coherence of 0.08, 0.16 or 0.32) and writes
+strength * (sin θ, cos θ) on the rule's stimulus ring;
+`_apply_long_delay_stimulus_magnitudes` overwrites those two channels during
+stim1 with level * (sin θ, cos θ), a direction's five trials taking the levels
+in trial order, after checking that they held the generated strength. The
+sibling rules share their generator state, so the k-th trial of both has the
+same direction and level, and the rule-cue sweep draws the same trials again,
+so its alpha = 0 reruns the base endpoints' trials. stim2 and the response, which a
+settled delay1 endpoint never reaches, are left as generated. DMC keeps 32
+trials per rule at random directions and magnitude 1
+(`SIBLING_LONG_DELAY_TRIALS_PER_RULE`). The caches record the levels
+(`stimulus_magnitude_levels`; endpoint version 4, sweep version 3). Caches
+written before the grid hold 32 trials per rule, four random magnitudes per
+direction; the DelayDM caches of all 25 L2 = 1e-4 runs were rerun on the
+grid on 2026-10-26 (the DMC caches are unchanged), and the DelayDM numbers in
+this file come from them unless marked pre-grid or dated earlier. The ring
+is read from the data
+(`_stimulus_ring_channels`: the two channels on during stim1 and off during
+fix1), which needs no channel layout.
+
+**The gradient method anchors the stimulus ring after both fixation
+channels.** `core.grad_fixed_points.detect_stimulus_channels`, which places
+the dense-angle stimulus of the gradient solve and the gradient rule-cue sweep,
+finds the strongest stimulus channel and pairs it from the layout, with the
+rings starting after `n_fixate` fixation channels: 2 with `fixate_off`, as on
+these networks, else 1. Until 2026-10-26 it counted the channels on during
+fix1 instead, and the fixation-off channel, silent there, made it pair the ring
+one channel early (DelayDM1 (1, 2) for the ring (2, 3)). No gradient sibling
+cache was written before the fix; the one-task and two-task runs have one
+fixation channel, so their solves are unchanged.
+
 **The PC pair and the example runs are chosen by fixed-point separation.**
 Every figure picks two of its six joint delay PCs by how well they separate
 the fixed points it draws, measured as the mean distance from each group's
@@ -352,12 +415,14 @@ and the selected panel is drawn in those task-aligned coordinates (axis
 labels "task-aligned"; trajectories and the overlaid sweep shifted with their
 task), while PC1-PC2 stays raw. The two DelayDM tasks receive the stimulus on
 different modalities and store it at places offset by a task-wide
-translation: pooled raw, no run clusters the same direction across tasks (best
-pair 0.91 of 25 runs on the 2026-10-22 caches, median 0.37; 0.13 in the full
-W⊙M space), while with the offset removed seed 42 reaches 2.45 (median 0.65).
-The aligned panel therefore shows a shared direction geometry up to a
-translation, and the raw panel the translation itself; hidden states overlap
-across tasks without it (1.26 raw, 1.33 aligned). DMC needs no alignment, its
+translation: pooled raw, no run clusters the same direction across tasks in
+W⊙M (best pair 0.48 of 25 runs on the grid caches, median 0.30; seed 42 0.04
+in the full W⊙M space), while with the offset removed seed 42 reaches 1.50
+(median 0.59; 0.75 in the full space). The aligned panel therefore shows a
+shared direction geometry up to a translation, and the raw panel the
+translation itself. Hidden states overlap across tasks more without it (best
+raw pair 0.84, median 0.36), yet alignment still helps (seed 434, the hidden
+endpoint run: 0.70 raw, 1.32 aligned). DMC needs no alignment, its
 response categories already share an axis across tasks. The DelayDM rule-cue
 sweep figures score the sweep's own fixed points instead
 (`best_sweep_pc_pair`): the separation by stimulus direction
@@ -390,7 +455,27 @@ each figure (endpoint or sweep, per representation) also takes its own run:
 the cached run of the `SIBLING_L2` cohort (L2 = 1e-4) with the highest
 best-pair score of that figure, ties to the lowest seed; a run name in
 either constant pins every
-figure of that family to one run instead. The endpoint figure's run also
+figure of that family to one run instead. A DelayDM sweep figure weighs its
+best-pair score by the trials it draws (every trial, or the one-trial view
+above; `_cue_interp_drawn_legibility`): times
+min(1, 0.1 / the largest drawn attractor-switch score), so a run whose lines
+jump no further than the switch threshold keeps its score
+(`_sibling_sweep_ranked_score`), and every run whose drawn direction means
+span less than 5% of a `2d` panel's range (`_SIBLING_MIN_DIRECTION_SPREAD`;
+per panel the median over alpha, smallest over panels) is ranked after all
+the others. The separation ratio alone cannot catch that collapse: on the
+pre-grid caches every seed 42 hidden sweep trial landed on one attractor, so
+the directions spanned 0.001 of each panel and drew as one line, yet the
+ratio of two near-zero distances still scored 0.74, and a ranking that took
+the smoothest run first picked exactly that run, since trials on one
+attractor never jump. On the grid caches the one-trial view leaves 5 hidden
+runs (seeds 177, 42, 510, 753, 303; seed 42 now scores 0.12) and 12
+e_modulation runs under 0.05; the weighed ranking picks seed 62 for hidden
+(1.49, largest drawn switch score 0.19 in the one-trial view, spread 0.91)
+and seed 42 for e_modulation (1.66, largest drawn score 0.09, spread 0.10),
+in both views. DMC sweeps are ranked by their
+score alone. The JSON rankings give each run's largest switch, direction
+spread and weighed score. The endpoint figure's run also
 serves its `_cue_interp` overlay (the overlaid sweep shares that run's
 basis, so it can look rougher than the standalone sweep figure) and the
 gradient-method geometry figures; the sweep figure's run serves its `2d` and
@@ -402,9 +487,9 @@ need them and saved as `multitask_sibling_run_scores_{delaydm,dmcgo}.json`
 in `paper_plot/`; with no scorable run the figures print their usual
 "Skipped" messages. Because the plane and the run are both picked for
 legibility on the drawn fixed points, the figures show the best case of the
-cohort, not a typical run: on the 2026-10-22 caches the chosen DelayDM
-e_modulation sweep keeps its directions 3.0 apart (separation ratio) at its
-worst alpha, against a cohort median of 0.71, so in most runs the directions
+cohort, not a typical run: on the grid caches the chosen DelayDM
+e_modulation sweep keeps its directions 1.66 apart (separation ratio) at its
+worst alpha, against a cohort median of 0.49, so in most runs the directions
 merge somewhere along the sweep. The saved rankings give the spread across
 runs. The endpoint figures' axis limits follow the drawn points
 (`_adaptive_pc_limits`) for every run.
