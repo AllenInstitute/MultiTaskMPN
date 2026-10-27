@@ -331,6 +331,24 @@ shared by `multiple_task_analysis.py` (clustering), `lesion.py` (lesions) and
 | `modulation_all_var_weighted_unnormalized` | W·Var(M), signed: positive- and negative-W synapses form separate clusters (in caches produced before 2026-09-25 every negative-W synapse had been classified as unresponsive, so those results describe positive-W synapses only) |
 | `modulation_all_abs_weighted_unnormalized` | \|W\|·Var(M), magnitude-weighted and sign-blind |
 
+All three weighted variants are computed from Var(M) by
+`weight_modulation_variance`; since 2026-10-27 that includes `weighted`, as
+W²·Var(M), where the script used to take the variance of a weighted copy of the
+M trajectory. The two agree up to rounding (on seed 749: median relative
+difference 5e-9, largest absolute difference 3e-8 of the feature's maximum),
+so `weighted` caches clustered before and after the change compare.
+
+**Memory.** `multiple_task_analysis.py` holds the recorded M trajectory once,
+750 trials x T steps x 300 x 300 float32 (T is the longest evaluation trial,
+which varies from run to run: 24 GiB at T = 96, 32 GiB at T = 126), plus the
+clustering's working memory. `record_tracked_states` writes every chunk of the
+forward pass into one preallocated array. Before 2026-10-27 the script also
+held the concatenated chunks and the weighted copy, two to three trajectories
+in all, and a 100 GiB job was killed (out of memory, the shell printing
+`Killed`) on long trials. The script prints the job's cgroup memory limit and
+use at the start and after the forward pass (`core/memory_limit.py`); psutil's
+node-wide numbers, printed before, hid the limit.
+
 Two sign-aware steps are identities for the non-negative variants and matter
 only for `var_weighted`: `clustering.unresponsive_row_mask` judges a synapse
 unresponsive by its mean |feature| (the previous signed mean treated every
@@ -403,7 +421,16 @@ run of one cohort, so it takes a few minutes on a CPU node:
 
 ```bash
 python multiple_task/multiple_task_diagnosis.py --feature L21e4
-python figures/paper_plot.py --only sibling_row_cluster_sharing --multitask-l2 1e4
+# seven sibling pairs and their summary by phase type
+python multiple_task/sibling_row_sharing.py --feature L21e4
+# untrained control: cluster fresh networks of one run's config (about 80 min
+# each on a GPU node; add --skip-completed to resume a killed batch), then
+# their row-cluster organization
+python multiple_task/untrained_clustering.py --feature L21e4 --seed 749 --init-seed 0 1 2 3 4
+python multiple_task/sibling_row_sharing.py --feature L21e4 --untrained
+# paper figures: rows grouped by period or by task, and the per-task view
+python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_organization
+python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_same_task
 ```
 
 Three pairs are checked: ReactCategoryPro vs ReactCategoryAnti (dmcgo/dmcnogo),
@@ -421,15 +448,152 @@ sibling pair, while the modulation chance stays between about 7% and 20%.
 The script writes `multiple_tasks_diagnosis/diagnosis_<tag>.{pkl,json}` and
 its own figure `same_cluster_diagnoses_<tag>.png` (tag `<feature>` or
 `<feature>_seed<seed>`), replacing earlier files of the same tag only, so the
-cohorts' results sit side by side. Results written before the chance levels
-(no `version` 2) are not read by `paper_plot.py`.
+cohorts' results sit side by side. No paper figure draws these results;
+they are an intermediate check.
 
-`paper_plot.py --only sibling_row_cluster_sharing` (`multiple_tasks` mode)
-draws `multitask_sibling_row_cluster_sharing.png` from
-`diagnosis_<MULTITASK_L2 feature>.pkl`: a row per task pair, a column per
-phase (headers on the heatmap phase colors, a pair without the phase leaves
-its cell empty), a bar per representation in the task-specificity colors
-(input blue, hidden red, synapses pink) giving the % of runs, a dark dash at
-the chance level, and n/N above each bar, starred when the count differs from
-chance (p < 0.05). It is skipped, with the command to run, when the cohort's
-result is missing or predates the chance levels.
+`multiple_task/sibling_row_sharing.py` runs the same per-pair test on seven
+sibling pairs in two groups, the pro / anti pairs (DelayPro / DelayAnti,
+MemoryPro / MemoryAnti, ReactPro / ReactAnti, ReactMatch2Sample /
+ReactNonMatch2Sample, ReactCategoryPro / ReactCategoryAnti) and the modality
+pairs (ContextIntModality1 / 2, IntegrationModality1 / 2), reusing the
+diagnosis's loading, chance levels and test. It then pools each group by
+phase type, Stimulus (stim1, stim2), Memory (delay1, delay2) and Response
+(go1): per run, the number of the group's (pair, phase) cells of that type
+whose two rows share a cluster minus the number chance predicts, tested
+over the runs with a two-sided Wilcoxon signed-rank test (the cells of one
+run share one clustering, so their per-cell tests are not pooled). A pooled
+cell whose mean chance is at least 95% (input and hidden in the memory
+periods) is reported but not tested. A third check asks whether rows are
+grouped by task rather than by period: for every task of the pairs and every
+two of its phases, whether the task's two rows share a row cluster, against
+the chance that a row of the one phase and a row of the other from two
+different tasks share one (`_cross_phase_chance`, so the phase combination is
+controlled for), pooled per task and per group and tested the same way;
+cells whose own chance is at least 95% (the two memory periods in input and
+hidden) are left out and counted. It writes
+`multiple_tasks_diagnosis/sibling_row_sharing_<tag>.{pkl,json}`, the
+per-pair figure `sibling_row_sharing_pairs_<tag>.png`, the summary figure
+`sibling_row_sharing_summary_<tag>.png` and the same-task figure
+`sibling_row_sharing_same_task_<tag>.png`, replacing only its own tag's
+files. A star marks a per-run excess that differs from zero in either
+direction; the bar against its chance dash gives the direction.
+On the 25 L21e4 runs the pooled pro / anti stimulus cells sit at chance in
+every representation because the pairs disagree: DelayPro / DelayAnti and
+MemoryPro / MemoryAnti share their stimulus rows in input and hidden (15-17
+of 25 runs, chance about 33%) but not in modulation (2-3 of 25), the
+category pair the other way round (2 of 25 in input and hidden, 16 of 25 in
+modulation), and the match pair in none. Within a period, input and hidden
+group the rows by period and input (every task's memory rows in one
+cluster), modulation by neither. Across periods, modulation keeps a task's
+rows together: 71% of the pro / anti tasks' phase pairs and 48% of the
+modality tasks' share a cluster, against chances of 11% and 10%, while input
+and hidden stay near chance (20% and 24% against 15% and 18% for pro / anti;
+16% and 27% against 9% and 20% for the modality tasks). DelayPro and
+DelayAnti are the exception: their stimulus and response rows share an input
+cluster in every run (the stimulus stays on) but a modulation cluster in
+none. The modulation keeps a 4 s memory of the trial (lambda = 0.99), longer
+than a period, so part of this grouping may be the trial's history carried
+in M rather than a separate task code.
+
+The organization check (`summarize_organization`) puts period and task on
+one scale with every task's rows: per run and representation, the fold
+enrichment of two rows of one period from different tasks, and of two rows
+of one task from different periods, sharing a row cluster over any two rows
+sharing one (the chance the run's cluster sizes give, so the
+representations, with their different numbers of row clusters, compare),
+tested against 1 over the runs and, as task minus period enrichment, between
+representations (paired Wilcoxon). On the 25 L21e4 runs the medians are, for
+period and task, input 1.85x and 0.90x, hidden 1.57x and 0.95x, synapses
+1.10x and 3.51x, and every pair of representations differs (p <= 7.5e-5).
+The same-task check is also run over every task (`same_task_all`; ReactPro
+and ReactAnti have one clustered period and so no cells). Result version 3
+holds both.
+
+`paper_plot.py` (`multiple_tasks` mode) draws two figures from
+`multiple_tasks_diagnosis/sibling_row_sharing_<MULTITASK_L2 feature>.pkl`,
+skipped with the command to run when it is missing or older than version 3:
+`multitask_row_cluster_organization.png`, the two enrichments side by side
+(same period, different task; same task, different period), one point per
+run in the representation colors, the median as a red dash, chance (1) as a
+dashed line on a log axis and the Wilcoxon p against 1 above each column
+(the Mann-Whitney p against the untrained networks once they exist, below);
+and `multitask_row_cluster_same_task.png`, the per-task view of its right
+panel: for every task with two clustered periods, three bars giving the % of
+its (run, period pair) cells in one row cluster, a dash at the
+period-combination chance of the same-task check (a stricter baseline than
+the organization figure's) and a star where the per-run excess differs from
+zero in either direction.
+
+The untrained control asks whether training makes this organization or the
+architecture alone does, for instance because M, with its 4 s memory, keeps
+a trial's earlier periods in every later one. `untrained_clustering.py`
+builds, for one run's config, an untrained network per init seed
+(`core/network_loading.build_network`: the same architecture, weights drawn
+after seeding NumPy and torch with the init seed, none of the trained ones;
+the same builder the state-space control uses) and runs the complete
+`multiple_task_analysis.main` clustering on it (`untrained_init_seed`), with
+every output under
+`multiple_tasks_analysis/untrained/<aname>_init<k>/`, named
+`..._init<k>` (`multiple_task_analysis.output_names`), where no trained-run
+reader looks. `--skip-completed` leaves out the networks whose two cluster
+pickles exist; no lesion step runs. `sibling_row_sharing.py --untrained`
+then analyzes those networks (tag `<feature>_untrained`). An untrained
+network of seed 749's config is not degenerate: hidden std 0.12 (trained
+0.16), M std 0.38, and up to about a quarter of its synapses reach their bounds
+late in long trials, as in the trained network (`modulation_feedback.py`). The
+organization figure draws the untrained networks, hollow with a gray median,
+right of the trained runs in each representation's column, with the
+two-sided Mann-Whitney p of trained against untrained above the column; it
+draws the trained runs alone, with the commands to run, while the untrained
+result is missing.
+
+## Modulation feedback and saturation
+
+`multiple_task/modulation_feedback.py` asks how long M remembers, given
+that M feeds back on itself through h. One step of the plastic layer is
+`h_t = tanh((W * (1 + M_{t-1})) x_t + b)`, then
+`M_t = clip(lam M_{t-1} + eta h_t x_t^T, -1, 1)`. Linearized, the row M_i
+of post neuron i is lam times the identity plus a rank-one term, so on its
+unclipped synapses every direction the neuron cannot read (orthogonal to
+`W_i * x`) decays by exactly lam, whatever the training, and only the one it
+reads, `<W_i * x, M_i>`, decays by
+`mu_i = lam + eta (1 - h_i^2) sum_{j unclipped} W_ij x_j^2`; of the 90,000
+synapse directions at most 300 are not set by lam. A clipped synapse stays at
+its bound while `eta h_i x_j` exceeds `1 - lam` (0.01 at lam = 0.99).
+
+```bash
+python multiple_task/modulation_feedback.py --feature L21e4 --seed 749
+python multiple_task/modulation_feedback.py --feature L21e4 --seed 749 --untrained-init-seed 0
+python multiple_task/modulation_feedback.py --feature L21e4 --seed all
+```
+
+The script steps the network through the clustering analysis's evaluation
+trials (50 per task, `mode_input="random"`, `long_all=False`), about a minute
+per network on a CPU, and records at every step mu_i of every post neuron and
+the share of synapses clipped to each bound. A finite-difference check
+through the real network step, in double precision, comes first: one step's
+response to a perturbation of M along a random direction, along the readable
+mode and along an unreadable direction must match the linearized map, mu_i
+and lam. The readable mode's time constant is `dt / (1 - |mu|)` (the
+convention that gives lam its 4000 ms). It writes
+`multiple_tasks_diagnosis/modulation_feedback_<aname>[_init<k>].{pkl,png}`:
+per task and period the quantiles of mu_i, its shares above 1, below -1 and
+below lam, the median time constant and the shares of synapses at each bound;
+the same pooled by period type (Context, Stimulus, Memory, Response); each
+task's saturation time course; and the check's errors.
+
+On seed 749 (L21e4, eta = 2.15) the check holds to 1.2e-7 per unit
+perturbation. The readable mode's mu has a median of 0.986-0.987 in every
+period type, below lam for 80-84% of the post neurons and steps, so the
+median time constant is 2.9-3.1 s against lam's 4 s; mu exceeds 1 for 4%
+(Memory) to 14% (Response) and is never below -1, and a tail reaches mu of
+about 0.4 (5th percentile in Memory). Synapses at a bound rise from about 1%
+in the Context period to peaks of 15-25% late in the stimulus and memory
+periods. An
+untrained network of the same config (init seed 0, eta = 1) has mu
+symmetric about lam (median 0.988, 5-95% 0.94-1.03, above 1 for 18-28%),
+median time constants of 3.3-3.8 s and up to about 25% of synapses at a bound
+late in long trials. In neither network does the feedback lengthen M's
+typical memory: the unreadable directions keep lam's 4 s, the median readable
+mode decays a little faster (more so after training), and where mu exceeds 1
+the mode grows until its synapses clip, which the saturation share counts.

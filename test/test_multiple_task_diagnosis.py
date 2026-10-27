@@ -1,4 +1,4 @@
-"""Tests for the sibling-task row-cluster diagnosis and its paper figure."""
+"""Tests for the sibling-task row-cluster diagnosis."""
 
 import json
 import pickle
@@ -12,7 +12,6 @@ import numpy as np
 from scipy.stats import binomtest
 
 import multiple_task_diagnosis as diagnosis
-import paper_plot
 
 
 # Rows of the synthetic clusterings: "{rule}-{phase}" for every phase a rule has.
@@ -126,74 +125,6 @@ class DiagnosisDriverTests(unittest.TestCase):
             self.assertEqual(json.loads((out / "diagnosis_L21e4.json").read_text())["version"],
                              diagnosis.RESULT_VERSION)
             self.assertNotEqual((out / "same_cluster_diagnoses_L21e4.png").read_bytes(), b"old")
-
-
-class RowClusterSharingFigureTests(unittest.TestCase):
-    def _payload(self):
-        experiments = [(f"run{seed}", _experiment()) for seed in range(8)]
-        return {
-            "version": paper_plot._ROW_SHARING_RESULT_VERSION,
-            "feature": paper_plot.multitask_feature(),
-            "seed": None,
-            "experiments": [name for name, _ in experiments],
-            "results": {
-                "category_same_cluster": diagnosis.diagnose_category_same_cluster(experiments),
-                "integration_modality_same_cluster":
-                    diagnosis.diagnose_integration_modality_same_cluster(experiments),
-            },
-        }
-
-    def _render(self, payload):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            if payload is not None:
-                with open(root / f"diagnosis_{paper_plot.multitask_feature()}.pkl", "wb") as stream:
-                    pickle.dump(payload, stream)
-            with patch.object(paper_plot, "MULTITASK_DIAGNOSIS_ROOT", root), \
-                    patch.object(paper_plot, "_ensure_out_dir"), \
-                    patch.object(paper_plot, "SHOW_LEGEND", True), \
-                    patch.object(paper_plot, "_save_fig") as save, \
-                    patch("builtins.print") as printed:
-                paper_plot.plot_sibling_row_cluster_sharing()
-        return save, printed
-
-    def test_phases_share_columns_and_bars_sit_on_their_chance(self):
-        payload = self._payload()
-        save, _ = self._render(payload)
-        save.assert_called_once()
-        fig = save.call_args.args[0]
-        self.addCleanup(paper_plot.plt.close, fig)
-        self.assertEqual(Path(save.call_args.args[1]).name,
-                         "multitask_sibling_row_cluster_sharing.png")
-        axes = np.array(fig.axes).reshape(2, 5)
-        self.assertEqual([ax.get_title() for ax in axes[0]],
-                         ["Stimulus 1", "Stimulus 2", "Memory 1", "Memory 2", "Response"])
-        # The DMC pair has no second stimulus or memory: those cells are empty.
-        self.assertEqual([ax.axison for ax in axes[0]], [True, False, True, False, True])
-        self.assertTrue(all(ax.axison for ax in axes[1]))
-        self.assertIn("ReactCategoryPro", axes[0, 0].get_ylabel())
-        # DMC response: every bar shares in 8/8 runs against a chance of 10%,
-        # so the dash sits at 10, the label above the bar and starred.
-        response = axes[0, 4]
-        dashes = [segment[0][1] for collection in response.collections
-                  for segment in collection.get_segments()]
-        np.testing.assert_allclose(dashes, [10.0, 10.0, 10.0])
-        self.assertEqual([text.get_text() for text in response.texts], ["8/8*"] * 3)
-        self.assertEqual([text.get_position()[1] for text in response.texts], [103.0] * 3)
-        # DMC first stimulus: no sharing, chance 0, nothing starred.
-        self.assertEqual([text.get_text() for text in axes[0, 0].texts], ["0/8"] * 3)
-        self.assertIn("ReactCategoryPro vs ReactCategoryAnti Response hidden 8/8",
-                      save.call_args.kwargs["extra"])
-
-    def test_skips_a_missing_or_pre_chance_result(self):
-        save, printed = self._render(None)
-        save.assert_not_called()
-        self.assertIn("multiple_task_diagnosis.py --feature", str(printed.call_args_list))
-        payload = self._payload()
-        payload["version"] = 1
-        save, printed = self._render(payload)
-        save.assert_not_called()
-        self.assertIn("no chance levels", str(printed.call_args_list))
 
 
 if __name__ == "__main__":

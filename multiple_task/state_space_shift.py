@@ -95,8 +95,8 @@ from sklearn.decomposition import IncrementalPCA
 import torch
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
-import mpn
 import mpn_tasks
+from network_loading import build_network
 import color_func
 import helper
 import multiple_task_performance as mpf
@@ -519,30 +519,6 @@ def _draw_distance_angle_figure(scatter_dict, rval_dict, out_path):
     plt.close(fig)
 
 
-def _build_network(checkpoint, untrained_init_seed=None):
-    """The network to analyze and the state dict its W and lam are read from.
-
-    By default the checkpoint's trained weights are loaded. With
-    ``untrained_init_seed`` the same architecture and config
-    (``checkpoint["net_params"]``) is initialized afresh after seeding
-    NumPy's and torch's global generators with it, and no weights are loaded:
-    an untrained network whose eta keeps its initial value. This is not the
-    training run's own initialization, which was never saved and cannot be
-    replayed, since training drew other random numbers before building its
-    network.
-    """
-    if untrained_init_seed is not None:
-        np.random.seed(untrained_init_seed)
-        torch.manual_seed(untrained_init_seed)
-    model = mpn.DeepMultiPlasticNet(checkpoint["net_params"], verbose=False, forzihan=True)
-    if untrained_init_seed is None:
-        missing, unexpected = model.load_state_dict(checkpoint["state_dict"], strict=True)
-        print("missing:", missing)
-        print("unexpected:", unexpected)
-        return model, checkpoint["state_dict"]
-    return model, {name: value.detach().cpu() for name, value in model.state_dict().items()}
-
-
 def _context_states(netpathname, untrained_init_seed=None):
     """Run one checkpoint's network on the evaluation trials and return what
     the analyses need, as a dict: the run's identifiers (aname, hidden_size,
@@ -550,9 +526,10 @@ def _context_states(netpathname, untrained_init_seed=None):
     the task names, each trial's task index and first-stimulus label, the
     task epochs, and the (trials x time x features) trajectories of the
     hidden state, M and W * M. With ``untrained_init_seed`` the network is
-    untrained (see _build_network); the evaluation trials do not depend on
-    it, since they are drawn after reseeding with EVALUATION_SEED. Full
-    hidden and modulation trajectories are retained on CPU.
+    untrained (see network_loading.build_network); the evaluation trials do
+    not depend on it, since they are drawn after reseeding with
+    EVALUATION_SEED. Full hidden and modulation trajectories are retained on
+    CPU.
     """
     hidden_size, l2_info = mpf.parse_hidden_and_l2(netpathname)
 
@@ -570,7 +547,7 @@ def _context_states(netpathname, untrained_init_seed=None):
     print(checkpoint["state_dict"].keys())
     print(load_net_params)
 
-    model, state_dict = _build_network(checkpoint, untrained_init_seed)
+    model, state_dict = build_network(checkpoint, untrained_init_seed)
     model.to(device)
     model.eval()
 
@@ -835,8 +812,8 @@ def eval_untrained(netpathname, output_dir=None, init_seed=UNTRAINED_INIT_SEED):
     """Context-end PCA and distance-angle analysis of an untrained network
     with the architecture and config of the checkpoint ``netpathname``: fresh
     weights drawn after seeding with ``init_seed``, none of the trained
-    weights used (see _build_network), run on the same evaluation trials as
-    the trained analysis. It is the control for both: what the rule-cue
+    weights used (see network_loading.build_network), run on the same
+    evaluation trials as the trained analysis. It is the control for both: what the rule-cue
     inputs and the Hebbian update produce without any learning.
 
     The PCA cache and the diagnostic figures go to ``<output_dir>/untrained/``

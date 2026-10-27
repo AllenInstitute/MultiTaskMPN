@@ -28,17 +28,19 @@ clustering, and clustering.unresponsive_row_mask judges responsiveness by mean
 `modulation_all_var_weighted` was classified as unresponsive, so its lesion
 results described positive-W synapses only.
 
-`modulation_all_weighted` weights the ACTIVITY before the variance is taken
-(multiple_task_analysis.py builds `Ms_orig * W` as its input array). The two
-`*_var_weighted` / `*_abs_weighted` variants weight the VARIANCE afterwards,
-which is what `weight_modulation_variance` implements.
+All three weighted variants are computed from Var(M) by
+`weight_modulation_variance`, which weights the VARIANCE afterwards: by W^2 for
+`modulation_all_weighted`, by W and |W| for the other two. W is static, so
+W^2 Var(M) is Var(W * M) up to floating-point rounding. Until 2026-10-27
+multiple_task_analysis.py built `Ms_orig * W` and took its variance, which
+held a second copy of the M trajectory (about 32 GiB at 126 time steps).
 """
 import numpy as np
 
 # clustering_name -> the post-variance weight it applies (None = none).
 MODULATION_VARIANCE_WEIGHTS = {
     "modulation_all": None,
-    "modulation_all_weighted": None,
+    "modulation_all_weighted": "squared",
     "modulation_all_var_weighted": "signed",
     "modulation_all_abs_weighted": "absolute",
 }
@@ -73,8 +75,9 @@ def weight_modulation_variance(cell_vars, clustering_name, modulation_W):
 
     cell_vars: (n_conditions, n_synapses) variance features, synapses in the
     C-order flattening of `modulation_W` (post, pre). Returns a new array:
-    unchanged for `modulation_all` / `modulation_all_weighted`, multiplied by
-    W for `modulation_all_var_weighted`, by |W| for `modulation_all_abs_weighted`.
+    unchanged for `modulation_all`, multiplied by W^2 for
+    `modulation_all_weighted` (Var(W * M)), by W for
+    `modulation_all_var_weighted`, by |W| for `modulation_all_abs_weighted`.
     """
     if clustering_name not in MODULATION_VARIANCE_WEIGHTS:
         raise ValueError(f"Unknown modulation clustering variant: {clustering_name!r}")
@@ -88,6 +91,8 @@ def weight_modulation_variance(cell_vars, clustering_name, modulation_W):
         return cell_vars.copy()
     if kind == "absolute":
         weights = np.abs(weights)
+    elif kind == "squared":
+        weights = weights ** 2
     return cell_vars * weights[np.newaxis, :]
 
 

@@ -6,6 +6,7 @@ import unittest
 
 import _bootstrap  # noqa: F401
 import numpy as np
+import helper
 import lesion
 import lesion_plot
 import modulation_variants as mv
@@ -17,18 +18,32 @@ class VarianceWeightingTests(unittest.TestCase):
         self.W = np.array([[0.5, -2.0], [0.0, 3.0]])          # (post, pre)
         self.vars = np.arange(1, 9, dtype=float).reshape(2, 4)  # (conditions, synapses)
 
-    def test_unweighted_variants_return_a_copy(self):
-        for name in ("modulation_all", "modulation_all_weighted"):
-            out = mv.weight_modulation_variance(self.vars, name, self.W)
-            np.testing.assert_array_equal(out, self.vars)
-            self.assertIsNot(out, self.vars)
+    def test_unweighted_variant_returns_a_copy(self):
+        out = mv.weight_modulation_variance(self.vars, "modulation_all", self.W)
+        np.testing.assert_array_equal(out, self.vars)
+        self.assertIsNot(out, self.vars)
 
-    def test_signed_and_absolute_weighting(self):
+    def test_signed_absolute_and_squared_weighting(self):
         signed = mv.weight_modulation_variance(self.vars, "modulation_all_var_weighted", self.W)
         np.testing.assert_allclose(signed, self.vars * np.array([0.5, -2.0, 0.0, 3.0]))
         absolute = mv.weight_modulation_variance(self.vars, "modulation_all_abs_weighted", self.W)
         np.testing.assert_allclose(absolute, self.vars * np.array([0.5, 2.0, 0.0, 3.0]))
         self.assertTrue((absolute >= 0).all())
+        squared = mv.weight_modulation_variance(self.vars, "modulation_all_weighted", self.W)
+        np.testing.assert_allclose(squared, self.vars * np.array([0.25, 4.0, 0.0, 9.0]))
+
+    def test_squared_weighting_is_the_variance_of_the_weighted_activity(self):
+        """W^2 Var(M) equals the Var(W * M) the pipeline used to compute from a
+        weighted copy of the trajectory, up to rounding."""
+        rng = np.random.default_rng(0)
+        W = rng.normal(size=(3, 4)).astype(np.float32)               # (post, pre)
+        M = rng.normal(size=(12, 5, 3, 4)).astype(np.float32)        # (trials, time, post, pre)
+        stimulus = np.repeat(np.arange(4), 3)
+        flat = (12, 5, -1)
+        weighted = helper.task_variance_period_numpy((M * W).reshape(flat), stimulus)
+        variance = helper.task_variance_period_numpy(M.reshape(flat), stimulus)
+        squared = mv.weight_modulation_variance(variance[np.newaxis], "modulation_all_weighted", W)
+        np.testing.assert_allclose(squared[0], weighted, rtol=1e-5)
 
     def test_unknown_variant_and_shape_mismatch_raise(self):
         with self.assertRaisesRegex(ValueError, "Unknown"):

@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 import _bootstrap  # noqa: F401
 import numpy as np
 import torch
+import network_loading
 import state_space_shift as state_space
 import paper_plot
 
@@ -157,7 +158,7 @@ class StateSpaceContextRecordTests(unittest.TestCase):
                         "net_params": {}, "state_dict": {
                             "mp_layer1.W": weights,
                             "mp_layer1.lam": torch.tensor(0.99)}}), \
-                    patch.object(state_space.mpn, "DeepMultiPlasticNet", return_value=model), \
+                    patch.object(network_loading.mpn, "DeepMultiPlasticNet", return_value=model), \
                     patch.object(state_space.mpn_tasks, "convert_and_init_multitask_params",
                                  return_value=(converted, {}, {})), \
                     patch.object(state_space.mpn_tasks, "generate_trials_wrap",
@@ -320,12 +321,12 @@ class UntrainedNetworkTests(unittest.TestCase):
         checkpoint = {"net_params": {"n_neurons": [1, 2, 1]},
                       "state_dict": {"mp_layer1.W": torch.full((2, 2), 7.0)}}
         draws = []
-        with patch.object(state_space.mpn, "DeepMultiPlasticNet",
+        with patch.object(network_loading.mpn, "DeepMultiPlasticNet",
                           side_effect=self._recording_constructor(draws)) as constructor:
-            first, first_state = state_space._build_network(checkpoint, untrained_init_seed=5)
+            first, first_state = network_loading.build_network(checkpoint, untrained_init_seed=5)
             np.random.rand(10)  # whatever ran in between, the seed fixes the weights
-            _, again_state = state_space._build_network(checkpoint, untrained_init_seed=5)
-            state_space._build_network(checkpoint, untrained_init_seed=6)
+            _, again_state = network_loading.build_network(checkpoint, untrained_init_seed=5)
+            network_loading.build_network(checkpoint, untrained_init_seed=6)
         first.load_state_dict.assert_not_called()
         np.testing.assert_array_equal(draws[0][0], draws[1][0])
         self.assertTrue(torch.equal(draws[0][1], draws[1][1]))
@@ -336,8 +337,8 @@ class UntrainedNetworkTests(unittest.TestCase):
 
         trained_model = Mock()
         trained_model.load_state_dict.return_value = ([], [])
-        with patch.object(state_space.mpn, "DeepMultiPlasticNet", return_value=trained_model):
-            model, state_dict = state_space._build_network(checkpoint)
+        with patch.object(network_loading.mpn, "DeepMultiPlasticNet", return_value=trained_model):
+            model, state_dict = network_loading.build_network(checkpoint)
         trained_model.load_state_dict.assert_called_once_with(checkpoint["state_dict"], strict=True)
         self.assertIs(state_dict, checkpoint["state_dict"])
 

@@ -40,9 +40,18 @@ diverge for a run saved with a shorter addon_name:
     (`clustering.prune_labels_by_k`); the between-modulation metric sweep
     over other k runs in memory before saving.
 
+With ``untrained_init_seed`` the same analysis runs on an untrained network
+of the run's architecture (network_loading.build_network: weights drawn after
+seeding with the init seed, none of the trained ones), the control for the
+row-cluster organization. Its outputs carry the name
+``{savefigure_name_base}_init{k}`` and go to
+./multiple_tasks_analysis/untrained/{that name}/, which no trained-run reader
+looks into (`output_names`).
+
 Sibling-task DelayDM/DMC fixed-point geometry is intentionally separate in
 ``sibling_delay_analysis.py``, which has its own CLI. No CLI entry point here:
-``main(seed, feature, ...)`` is invoked by ``run_pipeline.py``.
+``main(seed, feature, ...)`` is invoked by ``run_pipeline.py`` and, for the
+untrained control, by ``untrained_clustering.py``.
 """
 # %%
 import os
@@ -50,7 +59,6 @@ import gc
 import numpy as np
 from pathlib import Path
 import json
-import psutil
 import pickle
 
 import matplotlib as mpl
@@ -85,8 +93,9 @@ import helper
 import clustering
 import clustering_metric
 import color_func
-import mpn
 import mpn_tasks
+from memory_limit import GIB, memory_report
+from network_loading import build_network
 from modulation_variants import LESION_MODULATION_TYPES, weight_modulation_variance, signed_log1p
 from sibling_delay_analysis import is_sibling_artifact
 
@@ -178,22 +187,68 @@ def _gap_curve(Z, k_vals):
 _fixed_k_col_clusters = clustering.fixed_k_col_clusters
 
 
-def main(seed, feature, clean=True):
-    """Run the analysis for ONE trained network, identified by `seed`/`feature`.
+ANALYSIS_DIR = Path("multiple_tasks_analysis")
+UNTRAINED_ANALYSIS_DIR = ANALYSIS_DIR / "untrained"
+
+
+def output_names(seed, ruleset, addon_name, untrained_init_seed=None):
+    """(name, save_dir) of one analysis: the trained run's
+    {ruleset}_seed{seed}_{addon_name} under ANALYSIS_DIR or, for an untrained
+    control, that name with _init{k} under UNTRAINED_ANALYSIS_DIR."""
+    name = f"{ruleset}_seed{seed}_{addon_name}"
+    if untrained_init_seed is None:
+        return name, ANALYSIS_DIR / name
+    name = f"{name}_init{int(untrained_init_seed)}"
+    return name, UNTRAINED_ANALYSIS_DIR / name
+
+
+# The recorded trajectories the analysis reads, by key of the network's
+# track_states record: M of the plastic layer, its input and its hidden state.
+TRACKED_STATE_KEYS = ("M1", "input1", "hidden1")
+
+
+def record_tracked_states(model, inputs, chunk_size):
+    """Run `inputs` (trials, time, channels) through `model` in chunks of
+    `chunk_size` trials with run_mode="track_states" and return (outputs,
+    states): the network's outputs as a CPU tensor and {key: NumPy array} for
+    TRACKED_STATE_KEYS, with every trial.
+
+    Each state array is allocated once, at the first chunk's shape and dtype,
+    and every chunk is written into it. Collecting the chunks and
+    concatenating them held the M trajectory twice, about 32 GiB per copy at
+    750 trials x 126 steps x 300 x 300.
+    """
+    n_trials = inputs.shape[0]
+    outputs, states = [], {}
+    with torch.no_grad():
+        for start in range(0, n_trials, chunk_size):
+            end = min(start + chunk_size, n_trials)
+            chunk_output, _, record = model.iterate_sequence_batch(
+                inputs[start:end], run_mode="track_states")
+            outputs.append(chunk_output.cpu())
+            for key in TRACKED_STATE_KEYS:
+                values = record[key].cpu().numpy()
+                if key not in states:
+                    states[key] = np.empty((n_trials, *values.shape[1:]), dtype=values.dtype)
+                states[key][start:end] = values
+            del record
+    return torch.cat(outputs, dim=0), states
+
+
+def main(seed, feature, clean=True, untrained_init_seed=None):
+    """Run the analysis for ONE network, identified by `seed`/`feature`.
 
     Rebuilds `aname` from the naming convention, loads that run's recorded
     activity (param_{aname}_result.npz), hyperparameters (…_param.json) and
     checkpoint (savednet_{aname}.pt), then runs the weight-structure and
-    clustering analyses described in the module docstring. ``clean=True``
-    removes earlier clustering-owned outputs while preserving artifacts owned
-    by ``sibling_delay_analysis.py``. Sibling-task DelayDM/DMC geometry is run
-    independently by that module.
+    clustering analyses described in the module docstring. With
+    ``untrained_init_seed`` the network is an untrained one of the same
+    architecture and the outputs are those of the untrained control
+    (`output_names`). ``clean=True`` removes earlier clustering-owned outputs
+    while preserving artifacts owned by ``sibling_delay_analysis.py``.
+    Sibling-task DelayDM/DMC geometry is run independently by that module.
     """
-    mem = psutil.virtual_memory()
-    print(f"Total: {mem.total / 1e9:.2f} GB")
-    print(f"Available: {mem.available / 1e9:.2f} GB")
-    print(f"Used: {mem.used / 1e9:.2f} GB")
-    print(f"Percentage: {mem.percent}%")
+    print(memory_report())
 
     task = "everything"
     hidden = "300"
@@ -230,11 +285,15 @@ def main(seed, feature, clean=True):
 
     task_params, train_params, net_params = raw_cfg_param["task_params"], raw_cfg_param["train_params"], raw_cfg_param["net_params"]
 
-    savefigure_name = f"{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}"
+    savefigure_name, save_dir = output_names(
+        seed, hyp_dict['ruleset'], hyp_dict['addon_name'], untrained_init_seed)
     savefigure_name_base = savefigure_name
+    # The name of the weight and accuracy figures: the run's own, or the
+    # untrained control's.
+    run_label = aname if untrained_init_seed is None else savefigure_name
 
     # all outputs for this experiment go into their own subfolder
-    save_dir = f"./multiple_tasks_analysis/{savefigure_name_base}"
+    save_dir = str(save_dir)
     os.makedirs(save_dir, exist_ok=True)
     if clean:
         for _old_file in Path(save_dir).iterdir():
@@ -254,18 +313,13 @@ def main(seed, feature, clean=True):
 
     netpathname = "multiple_tasks/" + f"savednet_{aname}.pt"
     checkpoint = torch.load(netpathname, map_location="cpu")
+    print(checkpoint["state_dict"].keys())
+    print(checkpoint["net_params"])
 
-    state_dict = checkpoint["state_dict"]
-    print(state_dict.keys())
-    load_net_params = checkpoint["net_params"]
-    print(load_net_params)
-
-    # reload the network
-    model = mpn.DeepMultiPlasticNet(load_net_params, verbose=False, forzihan=True)
-
-    missing, unexpected = model.load_state_dict(checkpoint["state_dict"], strict=True)
-    print("missing:", missing)
-    print("unexpected:", unexpected)
+    # The trained network, or the untrained control: the same architecture
+    # with fresh weights. `state_dict` holds the weights of the network
+    # analyzed, which the weight analyses below read.
+    model, state_dict = build_network(checkpoint, untrained_init_seed)
     del checkpoint  # free duplicated weights; state_dict already extracted above
 
     model.eval()
@@ -434,7 +488,7 @@ def main(seed, feature, clean=True):
             fig.tight_layout()
             outname = ("weight_matrices" if tag == "output"
                        else f"weight_matrices_{tag}")
-            fig.savefig(f"{save_dir}/{outname}_{aname}.png",
+            fig.savefig(f"{save_dir}/{outname}_{run_label}.png",
                         dpi=300, bbox_inches="tight")
             plt.close(fig)
 
@@ -484,14 +538,14 @@ def main(seed, feature, clean=True):
         axs[1].spines["right"].set_visible(False)
 
         fig.tight_layout()
-        fig.savefig(f"{save_dir}/pathway_static_{aname}.png", dpi=300, bbox_inches="tight")
+        fig.savefig(f"{save_dir}/pathway_static_{run_label}.png", dpi=300, bbox_inches="tight")
         plt.close(fig)
 
     plot_weight_triplet_with_top_left_marginals(
         output_W=output_W,
         input_W=input_W,
         modulation_W=modulation_W,
-        aname=aname,
+        aname=run_label,
         cs=cs,
         save_dir=save_dir,
     )
@@ -506,7 +560,7 @@ def main(seed, feature, clean=True):
     ax.set_xlabel("Input Index", fontsize=12)
     ax.set_ylabel("Input Index", fontsize=12)
     fig.tight_layout()
-    fig.savefig(f"{save_dir}/input_weight_correlation_{aname}.png", dpi=300)
+    fig.savefig(f"{save_dir}/input_weight_correlation_{run_label}.png", dpi=300)
     plt.close(fig)
 
     plot_static_pathway_analysis(
@@ -514,7 +568,7 @@ def main(seed, feature, clean=True):
         input_W=input_W,
         modulation_W=modulation_W,
         input_labels=all_input,
-        aname=aname,
+        aname=run_label,
         save_dir=save_dir,
     )
 
@@ -548,29 +602,9 @@ def main(seed, feature, clean=True):
         test_output = test_output.to(device)
         test_mask = test_mask.to(device)
 
-        forward_chunk_size = 20  
-        B_total = test_input.shape[0]
-        chunk_net_outs, chunk_db = [], {}
-        with torch.no_grad():
-            for chunk_start in range(0, B_total, forward_chunk_size):
-                chunk_end = min(chunk_start + forward_chunk_size, B_total)
-                chunk_out, _, chunk_db_i = model.iterate_sequence_batch(
-                    test_input[chunk_start:chunk_end], run_mode='track_states'
-                )
-                chunk_net_outs.append(chunk_out.cpu())
-                for key, val in chunk_db_i.items():
-                    if torch.is_tensor(val):
-                        chunk_db.setdefault(key, []).append(val.cpu())
-                    else:
-                        chunk_db.setdefault(key, []).append(val)
-
-        net_out = torch.cat(chunk_net_outs, dim=0)
-        del chunk_net_outs  # free per-chunk output list now that net_out is assembled
-        db_test = {
-            key: torch.cat(chunks, dim=0) if torch.is_tensor(chunks[0]) else [x for c in chunks for x in c]
-            for key, chunks in chunk_db.items()
-        }
-        del chunk_db  # free per-chunk state lists now that db_test is assembled
+        forward_chunk_size = 20
+        net_out, tracked_states = record_tracked_states(model, test_input, forward_chunk_size)
+        print(f"M trajectory {tracked_states['M1'].nbytes / GIB:.1f} GiB; {memory_report()}")
         acc, _ = model.compute_acc(net_out.to(device), test_output, test_mask, test_input, isvalid=True, mode=model.acc_measure)
         print(f"Accuracy: {acc}")
 
@@ -622,16 +656,16 @@ def main(seed, feature, clean=True):
         ax_acc.set_axisbelow(True)
         ax_acc.spines[["top", "right"]].set_visible(False)
         fig_acc.tight_layout()
-        fig_acc.savefig(f"{save_dir}/per_task_accuracy_{aname}.png", dpi=300)
+        fig_acc.savefig(f"{save_dir}/per_task_accuracy_{run_label}.png", dpi=300)
         plt.close(fig_acc)
         # ─────────────────────────────────────────────────────────────────────────
 
         del net_out, test_output, test_mask  # no longer needed after accuracy; test_input kept for find_task below
 
-        Ms_orig = db_test["M1"].cpu().numpy()
-        xs = db_test["input1"].cpu().numpy()
-        hs = db_test["hidden1"].cpu().numpy()
-        del db_test  # all needed arrays extracted; free the large activation tensors
+        Ms_orig = tracked_states["M1"]
+        xs = tracked_states["input1"]
+        hs = tracked_states["hidden1"]
+        del tracked_states  # the three names above now hold the only references
 
         print(f"Ms_orig: {Ms_orig.shape}; xs: {xs.shape}; hs: {hs.shape}")
         print(f"modulation_W: {modulation_W.shape}")
@@ -678,9 +712,6 @@ def main(seed, feature, clean=True):
         test_task = np.array([int(c) for c in test_task]).flatten()
 
     # %%
-    weighted_Ms_orig = Ms_orig * modulation_W
-    print(f"weighted_Ms_orig: {weighted_Ms_orig.shape}")
-
     # 2026-03-29: for the modulation-weighted activity, we will not normalize across rules,
     # otherwise per-neuron normalization
     # will wash out the multiplication effect
@@ -691,9 +722,11 @@ def main(seed, feature, clean=True):
     # col_clusters_all. Reordering the list silently changes what they see.
     # The five modulation entries are the variants registered in
     # core/modulation_variants.py (LESION_MODULATION_TYPES): Var(M) normalized and
-    # unnormalized, Var(W*M), W*Var(M) and |W|*Var(M). The last two reuse Ms_orig
-    # and apply their weight after the variance (weight_modulation_variance).
-    clustering_data_analysis = [xs, xs, hs, hs, Ms_orig, Ms_orig, weighted_Ms_orig, Ms_orig, Ms_orig]
+    # unnormalized, Var(W*M), W*Var(M) and |W|*Var(M). All five read Ms_orig; the
+    # three weighted ones apply their weight after the variance
+    # (weight_modulation_variance), Var(W*M) as W^2 Var(M), so no W * M copy of
+    # the trajectory is held.
+    clustering_data_analysis = [xs, xs, hs, hs, Ms_orig, Ms_orig, Ms_orig, Ms_orig, Ms_orig]
     clustering_data_analysis_names = ["input", "input", "hidden", "hidden",
                                       "modulation_all", "modulation_all", "modulation_all_weighted",
                                       "modulation_all_var_weighted", "modulation_all_abs_weighted"]
@@ -824,8 +857,9 @@ def main(seed, feature, clean=True):
             clustering_save_name = clustering_name + "_unnormalized"
             vmins, vmaxs = None, None
 
-        # var_weighted / abs_weighted: variance is computed on Ms_orig above, then
-        # each synapse column is scaled by W or |W| (core/modulation_variants.py).
+        # weighted / var_weighted / abs_weighted: variance is computed on Ms_orig
+        # above, then each synapse column is scaled by W^2, W or |W|
+        # (core/modulation_variants.py).
         if "all" in clustering_name:
             cell_vars_rules_norm = weight_modulation_variance(
                 cell_vars_rules_norm, clustering_name, modulation_W)
@@ -3557,7 +3591,7 @@ def main(seed, feature, clean=True):
     # Free the large activity/modulation arrays now that all clustering
     # iterations are done (the list entries were only cleared to None; these
     # top-level names still hold the last references).
-    del xs, hs, Ms_orig, weighted_Ms_orig
+    del xs, hs, Ms_orig
     gc.collect()
 
     # save this only at the end

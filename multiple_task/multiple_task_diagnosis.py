@@ -14,9 +14,7 @@ registered diagnostic is run over the discovered experiments, its summary is
 printed, and all results are saved to
 ``multiple_tasks_diagnosis/diagnosis_{tag}.{pkl,json}``, with the tag
 ``{feature}[_seed{seed}]``. A run replaces the earlier results of its own tag
-only, so the cohorts' results sit side by side (``paper_plot.py`` reads
-``diagnosis_{feature}.pkl`` for its ``sibling_row_cluster_sharing`` figure).
-All requested same-cluster diagnostics are drawn in one figure
+only, so the cohorts' results sit side by side. All requested same-cluster diagnostics are drawn in one figure
 (``same_cluster_diagnoses_{tag}.png``), one task pair per row and one trial
 phase per column.
 
@@ -126,9 +124,8 @@ _PHASE_DISPLAY = {
     "go1": "Response",
 }
 
-# Per-representation bar colors, those of paper_plot's task-specificity and
-# sibling_row_cluster_sharing figures (_TASK_SPECIFICITY_COLORS), so the
-# diagnostic and the paper figure of one result agree.
+# Per-representation bar colors, those of paper_plot's task-specificity
+# figures (_TASK_SPECIFICITY_COLORS).
 _REP_COLORS = {
     "input": "#3182ce",       # blue
     "hidden": "#e53e3e",      # red
@@ -137,7 +134,7 @@ _REP_COLORS = {
 
 
 # Saved-result layout: 2 adds each representation's chance level and the
-# test against it (paper_plot reads only this version).
+# test against it.
 RESULT_VERSION = 2
 # Prefixes of the files one run writes, each followed by "{tag}.{suffix}".
 _OUTPUT_PREFIXES = ("diagnosis_", "same_cluster_diagnoses_")
@@ -158,18 +155,23 @@ def _clear_previous_results(tag):
 
 # ─── Experiment discovery & loading ──────────────────────────────────────────
 
-def _discover_anames(feature=None, seed=None):
-    """Experiment identifiers under multiple_tasks_analysis/ that have cluster info.
+def _discover_anames(feature=None, seed=None, root=None):
+    """Experiment identifiers under `root` (default MULTI_DIR) that have
+    cluster info: trained runs, or under multiple_tasks_analysis/untrained/
+    the untrained controls, whose names end in _init{k}
+    (multiple_task_analysis.output_names).
 
     Filters by regularization `feature` (e.g. 'L21e4') and/or `seed` when given,
     mirroring multiple_task_analysis.py's CLI. Sorted for deterministic output.
     """
+    root = MULTI_DIR if root is None else Path(root)
     anames = []
     # The mod pickle is 'cluster_info_mod_...'; this glob only matches the
     # neuron-cluster pickle 'cluster_info_everything_...'.
-    for p in sorted(MULTI_DIR.glob("everything_seed*/cluster_info_everything_seed*.pkl")):
+    for p in sorted(root.glob("everything_seed*/cluster_info_everything_seed*.pkl")):
         m = re.match(
-            r"cluster_info_(everything_seed(\d+)_(\w+)\+hidden\d+\+batch\d+\+angle)\.pkl",
+            r"cluster_info_(everything_seed(\d+)_(\w+)\+hidden\d+\+batch\d+\+angle"
+            r"(?:_init\d+)?)\.pkl",
             p.name,
         )
         if not m:
@@ -183,14 +185,15 @@ def _discover_anames(feature=None, seed=None):
     return anames
 
 
-def _load_experiment(aname):
-    """Row-cluster labels + tb_break_name per representation for one experiment.
+def _load_experiment(aname, root=None):
+    """Row-cluster labels + tb_break_name per representation for one experiment
+    under `root` (default MULTI_DIR).
 
     Returns {rep: {"row_labels": np.ndarray, "tb_break_name": np.ndarray}} for
     rep in {input, hidden, modulation}, or None if the neuron-cluster pickle is
     missing (input/hidden are required; modulation is included when available).
     """
-    run_dir = MULTI_DIR / aname
+    run_dir = (MULTI_DIR if root is None else Path(root)) / aname
     ci_path = run_dir / f"cluster_info_{aname}.pkl"
     mod_path = run_dir / f"cluster_info_mod_{aname}.pkl"
 
@@ -471,6 +474,12 @@ def plot_combined_same_cluster(results, out_path, title="Task-pair row-cluster s
                 ax.set_title(_PHASE_DISPLAY[phase], fontsize=9)
             if phase in result["per_phase"]:
                 _draw_same_cluster_bars(ax, result["per_phase"][phase])
+            elif col == 0:
+                # Empty, but it carries the pair's name (its y label).
+                ax.tick_params(left=False, labelleft=False, bottom=False,
+                               labelbottom=False)
+                ax.spines[:].set_visible(False)
+                ax.patch.set_visible(False)
             else:
                 ax.axis("off")
         a_disp = result.get("rule_a_display", result.get("rule_a", "A"))
