@@ -18,9 +18,11 @@ NAMING = ["_hyp_dict", "run_name", "setting_run_name"]
 SCRIPTS = {
     "multiple_task": {
         "source": ROOT / "multiple_task" / "multiple_task.py",
-        "functions": ["_normalize_m_bounds", "_addon_name_with_bounds", "validate_reg_lambda_addon_name",
+        "functions": ["_normalize_m_bounds", "_addon_name_with_bounds", "_addon_name_with_lambda",
+                      "effective_addon_name", "validate_reg_lambda_addon_name",
                       "current_basic_params", "full_addon_name"] + NAMING,
         "constants": ["RULESET", "CHOSEN_NETWORK", "N_HIDDEN", "n_hidden", "ADDON_NAME", "M_BOUNDS",
+                      "DT_MS", "M_TIME_SCALE", "LEGACY_M_LAMBDA",
                       "train", "rules_dict", "rules_dict_frequency", "mpn_depth"],
         "name_regex": r"^everything_seed7_L21e4\+hidden300\+batch128\+angle$",
         "more_stimulus": False, "per_run_directory": False,

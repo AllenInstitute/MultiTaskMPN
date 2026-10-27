@@ -90,7 +90,7 @@ FEATURE_VERSIONS = {
 }
 PRIMARY_VERSION = "magnitude"
 PRIMARY_LABEL_SET = "fixed_k20"
-ANAME_PATTERN = re.compile(r"everything_seed(\d+)_(\w+)\+hidden300\+batch128\+angle$")
+ANAME_PATTERN = re.compile(r"everything_seed(\d+)_([^+]+)\+hidden300\+batch128\+angle$")
 
 
 def result_name(aname):

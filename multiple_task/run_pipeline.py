@@ -31,7 +31,7 @@ ANALYSIS_DIR = Path("multiple_tasks_analysis")
 PERF_DIR = Path("multiple_tasks_perf")
 NORM_DIR = Path("multiple_tasks_norm")
 CHECKPOINT_PATTERN = re.compile(
-    r"savednet_everything_seed(\d+)_(\w+)\+hidden\d+\+batch\d+\+angle\.pt")
+    r"savednet_everything_seed(\d+)_([^+]+)\+hidden\d+\+batch\d+\+angle\.pt")
 
 
 def run_name(seed, feature):

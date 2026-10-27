@@ -80,6 +80,19 @@ class RunPipelineSelectionTests(unittest.TestCase):
             [(86, "L21e3"), (11, "L21e4"), (101, "L21e4"), (921, "L21e4"),
              (5, "L21e4proj300bottleneck100")])
 
+    def test_lambda_tagged_runs_are_found_but_kept_out_of_the_base_feature(self):
+        """multiple_task.py tags runs with a non-0.99 lambda (L21e4lam0.9). The
+        dot must not hide them from discovery, and the base feature must not
+        pick them up."""
+        self._checkpoint(11, "L21e4")
+        self._checkpoint(12, "L21e4lam0.9")
+        runs = self.ns["discover_runs"](self.checkpoints)
+        self.assertEqual(runs, [(11, "L21e4"), (12, "L21e4lam0.9")])
+        select = self.ns["select_runs"]
+        self.assertEqual(select(runs, feature="L21e4", root=self.root)[0], [(11, "L21e4")])
+        self.assertEqual(select(runs, feature="L21e4lam0.9", root=self.root)[0],
+                         [(12, "L21e4lam0.9")])
+
     def test_skip_completed_leaves_out_runs_with_every_marker(self):
         runs = [(11, "L21e4"), (408, "L21e4"), (749, "L21e4"), (842, "L21e4"), (86, "L21e3")]
         self._write_markers(408, "L21e4")                                   # complete

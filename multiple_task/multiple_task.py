@@ -11,8 +11,10 @@ The plastic weight and per-trial modulation matrices have shape
 
 Set linear_embed and N_HIDDEN to change dimensions; ADDON_NAME is only a
 base label. For example, L21e4proj300bottleneck100 labels proj=300,
-bottleneck=100 with L2=1e-4. Non-default modulation bounds are appended to
-this base label automatically (for example, ``mb2`` for ``(-2, 2)``). The
+bottleneck=100 with L2=1e-4. Non-default modulation bounds and M decay are
+appended to this base label automatically (for example, ``mb2`` for
+``(-2, 2)`` and ``lam0.9`` for M_TIME_SCALE = 400 ms; lambda = 0.99 stays
+untagged, like every saved cohort). The
 existing L21e4bottleneck100 label omits the default proj300. _hyp_dict and
 full_addon_name append +hidden{N_HIDDEN}+batch{n_batches}+{acc_measure}; keep
 this legacy hidden suffix for readers, with hidden meaning bottleneck, not proj.
@@ -112,6 +114,16 @@ ADDON_NAME = "L21e4"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appen
 # run names carry no bound tag. Non-default values (e.g. (-2, 2)) are encoded in
 # the effective ADDON_NAME automatically ("mb2"), keeping such runs distinct.
 M_BOUNDS = (-1.0, 1.0)
+# Time constant of M's decay: lambda = 1 - DT_MS / M_TIME_SCALE, fixed during
+# training (lam_train is False). Every saved multi-task cohort used the
+# historical 4000 ms (lambda = 0.99), so those run names carry no lambda tag.
+# Any other value is encoded in the effective ADDON_NAME automatically, after
+# the bound tag, as in pretrain/pretraining.py (400 ms -> L21e4lam0.9, or
+# L21e4mb2lam0.9 with bounds (-2, 2)), so such runs never share a name, or an
+# exact --feature filter, with the lambda = 0.99 cohorts.
+DT_MS = 40
+M_TIME_SCALE = 4000
+LEGACY_M_LAMBDA = 0.99
 train = True                    # whether or not to train the network
 verbose = True
 
@@ -144,6 +156,27 @@ def _addon_name_with_bounds(addon_name, m_bounds=None):
     if bounds[0] == -bounds[1]:
         return f"{addon_name}mb{bounds[1]:g}"
     return f"{addon_name}mb{bounds[0]:g}to{bounds[1]:g}"
+
+
+def _addon_name_with_lambda(addon_name, m_time_scale=None, dt=None):
+    """Append the pretraining-style lambda tag unless lambda is the historical 0.99."""
+    dt = DT_MS if dt is None else dt
+    m_time_scale = M_TIME_SCALE if m_time_scale is None else m_time_scale
+    if not np.isfinite(dt) or dt <= 0:
+        raise ValueError(f"dt must be finite and positive; got {dt!r}.")
+    if not np.isfinite(m_time_scale) or m_time_scale < dt:
+        raise ValueError(
+            f"M_TIME_SCALE must be finite and at least dt ({dt} ms); got {m_time_scale!r}."
+        )
+    retention = 1.0 - dt / m_time_scale
+    if np.isclose(retention, LEGACY_M_LAMBDA, rtol=0, atol=1e-12):
+        return addon_name
+    return f"{addon_name}lam{retention:.12g}"
+
+
+def effective_addon_name():
+    """ADDON_NAME with the bound and lambda tags of the configured setting."""
+    return _addon_name_with_lambda(_addon_name_with_bounds(ADDON_NAME))
 
 
 def validate_reg_lambda_addon_name(reg_lambda, addon_name, weight_reg="L2"):
@@ -259,7 +292,7 @@ def run_name(seed, addon_name):
 def setting_run_name():
     """`run_name(seed)` of the configured setting, built the way run_trial
     builds it, for scanning the saved runs."""
-    hyp_dict = _hyp_dict(_addon_name_with_bounds(ADDON_NAME))
+    hyp_dict = _hyp_dict(effective_addon_name())
     _, train_params, net_params = current_basic_params(hyp_dict)
     addon_name = full_addon_name(hyp_dict, train_params, net_params)
     return lambda seed: run_name(seed, addon_name)
@@ -270,7 +303,7 @@ def current_basic_params(hyp_dict):
         'task_type': hyp_dict['task_type'],
         'rules': rules_dict[hyp_dict['ruleset']],
         'rules_probs': rules_dict_frequency[hyp_dict['ruleset']], 
-        'dt': 40, # ms, directly influence sequence lengths,
+        'dt': DT_MS, # ms, directly influence sequence lengths,
         'ruleset': hyp_dict['ruleset'],
         'n_eachring': 8, # Number of distinct possible inputs on each ring
         'in_out_mode': 'low_dim',  # high_dim or low_dim or low_dim_pos (Robert vs. Laura's paper, resp)
@@ -353,7 +386,7 @@ def current_basic_params(hyp_dict):
             'eta_train': True,
             # 'eta_init': 'mirror_gaussian', #0.0,
             'lam_type': 'scalar', # scalar, pre_vector, post_vector, matrix
-            'm_time_scale': 4000, # ms, sets lambda
+            'm_time_scale': M_TIME_SCALE, # ms, sets lambda (tagged in the run name unless 0.99)
             'lam_train': False,
             'W_freeze': False, # different combination with [input_layer_add_trainable]
             'm_bounds': _normalize_m_bounds(M_BOUNDS),
@@ -391,8 +424,9 @@ def run_trial(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    run_addon_name = _addon_name_with_bounds(ADDON_NAME)
+    run_addon_name = effective_addon_name()
     print(f"Modulation bounds: {_normalize_m_bounds(M_BOUNDS)}; "
+          f"m_time_scale: {M_TIME_SCALE} ms (lambda = {1 - DT_MS / M_TIME_SCALE:.12g}); "
           f"effective ADDON_NAME: {run_addon_name}")
 
     hyp_dict = _hyp_dict(run_addon_name)

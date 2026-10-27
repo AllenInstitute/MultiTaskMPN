@@ -170,7 +170,7 @@ def _discover_anames(feature=None, seed=None, root=None):
     # neuron-cluster pickle 'cluster_info_everything_...'.
     for p in sorted(root.glob("everything_seed*/cluster_info_everything_seed*.pkl")):
         m = re.match(
-            r"cluster_info_(everything_seed(\d+)_(\w+)\+hidden\d+\+batch\d+\+angle"
+            r"cluster_info_(everything_seed(\d+)_([^+]+)\+hidden\d+\+batch\d+\+angle"
             r"(?:_init\d+)?)\.pkl",
             p.name,
         )

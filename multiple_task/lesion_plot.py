@@ -3531,7 +3531,7 @@ if __name__ == "__main__":
     # aname (ruleset 'everything', hidden300, batch128, +angle) — runs with
     # other configurations would not resolve inside main() and are not
     # offered here.
-    _pat = re.compile(r"everything_seed(\d+)_(\w+)\+hidden300\+batch128\+angle$")
+    _pat = re.compile(r"everything_seed(\d+)_([^+]+)\+hidden300\+batch128\+angle$")
     candidates = []
     for _d in sorted(Path("multiple_tasks_perf").glob("everything_seed*")):
         _m = _pat.match(_d.name)
