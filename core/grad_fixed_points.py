@@ -527,18 +527,22 @@ def derive_fixed_point_views(
     }
 
 
-def detect_stimulus_channels(template, fix_win, stim_win, rule=None):
+def detect_stimulus_channels(template, fix_win, stim_win, n_fixate, rule=None):
     """The active ring's (sin θ, cos θ) channel pair of one trial template.
 
     A ring channel carries energy during the stimulus window but is ~zero
     throughout fixation (this rejects the always-on fixation bit and the
     constant rule-cue channels). We detect the single most energetic such
     channel, then recover its PARTNER from the layout — low-dim rings are
-    consecutive (sin, cos) 2-blocks anchored just after the leading fixation
-    channel(s). Detecting one channel suffices because for an angle on an axis
-    (θ≈0/90/180/270°) one of sin/cos is exactly zero over the whole window.
-    `template` is (T, n_input); `fix_win` / `stim_win` are (start, stop) step
-    windows; `rule` only names the rule in error messages."""
+    consecutive (sin, cos) 2-blocks anchored just after the `n_fixate`
+    fixation channels. Detecting one channel suffices because for an angle on
+    an axis (θ≈0/90/180/270°) one of sin/cos is exactly zero over the whole
+    window. `n_fixate` comes from the task layout (2 with `fixate_off`, else
+    1, as in `mpn_tasks.Trial`), not from the template: the fixation-off
+    channel is silent during fixation, so counting the channels on there
+    would anchor the rings one channel early. `template` is (T, n_input);
+    `fix_win` / `stim_win` are (start, stop) step windows; `rule` only names
+    the rule in error messages."""
     fix_on, fix_off = fix_win
     stim_on, stim_off = stim_win
     stim_energy = (template[stim_on:stim_off] ** 2).sum(axis=0)
@@ -550,11 +554,12 @@ def detect_stimulus_channels(template, fix_win, stim_win, rule=None):
             f"could not auto-detect a stimulus channel for rule={rule} "
             f"(stim-only energies {np.round(stim_only, 3).tolist()}); "
             f"pass stim_channels explicitly.")
-    on_in_fix = fix_max > 1e-6
-    n_fix = 0
-    while n_fix < on_in_fix.size and on_in_fix[n_fix]:
-        n_fix += 1
-    ring_start = n_fix + ((c0 - n_fix) // 2) * 2
+    n_fixate = int(n_fixate)
+    if c0 < n_fixate:
+        raise ValueError(
+            f"stimulus channel {c0} for rule={rule} lies among the "
+            f"{n_fixate} fixation channel(s); pass stim_channels explicitly.")
+    ring_start = n_fixate + ((c0 - n_fixate) // 2) * 2
     if ring_start + 1 >= template.shape[1]:
         raise ValueError(
             f"stimulus ring pair ({ring_start},{ring_start+1}) out of range "
@@ -638,7 +643,8 @@ def build_dense_stimulus_template(cfg, rule, task_seed, n_interp,
         ch_a, ch_b = int(stim_channels[0]), int(stim_channels[1])
     else:
         ch_a, ch_b = detect_stimulus_channels(
-            template, (fix_on, fix_off), (stim_on, stim_off), rule=rule)
+            template, (fix_on, fix_off), (stim_on, stim_off),
+            n_fixate=2 if tp["hp"]["fixate_off"] else 1, rule=rule)
 
     # The ring's two channels hold magnitude * (sin θ, cos θ) in
     # generator order. Keep `stim` as the ANGLE label when magnitudes are
