@@ -43,7 +43,10 @@ synapse clusters are selectively important for specific tasks. Produces:
    reference. Task-pair similarities, the two-sided Spearman label-permutation
    test and an OLS guide line are saved to
    causal_vs_activity_tasksim_{side}_{aname}.pkl for paper_plot.py (one file
-   per activity side, hidden and input).
+   per activity side, hidden and input). A third side, modulation, pairs the
+   var-weighted synapse features (by magnitude, |W| Var(M)) with the freeze_M
+   lesion effects over that clustering's synapse clusters, the unresponsive
+   class left out.
 7. Combined-lesion interaction map — I(i,j) = combined − single_i − single_j
    per (input, hidden) cluster pair (I < 0 sub-additive/redundant, I > 0
    synergistic), regressed against each block's peak synapse-cluster
@@ -84,10 +87,11 @@ synapse clusters are selectively important for specific tasks. Produces:
 
 Outputs saved to ./multiple_tasks_norm/{aname}/.
 
-The paper-facing normalized-effect cache uses zero_W for the primary
-modulation lesion comparison with input/hidden neuron lesions. Both zero_W
-and freeze_M records remain available, with explicit intervention metadata,
-for the plasticity-dependence and cross-mode comparisons.
+The paper-facing normalized-effect cache records freeze_M as the primary
+modulation lesion (`primary_modulation_mode`), the mode paper_plot's lesion
+heatmap compares with the input/hidden neuron lesions. Both zero_W and
+freeze_M records remain available, with explicit intervention metadata, for
+the other figures and the plasticity-dependence and cross-mode comparisons.
 
 Effect matrices are saved as accuracy differences in fraction units; multiplying
 by 100 for display gives percentage points, not a relative percent decrease.
@@ -801,6 +805,151 @@ def _cosine_similarity_matrix(columns):
     return np.clip(similarity, -1.0, 1.0)
 
 
+# ── Causal vs activity task organization (docstring #6) ─────────────────────
+#
+# Each side pairs a task x task similarity from tuning (x) with one from lesion
+# dependence (y): do tasks that look alike depend on the same clusters? The
+# neuron sides (hidden, input) are computed inside main(); the synapse side
+# below compares the var-weighted unnormalized modulation features, by
+# magnitude |W| Var(M) because the signed feature carries the sign of W in
+# every task alike (as _tuning_profiles_for_variant does for cluster means),
+# with the freeze_M lesion effects over the same clustering's synapse
+# clusters. The unresponsive class is left out of the lesion profiles: it
+# holds most synapses and impairs every task, which would raise every task
+# pair's similarity together (state_space_vs_lesion.py drops it likewise).
+CAUSAL_VS_ACTIVITY_NEURON_X_DEFINITION = "pearson_corr_of_task_mean_activity_variance_profiles"
+CAUSAL_VS_ACTIVITY_NEURON_Y_DEFINITION = "pearson_corr_of_task_lesion_effect_profiles_over_neuron_clusters"
+CAUSAL_VS_ACTIVITY_MOD_TYPE = "modulation_all_var_weighted_unnormalized"
+CAUSAL_VS_ACTIVITY_MOD_MODE = "freeze_M"
+CAUSAL_VS_ACTIVITY_MOD_X_DEFINITION = "pearson_corr_of_task_mean_abs_modulation_variance_profiles"
+CAUSAL_VS_ACTIVITY_MOD_Y_DEFINITION = "pearson_corr_of_task_lesion_effect_profiles_over_synapse_clusters"
+
+
+def _period_averaged_task_profiles(features, row_names, tasks):
+    """(n_tasks, n_units) profiles: each task's "{task}-{period}" rows of
+    `features` (rows x units) averaged into one vector."""
+    features = np.asarray(features, dtype=float)
+    return np.stack([
+        features[[row for row, name in enumerate(row_names) if str(name).split("-")[0] == task]]
+        .mean(axis=0)
+        for task in tasks
+    ])
+
+
+def _causal_vs_activity_variant(S_act, S_les, tasks):
+    """Pairs, two-sided Spearman label-permutation test and OLS guide for one pairing."""
+    iu = np.triu_indices(len(tasks), k=1)
+    return {
+        "activity_similarity": S_act, "causal_similarity": S_les,
+        "activity_pairs": S_act[iu], "causal_pairs": S_les[iu],
+        "association": _mantel_spearman(S_act, S_les, n_perm=CLUSTER_CORR_N_PERM, seed=0),
+        "trend_line": _descriptive_trend_line(S_act[iu], S_les[iu]),
+    }
+
+
+def _plot_causal_vs_activity_diagnostic(primary, tasks, titles, x_label, stats_text, path):
+    """Per-run diagnostic: the two task-similarity matrices and their scatter."""
+    import seaborn as sns
+
+    fig, axs = plt.subplots(1, 3, figsize=(13, 3.8), dpi=300)
+    for ax, S, title in [(axs[0], primary["causal_similarity"], titles[0]),
+                         (axs[1], primary["activity_similarity"], titles[1])]:
+        sns.heatmap(S, ax=ax, cmap="RdBu_r", vmin=-1, vmax=1, center=0,
+                    xticklabels=tasks, yticklabels=tasks, cbar_kws={"shrink": 0.75})
+        ax.set_title(title, fontsize=9)
+        ax.tick_params(labelsize=6)
+    axs[2].scatter(primary["activity_pairs"], primary["causal_pairs"], s=14, alpha=0.7,
+                   color="steelblue", edgecolors="none")
+    axs[2].set_xlabel(x_label, fontsize=8)
+    axs[2].set_ylabel("Causal task similarity", fontsize=8)
+    axs[2].set_title(stats_text, fontsize=7)
+    axs[2].spines["top"].set_visible(False)
+    axs[2].spines["right"].set_visible(False)
+    fig.suptitle("Do tasks that look alike (activity) depend on the "
+                 "same clusters (lesion)?", fontsize=9)
+    fig.tight_layout()
+    fig.savefig(path, dpi=300)
+    plt.close(fig)
+
+
+def _modulation_causal_vs_activity(mod_ci_entry, effect_record, tasks, unresponsive_label):
+    """Synapse-side causal-vs-activity pairing of one run.
+
+    mod_ci_entry: the CAUSAL_VS_ACTIVITY_MOD_TYPE entry of cluster_info_mod
+    (`cell_vars_rules_sorted_norm`, rows x synapses, and `tb_break_name`);
+    effect_record: its CAUSAL_VS_ACTIVITY_MOD_MODE normalized-effect record
+    (tasks x `mod_c<k>` conditions); unresponsive_label: the class to leave
+    out of the lesion profiles, or None. Returns the variant dict of
+    _causal_vs_activity_variant plus the excluded condition names.
+    """
+    profiles = _period_averaged_task_profiles(
+        mod_ci_entry["cell_vars_rules_sorted_norm"], mod_ci_entry["tb_break_name"], tasks)
+    profiles, _ = _tuning_profiles_for_variant(profiles, CAUSAL_VS_ACTIVITY_MOD_TYPE)
+    S_act = np.corrcoef(profiles)
+    excluded = [] if unresponsive_label is None else [f"mod_c{int(unresponsive_label)}"]
+    missing = [name for name in excluded if name not in effect_record["conditions"]]
+    if missing:
+        raise ValueError(f"unresponsive class {missing} is not a lesion condition")
+    columns = [index for index, name in enumerate(effect_record["conditions"])
+               if name not in excluded]
+    if len(columns) < 2:
+        raise ValueError("need at least two synapse clusters for a lesion profile")
+    rows = [list(effect_record["tasks"]).index(task) for task in tasks]
+    effect = np.asarray(effect_record["effect"], dtype=float)[np.ix_(rows, columns)]
+    S_les = np.corrcoef(effect)
+    if not (np.isfinite(S_act).all() and np.isfinite(S_les).all()):
+        raise ValueError("non-finite task similarity (a constant task profile)")
+    variant = _causal_vs_activity_variant(S_act, S_les, tasks)
+    variant["excluded_conditions"] = excluded
+    return variant
+
+
+def _save_modulation_causal_vs_activity(results, normalized_effects, cluster_info_mod,
+                                        tasks, aname, save_dir):
+    """Save causal_vs_activity_tasksim_modulation_{aname}.pkl (same schema as
+    the neuron sides) and its diagnostic figure; skipped with a message when
+    the run lacks the clustering or the freeze_M lesion of that clustering."""
+    effect_key = f"{CAUSAL_VS_ACTIVITY_MOD_TYPE}__{CAUSAL_VS_ACTIVITY_MOD_MODE}"
+    effect_record = normalized_effects["entries"].get(effect_key)
+    if CAUSAL_VS_ACTIVITY_MOD_TYPE not in cluster_info_mod or effect_record is None:
+        print(f"[causal-vs-activity] modulation: {CAUSAL_VS_ACTIVITY_MOD_TYPE} clustering or "
+              f"its {CAUSAL_VS_ACTIVITY_MOD_MODE} lesion not found, skipping")
+        return
+    unresponsive = _mod_unresponsive_label(results["mod_lesion"][effect_key], legacy_last=True)
+    try:
+        primary = _modulation_causal_vs_activity(
+            cluster_info_mod[CAUSAL_VS_ACTIVITY_MOD_TYPE], effect_record, tasks, unresponsive)
+    except ValueError as error:
+        print(f"[causal-vs-activity] modulation: {error}, skipping")
+        return
+    r_m, p_m = _mantel_pearson_one_sided(primary["activity_similarity"],
+                                         primary["causal_similarity"])
+    association = primary["association"]
+    with open(f"{save_dir}/causal_vs_activity_tasksim_modulation_{aname}.pkl", "wb") as handle:
+        pickle.dump({
+            "schema_version": 2, "aname": aname, "side": "modulation",
+            "modulation_type": CAUSAL_VS_ACTIVITY_MOD_TYPE,
+            "mod_lesion_mode": CAUSAL_VS_ACTIVITY_MOD_MODE,
+            "tasks": list(tasks),
+            **primary,
+            "x_definition": CAUSAL_VS_ACTIVITY_MOD_X_DEFINITION,
+            "y_definition": CAUSAL_VS_ACTIVITY_MOD_Y_DEFINITION,
+            "lesion_source": f"normalized effects {effect_key}, unresponsive class excluded",
+            "pearson_mantel_one_sided": {"r": r_m, "p_perm": p_m, "n_perm": 10000},
+        }, handle)
+    _plot_causal_vs_activity_diagnostic(
+        primary, tasks,
+        (f"Causal (lesion profiles, var-weighted synapse clusters, "
+         f"{CAUSAL_VS_ACTIVITY_MOD_MODE})", "Activity (|W| Var(M) tuning)"),
+        "Activity task similarity (modulation)",
+        f"Spearman rho={association['rho']:.2f}, two-sided p={association['p_perm']:.4f}; "
+        f"Pearson Mantel r={r_m:.2f}, one-sided p={p_m:.4f}",
+        f"{save_dir}/causal_vs_activity_tasksim_modulation_{aname}.png")
+    print(f"[causal-vs-activity] modulation ({CAUSAL_VS_ACTIVITY_MOD_MODE}, without "
+          f"{primary['excluded_conditions'] or 'no class'}): Spearman rho={association['rho']:.2f}, "
+          f"p={association['p_perm']:.4f}; Pearson Mantel r={r_m:.2f}, p={p_m:.4f}; cache saved")
+
+
 # ── Task specificity of clusters and compositional sharing (docstring #11) ──
 #
 # A cluster's lesion profile marks which tasks it significantly impairs. The
@@ -980,7 +1129,7 @@ def main(seed, feature):
     baseline_keys = set(NEURON_BASELINE_KEYS)
     mod_lesion_results = results.get("mod_lesion", {})
     normalized_effects = {"schema_version": 1, "aname": aname,
-                          "primary_modulation_mode": "zero_W", "entries": {}}
+                          "primary_modulation_mode": "freeze_M", "entries": {}}
 
     def compute_and_plot_normalized_lesion(lesion_key, random_key, savename, xlabel_suffix=""):
         """Compute normalized lesion effect (random - cluster) and plot its heatmap.
@@ -1329,26 +1478,12 @@ def main(seed, feature):
     # pairings. The normalized pairing is kept in the cache as a reference
     # variant. Periods of a task are averaged into one activity
     # vector; a response-period-only variant is not used because it also makes
-    # the input side correlate.
+    # the input side correlate. The synapse side is computed further down,
+    # once cluster_info_mod is loaded (_save_modulation_causal_vs_activity).
     def _activity_task_similarity(ci_entry, tasks):
         """Task x task Pearson correlation of period-averaged task-variance profiles."""
-        V = ci_entry["cell_vars_rules_sorted_norm"]
-        tb = ci_entry["tb_break_name"]
-        A_task = np.stack([
-            V[[r for r, nm in enumerate(tb) if str(nm).split("-")[0] == t]].mean(axis=0)
-            for t in tasks
-        ])                                   # (n_tasks, n_neurons)
-        return np.corrcoef(A_task)
-
-    def _causal_vs_activity_variant(S_act, S_les, tasks):
-        """Pairs, two-sided Spearman label-permutation test and OLS guide for one pairing."""
-        iu = np.triu_indices(len(tasks), k=1)
-        return {
-            "activity_similarity": S_act, "causal_similarity": S_les,
-            "activity_pairs": S_act[iu], "causal_pairs": S_les[iu],
-            "association": _mantel_spearman(S_act, S_les, n_perm=CLUSTER_CORR_N_PERM, seed=0),
-            "trend_line": _descriptive_trend_line(S_act[iu], S_les[iu]),
-        }
+        return np.corrcoef(_period_averaged_task_profiles(
+            ci_entry["cell_vars_rules_sorted_norm"], ci_entry["tb_break_name"], tasks))
 
     _ci_path = f"./multiple_tasks_analysis/{aname}/cluster_info_{aname}.pkl"
     if os.path.exists(_ci_path) and E_dep_unnorm is not None:
@@ -1377,40 +1512,26 @@ def main(seed, feature):
                     "neuron_variant": "unnormalized",
                     "tasks": list(all_tasks),
                     **primary,
-                    "x_definition": "pearson_corr_of_task_mean_activity_variance_profiles",
-                    "y_definition": "pearson_corr_of_task_lesion_effect_profiles_over_neuron_clusters",
+                    "x_definition": CAUSAL_VS_ACTIVITY_NEURON_X_DEFINITION,
+                    "y_definition": CAUSAL_VS_ACTIVITY_NEURON_Y_DEFINITION,
                     "lesion_source": "causal_dependency_unnorm (input + hidden neuron clusters)",
                     "pearson_mantel_one_sided": {"r": r_m, "p_perm": p_m, "n_perm": 10000},
                     "reference_variants": {name: value for name, value in _variants.items()
                                            if name != "unnormalized"},
                 }, _f)
 
-            fig, axs = plt.subplots(1, 3, figsize=(13, 3.8), dpi=300)
-            for ax, S, ttl in [(axs[0], S_les, "Causal (lesion profiles, unnormalized clusters)"),
-                               (axs[1], S_act, f"Activity ({side} tuning, unnormalized)")]:
-                sns.heatmap(S, ax=ax, cmap="RdBu_r", vmin=-1, vmax=1, center=0,
-                            xticklabels=all_tasks, yticklabels=all_tasks,
-                            cbar_kws={"shrink": 0.75})
-                ax.set_title(ttl, fontsize=9)
-                ax.tick_params(labelsize=6)
-            axs[2].scatter(primary["activity_pairs"], primary["causal_pairs"], s=14, alpha=0.7,
-                           color="steelblue", edgecolors="none")
-            axs[2].set_xlabel(f"Activity task similarity ({side})", fontsize=8)
-            axs[2].set_ylabel("Causal task similarity", fontsize=8)
             _ref = _variants.get("normalized")
             _ref_txt = (f"; normalized pairing rho={_ref['association']['rho']:.2f}, "
                         f"p={_ref['association']['p_perm']:.3f}" if _ref else "")
-            axs[2].set_title(f"Spearman rho={_assoc_sp['rho']:.2f}, two-sided "
-                             f"p={_assoc_sp['p_perm']:.4f}; Pearson Mantel r={r_m:.2f}, "
-                             f"one-sided p={p_m:.4f}{_ref_txt}", fontsize=7)
-            axs[2].spines["top"].set_visible(False)
-            axs[2].spines["right"].set_visible(False)
-            fig.suptitle("Do tasks that look alike (activity) depend on the "
-                         "same clusters (lesion)?", fontsize=9)
-            fig.tight_layout()
-            fig.savefig(f"{save_dir}/causal_vs_activity_tasksim_{side}_{aname}.png",
-                        dpi=300)
-            plt.close(fig)
+            _plot_causal_vs_activity_diagnostic(
+                primary, all_tasks,
+                ("Causal (lesion profiles, unnormalized clusters)",
+                 f"Activity ({side} tuning, unnormalized)"),
+                f"Activity task similarity ({side})",
+                f"Spearman rho={_assoc_sp['rho']:.2f}, two-sided "
+                f"p={_assoc_sp['p_perm']:.4f}; Pearson Mantel r={r_m:.2f}, "
+                f"one-sided p={p_m:.4f}{_ref_txt}",
+                f"{save_dir}/causal_vs_activity_tasksim_{side}_{aname}.png")
             print(f"[causal-vs-activity] {side} (unnormalized): Spearman rho={_assoc_sp['rho']:.2f}, "
                   f"p={_assoc_sp['p_perm']:.4f}; Pearson Mantel r={r_m:.2f}, p={p_m:.4f}"
                   f"{_ref_txt}; cache saved")
@@ -1976,9 +2097,8 @@ def main(seed, feature):
             print(f"Saved modulation ARI comparison ({_n_ari} types)")
 
     # Second pass: for each clustering type that has both lesion modes,
-    # plot side-by-side heatmaps and a scatter comparison.
-    import seaborn as sns
-
+    # plot side-by-side heatmaps and a scatter comparison (seaborn is
+    # imported above, before the causal dependency maps).
     for base_key, modes_dict in mod_by_type.items():
         base_tag = base_key.replace("modulation_all_", "").replace("_", "-")
 
@@ -2962,6 +3082,9 @@ def main(seed, feature):
             cluster_info_mod = pickle.load(f)
         with open(cluster_path, "rb") as f:
             cluster_info = pickle.load(f)
+
+        _save_modulation_causal_vs_activity(results, normalized_effects, cluster_info_mod,
+                                            all_tasks, aname, save_dir)
 
         # Group by (base_key, variant) to plot both modes side-by-side
         from collections import defaultdict

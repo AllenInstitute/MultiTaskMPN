@@ -91,11 +91,10 @@ class OmLesionScatterTests(unittest.TestCase):
                                               [paper_plot._SCATTER_POINT_STYLE["linewidths"]])
                 np.testing.assert_allclose(scatter.get_facecolors(),
                                            [paper_plot.mpl.colors.to_rgba(
-                                               paper_plot._SCATTER_POINT_COLOR,
+                                               paper_plot._LESION_POINT_COLOR,
                                                paper_plot._DENSE_SCATTER_ALPHA)])
-                np.testing.assert_allclose(scatter.get_edgecolors(),
-                                           [paper_plot.mpl.colors.to_rgba(
-                                               "k", paper_plot._DENSE_SCATTER_ALPHA)])
+                # No outline around the dots.
+                self.assertEqual(len(scatter.get_edgecolors()), 0)
                 legend = axis.get_legend()
                 self.assertIn("Spearman", legend.get_title().get_text())
                 self.assertIn(f"p_perm = {entry['association']['p_perm']:.3f}", legend.get_title().get_text())
@@ -206,7 +205,7 @@ class OmLesionSeedsTests(unittest.TestCase):
                   if isinstance(collection, paper_plot.mpl.collections.PathCollection)]
         np.testing.assert_allclose([point.get_offsets()[0][1] for point in points], rhos)
         filled = [paper_plot.mpl.colors.to_hex(point.get_facecolors()[0])
-                  == paper_plot.mpl.colors.to_hex(paper_plot._SCATTER_POINT_COLOR)
+                  == paper_plot.mpl.colors.to_hex(paper_plot._LESION_POINT_COLOR)
                   for point in points]
         self.assertEqual(filled, [True, False, False])
         dashes = [collection for collection in axis.collections

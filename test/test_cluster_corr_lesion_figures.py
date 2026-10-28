@@ -133,16 +133,18 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
                 suffix = "normalized_lesion_effect" + ("_unnorm" if variant == "unnormalized" else "")
                 self.write(root, suffix, {f"{layer}_{variant}_k20": entry
                                           for layer in ("input", "hidden")})
-            self.write(root, "mod_lesion_effect_normalized_zero-W",
-                       {"normalized_zero-W": normalized})
-            self.write(root, "mod_lesion_effect_var-weighted-unnormalized_zero-W",
-                       {"var-weighted-unnormalized_zero-W": unnormalized})
-            self.write(root, "mod_lesion_effect_abs-weighted-unnormalized_zero-W",
-                       {"abs-weighted-unnormalized_zero-W": abs_weighted})
-            self.write(root, "mod_lesion_effect_unnormalized_zero-W",
-                       {"unnormalized_zero-W": self.entry(True, rho=0.99)})
+            self.write(root, "mod_lesion_effect_normalized_freeze-M",
+                       {"normalized_freeze-M": normalized})
             self.write(root, "mod_lesion_effect_var-weighted-unnormalized_freeze-M",
-                       {"var-weighted-unnormalized_freeze-M": self.entry(True, rho=0.99)})
+                       {"var-weighted-unnormalized_freeze-M": unnormalized})
+            abs_weighted["mod_lesion_mode"] = "freeze_M"
+            self.write(root, "mod_lesion_effect_abs-weighted-unnormalized_freeze-M",
+                       {"abs-weighted-unnormalized_freeze-M": abs_weighted})
+            # Every modulation figure is drawn from its freeze_M lesions; the
+            # zero_W caches and the plain unnormalized type are ignored.
+            for tag in ("normalized_zero-W", "var-weighted-unnormalized_zero-W",
+                        "abs-weighted-unnormalized_zero-W", "unnormalized_freeze-M"):
+                self.write(root, f"mod_lesion_effect_{tag}", {tag: self.entry(True, rho=0.99)})
             figures = self.render(root)
 
         expected = {
@@ -150,9 +152,9 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
             "multitask_cluster_corr_vs_lesion_hidden_norm.png": normalized,
             "multitask_cluster_corr_vs_lesion_input_unnorm.png": unnormalized,
             "multitask_cluster_corr_vs_lesion_hidden_unnorm.png": unnormalized,
-            "multitask_cluster_corr_vs_lesion_modulation_norm_zero_W.png": normalized,
-            "multitask_cluster_corr_vs_lesion_modulation_var_weighted_unnorm_zero_W.png": unnormalized,
-            "multitask_cluster_corr_vs_lesion_modulation_abs_weighted_unnorm_zero_W.png": abs_weighted,
+            "multitask_cluster_corr_vs_lesion_modulation_norm_freeze_M.png": normalized,
+            "multitask_cluster_corr_vs_lesion_modulation_var_weighted_unnorm_freeze_M.png": unnormalized,
+            "multitask_cluster_corr_vs_lesion_modulation_abs_weighted_unnorm_freeze_M.png": abs_weighted,
         }
         self.assertEqual(set(figures), set(expected))
         for name, entry in expected.items():
@@ -162,11 +164,11 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
         variants = (
             ("normalized_lesion_effect", "hidden_normalized_k20", False, False),
             ("normalized_lesion_effect_unnorm", "hidden_unnormalized_k20", True, False),
-            ("mod_lesion_effect_normalized_zero-W", "normalized_zero-W", False, False),
-            ("mod_lesion_effect_var-weighted-unnormalized_zero-W",
-             "var-weighted-unnormalized_zero-W", True, False),
-            ("mod_lesion_effect_weighted-unnormalized_zero-W",
-             "weighted-unnormalized_zero-W", True, True),
+            ("mod_lesion_effect_normalized_freeze-M", "normalized_freeze-M", False, False),
+            ("mod_lesion_effect_var-weighted-unnormalized_freeze-M",
+             "var-weighted-unnormalized_freeze-M", True, False),
+            ("mod_lesion_effect_weighted-unnormalized_freeze-M",
+             "weighted-unnormalized_freeze-M", True, True),
         )
         for suffix, key, exclude_last, weighted_only in variants:
             with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as directory:
@@ -197,7 +199,7 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
         entry.pop("binned_medians")
         with tempfile.TemporaryDirectory() as directory:
             root = self.root(directory)
-            self.write(root, "mod_leison_effect_normalized_zero-W", {"normalized_zero-W": entry})
+            self.write(root, "mod_leison_effect_normalized_freeze-M", {"normalized_freeze-M": entry})
             with patch("builtins.print") as output:
                 figures = self.render(root)
         self.assertEqual(len(figures), 1)
@@ -222,19 +224,19 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
                 medians["counts"][0] = 0
             with self.subTest(problem=problem), tempfile.TemporaryDirectory() as directory:
                 root = self.root(directory)
-                self.write(root, "mod_leison_effect_normalized_zero-W", {"normalized_zero-W": entry})
+                self.write(root, "mod_leison_effect_normalized_freeze-M", {"normalized_freeze-M": entry})
                 self.assertEqual(self.render(root), {})
 
     def test_missing_modulation_variant_does_not_fall_back_or_block_others(self):
         with tempfile.TemporaryDirectory() as directory:
             root = self.root(directory)
-            self.write(root, "mod_lesion_effect_normalized_zero-W",
-                       {"normalized_zero-W": self.entry()})
-            for tag in ("unnormalized_zero-W", "var-weighted-unnormalized_freeze-M"):
+            self.write(root, "mod_lesion_effect_normalized_freeze-M",
+                       {"normalized_freeze-M": self.entry()})
+            for tag in ("unnormalized_freeze-M", "var-weighted-unnormalized_zero-W"):
                 self.write(root, f"mod_lesion_effect_{tag}", {tag: self.entry(True)})
             figures = self.render(root)
         self.assertEqual(set(figures),
-                         {"multitask_cluster_corr_vs_lesion_modulation_norm_zero_W.png"})
+                         {"multitask_cluster_corr_vs_lesion_modulation_norm_freeze_M.png"})
 
     def test_incompatible_entries_are_skipped_without_refitting(self):
         problems = ("legacy_schema", "wrong_key", "wrong_mode", "wrong_x", "wrong_y",
@@ -242,16 +244,16 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
                     "missing_association", "pearson_association", "nonfinite")
         for problem in problems:
             entry = self.entry(True)
-            name = "var-weighted-unnormalized_zero-W"
+            name = "var-weighted-unnormalized_freeze-M"
             if problem == "legacy_schema":
                 entry = {"aname": paper_plot.LESION_ANAME, "exclude_last_cluster": True,
                          "y_definition": "sum_over_tasks_abs_effect_difference",
                          "tuning_cos_sim": [0.1, 0.4, 0.8], "lesion_l1_dist": [3., 4., 5.],
                          "regression": {"slope": 2., "intercept": 3., "r": 1., "p": 0.}}
             elif problem == "wrong_key":
-                name = "var-weighted-unnormalized_freeze-M"
+                name = "var-weighted-unnormalized_zero-W"
             elif problem == "wrong_mode":
-                entry["mod_lesion_mode"] = "freeze_M"
+                entry["mod_lesion_mode"] = "zero_W"
             elif problem == "wrong_x":
                 entry["x_definition"] = "cosine"
             elif problem == "wrong_y":
@@ -270,37 +272,53 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
                 entry["lesion_profile_dissim"][0] = np.nan
             with self.subTest(problem=problem), tempfile.TemporaryDirectory() as directory:
                 root = self.root(directory)
-                self.write(root, "mod_lesion_effect_var-weighted-unnormalized_zero-W", {name: entry})
+                self.write(root, "mod_lesion_effect_var-weighted-unnormalized_freeze-M", {name: entry})
                 self.assertEqual(self.render(root), {})
+
+    def test_every_modulation_figure_reads_the_lesion_heatmap_mode(self):
+        """Each modulation variant draws its freeze_M entry, the lesion heatmap's
+        mode, and rejects one that records another mode."""
+        self.assertEqual(paper_plot.LESION_HEATMAP_MODE, "freeze_M")
+        for type_tag, exclude_last in (("normalized", False), ("var-weighted-unnormalized", True),
+                                       ("abs-weighted-unnormalized", True)):
+            tag = f"{type_tag}_freeze-M"
+            for mode, drawn in (("freeze_M", 1), ("zero_W", 0), (None, 1)):
+                entry = self.entry(exclude_last)
+                if mode is not None:
+                    entry["mod_lesion_mode"] = mode
+                with self.subTest(tag=tag, mode=mode), tempfile.TemporaryDirectory() as directory:
+                    root = self.root(directory)
+                    self.write(root, f"mod_lesion_effect_{tag}", {tag: entry})
+                    self.assertEqual(len(self.render(root)), drawn)
 
     def test_weighted_uses_only_var_wm_cache(self):
         entry = self.entry(True, rho=-0.3)
-        tag = "weighted-unnormalized_zero-W"
+        tag = "weighted-unnormalized_freeze-M"
         with tempfile.TemporaryDirectory() as directory:
             root = self.root(directory)
-            for distractor in ("var-weighted-unnormalized_zero-W",
-                               "weighted-unnormalized_freeze-M", "unnormalized_zero-W"):
+            for distractor in ("var-weighted-unnormalized_freeze-M",
+                               "weighted-unnormalized_zero-W", "unnormalized_freeze-M"):
                 self.write(root, f"mod_lesion_effect_{distractor}",
                            {distractor: self.entry(True, rho=0.99)})
             self.assertEqual(self.render(root, weighted_only=True), {})
             self.write(root, f"mod_lesion_effect_{tag}", {tag: entry})
             figures = self.render(root, weighted_only=True)
-        stem = "multitask_cluster_corr_vs_lesion_modulation_weighted_unnorm_zero_W"
+        stem = "multitask_cluster_corr_vs_lesion_modulation_weighted_unnorm_freeze_M"
         self.assertEqual(set(figures), {f"{stem}.png"})
         self.assert_main_figure(figures[f"{stem}.png"], entry,
                                 tuning_word=r"$\mathrm{Var}(WM)$ tuning")
 
     def test_weighted_rejects_wrong_identity_and_exclusion(self):
-        tag = "weighted-unnormalized_zero-W"
+        tag = "weighted-unnormalized_freeze-M"
         for problem in ("key", "mode", "exclusion"):
             with self.subTest(problem=problem), tempfile.TemporaryDirectory() as directory:
                 root = self.root(directory)
                 entry = self.entry(True)
                 key = tag
                 if problem == "key":
-                    key = "var-weighted-unnormalized_zero-W"
+                    key = "var-weighted-unnormalized_freeze-M"
                 elif problem == "mode":
-                    entry["mod_lesion_mode"] = "freeze_M"
+                    entry["mod_lesion_mode"] = "zero_W"
                 else:
                     entry["exclude_last_cluster"] = False
                 self.write(root, f"mod_lesion_effect_{tag}", {key: entry})
@@ -390,8 +408,8 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
     def test_no_legend_keeps_figure_without_legend(self):
         with tempfile.TemporaryDirectory() as directory:
             root = self.root(directory)
-            self.write(root, "mod_lesion_effect_normalized_zero-W",
-                       {"normalized_zero-W": self.entry()})
+            self.write(root, "mod_lesion_effect_normalized_freeze-M",
+                       {"normalized_freeze-M": self.entry()})
             figures = self.render(root, show_legend=False)
         self.assertEqual(len(figures), 1)
         axis = next(iter(figures.values())).axes[0]

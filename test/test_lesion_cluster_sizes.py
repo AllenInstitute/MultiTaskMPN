@@ -17,15 +17,15 @@ class LesionClusterSizeTests(unittest.TestCase):
                 "all_comb_names_lesion": ["post_nolesion", *names],
             },
             "mod_lesion": {
-                "modulation_all_var_weighted_unnormalized__zero_W": {
-                    "mod_lesion_mode": "zero_W",
+                "modulation_all_var_weighted_unnormalized__freeze_M": {
+                    "mod_lesion_mode": "freeze_M",
                     "mod_col_clusters": {
                         index + 1: list(range(size))
                         for index, size in reversed(list(enumerate(modulation_sizes)))
                     },
                 },
-                "modulation_all_var_weighted_unnormalized__freeze_M": {
-                    "mod_lesion_mode": "freeze_M",
+                "modulation_all_var_weighted_unnormalized__zero_W": {
+                    "mod_lesion_mode": "zero_W",
                     "mod_col_clusters": {1: [0], 2: [1], 3: [2]},
                 },
             },
@@ -64,14 +64,15 @@ class LesionClusterSizeTests(unittest.TestCase):
                 self.assertEqual([text.get_text() for text in axis.texts],
                                  ["0%"] * np.count_nonzero(~positive))
 
-    def test_missing_or_mislabeled_zero_w_does_not_use_freeze_m_sizes(self):
+    def test_missing_or_mislabeled_freeze_m_does_not_use_zero_w_sizes(self):
+        """The sizes follow the heatmap's freeze_M entry and never fall back."""
         for problem in ("missing", "mislabeled"):
             data = self.data([1, 9, 90], [1, 99, 900])
-            key = "modulation_all_var_weighted_unnormalized__zero_W"
+            key = "modulation_all_var_weighted_unnormalized__freeze_M"
             if problem == "missing":
                 del data["mod_lesion"][key]
             else:
-                data["mod_lesion"][key]["mod_lesion_mode"] = "freeze_M"
+                data["mod_lesion"][key]["mod_lesion_mode"] = "zero_W"
             with self.subTest(problem=problem), \
                     patch.object(paper_plot, "_ensure_out_dir"), \
                     patch.object(paper_plot, "_load_lesion_results", return_value=data), \

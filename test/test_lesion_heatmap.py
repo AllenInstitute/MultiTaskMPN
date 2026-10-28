@@ -1,5 +1,6 @@
 """Hidden and modulation lesion panels use saved effects and identities; the
-input effects kept in the same cache are not drawn."""
+modulation panel reads freeze_M, and the input effects and zero_W effects kept
+in the same cache are not drawn."""
 
 import unittest
 from unittest.mock import patch
@@ -7,6 +8,8 @@ from unittest.mock import patch
 import _bootstrap  # noqa: F401
 import numpy as np
 import paper_plot
+
+FREEZE_M = "modulation_all_var_weighted_unnormalized__freeze_M"
 
 
 class LesionHeatmapTests(unittest.TestCase):
@@ -24,21 +27,23 @@ class LesionHeatmapTests(unittest.TestCase):
                     "effect": [[0.1, -0.8, 0., 0.3, 0.2, 0.],
                                [0.2, 0.6, 0., -0.1, 0.4, 0.]],
                 },
+                # zero_W carries the largest magnitudes, so drawing it (or
+                # letting it set the color scale) would fail the checks below.
                 "modulation_all_var_weighted_unnormalized__zero_W": {
                     "mod_lesion_mode": "zero_W",
                     "definition": "random_minus_lesion",
                     "units": "fraction",
                     "tasks": ["fdanti", "fdgo"],
                     "conditions": ["mod_c9", "mod_nolesion", "mod_c1"],
-                    "effect": [[0.5, 0., -0.2], [0.3, 0., 0.1]],
+                    "effect": [[-0.95, 0., -0.9], [-0.9, 0., -0.95]],
                 },
-                "modulation_all_var_weighted_unnormalized__freeze_M": {
+                FREEZE_M: {
                     "mod_lesion_mode": "freeze_M",
                     "definition": "random_minus_lesion",
                     "units": "fraction",
                     "tasks": ["fdanti", "fdgo"],
                     "conditions": ["mod_c9", "mod_nolesion", "mod_c1"],
-                    "effect": [[-0.95, 0., -0.9], [-0.9, 0., -0.95]],
+                    "effect": [[0.5, 0., -0.2], [0.3, 0., 0.1]],
                 },
             },
         }
@@ -53,6 +58,8 @@ class LesionHeatmapTests(unittest.TestCase):
         figure, output_path = save.call_args.args[:2]
         self.addCleanup(paper_plot.plt.close, figure)
         self.assertEqual(output_path.name, "multitask_lesion_heatmap_unnorm.png")
+        self.assertEqual(paper_plot.LESION_HEATMAP_MODE, "freeze_M")
+        self.assertIn("freeze_M", save.call_args.kwargs["extra"])
         self.assertEqual(len(figure.axes), 2)
         # Hidden (post) clusters above modulation clusters; the input (pre)
         # effects, with the largest magnitude in this cache, are not drawn and
@@ -81,7 +88,7 @@ class LesionHeatmapTests(unittest.TestCase):
         neurons = data["entries"]["lesion_unnorm"]
         neurons["conditions"][0] = "post_c21"
         neurons["conditions"][1] = "pre_c21"
-        modulation = data["entries"]["modulation_all_var_weighted_unnormalized__zero_W"]
+        modulation = data["entries"][FREEZE_M]
         modulation["conditions"][0] = "mod_c21"
         with patch.object(paper_plot, "_ensure_out_dir"), \
                 patch.object(paper_plot, "_load_pkl_or_skip", return_value=data), \
@@ -104,8 +111,9 @@ class LesionHeatmapTests(unittest.TestCase):
         self.assertEqual(neurons["conditions"][:2], ["post_c21", "pre_c21"])
         self.assertEqual(modulation["conditions"][0], "mod_c21")
 
-    def test_missing_hidden_or_invalid_zero_w_does_not_save_partial_figure(self):
-        for problem in ("missing", "nonfinite", "missing_zero_w", "wrong_mode"):
+    def test_missing_hidden_or_invalid_freeze_m_does_not_save_partial_figure(self):
+        """A cache without freeze_M effects is skipped, never drawn from zero_W."""
+        for problem in ("missing", "nonfinite", "missing_freeze_m", "wrong_mode"):
             data = self.cache()
             neurons = data["entries"]["lesion_unnorm"]
             if problem == "missing":
@@ -115,10 +123,10 @@ class LesionHeatmapTests(unittest.TestCase):
                 neurons["effect"] = np.asarray(neurons["effect"])[:, indices]
             elif problem == "nonfinite":
                 neurons["effect"][0][0] = np.nan
-            elif problem == "missing_zero_w":
-                del data["entries"]["modulation_all_var_weighted_unnormalized__zero_W"]
+            elif problem == "missing_freeze_m":
+                del data["entries"][FREEZE_M]
             else:
-                data["entries"]["modulation_all_var_weighted_unnormalized__zero_W"]["mod_lesion_mode"] = "freeze_M"
+                data["entries"][FREEZE_M]["mod_lesion_mode"] = "zero_W"
             with self.subTest(problem=problem), \
                     patch.object(paper_plot, "_ensure_out_dir"), \
                     patch.object(paper_plot, "_load_pkl_or_skip", return_value=data), \
@@ -149,9 +157,9 @@ class LesionHeatmapTests(unittest.TestCase):
         self.assertNotIn("lesion_unnorm", data["entries"])
         self.assertIn("post_noleison", neurons["conditions"])
 
-    def test_legacy_explicit_zero_w_key_without_mode_metadata_remains_supported(self):
+    def test_explicit_freeze_m_key_without_mode_metadata_is_read(self):
         data = self.cache()
-        del data["entries"]["modulation_all_var_weighted_unnormalized__zero_W"]["mod_lesion_mode"]
+        del data["entries"][FREEZE_M]["mod_lesion_mode"]
         with patch.object(paper_plot, "_ensure_out_dir"), \
                 patch.object(paper_plot, "_load_pkl_or_skip", return_value=data), \
                 patch.object(paper_plot, "_save_fig") as save, \

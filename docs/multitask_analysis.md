@@ -77,13 +77,18 @@ checks rather than switching seeds per figure.
 
 `python figures/paper_plot.py --only cluster_corr_vs_lesion` draws the four input/hidden
 scatter figures and three modulation figures:
-`multitask_cluster_corr_vs_lesion_modulation_norm_zero_W_n.png`,
-`multitask_cluster_corr_vs_lesion_modulation_var_weighted_unnorm_zero_W_n.png`
-and `multitask_cluster_corr_vs_lesion_modulation_abs_weighted_unnorm_zero_W_n.png`.
-All use cached **zero_W** effects; the two unnormalized figures use var-weighted
-(W·Var(M)) and abs-weighted (|W|·Var(M)) modulation and drop the unresponsive
-cluster. A run whose `lesion_plot.py` caches predate the abs-weighted variant
-skips only that figure. Each figure is scale-free
+`multitask_cluster_corr_vs_lesion_modulation_norm_freeze_M_n.png`,
+`multitask_cluster_corr_vs_lesion_modulation_var_weighted_unnorm_freeze_M_n.png`
+and `multitask_cluster_corr_vs_lesion_modulation_abs_weighted_unnorm_freeze_M_n.png`
+(`--only cluster_corr_vs_lesion_weighted` adds the Var(W·M) one,
+`..._modulation_weighted_unnorm_freeze_M_n.png`). Every modulation figure uses
+cached **freeze_M** effects, the intervention of the lesion heatmap
+(`paper_plot.LESION_HEATMAP_MODE`; changing it there moves all of them), and
+reads only that mode's cache, never zero_W as a substitute. The
+two unnormalized figures use var-weighted (W·Var(M)) and abs-weighted
+(|W|·Var(M)) modulation and drop the unresponsive cluster. A run whose
+`lesion_plot.py` caches predate the abs-weighted variant skips only that
+figure. Each figure is scale-free
 on both axes: x is the Pearson correlation between cluster mean tuning
 profiles, y is the Pearson correlation between per-task lesion effects after
 z-scoring each effect against its stored random-control repeats (control SD
@@ -108,7 +113,7 @@ until `lesion_plot.py` is rerun. All entries come from
 and statistics are read from the `schema_version=2` caches written by
 `lesion_plot.py`; legacy caches holding OLS regressions are skipped, never
 refitted. Missing or incompatible caches skip only the affected figure, with no
-fallback to other variants or freeze_M. The caches also hold an L1
+fallback to other variants or the other lesion mode. The caches also hold an L1
 supplement (the former tuning-cosine vs lesion-effect L1 scatter and L1 vs the
 pair's summed effect magnitude, which is what L1 mostly measures) that
 `lesion_plot.py` draws in its per-run diagnostic figure; `paper_plot.py` does
@@ -136,17 +141,23 @@ z-scored lesion dissimilarities and permutation statistics without refitting.
 No clustering or lesion experiment is rerun. Use an allocated compute node for
 rendering; this `--only` command preserves all other figures.
 
-The primary `lesion_heatmap` compares hidden neuron lesions with
-var-weighted, unnormalized modulation **zero_W** lesions (selected synaptic
-weights set to zero), as two task-by-cluster panels; the input neuron effects
-saved in the same cache are not drawn, and the shared color scale covers only
-the two drawn panels. Its `lesion_cluster_sizes` companion reads the same
-zero_W cluster memberships. `lesion_plot.py` exports both zero_W and freeze_M
-effects with explicit mode metadata; missing zero_W results are never replaced
-by freeze_M in these two figures. Existing explicit zero_W cache keys remain
-readable. The OM scatter reads the same zero_W mode (`paper_plot.OM_LESION_MODE`),
-so heatmap, cluster sizes and scatter describe one lesion experiment; upstream
-plasticity-share/cross-mode comparisons retain both intervention modes.
+The `lesion_heatmap` compares hidden neuron lesions with var-weighted,
+unnormalized modulation **freeze_M** lesions (the selected synapses keep W and
+their modulation is held at its initial value, M(t) <- M(0);
+`paper_plot.LESION_HEATMAP_MODE`), as two task-by-cluster panels; the input
+neuron effects saved in the same cache are not drawn, and the shared color
+scale covers only the two drawn panels. Its `lesion_cluster_sizes` companion
+reads the memberships of the same freeze_M entry; zero_W and freeze_M lesion
+the same synapse clusters, so the sizes do not depend on the mode.
+`lesion_plot.py` exports both zero_W and freeze_M effects with explicit mode
+metadata; missing freeze_M results are never replaced by zero_W in these two
+figures. Every modulation tuning-vs-lesion scatter and the modulation side of
+causal-vs-activity (below) follow the same mode. The OM scatter
+(`paper_plot.OM_LESION_MODE`), task specificity and the synapse column of
+`state_space_vs_lesion` still read **zero_W** (selected synaptic weights set to
+zero); plasticity share compares the two modes by definition.
+`lesion_plot.py` records freeze_M as `primary_modulation_mode` in the
+normalized-effect cache.
 
 The OM-versus-lesion-profile scatter uses Spearman rank correlation and a
 one-sided (negative association) modulation-cluster-footprint permutation test,
@@ -176,16 +187,20 @@ For every (task, synapse cluster) cell whose zero_W effect is significant
 1 means freezing the cluster's plasticity costs the task as much as removing
 its weights, 0 means the static wiring suffices. The figure shows one column
 per task (no-working-memory tasks fdgo/fdanti/reactgo/reactanti first), the
-saved cells as pale points and the saved task median as a dash; values outside
-the fixed y-limits appear as hollow triangles at the edge. The figure shows
+saved cells as pale grey points and the saved task median as a red dash;
+values outside the fixed y-limits appear as hollow grey triangles at the edge.
+Task labels slant at 45° (`_PLASTICITY_SHARE_TICK_ROTATION`), low enough to
+keep the long names short and high enough that their colored boxes do not
+overlap. The figure shows
 the values only: the one-sided task-level Mann-Whitney U test that
 `lesion_plot.py` also saves (memory tasks exceeding no-memory tasks) is not
 reported, and the former per-run `plasticity_share_seeds` figure was removed.
 `--only plasticity_share_cohort` draws `multitask_plasticity_share_cohort_n.png`,
 the same layout with every sibling run of `LESION_ANAME` (same feature, any
 seed) overlaid: the saved significant cells of all runs pooled per task as
-pale points, each run's saved task median as a short gray dash, and the median
-of the pooled cells as the red dash; the legend title gives the run count. A
+pale grey points, each run's saved task median as a short near-black dash (so
+it stays apart from the grey cells), and the median of the pooled cells as
+the red dash; the legend title gives the run count. A
 run whose task list differs from the others is left out with a note, and the
 figure is skipped below two runs. The share compares two interventions and is
 not an exact additive partition of static and plastic contributions.
@@ -201,10 +216,39 @@ because it discards the amplitude that predicts causal impact; the normalized
 pairing is kept in the cache under `reference_variants`. The
 legend reports the saved two-sided Spearman task-label (Mantel-type)
 permutation p, and the line is the saved OLS guide (the cluster-level
-tuning-vs-lesion scatters show bin medians instead, see above). `--only causal_vs_activity_seeds` reads the same
+tuning-vs-lesion scatters show bin medians instead, see above).
+
+A third side, `..._tasks_modulation_n.png` from
+`causal_vs_activity_tasksim_modulation_<aname>.pkl`, asks the same of the
+synapses: x the correlation of the two tasks' period-averaged var-weighted
+modulation features over all synapses, taken by magnitude (|W| Var(M); the
+signed W Var(M) carries the sign of W in every task alike and would inflate
+every pair), y the correlation of their **freeze_M** lesion-effect profiles
+over the var-weighted unnormalized synapse clusters, the intervention of the
+lesion heatmap. The unresponsive class is left out of y: it holds most
+synapses and impairs every task, which would raise every pair together
+(`state_space_vs_lesion.py` drops it for the same reason). A run gets this
+cache only from a `lesion_plot.py` run made after the side was added; until
+then the figure is skipped for it.
+
+`--only causal_vs_activity_seeds` reads the same
 caches for every sibling run of `LESION_ANAME` (same feature, any seed) and
-plots each run's hidden and input rho as a joined pair, filled when the saved
-permutation p is below 0.05, with the median as a dash. A response-period-only
+plots one point per run in a hidden, an input and a modulation column (fixed
+random jitter; the runs have no order), filled when the saved permutation p is
+below 0.05 and a hollow grey ring otherwise, with each column's median (dash)
+and interquartile range (bar).
+Hidden and input share their lesion basis, so input is hidden's control: a
+thin line joins each run's pair and a bracket gives the paired Wilcoxon
+signed-rank p of hidden minus input, computed from the saved per-run rhos.
+Modulation pairs other features with other lesions, so it stands apart behind
+a dotted divider and is not joined. A run needs both neuron sides; the
+modulation column holds the runs that have its cache. The panel has the
+figure size and the square axes box (about 1.49 in) of the single-run
+scatters, so it sits beside `..._tasks_hidden_n.png` at one scale; it carries
+no legend or run count, and its legend (filled and hollow markers, median and
+IQR) is saved as `multitask_causal_vs_activity_seeds_legend_n.png`. The
+bracket's test, the paired Wilcoxon signed-rank, belongs in the caption.
+A response-period-only
 activity vector is not used: it also makes the input side correlate. Both
 figures need `schema_version=2` caches written
 by the current `lesion_plot.py`.

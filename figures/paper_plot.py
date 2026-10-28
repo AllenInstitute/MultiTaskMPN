@@ -854,10 +854,17 @@ _IO_COMBINE = "#2166ac"               # deep blue = Fix + Task (+ bias) sum
 # angle, cluster tuning vs lesion, OM vs lesion, causal vs activity) and the
 # per-run `_seeds` dot plots draw their points and trend / median overlay with
 # these two colors, defined once so the figures agree (SCHEME.md family 4):
-# points in c_vals' blue, the overlay in a warm red no other family uses.
+# points in c_vals' blue (grey in the lesion-mode figures, _LESION_POINT_COLOR
+# below), the overlay in a warm red no other family uses.
 _SCATTER_POINT_COLOR = c_vals[1]          # "#3182ce"
 _TREND_LINE_COLOR = "tomato"
-_SCATTER_POINT_STYLE = dict(color=_SCATTER_POINT_COLOR, edgecolors="k", linewidths=0.4,
+# The lesion-mode scatters (cluster tuning vs lesion, OM vs lesion, causal vs
+# activity, state space vs lesion, plasticity share) and their `_seeds` and
+# cohort plots draw their points in grey instead, significant and not alike
+# (filled vs hollow grey ring), so the red overlay is their only color.
+_LESION_POINT_COLOR = "0.45"
+# The dots have no outline: a black edge only darkens dense clouds.
+_SCATTER_POINT_STYLE = dict(color=_SCATTER_POINT_COLOR, edgecolors="none", linewidths=0,
                             s=22, alpha=0.75, zorder=3)
 _TREND_LINE_STYLE = dict(color=_TREND_LINE_COLOR, linewidth=1.2, zorder=4)
 # Dense scatters (hundreds of points, e.g. OM vs lesion) fade their dots.
@@ -866,6 +873,9 @@ _DENSE_SCATTER_ALPHA = 0.45
 # Five, not four, so a 0 to 0.9 axis can take the 0.2 step (0, 0.2, ..., 0.8)
 # instead of falling back to 0 and 0.5 only once 0.25-type steps are barred.
 _STAT_SCATTER_MAX_TICKS = 5
+# Tick labels of these scatters and of the lesion `_seeds` dot plots, one
+# point above paper_plot's 7 pt default so they read at the 2.5 in panel size.
+_STAT_SCATTER_TICK_FONTSIZE = 8
 
 
 def _short_tick(value, _position=None):
@@ -880,13 +890,15 @@ def _invisible_legend_handle():
 
 
 def _stat_scatter(ax, x, y, legend_text, *, trend_line=None, xlabel="", ylabel="",
-                  legend_handles=None, point_alpha=None, label_fontsize=8):
+                  legend_handles=None, point_alpha=None, label_fontsize=8,
+                  point_color=None):
     """Draw one association scatter the way every such figure draws it.
 
-    Points in _SCATTER_POINT_STYLE (optionally faded with `point_alpha`), the
+    Points in _SCATTER_POINT_STYLE (optionally faded with `point_alpha`, and
+    in `point_color` instead of its blue, e.g. _LESION_POINT_COLOR), the
     saved OLS guide `trend_line` ({"slope", "intercept"}) in _TREND_LINE_STYLE
     spanning the data, and the statistics text as a frameless legend above the
-    axes - the only place a 2 in panel can hold it without hiding points. With
+    axes - the only place a 2.5 in panel can hold it without hiding points. With
     `legend_handles` (e.g. a median connector) the text becomes the legend
     title and the handles its entries. Spines, label sizes, tick counts and a
     square axes box (set_box_aspect(1): the data ranges differ between axes,
@@ -897,6 +909,8 @@ def _stat_scatter(ax, x, y, legend_text, *, trend_line=None, xlabel="", ylabel="
     style = dict(_SCATTER_POINT_STYLE)
     if point_alpha is not None:
         style["alpha"] = point_alpha
+    if point_color is not None:
+        style["color"] = point_color
     ax.scatter(x, y, **style)
     if trend_line is not None:
         positions = np.linspace(float(np.min(x)), float(np.max(x)), 100)
@@ -913,7 +927,7 @@ def _stat_scatter(ax, x, y, legend_text, *, trend_line=None, xlabel="", ylabel="
     ax.set_box_aspect(1)
     ax.set_xlabel(xlabel, fontsize=label_fontsize)
     ax.set_ylabel(ylabel, fontsize=label_fontsize)
-    ax.tick_params(labelsize=7)
+    ax.tick_params(labelsize=_STAT_SCATTER_TICK_FONTSIZE)
     # Round tick steps only (1, 2, 5 x a power of ten: 0.2, 0.5, 2 ...), never
     # the 0.25-type steps that put 0.75 on a correlation axis, and labels with
     # trailing zeros dropped (0.4, 0.8, 1).
@@ -2934,20 +2948,23 @@ def _run_offsets(n_runs, step, half_width):
     return (np.arange(n_runs) - (n_runs - 1) / 2) * step
 
 
-def _significance_marker(ax, x, y, significant, size=32):
-    """One statistic as a point: filled in the scatter blue when its saved
-    permutation p is below 0.05, hollow otherwise (the convention of every
-    per-run `_seeds` figure)."""
+def _significance_marker(ax, x, y, significant, size=32, color=_SCATTER_POINT_COLOR,
+                         hollow_edge="k"):
+    """One statistic as a point: filled in `color` when its saved permutation
+    p is below 0.05, hollow with a `hollow_edge` ring otherwise (the
+    convention of every per-run `_seeds` figure; the lesion-mode ones pass
+    _LESION_POINT_COLOR for both)."""
     ax.scatter([x], [y], s=size, zorder=3,
-               color=_SCATTER_POINT_COLOR if significant else "white",
-               edgecolors=_SCATTER_POINT_COLOR if significant else "k", linewidths=0.6)
+               color=color if significant else "white",
+               edgecolors=color if significant else hollow_edge, linewidths=0.6)
 
 
-def _significance_legend_handles():
-    filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color=_SCATTER_POINT_COLOR,
+def _significance_legend_handles(color=_SCATTER_POINT_COLOR, hollow_edge="k"):
+    """Legend entries matching _significance_marker with the same colors."""
+    filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color=color,
                               markersize=5, label=f"permutation p < {_STATE_SPACE_SIGNIFICANCE}")
     hollow = mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
-                              markeredgecolor="k", markersize=5,
+                              markeredgecolor=hollow_edge, markersize=5,
                               label=rf"p $\geq$ {_STATE_SPACE_SIGNIFICANCE}")
     return [filled, hollow]
 
@@ -4016,6 +4033,16 @@ def plot_overmembership_examples():
 # ─── Figure: Lesion heatmap ──────────────────────────────────────────────────
 # LESION_DIR (multiple_tasks_perf/{LESION_ANAME}) is set by _set_multitask_l2.
 
+# Synapse intervention drawn in the lesion heatmap, and read by its cluster-size
+# companion, every modulation tuning-vs-lesion figure and the modulation side
+# of causal-vs-activity. freeze_M keeps W and holds the selected synapses'
+# modulation at its initial value, so the panel measures what their
+# plasticity contributes. zero_W (W <- 0) stays in the same caches; the OM
+# scatter still reads it (OM_LESION_MODE). Both modes lesion the same synapse
+# clusters.
+LESION_HEATMAP_MODE = "freeze_M"
+_LESION_HEATMAP_MOD_KEY = f"modulation_all_var_weighted_unnormalized__{LESION_HEATMAP_MODE}"
+
 
 def _load_lesion_results():
     """Load the lesion/prune results pickle."""
@@ -4030,9 +4057,11 @@ def plot_lesion_heatmap():
 
     Two task-by-cluster panels: hidden neuron clusters (post, from
     lesion_unnorm) above modulation clusters from
-    modulation_all_var_weighted_unnormalized__zero_W. The input (pre) effects
-    saved in the same cache are not drawn. Modulation connections are removed
-    via zero_W; freeze_M is reserved for separate comparisons.
+    modulation_all_var_weighted_unnormalized__freeze_M. The input (pre) effects
+    saved in the same cache are not drawn. The modulation panel freezes the
+    selected synapses' M at its initial value and keeps W
+    (LESION_HEATMAP_MODE); a cache without freeze_M effects is skipped, never
+    replaced by zero_W.
 
     lesion_plot.py computes random_acc - cluster_acc. Positive values mean the
     targeted lesion impairs accuracy more than the size-matched random control.
@@ -4053,9 +4082,9 @@ def plot_lesion_heatmap():
         if data["schema_version"] != 1 or data["aname"] != LESION_ANAME:
             raise ValueError("normalized-effect cache version/run does not match")
         hidden = data["entries"]["lesion_unnorm"]
-        modulation = data["entries"]["modulation_all_var_weighted_unnormalized__zero_W"]
-        if modulation.get("mod_lesion_mode", "zero_W") != "zero_W":
-            raise ValueError("primary modulation heatmap requires zero_W effects")
+        modulation = data["entries"][_LESION_HEATMAP_MOD_KEY]
+        if modulation.get("mod_lesion_mode", LESION_HEATMAP_MODE) != LESION_HEATMAP_MODE:
+            raise ValueError(f"modulation heatmap requires {LESION_HEATMAP_MODE} effects")
         for entry in (hidden, modulation):
             if entry["definition"] != "random_minus_lesion" or entry["units"] != "fraction":
                 raise ValueError("unexpected effect definition or units")
@@ -4120,7 +4149,7 @@ def plot_lesion_heatmap():
     _tick_max = int(np.floor(vmax / 30.0)) * 30
     _ticks = np.arange(-_tick_max, _tick_max + 1, 30)
     out_path = _multitask_out("lesion_heatmap_unnorm.png")
-    _save_fig(fig, out_path, extra="  (modulation lesion: zero_W)")
+    _save_fig(fig, out_path, extra=f"  (modulation lesion: {LESION_HEATMAP_MODE})")
     _save_standalone_colorbar(
         _multitask_out("lesion_heatmap_unnorm_colorbar.png"),
         cmap="RdBu_r",
@@ -4141,12 +4170,13 @@ def plot_lesion_cluster_sizes():
         Top    — hidden (post) neuron clusters from the unnormalized
                  clustering: % of all hidden neurons per cluster
         Bottom — var-weighted-unnormalized modulation (synapse) clusters from
-                 the zero_W result, matching the primary heatmap:
-                 % of all clustered synapses per cluster
+                 the freeze_M result (LESION_HEATMAP_MODE), matching the
+                 heatmap: % of all clustered synapses per cluster
 
     Read hidden counts from saved lesion_units and compute modulation counts
-    from saved zero_W memberships. Percentages are calculated here using each
-    panel's summed counts; no lesion effects or significance tests are fitted.
+    from the saved memberships of that same entry. Percentages are calculated
+    here using each panel's summed counts; no lesion effects or significance
+    tests are fitted.
     The input panel in the main heatmap has no size panel here. Numberings are
     independent and displayed as C1..Cn; unlike the heatmap, C21 is not relabeled
     U in this figure. Percentages use log y axes; zero-size clusters are labeled
@@ -4168,13 +4198,12 @@ def plot_lesion_cluster_sizes():
     hid_sizes = np.array([lu[n] for n in post_names], float)
 
     # Bottom: var-weighted modulation cluster sizes (sorted ids = heatmap order)
-    mod_entry = data["mod_lesion"].get(
-        "modulation_all_var_weighted_unnormalized__zero_W")
+    mod_entry = data["mod_lesion"].get(_LESION_HEATMAP_MOD_KEY)
     if mod_entry is None:
-        print("  Skipped: var-weighted zero_W lesion entry not found.")
+        print(f"  Skipped: var-weighted {LESION_HEATMAP_MODE} lesion entry not found.")
         return
-    if mod_entry.get("mod_lesion_mode", "zero_W") != "zero_W":
-        print("  Skipped: modulation cluster sizes require a zero_W lesion entry.")
+    if mod_entry.get("mod_lesion_mode", LESION_HEATMAP_MODE) != LESION_HEATMAP_MODE:
+        print(f"  Skipped: modulation cluster sizes require a {LESION_HEATMAP_MODE} lesion entry.")
         return
     col_clusters = mod_entry["mod_col_clusters"]
     mod_sizes = np.array([len(col_clusters[c]) for c in sorted(col_clusters)],
@@ -4231,10 +4260,9 @@ def _saved_om_rank_association(entry):
     return {"rho": rho, "p_perm": probability, "n_perm": n_perm, "n_clusters": n_clusters}
 
 
-# Intervention shown in the OM-vs-lesion scatter. zero_W (selected synaptic
-# weights set to zero) matches the primary lesion heatmap and cluster-size
-# figure, so the three read one lesion mode; freeze_M stays available in the
-# same caches for the plasticity-share comparisons.
+# Intervention shown in the OM-vs-lesion scatter: zero_W (selected synaptic
+# weights set to zero). The other synapse-lesion figures follow
+# LESION_HEATMAP_MODE (freeze_M) instead; both modes stay in the same caches.
 OM_LESION_MODE = "zero_W"
 
 
@@ -4328,7 +4356,8 @@ def plot_om_vs_lesion():
     # Hundreds of points: fade them so the median connector stays readable.
     _stat_scatter(ax1, om_vals, lesion_diffs, f"{_rho_str}\n{_pp_str}",
                   legend_handles=[median_line], point_alpha=_DENSE_SCATTER_ALPHA,
-                  xlabel="Over-membership", ylabel="Lesion-effect\ndistance (L1)")
+                  xlabel="Over-membership", ylabel="Lesion-effect\ndistance (L1)",
+                  point_color=_LESION_POINT_COLOR)
     ax1.set_ylim(bottom=0)
     fig1.tight_layout()
     out_path1 = _multitask_out("om_vs_lesion_scatter.png")
@@ -4385,22 +4414,18 @@ def plot_om_vs_lesion_seeds():
     for offset, saved in zip(offsets, runs.values()):
         is_significant = saved["p_perm"] < 0.05
         significant += int(is_significant)
-        ax.scatter([offset], [saved["rho"]], s=32, zorder=3,
-                   color=_SCATTER_POINT_COLOR if is_significant else "white",
-                   edgecolors=_SCATTER_POINT_COLOR if is_significant else "k", linewidths=0.6)
+        _significance_marker(ax, offset, saved["rho"], is_significant,
+                             color=_LESION_POINT_COLOR, hollow_edge=_LESION_POINT_COLOR)
     ax.hlines(np.median(rhos), -0.22, 0.22, color=_TREND_LINE_COLOR, linewidth=1.8, zorder=4)
     p_value, p_text = _wilcoxon_vs_zero(rhos, alternative="less")
     ax.set_xticks([0])
-    ax.set_xticklabels(["Synapse clusters"], fontsize=7)
+    ax.set_xticklabels(["Synapse clusters"], fontsize=_STAT_SCATTER_TICK_FONTSIZE)
     ax.set_xlim(-0.6, 0.6)
     ax.set_ylabel(r"Spearman $\rho$" + "\n(OM vs lesion distance)", fontsize=7)
     ax.spines[["top", "right"]].set_visible(False)
-    ax.tick_params(axis="y", labelsize=7)
-    filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color=_SCATTER_POINT_COLOR,
-                              markersize=5, label="permutation p < 0.05")
-    hollow = mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
-                              markeredgecolor="k", markersize=5, label=r"p $\geq$ 0.05")
-    _seeds_legend(ax, [filled, hollow], len(runs),
+    ax.tick_params(axis="y", labelsize=_STAT_SCATTER_TICK_FONTSIZE)
+    _seeds_legend(ax, _significance_legend_handles(_LESION_POINT_COLOR, _LESION_POINT_COLOR),
+                  len(runs),
                   note="Wilcoxon signed-rank,\n" + rf"$\rho$ < 0 (one-sided): {p_text}")
     fig.tight_layout()
     _save_fig(fig, _multitask_out("om_vs_lesion_seeds.png"),
@@ -4415,6 +4440,12 @@ _PLASTICITY_SHARE_YLIM = (-0.6, 1.6)
 _PLASTICITY_SHARE_FIGSIZE = (4.6, 2.8)
 _PLASTICITY_SHARE_FAMILY_LABELS = {"reaction": "No working memory",
                                    "memory": "Working memory"}
+# Cells are lesion-figure points (_LESION_POINT_COLOR, grey), so each run's
+# median dash is drawn near black to stay distinct from them.
+_PLASTICITY_SHARE_RUN_MEDIAN_COLOR = "0.15"
+# Task labels slant at this angle from horizontal: low enough that the long
+# names stay short vertically, high enough that neighbors do not overlap.
+_PLASTICITY_SHARE_TICK_ROTATION = 45
 
 
 def _load_plasticity_share(directory=None, aname=None):
@@ -4465,9 +4496,10 @@ def _draw_plasticity_share_axes(ax, tasks, family, cells, medians, run_medians=N
                                 point_alpha=0.45):
     """Draw one plasticity-share panel: one column per task, no-working-memory
     tasks first, `cells[i]` (the task's share values) as pale points with
-    values beyond _PLASTICITY_SHARE_YLIM as hollow triangles at the edge,
-    `medians[i]` as the red dash and, when given, `run_medians[i]` (one value
-    per run) as short gray dashes. Returns the number of clipped cells."""
+    values beyond _PLASTICITY_SHARE_YLIM as hollow triangles at the edge, both
+    in _LESION_POINT_COLOR, `medians[i]` as the red dash and, when given,
+    `run_medians[i]` (one value per run) as short near-black dashes. Returns
+    the number of clipped cells."""
     order = ([index for index, kind in enumerate(family) if kind == "reaction"]
              + [index for index, kind in enumerate(family) if kind == "memory"])
     n_no_memory = sum(kind == "reaction" for kind in family)
@@ -4482,23 +4514,24 @@ def _draw_plasticity_share_axes(ax, tasks, family, cells, medians, run_medians=N
         if values.size:
             jitter = np.linspace(-0.22, 0.22, values.size) if values.size > 1 else np.zeros(1)
             inside = (values >= low) & (values <= high)
-            ax.scatter(position + jitter[inside], values[inside], color=_SCATTER_POINT_COLOR,
+            ax.scatter(position + jitter[inside], values[inside], color=_LESION_POINT_COLOR,
                        edgecolors="none", s=14, alpha=point_alpha, zorder=2)
             for beyond, marker, edge in ((values > high, "^", high), (values < low, "v", low)):
                 if beyond.any():
                     n_clipped += int(beyond.sum())
                     ax.scatter(position + jitter[beyond], np.full(beyond.sum(), edge),
-                               marker=marker, facecolors="none", edgecolors=_SCATTER_POINT_COLOR,
+                               marker=marker, facecolors="none", edgecolors=_LESION_POINT_COLOR,
                                linewidths=0.6, s=16, zorder=2)
         if run_medians is not None and len(run_medians[index]):
             ax.hlines(np.clip(run_medians[index], low, high), position - 0.3, position + 0.3,
-                      color="0.45", linewidth=0.7, zorder=3)
+                      color=_PLASTICITY_SHARE_RUN_MEDIAN_COLOR, linewidth=0.7, zorder=3)
         if np.isfinite(medians[index]):
             ax.scatter([position], [medians[index]], marker="_", s=160, color=_TREND_LINE_COLOR,
                        linewidths=1.8, zorder=4)
     ax.set_xticks(range(len(order)))
     ax.set_xticklabels([_TASK_DISPLAY.get(tasks[index], tasks[index]) for index in order],
-                       rotation=60, ha="right", fontsize=6)
+                       rotation=_PLASTICITY_SHARE_TICK_ROTATION, ha="right",
+                       rotation_mode="anchor", fontsize=6)
     _color_motif_ticklabels(ax, [tasks[index] for index in order], axis="x")
     for start, stop, kind in ((0, n_no_memory, "reaction"), (n_no_memory, len(order), "memory")):
         if stop > start:
@@ -4522,9 +4555,9 @@ def plot_plasticity_share():
     """
     Figure: plasticity share of each task's synapse-cluster dependence.
 
-    One column per task, no-working-memory tasks first. Pale points are the
-    saved share values, one per (task, synapse cluster) cell whose zero_W
-    effect was significant; the dark dash is the saved task median. Share 1
+    One column per task, no-working-memory tasks first. Pale grey points are
+    the saved share values, one per (task, synapse cluster) cell whose zero_W
+    effect was significant; the red dash is the saved task median. Share 1
     means freezing the plasticity of that cluster costs the task as much as
     removing its weights; 0 means the static wiring suffices. Values beyond
     the y-limits are drawn as hollow triangles at the edge, so no cell is
@@ -4576,7 +4609,7 @@ def plot_plasticity_share_cohort():
     memory tasks first, share 1 meaning that freezing a cluster's plasticity
     costs the task as much as removing its weights. The pale points are the
     saved significant (task, synapse cluster) cells of all runs pooled per
-    task, each short gray dash is one run's saved task median, and the red
+    task, each short near-black dash is one run's saved task median, and the red
     dash is the median of the pooled cells. Values beyond the y-limits are
     hollow triangles at the edge; run medians beyond them are drawn at the
     edge. The legend title gives the run count. Only saved values are drawn;
@@ -4598,7 +4631,8 @@ def plot_plasticity_share_cohort():
     fig, ax = plt.subplots(1, 1, figsize=_PLASTICITY_SHARE_FIGSIZE)
     n_clipped = _draw_plasticity_share_axes(ax, tasks, family, cells, medians, run_medians,
                                             point_alpha=0.3)
-    run_handle = mpl.lines.Line2D([], [], color="0.45", linewidth=0.7, label="Run median")
+    run_handle = mpl.lines.Line2D([], [], color=_PLASTICITY_SHARE_RUN_MEDIAN_COLOR, linewidth=0.7,
+                                  label="Run median")
     # With every run pooled no band of the axes stays empty, so the legend
     # sits outside, to the right of the axes.
     _legend(ax, handles=[_plasticity_share_median_handle("Pooled median"), run_handle],
@@ -4845,7 +4879,11 @@ def plot_state_space_vs_lesion():
     entry = _state_space_vs_lesion_entry(combined, LESION_ANAME)
     if entry is None:
         return
-    fig, axs = plt.subplots(len(_SSL_REPRESENTATIONS), len(_SSL_CLUSTER_TYPES), figsize=(5.4, 5.2))
+    # One _LESION_SCATTER_FIGSIZE square per panel, so each panel matches the
+    # single-panel lesion scatters.
+    n_rows, n_cols = len(_SSL_REPRESENTATIONS), len(_SSL_CLUSTER_TYPES)
+    panel_width, panel_height = _LESION_SCATTER_FIGSIZE
+    fig, axs = plt.subplots(n_rows, n_cols, figsize=(n_cols * panel_width, n_rows * panel_height))
     notes = []
     for row, (representation, _) in enumerate(_SSL_REPRESENTATIONS):
         x = np.asarray(entry["distances"][representation], dtype=float)
@@ -4857,7 +4895,8 @@ def plot_state_space_vs_lesion():
                      f"permutation {_permutation_p_text(test['p_value'])}")
             _stat_scatter(ax, x, y, label,
                           xlabel=f"Context-end distance\n({_SSL_DISTANCE_LABELS[representation]})",
-                          ylabel="Lesion-profile\nsimilarity (r)" if column == 0 else "")
+                          ylabel="Lesion-profile\nsimilarity (r)" if column == 0 else "",
+                          point_color=_LESION_POINT_COLOR)
             if row == 0:
                 ax.set_title(title, fontsize=9, pad=22)
             notes.append(f"{representation}/{cluster_type}: rho = {test['rho']:.3f}, "
@@ -4903,7 +4942,8 @@ def plot_state_space_vs_lesion_seeds():
             rhos = np.array([test["rho"] for test in tests])
             for offset, test in zip(offsets, tests):
                 _significance_marker(ax, position + offset, test["rho"],
-                                     test["p_value"] < _STATE_SPACE_SIGNIFICANCE, size=22)
+                                     test["p_value"] < _STATE_SPACE_SIGNIFICANCE, size=22,
+                                     color=_LESION_POINT_COLOR, hollow_edge=_LESION_POINT_COLOR)
             ax.hlines(np.median(rhos), position - 0.3, position + 0.3, color=_TREND_LINE_COLOR,
                       linewidth=1.8, zorder=4)
             p_cohort, p_text = _wilcoxon_vs_zero(rhos)
@@ -4919,8 +4959,10 @@ def plot_state_space_vs_lesion_seeds():
         ax.spines[["top", "right"]].set_visible(False)
         ax.tick_params(axis="y", labelsize=7)
     axs[0].set_ylabel(r"Spearman $\rho$" + "\n(distance vs lesion similarity)", fontsize=7)
-    _state_space_figure_legend(fig, _significance_legend_handles() + [
-        mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8, label="median over runs")])
+    _state_space_figure_legend(
+        fig, _significance_legend_handles(_LESION_POINT_COLOR, _LESION_POINT_COLOR) + [
+            mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8,
+                             label="median over runs")])
     _save_fig(fig, _multitask_out("state_space_vs_lesion_seeds.png"),
               extra=f"  {len(entries)} runs; " + "; ".join(summaries))
 
@@ -5366,12 +5408,12 @@ CLUSTER_CORR_Y_DEFINITION = "one_minus_pearson_corr_of_z_scored_effect_profiles"
 # One size for every lesion-mode scatter figure (tuning vs lesion, OM vs lesion,
 # causal vs activity and the per-run `_seeds` dot plots), so they tile as equal
 # squares; the task-specificity count bars keep their own size below.
-_LESION_SCATTER_FIGSIZE = (2.0, 2.0)
+_LESION_SCATTER_FIGSIZE = (2.5, 2.5)
 _TASK_SPECIFICITY_FIGSIZE = (3, 2.8)
 
 
 def _seeds_legend(ax, handles, n_runs, note=None):
-    """Legend of the per-run `_seeds` figures, placed above the axes (a 2 in
+    """Legend of the per-run `_seeds` figures, placed above the axes (a 2.5 in
     panel has no empty corner for a box) with the run count as its title;
     `note` is appended to that title and may hold its own line breaks.
     tight_layout reserves the legend's width for the axes, so every title
@@ -5391,7 +5433,7 @@ def _rank_association_label(association, unit=""):
         raise ValueError("non-finite saved rank statistics")
     p_text = "p < 0.001" if p_perm < 0.001 else f"p = {p_perm:.3f}"
     suffix = f" {unit}" if unit else ""
-    # Two short lines: a one-line label is wider than the 2 in scatter axes and
+    # Two short lines: a one-line label is wider than the 2.5 in scatter axes and
     # would make tight_layout squeeze the plot to make room for it.
     return (rf"$\rho$ = {rho:.2f} (n = {int(association['n_clusters'])}{suffix})"
             "\n" f"permutation {p_text}")
@@ -5444,9 +5486,11 @@ def _read_cluster_corr_entry(name, data, expected_entry, aname=None):
         raise ValueError("legacy cache without the scale-free comparison")
     if expected_entry is not None:
         exclude_last = "unnormalized" in expected_entry
+        # The entry name ends in its lesion mode ("..._zero-W", "..._freeze-M").
+        expected_mode = expected_entry.rsplit("_", 1)[1].replace("-", "_")
         if (name != expected_entry
                 or data.get("exclude_last_cluster") is not exclude_last
-                or data.get("mod_lesion_mode", "zero_W") != "zero_W"):
+                or data.get("mod_lesion_mode", expected_mode) != expected_mode):
             raise ValueError("modulation variant, mode or cluster exclusion does not match")
     if (data.get("x_definition") != CLUSTER_CORR_X_DEFINITION
             or data.get("y_definition") != CLUSTER_CORR_Y_DEFINITION
@@ -5478,29 +5522,28 @@ def plot_cluster_corr_vs_lesion():
     tuned pairs; they are descriptive, not the statistic.
 
     Produces input/hidden figures for both clustering variants, plus three
-    zero_W modulation figures: normalized, var-weighted unnormalized (W*Var(M))
-    and abs-weighted unnormalized (|W|*Var(M)); Var(W*M) has its own entry
-    point, plot_cluster_corr_vs_lesion_weighted. Modulation uses only the
-    exact saved variant/mode entry, never a freeze_M substitute; its
-    unnormalized variants drop the unresponsive cluster. All
+    modulation figures: normalized, var-weighted unnormalized (W*Var(M)) and
+    abs-weighted unnormalized (|W|*Var(M)); Var(W*M) has its own entry point,
+    plot_cluster_corr_vs_lesion_weighted. Every modulation figure uses the
+    lesion heatmap's intervention, LESION_HEATMAP_MODE (freeze_M), and only
+    that exact saved variant/mode entry, never the other mode as a
+    substitute; its unnormalized variants drop the unresponsive cluster. All
     entries come from LESION_ANAME's caches. Legacy caches are skipped, not
     refitted, and the L1 supplement kept in the caches is not drawn here.
     """
     variants = [
         ("normalized_lesion_effect", None, None),
         ("normalized_lesion_effect_unnorm", None, None),
-        ("mod_lesion_effect_normalized_zero-W", "modulation_norm_zero_W",
-         "normalized_zero-W"),
-        ("mod_lesion_effect_var-weighted-unnormalized_zero-W",
-         "modulation_var_weighted_unnorm_zero_W", "var-weighted-unnormalized_zero-W"),
-        ("mod_lesion_effect_abs-weighted-unnormalized_zero-W",
-         "modulation_abs_weighted_unnorm_zero_W", "abs-weighted-unnormalized_zero-W"),
+        _cluster_corr_modulation_variant("normalized", "norm"),
+        _cluster_corr_modulation_variant("var-weighted-unnormalized", "var_weighted_unnorm"),
+        _cluster_corr_modulation_variant("abs-weighted-unnormalized", "abs_weighted_unnorm"),
     ]
     _plot_cluster_corr_vs_lesion_variants(variants)
 
 
 def plot_cluster_corr_vs_lesion_weighted():
-    """Plot Var(W*M) tuning versus zero_W lesion profiles from its exact saved cache.
+    """Plot Var(W*M) tuning versus LESION_HEATMAP_MODE (freeze_M) lesion
+    profiles from its exact saved cache.
 
     The weighted-unnormalized features are variance after multiplication by W,
     unlike var-weighted features W*Var(M). Keep the saved cluster memberships,
@@ -5508,9 +5551,19 @@ def plot_cluster_corr_vs_lesion_weighted():
     separately from the existing modulation figures.
     """
     _plot_cluster_corr_vs_lesion_variants([
-        ("mod_lesion_effect_weighted-unnormalized_zero-W",
-         "modulation_weighted_unnorm_zero_W", "weighted-unnormalized_zero-W"),
+        _cluster_corr_modulation_variant("weighted-unnormalized", "weighted_unnorm"),
     ])
+
+
+def _cluster_corr_modulation_variant(type_tag, output_tag):
+    """(cache suffix, output name, expected entry) of one modulation clustering
+    type under LESION_HEATMAP_MODE, so every synapse tuning-vs-lesion figure
+    reads the lesion heatmap's intervention. Cache names spell the mode with a
+    hyphen ("freeze-M"), output names as the mode ("freeze_M")."""
+    cache_mode = LESION_HEATMAP_MODE.replace("_", "-")
+    return (f"mod_lesion_effect_{type_tag}_{cache_mode}",
+            f"modulation_{output_tag}_{LESION_HEATMAP_MODE}",
+            f"{type_tag}_{cache_mode}")
 
 
 def _plot_cluster_corr_vs_lesion_variants(variants):
@@ -5536,7 +5589,7 @@ def _plot_cluster_corr_vs_lesion_variants(variants):
                       "run multiple_task/lesion_plot.py again.")
                 continue
 
-            weighted = expected_entry == "weighted-unnormalized_zero-W"
+            weighted = (expected_entry or "").startswith("weighted-unnormalized_")
             tuning_word = r"$\mathrm{Var}(WM)$ tuning" if weighted else "Tuning"
             # e.g. "input_normalized_k20" -> "input_norm"
             clean_name = output_name or name.replace("_normalized", "_norm").replace(
@@ -5560,7 +5613,7 @@ def _plot_cluster_corr_vs_lesion_variants(variants):
                 handles.append(_draw_similarity_bin_medians(ax, entry["binned_medians"]))
             _stat_scatter(ax, entry["x"], similarity, _rank_association_label(association),
                           legend_handles=handles, xlabel=f"{tuning_word} correlation",
-                          ylabel="Lesion similarity (r)")
+                          ylabel="Lesion similarity (r)", point_color=_LESION_POINT_COLOR)
             fig.tight_layout()
             _save_fig(fig, _multitask_out(f"cluster_corr_vs_lesion_{clean_name}.png"),
                       extra=f" [{LESION_ANAME}]")
@@ -5645,10 +5698,9 @@ def _plot_cluster_corr_seed_rhos(runs, out_name):
         ax.plot(positions + offset, [entries[side]["rho"] for side in sides],
                 color="0.75", linewidth=0.6, zorder=2)
         for position, side in zip(positions, sides):
-            significant = entries[side]["p_perm"] < 0.05
-            ax.scatter([position + offset], [entries[side]["rho"]], s=32, zorder=3,
-                       color=_SCATTER_POINT_COLOR if significant else "white",
-                       edgecolors=_SCATTER_POINT_COLOR if significant else "k", linewidths=0.6)
+            _significance_marker(ax, position + offset, entries[side]["rho"],
+                                 entries[side]["p_perm"] < 0.05,
+                                 color=_LESION_POINT_COLOR, hollow_edge=_LESION_POINT_COLOR)
     cohort_tests, test_texts = {}, []
     for position, side in zip(positions, sides):
         rhos = [entries[side]["rho"] for entries in runs.values()]
@@ -5657,16 +5709,14 @@ def _plot_cluster_corr_seed_rhos(runs, out_name):
         cohort_tests[side], p_text = _wilcoxon_vs_zero(rhos)
         test_texts.append(f"{side} {p_text}")
     ax.set_xticks(positions)
-    ax.set_xticklabels([_CLUSTER_CORR_SEED_LABELS[side] for side in sides], fontsize=7)
+    ax.set_xticklabels([_CLUSTER_CORR_SEED_LABELS[side] for side in sides],
+                       fontsize=_STAT_SCATTER_TICK_FONTSIZE)
     ax.set_xlim(-0.6, len(positions) - 0.4)
     ax.set_ylabel(r"Spearman $\rho$" + "\n(tuning vs lesion similarity)", fontsize=7)
     ax.spines[["top", "right"]].set_visible(False)
-    ax.tick_params(axis="y", labelsize=7)
-    filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color=_SCATTER_POINT_COLOR,
-                              markersize=5, label="permutation p < 0.05")
-    hollow = mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
-                              markeredgecolor="k", markersize=5, label=r"p $\geq$ 0.05")
-    _seeds_legend(ax, [filled, hollow], len(runs),
+    ax.tick_params(axis="y", labelsize=_STAT_SCATTER_TICK_FONTSIZE)
+    _seeds_legend(ax, _significance_legend_handles(_LESION_POINT_COLOR, _LESION_POINT_COLOR),
+                  len(runs),
                   note="Wilcoxon signed-rank vs 0:\n" + ", ".join(test_texts))
     fig.tight_layout()
     summary = ", ".join(
@@ -5713,13 +5763,33 @@ def _sibling_run_dirs():
 
 # ─── Figure: Causal vs activity task organization ────────────────────────────
 
-CAUSAL_VS_ACTIVITY_SIDES = ("hidden", "input")
+CAUSAL_VS_ACTIVITY_SIDES = ("hidden", "input", "modulation")
+# A run enters the seeds figure once both neuron sides are saved; the synapse
+# side, added later to lesion_plot.py, is drawn for the runs that have it.
+_CAUSAL_VS_ACTIVITY_NEURON_SIDES = ("hidden", "input")
 _CAUSAL_VS_ACTIVITY_X_DEFINITION = "pearson_corr_of_task_mean_activity_variance_profiles"
 _CAUSAL_VS_ACTIVITY_Y_DEFINITION = "pearson_corr_of_task_lesion_effect_profiles_over_neuron_clusters"
-_CAUSAL_VS_ACTIVITY_SIDE_LABELS = {"hidden": "Hidden activity", "input": "Input activity"}
-# Unnormalized neuron clusters and raw task-variance features on both sides,
-# matching the lesion heatmap and the hidden tuning-vs-lesion scatter.
+_CAUSAL_VS_ACTIVITY_MOD_X_DEFINITION = "pearson_corr_of_task_mean_abs_modulation_variance_profiles"
+_CAUSAL_VS_ACTIVITY_MOD_Y_DEFINITION = "pearson_corr_of_task_lesion_effect_profiles_over_synapse_clusters"
+_CAUSAL_VS_ACTIVITY_SIDE_LABELS = {"hidden": "Hidden activity", "input": "Input activity",
+                                   "modulation": "Modulation"}
+# Unnormalized neuron clusters and raw task-variance features on both neuron
+# sides, matching the lesion heatmap and the hidden tuning-vs-lesion scatter.
 _CAUSAL_VS_ACTIVITY_VARIANT = "unnormalized"
+# Metadata each side's cache must carry. The synapse side pairs the
+# var-weighted features (by magnitude) with the freeze_M lesion effects over
+# that clustering's synapse clusters, the intervention of the lesion heatmap.
+_CAUSAL_VS_ACTIVITY_NEURON_FIELDS = {"neuron_variant": _CAUSAL_VS_ACTIVITY_VARIANT,
+                                     "x_definition": _CAUSAL_VS_ACTIVITY_X_DEFINITION,
+                                     "y_definition": _CAUSAL_VS_ACTIVITY_Y_DEFINITION}
+_CAUSAL_VS_ACTIVITY_CACHE_FIELDS = {
+    "hidden": _CAUSAL_VS_ACTIVITY_NEURON_FIELDS,
+    "input": _CAUSAL_VS_ACTIVITY_NEURON_FIELDS,
+    "modulation": {"modulation_type": "modulation_all_var_weighted_unnormalized",
+                   "mod_lesion_mode": LESION_HEATMAP_MODE,
+                   "x_definition": _CAUSAL_VS_ACTIVITY_MOD_X_DEFINITION,
+                   "y_definition": _CAUSAL_VS_ACTIVITY_MOD_Y_DEFINITION},
+}
 
 
 def _read_causal_vs_activity(path, side, aname):
@@ -5727,12 +5797,11 @@ def _read_causal_vs_activity(path, side, aname):
     saved = load_lesion_pickle(path)
     if saved.get("schema_version") != 2:
         raise ValueError("cache predates the unnormalized pairing; rerun lesion_plot.py")
-    if saved.get("neuron_variant") != _CAUSAL_VS_ACTIVITY_VARIANT:
-        raise ValueError("cache uses another neuron-cluster variant")
-    if (saved.get("aname") != aname or saved.get("side") != side
-            or saved.get("x_definition") != _CAUSAL_VS_ACTIVITY_X_DEFINITION
-            or saved.get("y_definition") != _CAUSAL_VS_ACTIVITY_Y_DEFINITION):
-        raise ValueError("cache belongs to another run, side or metric")
+    if saved.get("aname") != aname or saved.get("side") != side:
+        raise ValueError("cache belongs to another run or side")
+    for field, expected in _CAUSAL_VS_ACTIVITY_CACHE_FIELDS[side].items():
+        if saved.get(field) != expected:
+            raise ValueError(f"cache has {field} = {saved.get(field)!r}, expected {expected!r}")
     x = np.asarray(saved["activity_pairs"], dtype=float)
     y = np.asarray(saved["causal_pairs"], dtype=float)
     n_tasks = len(saved["tasks"])
@@ -5758,17 +5827,20 @@ def _causal_vs_activity_path(directory, side, aname):
 
 def plot_causal_vs_activity():
     """
-    Figure: do tasks that look alike in activity depend on the same neuron clusters?
+    Figure: do tasks that look alike in activity depend on the same clusters?
 
-    One figure per activity side (hidden, input). Each point is a pair of
-    tasks: x is the Pearson correlation between the two tasks' mean activity
-    variance profiles over that side's neurons, y the correlation between
-    their lesion-effect profiles over all input and hidden neuron clusters.
-    Coordinates, the two-sided Spearman task-label permutation test and the
-    OLS guide line are read from lesion_plot.py's cache for LESION_ANAME; the
-    style matches the cluster-level tuning-vs-lesion scatters. Both sides use
-    the unnormalized variant (raw task-variance features, unnormalized neuron
-    clusters); caches of another variant are skipped.
+    One figure per side (hidden, input, modulation). Each point is a pair of
+    tasks: x is the Pearson correlation between the two tasks' mean
+    task-variance profiles over that side's units, y the correlation between
+    their lesion-effect profiles. The neuron sides compare activity over
+    neurons with lesions of all input and hidden neuron clusters, both in the
+    unnormalized variant (raw task-variance features, unnormalized neuron
+    clusters). The modulation side compares |W| Var(M) over synapses with
+    freeze_M lesions of the var-weighted synapse clusters, the unresponsive
+    class left out. Coordinates, the two-sided Spearman task-label
+    permutation test and the OLS guide line are read from lesion_plot.py's
+    cache for LESION_ANAME; the style matches the cluster-level
+    tuning-vs-lesion scatters. Caches of another variant are skipped.
     """
     _ensure_out_dir()
     for side in CAUSAL_VS_ACTIVITY_SIDES:
@@ -5786,81 +5858,181 @@ def plot_causal_vs_activity():
         _stat_scatter(ax, entry["x"], entry["y"],
                       _rank_association_label(entry["association"], unit="tasks"),
                       trend_line=entry["trend_line"],
-                      # Two lines each: the square axes box is about 1.1 in wide,
+                      # Two lines each: the square axes box is about 1.5 in wide,
                       # narrower than either label on one line.
                       xlabel=f"Similarity:\n{_CAUSAL_VS_ACTIVITY_SIDE_LABELS[side].lower()}",
-                      ylabel="Similarity:\nlesion profiles")
+                      ylabel="Similarity:\nlesion profiles", point_color=_LESION_POINT_COLOR)
         fig.tight_layout()
         _save_fig(fig, _multitask_out(f"causal_vs_activity_tasks_{side}.png"),
                   extra=f" [{LESION_ANAME}] {entry['n_tasks']} tasks")
 
 
 def _causal_vs_activity_runs():
-    """Sibling runs of LESION_ANAME (same feature, any seed) with saved caches."""
+    """Sibling runs of LESION_ANAME (same feature, any seed) with both neuron
+    sides saved, each with the sides it has; a missing or unreadable
+    modulation cache only leaves that side out."""
     runs = {}
     for directory in _sibling_run_dirs():
         entries = {}
         for side in CAUSAL_VS_ACTIVITY_SIDES:
             path = _causal_vs_activity_path(directory, side, directory.name)
             if not path.exists():
-                break
+                continue
             try:
                 entries[side] = _read_causal_vs_activity(path, side, directory.name)
             except (OSError, KeyError, TypeError, ValueError) as error:
                 print(f"  Skipped {directory.name} ({side}): {error}.")
-                break
-        if len(entries) == len(CAUSAL_VS_ACTIVITY_SIDES):
+        if all(side in entries for side in _CAUSAL_VS_ACTIVITY_NEURON_SIDES):
             runs[directory.name] = entries
     return runs
 
 
+# Layout of the seeds figure. Hidden and input share their lesion basis (the
+# same neuron-cluster lesion profiles; only the activity side differs), so they
+# sit side by side with each run's pair joined: input is the control for
+# hidden. Modulation pairs other features with other lesions, so it stands
+# apart behind a dotted divider and is not joined.
+_CAUSAL_SEEDS_POSITIONS = {"hidden": 0.0, "input": 1.0, "modulation": 2.4}
+_CAUSAL_SEEDS_DIVIDER = 1.7
+_CAUSAL_SEEDS_JITTER = 0.15        # max horizontal spread of a column's points
+_CAUSAL_SEEDS_MEDIAN_HALF_WIDTH = 0.27
+_CAUSAL_SEEDS_POINT_SIZE = 20
+_CAUSAL_SEEDS_LEGEND_FIGSIZE = (1.6, 0.7)
+# Side of the panel's square axes box, in inches: the box tight_layout gives
+# the single-run causal scatters at _LESION_SCATTER_FIGSIZE (their statistics
+# legend takes the top), so the seeds panel beside them is drawn at one scale.
+# test_causal_vs_activity_figures checks the two still agree.
+_CAUSAL_SEEDS_BOX_INCHES = 1.49
+_CAUSAL_SEEDS_BOX_ORIGIN = (0.3, 0.2)    # lower-left corner, figure fraction
+
+
+def _causal_seeds_legend_handles():
+    """Legend entries of the seeds figure: significant and non-significant
+    runs, and the red median dash with its interquartile bar."""
+    filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color=_LESION_POINT_COLOR,
+                              markeredgecolor="none", markersize=4.5, label="permutation p < 0.05")
+    hollow = mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
+                              markeredgecolor=_LESION_POINT_COLOR, markeredgewidth=0.8,
+                              markersize=4.5, label=r"permutation p $\geq$ 0.05")
+    summary = mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8, marker="|",
+                               markersize=6, markeredgewidth=1.0, label="median, IQR")
+    return [filled, hollow, summary]
+
+
+def _save_causal_seeds_legend(out_path):
+    """Save the seeds figure's legend as its own small figure (only when
+    legends are on), so the panel keeps the scatters' size."""
+    if not SHOW_LEGEND:
+        return
+    fig = plt.figure(figsize=_CAUSAL_SEEDS_LEGEND_FIGSIZE)
+    fig.legend(handles=_causal_seeds_legend_handles(), loc="center", frameon=False,
+               fontsize=6, handletextpad=0.4, labelspacing=0.5)
+    _save_fig(fig, out_path, extra="  (legend of causal_vs_activity_seeds)")
+
+
 def plot_causal_vs_activity_seeds():
     """
-    Figure: the task-level Mantel rho of every sibling run, hidden vs input.
+    Figure: the task-level Mantel rho of every sibling run, hidden vs input
+    vs modulation.
 
-    Each run contributes one point per activity side, joined by a thin line;
-    filled markers have a saved permutation p below 0.05, hollow ones do not.
-    The dash is the median over runs. Only saved statistics are drawn.
+    One column per side, one point per run: filled when the run's saved
+    permutation p is below 0.05, hollow otherwise, spread horizontally by a
+    fixed random jitter (the runs have no order). A thin line joins each
+    run's hidden and input points, the controlled pair; the bracket above
+    them gives the paired Wilcoxon signed-rank p of hidden minus input over
+    runs, the cohort-level test computed here from the saved rhos. Modulation
+    stands apart (other features and lesions) and appears once any run has
+    its cache. Each column carries its median (dash) and interquartile range
+    (bar). Only saved per-run statistics are drawn.
+
+    The panel has the size and square axes box of the single-run scatters
+    (causal_vs_activity_tasks_*), so the two sit side by side as equals; its
+    legend is saved as its own figure, causal_vs_activity_seeds_legend.png.
     """
     _ensure_out_dir()
     runs = _causal_vs_activity_runs()
     if len(runs) < 2:
         print(f"  Skipped: {len(runs)} run(s) with saved task-level Mantel caches; need >= 2.")
         return
+    sides = [side for side in CAUSAL_VS_ACTIVITY_SIDES
+             if any(side in entries for entries in runs.values())]
+    associations = {side: [entries[side]["association"] for entries in runs.values()
+                           if side in entries]
+                    for side in sides}
+    rhos = {side: np.array([saved["rho"] for saved in saved_list])
+            for side, saved_list in associations.items()}
+    significant = {side: np.array([saved["p_perm"] < 0.05 for saved in saved_list])
+                   for side, saved_list in associations.items()}
+    rng = np.random.default_rng(0)
+    xs = {side: _CAUSAL_SEEDS_POSITIONS[side]
+          + rng.uniform(-_CAUSAL_SEEDS_JITTER, _CAUSAL_SEEDS_JITTER, rhos[side].size)
+          for side in sides}
+
     fig, ax = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
     ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
-    positions = np.arange(len(CAUSAL_VS_ACTIVITY_SIDES))
-    for run_index, (name, entries) in enumerate(runs.items()):
-        rhos = [entries[side]["association"]["rho"] for side in CAUSAL_VS_ACTIVITY_SIDES]
-        offset = (run_index - (len(runs) - 1) / 2) * 0.03
-        ax.plot(positions + offset, rhos, color="0.75", linewidth=0.6, zorder=2)
-        for position, side in zip(positions, CAUSAL_VS_ACTIVITY_SIDES):
-            association = entries[side]["association"]
-            significant = association["p_perm"] < 0.05
-            ax.scatter([position + offset], [association["rho"]], s=32, zorder=3,
-                       color=_SCATTER_POINT_COLOR if significant else "white",
-                       edgecolors=_SCATTER_POINT_COLOR if significant else "k", linewidths=0.6)
-    for position, side in zip(positions, CAUSAL_VS_ACTIVITY_SIDES):
-        median = np.median([entries[side]["association"]["rho"] for entries in runs.values()])
-        ax.hlines(median, position - 0.22, position + 0.22, color=_TREND_LINE_COLOR,
-                  linewidth=1.8, zorder=4)
-    ax.set_xticks(positions)
-    ax.set_xticklabels([side.capitalize() for side in CAUSAL_VS_ACTIVITY_SIDES], fontsize=7)
-    ax.set_xlim(-0.6, len(positions) - 0.4)
+    if "modulation" in sides:
+        ax.axvline(_CAUSAL_SEEDS_DIVIDER, color="0.7", linewidth=0.6, linestyle=":", zorder=1)
+    # Every run has both neuron sides (_causal_vs_activity_runs), in run order.
+    for run in range(len(runs)):
+        ax.plot([xs["hidden"][run], xs["input"][run]],
+                [rhos["hidden"][run], rhos["input"][run]],
+                color="0.85", linewidth=0.5, zorder=2)
+    for side in sides:
+        hit = significant[side]
+        ax.scatter(xs[side][hit], rhos[side][hit], s=_CAUSAL_SEEDS_POINT_SIZE,
+                   color=_LESION_POINT_COLOR, edgecolors="none", zorder=3)
+        ax.scatter(xs[side][~hit], rhos[side][~hit], s=_CAUSAL_SEEDS_POINT_SIZE,
+                   facecolors="white", edgecolors=_LESION_POINT_COLOR, linewidths=0.8,
+                   zorder=3)
+        position = _CAUSAL_SEEDS_POSITIONS[side]
+        q25, median, q75 = np.percentile(rhos[side], [25, 50, 75])
+        ax.vlines(position, q25, q75, color=_TREND_LINE_COLOR, linewidth=1.0, zorder=4)
+        ax.hlines(median, position - _CAUSAL_SEEDS_MEDIAN_HALF_WIDTH,
+                  position + _CAUSAL_SEEDS_MEDIAN_HALF_WIDTH,
+                  color=_TREND_LINE_COLOR, linewidth=1.8, zorder=4)
+
+    # Paired test of hidden against its input control, as a bracket.
+    p_paired, p_text = _wilcoxon_vs_zero(rhos["hidden"] - rhos["input"])
+    values = np.concatenate(list(rhos.values()))
+    span = max(values.max() - values.min(), 1e-6)
+    base = max(rhos["hidden"].max(), rhos["input"].max()) + 0.06 * span
+    top = base + 0.04 * span
+    ax.plot([0.0, 0.0, 1.0, 1.0], [base, top, top, base], color="0.3", linewidth=0.7,
+            zorder=4)
+    # Only the p sits on the bracket (the test belongs in the caption), so the
+    # label stays within the bracket and clear of the y tick labels.
+    ax.text(0.5, top + 0.01 * span, p_text, ha="center", va="bottom", fontsize=6)
+    bottom = min(values.min(), 0.0) - 0.06 * span
+    ax.set_ylim(bottom, top + 0.14 * span)
+    # The scatter family's tick steps and labels, with no tick beside the
+    # bracket, which is not on the rho scale; one more interval than the
+    # scatters allow covers the bracket's headroom, which then drops its ticks.
+    ax.yaxis.set_major_locator(mticker.MaxNLocator(_STAT_SCATTER_MAX_TICKS + 1,
+                                                   steps=[1, 2, 5, 10]))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(_short_tick))
+    ax.set_yticks([tick for tick in ax.get_yticks() if bottom <= tick <= base])
+
+    ax.set_xticks([_CAUSAL_SEEDS_POSITIONS[side] for side in sides])
+    ax.set_xticklabels([side.capitalize() for side in sides],
+                       fontsize=_STAT_SCATTER_TICK_FONTSIZE)
+    ax.set_xlim(-0.55, max(_CAUSAL_SEEDS_POSITIONS[side] for side in sides) + 0.55)
     ax.set_ylabel(r"Task-level Mantel $\rho$" + "\n(activity vs lesion similarity)", fontsize=7)
     ax.spines[["top", "right"]].set_visible(False)
-    ax.tick_params(axis="y", labelsize=7)
-    filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color=_SCATTER_POINT_COLOR,
-                              markersize=5, label="permutation p < 0.05")
-    hollow = mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
-                              markeredgecolor="k", markersize=5, label=r"p $\geq$ 0.05")
-    _seeds_legend(ax, [filled, hollow], len(runs))
-    fig.tight_layout()
-    n_positive = {side: sum(entries[side]["association"]["rho"] > 0 for entries in runs.values())
-                  for side in CAUSAL_VS_ACTIVITY_SIDES}
+    ax.tick_params(axis="y", labelsize=_STAT_SCATTER_TICK_FONTSIZE)
+    # A fixed square box instead of tight_layout, which would hand this panel
+    # (no legend on top) a larger box than the scatters; the saved image is
+    # cropped to its content, so the margins only have to hold the labels.
+    width, height = _LESION_SCATTER_FIGSIZE
+    ax.set_position([*_CAUSAL_SEEDS_BOX_ORIGIN,
+                     _CAUSAL_SEEDS_BOX_INCHES / width, _CAUSAL_SEEDS_BOX_INCHES / height])
+    _save_causal_seeds_legend(_multitask_out("causal_vs_activity_seeds_legend.png"))
     _save_fig(fig, _multitask_out("causal_vs_activity_seeds.png"),
-              extra="  " + ", ".join(f"{side}: {count}/{len(runs)} rho > 0"
-                                     for side, count in n_positive.items()))
+              extra="  " + ", ".join(
+                  f"{side}: {int(np.sum(rhos[side] > 0))}/{rhos[side].size} rho > 0, "
+                  f"{int(significant[side].sum())} significant, "
+                  f"median {np.median(rhos[side]):.2f}"
+                  for side in sides)
+              + f"; hidden vs input paired Wilcoxon p = {p_paired:.2g}")
 
 
 # ─── Figure: Task specificity ────────────────────────────────────────────────

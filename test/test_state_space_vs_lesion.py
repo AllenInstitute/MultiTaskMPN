@@ -307,6 +307,13 @@ class PaperFigureTests(unittest.TestCase):
             self.assertIn(f"{test['rho']:.2f}", legend_text)
             self.assertIn(paper_plot._permutation_p_text(test["p_value"]), legend_text)
             self.assertIn(paper_plot._SSL_DISTANCE_LABELS[representation], axis.get_xlabel())
+            # Undecorated dots and the scatter family's tick size.
+            self.assertEqual(len(points[0].get_edgecolors()), 0)
+            self.assertTrue(all(label.get_fontsize() == paper_plot._STAT_SCATTER_TICK_FONTSIZE
+                                for label in axis.get_xticklabels() + axis.get_yticklabels()))
+        # Each panel is one single-scatter square.
+        np.testing.assert_allclose(figure.get_size_inches(),
+                                   2 * np.asarray(paper_plot._LESION_SCATTER_FIGSIZE))
         self.assertEqual([axis.get_ylabel() != "" for axis in figure.axes], [True, False, True, False])
         self.assertAlmostEqual(entry["tests"]["eff_mod"]["synapse"]["rho"], -1.0, places=0)
         self.assertIn("eff_mod/synapse: rho = -", save.call_args.kwargs["extra"])
@@ -351,7 +358,7 @@ class PaperFigureTests(unittest.TestCase):
                 drawn = sorted(offsets[np.isclose(offsets[:, 0], position, atol=0.3), 1])
                 np.testing.assert_allclose(drawn, rhos)
                 filled = sum(np.allclose(c.get_facecolors()[0][:3],
-                                         paper_plot.mpl.colors.to_rgb(paper_plot._SCATTER_POINT_COLOR))
+                                         paper_plot.mpl.colors.to_rgb(paper_plot._LESION_POINT_COLOR))
                              for c in dots if np.isclose(c.get_offsets()[0][0], position, atol=0.3))
                 self.assertEqual(filled, sum(test["p_value"] < 0.05 for test in tests))
                 label = axis.get_xticklabels()[position].get_text()
