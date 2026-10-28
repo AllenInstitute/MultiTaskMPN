@@ -4,7 +4,7 @@ import pickle
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import _bootstrap  # noqa: F401
 import numpy as np
@@ -15,9 +15,85 @@ MODE = paper_plot.OM_LESION_MODE
 MODE_TAG = MODE.replace("_", "-")
 
 
+def scatter_run(root, highlight=None):
+    """Point the OM-vs-lesion scatter at the fixture's run directory, with the
+    example-block highlight given (none by default: no cluster cache here)."""
+    return patch.multiple(paper_plot,
+                          _om_scatter_run=MagicMock(return_value=(root, paper_plot.LESION_ANAME)),
+                          _om_scatter_highlight=MagicMock(return_value=highlight))
+
+
 class OmLesionScatterTests(unittest.TestCase):
-    def test_scatter_uses_the_heatmap_lesion_mode(self):
+    def test_scatter_keeps_zero_w_unlike_the_heatmap(self):
         self.assertEqual(MODE, "zero_W")
+        self.assertNotEqual(MODE, paper_plot.LESION_HEATMAP_MODE)
+
+    def test_scatter_reads_the_clustering_example_run_not_the_lesion_example(self):
+        """The deliberate exception: ANAME (the OM example panels' run), not the
+        LESION_ANAME every other lesion figure reads; the saved message says so."""
+        cache = self.cache(False)
+        cache["aname"] = "clustering_run"
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory) / "clustering_run"
+            run_dir.mkdir()
+            path = run_dir / f"om_vs_lesion_diff_var-weighted-unnormalized_{MODE_TAG}_unnorm_clustering_run.pkl"
+            with path.open("wb") as stream:
+                pickle.dump(cache, stream)
+            with patch.object(paper_plot, "LESION_NORM_ROOT", Path(directory)), \
+                    patch.object(paper_plot, "ANAME", "clustering_run"), \
+                    patch.object(paper_plot, "LESION_ANAME", "lesion_run"), \
+                    patch.object(paper_plot, "_om_example_selection", return_value=None), \
+                    patch.object(paper_plot, "_ensure_out_dir"), \
+                    patch.object(paper_plot, "_save_fig") as save:
+                self.assertEqual(paper_plot._om_scatter_run(), (run_dir, "clustering_run"))
+                paper_plot.plot_om_vs_lesion()
+        save.assert_called_once()
+        self.addCleanup(paper_plot.plt.close, save.call_args.args[0])
+        self.assertIn("not the lesion example lesion_run", save.call_args.kwargs["extra"])
+
+    def selection(self, om=2.5):
+        """A one-example OM selection whose deciding block (input C2, hidden
+        C1 of cluster C7) has OM `om` and whose color limit is 3."""
+        ratios = np.zeros((1, 2, 2))
+        ratios[0, 1, 0] = om
+        return {"ratios": ratios, "cluster_ids": [7], "chosen": [0], "tops": [(1, 0)], "vmax": 3.0}
+
+    def test_highlight_finds_the_example_block_by_its_om(self):
+        with patch.object(paper_plot, "ANAME", "run"), \
+                patch.object(paper_plot, "_om_example_selection", return_value=self.selection()):
+            found = paper_plot._om_scatter_highlight(np.array([0.5, 2.5, 1.0]), "run")
+            self.assertEqual(found, {"point": 1, "om": 2.5, "cluster_id": 7,
+                                     "input": 2, "hidden": 1, "vmax": 3.0})
+            with patch("builtins.print"):
+                # Two points with the block's OM: ambiguous, nothing highlighted.
+                self.assertIsNone(paper_plot._om_scatter_highlight(np.array([2.5, 2.5]), "run"))
+                # A scatter of another run cannot hold the example block.
+                self.assertIsNone(paper_plot._om_scatter_highlight(np.array([2.5]), "other_run"))
+
+    def test_highlight_is_drawn_on_top_in_the_examples_color(self):
+        cache = self.cache(False)
+        highlight = {"point": 0, "om": 1.5, "cluster_id": 7, "input": 2, "hidden": 1, "vmax": 3.0}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write(root, cache, False)
+            with scatter_run(root, highlight), \
+                    patch.object(paper_plot, "_ensure_out_dir"), \
+                    patch.object(paper_plot, "_save_fig") as save:
+                paper_plot.plot_om_vs_lesion()
+        figure = save.call_args.args[0]
+        self.addCleanup(paper_plot.plt.close, figure)
+        axis = figure.axes[0]
+        ringed = [c for c in axis.collections if isinstance(c, paper_plot.mpl.collections.PathCollection)
+                  and len(c.get_edgecolors()) and np.allclose(c.get_edgecolors()[0][:3], 0.)]
+        self.assertEqual(len(ringed), 1)
+        np.testing.assert_allclose(ringed[0].get_offsets(),
+                                   [[cache["om_vals"][0], cache["lesion_diffs"][0]]])
+        expected = paper_plot.plt.get_cmap(paper_plot._MULTITASK_HEATMAP_CMAP)(0.5)
+        np.testing.assert_allclose(ringed[0].get_facecolors()[0], expected)
+        self.assertGreater(ringed[0].get_zorder(), 3)
+        self.assertIn("Example block", [text.get_text() for text in axis.get_legend().get_texts()])
+        self.assertIn("highlighted: example 1 block, synapse cluster C7 at input C2 / hidden C1",
+                      save.call_args.kwargs["extra"])
 
     def test_single_cache_of_the_other_mode_is_rejected(self):
         cache = self.cache(False)
@@ -66,7 +142,7 @@ class OmLesionScatterTests(unittest.TestCase):
             with self.subTest(combined=combined), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 self.write(root, cache, combined)
-                with patch.object(paper_plot, "LESION_NORM_DIR", root), \
+                with scatter_run(root), \
                         patch.object(paper_plot, "_ensure_out_dir"), \
                         patch.object(paper_plot, "_save_fig") as save, \
                         patch.object(lesion_plot, "_om_scatter_summary",
@@ -119,7 +195,7 @@ class OmLesionScatterTests(unittest.TestCase):
             with self.subTest(problem=problem), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 self.write(root, cache, True)
-                with patch.object(paper_plot, "LESION_NORM_DIR", root), \
+                with scatter_run(root), \
                         patch.object(paper_plot, "_ensure_out_dir"), \
                         patch.object(paper_plot, "_save_fig") as save:
                     paper_plot.plot_om_vs_lesion()
@@ -144,7 +220,7 @@ class OmLesionScatterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.write(root, cache, False)
-            with patch.object(paper_plot, "LESION_NORM_DIR", root), \
+            with scatter_run(root), \
                     patch.object(paper_plot, "SHOW_LEGEND", False), \
                     patch.object(paper_plot, "_ensure_out_dir"), \
                     patch.object(paper_plot, "_save_fig") as save:

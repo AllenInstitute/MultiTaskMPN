@@ -164,7 +164,20 @@ one-sided (negative association) modulation-cluster-footprint permutation test,
 not linear regression. `lesion_plot.py` saves the scatter, `association`
 (rho, matching permutation p, null statistics and test metadata), and
 `binned_medians` in both single-mode and combined `schema_version=2` caches;
-`paper_plot.py` takes the zero_W entry.
+`paper_plot.py` takes the zero_W entry. **Run selection differs from the other
+lesion figures:** the single-run scatter is drawn from `ANAME`, the clustering
+example (seed 749 under `--multitask-l2 1e4`), the run of the
+`overmembership_examples_dots_*` panels, so the example clusters are among its
+points; every other single-run lesion figure uses `LESION_ANAME` (seed 921).
+`paper_plot._om_scatter_run` holds the choice and the saved message names the
+run. `om_vs_lesion_seeds` pools every sibling run either way. Because of the
+shared run, the deciding block of `overmembership_examples_dots_1` (its most
+significant input × hidden block; both panels take it from
+`_om_example_selection`) is drawn on top of the scatter in the viridis color
+the examples give its OM, with a black ring ("Example block"). The cache keeps
+no block identity per point, so the point is found by its OM value, which the
+scatter copies from the same `om_stack`; the highlight is skipped with a note
+unless exactly one point matches.
 Up to five quantile bins provide median OM/L1 points and counts; tied OM values
 stay together. The median connector is descriptive and is not forced to decrease.
 `paper_plot.py` only reads these values, draws pale scatter points and the saved
