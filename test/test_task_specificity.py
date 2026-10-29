@@ -68,6 +68,28 @@ class CountTests(unittest.TestCase):
         hub[:, :2] = True
         self.assertLess(lesion_plot._count_dispersion_test(hub, n_perm=400)["p_perm"], 0.05)
 
+    def test_null_count_pmf_is_the_exact_shuffle_distribution(self):
+        # Two tasks impairing 2 and 1 of 4 clusters: a cluster is hit with
+        # probability 1/2 and 1/4, independently, so its count is
+        # Poisson-binomial: [3/8, 1/2, 1/8].
+        sig = np.array([[1, 1, 0, 0],
+                        [1, 0, 0, 0]], dtype=bool)
+        np.testing.assert_allclose(lesion_plot._null_count_pmf(sig), [0.375, 0.5, 0.125])
+        # Clusters x pmf is the per-count histogram the shuffle averages to,
+        # and the dispersion test saves it.
+        rng = np.random.default_rng(2)
+        sig = rng.random((8, 12)) < 0.4
+        result = lesion_plot._count_dispersion_test(sig, n_perm=10)
+        pmf = result["null_count_pmf"]
+        self.assertEqual(pmf.shape, (9,))
+        self.assertAlmostEqual(pmf.sum(), 1.0)
+        shuffled = np.zeros(9)
+        n_draws = 4000
+        for _ in range(n_draws):
+            counts = np.stack([rng.permutation(row) for row in sig]).sum(axis=0)
+            shuffled += np.bincount(counts, minlength=9)
+        np.testing.assert_allclose(shuffled / n_draws, 12 * pmf, atol=0.1)
+
 
 class SharingTests(unittest.TestCase):
     def test_related_pairs_sharing_is_detected(self):
@@ -119,7 +141,9 @@ class SharingTests(unittest.TestCase):
         sig_by_type = {"hidden": {"sig": rng.random((15, 8)) < 0.3,
                                   "cluster_labels": [f"h{k}" for k in range(8)]}}
         summary = lesion_plot._task_specificity_summary(sig_by_type, TASKS, n_perm=20)
-        self.assertEqual(summary["schema_version"], 1)
+        self.assertEqual(summary["schema_version"], lesion_plot.TASK_SPECIFICITY_SCHEMA_VERSION)
+        self.assertEqual(lesion_plot.TASK_SPECIFICITY_SCHEMA_VERSION, 2)
+        self.assertEqual(lesion_plot.TASK_SPECIFICITY_MOD_MODE, "freeze_M")
         self.assertEqual(list(summary["types"]), ["hidden"])
         self.assertEqual(summary["types"]["hidden"]["dispersion"]["counts"].shape, (8,))
         with self.assertRaisesRegex(ValueError, "shape"):

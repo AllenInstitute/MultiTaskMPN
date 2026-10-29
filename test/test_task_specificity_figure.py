@@ -24,6 +24,10 @@ class TaskSpecificityFigureTests(unittest.TestCase):
         return {"relations": relations, "by_relation": by_relation, "permutation_unit": "task_label",
                 "side": "greater", "n_perm": 4, "seed": 0}
 
+    # Null distributions of one cluster's count over the 6 tasks (0..6).
+    HIDDEN_PMF = np.array([0.1, 0.3, 0.3, 0.2, 0.1, 0.0, 0.0])
+    MODULATION_PMF = np.array([0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0])
+
     def cache(self):
         tasks = [f"t{k}" for k in range(6)]
         relations = ["response rule", "timing", "other"]
@@ -31,15 +35,18 @@ class TaskSpecificityFigureTests(unittest.TestCase):
             "hidden": {"cluster_labels": ["h1", "h2", "h3", "h4"],
                        "dispersion": {"counts": np.array([0, 1, 1, 5]), "p_perm": 0.01,
                                       "null_var": np.array([0.5, 1.0, 1.5, 1.0]),
+                                      "null_count_pmf": self.HIDDEN_PMF.copy(),
                                       "side": "greater"},
                        "sharing": self.sharing(relations, [0.6, 0.5, 0.2])},
             "modulation": {"cluster_labels": ["c1", "c2", "c3"],
                            "dispersion": {"counts": np.array([2, 2, 2]), "p_perm": 0.7,
-                                          "null_var": np.full(4, 0.25), "side": "greater"},
+                                          "null_var": np.full(4, 0.25),
+                                          "null_count_pmf": self.MODULATION_PMF.copy(),
+                                          "side": "greater"},
                            "sharing": self.sharing(relations, [0.3, 0.3, 0.3])},
         }
-        return {"schema_version": 1, "aname": paper_plot.LESION_ANAME, "tasks": tasks,
-                "n_perm": 4, "types": types}
+        return {"schema_version": 2, "aname": paper_plot.LESION_ANAME, "tasks": tasks,
+                "n_perm": 4, "modulation_lesion_mode": "freeze_M", "types": types}
 
     def render(self, cache, show_legend=True):
         with tempfile.TemporaryDirectory() as directory:
@@ -58,45 +65,54 @@ class TaskSpecificityFigureTests(unittest.TestCase):
         return figures
 
     def test_counts_figure_uses_saved_values(self):
+        import lesion_plot
+
         figures = self.render(self.cache())
-        # Only the counts figure: the task-pair sharing figures were removed.
         self.assertEqual(set(figures), {"multitask_task_specificity_counts.png"})
-        self.assertFalse(hasattr(paper_plot, "_short_p"))
-        self.assertFalse(hasattr(paper_plot, "_TASK_SHARING_RELATION_LABELS"))
-        axis = figures["multitask_task_specificity_counts.png"].axes[0]
-        # One column per saved type (hidden, modulation), each tick label
-        # naming the type, its cluster count and the saved dispersion p.
-        self.assertEqual([label.get_text() for label in axis.get_xticklabels()],
-                         ["Hidden\nclusters\nn = 4\np = 0.010",
-                          "Synapse\nclusters\nn = 3\np = 0.700"])
+        figure = figures["multitask_task_specificity_counts.png"]
+        # One row per saved type (hidden, modulation), titled with the type
+        # and its cluster count on the left and the saved dispersion p on the
+        # right; the rows share both axes.
+        hidden_axis, synapse_axis = figure.axes
+        self.assertEqual([axis.get_title(loc="left") for axis in figure.axes],
+                         ["Hidden clusters (n = 4)", "Synapse clusters (n = 3)"])
+        self.assertEqual([axis.get_title(loc="right") for axis in figure.axes],
+                         ["p = 0.010", "p = 0.700"])
+        self.assertEqual(hidden_axis.get_xlim(), synapse_axis.get_xlim())
+        self.assertEqual(hidden_axis.get_ylim(), synapse_axis.get_ylim())
+        # Every cluster is one dot stacked over its count, one cluster per
+        # unit of height: hidden 0, 1, 1, 5 and modulation 2, 2, 2.
         collections = paper_plot.mpl.collections
-        dots = [c for c in axis.collections if isinstance(c, collections.PathCollection)]
-        offsets = np.concatenate([c.get_offsets() for c in dots])
-        # Every cluster is one dot at its count: hidden 0, 1, 1, 5 at x = 0
-        # (the two 1s spread sideways), modulation 2, 2, 2 at x = 1.
-        self.assertEqual(len(offsets), 7)
-        self.assertEqual(sorted(offsets[np.isclose(offsets[:, 0], 0, atol=0.3), 1].tolist()),
-                         [0, 1, 1, 5])
-        self.assertEqual(sorted(offsets[np.isclose(offsets[:, 0], 1, atol=0.3), 1].tolist()),
-                         [2, 2, 2])
-        ties = offsets[np.isclose(offsets[:, 1], 1)][:, 0]
-        self.assertEqual(len(ties), 2)
-        self.assertGreater(ties.max() - ties.min(), 0)
-        # Median dashes and the mixing-null bands (mean ± sqrt(median null var)).
-        dashes = [c for c in axis.collections if isinstance(c, collections.LineCollection)]
-        self.assertEqual([c.get_segments()[0][0, 1] for c in dashes], [1.0, 2.0])
-        bands = [c for c in axis.collections if isinstance(c, collections.PolyCollection)]
-        self.assertEqual(len(bands), 2)
-        hidden_band = bands[0].get_paths()[0].vertices[:, 1]
-        np.testing.assert_allclose([hidden_band.min(), hidden_band.max()], [0.75, 2.75])
-        synapse_band = bands[1].get_paths()[0].vertices[:, 1]
-        np.testing.assert_allclose([synapse_band.min(), synapse_band.max()], [1.5, 2.5])
-        self.assertEqual(axis.get_ylabel(), "Tasks impaired per cluster")
-        self.assertGreater(axis.get_ylim()[1], 6)
-        legend_texts = [text.get_text() for text in axis.get_legend().get_texts()]
-        self.assertEqual(legend_texts, ["median", "mixing null, mean ± SD"])
+        for axis, expected in ((hidden_axis, [(0, 0.5), (1, 0.5), (1, 1.5), (5, 0.5)]),
+                               (synapse_axis, [(2, 0.5), (2, 1.5), (2, 2.5)])):
+            dots = [c for c in axis.collections if isinstance(c, collections.PathCollection)]
+            offsets = np.concatenate([c.get_offsets() for c in dots])
+            self.assertEqual(sorted(map(tuple, offsets.tolist())), expected)
+        # The gray histogram is the expected number of clusters per count
+        # under the saved null: clusters x the saved count distribution.
+        for axis, n_clusters, pmf in ((hidden_axis, 4, self.HIDDEN_PMF),
+                                      (synapse_axis, 3, self.MODULATION_PMF)):
+            steps = [patch for patch in axis.patches
+                     if isinstance(patch, paper_plot.mpl.patches.StepPatch)]
+            self.assertEqual(len(steps), 1)
+            np.testing.assert_allclose(steps[0].get_data().values, n_clusters * pmf)
+            np.testing.assert_allclose(steps[0].get_data().edges, np.arange(8) - 0.5)
+        # The red median line: hidden median 1, modulation 2.
+        for axis, median in ((hidden_axis, 1.0), (synapse_axis, 2.0)):
+            lines = [line for line in axis.get_lines()
+                     if line.get_color() == paper_plot._TREND_LINE_COLOR]
+            self.assertEqual([line.get_xdata()[0] for line in lines], [median])
+        self.assertEqual(synapse_axis.get_xlabel(), "Tasks impaired per cluster")
+        self.assertEqual(synapse_axis.get_ylabel(), "Clusters")
+        self.assertGreaterEqual(hidden_axis.get_ylim()[1], 3)
+        legend_texts = [text.get_text() for text in figure.legends[0].get_texts()]
+        self.assertEqual(legend_texts, ["cluster", "mixing null, expected", "median"])
         self.assertIs(paper_plot.FIGURES_BY_MODE["lesion"]["task_specificity"],
                       paper_plot.plot_task_specificity)
+        # The synapse clusters are tested with the lesion heatmap's mode.
+        self.assertEqual(lesion_plot.TASK_SPECIFICITY_MOD_MODE, paper_plot.LESION_HEATMAP_MODE)
+        self.assertEqual(lesion_plot.TASK_SPECIFICITY_SCHEMA_VERSION,
+                         paper_plot._TASK_SPECIFICITY_SCHEMA_VERSION)
 
     def test_counts_do_not_depend_on_the_sharing_statistics(self):
         cache = self.cache()
@@ -104,27 +120,142 @@ class TaskSpecificityFigureTests(unittest.TestCase):
             entry.pop("sharing")
         figures = self.render(cache)
         self.assertEqual(set(figures), {"multitask_task_specificity_counts.png"})
-        axis = figures["multitask_task_specificity_counts.png"].axes[0]
-        self.assertEqual(len(axis.get_xticklabels()), 2)
+        self.assertEqual(len(figures["multitask_task_specificity_counts.png"].axes), 2)
 
     def test_no_legend_and_incompatible_caches(self):
         figures = self.render(self.cache(), show_legend=False)
         for figure in figures.values():
-            self.assertIsNone(figure.axes[0].get_legend())
-        for problem in ("missing", "run", "type", "counts", "null"):
+            self.assertEqual(figure.legends, [])
+        for problem in ("missing", "run", "schema", "mode", "type", "counts", "null", "pmf"):
             cache = self.cache()
             if problem == "missing":
                 cache = None
             elif problem == "run":
                 cache["aname"] = "other"
+            elif problem == "schema":
+                cache["schema_version"] = 1
+            elif problem == "mode":
+                cache["modulation_lesion_mode"] = "zero_W"
             elif problem == "null":
-                cache["types"]["hidden"]["dispersion"].pop("null_var")
+                cache["types"]["hidden"]["dispersion"].pop("null_count_pmf")
+            elif problem == "pmf":
+                cache["types"]["hidden"]["dispersion"]["null_count_pmf"] = self.HIDDEN_PMF[:-1]
             elif problem == "type":
                 cache["types"]["synapse"] = cache["types"].pop("modulation")
             else:
                 cache["types"]["hidden"]["dispersion"]["counts"] = np.array([0, 9, 1, 1])
             with self.subTest(problem=problem):
                 self.assertEqual(self.render(cache), {})
+
+
+class TaskSpecificitySeedsTests(TaskSpecificityFigureTests):
+    """The median impaired-task count of every sibling run, per cluster type."""
+
+    def write_run(self, base, seed, hidden_counts, modulation_counts, p_hidden=0.01):
+        import re
+        aname = re.sub(r"seed\d+", f"seed{seed}", paper_plot.LESION_ANAME)
+        cache = self.cache()
+        cache["aname"] = aname
+        cache["types"]["hidden"]["dispersion"]["counts"] = np.array(hidden_counts)
+        cache["types"]["hidden"]["dispersion"]["p_perm"] = p_hidden
+        cache["types"]["modulation"]["dispersion"]["counts"] = np.array(modulation_counts)
+        run_dir = base / aname
+        run_dir.mkdir()
+        with (run_dir / f"task_specificity_{aname}.pkl").open("wb") as f:
+            pickle.dump(cache, f)
+        return run_dir
+
+    def render_seeds(self, root):
+        with patch.object(paper_plot, "LESION_NORM_DIR", root), \
+                patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(paper_plot, "_save_fig") as save, \
+                patch("builtins.print") as output:
+            paper_plot.plot_task_specificity_seeds()
+        return save, output
+
+    def test_seeds_draw_each_runs_median_count_per_type(self):
+        from scipy.stats import wilcoxon
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = self.write_run(base, 11, [0, 1, 1, 5], [2, 4, 6], p_hidden=0.01)
+            self.write_run(base, 22, [1, 2, 3], [3, 5, 5], p_hidden=0.30)
+            self.write_run(base, 33, [1, 1, 2], [5, 5, 6], p_hidden=0.01)
+            save, _ = self.render_seeds(root)
+        save.assert_called_once()
+        figure, path = save.call_args.args[:2]
+        self.addCleanup(paper_plot.plt.close, figure)
+        self.assertEqual(path.name, "multitask_task_specificity_seeds.png")
+        axis = figure.axes[0]
+        self.assertEqual([label.get_text() for label in axis.get_xticklabels()],
+                         ["Hidden", "Synapse"])
+        collections = paper_plot.mpl.collections
+        dots = [c for c in axis.collections
+                if isinstance(c, collections.PathCollection) and len(c.get_offsets())]
+        offsets = np.concatenate([c.get_offsets() for c in dots])
+        # Run medians: hidden 1, 2, 1 at x = 0 (the tied 1s side by side),
+        # modulation 4, 5, 5 at x = 1.
+        hidden = offsets[np.isclose(offsets[:, 0], 0, atol=0.3)]
+        self.assertEqual(sorted(hidden[:, 1].tolist()), [1, 1, 2])
+        tied = hidden[np.isclose(hidden[:, 1], 1), 0]
+        self.assertGreater(tied.max() - tied.min(), 0)
+        self.assertEqual(sorted(offsets[np.isclose(offsets[:, 0], 1, atol=0.3), 1].tolist()),
+                         [4, 5, 5])
+        # Hollow (white face) where the saved dispersion p is >= 0.05: the
+        # hidden point of seed 22 (p = 0.30) and every modulation point (0.7).
+        hollow = [c for c in dots if np.allclose(c.get_facecolors()[0][:3], 1.0)]
+        self.assertEqual(sorted(np.concatenate([c.get_offsets() for c in hollow])[:, 1].tolist()),
+                         [2, 4, 5, 5])
+        # Median dashes over runs, and the bracket's paired Wilcoxon p.
+        dashes = [c for c in axis.collections if isinstance(c, collections.LineCollection)
+                  and np.isclose(c.get_segments()[0][0, 1], c.get_segments()[0][1, 1])]
+        self.assertEqual(sorted(c.get_segments()[0][0, 1] for c in dashes), [1.0, 5.0])
+        expected = wilcoxon([4 - 1, 5 - 2, 5 - 1]).pvalue
+        self.assertEqual([text.get_text() for text in axis.texts], [f"p = {expected:.3f}"])
+        self.assertIn("3 runs", axis.get_legend().get_title().get_text())
+        self.assertIn("modulation vs hidden paired Wilcoxon", save.call_args.kwargs["extra"])
+        self.assertIs(paper_plot.FIGURES_BY_MODE["lesion"]["task_specificity_seeds"],
+                      paper_plot.plot_task_specificity_seeds)
+
+    def test_seeds_need_two_runs_and_drop_disagreeing_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = self.write_run(base, 11, [0, 1, 1, 5], [2, 4, 6])
+            save, output = self.render_seeds(root)
+        save.assert_not_called()
+        self.assertIn("need >= 2", output.call_args.args[0])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = self.write_run(base, 11, [0, 1, 1, 5], [2, 4, 6])
+            self.write_run(base, 22, [1, 2, 3], [3, 5, 5])
+            # A run of the old zero_W cache is incompatible; one without the
+            # synapse clusters disagrees with the others.
+            old = self.write_run(base, 33, [1, 1, 2], [5, 5, 6])
+            cache = load_pickle(old / f"task_specificity_{old.name}.pkl")
+            cache["modulation_lesion_mode"] = "zero_W"
+            dump_pickle(cache, old / f"task_specificity_{old.name}.pkl")
+            odd = self.write_run(base, 44, [1, 1, 2], [5, 5, 6])
+            cache = load_pickle(odd / f"task_specificity_{odd.name}.pkl")
+            cache["types"].pop("modulation")
+            dump_pickle(cache, odd / f"task_specificity_{odd.name}.pkl")
+            save, output = self.render_seeds(root)
+        save.assert_called_once()
+        self.addCleanup(paper_plot.plt.close, save.call_args.args[0])
+        self.assertIn("2 runs",
+                      save.call_args.args[0].axes[0].get_legend().get_title().get_text())
+        printed = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
+        self.assertIn("incompatible", printed)
+        self.assertIn("cluster types differ", printed)
+
+
+def load_pickle(path):
+    with Path(path).open("rb") as f:
+        return pickle.load(f)
+
+
+def dump_pickle(obj, path):
+    with Path(path).open("wb") as f:
+        pickle.dump(obj, f)
 
 
 class TaskSharingCohortTests(TaskSpecificityFigureTests):
@@ -200,7 +331,7 @@ class TaskSharingCohortTests(TaskSpecificityFigureTests):
         self.assertEqual(filled, 2)
         dashes = [c for c in hidden_axis.collections if isinstance(c, collections.LineCollection)]
         np.testing.assert_allclose([c.get_segments()[0][0, 1] for c in dashes],
-                                   [np.median([0.35, 0.1, 0.3]), 0.3, 0.2])
+                                   [np.median([0.35, 0.1, 0.3]), 0.3, 0.3])
         # Column texts carry the one-sided cohort Wilcoxon p of excess > 0.
         expected = wilcoxon([0.4, 0.2, 0.3], alternative="greater").pvalue
         texts = [text.get_text() for text in hidden_axis.texts]

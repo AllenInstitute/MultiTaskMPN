@@ -1645,8 +1645,12 @@ def _dmc_category_labels(task_idx, stim_idx):
     The split cuts across task and stimulus identity:
         Group A: task0 stim {0..n/2-1} + task1 stim {n/2..n-1}
         Group B: task0 stim {n/2..n-1} + task1 stim {0..n/2-1}
-    Thus group A iff (task == 0) == (stim < n_stim/2). A separating plane
-    encodes remembered category rather than stimulus identity or task cue.
+    Thus group A iff (task == 0) == (stim < n_stim/2). A plane that separates
+    these groups would encode the remembered category as "what to respond
+    to" rather than stimulus identity or task cue; whether the state itself
+    does is the cohort question of sibling_cohort.py (category_axis_cosine),
+    and on the L21e4 runs the two rules' category axes are orthogonal, so a
+    plane picked for this split shows the labeling, not a shared code.
 
     n_stim is the generator's SIBLING_FP_N_STIM directions, not the largest
     index drawn: DMC trials draw their directions at random, so a sample can

@@ -14,6 +14,13 @@ DMC sweep
 figure draws each PC on its own row and shows the response clusters swapping
 under the sibling's cue, so it pairs the PC on which the clusters keep their
 order with the PC on which they swap.
+
+A plane picked this way shows the labeling it was picked for, so the
+cohort statistics of multiple_task/sibling_cohort.py judge the same
+geometry in the full state space, with no plane and no run chosen:
+`translation_metrics` (how far two tasks' matched fixed points differ by
+one shared vector) and `category_axis_cosine` (whether two tasks code a
+category along one direction, its reverse or their own).
 """
 
 import numpy as np
@@ -102,6 +109,88 @@ def remove_task_offsets(points, task_idx):
     task_idx = np.asarray(task_idx)
     offsets = task_offsets(points, task_idx)
     return points - np.stack([offsets[task] for task in task_idx])
+
+
+def _condensed_euclidean(points):
+    """Upper-triangle Euclidean distances between the rows of `points`, from
+    the Gram matrix so a wide (n × 90,000) array is never expanded pairwise."""
+    points = np.asarray(points, dtype=float)
+    gram = points @ points.T
+    squared = np.maximum(np.diag(gram)[:, None] + np.diag(gram)[None, :] - 2.0 * gram, 0.0)
+    return np.sqrt(squared)[np.triu_indices(points.shape[0], 1)]
+
+
+def translation_metrics(first, second):
+    """How far two tasks' matched fixed points differ by one translation.
+
+    `first` and `second` are (n, ...) arrays, row k of each the same
+    condition (stimulus direction and magnitude) under the two tasks; the
+    rows are flattened. Returns `translation`, the mean cross-task
+    displacement (the shared vector); `translation_explained`, the fraction
+    of the mean squared displacement that this one vector accounts for (1
+    for a pure translation); `geometry_r`, the Pearson correlation of the two
+    tasks' within-task pairwise distances, which a translation leaves
+    unchanged; `n_pairs`; and `raw_rms` and `residual_rms`, the root mean
+    square displacement before and after removing the shared vector.
+    """
+    first = np.asarray(first, dtype=float)
+    second = np.asarray(second, dtype=float)
+    first = first.reshape(first.shape[0], -1)
+    second = second.reshape(second.shape[0], -1)
+    if first.shape != second.shape:
+        raise ValueError("the two tasks' matched fixed points differ in shape")
+    if first.shape[0] < 3:
+        raise ValueError("need at least three matched sibling-task conditions")
+    displacement = second - first
+    translation = displacement.mean(axis=0)
+    total_squared = float(np.mean(np.sum(displacement ** 2, axis=1)))
+    translation_squared = float(np.sum(translation ** 2))
+    residual = displacement - translation
+    dist_first, dist_second = _condensed_euclidean(first), _condensed_euclidean(second)
+    if np.std(dist_first) == 0 or np.std(dist_second) == 0:
+        geometry_r = np.nan
+    else:
+        geometry_r = float(np.corrcoef(dist_first, dist_second)[0, 1])
+    return {
+        "translation": translation,
+        "translation_explained": (translation_squared / total_squared
+                                  if total_squared > 0 else np.nan),
+        "geometry_r": geometry_r,
+        "n_pairs": int(first.shape[0]),
+        "raw_rms": float(np.sqrt(total_squared)),
+        "residual_rms": float(np.sqrt(np.mean(np.sum(residual ** 2, axis=1)))),
+    }
+
+
+def category_axis_cosine(points, task_idx, category):
+    """Cosine between the two tasks' category axes.
+
+    Within each task the axis is the centroid of the points of the larger
+    category label minus that of the smaller. 1 when both tasks lay the two
+    categories out along one direction (the same code in both), -1 when the
+    direction reverses between the tasks (what a "respond to" code would give
+    the DMC pair, whose response flips with the task), 0 when each task uses
+    its own direction. `task_idx` and `category` must each take two values;
+    NaN when a task does not separate the categories at all.
+    """
+    points = np.asarray(points, dtype=float)
+    points = points.reshape(points.shape[0], -1)
+    task_idx, category = np.asarray(task_idx), np.asarray(category)
+    if task_idx.shape != (points.shape[0],) or category.shape != (points.shape[0],):
+        raise ValueError("points, task labels and category labels disagree")
+    tasks, categories = np.unique(task_idx), np.unique(category)
+    if tasks.size != 2 or categories.size != 2:
+        raise ValueError("the category axis cosine needs two tasks and two categories")
+    axes = []
+    for task in tasks:
+        halves = [points[(task_idx == task) & (category == label)] for label in categories]
+        if any(half.shape[0] == 0 for half in halves):
+            raise ValueError(f"task {task} lacks one of the categories")
+        axes.append(halves[1].mean(axis=0) - halves[0].mean(axis=0))
+    norms = [float(np.linalg.norm(axis)) for axis in axes]
+    if min(norms) == 0:
+        return np.nan
+    return float(axes[0] @ axes[1] / (norms[0] * norms[1]))
 
 
 def task_specific_pc_score(points, family, *, stim_idx=None, group_labels=None,

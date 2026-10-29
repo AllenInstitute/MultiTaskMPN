@@ -1,4 +1,5 @@
-"""Tests for the fixed-point separation score that picks the sibling PC pair."""
+"""Tests for the fixed-point separation score that picks the sibling PC pair
+and the full-space translation and category-axis metrics of the cohort."""
 
 import unittest
 
@@ -13,12 +14,14 @@ from core.sibling_geometry import (
     best_dmc_sweep_pc_pair,
     best_sweep_pc_pair,
     best_task_specific_pc_pair,
+    category_axis_cosine,
     dmc_sweep_axis_scores,
     remove_task_offsets,
     separation_components,
     separation_score,
     sweep_separation_score,
     task_specific_pc_score,
+    translation_metrics,
 )
 
 
@@ -213,6 +216,46 @@ class SiblingGeometryTests(unittest.TestCase):
             best_task_specific_pc_pair(points, "dmcgo")
         with self.assertRaises(ValueError):
             best_task_specific_pc_pair(points, "delaydm1")
+
+    def test_translation_metrics_measure_one_shared_displacement(self):
+        rng = np.random.default_rng(0)
+        first = rng.normal(size=(6, 2, 4))          # flattened like a W * M endpoint
+        shift = np.full((2, 4), 3.0)
+        metrics = translation_metrics(first, first + shift)
+        self.assertAlmostEqual(metrics["translation_explained"], 1.0)
+        np.testing.assert_allclose(metrics["translation"], shift.ravel())
+        self.assertAlmostEqual(metrics["geometry_r"], 1.0)
+        self.assertAlmostEqual(metrics["raw_rms"], np.linalg.norm(shift))
+        self.assertAlmostEqual(metrics["residual_rms"], 0.0)
+        self.assertEqual(metrics["n_pairs"], 6)
+        # A displacement that averages out over the conditions is no translation.
+        scattered = translation_metrics(first, -first)
+        self.assertLess(scattered["translation_explained"], 0.5)
+        self.assertAlmostEqual(scattered["geometry_r"], 1.0)
+        with self.assertRaisesRegex(ValueError, "three"):
+            translation_metrics(first[:2], first[:2])
+        with self.assertRaisesRegex(ValueError, "shape"):
+            translation_metrics(first, first[:5])
+
+    def test_category_axis_cosine_reads_the_shared_reversed_or_own_code(self):
+        task = np.repeat([0, 1], 4)
+        category = np.tile([0, 0, 1, 1], 2)
+        points = np.zeros((8, 3))
+        points[:4, 0] = category[:4]                 # task 0 codes the category on axis 0
+        points[4:, 2] = 5.0                          # task 1 sits elsewhere
+        points[4:, 0] = category[4:]
+        self.assertAlmostEqual(category_axis_cosine(points, task, category), 1.0)
+        points[4:, 0] = 1 - category[4:]
+        self.assertAlmostEqual(category_axis_cosine(points, task, category), -1.0)
+        points[4:, 0] = 0.0
+        points[4:, 1] = category[4:]
+        self.assertAlmostEqual(category_axis_cosine(points, task, category), 0.0)
+        points[4:, 1] = 0.0                          # task 1 does not separate the categories
+        self.assertTrue(np.isnan(category_axis_cosine(points, task, category)))
+        with self.assertRaisesRegex(ValueError, "two tasks"):
+            category_axis_cosine(points, np.zeros(8, dtype=int), category)
+        with self.assertRaisesRegex(ValueError, "lacks"):
+            category_axis_cosine(points, task, np.r_[category[:4], np.zeros(4, dtype=int)])
 
 
 if __name__ == "__main__":

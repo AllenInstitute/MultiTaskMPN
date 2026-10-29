@@ -15,26 +15,29 @@ lesion-effect profiles:
   unnormalized input and hidden neuron clusters (``causal_similarity`` in
   ``causal_vs_activity_tasksim_hidden_<aname>.pkl``, the matrix the
   causal-vs-activity figures use);
-- synapse clusters: the Pearson correlation of the two tasks' zero_W
-  lesion-effect profiles over the var-weighted unnormalized synapse clusters
+- synapse clusters: the Pearson correlation of the two tasks' freeze_M
+  lesion-effect profiles (``SYNAPSE_LESION_MODE``, the intervention of the
+  paper's lesion heatmap) over the var-weighted unnormalized synapse clusters
   (``normalized_lesion_effects_<aname>.pkl``), computed here without the
   unresponsive class. That class holds most synapses, so its size-matched
-  random control destroys the network while the class itself does little, an
-  effect near -0.8 for every task that would dominate the profiles; its
+  random control destroys the network while the class itself does little, a
+  large negative effect for every task that would dominate the profiles; its
   label is read from the lesion pickle (``multiple_tasks_perf/<aname>/``),
   as the task-specificity analysis does.
 
 Each (representation, cluster type) pair gets a two-sided Spearman task-label
 permutation (Mantel) test (``N_PERMUTATIONS`` permutations, seed
-``PERMUTATION_SEED``), because the pairs share tasks. A negative rho means
-that tasks whose context-end states lie closer depend on more similar
-clusters. Nothing is recomputed from network activity; the script reads
-caches and runs in seconds. Rerun it after ``state_space_structure.py`` or
-``lesion_plot.py`` (the state-space batch run clears its output too).
+``PERMUTATION_SEED``), because the pairs share tasks, and a descriptive OLS
+guide line for the figure (as the causal-vs-activity scatter has; the
+statistic stays the rank correlation). A negative rho means that tasks whose
+context-end states lie closer depend on more similar clusters. Nothing is
+recomputed from network activity; the script reads caches and runs in
+seconds. Rerun it after ``state_space_structure.py`` or ``lesion_plot.py``
+(the state-space batch run clears its output too).
 
 Output: ``state_space/state_space_vs_lesion_results.pkl``, {aname: entry}
-with the per-pair coordinates, the tests (null arrays included) and the
-run's L2 strength; ``paper_plot.py`` draws them in ``lesion`` mode
+with the per-pair coordinates, the tests (null arrays included), the guide
+lines and the run's L2 strength; ``paper_plot.py`` draws them in ``lesion`` mode
 (``state_space_vs_lesion`` and ``state_space_vs_lesion_seeds``).
 """
 from pathlib import Path
@@ -52,13 +55,20 @@ LESION_PERF_ROOT = Path("multiple_tasks_perf")
 NOISE_LEVEL = 0.01
 N_PERMUTATIONS = 10000
 PERMUTATION_SEED = 0
-SCHEMA_VERSION = 1
+# 2: every (representation, cluster type) test has a saved OLS guide line.
+SCHEMA_VERSION = 2
 RESULT_NAME = "state_space_vs_lesion_results.pkl"
 REPRESENTATIONS = ("hidden", "eff_mod")
 CLUSTER_TYPES = ("neuron", "synapse")
 NEURON_TASKSIM_NAME = "causal_vs_activity_tasksim_hidden"
 NEURON_SIMILARITY_DEFINITION = "pearson_corr_of_task_lesion_effect_profiles_over_neuron_clusters"
-SYNAPSE_EFFECT_ENTRY = "modulation_all_var_weighted_unnormalized__zero_W"
+# Synapse intervention of the synapse-cluster column: freeze_M (M held at its
+# initial value, W kept), as in paper_plot's lesion heatmap
+# (LESION_HEATMAP_MODE); test_state_space_vs_lesion checks the two agree.
+SYNAPSE_LESION_MODE = "freeze_M"
+SYNAPSE_EFFECT_ENTRY = f"modulation_all_var_weighted_unnormalized__{SYNAPSE_LESION_MODE}"
+SYNAPSE_SIMILARITY_DEFINITION = (f"pearson_corr_of_task_{SYNAPSE_LESION_MODE}_lesion_effect_profiles"
+                                 "_over_var_weighted_synapse_clusters")
 SYNAPSE_CONDITION_PREFIX = "mod_c"
 SYNAPSE_BASELINE_CONDITIONS = ("mod_nolesion", "mod_cNone")
 
@@ -108,7 +118,7 @@ def neuron_cluster_similarity(aname, lesion_root=LESION_NORM_ROOT):
 
 def synapse_unresponsive_condition(aname, lesion_perf_root=LESION_PERF_ROOT):
     """Condition name (``mod_c<label>``) of the unresponsive synapse class in
-    the run's var-weighted zero_W lesion record, or None when none was
+    the run's var-weighted SYNAPSE_LESION_MODE lesion record, or None when none was
     flagged. Mirrors lesion_plot's ``_mod_unresponsive_label`` with
     ``legacy_last``: pickles written before the label was recorded take the
     last ``mod_c`` condition, the k + 1 class appended by every clustering."""
@@ -126,9 +136,11 @@ def synapse_unresponsive_condition(aname, lesion_perf_root=LESION_PERF_ROOT):
 
 def synapse_cluster_similarity(aname, lesion_root=LESION_NORM_ROOT, lesion_perf_root=LESION_PERF_ROOT):
     """(tasks, matrix, excluded condition) with the Pearson correlation
-    between the two tasks' zero_W lesion-effect profiles over the var-weighted
-    unnormalized synapse clusters, leaving out the recorded unresponsive
-    class; None when the run has no normalized-effects cache."""
+    between the two tasks' SYNAPSE_LESION_MODE (freeze_M) lesion-effect
+    profiles over the var-weighted unnormalized synapse clusters, leaving out
+    the recorded unresponsive class; None when the run has no
+    normalized-effects cache. An entry recording another mode is an error,
+    never a substitute."""
     path = resolve_lesion_cache_path(Path(lesion_root) / aname / f"normalized_lesion_effects_{aname}.pkl")
     if not path.exists():
         return None
@@ -136,7 +148,7 @@ def synapse_cluster_similarity(aname, lesion_root=LESION_NORM_ROOT, lesion_perf_
     if saved.get("schema_version") != 1 or saved.get("aname") != aname:
         raise ValueError(f"{path.name}: legacy cache or another run")
     entry = saved["entries"][SYNAPSE_EFFECT_ENTRY]
-    if (entry.get("mod_lesion_mode", "zero_W") != "zero_W"
+    if (entry.get("mod_lesion_mode", SYNAPSE_LESION_MODE) != SYNAPSE_LESION_MODE
             or entry.get("definition") != "random_minus_lesion"):
         raise ValueError(f"{path.name}: unexpected synapse lesion mode or effect definition")
     conditions = list(entry["conditions"])
@@ -176,13 +188,30 @@ def _aligned(matrix, source_tasks, target_tasks):
     return matrix[np.ix_(index, index)]
 
 
+def descriptive_trend_line(x, y):
+    """Ordinary least-squares line through one panel's pairs, as a visual
+    guide only (the same guide lesion_plot.py saves for the causal-vs-activity
+    scatter). The reported association is the Spearman rho with its
+    task-label permutation p; a rank correlation has no line in the raw
+    coordinates, so this carries no inferential claim. None when x is
+    constant."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if x.size < 2 or np.std(x) < 1e-12:
+        return None
+    slope, intercept = np.polyfit(x, y, 1)
+    return {"method": "ols", "slope": float(slope), "intercept": float(intercept),
+            "role": "descriptive_guide_for_spearman_scatter"}
+
+
 def analyze_run(aname, l2_info, tasks, distances, similarities,
                 n_permutations=N_PERMUTATIONS, seed=PERMUTATION_SEED):
     """The results entry of one run: per task pair (``pairs``, i < j in the
     structure cache's task order) the centroid distances per representation
     and the lesion-profile similarities per cluster type, and under
     ``tests[representation][cluster_type]`` the Spearman Mantel test of
-    distance against similarity."""
+    distance against similarity, under ``trend_lines`` (same keys) its
+    descriptive OLS guide."""
     upper = np.triu_indices(len(tasks), 1)
     entry = {
         "schema_version": SCHEMA_VERSION, "aname": aname, "l2_info": l2_info,
@@ -191,10 +220,11 @@ def analyze_run(aname, l2_info, tasks, distances, similarities,
         "distance_definition": "euclidean distance between full-dimensional context-end task centroids",
         "similarity_definitions": {
             "neuron": NEURON_SIMILARITY_DEFINITION,
-            "synapse": "pearson_corr_of_task_zero_W_lesion_effect_profiles_over_var_weighted_synapse_clusters",
+            "synapse": SYNAPSE_SIMILARITY_DEFINITION,
         },
         "distances": {name: matrix[upper] for name, matrix in distances.items()},
         "similarities": {}, "excluded_conditions": {}, "tests": {name: {} for name in distances},
+        "trend_lines": {name: {} for name in distances},
     }
     for cluster_type, (sim_tasks, matrix, *extra) in similarities.items():
         aligned = _aligned(matrix, sim_tasks, tasks)
@@ -204,6 +234,8 @@ def analyze_run(aname, l2_info, tasks, distances, similarities,
         for representation, distance in distances.items():
             entry["tests"][representation][cluster_type] = mantel_spearman_permutation(
                 distance, aligned, n_permutations=n_permutations, seed=seed)
+            entry["trend_lines"][representation][cluster_type] = descriptive_trend_line(
+                distance[upper], aligned[upper])
     return entry
 
 

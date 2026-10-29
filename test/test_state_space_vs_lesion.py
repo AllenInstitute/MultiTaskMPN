@@ -43,15 +43,16 @@ def _tasksim_cache(aname, tasks, similarity):
 
 
 def _effects_cache(aname, tasks, effect, conditions):
-    return {"schema_version": 1, "aname": aname, "primary_modulation_mode": "zero_W",
+    return {"schema_version": 1, "aname": aname, "primary_modulation_mode": link.SYNAPSE_LESION_MODE,
             "entries": {link.SYNAPSE_EFFECT_ENTRY: {
                 "effect": effect, "tasks": list(tasks), "conditions": list(conditions),
                 "definition": "random_minus_lesion", "units": "fraction",
-                "mod_lesion_mode": "zero_W"}}}
+                "mod_lesion_mode": link.SYNAPSE_LESION_MODE}}}
 
 
 def _prune_results(conditions, unresponsive_label="missing"):
-    record = {"all_comb_names_mod": ["mod_nolesion"] + list(conditions), "mod_lesion_mode": "zero_W"}
+    record = {"all_comb_names_mod": ["mod_nolesion"] + list(conditions),
+              "mod_lesion_mode": link.SYNAPSE_LESION_MODE}
     if unresponsive_label != "missing":
         record["unresponsive_label"] = unresponsive_label
     return {"mod_lesion": {link.SYNAPSE_EFFECT_ENTRY: record}}
@@ -142,6 +143,26 @@ class LesionSimilarityTests(unittest.TestCase):
                 link.synapse_cluster_similarity(self.aname, root / "norm", root / "perf")
             self.assertIsNone(link.synapse_cluster_similarity("other_run", root / "norm", root / "perf"))
 
+    def test_synapse_similarity_reads_freeze_m_like_the_lesion_heatmap(self):
+        """The synapse column uses the lesion heatmap's mode, recorded in the
+        results so paper_plot can tell; an entry of another mode is an error."""
+        self.assertEqual(link.SYNAPSE_LESION_MODE, "freeze_M")
+        self.assertEqual(link.SYNAPSE_LESION_MODE, paper_plot.LESION_HEATMAP_MODE)
+        self.assertEqual(link.SYNAPSE_EFFECT_ENTRY,
+                         "modulation_all_var_weighted_unnormalized__freeze_M")
+        self.assertEqual(link.SYNAPSE_SIMILARITY_DEFINITION, paper_plot._SSL_SYNAPSE_DEFINITION)
+        rng = np.random.default_rng(5)
+        effect = rng.normal(size=(len(RULES), len(self.conditions)))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_synapse_caches(root, effect, unresponsive_label=None)
+            path = root / "norm" / self.aname / f"normalized_lesion_effects_{self.aname}.pkl"
+            mislabeled = _effects_cache(self.aname, RULES, effect, self.conditions)
+            mislabeled["entries"][link.SYNAPSE_EFFECT_ENTRY]["mod_lesion_mode"] = "zero_W"
+            _write(path, mislabeled)
+            with self.assertRaisesRegex(ValueError, "lesion mode"):
+                link.synapse_cluster_similarity(self.aname, root / "norm", root / "perf")
+
     def test_neuron_similarity_requires_the_current_cache_schema(self):
         rng = np.random.default_rng(3)
         similarity = _similarity_matrix(rng, len(RULES))
@@ -196,6 +217,14 @@ class AnalyzeRunTests(unittest.TestCase):
                 self.assertEqual(test["n_permutations"], 25)
                 self.assertAlmostEqual(
                     test["rho"], spearmanr(distances[UPPER], similarity[UPPER]).correlation)
+                # The descriptive guide is the OLS line through the same pairs.
+                trend = entry["trend_lines"][representation][cluster_type]
+                slope, intercept = np.polyfit(distances[UPPER], similarity[UPPER], 1)
+                self.assertEqual(trend["method"], "ols")
+                self.assertAlmostEqual(trend["slope"], slope)
+                self.assertAlmostEqual(trend["intercept"], intercept)
+        self.assertEqual(entry["schema_version"], 2)
+        self.assertIsNone(link.descriptive_trend_line(np.ones(4), np.arange(4.)))
         self.assertAlmostEqual(entry["tests"]["eff_mod"]["synapse"]["rho"], -1.0)
         self.assertLess(entry["tests"]["eff_mod"]["synapse"]["p_value"], 0.1)
         with self.assertRaisesRegex(ValueError, "different tasks"):
@@ -301,7 +330,14 @@ class PaperFigureTests(unittest.TestCase):
             offsets = points[0].get_offsets()
             np.testing.assert_allclose(offsets[:, 0], entry["distances"][representation])
             np.testing.assert_allclose(offsets[:, 1], entry["similarities"][cluster_type])
-            self.assertEqual(len(axis.lines), 0)            # no fitted line for a rank statistic
+            # One red line: the saved OLS guide, not refitted here.
+            self.assertEqual(len(axis.lines), 1)
+            trend = entry["trend_lines"][representation][cluster_type]
+            line = axis.lines[0]
+            np.testing.assert_allclose(line.get_ydata(),
+                                       trend["intercept"] + trend["slope"] * line.get_xdata())
+            self.assertEqual(paper_plot.mpl.colors.to_hex(line.get_color()),
+                             paper_plot.mpl.colors.to_hex(paper_plot._TREND_LINE_COLOR))
             test = entry["tests"][representation][cluster_type]
             legend_text = axis.get_legend().get_texts()[0].get_text()
             self.assertIn(f"{test['rho']:.2f}", legend_text)
@@ -333,6 +369,15 @@ class PaperFigureTests(unittest.TestCase):
         save.assert_not_called()
         printed = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
         self.assertIn("incompatible", printed)
+        # Results computed with zero_W synapse lesions (before the switch to
+        # freeze_M) are skipped, not drawn as freeze_M.
+        legacy = self.results([aname])
+        legacy[aname]["similarity_definitions"]["synapse"] = (
+            "pearson_corr_of_task_zero_W_lesion_effect_profiles_over_var_weighted_synapse_clusters")
+        save, output = self.render(paper_plot.plot_state_space_vs_lesion, legacy, [aname])
+        save.assert_not_called()
+        printed = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
+        self.assertIn("another lesion mode", printed)
 
     def test_seed_figure_draws_every_sibling_run_with_the_cohort_test(self):
         import re

@@ -21,6 +21,14 @@ python multiple_task/sibling_delay_analysis.py \
   --seed 921 --feature L21e4 --families delaydm1 dmcgo \
   --method long_delay_endpoint
 python figures/paper_plot.py --only sibling_cue_interp
+# the same geometry over every cached run of the cohort, in the full state
+# space, one statistic per figure
+python multiple_task/sibling_cohort.py --feature L21e4
+python figures/paper_plot.py --only sibling_cohort_translation
+python figures/paper_plot.py --only sibling_cohort_alignment
+python figures/paper_plot.py --only sibling_cohort_cue_transfer
+python figures/paper_plot.py --only sibling_cohort_category_axis
+python figures/paper_plot.py --only sibling_cohort_category_memory
 
 # additional state-space analysis
 python multiple_task/state_space_shift.py
@@ -300,7 +308,11 @@ network must respond to: "respond to category 1" holds DMCGo trials whose
 first stimulus is in category 1 (locations 0-3, below pi) together with
 DMCNoGo trials whose first stimulus is in category 2 (locations 4-7), since
 both respond to a category-1 second stimulus; "respond to category 2" is the
-complement. `python figures/paper_plot.py --only onetask_stimulus_colorwheel`
+complement. This is the labeling the plane is picked to separate; whether
+the state codes the category that way is the question of the
+[cohort statistics](#sibling-task-cohort-statistics), which say it does
+not (the two rules' category axes are orthogonal in the full space).
+`python figures/paper_plot.py --only onetask_stimulus_colorwheel`
 saves, beside the stimulus colorwheel, `onetask_stimulus_colorwheel_dmc_category`:
 the eight DMC stimulus locations (0.05 pi to 1.80 pi, offset from the ring
 directions so none lies on the boundary at 0 / pi) in their direction colors,
@@ -431,7 +443,8 @@ the directions merge anywhere along the sweep, or a trial hops to another
 direction's attractor, is not chosen. The endpoints alone cannot judge the
 sweep, whose middle and alpha = 1 end (an input never trained) they never
 see. The DMC sweep figure shows the two response clusters swapping under
-the sibling's cue and draws each PC on its own row, so a separable-at-every-
+the sibling's cue (in the plane chosen for it; see the cohort statistics
+below) and draws each PC on its own row, so a separable-at-every-
 alpha score would select against it and a pair scored as a plane can hide a
 row with no clusters at all (an axis that only adds little spread). It
 instead pairs two PCs chosen on their own (`best_dmc_sweep_pc_pair`): on each
@@ -491,6 +504,99 @@ cohort, not a typical run: on the grid caches the chosen DelayDM
 e_modulation sweep keeps its directions 1.66 apart (separation ratio) at its
 worst alpha, against a cohort median of 0.49, so in most runs the directions
 merge somewhere along the sweep. The saved rankings give the spread across
-runs. The endpoint figures' axis limits follow the drawn points
-(`_adaptive_pc_limits`) for every run.
+runs, and the [cohort figures](#sibling-task-cohort-statistics) put every
+run in the full state space. The endpoint figures' axis limits follow the
+drawn points (`_adaptive_pc_limits`) for every run.
+
+## Sibling-task cohort statistics
+
+`python multiple_task/sibling_cohort.py --feature L21e4` asks what the
+sibling illustrations show over every run of a cohort. It reads the settled
+long-delay endpoint and rule-cue sweep caches of every
+`two_in_multiples/everything_seed*_<feature>+hidden300+batch128+angle/` run
+(both families, every point at the fixed-point criterion; a run missing a
+cache or holding an unsettled point is listed with the reason) and
+computes, in the full hidden-state and W ⊙ M spaces with no PC pair and no
+run chosen, the statistics below per run, family and representation
+(`core.sibling_geometry` holds the metrics). Nothing is
+re-simulated; a cohort takes a few minutes, mostly reading the W ⊙ M
+sweeps. It writes `two_in_multiples/sibling_cohort_results.pkl` (the
+feature, the definitions, every run's statistics and the skipped runs),
+which `paper_plot.py` draws in `two_in_multiple` mode, one statistic per
+figure: every run a point in the statistics blue, a run's hidden-state and
+W ⊙ M columns joined, the median over runs as a red dash with the
+interquartile range and the run count in the legend; skipped below two
+runs or when the file belongs to another cohort than `SIBLING_L2`. Rerun
+the script after `sibling_delay_analysis.py` rewrites any run's caches.
+
+- `multitask_sibling_cohort_translation`: the two DelayDM rules' endpoints
+  matched by (direction, magnitude), and the fraction of their mean squared
+  cross-task displacement that one shared vector accounts for
+  (`core.sibling_geometry.translation_metrics`; 1 is a pure translation).
+- `multitask_sibling_cohort_alignment`: the separation of the pooled
+  DelayDM endpoints by stimulus direction (`separation_score`) with each
+  task's mean removed, over the raw separation, on a log axis with 1
+  marked.
+- `multitask_sibling_cohort_cue_transfer`: for DelayDM and DMC, the
+  distance of each sweep trial's alpha = 1 endpoint (the base rule's
+  stimulus under the sibling's cue) from the sibling task's endpoint of the
+  same stimulus, as a fraction of the task distance (DelayDM: the matched
+  endpoint and the translation's length; DMC: the DMCNoGo centroid of the
+  trial's stimulus category and the Go-NoGo centroid distance of that
+  category), median over the trials; 0 means it lands on the sibling's
+  endpoint. The script also saves the fraction of the translation the
+  DelayDM sweep traverses and the fraction of trials nearer the sibling's
+  endpoint than their own.
+- `multitask_sibling_cohort_category_axis`: the cosine between the two DMC
+  rules' stimulus-category axes (within each task, the category-1 centroid
+  minus the category-2 one; `category_axis_cosine`): +1 one shared code,
+  -1 a code reversed between the tasks, as "respond to category 1 / 2"
+  clusters common to both tasks would give, 0 a direction of its own per
+  task. The separations by task, and by response and by stimulus category
+  with the task means removed, are saved beside it.
+- `multitask_sibling_cohort_category_memory`: whether each DMC rule holds
+  the category at all: per rule (DMCGo, DMCNoGo) and representation, the
+  separation of that rule's own endpoints by stimulus category
+  (`separation_score`, full space), on a log axis from 1/8 to 64 with 1
+  marked; a rule whose endpoints do not separate the categories, or whose
+  trials of a category collapse onto one point (a separation in the
+  thousands), is a hollow point at the edge. The script also saves, per
+  rule, the largest separation any of
+  the other 34 balanced four-against-four splits of the eight directions
+  gives and whether the category split beats them all (the endpoints group
+  by the category boundary, not by some other half of the ring), and the
+  leave-one-out nearest-centroid accuracy of the category; the saved
+  message reports them. The category-axis figure then asks how the two
+  rules' codes relate; this one asks whether each rule has one.
+
+On the 25 L2 = 1e-4 runs (DelayDM caches of 2026-10-26, DMC of 2026-10-22;
+medians with quartiles from the script's run of 2026-10-29): the DelayDM
+displacement is one translation
+(explained fraction hidden 0.80 [0.73, 0.90], W ⊙ M 0.97 [0.94, 0.98]), the
+same direction clusters across the tasks once it is removed (aligned over
+raw separation 1.95x and 4.25x, above 1 in 25/25 runs) and the cue alone
+carries the state the whole way (97-100% of the translation traversed; the
+alpha = 1 endpoint, an input never trained, ends 0.20 [0.07, 0.36] of the
+translation from the sibling's matched endpoint in the hidden state and
+0.09 [0.05, 0.14] in W ⊙ M, nearer it than its own for about every
+trial). The DMC alpha = 1 endpoint, a trained DMCNoGo input, lands on the
+DMCNoGo endpoint of its stimulus (residual 5-6% of the Go-NoGo distance).
+But the two DMC rules' category axes are nearly orthogonal (cosine median
+0.04, negative in 4/25 hidden and 1/25 W ⊙ M runs, many at 0.00), while in
+the plane the DMC sweep figure picks it is -0.64 (negative in 15-18 of 25);
+with the task means removed, grouping by stimulus category beats grouping
+by response category in 22-23 of 25 runs. The response-cluster swap of that
+figure is therefore a property of the chosen plane, not of the state; what
+the cohort supports is that the cue moves the delay state from the Go
+endpoint to the NoGo endpoint of the same stimulus, each task coding the
+category along its own direction. Whether each rule holds the category at
+all differs between the two: DMCNoGo's endpoints separate by category in
+25/25 runs (separation 3.78 [2.25, 6.69] hidden, 2.60 [2.26, 4.53] W ⊙ M;
+nearest-centroid accuracy 1.00; the category split is the best of all 35
+balanced splits in 20-21 of 25), while DMCGo's separate less (1.67 [0.99,
+2.64] and 1.82 [1.05, 2.13], above 1 in 18 and 20 of 25; accuracy 0.84 and
+0.91) and group by the category boundary rather than by some other half of
+the ring in only 9 of 25 runs. The DMCGo delay state is therefore not a
+clean category memory in most runs, which the DMC endpoint figure, drawn
+in the plane that separates the response categories best, does not show.
 

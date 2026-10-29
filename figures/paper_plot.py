@@ -11,7 +11,8 @@ Figures are grouped into modes by the experiment they depend on:
     lesion           multi-task lesion effects and cluster comparisons
     state_space      multi-task state-space geometry analyses
     acc_plot         accuracy comparisons (L2, activation, projection/hidden dims)
-    two_in_multiple  sibling-task delay geometry and rule-cue sweeps in the multi-task network
+    two_in_multiple  sibling-task delay geometry and rule-cue sweeps in the multi-task
+                     network, and their statistics over the cohort
     pretraining      pretraining → post-training transfer analyses
     two_task         two-task network (cross-task / cross-period PCA)
 
@@ -52,7 +53,8 @@ from core.sibling_geometry import (DELAYDM_METRIC_NAME, DMC_SWEEP_METRIC_NAME,
                                    DMC_SWEEP_KEEP_EVERY_ALPHA_METRIC_NAME,
                                    DMCGO_METRIC_NAME, SWEEP_METRIC_NAME,
                                    best_dmc_sweep_pc_pair, best_sweep_pc_pair,
-                                   best_task_specific_pc_pair, task_offsets)
+                                   best_task_specific_pc_pair, task_offsets,
+                                   translation_metrics)
 from core.state_space_geometry import task_centroid_separation
 from core.lesion_cache import load_lesion_pickle, normalize_lesion_cache, resolve_lesion_cache_path
 from pretrain.pretraining_utils import variant_addon
@@ -797,7 +799,8 @@ _SCATTER_POINT_COLOR = c_vals[1]          # "#3182ce"
 _TREND_LINE_COLOR = "tomato"
 # The lesion-mode scatters (cluster tuning vs lesion, OM vs lesion, causal vs
 # activity, state space vs lesion, plasticity share) and their `_seeds` and
-# cohort plots draw their points in grey instead, significant and not alike
+# cohort plots, and the task-specificity `_seeds` plot, draw their points in
+# grey instead, significant and not alike
 # (filled vs hollow grey ring), so the red overlay is their only color.
 _LESION_POINT_COLOR = "0.45"
 # The dots have no outline: a black edge only darkens dense clouds.
@@ -3739,7 +3742,11 @@ def plot_overmembership_examples():
 
 # Synapse intervention drawn in the lesion heatmap, and read by its cluster-size
 # companion, every modulation tuning-vs-lesion figure and the modulation side
-# of causal-vs-activity. freeze_M keeps W and holds the selected synapses'
+# of causal-vs-activity. The synapse clusters of the task-specificity and
+# task-sharing figures (lesion_plot.py's TASK_SPECIFICITY_MOD_MODE) and the
+# synapse column of state_space_vs_lesion (state_space_vs_lesion.py's
+# SYNAPSE_LESION_MODE) are computed with the same mode; their tests check the
+# constants agree. freeze_M keeps W and holds the selected synapses'
 # modulation at its initial value, so the panel measures what their
 # plasticity contributes. zero_W (W <- 0) stays in the same caches; the OM
 # scatter still reads it (OM_LESION_MODE). Both modes lesion the same synapse
@@ -4458,8 +4465,7 @@ def _load_task_sharing(directory, aname):
         return None
     try:
         saved = load_lesion_pickle(path)
-        if saved.get("schema_version") != 1 or saved.get("aname") != aname:
-            raise ValueError("cache schema or run does not match")
+        _check_task_specificity_cache(saved, aname)
         types = {}
         for type_name, entry in saved["types"].items():
             if type_name not in _TASK_SPECIFICITY_TYPES:
@@ -4512,7 +4518,8 @@ def plot_task_sharing_cohort():
     """
     Figure: multitask_task_sharing_cohort.png — do tasks that differ in one
     component depend on the same clusters? Every sibling run of LESION_ANAME,
-    one panel per cluster type.
+    one panel per cluster type (synapse clusters impair tasks through their
+    freeze_M lesions, as in the task-specificity counts).
 
     For each run and relation (the component the two tasks of a pair differ
     in, lesion_plot.TASK_PAIR_RELATIONS; "All related" pools them), the point
@@ -4600,6 +4607,11 @@ _STATE_SPACE_VS_LESION_HINT = "Run python multiple_task/state_space_vs_lesion.py
 _SSL_CLUSTER_TYPES = (("neuron", "Neuron clusters"), ("synapse", "Synapse clusters"))
 _SSL_REPRESENTATIONS = (("hidden", "Hidden"), ("eff_mod", r"W $\odot$ M"))
 _SSL_DISTANCE_LABELS = {"hidden": "hidden-state centroids", "eff_mod": r"W $\odot$ M centroids"}
+# The synapse column's lesion similarity, as state_space_vs_lesion.py records
+# it: freeze_M, the lesion heatmap's mode. Entries computed with zero_W (before
+# the switch) are skipped, never drawn as freeze_M.
+_SSL_SYNAPSE_DEFINITION = ("pearson_corr_of_task_freeze_M_lesion_effect_profiles"
+                           "_over_var_weighted_synapse_clusters")
 
 
 def _state_space_vs_lesion_entry(combined, aname):
@@ -4610,8 +4622,11 @@ def _state_space_vs_lesion_entry(combined, aname):
               f"{_STATE_SPACE_VS_LESION_HINT}")
         return None
     try:
-        if entry["schema_version"] != 1 or entry["aname"] != aname:
+        # Schema 2 adds the saved OLS guide line of every panel.
+        if entry["schema_version"] != 2 or entry["aname"] != aname:
             raise ValueError("schema or run does not match")
+        if entry["similarity_definitions"]["synapse"] != _SSL_SYNAPSE_DEFINITION:
+            raise ValueError("synapse lesion similarity of another lesion mode (rerun the script)")
         n_pairs = len(entry["pairs"])
         for representation, _ in _SSL_REPRESENTATIONS:
             if np.asarray(entry["distances"][representation]).shape != (n_pairs,):
@@ -4621,6 +4636,10 @@ def _state_space_vs_lesion_entry(combined, aname):
                 if (test["statistic"] != "spearman" or test["sided"] != "two-sided"
                         or not np.isfinite(test["rho"]) or not np.isfinite(test["p_value"])):
                     raise ValueError(f"invalid test for {representation} vs {cluster_type}")
+                trend = entry["trend_lines"][representation][cluster_type]
+                if trend is not None and not all(np.isfinite(float(trend[key]))
+                                                 for key in ("slope", "intercept")):
+                    raise ValueError(f"invalid guide line for {representation} vs {cluster_type}")
         for cluster_type, _ in _SSL_CLUSTER_TYPES:
             if np.asarray(entry["similarities"][cluster_type]).shape != (n_pairs,):
                 raise ValueError(f"{cluster_type} similarities do not match the pairs")
@@ -4643,13 +4662,15 @@ def plot_state_space_vs_lesion():
     representation (the state-space analysis, state_space_structure.py), y
     the Pearson correlation of their lesion-effect profiles (random-control
     minus lesion accuracy), over all unnormalized input and hidden neuron
-    clusters (the causal-vs-activity matrix) or over the var-weighted zero_W
-    synapse clusters without the unresponsive class. Each panel's legend
+    clusters (the causal-vs-activity matrix) or over the var-weighted
+    synapse clusters lesioned with freeze_M (_SSL_SYNAPSE_DEFINITION), without
+    the unresponsive class. Each panel's legend
     reports the saved Spearman rho with its two-sided task-label permutation
     (Mantel) p, from multiple_task/state_space_vs_lesion.py; a negative rho
     links the task geometry of the state-space chapter to the causal
-    dependence of the lesion chapter. No line is drawn: the statistic is a
-    rank correlation.
+    dependence of the lesion chapter. The red line is the script's saved OLS
+    guide, as in the causal-vs-activity scatter: descriptive only, the
+    statistic is the rank correlation.
     """
     _ensure_out_dir()
     combined = _load_pkl_or_skip(STATE_SPACE_VS_LESION_RESULT_PATH, _STATE_SPACE_VS_LESION_HINT)
@@ -4673,6 +4694,7 @@ def plot_state_space_vs_lesion():
             label = (rf"$\rho$ = {test['rho']:.2f} (n = {x.size} pairs)" + "\n"
                      f"permutation {_permutation_p_text(test['p_value'])}")
             _stat_scatter(ax, x, y, label,
+                          trend_line=entry["trend_lines"][representation][cluster_type],
                           xlabel=f"Context-end distance\n({_SSL_DISTANCE_LABELS[representation]})",
                           ylabel="Lesion-profile\nsimilarity (r)" if column == 0 else "",
                           point_color=_LESION_POINT_COLOR)
@@ -5186,9 +5208,10 @@ CLUSTER_CORR_X_DEFINITION = "pearson_corr_of_cluster_mean_tuning_profiles"
 CLUSTER_CORR_Y_DEFINITION = "one_minus_pearson_corr_of_z_scored_effect_profiles"
 # One size for every lesion-mode scatter figure (tuning vs lesion, OM vs lesion,
 # causal vs activity and the per-run `_seeds` dot plots), so they tile as equal
-# squares; the task-specificity count bars keep their own size below.
+# squares; the task-specificity counts figure, one row per cluster type, is
+# as wide but taller.
 _LESION_SCATTER_FIGSIZE = (2.5, 2.5)
-_TASK_SPECIFICITY_FIGSIZE = (3, 2.8)
+_TASK_SPECIFICITY_FIGSIZE = (2.5, 3.0)
 
 
 def _seeds_legend(ax, handles, n_runs, note=None):
@@ -5686,8 +5709,9 @@ _CAUSAL_SEEDS_BOX_ORIGIN = (0.3, 0.2)    # lower-left corner, figure fraction
 
 
 def _causal_seeds_legend_handles():
-    """Legend entries of the seeds figure: significant and non-significant
-    runs, and the red median dash with its interquartile bar."""
+    """Legend entries of the causal-vs-activity and task-specificity seeds
+    figures: significant and non-significant runs, and the red median dash
+    with its interquartile bar."""
     filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color=_LESION_POINT_COLOR,
                               markeredgecolor="none", markersize=4.5, label="permutation p < 0.05")
     hollow = mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
@@ -5820,24 +5844,48 @@ _TASK_SPECIFICITY_TYPES = ("input", "hidden", "modulation")
 _TASK_SPECIFICITY_LABELS = {"input": "Input neuron clusters", "hidden": "Hidden neuron clusters",
                             "modulation": "Synapse clusters"}
 _TASK_SPECIFICITY_COLORS = {"input": c_vals[1], "hidden": c_vals[0], "modulation": c_vals[4]}
-_TASK_SPECIFICITY_TICK_LABELS = {"input": "Input\nclusters", "hidden": "Hidden\nclusters",
-                                 "modulation": "Synapse\nclusters"}
+_TASK_SPECIFICITY_TICK_LABELS = {"input": "Input", "hidden": "Hidden", "modulation": "Synapse"}
+# The cache lesion_plot.py writes (its TASK_SPECIFICITY_SCHEMA_VERSION); its
+# synapse clusters must impair tasks through the lesion heatmap's mode.
+_TASK_SPECIFICITY_SCHEMA_VERSION = 2
+# Counts figure: the dots and the gray mixing-null histogram behind them.
+_TASK_SPECIFICITY_DOT_SIZE = 12
+_TASK_SPECIFICITY_NULL_COLOR = "0.86"
+# Seeds figure: runs tied on a value spread this far apart, within the
+# column's median dash.
+_TASK_SPECIFICITY_SEEDS_TIE_STEP = 0.09
+_TASK_SPECIFICITY_SEEDS_HALF_WIDTH = 0.27
 
 
-def _load_task_specificity():
-    """Load the per-cluster impaired-task counts and their dispersion test
-    (observed variance, the mixing null's variances and the permutation p)
-    from lesion_plot.py's task-specificity cache for LESION_ANAME, or None
-    with a note. The cache also holds per-relation task-pair sharing
-    statistics, which no paper figure draws, so they are not read."""
-    path = resolve_lesion_cache_path(LESION_NORM_DIR / f"task_specificity_{LESION_ANAME}.pkl")
+def _check_task_specificity_cache(saved, aname):
+    """Raise ValueError unless a task-specificity cache has the current
+    schema, belongs to run `aname` and tested its synapse clusters with
+    LESION_HEATMAP_MODE lesions (shared by the counts and sharing readers)."""
+    if (saved.get("schema_version") != _TASK_SPECIFICITY_SCHEMA_VERSION
+            or saved.get("aname") != aname):
+        raise ValueError("cache schema or run does not match")
+    if ("modulation" in saved["types"]
+            and saved.get("modulation_lesion_mode") != LESION_HEATMAP_MODE):
+        raise ValueError(f"synapse clusters not tested with {LESION_HEATMAP_MODE} lesions")
+
+
+def _load_task_specificity(directory, aname, report_missing=True):
+    """Load run `aname`'s per-cluster impaired-task counts and their
+    dispersion test from lesion_plot.py's task-specificity cache in
+    `directory`: {"tasks", "types": {type: {"counts", "p_dispersion",
+    "null_count_pmf"}}}, where null_count_pmf is the saved exact distribution
+    of one cluster's count (0..T tasks) under the mixing null. None with a
+    note when the cache is incompatible, and when it is missing unless
+    `report_missing` is False. The cache's per-relation task-pair sharing
+    statistics are read by _load_task_sharing instead."""
+    path = resolve_lesion_cache_path(Path(directory) / f"task_specificity_{aname}.pkl")
     if not path.exists():
-        print(f"  Skipped: {path.name} not found. Run multiple_task/lesion_plot.py first.")
+        if report_missing:
+            print(f"  Skipped: {path.name} not found. Run multiple_task/lesion_plot.py first.")
         return None
     try:
         saved = load_lesion_pickle(path)
-        if saved.get("schema_version") != 1 or saved.get("aname") != LESION_ANAME:
-            raise ValueError("cache schema or run does not match")
+        _check_task_specificity_cache(saved, aname)
         tasks = list(saved["tasks"])
         types = {}
         for type_name, entry in saved["types"].items():
@@ -5846,15 +5894,15 @@ def _load_task_specificity():
             dispersion = entry["dispersion"]
             counts = np.asarray(dispersion["counts"], dtype=int)
             p_disp = float(dispersion["p_perm"])
-            null_var = np.asarray(dispersion["null_var"], dtype=float)
+            pmf = np.asarray(dispersion["null_count_pmf"], dtype=float)
             if (counts.ndim != 1 or counts.size == 0 or counts.min() < 0
                     or counts.max() > len(tasks) or not np.isfinite(p_disp)
                     or dispersion.get("side") != "greater"
-                    or null_var.ndim != 1 or null_var.size == 0
-                    or not np.isfinite(null_var).all() or np.any(null_var < 0)):
+                    or pmf.shape != (len(tasks) + 1,) or not np.isfinite(pmf).all()
+                    or np.any(pmf < 0) or not np.isclose(pmf.sum(), 1.0)):
                 raise ValueError(f"{type_name}: invalid impaired-task counts or dispersion test")
             types[type_name] = {"counts": counts, "p_dispersion": p_disp,
-                                "null_var_median": float(np.median(null_var))}
+                                "null_count_pmf": pmf}
         if not types:
             raise ValueError("no cluster types saved")
     except (OSError, KeyError, TypeError, ValueError) as error:
@@ -5863,67 +5911,174 @@ def _load_task_specificity():
     return {"tasks": tasks, "types": types}
 
 
+def _task_specificity_runs():
+    """{aname: _load_task_specificity(...)} over the sibling runs of
+    LESION_ANAME whose caches validate and hold the same cluster types as the
+    first such run; a disagreeing run is left out with a note."""
+    runs = {}
+    for directory in _sibling_run_dirs():
+        saved = _load_task_specificity(directory, directory.name, report_missing=False)
+        if saved is None:
+            continue
+        if runs and set(saved["types"]) != set(next(iter(runs.values()))["types"]):
+            print(f"  Skipped {directory.name}: its cluster types differ from the other runs.")
+            continue
+        runs[directory.name] = saved
+    return runs
+
+
+def _tie_offsets(values, step, half_width):
+    """x offsets that set the tied values of one column side by side, as in
+    a dot histogram (_run_offsets per group of equal values); a value no
+    other shares sits on the column."""
+    values = np.asarray(values)
+    offsets = np.zeros(values.size)
+    for value in np.unique(values):
+        members = np.flatnonzero(values == value)
+        offsets[members] = _run_offsets(members.size, step, half_width)
+    return offsets
+
+
 def plot_task_specificity():
     """
     Figure: multitask_task_specificity_counts.png — how many tasks each
-    cluster impairs, one column per cluster type.
+    cluster impairs, one row per cluster type.
 
     For input and hidden neuron clusters and synapse clusters (the
-    unresponsive class excluded), every cluster is a dot at the number of
-    tasks whose accuracy its zero_W lesion significantly lowers; tied values
-    spread sideways, so each column reads as a dot histogram, and the dash is
-    the median. The gray band is the spread the counts would have under the
-    saved mixing null, which shuffles cluster identity within each task and so
-    keeps every task's number of impaired clusters and the mean count per
-    cluster: the mean ± one SD, the square root of the median null variance.
-    Dots that spread beyond the band mean the type holds both specialized and
-    hub-like clusters rather than a uniform mix; the tick label carries the
-    cluster count and the saved one-sided permutation p of the observed
-    variance exceeding the null. Everything comes from lesion_plot.py's
-    cache; nothing is recomputed.
+    unresponsive class excluded), every cluster is a dot stacked over the
+    number of tasks whose accuracy its lesion significantly lowers (freeze_M
+    for the synapse clusters, as in the lesion heatmap), so each row is a dot
+    histogram counted in clusters. The gray histogram behind the dots is what
+    the saved mixing null expects at each count: it shuffles cluster identity
+    within each task, keeping every task's number of impaired clusters, and
+    the expectation is the saved exact null distribution of one cluster's
+    count times the number of clusters. Dots piling up at both ends, beyond
+    the gray hump, mean specialized and hub-like clusters rather than a
+    uniform mix; the red line is the median, and the right-hand title the
+    saved one-sided permutation p of the count variance exceeding that null.
+    The rows share both axes. Everything comes from lesion_plot.py's cache;
+    nothing is recomputed.
     """
     _ensure_out_dir()
-    saved = _load_task_specificity()
+    saved = _load_task_specificity(LESION_NORM_DIR, LESION_ANAME)
     if saved is None:
         return
     n_tasks = len(saved["tasks"])
     types = [name for name in _TASK_SPECIFICITY_TYPES if name in saved["types"]]
-    fig, ax = plt.subplots(1, 1, figsize=_TASK_SPECIFICITY_FIGSIZE)
-    tick_labels, notes = [], []
-    for position, type_name in enumerate(types):
+    edges = np.arange(n_tasks + 2) - 0.5
+    expected = {name: saved["types"][name]["counts"].size * saved["types"][name]["null_count_pmf"]
+                for name in types}
+    tallest = max(max(np.bincount(saved["types"][name]["counts"]).max(), expected[name].max())
+                  for name in types)
+    fig, axs = plt.subplots(len(types), 1, figsize=_TASK_SPECIFICITY_FIGSIZE, sharex=True,
+                            sharey=True)
+    axs = np.atleast_1d(axs)
+    notes = []
+    for ax, type_name in zip(axs, types):
         entry = saved["types"][type_name]
         counts = entry["counts"]
-        null_sd = float(np.sqrt(entry["null_var_median"]))
-        ax.fill_between([position - 0.3, position + 0.3], counts.mean() - null_sd,
-                        counts.mean() + null_sd, color="0.85", linewidth=0, zorder=1)
-        for value in np.unique(counts):
-            ties = int(np.count_nonzero(counts == value))
-            half_width = min(0.28, 0.07 * (ties - 1))
-            ax.scatter(position + np.linspace(-half_width, half_width, ties),
-                       np.full(ties, value), s=16, color=_TASK_SPECIFICITY_COLORS[type_name],
-                       edgecolors="none", alpha=0.75, zorder=3)
-        ax.hlines(np.median(counts), position - 0.3, position + 0.3, color=_TREND_LINE_COLOR,
-                  linewidth=1.8, zorder=4)
-        tick_labels.append(f"{_TASK_SPECIFICITY_TICK_LABELS[type_name]}\nn = {counts.size}\n"
-                           f"{_permutation_p_text(entry['p_dispersion'])}")
-        notes.append(f"{type_name}: median {np.median(counts):.0f} tasks, variance "
-                     f"{counts.var():.1f} vs null {entry['null_var_median']:.1f}")
-    ax.set_xticks(np.arange(len(types)))
-    ax.set_xticklabels(tick_labels, fontsize=6)
-    ax.set_xlim(-0.6, len(types) - 0.4)
-    ax.set_ylabel("Tasks impaired per cluster", fontsize=8)
-    ax.set_ylim(-0.6, n_tasks + 0.6)
-    ax.yaxis.set_major_locator(mticker.MultipleLocator(5))
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.tick_params(axis="y", labelsize=7)
-    median = mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8, label="median")
-    band = mpl.patches.Patch(color="0.85", label="mixing null, mean ± SD")
-    _legend(ax, handles=[median, band], loc="lower left", bbox_to_anchor=(0.0, 1.0),
-            borderaxespad=0.0, ncol=2, columnspacing=0.8, handletextpad=0.4, fontsize=6,
-            frameon=False)
-    fig.tight_layout()
+        ax.stairs(expected[type_name], edges, fill=True, color=_TASK_SPECIFICITY_NULL_COLOR,
+                  linewidth=0, zorder=1)
+        values, ties = np.unique(counts, return_counts=True)
+        ax.scatter(np.repeat(values, ties), np.concatenate([np.arange(tie) + 0.5 for tie in ties]),
+                   s=_TASK_SPECIFICITY_DOT_SIZE, color=_TASK_SPECIFICITY_COLORS[type_name],
+                   edgecolors="none", zorder=3)
+        ax.axvline(np.median(counts), color=_TREND_LINE_COLOR, linewidth=1.2, zorder=2)
+        ax.set_title(f"{_TASK_SPECIFICITY_TICK_LABELS[type_name]} clusters (n = {counts.size})",
+                     fontsize=7, loc="left", pad=2)
+        ax.set_title(_permutation_p_text(entry["p_dispersion"]), fontsize=6, loc="right", pad=2)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.tick_params(labelsize=7)
+        notes.append(f"{type_name}: median {np.median(counts):g} tasks, variance "
+                     f"{counts.var():.1f}, dispersion p = {entry['p_dispersion']:.3g}")
+    axs[0].set_ylim(0, tallest + 0.5)
+    axs[0].yaxis.set_major_locator(mticker.MaxNLocator(3, integer=True))
+    axs[0].set_xlim(-0.7, n_tasks + 0.7)
+    axs[0].xaxis.set_major_locator(mticker.MultipleLocator(5))
+    axs[len(axs) // 2].set_ylabel("Clusters", fontsize=8)
+    axs[-1].set_xlabel("Tasks impaired per cluster", fontsize=8)
+    dot = mpl.lines.Line2D([], [], marker="o", linestyle="none", color="0.35",
+                           markeredgecolor="none", markersize=3.5, label="cluster")
+    null = mpl.patches.Patch(color=_TASK_SPECIFICITY_NULL_COLOR, label="mixing null, expected")
+    median = mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.2, label="median")
+    _state_space_figure_legend(fig, [dot, null, median], top=0.95)
     _save_fig(fig, _multitask_out("task_specificity_counts.png"),
               extra=f" [{LESION_ANAME}] " + "; ".join(notes))
+
+
+def plot_task_specificity_seeds():
+    """
+    Figure: multitask_task_specificity_seeds.png — the median number of tasks
+    a cluster impairs, in every sibling run of LESION_ANAME, per cluster type.
+
+    One column per cluster type (input, hidden and synapse clusters, with the
+    lesions of the counts figure), one grey point per run at the median of
+    its clusters' impaired-task counts: filled when the run's saved
+    dispersion permutation p is below 0.05 (counts more spread than the
+    mixing null), hollow otherwise. Runs tied on a value spread sideways, and
+    a thin line joins each run's points. The red dash and bar are the median
+    and interquartile range over runs; each bracket is the two-sided paired
+    Wilcoxon signed-rank p of the runs' medians between two neighboring
+    columns, computed here from the saved counts. Skipped below two runs.
+    """
+    _ensure_out_dir()
+    runs = _task_specificity_runs()
+    if len(runs) < 2:
+        print(f"  Skipped: {len(runs)} run(s) with saved task-specificity caches; need >= 2.")
+        return
+    first = next(iter(runs.values()))
+    types = [name for name in _TASK_SPECIFICITY_TYPES if name in first["types"]]
+    medians = {name: np.array([np.median(saved["types"][name]["counts"])
+                               for saved in runs.values()]) for name in types}
+    significant = {name: np.array([saved["types"][name]["p_dispersion"] < 0.05
+                                   for saved in runs.values()]) for name in types}
+    xs = {name: position + _tie_offsets(medians[name], _TASK_SPECIFICITY_SEEDS_TIE_STEP,
+                                        _TASK_SPECIFICITY_SEEDS_HALF_WIDTH)
+          for position, name in enumerate(types)}
+
+    fig, ax = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
+    for run in range(len(runs)):
+        ax.plot([xs[name][run] for name in types], [medians[name][run] for name in types],
+                color="0.85", linewidth=0.5, zorder=2)
+    for position, name in enumerate(types):
+        hit = significant[name]
+        ax.scatter(xs[name][hit], medians[name][hit], s=_CAUSAL_SEEDS_POINT_SIZE,
+                   color=_LESION_POINT_COLOR, edgecolors="none", zorder=3)
+        ax.scatter(xs[name][~hit], medians[name][~hit], s=_CAUSAL_SEEDS_POINT_SIZE,
+                   facecolors="white", edgecolors=_LESION_POINT_COLOR, linewidths=0.8, zorder=3)
+        q25, median, q75 = np.percentile(medians[name], [25, 50, 75])
+        ax.vlines(position, q25, q75, color=_TREND_LINE_COLOR, linewidth=1.0, zorder=4)
+        ax.hlines(median, position - _TASK_SPECIFICITY_SEEDS_HALF_WIDTH,
+                  position + _TASK_SPECIFICITY_SEEDS_HALF_WIDTH, color=_TREND_LINE_COLOR,
+                  linewidth=1.8, zorder=4)
+
+    # Paired tests of neighboring columns, as brackets above every point.
+    base = max(values.max() for values in medians.values()) + 0.8
+    top = base + 0.5
+    tests = []
+    for left, (lower, upper) in enumerate(zip(types[:-1], types[1:])):
+        p_value, p_text = _wilcoxon_vs_zero(medians[upper] - medians[lower])
+        ax.plot([left + 0.05, left + 0.05, left + 0.95, left + 0.95], [base, top, top, base],
+                color="0.3", linewidth=0.7, zorder=4)
+        ax.text(left + 0.5, top + 0.15, p_text, ha="center", va="bottom", fontsize=6)
+        tests.append(f"{upper} vs {lower} paired Wilcoxon p = {p_value:.2g}")
+    ax.set_ylim(0, top + 1.6)
+    ax.yaxis.set_major_locator(mticker.MultipleLocator(5))
+    ax.set_yticks([tick for tick in ax.get_yticks() if 0 <= tick <= base])
+    ax.set_xticks(np.arange(len(types)))
+    ax.set_xticklabels([_TASK_SPECIFICITY_TICK_LABELS[name] for name in types],
+                       fontsize=_STAT_SCATTER_TICK_FONTSIZE)
+    ax.set_xlim(-0.55, len(types) - 0.45)
+    ax.set_ylabel("Median tasks impaired\nper cluster", fontsize=7)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.tick_params(axis="y", labelsize=_STAT_SCATTER_TICK_FONTSIZE)
+    _seeds_legend(ax, _causal_seeds_legend_handles(), len(runs))
+    fig.tight_layout()
+    _save_fig(fig, _multitask_out("task_specificity_seeds.png"),
+              extra="  " + ", ".join(
+                  f"{name}: median {np.median(medians[name]):g}, "
+                  f"{int(significant[name].sum())}/{len(runs)} dispersion p < 0.05"
+                  for name in types) + "; " + "; ".join(tests))
 
 
 # ─── Figure: Transfer speed ──────────────────────────────────────────────────
@@ -9961,6 +10116,8 @@ def _multitask_sibling_aname(family, plot_name, figure="endpoint"):
 # serves its `_cue_interp` overlay (the overlaid sweep shares that run's basis)
 # and the gradient-method geometry figures; the sweep figure's run serves its
 # 2d and 3d views. The whole ranking is printed and saved beside the figures.
+# The cohort figures (plot_sibling_cohort_*) put every run in the full state
+# space, with no plane and no run chosen, behind these illustrations.
 _SIBLING_SELECTED_RUNS = {}
 _SIBLING_REPRESENTATIONS = ("hidden", "e_modulation")
 _SIBLING_FIGURES = ("endpoint", "sweep")
@@ -9982,8 +10139,10 @@ def _sibling_sweep_pc_pair(family, sweeps):
     which they swap under the sibling's cue (`best_dmc_sweep_pc_pair`; the
     kept PC at both ends, or at every alpha with
     SIBLING_DMC_KEEP_AT_EVERY_ALPHA), so each row of the figure shows the
-    clusters: what was seen is kept, the response flips. `sweeps` maps each
-    base rule to its sweep.
+    clusters: what was seen is kept, the response flips. That is the
+    figure's reading of its chosen plane; whether the state codes the
+    response is the cohort check (plot_sibling_cohort_category_axis).
+    `sweeps` maps each base rule to its sweep.
     """
     projections = [np.asarray(sweep["proj"], dtype=float) for sweep in sweeps.values()]
     if family == "dmcgo":
@@ -10284,19 +10443,11 @@ def _matched_delaydm_projection_indices(entry):
     return paired[0][0], paired[1][0]
 
 
-def _condensed_euclidean(x):
-    """Upper-triangle Euclidean distances without a scipy.spatial dependency."""
-    x = np.asarray(x, dtype=float)
-    gram = x @ x.T
-    sq = np.maximum(
-        np.diag(gram)[:, None] + np.diag(gram)[None, :] - 2.0 * gram, 0.0)
-    return np.sqrt(sq)[np.triu_indices(x.shape[0], 1)]
-
-
 def _sibling_alignment_metrics(family, rules, aname, rep_key="fixed_WM",
                                probe="longdelay"):
     """Quantify sibling-task translation and geometry before PCA, from the
-    gradient fixed points of run `aname`.
+    gradient fixed points of run `aname`
+    (core.sibling_geometry.translation_metrics).
 
     Translation explained is the fraction of the mean squared paired
     cross-task displacement accounted for by one shared displacement vector.
@@ -10328,31 +10479,9 @@ def _sibling_alignment_metrics(family, rules, aname, rep_key="fixed_WM",
                                atol=1e-8, rtol=0)):
         raise ValueError(f"{family} fixed-point pickles do not contain matching "
                          "stimulus×magnitude conditions")
-    first, second = records[0][0], records[1][0]
-    if first.shape[0] < 3:
-        raise ValueError("need at least three matched sibling-task conditions")
-
-    displacement = second - first
-    task_translation = displacement.mean(axis=0)
-    total_squared = float(np.mean(np.sum(displacement ** 2, axis=1)))
-    translation_squared = float(np.sum(task_translation ** 2))
-    translation_explained = (translation_squared / total_squared
-                             if total_squared > 0 else np.nan)
-    residual = displacement - task_translation
-
-    dist_first = _condensed_euclidean(first)
-    dist_second = _condensed_euclidean(second)
-    if np.std(dist_first) == 0 or np.std(dist_second) == 0:
-        geometry_r = np.nan
-    else:
-        geometry_r = float(np.corrcoef(dist_first, dist_second)[0, 1])
-    return {
-        "translation_explained": translation_explained,
-        "geometry_r": geometry_r,
-        "n_pairs": int(first.shape[0]),
-        "raw_rms": float(np.sqrt(total_squared)),
-        "residual_rms": float(np.sqrt(np.mean(np.sum(residual ** 2, axis=1)))),
-    }
+    metrics = translation_metrics(records[0][0], records[1][0])
+    metrics.pop("translation")
+    return metrics
 
 
 def _plot_multitask_sibling_fixed_point_geometry_representation(
@@ -11530,6 +11659,334 @@ def plot_multitask_sibling_cue_interp():
                     _multitask_out(
                         f"{_MULTITASK_SIBLING_OUTPUT_NAMES[family]}_cue_interp_"
                         f"{method}_legend.png"))
+
+
+# ─── Figures: sibling-task cohort statistics ─────────────────────────────────
+# multiple_task/sibling_cohort.py reads every cached SIBLING_L2 run's settled
+# long-delay endpoints and rule-cue sweeps in the full state space, with no PC
+# pair and no run chosen, and saves one value per run, family and
+# representation. The figures below draw those values, one statistic per
+# figure, so the sibling illustrations above, which show the best plane of the
+# best run, have the whole cohort behind them. The names and the schema must
+# agree with the script (test_sibling_cohort checks).
+SIBLING_COHORT_RESULT_NAME = "sibling_cohort_results.pkl"
+_SIBLING_COHORT_SCHEMA_VERSION = 2
+_SIBLING_COHORT_REPRESENTATIONS = (("hidden", "Hidden"), ("e_modulation", r"W $\odot$ M"))
+_SIBLING_COHORT_FAMILY_LABELS = {"delaydm1": "DelayDM", "dmcgo": "DMC"}
+_SIBLING_COHORT_POINT_SIZE = 20
+_SIBLING_COHORT_HALF_WIDTH = 0.27
+_SIBLING_COHORT_FIGSIZE = (2.5, 2.5)
+_SIBLING_COHORT_WIDE_FIGSIZE = (3.4, 2.5)
+# Log-axis limits of the category-memory figure; separations beyond them are
+# drawn hollow at the edge. 1/8 catches a rule with no category axis (seed 434
+# DMCGo), 64 a rule whose trials of a category collapse onto one point.
+_SIBLING_COHORT_MEMORY_LIMITS = (0.125, 64.0)
+
+
+def _sibling_cohort_hint():
+    return (f"Run python multiple_task/sibling_cohort.py --feature "
+            f"{multitask_feature(SIBLING_L2)} first.")
+
+
+def _load_sibling_cohort():
+    """The saved per-run entries of the SIBLING_L2 cohort, by seed, or None
+    with a note when the results are missing, of another cohort or schema,
+    or hold fewer than two runs. Nothing is recomputed here."""
+    path = TWO_IN_MULTIPLES_DIR / SIBLING_COHORT_RESULT_NAME
+    saved = _load_pkl_or_skip(path, _sibling_cohort_hint())
+    if saved is None:
+        return None
+    cohort = multitask_feature(SIBLING_L2)
+    try:
+        if saved.get("schema_version") != _SIBLING_COHORT_SCHEMA_VERSION:
+            raise ValueError(f"schema_version {saved.get('schema_version')!r}")
+        if saved.get("feature") != cohort:
+            raise ValueError(f"results of {saved.get('feature')!r}, not the {cohort} cohort")
+        runs = sorted(saved["runs"].values(), key=lambda entry: int(entry["seed"]))
+        for entry in runs:
+            for family in _SIBLING_COHORT_FAMILY_LABELS:
+                for representation, _ in _SIBLING_COHORT_REPRESENTATIONS:
+                    if not entry["families"][family][representation]:
+                        raise ValueError(f"seed {entry['seed']}: empty {family} {representation}")
+    except (KeyError, TypeError, ValueError) as error:
+        print(f"  Skipped: incompatible {path.name} ({error}). {_sibling_cohort_hint()}")
+        return None
+    if len(runs) < 2:
+        print(f"  Skipped: {len(runs)} run(s) with sibling cohort results; need >= 2.")
+        return None
+    return runs
+
+
+def _sibling_cohort_columns(runs, family, key):
+    """[(representation label, values over runs)] of one saved statistic."""
+    return [(label, np.array([entry["families"][family][representation][key] for entry in runs],
+                             dtype=float))
+            for representation, label in _SIBLING_COHORT_REPRESENTATIONS]
+
+
+def _sibling_cohort_note(runs, family, key, decimals=3):
+    """'key: hidden <median>, e_modulation <median>' for the saved message."""
+    medians = []
+    for representation, _ in _SIBLING_COHORT_REPRESENTATIONS:
+        median = np.median([entry["families"][family][representation][key] for entry in runs])
+        medians.append(f"{representation} {median:.{decimals}f}")
+    return f"{_SIBLING_COHORT_FAMILY_LABELS[family]} {key}: {', '.join(medians)}"
+
+
+def _draw_sibling_cohort(ax, groups, n_runs, floor=None, ceiling=None):
+    """One column per (label, values) of every group in `groups`, the groups
+    one column apart behind a dotted divider: every run a point in the
+    statistics blue, its points within a group joined by a thin line (one
+    network), the median over runs as a red dash with the interquartile
+    range as a bar. Values at or beyond `floor` / `ceiling` (a log axis
+    whose extremes would squeeze the rest) are drawn hollow at that edge.
+    Returns the tick positions."""
+    offsets = _run_offsets(n_runs, 0.05, _SIBLING_COHORT_HALF_WIDTH)
+    low = -np.inf if floor is None else floor
+    high = np.inf if ceiling is None else ceiling
+    positions, labels, start = [], [], 0
+    for index, columns in enumerate(groups):
+        if index:
+            ax.axvline(start - 1, color="0.3", linewidth=0.6, linestyle=":", zorder=1)
+        xs = [start + k for k in range(len(columns))]
+        shown = [(label, np.clip(values, low, high)) for label, values in columns]
+        for run in range(n_runs):
+            ax.plot([x + offsets[run] for x in xs], [values[run] for _, values in shown],
+                    color="0.85", linewidth=0.5, zorder=2)
+        for x, (label, values), (_, drawn) in zip(xs, columns, shown):
+            hollow = (values <= low) | (values >= high)
+            ax.scatter(x + offsets[~hollow], drawn[~hollow], s=_SIBLING_COHORT_POINT_SIZE,
+                       color=_SCATTER_POINT_COLOR, edgecolors="none", zorder=3)
+            if hollow.any():
+                ax.scatter(x + offsets[hollow], drawn[hollow], s=_SIBLING_COHORT_POINT_SIZE,
+                           facecolors="white", edgecolors=_SCATTER_POINT_COLOR, linewidths=0.8,
+                           zorder=3)
+            q25, median, q75 = np.percentile(drawn, [25, 50, 75])
+            ax.vlines(x, q25, q75, color=_TREND_LINE_COLOR, linewidth=1.0, zorder=4)
+            ax.hlines(median, x - _SIBLING_COHORT_HALF_WIDTH, x + _SIBLING_COHORT_HALF_WIDTH,
+                      color=_TREND_LINE_COLOR, linewidth=1.8, zorder=4)
+            positions.append(x)
+            labels.append(label)
+        start = xs[-1] + 2
+    ax.set_xticks(positions)
+    ax.set_xticklabels(labels, fontsize=7)
+    ax.set_xlim(-0.6, positions[-1] + 0.6)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.tick_params(axis="y", labelsize=7)
+    return positions
+
+
+def _sibling_cohort_figure(groups, n_runs, ylabel, figsize=_SIBLING_COHORT_FIGSIZE, floor=None,
+                           ceiling=None):
+    """One sibling cohort figure: the columns of `groups` drawn by
+    `_draw_sibling_cohort` (`floor` and `ceiling` passed on), `ylabel`, and
+    the legend with the run count."""
+    fig, ax = plt.subplots(1, 1, figsize=figsize)
+    positions = _draw_sibling_cohort(ax, groups, n_runs, floor=floor, ceiling=ceiling)
+    ax.set_ylabel(ylabel, fontsize=7)
+    handles = [mpl.lines.Line2D([], [], marker="o", linestyle="none", color=_SCATTER_POINT_COLOR,
+                                markeredgecolor="none", markersize=4, label="run"),
+               mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8,
+                                label="median, IQR")]
+    _seeds_legend(ax, handles, n_runs)
+    return fig, ax, positions
+
+
+def plot_sibling_cohort_translation():
+    """
+    Figure: multitask_sibling_cohort_translation.png — for every cached run
+    of the SIBLING_L2 cohort, how far the two DelayDM rules store the same
+    stimulus at places that differ by one translation: the fraction of the
+    mean squared displacement between the two tasks' matched settled
+    endpoints (same direction and magnitude) that one shared vector accounts
+    for, in the full hidden-state and W ⊙ M spaces (1: a pure translation;
+    core.sibling_geometry.translation_metrics). One point per run, a run's
+    two representations joined, the median over runs as a red dash with the
+    interquartile range. The DelayDM endpoint figure shows this translation
+    in one run's best plane; nothing is recomputed here
+    (multiple_task/sibling_cohort.py).
+    """
+    _ensure_out_dir()
+    runs = _load_sibling_cohort()
+    if runs is None:
+        return
+    columns = _sibling_cohort_columns(runs, "delaydm1", "translation_explained")
+    fig, ax, _ = _sibling_cohort_figure(
+        [columns], len(runs), "Cross-task displacement\nexplained by one translation")
+    ax.axhline(1.0, color="0.6", linewidth=0.6, linestyle="--", zorder=1)
+    ax.set_ylim(0.0, 1.08)
+    _save_fig(fig, _multitask_out("sibling_cohort_translation.png"),
+              extra=f"  {len(runs)} runs; "
+                    f"{_sibling_cohort_note(runs, 'delaydm1', 'translation_explained')}; "
+                    f"{_sibling_cohort_note(runs, 'delaydm1', 'geometry_r')}")
+
+
+def plot_sibling_cohort_alignment():
+    """
+    Figure: multitask_sibling_cohort_alignment.png — whether the same
+    stimulus direction clusters across the two DelayDM rules once that
+    translation is removed: per run and representation, the separation of
+    the pooled settled endpoints by stimulus direction
+    (core.sibling_geometry.separation_score, full space) with each task's
+    mean removed, divided by the raw separation, on a log axis with 1
+    marked. Above 1 in every run means the raw endpoints separate by task
+    first and by direction only once the task-wide offset is gone, which is
+    why the DelayDM endpoint figure draws its selected plane task-aligned.
+    """
+    _ensure_out_dir()
+    runs = _load_sibling_cohort()
+    if runs is None:
+        return
+    columns = _sibling_cohort_columns(runs, "delaydm1", "alignment_gain")
+    fig, ax, _ = _sibling_cohort_figure(
+        [columns], len(runs), "Direction separation,\ntask means removed / raw")
+    ax.set_yscale("log", base=2)
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda value, _: f"{value:g}"))
+    ax.axhline(1.0, color="0.6", linewidth=0.6, linestyle="--", zorder=1)
+    low = min(0.8, min(values.min() for _, values in columns) * 0.9)
+    ax.set_ylim(low, max(values.max() for _, values in columns) * 1.2)
+    counts = "; ".join(f"{representation} {int(np.sum(values > 1))}/{values.size} runs above 1"
+                       for (representation, _), (_, values)
+                       in zip(_SIBLING_COHORT_REPRESENTATIONS, columns))
+    _save_fig(fig, _multitask_out("sibling_cohort_alignment.png"),
+              extra=f"  {len(runs)} runs; "
+                    f"{_sibling_cohort_note(runs, 'delaydm1', 'alignment_gain')}; {counts}")
+
+
+def plot_sibling_cohort_cue_transfer():
+    """
+    Figure: multitask_sibling_cohort_cue_transfer.png — whether the rule cue
+    alone carries the delay state to the sibling task's endpoint. Per run,
+    family and representation, the distance of each sweep trial's settled
+    endpoint at alpha = 1 (the base rule's stimulus under the sibling's cue)
+    from the sibling task's endpoint of the same stimulus, as a fraction of
+    the distance between the two tasks (DelayDM: the matched endpoint and the
+    task translation's length; DMC: the DMCNoGo centroid of the trial's
+    stimulus category and the Go-NoGo centroid distance of that category),
+    median over the trials. 0 means the alpha = 1 endpoint lies on the
+    sibling's, 1 that it came no nearer than the task gap. DelayDM's
+    alpha = 1 input (its stimulus modality with the other rule's cue) was
+    never trained; DMC's is a trained DMCNoGo trial.
+    """
+    _ensure_out_dir()
+    runs = _load_sibling_cohort()
+    if runs is None:
+        return
+    families = ("delaydm1", "dmcgo")
+    groups = [_sibling_cohort_columns(runs, family, "cue_end_residual") for family in families]
+    fig, ax, positions = _sibling_cohort_figure(
+        groups, len(runs), "Distance of the α = 1 end to the\nsibling's endpoint / task distance",
+        figsize=_SIBLING_COHORT_WIDE_FIGSIZE)
+    ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
+    ax.axhline(1.0, color="0.6", linewidth=0.6, linestyle="--", zorder=1)
+    highest = max(values.max() for columns in groups for _, values in columns)
+    # A little room below 0: endpoints that land on the sibling's sit at 0
+    # and would otherwise be cut by the axis.
+    ax.set_ylim(-0.04, max(1.1, highest * 1.1))
+    below_ticks = mpl.transforms.blended_transform_factory(ax.transData, ax.transAxes)
+    for family, first in zip(families, positions[::len(_SIBLING_COHORT_REPRESENTATIONS)]):
+        ax.text(first + (len(_SIBLING_COHORT_REPRESENTATIONS) - 1) / 2, -0.2,
+                _SIBLING_COHORT_FAMILY_LABELS[family], transform=below_ticks,
+                ha="center", va="top", fontsize=7)
+    _save_fig(fig, _multitask_out("sibling_cohort_cue_transfer.png"),
+              extra=f"  {len(runs)} runs; " + "; ".join(
+                  _sibling_cohort_note(runs, family, "cue_end_residual") for family in families)
+              + f"; {_sibling_cohort_note(runs, 'delaydm1', 'cue_traversed')}; "
+                f"{_sibling_cohort_note(runs, 'dmcgo', 'cue_end_nearer_same')}")
+
+
+def plot_sibling_cohort_category_axis():
+    """
+    Figure: multitask_sibling_cohort_category_axis.png — how the two DMC
+    rules code the stimulus category at the settled delay endpoint: per run
+    and representation the cosine between the two tasks' category axes
+    (within each task, the centroid of the category-1 endpoints minus the
+    category-2 one; core.sibling_geometry.category_axis_cosine, full space).
+    +1 is one shared code, -1 a code that reverses between the tasks, as
+    "respond to category 1 / 2" clusters common to both tasks would give, 0
+    a direction of its own per task. This is the cohort check of the DMC
+    sweep figure, whose plane is chosen for the swap of the response
+    clusters: a swap seen in a chosen plane is a property of the state only
+    if the cosine is negative here.
+    """
+    _ensure_out_dir()
+    runs = _load_sibling_cohort()
+    if runs is None:
+        return
+    columns = _sibling_cohort_columns(runs, "dmcgo", "category_axis_cosine")
+    fig, ax, _ = _sibling_cohort_figure(
+        [columns], len(runs), "Cosine of the two tasks'\ncategory axes")
+    ax.set_ylim(-1.15, 1.15)
+    # The three reference levels, named on the right so the names never sit
+    # on the points, which cluster at 0.
+    for level in (1.0, 0.0, -1.0):
+        ax.axhline(level, color="0.6", linewidth=0.6, linestyle="--" if level else "-", zorder=1)
+    codes = ax.secondary_yaxis("right")
+    codes.set_yticks([-1.0, 0.0, 1.0])
+    codes.set_yticklabels(["reversed code", "orthogonal", "same code"], fontsize=6, color="0.4")
+    codes.tick_params(length=0)
+    codes.spines["right"].set_visible(False)
+    counts = "; ".join(f"{representation} {int(np.sum(values < 0))}/{values.size} runs below 0"
+                       for (representation, _), (_, values)
+                       in zip(_SIBLING_COHORT_REPRESENTATIONS, columns))
+    _save_fig(fig, _multitask_out("sibling_cohort_category_axis.png"),
+              extra=f"  {len(runs)} runs; "
+                    f"{_sibling_cohort_note(runs, 'dmcgo', 'category_axis_cosine')}; {counts}")
+
+
+def plot_sibling_cohort_category_memory():
+    """
+    Figure: multitask_sibling_cohort_category_memory.png — whether each DMC
+    rule holds the category of the first stimulus at the settled delay
+    endpoint: per run, rule (DMCGo, DMCNoGo) and representation, the
+    separation of that rule's own endpoints by stimulus category
+    (core.sibling_geometry.separation_score, full space), on a log axis with
+    1 marked (the category centroids as far apart as the endpoints spread
+    within a category). The axis runs from 1/8 to 64; a rule whose endpoints
+    do not separate the categories at all, or whose trials of a category
+    collapse onto one point (a separation in the thousands), is a hollow
+    point at the edge, so the extremes do not squeeze the rest
+    (_SIBLING_COHORT_MEMORY_LIMITS). The saved message adds how many
+    runs' category split beats every other balanced split of the eight
+    stimulus directions (the endpoints group by the category boundary, not
+    by some other half of the ring) and the nearest-centroid accuracy of the
+    category; the category-axis figure asks how the two rules' codes relate.
+    """
+    _ensure_out_dir()
+    runs = _load_sibling_cohort()
+    if runs is None:
+        return
+    rules = _MULTITASK_SIBLING_FAMILIES["dmcgo"]
+    groups = [_sibling_cohort_columns(runs, "dmcgo", f"category_separation_{rule}")
+              for rule in rules]
+    floor, ceiling = _SIBLING_COHORT_MEMORY_LIMITS
+    fig, ax, positions = _sibling_cohort_figure(
+        groups, len(runs), "Separation of the rule's endpoints\nby stimulus category",
+        figsize=_SIBLING_COHORT_WIDE_FIGSIZE, floor=floor, ceiling=ceiling)
+    ax.set_yscale("log", base=2)
+    ax.yaxis.set_major_locator(mticker.FixedLocator([0.25, 1.0, 4.0, 16.0, 64.0]))
+    ax.yaxis.set_minor_locator(mticker.NullLocator())
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda value, _: f"{value:g}"))
+    ax.axhline(1.0, color="0.6", linewidth=0.6, linestyle="--", zorder=1)
+    ax.set_ylim(floor / 1.4, ceiling * 1.4)
+    below_ticks = mpl.transforms.blended_transform_factory(ax.transData, ax.transAxes)
+    for rule, first in zip(rules, positions[::len(_SIBLING_COHORT_REPRESENTATIONS)]):
+        ax.text(first + (len(_SIBLING_COHORT_REPRESENTATIONS) - 1) / 2, -0.2,
+                _TASK_DISPLAY.get(rule, rule), transform=below_ticks, ha="center", va="top",
+                fontsize=7)
+    notes = []
+    for rule in rules:
+        notes.append(_sibling_cohort_note(runs, "dmcgo", f"category_separation_{rule}"))
+        best = []
+        for representation, _ in _SIBLING_COHORT_REPRESENTATIONS:
+            key = f"category_is_best_split_{rule}"
+            n_best = sum(entry["families"]["dmcgo"][representation][key] for entry in runs)
+            best.append(f"{representation} {n_best}/{len(runs)}")
+        notes.append(f"{rule} category split best of all balanced splits: {', '.join(best)}")
+        notes.append(_sibling_cohort_note(runs, "dmcgo",
+                                          f"category_nearest_centroid_accuracy_{rule}"))
+    _save_fig(fig, _multitask_out("sibling_cohort_category_memory.png"),
+              extra=f"  {len(runs)} runs; " + "; ".join(notes))
 
 
 def plot_two_task_interp_fixed_points(period="longdelay"):
@@ -12782,6 +13239,7 @@ FIGURES_BY_MODE = {
         "causal_vs_activity_tasks": plot_causal_vs_activity,
         "causal_vs_activity_seeds": plot_causal_vs_activity_seeds,
         "task_specificity": plot_task_specificity,
+        "task_specificity_seeds": plot_task_specificity_seeds,
         "task_sharing_cohort": plot_task_sharing_cohort,
         # Links the state-space task geometry to the lesion dependence
         # (multiple_task/state_space_vs_lesion.py).
@@ -12825,6 +13283,13 @@ FIGURES_BY_MODE = {
         # The rule cue interpolated between the sibling rules, traced in the
         # same joint delay basis for both sibling methods.
         "sibling_cue_interp": plot_multitask_sibling_cue_interp,
+        # Every cached run of the cohort in the full state space, one
+        # statistic per figure (multiple_task/sibling_cohort.py).
+        "sibling_cohort_translation": plot_sibling_cohort_translation,
+        "sibling_cohort_alignment": plot_sibling_cohort_alignment,
+        "sibling_cohort_cue_transfer": plot_sibling_cohort_cue_transfer,
+        "sibling_cohort_category_axis": plot_sibling_cohort_category_axis,
+        "sibling_cohort_category_memory": plot_sibling_cohort_category_memory,
     },
     "pretraining": {
         "backbone_probe": plot_backbone_probe,

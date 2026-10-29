@@ -40,11 +40,13 @@ The `lesion` figure mode contains `lesion_heatmap`, `lesion_cluster_sizes`,
 `cluster_corr_vs_lesion`, `cluster_corr_vs_lesion_weighted`,
 `cluster_corr_vs_lesion_seeds`, `om_vs_lesion`, `om_vs_lesion_seeds`,
 `plasticity_share`, `plasticity_share_cohort`, `causal_vs_activity_tasks`,
-`causal_vs_activity_seeds`, `task_specificity`, `task_sharing_cohort`,
-`state_space_vs_lesion` and `state_space_vs_lesion_seeds`. All but the four
-`_seeds` and two `_cohort` figures read one run,
-`LESION_ANAME`, independently of `ANAME`, which selects the `multiple_tasks`
-clustering figures. These figures no longer run under `multiple_tasks`; use
+`causal_vs_activity_seeds`, `task_specificity`, `task_specificity_seeds`,
+`task_sharing_cohort`,
+`state_space_vs_lesion` and `state_space_vs_lesion_seeds`. All but the five
+`_seeds` and two `_cohort` figures read one run, `LESION_ANAME`,
+independently of `ANAME`, which selects the `multiple_tasks` clustering
+figures; the exception is `om_vs_lesion`, which reads `ANAME` (see the OM
+scatter below). These figures no longer run under `multiple_tasks`; use
 `python figures/paper_plot.py multiple_tasks lesion` for both groups. Existing figure
 names and `--only FIGURE` commands are unchanged. The historical `leison`
 spelling is now `lesion` in commands, module names, output names and cache keys:
@@ -131,7 +133,7 @@ selected by `--multitask-l2`; render it once per cohort to compare them.
 
 `python figures/paper_plot.py --only cluster_corr_vs_lesion_weighted` draws the separate
 **Var(WM)** comparison from `LESION_ANAME`, exporting only
-`multitask_cluster_corr_vs_lesion_modulation_weighted_unnorm_zero_W_n.png`.
+`multitask_cluster_corr_vs_lesion_modulation_weighted_unnorm_freeze_M_n.png`.
 The upstream `modulation_all_weighted_unnormalized`
 features take variance **after** multiplying modulation by static W, giving
 `W**2 * Var(M)`, unlike `var_weighted`, which gives `W * Var(M)`.
@@ -151,11 +153,12 @@ reads the memberships of the same freeze_M entry; zero_W and freeze_M lesion
 the same synapse clusters, so the sizes do not depend on the mode.
 `lesion_plot.py` exports both zero_W and freeze_M effects with explicit mode
 metadata; missing freeze_M results are never replaced by zero_W in these two
-figures. Every modulation tuning-vs-lesion scatter and the modulation side of
-causal-vs-activity (below) follow the same mode. The OM scatter
-(`paper_plot.OM_LESION_MODE`), task specificity and the synapse column of
-`state_space_vs_lesion` still read **zero_W** (selected synaptic weights set to
-zero); plasticity share compares the two modes by definition.
+figures. Every modulation tuning-vs-lesion scatter, the modulation side of
+causal-vs-activity, the synapse clusters of task specificity and task sharing
+and the synapse column of `state_space_vs_lesion` (below) follow the same
+mode. The OM scatter (`paper_plot.OM_LESION_MODE`) still reads **zero_W**
+(selected synaptic weights set to zero); plasticity share compares the two
+modes by definition.
 `lesion_plot.py` records freeze_M as `primary_modulation_mode` in the
 normalized-effect cache.
 
@@ -218,6 +221,24 @@ run whose task list differs from the others is left out with a note, and the
 figure is skipped below two runs. The share compares two interventions and is
 not an exact additive partition of static and plastic contributions.
 
+The share is not a measure of working memory, and the text has to say so. On
+the 25 L21e4 runs the pooled medians of the four no-working-memory tasks are
+DelayPro 0.55, DelayAnti 0.65, ReactPro 0.76 and ReactAnti 0.79 (0.69 over
+their 1,331 cells): freezing a cluster's modulation costs these tasks more
+than half of what removing its weights costs, although their stimulus stays
+on and nothing has to be held across a delay. The working-memory tasks pool
+at 0.83 (3,298 cells), but MemoryPro and MemoryAnti, the delayed counterparts
+of DelayPro and DelayAnti, sit at 0.64 and 0.49, below the reaction tasks,
+and the matching family is the highest (0.90-0.97); so the family contrast
+is one of degree and does not follow the delay. The reason is in the
+intervention: freeze_M holds M at M(0) for the whole trial, which removes
+all of the cluster's within-trial modulation, written from the first step on
+(the Hebbian term runs during the context and stimulus periods, before any
+delay), not only the part that bridges a delay. The share therefore says how
+much of a cluster's contribution to a task runs through its modulation rather
+than its weights; which tasks need that modulation as a memory is the
+question of a time-resolved freeze, which has not been run.
+
 `python figures/paper_plot.py --only causal_vs_activity_tasks` draws
 `multitask_causal_vs_activity_tasks_hidden_n.png` and `..._input_n.png` from
 `causal_vs_activity_tasksim_<side>_<aname>.pkl`: one point per task pair, x the
@@ -269,19 +290,35 @@ by the current `lesion_plot.py`.
 `python figures/paper_plot.py --only task_specificity` draws
 `multitask_task_specificity_counts_n.png` from `task_specificity_<aname>.pkl`
 for input and hidden neuron clusters (unnormalized clustering) and
-var-weighted zero_W synapse clusters, the unresponsive class excluded. A
-cluster "impairs" a task when its zero_W lesion effect is significant
-(one-sided z against the control repeats, BH-FDR q = 0.05, the
-causal-dependency mask). The figure has one column per cluster type: every
-cluster is a dot at the number of tasks it impairs (ties spread sideways, a
-dot histogram), the dash is the median, and the gray band is the spread the
-counts would have under the saved mixing null, which shuffles cluster identity
-within each task and so keeps each task's number of impaired clusters and the
-mean count (mean ± one SD, the square root of the median null variance).
-Dots spreading beyond the band mean specialized and hub-like clusters rather
-than a uniform mix; the tick label gives the cluster count and the saved
-one-sided permutation p of the observed variance exceeding that null. Nothing
-is recomputed in `paper_plot.py`. The same cache holds, per cluster type, the
+var-weighted synapse clusters, the unresponsive class excluded. A cluster
+"impairs" a task when its lesion effect is significant (one-sided z against
+the control repeats, BH-FDR q = 0.05; for neuron clusters the
+causal-dependency mask). Synapse clusters are tested with their **freeze_M**
+lesions (`lesion_plot.TASK_SPECIFICITY_MOD_MODE`, the lesion heatmap's mode),
+against the freeze_M control repeats; caches written before this switch
+(`schema_version=1`, zero_W) are skipped with a note, so rerun
+`lesion_plot.py`. The figure has one row per cluster type, sharing both axes:
+every cluster is a dot stacked over the number of tasks it impairs (a dot
+histogram counted in clusters), the red line is the median, and the gray
+histogram behind the dots is the number of clusters the saved mixing null
+expects at each count. That null shuffles cluster identity within each task,
+keeping each task's number of impaired clusters, so one cluster's count is
+Poisson-binomial; `lesion_plot.py` saves its exact distribution as
+`null_count_pmf`, and the figure draws it times the number of clusters. Dots
+piling up at both ends beyond the gray hump mean specialized and hub-like
+clusters rather than a uniform mix; the right-hand row title gives the saved
+one-sided permutation p of the observed count variance exceeding that null.
+Nothing is recomputed in `paper_plot.py`.
+`python figures/paper_plot.py --only task_specificity_seeds` draws the cohort,
+`multitask_task_specificity_seeds_n.png`: one column per cluster type, each
+sibling run of `LESION_ANAME` a grey point at the median of its clusters'
+counts (filled when the run's dispersion p is below 0.05, runs tied on a value
+side by side, each run's points joined), the median and interquartile range
+over runs in red, and over each pair of neighboring columns a bracket with the
+two-sided paired Wilcoxon signed-rank p of the runs' medians. It needs two
+runs, and leaves out runs whose cluster types differ.
+
+The same cache holds, per cluster type, the
 task-pair Jaccard overlap of impaired clusters grouped by the component the
 two tasks differ in (`TASK_PAIR_RELATIONS` in `lesion_plot.py`) with one-sided
 task-label permutation tests. `python figures/paper_plot.py --only task_sharing_cohort`
@@ -306,18 +343,22 @@ lesion-effect profiles: for neuron clusters the saved `causal_similarity` of
 `causal_vs_activity_tasksim_hidden_<aname>.pkl` (Pearson correlation of the
 random-minus-lesion effects over all unnormalized input and hidden neuron
 clusters, the causal-vs-activity matrix), for synapse clusters the Pearson
-correlation of the var-weighted zero_W effects in
-`normalized_lesion_effects_<aname>.pkl` over the synapse clusters without the
-unresponsive class, whose label is read from the lesion pickle in
-`multiple_tasks_perf/` (the class holds most synapses, so its size-matched
-random control collapses the network and its effect is near −0.8 for every
-task). Each (representation, cluster type) pair gets a two-sided Spearman
-task-label permutation (Mantel) test (10,000 permutations, seed 0;
+correlation of the var-weighted **freeze_M** effects (`SYNAPSE_LESION_MODE`,
+the lesion heatmap's intervention) in `normalized_lesion_effects_<aname>.pkl`
+over the synapse clusters without the unresponsive class, whose label is read
+from the lesion pickle in `multiple_tasks_perf/` (the class holds most
+synapses, so its size-matched random control collapses the network and its
+effect is strongly negative for every task). `paper_plot.py` skips results
+whose synapse similarity was computed with another mode (results written
+before the switch from zero_W, `schema_version=1`); rerun the script to
+refresh them. Each (representation, cluster type) pair gets a two-sided
+Spearman task-label permutation (Mantel) test (10,000 permutations, seed 0;
 `core.state_space_geometry.mantel_spearman_permutation`), a negative rho
 meaning that tasks whose context-end states lie closer depend on more similar
-clusters. Nothing is recomputed from network activity, so it runs in seconds;
-the results go to `state_space/state_space_vs_lesion_results.pkl` (one entry
-per run with the pair coordinates, the tests with their null arrays and the
+clusters, and a descriptive OLS guide line for the figure. Nothing is
+recomputed from network activity, so it runs in seconds; the results go to
+`state_space/state_space_vs_lesion_results.pkl` (one entry per run with the
+pair coordinates, the tests with their null arrays, the guide lines and the
 L2), which the state-space batch run clears like every top-level file there,
 so rerun it after `state_space_structure.py` or `lesion_plot.py`.
 `python figures/paper_plot.py --only state_space_vs_lesion` draws
@@ -325,8 +366,10 @@ so rerun it after `state_space_structure.py` or `lesion_plot.py`.
 with one row per representation (hidden-state and W ⊙ M centroid distance)
 and one column per cluster type (neuron clusters, synapse clusters), one
 point per task pair, x the centroid distance, y the lesion-profile
-similarity, each panel's saved rho and permutation p in its legend and no
-fitted line (the statistic is a rank correlation). `--only state_space_vs_lesion_seeds` draws
+similarity, each panel's saved rho and permutation p in its legend and the
+script's saved OLS guide line, descriptive only as in the causal-vs-activity
+scatter (the statistic is the rank correlation).
+`--only state_space_vs_lesion_seeds` draws
 `multitask_state_space_vs_lesion_seeds_n.png`: per cluster type, every
 sibling run's rho for the hidden-state and the W ⊙ M distance, filled when
 its saved permutation p is below 0.05, the median over runs as a dash and
@@ -676,3 +719,63 @@ late in long trials. In neither network does the feedback lengthen M's
 typical memory: the unreadable directions keep lam's 4 s, the median readable
 mode decays a little faster (more so after training), and where mu exceeds 1
 the mode grows until its synapses clip, which the saturation share counts.
+
+## Rule-cue ablation
+
+`multiple_task/rule_cue_ablation.py` asks whether the rule cue is what makes
+the clustering rows group as they do (input and hidden rows by period,
+synapse rows by task, in trained and untrained networks alike; see
+[Sibling-task row-cluster sharing](#sibling-task-row-cluster-sharing)). The
+cue is on for the whole trial, so it is a constant that adds no variance to
+the input and hidden features, while M integrates it into a task-specific
+drift. The script runs one network, trained or untrained
+(`--untrained-init-seed`, `network_loading.build_network`), on the evaluation
+trials of `modulation_feedback.py` (50 per task, `mode_input="random"`, trial
+seed 0) twice, once as they are and once with every rule-cue channel set to
+zero (the cue and its input noise), and computes the input, hidden and
+modulation features of both as the clustering does: per task and period, the
+variance over stimulus conditions and time of the stimulus-conditioned mean
+(`helper.task_variance_period_numpy`), each column divided by its maximum
+over the rows (the `_normalized` features of the heatmaps), the rows in the
+clustering's period-major order and windows.
+
+```bash
+python multiple_task/rule_cue_ablation.py --feature L21e4 --seed 749
+python multiple_task/rule_cue_ablation.py --feature L21e4 --seed 749 --untrained-init-seed 0
+# another evaluation batch, with other stimulus-modality draws
+python multiple_task/rule_cue_ablation.py --feature L21e4 --seed 749 --untrained-init-seed 0 --trial-seed 2
+```
+
+The readout needs no clustering. It is the clustering's metric, the
+Euclidean distance between two rows divided by its mean over every two rows
+(below 1: closer than a typical pair), averaged per representation and
+condition over three kinds of pair: one task in two periods ("same task"),
+one period in two tasks ("same period") and the rest ("other"). Row
+correlation was tried first and fails for input and hidden, whose period
+grouping is mostly row magnitude (no input feature varies in the memory
+periods, so those rows are zero), which a correlation discards. How much the
+cue changes the features themselves is the correlation of each row with the
+same row of the other condition and the ratio of the summed unnormalized
+features (no cue / cue). `mode="random"` draws each task's stimulus
+modalities once per batch, so all trials of a task share them; the script
+records the modality of each task's first stimulus, and `--trial-seed` draws
+another batch with other draws, so a result can be checked against the
+modality draw. It writes
+`multiple_tasks_diagnosis/rule_cue_ablation_<aname>[_init<k>][_trials<s>].{pkl,png}`
+(result version 2): the distance matrices and pair means per condition and
+representation, the matched-row correlations, the feature ratios and the
+features themselves.
+
+So far only the untrained network of seed 749's config (init seed 0) has
+been analyzed, on trial seeds 0 and 2, which agree. Without the cue the
+synapse rows keep their task grouping (same-task relative distance 0.62 with
+the cue, 0.63 without; same-period 1.02 and 0.98), the input rows are
+unchanged (same-period 0.71 and 0.68, same-task 1.03 in both) and the hidden
+rows group more by period (same-period 0.85 to 0.75, same-task 0.96 to
+1.02); the features themselves change most in the modulation (matched-row r
+median 0.33, summed features x0.76) and least in the input (0.60, x0.99).
+The cue is therefore not what groups the synapse rows by task. The trained
+run has not been analyzed, and the remaining candidate, M's carry-over of a
+trial's earlier periods (lambda = 0.99, a 4 s memory), is the question of
+the lambda = 0.9 cohort (`L21e4lam0.9`) and of an untrained network with
+lambda overridden, neither of which has been run through this script.

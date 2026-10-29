@@ -73,11 +73,13 @@ synapse clusters are selectively important for specific tasks. Produces:
    MPN prediction is that working-memory tasks run on M.
 11. Task specificity and compositional sharing — how many tasks each
     (unresponsive-excluded) input, hidden or var-weighted synapse cluster
-    significantly impairs, with a per-task shuffle null for the dispersion of
-    that count, and the Jaccard overlap of impaired clusters for every task
-    pair grouped by the task component the pair differs in (response rule,
-    timing, modality, context cue, family) with a task-label permutation p.
-    Saved to task_specificity_{aname}.pkl for paper_plot.py.
+    significantly impairs (synapse clusters through their freeze_M lesion),
+    with a per-task shuffle null for the dispersion of that count and the
+    exact null distribution of one cluster's count, and the Jaccard overlap
+    of impaired clusters for every task pair grouped by the task component
+    the pair differs in (response rule, timing, modality, context cue,
+    family) with a task-label permutation p. Saved to
+    task_specificity_{aname}.pkl for paper_plot.py.
 10. Protective-cluster dissection — decomposes every NEGATIVE normalized
     lesion effect (cluster lesion hurting LESS than the size-matched random
     control) into own damage vs control damage on the shared test set, to
@@ -961,6 +963,11 @@ def _save_modulation_causal_vs_activity(results, normalized_effects, cluster_inf
 # they depend on; grouping pairs by which task component they differ in asks
 # whether shared clusters follow the compositional structure of the battery.
 TASK_SPECIFICITY_N_PERM = 5000
+TASK_SPECIFICITY_SCHEMA_VERSION = 2
+# Synapse clusters impair a task through their freeze_M lesion, the mode of
+# paper_plot's lesion heatmap (neuron clusters have a single lesion).
+TASK_SPECIFICITY_MOD_TYPE = "modulation_all_var_weighted_unnormalized"
+TASK_SPECIFICITY_MOD_MODE = "freeze_M"
 TASK_PAIR_RELATIONS = {
     "response rule": [("fdgo", "fdanti"), ("delaygo", "delayanti"),
                       ("reactgo", "reactanti"), ("dmsgo", "dmsnogo"),
@@ -988,13 +995,32 @@ def _task_specificity_counts(sig):
     return sig.sum(axis=0)
 
 
+def _null_count_pmf(sig):
+    """Distribution of one cluster's impaired-task count under the mixing null.
+
+    The per-task shuffle of _count_dispersion_test places task t's k_t
+    impaired clusters at random, so any given cluster is impaired in task t
+    with probability k_t / C, independently across tasks: its count is
+    Poisson-binomial. Returns P(count = 0..T) exactly (no sampling), so
+    C * pmf is the expected number of clusters at each count.
+    """
+    sig = np.asarray(sig, dtype=bool)
+    if sig.ndim != 2:
+        raise ValueError("sig must be a (tasks, clusters) boolean matrix")
+    pmf = np.array([1.0])
+    for rate in sig.mean(axis=1):
+        pmf = np.convolve(pmf, [1.0 - rate, rate])
+    return pmf
+
+
 def _count_dispersion_test(sig, n_perm=TASK_SPECIFICITY_N_PERM, seed=0):
     """Variance of tasks-per-cluster against a per-task shuffle of cluster identity.
 
     Each permutation shuffles every task row independently across clusters,
     preserving how many clusters each task depends on while destroying which
     clusters co-occur. One-sided p for the observed variance exceeding the
-    null (more specialized/hub-like than mixing).
+    null (more specialized/hub-like than mixing). Also returns the null's
+    exact per-cluster count distribution (`null_count_pmf`, _null_count_pmf).
     """
     sig = np.asarray(sig, dtype=bool)
     counts = _task_specificity_counts(sig)
@@ -1007,6 +1033,7 @@ def _count_dispersion_test(sig, n_perm=TASK_SPECIFICITY_N_PERM, seed=0):
         null[index] = shuffled.sum(axis=0).var()
     observed = float(counts.var())
     return {"counts": counts, "observed_var": observed, "null_var": null,
+            "null_count_pmf": _null_count_pmf(sig),
             "p_perm": float((1.0 + np.sum(null >= observed)) / (n_perm + 1.0)),
             "n_perm": int(n_perm), "seed": int(seed), "side": "greater",
             "null": "independent per-task shuffle of cluster identity"}
@@ -1092,8 +1119,8 @@ def _sharing_by_relation(sig, tasks, n_perm=TASK_SPECIFICITY_N_PERM, seed=0):
 
 def _task_specificity_summary(sig_by_type, tasks, n_perm=TASK_SPECIFICITY_N_PERM, seed=0):
     """Counts, dispersion tests and relation sharing for each cluster type."""
-    summary = {"schema_version": 1, "tasks": list(tasks), "n_perm": int(n_perm),
-               "types": {}}
+    summary = {"schema_version": TASK_SPECIFICITY_SCHEMA_VERSION, "tasks": list(tasks),
+               "n_perm": int(n_perm), "types": {}}
     for type_name, entry in sig_by_type.items():
         sig = np.asarray(entry["sig"], dtype=bool)
         if sig.shape != (len(tasks), len(entry["cluster_labels"])):
@@ -2225,7 +2252,18 @@ def main(seed, feature):
 
     _FAM_COLORS = {"reaction": "#d95f02", "memory": "#1b9e77"}
 
-    _mod_sig = {}   # zero_W significance per modulation type, for task specificity
+    def _mod_control_significance(record, keep):
+        """(effect, significance) of a modulation lesion record's conditions
+        `keep`: effect = control mean - lesion accuracy (T, C), significant
+        when the one-sided z against the stored raw control repeats passes
+        BH-FDR q=0.05."""
+        acc = np.asarray(record["modtask_accs"], float)[:, keep]
+        raw = np.asarray(record["modrandomtask_accs_raw"], float)[:, keep, :]
+        effect = raw.mean(axis=2) - acc
+        std = np.maximum(raw.std(axis=2), 1e-4)
+        return effect, _bh_fdr_mask(gauss_norm.sf(effect / std), q=0.05)
+
+    _mod_sig = {}   # per-mode significance per modulation type, for task specificity
     for _pd_type in LESION_MODULATION_TYPES:
         zw = mod_lesion_results.get(f"{_pd_type}__zero_W")
         fm = mod_lesion_results.get(f"{_pd_type}__freeze_M")
@@ -2235,22 +2273,15 @@ def main(seed, feature):
         _keep_pd = [k for k, n in enumerate(_names_pd) if n not in mod_baseline_keys]
         _cids = [int(_names_pd[k].replace("mod_c", "")) for k in _keep_pd]
 
-        # zero_W significance from its stored raw control repeats
-        _acc_zw = np.asarray(zw["modtask_accs"], float)[:, _keep_pd]
-        _raw_zw = np.asarray(zw["modrandomtask_accs_raw"], float)[:, _keep_pd, :]
-        E_zw = _raw_zw.mean(axis=2) - _acc_zw                    # (T, C)
-        _std_zw = np.maximum(_raw_zw.std(axis=2), 1e-4)
-        sig_zw = _bh_fdr_mask(gauss_norm.sf(E_zw / _std_zw), q=0.05)
-
-        # freeze_M effect (numerator; needs no own significance test)
-        _acc_fm = np.asarray(fm["modtask_accs"], float)[:, _keep_pd]
-        _rnd_fm = np.asarray(fm["modrandomtask_accs"], float)[:, _keep_pd]
-        E_fm = _rnd_fm - _acc_fm                                 # (T, C)
+        # zero_W significance gates the ratio; the freeze_M effect is its
+        # numerator, whose own significance only task specificity uses.
+        E_zw, sig_zw = _mod_control_significance(zw, _keep_pd)   # (T, C)
+        E_fm, sig_fm = _mod_control_significance(fm, _keep_pd)
 
         share = np.full_like(E_zw, np.nan)
         share[sig_zw] = E_fm[sig_zw] / E_zw[sig_zw]              # sig ⇒ E_zw > 0
         _mod_sig[_pd_type] = {
-            "sig": sig_zw, "cluster_ids": list(_cids),
+            "sig": {"zero_W": sig_zw, "freeze_M": sig_fm}, "cluster_ids": list(_cids),
             "unresponsive_label": _mod_unresponsive_label(
                 zw, legacy_last=("unnormalized" in _pd_type))}
 
@@ -2987,10 +3018,10 @@ def main(seed, feature):
     # ══════════════════════════════════════════════════════════════════
     # Task specificity of clusters and compositional sharing (docstring #11).
     # Significance masks: unnormalized input/hidden neuron clusters from the
-    # causal-dependency block, var-weighted zero_W synapse clusters from the
-    # plasticity-share block (both one-sided BH-FDR q=0.05 against control
-    # repeats). The unresponsive cluster of each type, identified by its
-    # recorded label, is excluded.
+    # causal-dependency block, var-weighted synapse clusters' freeze_M lesions
+    # (TASK_SPECIFICITY_MOD_MODE) from the plasticity-share block (both
+    # one-sided BH-FDR q=0.05 against control repeats). The unresponsive
+    # cluster of each type, identified by its recorded label, is excluded.
     # ══════════════════════════════════════════════════════════════════
     _spec_types = {}
     if "unnorm" in _causal_sig:
@@ -3002,18 +3033,19 @@ def main(seed, feature):
             if len(cols) >= 2:
                 _spec_types[side] = {"sig": _cs["sig"][:, cols],
                                      "cluster_labels": [_cs["cluster_names"][k] for k in cols]}
-    _spec_mod_key = "modulation_all_var_weighted_unnormalized"
-    if _spec_mod_key in _mod_sig:
-        _ms = _mod_sig[_spec_mod_key]
+    if TASK_SPECIFICITY_MOD_TYPE in _mod_sig:
+        _ms = _mod_sig[TASK_SPECIFICITY_MOD_TYPE]
         # drop the unresponsive synapse class, identified by its recorded label
         keep = [k for k, cid in enumerate(_ms["cluster_ids"]) if cid != _ms["unresponsive_label"]]
         if len(keep) >= 2:
-            _spec_types["modulation"] = {"sig": _ms["sig"][:, keep],
-                                         "cluster_labels": [f"c{_ms['cluster_ids'][k]}" for k in keep]}
+            _spec_types["modulation"] = {
+                "sig": _ms["sig"][TASK_SPECIFICITY_MOD_MODE][:, keep],
+                "cluster_labels": [f"c{_ms['cluster_ids'][k]}" for k in keep]}
     if _spec_types:
         _spec = _task_specificity_summary(_spec_types, all_tasks)
         _spec["aname"] = aname
-        _spec["modulation_type"] = _spec_mod_key
+        _spec["modulation_type"] = TASK_SPECIFICITY_MOD_TYPE
+        _spec["modulation_lesion_mode"] = TASK_SPECIFICITY_MOD_MODE
         _spec["neuron_variant"] = "unnormalized"
         _spec["significance"] = "one-sided z vs control repeats, BH-FDR q=0.05"
         with open(f"{save_dir}/task_specificity_{aname}.pkl", "wb") as _f:
@@ -3034,7 +3066,8 @@ def main(seed, feature):
         ax0.set_xlabel("# tasks a cluster significantly impairs")
         ax0.set_ylabel("Fraction of clusters")
         ax0.legend(fontsize=6, frameon=False)
-        ax0.set_title("Task specificity (unresponsive clusters excluded)", fontsize=8)
+        ax0.set_title("Task specificity (unresponsive clusters excluded; synapses "
+                      f"{TASK_SPECIFICITY_MOD_MODE})", fontsize=8)
         for ax, (type_name, entry) in zip(axs[0, 1:], _spec["types"].items()):
             sharing = entry["sharing"]
             for pos, name in enumerate(sharing["relations"]):
