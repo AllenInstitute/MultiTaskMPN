@@ -28,6 +28,22 @@ class TaskSpecificityFigureTests(unittest.TestCase):
     HIDDEN_PMF = np.array([0.1, 0.3, 0.3, 0.2, 0.1, 0.0, 0.0])
     MODULATION_PMF = np.array([0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0])
 
+    THRESHOLDS = (0.02, 0.05, 0.1, 0.2)
+
+    def robustness(self, counts, sizes, rho_significant, rho_threshold):
+        """The size and fixed-threshold fields of one type: the counts at
+        every threshold (the 0.05 one `counts`, the others shifted) and the
+        size correlations (`rho_threshold` at 0.05)."""
+        counts = np.asarray(counts)
+        threshold_counts = {thr: np.clip(counts + k - 1, 0, 6)
+                            for k, thr in enumerate(self.THRESHOLDS)}
+        correlation = {"significant": rho_significant}
+        correlation.update({thr: rho_threshold - 0.1 * (k - 1)
+                            for k, thr in enumerate(self.THRESHOLDS)})
+        return {"cluster_sizes": np.asarray(sizes, dtype=float),
+                "threshold_counts": threshold_counts, "size_correlation": correlation,
+                "effect": np.zeros((6, counts.size))}
+
     def cache(self):
         tasks = [f"t{k}" for k in range(6)]
         relations = ["response rule", "timing", "other"]
@@ -37,16 +53,19 @@ class TaskSpecificityFigureTests(unittest.TestCase):
                                       "null_var": np.array([0.5, 1.0, 1.5, 1.0]),
                                       "null_count_pmf": self.HIDDEN_PMF.copy(),
                                       "side": "greater"},
-                       "sharing": self.sharing(relations, [0.6, 0.5, 0.2])},
+                       "sharing": self.sharing(relations, [0.6, 0.5, 0.2]),
+                       **self.robustness([1, 2, 2, 4], [3, 1, 5, 20], -0.4, -0.1)},
             "modulation": {"cluster_labels": ["c1", "c2", "c3"],
                            "dispersion": {"counts": np.array([2, 2, 2]), "p_perm": 0.7,
                                           "null_var": np.full(4, 0.25),
                                           "null_count_pmf": self.MODULATION_PMF.copy(),
                                           "side": "greater"},
-                           "sharing": self.sharing(relations, [0.3, 0.3, 0.3])},
+                           "sharing": self.sharing(relations, [0.3, 0.3, 0.3]),
+                           **self.robustness([2, 3, 1], [50, 200, 1000], -0.3, 0.05)},
         }
-        return {"schema_version": 2, "aname": paper_plot.LESION_ANAME, "tasks": tasks,
-                "n_perm": 4, "modulation_lesion_mode": "freeze_M", "types": types}
+        return {"schema_version": 3, "aname": paper_plot.LESION_ANAME, "tasks": tasks,
+                "n_perm": 4, "modulation_lesion_mode": "freeze_M",
+                "effect_thresholds": list(self.THRESHOLDS), "types": types}
 
     def render(self, cache, show_legend=True):
         with tempfile.TemporaryDirectory() as directory:
@@ -126,14 +145,15 @@ class TaskSpecificityFigureTests(unittest.TestCase):
         figures = self.render(self.cache(), show_legend=False)
         for figure in figures.values():
             self.assertEqual(figure.legends, [])
-        for problem in ("missing", "run", "schema", "mode", "type", "counts", "null", "pmf"):
+        for problem in ("missing", "run", "schema", "mode", "type", "counts", "null", "pmf",
+                        "threshold", "sizes", "rho"):
             cache = self.cache()
             if problem == "missing":
                 cache = None
             elif problem == "run":
                 cache["aname"] = "other"
             elif problem == "schema":
-                cache["schema_version"] = 1
+                cache["schema_version"] = 2
             elif problem == "mode":
                 cache["modulation_lesion_mode"] = "zero_W"
             elif problem == "null":
@@ -142,6 +162,12 @@ class TaskSpecificityFigureTests(unittest.TestCase):
                 cache["types"]["hidden"]["dispersion"]["null_count_pmf"] = self.HIDDEN_PMF[:-1]
             elif problem == "type":
                 cache["types"]["synapse"] = cache["types"].pop("modulation")
+            elif problem == "threshold":     # no counts at the figure's threshold
+                cache["types"]["hidden"]["threshold_counts"].pop(0.05)
+            elif problem == "sizes":
+                cache["types"]["hidden"]["cluster_sizes"] = np.array([3.0, 1.0, 5.0])
+            elif problem == "rho":
+                cache["types"]["hidden"]["size_correlation"].pop("significant")
             else:
                 cache["types"]["hidden"]["dispersion"]["counts"] = np.array([0, 9, 1, 1])
             with self.subTest(problem=problem):
@@ -151,7 +177,11 @@ class TaskSpecificityFigureTests(unittest.TestCase):
 class TaskSpecificitySeedsTests(TaskSpecificityFigureTests):
     """The median impaired-task count of every sibling run, per cluster type."""
 
-    def write_run(self, base, seed, hidden_counts, modulation_counts, p_hidden=0.01):
+    def write_run(self, base, seed, hidden_counts, modulation_counts, p_hidden=0.01,
+                  threshold=None, rho=None):
+        """Cache one run: the significance counts per type, and optionally
+        `threshold` ({type: counts at 0.05}) and `rho` ({type: (significant,
+        threshold) size correlations})."""
         import re
         aname = re.sub(r"seed\d+", f"seed{seed}", paper_plot.LESION_ANAME)
         cache = self.cache()
@@ -159,18 +189,24 @@ class TaskSpecificitySeedsTests(TaskSpecificityFigureTests):
         cache["types"]["hidden"]["dispersion"]["counts"] = np.array(hidden_counts)
         cache["types"]["hidden"]["dispersion"]["p_perm"] = p_hidden
         cache["types"]["modulation"]["dispersion"]["counts"] = np.array(modulation_counts)
+        for type_name, counts in (("hidden", hidden_counts), ("modulation", modulation_counts)):
+            entry = cache["types"][type_name]
+            sizes = np.arange(1, len(counts) + 1, dtype=float)
+            entry.update(self.robustness(
+                (threshold or {}).get(type_name, counts), sizes,
+                *(rho or {}).get(type_name, (-0.5, 0.0))))
         run_dir = base / aname
         run_dir.mkdir()
         with (run_dir / f"task_specificity_{aname}.pkl").open("wb") as f:
             pickle.dump(cache, f)
         return run_dir
 
-    def render_seeds(self, root):
+    def render_seeds(self, root, function=None):
         with patch.object(paper_plot, "LESION_NORM_DIR", root), \
                 patch.object(paper_plot, "_ensure_out_dir"), \
                 patch.object(paper_plot, "_save_fig") as save, \
                 patch("builtins.print") as output:
-            paper_plot.plot_task_specificity_seeds()
+            (function or paper_plot.plot_task_specificity_seeds)()
         return save, output
 
     def test_seeds_draw_each_runs_median_count_per_type(self):
@@ -217,6 +253,48 @@ class TaskSpecificitySeedsTests(TaskSpecificityFigureTests):
         self.assertIs(paper_plot.FIGURES_BY_MODE["lesion"]["task_specificity_seeds"],
                       paper_plot.plot_task_specificity_seeds)
 
+    def test_threshold_seeds_draw_the_fixed_threshold_medians_all_filled(self):
+        from scipy.stats import wilcoxon
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = self.write_run(base, 11, [0, 1, 1, 5], [2, 4, 6],
+                                  threshold={"hidden": [1, 2, 2, 6], "modulation": [4, 6, 6]})
+            self.write_run(base, 22, [1, 2, 3], [3, 5, 5],
+                           threshold={"hidden": [3, 3, 4], "modulation": [5, 5, 6]})
+            self.write_run(base, 33, [1, 1, 2], [5, 5, 6], p_hidden=0.3,
+                           threshold={"hidden": [0, 1, 1], "modulation": [6, 6, 6]})
+            save, _ = self.render_seeds(root, paper_plot.plot_task_specificity_threshold_seeds)
+        save.assert_called_once()
+        figure, path = save.call_args.args[:2]
+        self.addCleanup(paper_plot.plt.close, figure)
+        self.assertEqual(path.name, "multitask_task_specificity_threshold_seeds.png")
+        axis = figure.axes[0]
+        collections = paper_plot.mpl.collections
+        dots = [c for c in axis.collections
+                if isinstance(c, collections.PathCollection) and len(c.get_offsets())]
+        offsets = np.concatenate([c.get_offsets() for c in dots])
+        # Run medians of the threshold counts, not of the significance counts:
+        # hidden 2, 3, 1; modulation 6, 5, 6. Every point is filled.
+        self.assertEqual(sorted(offsets[np.isclose(offsets[:, 0], 0, atol=0.3), 1].tolist()),
+                         [1, 2, 3])
+        self.assertEqual(sorted(offsets[np.isclose(offsets[:, 0], 1, atol=0.3), 1].tolist()),
+                         [5, 6, 6])
+        self.assertFalse(any(np.allclose(c.get_facecolors()[0][:3], 1.0) for c in dots))
+        expected = wilcoxon([6 - 2, 5 - 3, 6 - 1]).pvalue
+        self.assertEqual([text.get_text() for text in axis.texts], [f"p = {expected:.3f}"])
+        self.assertIn("effect > 5 pp", axis.get_ylabel())
+        legend = axis.get_legend()
+        self.assertEqual([text.get_text() for text in legend.get_texts()], ["run", "median, IQR"])
+        self.assertIn("3 runs", legend.get_title().get_text())
+        extra = save.call_args.kwargs["extra"]
+        self.assertIn("hidden: median 1 at > 2 pp, 2 at > 5 pp, 3 at > 10 pp, 4 at > 20 pp", extra)
+        self.assertIn("modulation vs hidden paired Wilcoxon", extra)
+        self.assertIs(paper_plot.FIGURES_BY_MODE["lesion"]["task_specificity_threshold_seeds"],
+                      paper_plot.plot_task_specificity_threshold_seeds)
+        self.assertEqual(paper_plot._TASK_SPECIFICITY_FIGURE_THRESHOLD, 0.05)
+        self.assertIn(paper_plot._TASK_SPECIFICITY_FIGURE_THRESHOLD, self.THRESHOLDS)
+
     def test_seeds_need_two_runs_and_drop_disagreeing_runs(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -246,6 +324,86 @@ class TaskSpecificitySeedsTests(TaskSpecificityFigureTests):
         printed = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
         self.assertIn("incompatible", printed)
         self.assertIn("cluster types differ", printed)
+
+
+class TaskSpecificitySizeTests(TaskSpecificitySeedsTests):
+    """The per-run correlation of cluster size with the impaired-task count,
+    under the significance and the fixed-threshold rule."""
+
+    RHO = {11: {"hidden": (-0.6, -0.1), "modulation": (-0.3, 0.05)},
+           22: {"hidden": (-0.4, 0.1), "modulation": (-0.2, 0.0)},
+           33: {"hidden": (-0.5, 0.0), "modulation": (-0.4, 0.1)}}
+
+    def test_size_figure_draws_both_rules_per_type(self):
+        from scipy.stats import wilcoxon
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = None
+            for seed, rho in self.RHO.items():
+                run_dir = self.write_run(base, seed, [0, 1, 1, 5], [2, 4, 6], rho=rho)
+                root = root or run_dir
+            save, _ = self.render_seeds(root, paper_plot.plot_task_specificity_size)
+        save.assert_called_once()
+        figure, path = save.call_args.args[:2]
+        self.addCleanup(paper_plot.plt.close, figure)
+        self.assertEqual(path.name, "multitask_task_specificity_size.png")
+        axis = figure.axes[0]
+        collections = paper_plot.mpl.collections
+        dots = [c for c in axis.collections
+                if isinstance(c, collections.PathCollection) and len(c.get_offsets())]
+        # Two columns per type (significant, threshold) at 0, 1 and 3, 4, each
+        # holding the three runs' saved correlations, in the lesion grey.
+        self.assertEqual(len(dots), 4)
+        expected = {0: [-0.6, -0.5, -0.4], 1: [-0.1, 0.0, 0.1],
+                    3: [-0.4, -0.3, -0.2], 4: [0.0, 0.05, 0.1]}
+        for position, values in expected.items():
+            column = np.concatenate([c.get_offsets() for c in dots
+                                     if np.isclose(c.get_offsets()[0][0], position, atol=0.3)])
+            np.testing.assert_allclose(sorted(column[:, 1]), values)
+        for c in dots:
+            np.testing.assert_allclose(
+                c.get_facecolors()[0][:3],
+                paper_plot.mpl.colors.to_rgb(paper_plot._LESION_POINT_COLOR))
+        self.assertEqual([label.get_text() for label in axis.get_xticklabels()],
+                         ["Signif.", "> 5 pp"] * 2)
+        # Medians per column, the type labels under the groups and one
+        # two-sided Wilcoxon p above each column.
+        dashes = [c for c in axis.collections if isinstance(c, collections.LineCollection)
+                  and np.isclose(c.get_segments()[0][0, 1], c.get_segments()[0][1, 1])]
+        np.testing.assert_allclose(sorted(c.get_segments()[0][0, 1] for c in dashes),
+                                   [-0.5, -0.3, 0.0, 0.05])
+        texts = [text.get_text() for text in axis.texts]
+        self.assertEqual(texts[:2], ["Hidden", "Synapse"])
+        self.assertEqual(texts[2], paper_plot._short_p(wilcoxon([-0.6, -0.4, -0.5]).pvalue))
+        self.assertEqual(len(texts), 6)
+        self.assertIn("3 runs", axis.get_legend().get_title().get_text())
+        self.assertIn("hidden/Signif.: median rho -0.50, 3/3 < 0",
+                      save.call_args.kwargs["extra"])
+        self.assertIs(paper_plot.FIGURES_BY_MODE["lesion"]["task_specificity_size"],
+                      paper_plot.plot_task_specificity_size)
+
+    def test_size_figure_drops_undefined_correlations_and_needs_two_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = self.write_run(base, 11, [0, 1, 1, 5], [2, 4, 6], rho=self.RHO[11])
+            self.write_run(base, 22, [1, 2, 3], [3, 5, 5], rho=self.RHO[22])
+            # A constant count has no correlation: the run is left out.
+            self.write_run(base, 33, [1, 1, 1], [5, 5, 6],
+                           rho={"hidden": (np.nan, 0.0), "modulation": (-0.4, 0.1)})
+            save, output = self.render_seeds(root, paper_plot.plot_task_specificity_size)
+        save.assert_called_once()
+        self.addCleanup(paper_plot.plt.close, save.call_args.args[0])
+        self.assertIn("2 runs", save.call_args.kwargs["extra"])
+        printed = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
+        self.assertIn("undefined size correlation", printed)
+        self.assertIn("seed33", printed)
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = self.write_run(base, 11, [0, 1, 1, 5], [2, 4, 6], rho=self.RHO[11])
+            save, output = self.render_seeds(root, paper_plot.plot_task_specificity_size)
+        save.assert_not_called()
+        self.assertIn("need >= 2", output.call_args.args[0])
 
 
 def load_pickle(path):

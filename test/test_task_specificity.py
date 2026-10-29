@@ -137,18 +137,47 @@ class SharingTests(unittest.TestCase):
                     self.assertEqual(actual, expected)
 
     def test_summary_bundles_types_and_validates_shapes(self):
+        from scipy.stats import spearmanr
+
         rng = np.random.default_rng(5)
-        sig_by_type = {"hidden": {"sig": rng.random((15, 8)) < 0.3,
+        effect = rng.normal(scale=0.1, size=(15, 8))
+        sizes = np.array([1, 2, 3, 5, 8, 13, 21, 34], dtype=float)
+        sig_by_type = {"hidden": {"sig": rng.random((15, 8)) < 0.3, "effect": effect,
+                                  "sizes": sizes,
                                   "cluster_labels": [f"h{k}" for k in range(8)]}}
         summary = lesion_plot._task_specificity_summary(sig_by_type, TASKS, n_perm=20)
         self.assertEqual(summary["schema_version"], lesion_plot.TASK_SPECIFICITY_SCHEMA_VERSION)
-        self.assertEqual(lesion_plot.TASK_SPECIFICITY_SCHEMA_VERSION, 2)
+        self.assertEqual(lesion_plot.TASK_SPECIFICITY_SCHEMA_VERSION, 3)
         self.assertEqual(lesion_plot.TASK_SPECIFICITY_MOD_MODE, "freeze_M")
         self.assertEqual(list(summary["types"]), ["hidden"])
-        self.assertEqual(summary["types"]["hidden"]["dispersion"]["counts"].shape, (8,))
+        hidden = summary["types"]["hidden"]
+        self.assertEqual(hidden["dispersion"]["counts"].shape, (8,))
+        # Beside the significance counts: the counts above every fixed effect
+        # threshold, the cluster sizes, and how each count follows size.
+        self.assertEqual(summary["effect_thresholds"],
+                         list(lesion_plot.TASK_SPECIFICITY_EFFECT_THRESHOLDS))
+        self.assertEqual(list(hidden["threshold_counts"]), [0.02, 0.05, 0.1, 0.2])
+        for threshold, counts in hidden["threshold_counts"].items():
+            np.testing.assert_array_equal(counts, (effect > threshold).sum(axis=0))
+            self.assertAlmostEqual(hidden["size_correlation"][threshold],
+                                   spearmanr(sizes, counts).correlation)
+        np.testing.assert_array_equal(hidden["cluster_sizes"], sizes)
+        self.assertAlmostEqual(hidden["size_correlation"]["significant"],
+                               spearmanr(sizes, hidden["dispersion"]["counts"]).correlation)
+        np.testing.assert_array_equal(hidden["effect"], effect)
+        # Undefined correlations: too few clusters, or a constant count.
+        self.assertTrue(np.isnan(lesion_plot._size_rank_correlation([1, 2], [3, 4])))
+        self.assertTrue(np.isnan(lesion_plot._size_rank_correlation([1, 2, 3], [2, 2, 2])))
+        self.assertEqual(lesion_plot._size_rank_correlation([1, 2, 3], [1, 2, 3]), 1.0)
         with self.assertRaisesRegex(ValueError, "shape"):
             lesion_plot._task_specificity_summary(
-                {"hidden": {"sig": np.zeros((14, 8), bool), "cluster_labels": list("abcdefgh")}},
+                {"hidden": {"sig": np.zeros((14, 8), bool), "effect": np.zeros((14, 8)),
+                            "sizes": sizes, "cluster_labels": list("abcdefgh")}},
+                TASKS, n_perm=5)
+        with self.assertRaisesRegex(ValueError, "effect or cluster sizes"):
+            lesion_plot._task_specificity_summary(
+                {"hidden": {"sig": np.zeros((15, 8), bool), "effect": np.zeros((15, 7)),
+                            "sizes": sizes, "cluster_labels": list("abcdefgh")}},
                 TASKS, n_perm=5)
 
 

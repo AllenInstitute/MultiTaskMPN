@@ -799,8 +799,8 @@ _SCATTER_POINT_COLOR = c_vals[1]          # "#3182ce"
 _TREND_LINE_COLOR = "tomato"
 # The lesion-mode scatters (cluster tuning vs lesion, OM vs lesion, causal vs
 # activity, state space vs lesion, plasticity share) and their `_seeds` and
-# cohort plots, and the task-specificity `_seeds` plot, draw their points in
-# grey instead, significant and not alike
+# cohort plots, and the task-specificity `_seeds`, threshold `_seeds` and
+# size plots, draw their points in grey instead, significant and not alike
 # (filled vs hollow grey ring), so the red overlay is their only color.
 _LESION_POINT_COLOR = "0.45"
 # The dots have no outline: a black edge only darkens dense clouds.
@@ -5847,7 +5847,7 @@ _TASK_SPECIFICITY_COLORS = {"input": c_vals[1], "hidden": c_vals[0], "modulation
 _TASK_SPECIFICITY_TICK_LABELS = {"input": "Input", "hidden": "Hidden", "modulation": "Synapse"}
 # The cache lesion_plot.py writes (its TASK_SPECIFICITY_SCHEMA_VERSION); its
 # synapse clusters must impair tasks through the lesion heatmap's mode.
-_TASK_SPECIFICITY_SCHEMA_VERSION = 2
+_TASK_SPECIFICITY_SCHEMA_VERSION = 3
 # Counts figure: the dots and the gray mixing-null histogram behind them.
 _TASK_SPECIFICITY_DOT_SIZE = 12
 _TASK_SPECIFICITY_NULL_COLOR = "0.86"
@@ -5855,6 +5855,16 @@ _TASK_SPECIFICITY_NULL_COLOR = "0.86"
 # column's median dash.
 _TASK_SPECIFICITY_SEEDS_TIE_STEP = 0.09
 _TASK_SPECIFICITY_SEEDS_HALF_WIDTH = 0.27
+# Robustness figures: the fixed effect threshold (accuracy fraction) whose
+# saved counts the threshold seeds figure draws and the size figure compares
+# with the significance counts; it must be one of the cache's
+# TASK_SPECIFICITY_EFFECT_THRESHOLDS.
+_TASK_SPECIFICITY_FIGURE_THRESHOLD = 0.05
+_TASK_SPECIFICITY_SIZE_FIGSIZE = (3.6, 2.5)
+
+
+def _task_specificity_threshold_label():
+    return f"effect > {100 * _TASK_SPECIFICITY_FIGURE_THRESHOLD:g} pp"
 
 
 def _check_task_specificity_cache(saved, aname):
@@ -5873,11 +5883,17 @@ def _load_task_specificity(directory, aname, report_missing=True):
     """Load run `aname`'s per-cluster impaired-task counts and their
     dispersion test from lesion_plot.py's task-specificity cache in
     `directory`: {"tasks", "types": {type: {"counts", "p_dispersion",
-    "null_count_pmf"}}}, where null_count_pmf is the saved exact distribution
-    of one cluster's count (0..T tasks) under the mixing null. None with a
-    note when the cache is incompatible, and when it is missing unless
-    `report_missing` is False. The cache's per-relation task-pair sharing
-    statistics are read by _load_task_sharing instead."""
+    "null_count_pmf", "cluster_sizes", "threshold_counts",
+    "all_threshold_counts", "size_correlation"}}}, where null_count_pmf is
+    the saved exact distribution of one cluster's count (0..T tasks) under
+    the mixing null, threshold_counts the saved counts at
+    _TASK_SPECIFICITY_FIGURE_THRESHOLD (all_threshold_counts those at every
+    saved threshold) and size_correlation the saved Spearman rho of cluster
+    size with the significance count ("significant") and with that threshold
+    count ("threshold"). None with a note when the cache is incompatible, and
+    when it is missing unless `report_missing` is False. The cache's
+    per-relation task-pair sharing statistics are read by _load_task_sharing
+    instead."""
     path = resolve_lesion_cache_path(Path(directory) / f"task_specificity_{aname}.pkl")
     if not path.exists():
         if report_missing:
@@ -5901,8 +5917,28 @@ def _load_task_specificity(directory, aname, report_missing=True):
                     or pmf.shape != (len(tasks) + 1,) or not np.isfinite(pmf).all()
                     or np.any(pmf < 0) or not np.isclose(pmf.sum(), 1.0)):
                 raise ValueError(f"{type_name}: invalid impaired-task counts or dispersion test")
+            sizes = np.asarray(entry["cluster_sizes"], dtype=float)
+            all_counts = {float(key): np.asarray(value, dtype=int)
+                          for key, value in entry["threshold_counts"].items()}
+            threshold = [key for key in all_counts
+                         if np.isclose(key, _TASK_SPECIFICITY_FIGURE_THRESHOLD)]
+            rho_keys = [key for key in entry["size_correlation"] if key != "significant"
+                        and np.isclose(float(key), _TASK_SPECIFICITY_FIGURE_THRESHOLD)]
+            if len(threshold) != 1 or len(rho_keys) != 1:
+                raise ValueError(f"{type_name}: no counts at the effect threshold "
+                                 f"{_TASK_SPECIFICITY_FIGURE_THRESHOLD:g}")
+            threshold_counts = all_counts[threshold[0]]
+            size_rho = {"significant": float(entry["size_correlation"]["significant"]),
+                        "threshold": float(entry["size_correlation"][rho_keys[0]])}
+            if (sizes.shape != counts.shape or not np.isfinite(sizes).all() or np.any(sizes <= 0)
+                    or any(value.shape != counts.shape or value.min() < 0
+                           or value.max() > len(tasks) for value in all_counts.values())):
+                raise ValueError(f"{type_name}: invalid cluster sizes or threshold counts")
             types[type_name] = {"counts": counts, "p_dispersion": p_disp,
-                                "null_count_pmf": pmf}
+                                "null_count_pmf": pmf, "cluster_sizes": sizes,
+                                "threshold_counts": threshold_counts,
+                                "all_threshold_counts": all_counts,
+                                "size_correlation": size_rho}
         if not types:
             raise ValueError("no cluster types saved")
     except (OSError, KeyError, TypeError, ValueError) as error:
@@ -5957,7 +5993,10 @@ def plot_task_specificity():
     uniform mix; the red line is the median, and the right-hand title the
     saved one-sided permutation p of the count variance exceeding that null.
     The rows share both axes. Everything comes from lesion_plot.py's cache;
-    nothing is recomputed.
+    nothing is recomputed. The criterion depends on the control's spread,
+    which grows with cluster size: plot_task_specificity_size shows how far
+    the counts follow size, and plot_task_specificity_threshold_seeds
+    counts by a fixed effect threshold instead.
     """
     _ensure_out_dir()
     saved = _load_task_specificity(LESION_NORM_DIR, LESION_ANAME)
@@ -6020,28 +6059,62 @@ def plot_task_specificity_seeds():
     and interquartile range over runs; each bracket is the two-sided paired
     Wilcoxon signed-rank p of the runs' medians between two neighboring
     columns, computed here from the saved counts. Skipped below two runs.
+    plot_task_specificity_threshold_seeds is the same figure counted by a
+    fixed effect threshold, plot_task_specificity_size the size check.
     """
     _ensure_out_dir()
     runs = _task_specificity_runs()
     if len(runs) < 2:
         print(f"  Skipped: {len(runs)} run(s) with saved task-specificity caches; need >= 2.")
         return
-    first = next(iter(runs.values()))
-    types = [name for name in _TASK_SPECIFICITY_TYPES if name in first["types"]]
+    types = _task_specificity_types(runs)
     medians = {name: np.array([np.median(saved["types"][name]["counts"])
                                for saved in runs.values()]) for name in types}
     significant = {name: np.array([saved["types"][name]["p_dispersion"] < 0.05
                                    for saved in runs.values()]) for name in types}
+    note = ", ".join(f"{name}: median {np.median(medians[name]):g}, "
+                     f"{int(significant[name].sum())}/{len(runs)} dispersion p < 0.05"
+                     for name in types)
+    _draw_task_specificity_seeds(medians, significant, "Median tasks impaired\nper cluster",
+                                 "task_specificity_seeds.png", _causal_seeds_legend_handles(),
+                                 [note])
+
+
+def _task_specificity_types(runs):
+    """The cluster types of the loaded runs, in the figures' order."""
+    first = next(iter(runs.values()))
+    return [name for name in _TASK_SPECIFICITY_TYPES if name in first["types"]]
+
+
+def _task_specificity_run_handles():
+    """Legend entries of the task-specificity figures whose runs carry no
+    per-run test: the run point and the red median dash with its bar."""
+    run = mpl.lines.Line2D([], [], marker="o", linestyle="none", color=_LESION_POINT_COLOR,
+                           markeredgecolor="none", markersize=4.5, label="run")
+    return [run, _causal_seeds_legend_handles()[-1]]
+
+
+def _draw_task_specificity_seeds(medians, significant, ylabel, out_name, handles, notes):
+    """Renderer of the task-specificity seeds figures: one column per cluster
+    type of `medians` ({type: one value per run}), runs tied on a value
+    spread sideways and each run's points joined by a thin line, filled or
+    hollow by `significant` ({type: bool per run}; None fills every point),
+    the median and interquartile range over runs in red, and over each pair
+    of neighboring columns a bracket with the two-sided paired Wilcoxon
+    signed-rank p of the runs' values. `handles` make the legend; `notes`
+    precede the tests in the saved message."""
+    types = list(medians)
+    n_runs = next(iter(medians.values())).size
     xs = {name: position + _tie_offsets(medians[name], _TASK_SPECIFICITY_SEEDS_TIE_STEP,
                                         _TASK_SPECIFICITY_SEEDS_HALF_WIDTH)
           for position, name in enumerate(types)}
 
     fig, ax = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
-    for run in range(len(runs)):
+    for run in range(n_runs):
         ax.plot([xs[name][run] for name in types], [medians[name][run] for name in types],
                 color="0.85", linewidth=0.5, zorder=2)
     for position, name in enumerate(types):
-        hit = significant[name]
+        hit = np.ones(n_runs, dtype=bool) if significant is None else significant[name]
         ax.scatter(xs[name][hit], medians[name][hit], s=_CAUSAL_SEEDS_POINT_SIZE,
                    color=_LESION_POINT_COLOR, edgecolors="none", zorder=3)
         ax.scatter(xs[name][~hit], medians[name][~hit], s=_CAUSAL_SEEDS_POINT_SIZE,
@@ -6069,16 +6142,105 @@ def plot_task_specificity_seeds():
     ax.set_xticklabels([_TASK_SPECIFICITY_TICK_LABELS[name] for name in types],
                        fontsize=_STAT_SCATTER_TICK_FONTSIZE)
     ax.set_xlim(-0.55, len(types) - 0.45)
-    ax.set_ylabel("Median tasks impaired\nper cluster", fontsize=7)
+    ax.set_ylabel(ylabel, fontsize=7)
     ax.spines[["top", "right"]].set_visible(False)
     ax.tick_params(axis="y", labelsize=_STAT_SCATTER_TICK_FONTSIZE)
-    _seeds_legend(ax, _causal_seeds_legend_handles(), len(runs))
+    _seeds_legend(ax, handles, n_runs)
     fig.tight_layout()
-    _save_fig(fig, _multitask_out("task_specificity_seeds.png"),
-              extra="  " + ", ".join(
-                  f"{name}: median {np.median(medians[name]):g}, "
-                  f"{int(significant[name].sum())}/{len(runs)} dispersion p < 0.05"
-                  for name in types) + "; " + "; ".join(tests))
+    _save_fig(fig, _multitask_out(out_name), extra="  " + "; ".join(list(notes) + tests))
+
+
+def plot_task_specificity_threshold_seeds():
+    """
+    Figure: multitask_task_specificity_threshold_seeds.png — the seeds figure
+    counted by a fixed effect threshold instead of significance: per run and
+    cluster type, the median over clusters of the number of tasks whose
+    random-minus-lesion effect exceeds _TASK_SPECIFICITY_FIGURE_THRESHOLD (5
+    accuracy points), from the counts lesion_plot.py saves at its
+    TASK_SPECIFICITY_EFFECT_THRESHOLDS. The significance criterion depends on
+    the control's spread, which grows with cluster size, so this count is the
+    same yardstick for every cluster and type. Every point is filled (the
+    threshold count has no dispersion test); the rest is as in the seeds
+    figure. The saved message gives the medians at every saved threshold.
+    """
+    _ensure_out_dir()
+    runs = _task_specificity_runs()
+    if len(runs) < 2:
+        print(f"  Skipped: {len(runs)} run(s) with saved task-specificity caches; need >= 2.")
+        return
+    types = _task_specificity_types(runs)
+    medians = {name: np.array([np.median(saved["types"][name]["threshold_counts"])
+                               for saved in runs.values()]) for name in types}
+    notes = []
+    for name in types:
+        by_threshold = []
+        for thr in sorted(next(iter(runs.values()))["types"][name]["all_threshold_counts"]):
+            run_medians = [np.median(saved["types"][name]["all_threshold_counts"][thr])
+                           for saved in runs.values()]
+            by_threshold.append(f"{np.median(run_medians):g} at > {100 * thr:g} pp")
+        notes.append(f"{name}: median " + ", ".join(by_threshold))
+    ylabel = f"Median tasks impaired\nper cluster ({_task_specificity_threshold_label()})"
+    _draw_task_specificity_seeds(medians, None, ylabel, "task_specificity_threshold_seeds.png",
+                                 _task_specificity_run_handles(), notes)
+
+
+def plot_task_specificity_size():
+    """
+    Figure: multitask_task_specificity_size.png — whether a cluster's
+    impaired-task count follows its size. Per run and cluster type, the saved
+    Spearman correlation over the type's clusters between cluster size
+    (neurons, or synapses) and the number of tasks the cluster impairs, under
+    the two counting rules side by side: significance (the counts figure's
+    criterion) and the fixed effect threshold of the threshold seeds figure.
+    One grey point per run, a run's two rules joined, the median and
+    interquartile range over runs in red, 0 marked, and over each column the
+    two-sided Wilcoxon signed-rank p of the runs' correlations against zero,
+    computed here from the saved per-run values. A negative correlation under
+    the significance rule alone means that small clusters reach significance
+    more easily, because their size-matched random controls spread less. A
+    run whose correlation is undefined under either rule (a constant count)
+    is left out with a note; skipped below two runs.
+    """
+    _ensure_out_dir()
+    runs = _task_specificity_runs()
+    types = _task_specificity_types(runs) if runs else []
+    # Short column labels: the type's two columns sit one unit apart.
+    rules = (("significant", "Signif."),
+             ("threshold", f"> {100 * _TASK_SPECIFICITY_FIGURE_THRESHOLD:g} pp"))
+    kept = {aname: saved for aname, saved in runs.items()
+            if all(np.isfinite(saved["types"][name]["size_correlation"][rule])
+                   for name in types for rule, _ in rules)}
+    dropped = sorted(set(runs) - set(kept))
+    if dropped:
+        print(f"  Left out {len(dropped)} run(s) with an undefined size correlation: "
+              + ", ".join(dropped))
+    if len(kept) < 2:
+        print(f"  Skipped: {len(kept)} run(s) with saved size correlations; need >= 2.")
+        return
+    groups = [[(label, np.array([saved["types"][name]["size_correlation"][rule]
+                                 for saved in kept.values()]))
+               for rule, label in rules] for name in types]
+    fig, ax = plt.subplots(1, 1, figsize=_TASK_SPECIFICITY_SIZE_FIGSIZE)
+    positions = _draw_sibling_cohort(ax, groups, len(kept), color=_LESION_POINT_COLOR)
+    ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
+    ax.set_ylim(-1.05, 1.3)
+    below_ticks = mpl.transforms.blended_transform_factory(ax.transData, ax.transAxes)
+    for name, first in zip(types, positions[::len(rules)]):
+        ax.text(first + (len(rules) - 1) / 2, -0.2, _TASK_SPECIFICITY_TICK_LABELS[name],
+                transform=below_ticks, ha="center", va="top", fontsize=7)
+    notes = []
+    columns = [(name, label, values) for name, group in zip(types, groups)
+               for (label, values) in group]
+    for position, (name, label, values) in zip(positions, columns):
+        p_value, _ = _wilcoxon_vs_zero(values)
+        ax.text(position, 1.08, _short_p(p_value), ha="center", va="bottom", fontsize=6)
+        notes.append(f"{name}/{label}: median rho {np.median(values):+.2f}, "
+                     f"{int(np.sum(values < 0))}/{values.size} < 0, Wilcoxon p = {p_value:.2g}")
+    ax.set_ylabel("Spearman ρ, cluster size\nvs tasks impaired", fontsize=7)
+    _seeds_legend(ax, _task_specificity_run_handles(), len(kept))
+    fig.tight_layout()
+    _save_fig(fig, _multitask_out("task_specificity_size.png"),
+              extra=f"  {len(kept)} runs; " + "; ".join(notes))
 
 
 # ─── Figure: Transfer speed ──────────────────────────────────────────────────
@@ -11733,10 +11895,12 @@ def _sibling_cohort_note(runs, family, key, decimals=3):
     return f"{_SIBLING_COHORT_FAMILY_LABELS[family]} {key}: {', '.join(medians)}"
 
 
-def _draw_sibling_cohort(ax, groups, n_runs, floor=None, ceiling=None):
+def _draw_sibling_cohort(ax, groups, n_runs, floor=None, ceiling=None,
+                         color=_SCATTER_POINT_COLOR):
     """One column per (label, values) of every group in `groups`, the groups
-    one column apart behind a dotted divider: every run a point in the
-    statistics blue, its points within a group joined by a thin line (one
+    one column apart behind a dotted divider: every run a point in `color`
+    (the statistics blue; the lesion-mode task-specificity size figure
+    passes its grey), its points within a group joined by a thin line (one
     network), the median over runs as a red dash with the interquartile
     range as a bar. Values at or beyond `floor` / `ceiling` (a log axis
     whose extremes would squeeze the rest) are drawn hollow at that edge.
@@ -11756,11 +11920,10 @@ def _draw_sibling_cohort(ax, groups, n_runs, floor=None, ceiling=None):
         for x, (label, values), (_, drawn) in zip(xs, columns, shown):
             hollow = (values <= low) | (values >= high)
             ax.scatter(x + offsets[~hollow], drawn[~hollow], s=_SIBLING_COHORT_POINT_SIZE,
-                       color=_SCATTER_POINT_COLOR, edgecolors="none", zorder=3)
+                       color=color, edgecolors="none", zorder=3)
             if hollow.any():
                 ax.scatter(x + offsets[hollow], drawn[hollow], s=_SIBLING_COHORT_POINT_SIZE,
-                           facecolors="white", edgecolors=_SCATTER_POINT_COLOR, linewidths=0.8,
-                           zorder=3)
+                           facecolors="white", edgecolors=color, linewidths=0.8, zorder=3)
             q25, median, q75 = np.percentile(drawn, [25, 50, 75])
             ax.vlines(x, q25, q75, color=_TREND_LINE_COLOR, linewidth=1.0, zorder=4)
             ax.hlines(median, x - _SIBLING_COHORT_HALF_WIDTH, x + _SIBLING_COHORT_HALF_WIDTH,
@@ -13240,6 +13403,10 @@ FIGURES_BY_MODE = {
         "causal_vs_activity_seeds": plot_causal_vs_activity_seeds,
         "task_specificity": plot_task_specificity,
         "task_specificity_seeds": plot_task_specificity_seeds,
+        # The same counts by a fixed effect threshold, and whether either
+        # count follows cluster size.
+        "task_specificity_threshold_seeds": plot_task_specificity_threshold_seeds,
+        "task_specificity_size": plot_task_specificity_size,
         "task_sharing_cohort": plot_task_sharing_cohort,
         # Links the state-space task geometry to the lesion dependence
         # (multiple_task/state_space_vs_lesion.py).

@@ -41,9 +41,10 @@ The `lesion` figure mode contains `lesion_heatmap`, `lesion_cluster_sizes`,
 `cluster_corr_vs_lesion_seeds`, `om_vs_lesion`, `om_vs_lesion_seeds`,
 `plasticity_share`, `plasticity_share_cohort`, `causal_vs_activity_tasks`,
 `causal_vs_activity_seeds`, `task_specificity`, `task_specificity_seeds`,
+`task_specificity_threshold_seeds`, `task_specificity_size`,
 `task_sharing_cohort`,
-`state_space_vs_lesion` and `state_space_vs_lesion_seeds`. All but the five
-`_seeds` and two `_cohort` figures read one run, `LESION_ANAME`,
+`state_space_vs_lesion` and `state_space_vs_lesion_seeds`. All but the six
+`_seeds`, the size and two `_cohort` figures read one run, `LESION_ANAME`,
 independently of `ANAME`, which selects the `multiple_tasks` clustering
 figures; the exception is `om_vs_lesion`, which reads `ANAME` (see the OM
 scatter below). These figures no longer run under `multiple_tasks`; use
@@ -295,9 +296,10 @@ var-weighted synapse clusters, the unresponsive class excluded. A cluster
 the control repeats, BH-FDR q = 0.05; for neuron clusters the
 causal-dependency mask). Synapse clusters are tested with their **freeze_M**
 lesions (`lesion_plot.TASK_SPECIFICITY_MOD_MODE`, the lesion heatmap's mode),
-against the freeze_M control repeats; caches written before this switch
-(`schema_version=1`, zero_W) are skipped with a note, so rerun
-`lesion_plot.py`. The figure has one row per cluster type, sharing both axes:
+against the freeze_M control repeats; caches of an earlier schema
+(`schema_version=1`, zero_W; 2, without the threshold counts below) are
+skipped with a note, so rerun `lesion_plot.py`. The figure has one row per
+cluster type, sharing both axes:
 every cluster is a dot stacked over the number of tasks it impairs (a dot
 histogram counted in clusters), the red line is the median, and the gray
 histogram behind the dots is the number of clusters the saved mixing null
@@ -318,7 +320,40 @@ over runs in red, and over each pair of neighboring columns a bracket with the
 two-sided paired Wilcoxon signed-rank p of the runs' medians. It needs two
 runs, and leaves out runs whose cluster types differ.
 
-The same cache holds, per cluster type, the
+The significance criterion depends on the random control's spread, and that
+spread grows with cluster size (bigger size-matched random lesions do more
+variable damage; Spearman rho of size with the control SD is about 0.95 in
+every type), so small clusters reach significance more easily than large
+ones. `lesion_plot.py` therefore also saves, per cluster type, the number of
+tasks each cluster impairs by a fixed effect threshold (its
+random-minus-lesion effect above `TASK_SPECIFICITY_EFFECT_THRESHOLDS`, 2, 5,
+10 and 20 accuracy points, a criterion the spread does not enter), the
+cluster sizes (neurons, or synapses) and the Spearman correlation of size
+with every count (`size_correlation`; NaN below three clusters or for a
+constant count). `python figures/paper_plot.py --only
+task_specificity_threshold_seeds` draws
+`multitask_task_specificity_threshold_seeds_n.png`, the seeds figure counted
+at `paper_plot._TASK_SPECIFICITY_FIGURE_THRESHOLD` (5 points) with every
+point filled, its saved message giving the medians at every saved threshold;
+`--only task_specificity_size` draws `multitask_task_specificity_size_n.png`,
+per cluster type two columns of per-run correlations, under the significance
+rule and under the threshold rule, a run's two joined, with the median and
+interquartile range over runs, 0 marked and the two-sided Wilcoxon
+signed-rank p of the runs' correlations against zero above each column
+(computed in `paper_plot.py`); runs with an undefined correlation are left
+out with a note. On the 25 L21e4 runs (development probe of 2026-10-29; the
+two figures' saved messages give the same cohort medians) the median
+correlation of size with the significance count is −0.57 (input), −0.50
+(hidden) and −0.28 (synapse), against −0.20, −0.14 and +0.03 with the
+5-point threshold, and the medians of the threshold counts are 6, 4 and 9.5
+tasks against 2, 2.5 and 11.5 by significance: the synapse clusters still
+impair the most tasks, by less, and the spread of the significance counts
+partly reflects cluster size. Half of the hidden clusters hold three neurons
+or fewer (median 10 of 20 per run; the unresponsive hidden class holds about
+159 of 300 neurons), so the hidden row of the counts figure is largely a
+statement about single neurons.
+
+The same cache (so the same schema requirement) holds, per cluster type, the
 task-pair Jaccard overlap of impaired clusters grouped by the component the
 two tasks differ in (`TASK_PAIR_RELATIONS` in `lesion_plot.py`) with one-sided
 task-label permutation tests. `python figures/paper_plot.py --only task_sharing_cohort`

@@ -71,6 +71,12 @@ synapse clusters are selectively important for specific tasks. Produces:
     Aggregated per task and compared between memory-family
    tasks (delay/dm/dms/dmc) and reaction-family tasks (fd/react) — the
    MPN prediction is that working-memory tasks run on M.
+10. Protective-cluster dissection — decomposes every NEGATIVE normalized
+    lesion effect (cluster lesion hurting LESS than the size-matched random
+    control) into own damage vs control damage on the shared test set, to
+    separate the mechanical reading (the cluster is inert and the control
+    sampled critical hub neurons) from genuine protection (removing the
+    cluster IMPROVES absolute accuracy above the intact baseline).
 11. Task specificity and compositional sharing — how many tasks each
     (unresponsive-excluded) input, hidden or var-weighted synapse cluster
     significantly impairs (synapse clusters through their freeze_M lesion),
@@ -78,14 +84,13 @@ synapse clusters are selectively important for specific tasks. Produces:
     exact null distribution of one cluster's count, and the Jaccard overlap
     of impaired clusters for every task pair grouped by the task component
     the pair differs in (response rule, timing, modality, context cue,
-    family) with a task-label permutation p. Saved to
+    family) with a task-label permutation p. Beside the significance
+    counts it saves, per cluster, the number of tasks whose effect exceeds
+    fixed thresholds (TASK_SPECIFICITY_EFFECT_THRESHOLDS, a criterion the
+    control's spread does not enter), the cluster sizes and the Spearman
+    correlation of size with each count, because the control spread grows
+    with cluster size and so does the chance of significance. Saved to
     task_specificity_{aname}.pkl for paper_plot.py.
-10. Protective-cluster dissection — decomposes every NEGATIVE normalized
-    lesion effect (cluster lesion hurting LESS than the size-matched random
-    control) into own damage vs control damage on the shared test set, to
-    separate the mechanical reading (the cluster is inert and the control
-    sampled critical hub neurons) from genuine protection (removing the
-    cluster IMPROVES absolute accuracy above the intact baseline).
 
 Outputs saved to ./multiple_tasks_norm/{aname}/.
 
@@ -963,11 +968,20 @@ def _save_modulation_causal_vs_activity(results, normalized_effects, cluster_inf
 # they depend on; grouping pairs by which task component they differ in asks
 # whether shared clusters follow the compositional structure of the battery.
 TASK_SPECIFICITY_N_PERM = 5000
-TASK_SPECIFICITY_SCHEMA_VERSION = 2
+# 3: fixed-threshold counts, cluster sizes and size correlations saved per type.
+TASK_SPECIFICITY_SCHEMA_VERSION = 3
 # Synapse clusters impair a task through their freeze_M lesion, the mode of
 # paper_plot's lesion heatmap (neuron clusters have a single lesion).
 TASK_SPECIFICITY_MOD_TYPE = "modulation_all_var_weighted_unnormalized"
 TASK_SPECIFICITY_MOD_MODE = "freeze_M"
+# Effect thresholds (accuracy fraction) of the size-free robustness counts: a
+# cluster also "impairs" a task when its random-minus-lesion effect exceeds
+# the threshold, whatever the control's spread. The significance criterion
+# depends on that spread, which grows with cluster size (bigger random
+# controls do more variable damage), so small clusters reach significance
+# more easily; these counts and the size correlations show how much of the
+# count distribution that explains. paper_plot draws the 0.05 one.
+TASK_SPECIFICITY_EFFECT_THRESHOLDS = (0.02, 0.05, 0.10, 0.20)
 TASK_PAIR_RELATIONS = {
     "response rule": [("fdgo", "fdanti"), ("delaygo", "delayanti"),
                       ("reactgo", "reactanti"), ("dmsgo", "dmsnogo"),
@@ -1117,19 +1131,49 @@ def _sharing_by_relation(sig, tasks, n_perm=TASK_SPECIFICITY_N_PERM, seed=0):
     return out
 
 
-def _task_specificity_summary(sig_by_type, tasks, n_perm=TASK_SPECIFICITY_N_PERM, seed=0):
-    """Counts, dispersion tests and relation sharing for each cluster type."""
+def _size_rank_correlation(sizes, counts):
+    """Spearman rho between cluster size and impaired-task count; NaN below
+    three clusters or when either is constant."""
+    sizes = np.asarray(sizes, dtype=float)
+    counts = np.asarray(counts, dtype=float)
+    if sizes.size < 3 or np.ptp(sizes) == 0 or np.ptp(counts) == 0:
+        return np.nan
+    return float(spearmanr(sizes, counts).correlation)
+
+
+def _task_specificity_summary(sig_by_type, tasks, n_perm=TASK_SPECIFICITY_N_PERM, seed=0,
+                              thresholds=TASK_SPECIFICITY_EFFECT_THRESHOLDS):
+    """Counts, dispersion tests and relation sharing for each cluster type,
+    with the fixed-threshold counts of its effects (`effect`, tasks x
+    clusters, random minus lesion), its cluster sizes and the Spearman
+    correlation of size with every count."""
     summary = {"schema_version": TASK_SPECIFICITY_SCHEMA_VERSION, "tasks": list(tasks),
-               "n_perm": int(n_perm), "types": {}}
+               "n_perm": int(n_perm), "effect_thresholds": [float(thr) for thr in thresholds],
+               "threshold_definition": "random-minus-lesion effect (accuracy fraction) above "
+                                       "the threshold",
+               "types": {}}
     for type_name, entry in sig_by_type.items():
         sig = np.asarray(entry["sig"], dtype=bool)
+        effect = np.asarray(entry["effect"], dtype=float)
+        sizes = np.asarray(entry["sizes"], dtype=float)
         if sig.shape != (len(tasks), len(entry["cluster_labels"])):
             raise ValueError(f"{type_name}: sig shape does not match tasks and clusters")
+        if effect.shape != sig.shape or sizes.shape != (sig.shape[1],):
+            raise ValueError(f"{type_name}: effect or cluster sizes do not match sig")
+        dispersion = _count_dispersion_test(sig, n_perm=n_perm, seed=seed)
+        threshold_counts = {float(thr): (effect > thr).sum(axis=0) for thr in thresholds}
+        size_correlation = {"significant": _size_rank_correlation(sizes, dispersion["counts"])}
+        size_correlation.update({thr: _size_rank_correlation(sizes, counts)
+                                 for thr, counts in threshold_counts.items()})
         summary["types"][type_name] = {
             "cluster_labels": list(entry["cluster_labels"]),
-            "dispersion": _count_dispersion_test(sig, n_perm=n_perm, seed=seed),
+            "dispersion": dispersion,
             "sharing": _sharing_by_relation(sig, tasks, n_perm=n_perm, seed=seed),
             "sig": sig,
+            "effect": effect,
+            "cluster_sizes": sizes,
+            "threshold_counts": threshold_counts,
+            "size_correlation": size_correlation,
         }
     return summary
 
@@ -1484,7 +1528,10 @@ def main(seed, feature):
             name.replace("pre_c", "i").replace("post_c", "h")
             for name in _unresponsive_condition_names(results[lesion_key],
                                                       legacy_last=(vtag == "unnorm"))}
-        _causal_sig[vtag] = {"sig": sig, "cluster_names": cnames,
+        # Neurons per cluster, recorded by lesion.py under the condition name.
+        units = results[lesion_key].get("lesion_units", {})
+        sizes = np.array([float(units.get(names_all[k], np.nan)) for k in keep_idx])
+        _causal_sig[vtag] = {"sig": sig, "effect": E, "sizes": sizes, "cluster_names": cnames,
                              "unresponsive_names": unresponsive_names}
         return E
 
@@ -2280,8 +2327,13 @@ def main(seed, feature):
 
         share = np.full_like(E_zw, np.nan)
         share[sig_zw] = E_fm[sig_zw] / E_zw[sig_zw]              # sig ⇒ E_zw > 0
+        _clusters_pd = zw.get("mod_col_clusters", {})           # cluster id -> synapses
         _mod_sig[_pd_type] = {
-            "sig": {"zero_W": sig_zw, "freeze_M": sig_fm}, "cluster_ids": list(_cids),
+            "sig": {"zero_W": sig_zw, "freeze_M": sig_fm},
+            "effect": {"zero_W": E_zw, "freeze_M": E_fm},
+            "sizes": np.array([float(len(_clusters_pd[cid])) if cid in _clusters_pd else np.nan
+                               for cid in _cids]),
+            "cluster_ids": list(_cids),
             "unresponsive_label": _mod_unresponsive_label(
                 zw, legacy_last=("unnormalized" in _pd_type))}
 
@@ -3031,7 +3083,8 @@ def main(seed, feature):
             cols = [k for k, n in enumerate(_cs["cluster_names"])
                     if n.startswith(prefix) and n not in _cs["unresponsive_names"]]
             if len(cols) >= 2:
-                _spec_types[side] = {"sig": _cs["sig"][:, cols],
+                _spec_types[side] = {"sig": _cs["sig"][:, cols], "effect": _cs["effect"][:, cols],
+                                     "sizes": _cs["sizes"][cols],
                                      "cluster_labels": [_cs["cluster_names"][k] for k in cols]}
     if TASK_SPECIFICITY_MOD_TYPE in _mod_sig:
         _ms = _mod_sig[TASK_SPECIFICITY_MOD_TYPE]
@@ -3040,6 +3093,8 @@ def main(seed, feature):
         if len(keep) >= 2:
             _spec_types["modulation"] = {
                 "sig": _ms["sig"][TASK_SPECIFICITY_MOD_MODE][:, keep],
+                "effect": _ms["effect"][TASK_SPECIFICITY_MOD_MODE][:, keep],
+                "sizes": _ms["sizes"][keep],
                 "cluster_labels": [f"c{_ms['cluster_ids'][k]}" for k in keep]}
     if _spec_types:
         _spec = _task_specificity_summary(_spec_types, all_tasks)
@@ -3104,6 +3159,14 @@ def main(seed, feature):
                   f"{disp['null_var'].mean():.2f} p={disp['p_perm']:.3f}; related-pair Jaccard "
                   f"{rel['related']['mean']:.2f} vs other {rel['other']['mean']:.2f} "
                   f"p={rel['related']['p_perm']:.3f}")
+            thresholds = ", ".join(
+                f">{thr:.0%} median {np.median(counts):g}"
+                for thr, counts in entry["threshold_counts"].items())
+            rho = entry["size_correlation"]
+            print(f"[task-specificity] {type_name}: effect-threshold counts {thresholds}; "
+                  f"Spearman(size, count) significant {rho['significant']:+.2f}, "
+                  + ", ".join(f">{thr:.0%} {value:+.2f}" for thr, value in rho.items()
+                              if thr != "significant"))
     else:
         print("[task-specificity] no significance masks available, skipping")
 
