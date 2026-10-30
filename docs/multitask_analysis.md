@@ -24,14 +24,18 @@ python multiple_task/run_pipeline.py --seed 749 --feature L21e4
 # several seeds of one cohort, run in the given order
 python multiple_task/run_pipeline.py --feature L21e3 --seed 299 365 487 501 934
 # every checkpoint of a cohort that has no pipeline outputs yet (rerun after
-# more training). A run counts as completed when all three steps wrote their
-# last file: cluster_info and cluster_info_mod, lesion_prune_results, and the
-# two lesion_interaction pickles; a run missing any is redone from step 1.
+# more training). A run counts as completed when all four steps wrote their
+# last file: cluster_info and cluster_info_mod, lesion_prune_results, the
+# lesion_controls pickle of --control-pool (responsive by default) and the
+# two lesion_interaction pickles; a run missing any is redone from step 1,
+# or with --resume only its missing steps are run (how runs lesioned before
+# the controls step existed get their controls and plots).
 # --skip-completed needs --feature or --seed; to spread a cohort over nodes,
 # give each process its own --seed list (two bare runs would pick the same
 # checkpoints). Each run takes about an hour of clustering plus four to six
-# hours of lesions.
+# hours of lesions and one to two hours of controls per synapse type.
 python multiple_task/run_pipeline.py --feature L21e4 --skip-completed
+python multiple_task/run_pipeline.py --feature L21e4 --skip-completed --resume
 ```
 
 ## Figures
@@ -39,12 +43,13 @@ python multiple_task/run_pipeline.py --feature L21e4 --skip-completed
 The `lesion` figure mode contains `lesion_heatmap`, `lesion_cluster_sizes`,
 `cluster_corr_vs_lesion`, `cluster_corr_vs_lesion_weighted`,
 `cluster_corr_vs_lesion_seeds`, `om_vs_lesion`, `om_vs_lesion_seeds`,
-`plasticity_share`, `plasticity_share_cohort`, `causal_vs_activity_tasks`,
+`plasticity_share`, `plasticity_share_cohort`, `plasticity_share_cohort_violin`,
+`causal_vs_activity_tasks`,
 `causal_vs_activity_seeds`, `task_specificity`, `task_specificity_seeds`,
 `task_specificity_threshold_seeds`, `task_specificity_size`,
-`task_sharing_cohort`,
-`state_space_vs_lesion` and `state_space_vs_lesion_seeds`. All but the six
-`_seeds`, the size and two `_cohort` figures read one run, `LESION_ANAME`,
+`task_specificity_pool_seeds`, `task_sharing_cohort`,
+`state_space_vs_lesion` and `state_space_vs_lesion_seeds`. All but the seven
+`_seeds`, the size and three `_cohort` figures read one run, `LESION_ANAME`,
 independently of `ANAME`, which selects the `multiple_tasks` clustering
 figures; the exception is `om_vs_lesion`, which reads `ANAME` (see the OM
 scatter below). These figures no longer run under `multiple_tasks`; use
@@ -66,7 +71,10 @@ The `multiple_tasks` and `lesion` figures read one L2 cohort of the
 `MULTITASK_L2` in `paper_plot.py` (currently `1e3`) or per invocation with
 `python figures/paper_plot.py --multitask-l2 1e4 multiple_tasks lesion`. The aggregate
 figures (overmembership, `cluster_corr_vs_lesion_seeds`, `om_vs_lesion_seeds`,
-`plasticity_share_cohort`, `causal_vs_activity_seeds`, `task_sharing_cohort`,
+`plasticity_share_cohort`, `plasticity_share_cohort_violin`,
+`causal_vs_activity_seeds`, `task_specificity_seeds`,
+`task_specificity_threshold_seeds`, `task_specificity_size`,
+`task_specificity_pool_seeds`, `task_sharing_cohort`,
 `state_space_vs_lesion_seeds`) summarize every cached seed of that cohort. The single-run figures use the
 cohort's designated seed from `MULTITASK_DESIGNATED_SEEDS` (749 for clustering
 and 921 for lesions in the 1e4 cohort; none for 1e3) when its cache directory
@@ -199,7 +207,8 @@ undefined rho are left out with a note.
 `python figures/paper_plot.py --only plasticity_share` draws
 `multitask_plasticity_share_n.png` from `plasticity_share_var-weighted-unnormalized_<aname>.pkl`.
 For every (task, synapse cluster) cell whose zero_W effect is significant
-(one-sided BH-FDR q = 0.05 against the stored random-control repeats),
+(one-sided prediction t against the stored random-control repeats, BH-FDR
+q = 0.05; see [Activity-matched controls](#activity-matched-controls)),
 `lesion_plot.py` saves the plasticity share = freeze_M effect / zero_W effect:
 1 means freezing the cluster's plasticity costs the task as much as removing
 its weights, 0 means the static wiring suffices. The figure shows one column
@@ -219,8 +228,15 @@ pale grey points, each run's saved task median as a short near-black dash (so
 it stays apart from the grey cells), and the median of the pooled cells as
 the red dash; the legend title gives the run count. A
 run whose task list differs from the others is left out with a note, and the
-figure is skipped below two runs. The share compares two interventions and is
-not an exact additive partition of static and plastic contributions.
+figure is skipped below two runs. `--only plasticity_share_cohort_violin`
+draws `multitask_plasticity_share_cohort_violin_n.png`, the same pooled cells
+per task as a Gaussian kernel density (scipy's Scott bandwidth, cells within
+the y-limits only, every column scaled to the same peak width so shapes
+compare rather than counts) under the same run and pooled medians; cells
+beyond the limits stay triangles at the edge, and a task with fewer than
+three cells within them shows its points. The share compares two
+interventions and is not an exact additive partition of static and plastic
+contributions.
 
 The share is not a measure of working memory, and the text has to say so. On
 the 25 L21e4 runs the pooled medians of the four no-working-memory tasks are
@@ -292,13 +308,15 @@ by the current `lesion_plot.py`.
 `multitask_task_specificity_counts_n.png` from `task_specificity_<aname>.pkl`
 for input and hidden neuron clusters (unnormalized clustering) and
 var-weighted synapse clusters, the unresponsive class excluded. A cluster
-"impairs" a task when its lesion effect is significant (one-sided z against
-the control repeats, BH-FDR q = 0.05; for neuron clusters the
-causal-dependency mask). Synapse clusters are tested with their **freeze_M**
+"impairs" a task when its lesion effect is significant (one-sided
+prediction t against the control repeats, BH-FDR q = 0.05; the
+unnormalized input and hidden clusters are one family, as in the
+causal-dependency map). Synapse clusters are tested with their **freeze_M**
 lesions (`lesion_plot.TASK_SPECIFICITY_MOD_MODE`, the lesion heatmap's mode),
 against the freeze_M control repeats; caches of an earlier schema
-(`schema_version=1`, zero_W; 2, without the threshold counts below) are
-skipped with a note, so rerun `lesion_plot.py`. The figure has one row per
+(`schema_version=1`, zero_W; 2, without the threshold counts below; 3,
+without the control pool and the per-pool counts) are skipped with a note,
+so rerun `lesion_plot.py`. The figure has one row per
 cluster type, sharing both axes:
 every cluster is a dot stacked over the number of tasks it impairs (a dot
 histogram counted in clusters), the red line is the median, and the gray
@@ -351,7 +369,10 @@ impair the most tasks, by less, and the spread of the significance counts
 partly reflects cluster size. Half of the hidden clusters hold three neurons
 or fewer (median 10 of 20 per run; the unresponsive hidden class holds about
 159 of 300 neurons), so the hidden row of the counts figure is largely a
-statement about single neurons.
+statement about single neurons. The size dependence comes from the
+controls themselves, which [Activity-matched controls](#activity-matched-controls)
+redraws from the responsive units; the pool figure there compares the
+counts under both.
 
 The same cache (so the same schema requirement) holds, per cluster type, the
 task-pair Jaccard overlap of impaired clusters grouped by the component the
@@ -421,6 +442,86 @@ Use `--seed all` in the first command to update every matching run's OM results.
 This reuses completed lesion experiments, but clears and regenerates the selected
 runs' post-processing outputs in `multiple_tasks_norm/`.
 
+## Activity-matched controls
+
+`lesion.py` compares every cluster lesion with size-matched random lesions
+drawn from all units of that side or layer. More than half of the hidden
+neurons (median 159 of 300 per run) and of the plastic synapses (57%) belong
+to the unresponsive class, so those controls are mostly silent units and
+barely hurt the network (a random zero_W lesion costs about 2 accuracy
+points, a random freeze_M lesion 0.7); the significance test then asks
+whether a cluster matters more than a half-silent random set, and the
+control spread tracks the cluster size (Spearman rho about 0.95), which is
+what the threshold counts above work around.
+`multiple_task/lesion_controls.py` scores the single-cluster conditions
+again, on a seeded test set (`--test-seed`, default 0; the per-task input
+checksums are saved so two pickles can be told apart), with the random
+controls drawn from the **responsive** units only (`--pool responsive`, the
+default: the units outside the unresponsive class of that neuron variant or
+synapse clustering) or, for a comparison on the same trials, from every unit
+(`--pool all`). It repeats the controls 30 times per (side or layer, size)
+and task (`--repeats`), scores both neuron variants and every synapse
+clustering type the lesion pickle holds (`--mod-types` to restrict) in both
+lesion modes, and leaves the combined lesions and the pruning sweep to
+`lesion.py`. A condition larger than the selected pool (the unresponsive
+class itself) draws from every unit, and `condition_pools` records the pool
+of each condition. The clusters, condition names and lesion operations are
+those of `lesion.py` (shared in `core/lesion_ops.py`) and are checked against
+the run's lesion pickle before anything is scored. The output,
+`multiple_tasks_perf/<aname>/lesion_controls_<pool>_<aname>.pkl`, mirrors
+the lesion pickle's `lesion` / `random_lesion` / `lesion_unnorm` /
+`random_lesion_unnorm` / `mod_lesion` records (same shapes and condition
+order) and adds `control_pool`, `repeat_num`, `test_seed`, `test_checksums`
+and the pools; nothing is written into the lesion pickle, which `lesion.py`
+no longer clears from its directory. A run costs about 45,000 forward passes
+of 200 trials per synapse type (around 1.5 h on a GPU for one type, five
+types in proportion); the script prints the planned count first.
+
+```bash
+python multiple_task/lesion_controls.py --seed 921 --feature L21e4
+python multiple_task/lesion_controls.py --seed 921 --feature L21e4 --pool all
+python multiple_task/lesion_controls.py --seed all --feature L21e4 --skip-completed
+python multiple_task/lesion_plot.py --seed all --feature L21e4 --control-pool responsive
+```
+
+`lesion_plot.py --control-pool responsive` overlays that pickle on the
+lesion pickle in memory (`core/lesion_cache.overlay_lesion_controls`): every
+single-cluster analysis (normalized effects, causal dependency, cluster
+correlation, plasticity share, OM profiles, causal-vs-activity, task
+specificity and sharing) then reads the activity-matched controls, while the
+combined lesions keep `lesion.py`'s: the OM scatters and the OM profile
+prediction compare synapse-cluster effects under the chosen pool with
+combined effects under `lesion.py`'s (their caches record
+`combined_control_pool`), and the interaction map takes its single effects
+from `lesion.py`'s pickle so that its three terms share one control.
+`state_space_vs_lesion.py` records the pool of the caches it reads
+(`control_pool` per run). Its default, `lesion_plot.DEFAULT_CONTROL_POOL`
+(`all`), reproduces the historical analyses; `run_pipeline.py` computes and
+reads the responsive pool (`--control-pool`, `--control-repeats`) as its
+third and fourth steps, and `--resume` lets runs lesioned before the step
+existed get their controls and plots without a second lesion pass. Every
+cache `lesion_plot.py` writes records `control_pool`, `control_repeats` and
+`control_test_seed`; cohort figures in `paper_plot.py` refuse to mix runs
+whose task-specificity caches used different pools. A lesion is significant
+against its controls by a one-sided prediction t test (`lesion_plot._control_test`:
+effect / (sd · sqrt(1 + 1/R)) on R − 1 degrees of freedom, the control sd
+floored at `CONTROL_SD_FLOOR`), BH-FDR at `CONTROL_FDR_Q` = 0.05, under
+either pool; it replaced a Gaussian z that took the sample sd of 10 repeats
+as known.
+
+The task-specificity cache (schema 4) also saves, per cluster type, the
+impaired-task count of every cluster under each control pool the run has
+(`pool_counts`: `all`, lesion.py's controls on its own trials; `responsive`;
+and `all_same_trials` when the `--pool all` pickle exists), whichever pool
+its own statistics used. `python figures/paper_plot.py --only
+task_specificity_pool_seeds` draws `multitask_task_specificity_pool_seeds_n.png`:
+per cluster type one column per pool present in every run, each run a grey
+point at the median of its clusters' counts, a run's columns joined, the
+median and interquartile range over runs in red, and over each type the
+two-sided paired Wilcoxon signed-rank p of the runs' medians between the
+responsive and the all pool, computed in `paper_plot.py`. It is skipped when
+the runs hold counts for one pool only.
+
 ## Modulation cluster pickle size
 
 `cluster_info_mod_{aname}.pkl` stores each grouped modulation clustering
@@ -444,7 +545,10 @@ carries `col_unresponsive_mask` / `col_unresponsive_label` (and
 `unresponsive_hidden_index`, and `lesion_prune_results_{aname}.pkl` records
 `unresponsive_labels` / `unresponsive_conditions` per neuron variant,
 `unresponsive_pre_label` / `unresponsive_post_label` per combined lesion and
-`unresponsive_label` per modulation lesion (`None` when nothing was flagged).
+`unresponsive_label` per modulation lesion (`None` when nothing was flagged);
+the `lesion_controls_<pool>_{aname}.pkl` beside it (see
+[Activity-matched controls](#activity-matched-controls)) carries the same
+fields and, per condition, the pool its controls came from.
 `lesion_plot.py` and `paper_plot.py` read these fields; caches written before
 they existed fall back to the former rule (the last cluster of an unnormalized
 variant). The `cluster_corr_vs_lesion`

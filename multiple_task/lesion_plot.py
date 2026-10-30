@@ -33,9 +33,10 @@ synapse clusters are selectively important for specific tasks. Produces:
     using pooled Spearman rho and a negative-sided cluster-permutation p
     (footprint ownership shuffled). Scatter plots include quantile-bin medians,
     not a fitted regression line; neither a linear nor decreasing shape is imposed.
-6. Causal dependency map — z-scores every (task, cluster) lesion effect
-   against its stored random-control repeats (one-sided, BH-FDR across
-   cells), biclusters the masked dependency matrix, and Mantel-tests whether
+6. Causal dependency map — tests every (task, cluster) lesion effect
+   against its stored random-control repeats (one-sided prediction t,
+   _control_test, BH-FDR across cells), biclusters the masked dependency
+   matrix, and Mantel-tests whether
    the task organization implied by CAUSAL dependence matches the one
    implied by ACTIVITY tuning (cluster_info variance profiles). The paper
    variant pairs the unnormalized neuron clusters' lesion effects with raw
@@ -49,7 +50,9 @@ synapse clusters are selectively important for specific tasks. Produces:
    class left out.
 7. Combined-lesion interaction map — I(i,j) = combined − single_i − single_j
    per (input, hidden) cluster pair (I < 0 sub-additive/redundant, I > 0
-   synergistic), regressed against each block's peak synapse-cluster
+   synergistic), the three effects all against lesion.py's every-unit
+   controls whichever control pool the other analyses read, regressed
+   against each block's peak synapse-cluster
    over-membership to test whether anatomical co-location explains
    functional interaction. A saturation control separates genuine pathway
    redundancy from floor effects (a cluster that alone crushes a task to
@@ -108,21 +111,25 @@ paper_plot.py reads these for the main heatmap
 and scatter figures, but its cluster-size figure derives counts/percentages
 from saved memberships.
 
-Entry points: run_pipeline.py calls `main(seed, feature)` as pipeline step 3.
-Standalone, `python multiple_task/lesion_plot.py --seed 749 --feature L21e4`
-(run from the repository root) re-plots one COMPLETED lesion run. Passing
-`--seed all --feature L21e4` re-plots all completed runs matching that
-feature. Single-run filters must still select exactly one run — anything
-ambiguous or unmatched is an error.
-All old files in multiple_tasks_norm/{aname}/ are cleared at the start of
-every run, so stale figures never survive a re-plot.
+Entry points: run_pipeline.py calls `main(seed, feature, control_pool)` as
+pipeline step 4. Standalone, `python multiple_task/lesion_plot.py --seed 749
+--feature L21e4` (run from the repository root) re-plots one COMPLETED lesion
+run. Passing `--seed all --feature L21e4` re-plots all completed runs
+matching that feature. Single-run filters must still select exactly one run
+— anything ambiguous or unmatched is an error. `--control-pool responsive`
+reads the activity-matched controls of lesion_controls.py instead of
+lesion.py's (DEFAULT_CONTROL_POOL; see the random-control pool note below).
+All old files in multiple_tasks_norm/{aname}/ are cleared once the run's
+pickles have been read, so stale figures never survive a re-plot and a run
+without the requested controls keeps its caches (with `--seed all` such a
+run is skipped and named at the end).
 """
 import os
 from pathlib import Path
 import numpy as np
 
 import pickle
-from scipy.stats import linregress, norm as gauss_norm, pearsonr, mannwhitneyu, rankdata, spearmanr
+from scipy.stats import linregress, pearsonr, mannwhitneyu, rankdata, spearmanr, t as t_dist
 
 import matplotlib.pyplot as plt
 import matplotlib as mpl
@@ -132,7 +139,8 @@ import helper
 import clustering
 from modulation_variants import (LESION_MODULATION_TYPES, MODULATION_TYPE_COLORS,
                                  MODULATION_VARIANCE_WEIGHTS)
-from lesion_cache import load_lesion_pickle
+from lesion_cache import (CONTROL_POOLS, MOD_BASELINE_NAMES, controls_pickle_path,
+                          load_lesion_pickle, overlay_lesion_controls)
 
 mpl.rcParams.update({
     "font.family": "sans-serif",
@@ -454,7 +462,7 @@ def _normalized_modulation_effect_record(mod_type_key, mod_data, default_tasks):
             or lesion_acc.shape[1] != len(conditions)):
         raise ValueError("Modulation lesion/control accuracy shapes must match conditions")
     selected = [index for index, name in enumerate(conditions)
-                if name not in ("mod_nolesion", "mod_cNone")]
+                if name not in MOD_BASELINE_NAMES]
     record = _normalized_effect_record(
         (random_acc - lesion_acc)[:, selected],
         mod_data.get("all_tasks", default_tasks),
@@ -935,6 +943,7 @@ def _save_modulation_causal_vs_activity(results, normalized_effects, cluster_inf
     with open(f"{save_dir}/causal_vs_activity_tasksim_modulation_{aname}.pkl", "wb") as handle:
         pickle.dump({
             "schema_version": 2, "aname": aname, "side": "modulation",
+            **_control_meta(results),
             "modulation_type": CAUSAL_VS_ACTIVITY_MOD_TYPE,
             "mod_lesion_mode": CAUSAL_VS_ACTIVITY_MOD_MODE,
             "tasks": list(tasks),
@@ -957,6 +966,69 @@ def _save_modulation_causal_vs_activity(results, normalized_effects, cluster_inf
           f"p={association['p_perm']:.4f}; Pearson Mantel r={r_m:.2f}, p={p_m:.4f}; cache saved")
 
 
+# ── Random-control pool and the lesion-vs-control test ──
+#
+# lesion.py draws its size-matched random controls from every unit of a side
+# or layer. lesion_controls.py scores the single-cluster conditions again on a
+# seeded test set, with controls drawn from the responsive units only (its
+# "responsive" pool) or, for a same-trials comparison, from every unit
+# ("all"). main(control_pool=...) overlays that pickle on the lesion pickle in
+# memory (lesion_cache.overlay_lesion_controls; the combined lesions keep
+# lesion.py's controls), and every cache written below records the pool,
+# repeat count and test seed it was computed with (_control_meta).
+DEFAULT_CONTROL_POOL = "all"
+# Control standard deviations below this (an accuracy fraction) are floored
+# before a lesion is tested: a saturated or degenerate control set has no
+# spread, and without the floor any effect would be significant.
+CONTROL_SD_FLOOR = 1e-4
+CONTROL_FDR_Q = 0.05
+
+
+def _control_meta(results):
+    """The pool, repeat count and test seed of the controls in `results`, for
+    the caches, so a reader can tell which controls they were computed with."""
+    return {"control_pool": results.get("control_pool", "all"),
+            "control_repeats": int(results["repeat_num"]) if "repeat_num" in results else None,
+            "control_test_seed": results.get("test_seed")}
+
+
+def _bh_fdr_mask(p, q=CONTROL_FDR_Q):
+    """Benjamini-Hochberg rejection mask, same shape as p."""
+    flat = np.asarray(p, float).ravel()
+    m = flat.size
+    order = np.argsort(flat)
+    passed = flat[order] <= q * np.arange(1, m + 1) / m
+    k = (np.max(np.nonzero(passed)[0]) + 1) if passed.any() else 0
+    mask = np.zeros(m, dtype=bool)
+    mask[order[:k]] = True
+    return mask.reshape(np.asarray(p).shape)
+
+
+def _control_test(lesion_acc, control_raw, sd_floor=CONTROL_SD_FLOOR):
+    """Test every (task, condition) lesion against its control repeats.
+
+    lesion_acc: (T, C) accuracy after each lesion; control_raw: (T, C, R)
+    accuracy under R size-matched random lesions. effect = control mean -
+    lesion accuracy. p is one-sided, that the lesioned network scores below
+    what one more random control would: the prediction t statistic
+    effect / (sd * sqrt(1 + 1/R)) on R - 1 degrees of freedom, with the
+    control sd (ddof 1) floored at `sd_floor`. (The former Gaussian z took
+    the sample sd as known, which is too permissive at R = 10.) Returns
+    {"effect", "statistic", "p"} shaped (T, C) and "n_repeats".
+    """
+    lesion_acc = np.asarray(lesion_acc, dtype=float)
+    control_raw = np.asarray(control_raw, dtype=float)
+    if (lesion_acc.ndim != 2 or control_raw.ndim != 3
+            or control_raw.shape[:2] != lesion_acc.shape or control_raw.shape[2] < 2):
+        raise ValueError("Need (T, C) lesion accuracies and matching (T, C, R>=2) control repeats")
+    n_repeats = int(control_raw.shape[2])
+    effect = control_raw.mean(axis=2) - lesion_acc
+    sd = np.maximum(control_raw.std(axis=2, ddof=1), float(sd_floor))
+    statistic = effect / (sd * np.sqrt(1.0 + 1.0 / n_repeats))
+    return {"effect": effect, "statistic": statistic,
+            "p": t_dist.sf(statistic, df=n_repeats - 1), "n_repeats": n_repeats}
+
+
 # ── Task specificity of clusters and compositional sharing (docstring #11) ──
 #
 # A cluster's lesion profile marks which tasks it significantly impairs. The
@@ -969,7 +1041,9 @@ def _save_modulation_causal_vs_activity(results, normalized_effects, cluster_inf
 # whether shared clusters follow the compositional structure of the battery.
 TASK_SPECIFICITY_N_PERM = 5000
 # 3: fixed-threshold counts, cluster sizes and size correlations saved per type.
-TASK_SPECIFICITY_SCHEMA_VERSION = 3
+# 4: the control pool of the statistics and the counts under every pool the
+#    run has (pool_counts) saved per type.
+TASK_SPECIFICITY_SCHEMA_VERSION = 4
 # Synapse clusters impair a task through their freeze_M lesion, the mode of
 # paper_plot's lesion heatmap (neuron clusters have a single lesion).
 TASK_SPECIFICITY_MOD_TYPE = "modulation_all_var_weighted_unnormalized"
@@ -1178,12 +1252,148 @@ def _task_specificity_summary(sig_by_type, tasks, n_perm=TASK_SPECIFICITY_N_PERM
     return summary
 
 
-def main(seed, feature):
+def _task_specificity_masks(results, tasks):
+    """The (task, cluster) significance masks task specificity counts, from
+    one results dict: {"input" | "hidden" | "modulation": {"sig", "effect",
+    "sizes", "cluster_labels"}}, the unresponsive class of each type dropped
+    and types with fewer than two clusters left out.
+
+    Neuron clusters are the unnormalized variant's, tested as one family
+    (input and hidden together, as the causal-dependency map does); synapse
+    clusters are TASK_SPECIFICITY_MOD_TYPE's TASK_SPECIFICITY_MOD_MODE
+    lesions, their family that record's conditions. Both use _control_test
+    with BH-FDR at CONTROL_FDR_Q, so the masks equal those of the
+    causal-dependency map and the plasticity-share block on the same results.
+    """
+    masks = {}
+    lesion = results.get("lesion_unnorm")
+    control = results.get("random_lesion_unnorm")
+    if lesion is not None and control is not None:
+        names = list(lesion["all_comb_names_lesion"])
+        keep = [k for k, name in enumerate(names) if name not in NEURON_BASELINE_KEYS]
+        test = _control_test(np.asarray(lesion["ihtask_accs"], float)[:, keep],
+                             np.asarray(control["ihrandomtask_accs_raw"], float)[:, keep, :])
+        sig = _bh_fdr_mask(test["p"])
+        unresponsive = _unresponsive_condition_names(lesion, legacy_last=True)
+        units = lesion.get("lesion_units", {})
+        for side, prefix in (("input", "pre_c"), ("hidden", "post_c")):
+            cols = [j for j, k in enumerate(keep)
+                    if names[k].startswith(prefix) and names[k] not in unresponsive]
+            if len(cols) >= 2:
+                masks[side] = {
+                    "sig": sig[:, cols], "effect": test["effect"][:, cols],
+                    "sizes": np.array([float(units.get(names[keep[j]], np.nan)) for j in cols]),
+                    "cluster_labels": [names[keep[j]].replace("pre_c", "i").replace("post_c", "h")
+                                       for j in cols]}
+    record = results.get("mod_lesion", {}).get(
+        f"{TASK_SPECIFICITY_MOD_TYPE}__{TASK_SPECIFICITY_MOD_MODE}")
+    if record is not None:
+        names = list(record["all_comb_names_mod"])
+        keep = [k for k, name in enumerate(names) if name not in MOD_BASELINE_NAMES]
+        test = _control_test(np.asarray(record["modtask_accs"], float)[:, keep],
+                             np.asarray(record["modrandomtask_accs_raw"], float)[:, keep, :])
+        sig = _bh_fdr_mask(test["p"])
+        unresponsive = _mod_unresponsive_label(
+            record, legacy_last=("unnormalized" in TASK_SPECIFICITY_MOD_TYPE))
+        ids = [int(names[k].replace("mod_c", "")) for k in keep]
+        clusters = record.get("mod_col_clusters", {})
+        cols = [j for j, cid in enumerate(ids) if cid != unresponsive]
+        if len(cols) >= 2:
+            masks["modulation"] = {
+                "sig": sig[:, cols], "effect": test["effect"][:, cols],
+                "sizes": np.array([float(len(clusters[ids[j]])) if ids[j] in clusters else np.nan
+                                   for j in cols]),
+                "cluster_labels": [f"c{ids[j]}" for j in cols]}
+    return masks
+
+
+def _task_specificity_pool_counts(results_by_pool, tasks, reference):
+    """Impaired-task counts of every cluster under each control pool:
+    {pool: {type: counts}}, over the pools of `results_by_pool` ({pool:
+    results}) whose clusters are those of `reference` ({type:
+    {"cluster_labels"}}, the summary's); a pool or type with other clusters
+    is left out with a note."""
+    counts = {}
+    for pool, results in results_by_pool.items():
+        masks = _task_specificity_masks(results, tasks)
+        counts[pool] = {}
+        for type_name, entry in reference.items():
+            mask = masks.get(type_name)
+            if mask is None or list(mask["cluster_labels"]) != list(entry["cluster_labels"]):
+                print(f"[task-specificity] pool {pool}: {type_name} clusters differ, left out")
+                continue
+            counts[pool][type_name] = np.asarray(mask["sig"], dtype=bool).sum(axis=0)
+    return counts
+
+
+def _single_cluster_effects(results, lesion_key, random_key):
+    """(effects, names) of one neuron variant's single-cluster conditions in
+    `results`: random-control mean minus lesion accuracy, (T, C), the
+    baselines dropped and the names in the i<k> / h<k> form; None when the
+    records are missing."""
+    if lesion_key not in results or random_key not in results:
+        return None
+    names = list(results[lesion_key]["all_comb_names_lesion"])
+    keep = [k for k, name in enumerate(names) if name not in NEURON_BASELINE_KEYS]
+    accs = np.asarray(results[lesion_key]["ihtask_accs"], float)
+    control = np.asarray(results[random_key]["ihrandomtask_accs"], float)
+    return ((control - accs)[:, keep],
+            [names[k].replace("pre_c", "i").replace("post_c", "h") for k in keep])
+
+
+def _control_pool_results(results_all, pickle_name, required=None):
+    """{pool: results} for every control pool available to a run: "all" is
+    the lesion pickle itself (lesion.py's controls on its own trials);
+    "responsive" and "all_same_trials" overlay the lesion_controls pickles
+    of the responsive and the all pool (seeded trials) when they exist. A
+    pickle that does not match the lesion pickle is left out with a note,
+    unless it is the `required` pool, whose mismatch is an error."""
+    by_pool = {"all": results_all}
+    for pool, name in (("responsive", "responsive"), ("all_same_trials", "all")):
+        path = controls_pickle_path(pickle_name, name)
+        if not path.exists():
+            continue
+        try:
+            overlaid, kept = overlay_lesion_controls(results_all, load_lesion_pickle(path))
+        except ValueError as error:
+            if pool == required:
+                raise
+            print(f"[control-pool] {pool} left out: {error}")
+            continue
+        if kept:
+            print(f"[control-pool] {pool}: {len(kept)} modulation record(s) keep lesion.py's "
+                  f"controls ({', '.join(kept)})")
+        by_pool[pool] = overlaid
+    return by_pool
+
+
+def main(seed, feature, control_pool=None):
+    """Post-process one run's lesion pickle with the controls of `control_pool`
+    (DEFAULT_CONTROL_POOL when None; see the random-control pool note above)."""
+    control_pool = DEFAULT_CONTROL_POOL if control_pool is None else control_pool
+    if control_pool not in CONTROL_POOLS:
+        raise ValueError(f"control_pool must be one of {CONTROL_POOLS}, got {control_pool!r}")
     aname = f"everything_seed{seed}_{feature}+hidden300+batch128+angle"
     print(f"aname: {aname}")
 
     pickle_dir = f"./multiple_tasks_perf/{aname}"
     save_dir = f"./multiple_tasks_norm/{aname}"
+
+    pickle_name = f"{pickle_dir}/lesion_prune_results_{aname}.pkl"
+    # lesion.py's pickle (controls from every unit, on its own trials) and the
+    # lesion_controls pickles available for the run; `results` is the one
+    # every analysis below reads, the others feed the pool comparison. Read
+    # before the output directory is cleared, so a missing or unusable
+    # controls pickle leaves the run's existing caches in place.
+    results_all = load_lesion_pickle(pickle_name)
+    results_by_pool = _control_pool_results(results_all, pickle_name, required=control_pool)
+    if control_pool not in results_by_pool:
+        raise FileNotFoundError(
+            f"{controls_pickle_path(pickle_name, control_pool)} not found; run "
+            f"multiple_task/lesion_controls.py --seed {seed} --feature {feature} "
+            f"--pool {control_pool} first")
+    results = results_by_pool[control_pool]
+
     os.makedirs(save_dir, exist_ok=True)
     # Clear ALL previous outputs for this run before plotting anything, so a
     # re-plot can never leave stale figures from an older code version behind.
@@ -1192,15 +1402,16 @@ def main(seed, feature):
         _old.unlink()
     if _old_files:
         print(f"Cleared {len(_old_files)} old file(s) from {save_dir}")
-
-    pickle_name = f"{pickle_dir}/lesion_prune_results_{aname}.pkl"
-    results = load_lesion_pickle(pickle_name)
+    print(f"[control-pool] {control_pool}: {results['repeat_num']} control repeats"
+          + (f", test seed {results['test_seed']}" if control_pool != 'all' else "")
+          + f"; pools available for the comparison: {', '.join(results_by_pool)}")
         
     # handle both old pickle names ("pre_cNone") and new ("pre_nolesion") after rename fix
     baseline_keys = set(NEURON_BASELINE_KEYS)
     mod_lesion_results = results.get("mod_lesion", {})
     normalized_effects = {"schema_version": 1, "aname": aname,
-                          "primary_modulation_mode": "freeze_M", "entries": {}}
+                          "primary_modulation_mode": "freeze_M", "entries": {},
+                          **_control_meta(results)}
 
     def compute_and_plot_normalized_lesion(lesion_key, random_key, savename, xlabel_suffix=""):
         """Compute normalized lesion effect (random - cluster) and plot its heatmap.
@@ -1425,31 +1636,18 @@ def main(seed, feature):
     # Causal dependency map — significance layer + biclustering, and the
     # causal-vs-activity task-organization comparison (module docstring #6).
     #
-    # Statistics: every (task, cluster) lesion effect is z-scored against
-    # its own size-matched random-control distribution, using the raw
-    # repeats lesion.py stores (ihrandomtask_accs_raw):
-    #     z = (mean_ctrl - acc_lesion) / std_ctrl,   p = Phi(-z)  one-sided
-    # The normal approximation is justified because each control accuracy
-    # is itself a mean over test_n_batch trials. BH-FDR at q = 0.05 across
-    # all cells of a variant. NB lesion.py's control cache shares draws
-    # between same-(side, size) conditions, so p-values of such cells are
-    # correlated — fine for a per-cell mask, but the cells are not fully
-    # independent.
+    # Statistics: every (task, cluster) lesion effect is tested against its
+    # own size-matched random-control repeats (ihrandomtask_accs_raw of the
+    # pool in use) with _control_test, the one-sided prediction t
+    #     t = (mean_ctrl - acc_lesion) / (sd_ctrl * sqrt(1 + 1/R)),  df R - 1,
+    # BH-FDR at CONTROL_FDR_Q across all cells of a variant. NB the control
+    # cache shares draws between same-(side, size) conditions, so p-values
+    # of such cells are correlated — fine for a per-cell mask, but the cells
+    # are not fully independent.
     # ══════════════════════════════════════════════════════════════════
     import seaborn as sns
     from scipy.cluster.hierarchy import linkage as _sch_linkage, \
         leaves_list as _sch_leaves
-
-    def _bh_fdr_mask(p, q=0.05):
-        """Benjamini-Hochberg rejection mask, same shape as p."""
-        flat = np.asarray(p, float).ravel()
-        m = flat.size
-        order = np.argsort(flat)
-        passed = flat[order] <= q * np.arange(1, m + 1) / m
-        k = (np.max(np.nonzero(passed)[0]) + 1) if passed.any() else 0
-        mask = np.zeros(m, dtype=bool)
-        mask[order[:k]] = True
-        return mask.reshape(np.asarray(p).shape)
 
     def _causal_dependency(lesion_key, random_key, vtag):
         """FDR-masked (task, cluster) dependency matrix + biclustered view.
@@ -1465,13 +1663,9 @@ def main(seed, feature):
         accs = np.asarray(results[lesion_key]["ihtask_accs"], float)[:, keep_idx]
         raw = np.asarray(results[random_key]["ihrandomtask_accs_raw"],
                          float)[:, keep_idx, :]
-        E = raw.mean(axis=2) - accs                       # (n_tasks, n_clusters)
-        # Floor the control std: saturated or degenerate controls can have
-        # zero spread, which would declare negligible effects significant.
-        std = np.maximum(raw.std(axis=2), 1e-4)
-        z = E / std
-        pvals = gauss_norm.sf(z)                          # one-sided: worse than control
-        sig = _bh_fdr_mask(pvals, q=0.05)
+        test = _control_test(accs, raw)                   # one-sided: worse than control
+        E, stat, pvals = test["effect"], test["statistic"], test["p"]   # (n_tasks, n_clusters)
+        sig = _bh_fdr_mask(pvals)
         E_sig = np.where(sig, E, 0.0)
 
         # Bicluster the MASKED matrix so the ordering is driven by
@@ -1513,29 +1707,17 @@ def main(seed, feature):
 
         with open(f"{save_dir}/causal_dependency_{vtag}_{aname}.pkl", "wb") as _f:
             pickle.dump({
-                "effect": E, "z": z, "p": pvals, "sig": sig,
+                "effect": E, "t": stat, "p": pvals, "sig": sig,
                 "cluster_names": cnames, "tasks": list(all_tasks),
                 "row_order": np.asarray(row_order),
                 "col_order": np.asarray(col_order),
-                "fdr_q": 0.05, "n_sig": n_sig,
+                "fdr_q": CONTROL_FDR_Q, "n_sig": n_sig, "statistic": "prediction_t",
+                **_control_meta(results),
             }, _f)
         print(f"[causal-dep {vtag}] {n_sig}/{n_cells} significant cells "
-              f"(BH-FDR q=0.05); saved map + pkl")
-        # Unresponsive classes, in the renamed ("i3"/"h21") cluster names, read
-        # from the lesion pickle; legacy pickles: last cluster of each side of
-        # the unnormalized variant.
-        unresponsive_names = {
-            name.replace("pre_c", "i").replace("post_c", "h")
-            for name in _unresponsive_condition_names(results[lesion_key],
-                                                      legacy_last=(vtag == "unnorm"))}
-        # Neurons per cluster, recorded by lesion.py under the condition name.
-        units = results[lesion_key].get("lesion_units", {})
-        sizes = np.array([float(units.get(names_all[k], np.nan)) for k in keep_idx])
-        _causal_sig[vtag] = {"sig": sig, "effect": E, "sizes": sizes, "cluster_names": cnames,
-                             "unresponsive_names": unresponsive_names}
+              f"(BH-FDR q={CONTROL_FDR_Q}); saved map + pkl")
         return E
 
-    _causal_sig = {}   # reused by the task-specificity section below
     E_dep_norm = _causal_dependency("lesion", "random_lesion", "norm")
     E_dep_unnorm = None
     if "lesion_unnorm" in results and "random_lesion_unnorm" in results:
@@ -1583,6 +1765,7 @@ def main(seed, feature):
             with open(f"{save_dir}/causal_vs_activity_tasksim_{side}_{aname}.pkl", "wb") as _f:
                 pickle.dump({
                     "schema_version": 2, "aname": aname, "side": side,
+                    **_control_meta(results),
                     "neuron_variant": "unnormalized",
                     "tasks": list(all_tasks),
                     **primary,
@@ -1756,6 +1939,7 @@ def main(seed, feature):
         with open(f"{_path}.pkl", "wb") as _f:
             pickle.dump({
                 "own_damage": own, "ctrl_damage": ctrl, "effect": E_pc,
+                **_control_meta(results),
                 "z_own": z_own, "improving": improving, "damaging": damaging,
                 "baseline": base_pc, "cluster_names": cn_pc,
                 "lesion_sizes": sizes_pc, "tasks": list(all_tasks),
@@ -2302,15 +2486,12 @@ def main(seed, feature):
     def _mod_control_significance(record, keep):
         """(effect, significance) of a modulation lesion record's conditions
         `keep`: effect = control mean - lesion accuracy (T, C), significant
-        when the one-sided z against the stored raw control repeats passes
-        BH-FDR q=0.05."""
-        acc = np.asarray(record["modtask_accs"], float)[:, keep]
-        raw = np.asarray(record["modrandomtask_accs_raw"], float)[:, keep, :]
-        effect = raw.mean(axis=2) - acc
-        std = np.maximum(raw.std(axis=2), 1e-4)
-        return effect, _bh_fdr_mask(gauss_norm.sf(effect / std), q=0.05)
+        when the one-sided prediction t against the stored raw control
+        repeats (_control_test) passes BH-FDR at CONTROL_FDR_Q."""
+        test = _control_test(np.asarray(record["modtask_accs"], float)[:, keep],
+                             np.asarray(record["modrandomtask_accs_raw"], float)[:, keep, :])
+        return test["effect"], _bh_fdr_mask(test["p"])
 
-    _mod_sig = {}   # per-mode significance per modulation type, for task specificity
     for _pd_type in LESION_MODULATION_TYPES:
         zw = mod_lesion_results.get(f"{_pd_type}__zero_W")
         fm = mod_lesion_results.get(f"{_pd_type}__freeze_M")
@@ -2321,21 +2502,13 @@ def main(seed, feature):
         _cids = [int(_names_pd[k].replace("mod_c", "")) for k in _keep_pd]
 
         # zero_W significance gates the ratio; the freeze_M effect is its
-        # numerator, whose own significance only task specificity uses.
+        # numerator (task specificity tests the freeze_M effects itself, in
+        # _task_specificity_masks).
         E_zw, sig_zw = _mod_control_significance(zw, _keep_pd)   # (T, C)
-        E_fm, sig_fm = _mod_control_significance(fm, _keep_pd)
+        E_fm, _ = _mod_control_significance(fm, _keep_pd)
 
         share = np.full_like(E_zw, np.nan)
         share[sig_zw] = E_fm[sig_zw] / E_zw[sig_zw]              # sig ⇒ E_zw > 0
-        _clusters_pd = zw.get("mod_col_clusters", {})           # cluster id -> synapses
-        _mod_sig[_pd_type] = {
-            "sig": {"zero_W": sig_zw, "freeze_M": sig_fm},
-            "effect": {"zero_W": E_zw, "freeze_M": E_fm},
-            "sizes": np.array([float(len(_clusters_pd[cid])) if cid in _clusters_pd else np.nan
-                               for cid in _cids]),
-            "cluster_ids": list(_cids),
-            "unresponsive_label": _mod_unresponsive_label(
-                zw, legacy_last=("unnormalized" in _pd_type))}
 
         n_sig_pd = int(sig_zw.sum())
         type_tag = _pd_type.replace("modulation_all_", "").replace("_", "-")
@@ -2436,7 +2609,7 @@ def main(seed, feature):
                 "cluster_ids": _cids, "tasks": list(all_tasks),
                 "task_family": list(_fam), "task_median_share": task_med,
                 "mwu_U": _U, "mwu_p_one_sided": _p_mwu,
-                "mod_type": _pd_type, "fdr_q": 0.05,
+                "mod_type": _pd_type, "fdr_q": CONTROL_FDR_Q, **_control_meta(results),
             }, _f)
         print(f"[plasticity-share] {type_tag}: {n_sig_pd} sig cells; "
               f"overall median share={np.nanmedian(share):.2f}; "
@@ -2603,6 +2776,9 @@ def main(seed, feature):
                 "schema_version": 2,
                 **summary,
                 "aname": aname,
+                **_control_meta(results),
+                # the combined-lesion side has lesion.py's controls only
+                "combined_control_pool": results.get("combined_control_pool", "all"),
                 "labels": labels,
                 "y_definition": "task-profile L1/T: mean_t |mod_effect(t) - combined_effect(t)|",
                 "mod_type_key": mod_type_key,
@@ -2839,6 +3015,8 @@ def main(seed, feature):
                 "schema_version": 2,
                 "mode_data": mode_data_all,
                 "aname": aname,
+                **_control_meta(results),
+                "combined_control_pool": results.get("combined_control_pool", "all"),
                 "prediction": ({"predicted_pct": np.asarray(_pred_x),
                                 "actual_pct": np.asarray(_pred_y),
                                 "actual_own_damage_pct": np.asarray(_pred_y),
@@ -3060,6 +3238,8 @@ def main(seed, feature):
                 "tasks": list(all_tasks), "base_key": base_key,
                 "variant": variant,
                 "actual_definition": "baseline_minus_lesion",
+                **_control_meta(results),
+                "combined_control_pool": results.get("combined_control_pool", "all"),
             }, _f)
         print(f"[om-profile] {type_tag} [{variant}]: profile r mean="
               f"{np.nanmean(prof_r):.2f} ({np.nanmean(prof_r > 0) * 100:.0f}%>0); "
@@ -3069,40 +3249,27 @@ def main(seed, feature):
 
     # ══════════════════════════════════════════════════════════════════
     # Task specificity of clusters and compositional sharing (docstring #11).
-    # Significance masks: unnormalized input/hidden neuron clusters from the
-    # causal-dependency block, var-weighted synapse clusters' freeze_M lesions
-    # (TASK_SPECIFICITY_MOD_MODE) from the plasticity-share block (both
-    # one-sided BH-FDR q=0.05 against control repeats). The unresponsive
-    # cluster of each type, identified by its recorded label, is excluded.
+    # Significance masks (_task_specificity_masks): the unnormalized
+    # input/hidden neuron clusters tested as one family and the var-weighted
+    # synapse clusters' freeze_M lesions (TASK_SPECIFICITY_MOD_MODE), both by
+    # _control_test with BH-FDR at CONTROL_FDR_Q, the masks of the
+    # causal-dependency and plasticity-share blocks. The unresponsive cluster
+    # of each type, identified by its recorded label, is excluded.
     # ══════════════════════════════════════════════════════════════════
-    _spec_types = {}
-    if "unnorm" in _causal_sig:
-        _cs = _causal_sig["unnorm"]
-        for side, prefix in (("input", "i"), ("hidden", "h")):
-            # drop the unresponsive class, identified by name (see _causal_dependency)
-            cols = [k for k, n in enumerate(_cs["cluster_names"])
-                    if n.startswith(prefix) and n not in _cs["unresponsive_names"]]
-            if len(cols) >= 2:
-                _spec_types[side] = {"sig": _cs["sig"][:, cols], "effect": _cs["effect"][:, cols],
-                                     "sizes": _cs["sizes"][cols],
-                                     "cluster_labels": [_cs["cluster_names"][k] for k in cols]}
-    if TASK_SPECIFICITY_MOD_TYPE in _mod_sig:
-        _ms = _mod_sig[TASK_SPECIFICITY_MOD_TYPE]
-        # drop the unresponsive synapse class, identified by its recorded label
-        keep = [k for k, cid in enumerate(_ms["cluster_ids"]) if cid != _ms["unresponsive_label"]]
-        if len(keep) >= 2:
-            _spec_types["modulation"] = {
-                "sig": _ms["sig"][TASK_SPECIFICITY_MOD_MODE][:, keep],
-                "effect": _ms["effect"][TASK_SPECIFICITY_MOD_MODE][:, keep],
-                "sizes": _ms["sizes"][keep],
-                "cluster_labels": [f"c{_ms['cluster_ids'][k]}" for k in keep]}
+    _spec_types = _task_specificity_masks(results, all_tasks)
     if _spec_types:
         _spec = _task_specificity_summary(_spec_types, all_tasks)
         _spec["aname"] = aname
         _spec["modulation_type"] = TASK_SPECIFICITY_MOD_TYPE
         _spec["modulation_lesion_mode"] = TASK_SPECIFICITY_MOD_MODE
         _spec["neuron_variant"] = "unnormalized"
-        _spec["significance"] = "one-sided z vs control repeats, BH-FDR q=0.05"
+        _spec["significance"] = ("one-sided prediction t vs control repeats, BH-FDR q="
+                                 f"{CONTROL_FDR_Q}")
+        _spec.update(_control_meta(results))
+        # The same counts under every control pool the run has, for the pool
+        # comparison figure (paper_plot's task_specificity_pool_seeds).
+        _spec["pool_counts"] = _task_specificity_pool_counts(results_by_pool, all_tasks,
+                                                             _spec["types"])
         with open(f"{save_dir}/task_specificity_{aname}.pkl", "wb") as _f:
             pickle.dump(_spec, _f)
 
@@ -3167,6 +3334,10 @@ def main(seed, feature):
                   f"Spearman(size, count) significant {rho['significant']:+.2f}, "
                   + ", ".join(f">{thr:.0%} {value:+.2f}" for thr, value in rho.items()
                               if thr != "significant"))
+            pools = ", ".join(f"{pool} {np.median(counts[type_name]):g}"
+                              for pool, counts in _spec["pool_counts"].items()
+                              if type_name in counts)
+            print(f"[task-specificity] {type_name}: median tasks impaired by control pool: {pools}")
     else:
         print("[task-specificity] no significance masks available, skipping")
 
@@ -3253,6 +3424,7 @@ def main(seed, feature):
                 axs[0, col].set_title(f"{name}: skipped ({error})", fontsize=7)
                 continue
             summary["aname"] = aname
+            summary.update(_control_meta(results))
             if "mod_lesion_mode" in panel:
                 summary["mod_lesion_mode"] = panel["mod_lesion_mode"]
             summary["tuning_profile"] = panel.get("tuning_profile", "cluster mean")
@@ -3443,7 +3615,7 @@ def main(seed, feature):
                 mod_data = mod_lesion_results[f"{mod_type_key}__{mode}"]
                 names_mod = list(mod_data["all_comb_names_mod"])
                 index = [k for k, key in enumerate(names_mod)
-                         if key not in ("mod_nolesion", "mod_cNone")]
+                         if key not in MOD_BASELINE_NAMES]
                 lesion_labels = [names_mod[k] for k in index]
                 if lesion_labels != [f"mod_c{lab}" for lab in unique_labels]:
                     print(f"[mod corr_vs_lesion] cluster order mismatch for "
@@ -3500,14 +3672,20 @@ def main(seed, feature):
     except NameError:
         _cim_for_interaction = None
 
-    for vtag, singles, names_f in [
-        ("norm", select_props, all_comb_names_lesion_),
-        ("unnorm", select_props_unnorm, all_comb_names_unnorm_),
+    # The single effects are read from lesion.py's pickle (results_all), not
+    # from the overlaid `results`: the combined lesions have lesion.py's
+    # every-unit controls only, and the decomposition needs its three terms
+    # against the same controls (under --control-pool all the two agree).
+    for vtag, lesion_key, random_key in [
+        ("norm", "lesion", "random_lesion"),
+        ("unnorm", "lesion_unnorm", "random_lesion_unnorm"),
     ]:
         ckey = f"combined_lesion_{vtag}"
-        if singles is None or ckey not in results or not results[ckey]:
+        single = _single_cluster_effects(results_all, lesion_key, random_key)
+        if single is None or ckey not in results or not results[ckey]:
             print(f"[interaction {vtag}] missing singles or combined data, skipping")
             continue
+        singles, names_f = single
         cdata = results[ckey]
         c_pre_n, c_post_n = cdata["pre_n"], cdata["post_n"]
         n_pre_s = len([n for n in names_f if n.startswith("i")])
@@ -3702,6 +3880,10 @@ def main(seed, feature):
                 "single_input_effects": SI, "single_hidden_effects": SH,
                 "combined_effects": CE, "om_max": om_max, "om_regression": om_reg,
                 "tasks": list(all_tasks), "vtag": vtag,
+                # the combined lesions are scored by lesion.py only, with its
+                # every-unit controls, whichever pool the single-cluster
+                # analyses above used
+                "control_pool": "all",
                 # saturation control
                 "interaction_mult_per_task": I_mult_task,
                 "interaction_mult_avg": I_mult_avg,
@@ -3743,6 +3925,11 @@ if __name__ == "__main__":
              "completed run matching --feature.")
     parser.add_argument("--feature", type=str, default=None,
                         help="Feature tag of the run to plot (e.g. 'L21e4').")
+    parser.add_argument("--control-pool", choices=CONTROL_POOLS, default=None,
+                        help="Random controls the single-cluster analyses read: lesion.py's "
+                             "(all) or lesion_controls.py's activity-matched ones "
+                             "(responsive; needs that run's lesion_controls pickle). "
+                             f"Default: {DEFAULT_CONTROL_POOL}.")
     args = parser.parse_args()
 
     # Discover plottable runs: perf directories holding a finished
@@ -3767,9 +3954,19 @@ if __name__ == "__main__":
                 f"No completed lesion runs match feature={args.feature!r}. "
                 f"Available runs: {_avail}")
         print(f"Plotting {len(matches)} lesion run(s) for feature='{args.feature}'")
+        _skipped = []
         for _seed, _feature in matches:
             print(f"Plotting lesion results for seed={_seed}, feature='{_feature}'")
-            main(_seed, _feature)
+            try:
+                main(_seed, _feature, control_pool=args.control_pool)
+            except FileNotFoundError as error:
+                # The run keeps its existing caches (main reads before it clears).
+                print(f"Skipped seed={_seed}: {error}")
+                _skipped.append(_seed)
+        if _skipped:
+            raise SystemExit(f"Skipped {len(_skipped)} run(s) without a usable "
+                             f"{args.control_pool or DEFAULT_CONTROL_POOL} controls pickle: "
+                             f"seeds {_skipped}")
         raise SystemExit(0)
 
     try:
@@ -3795,4 +3992,4 @@ if __name__ == "__main__":
 
     _seed, _feature = matches[0]
     print(f"Plotting lesion results for seed={_seed}, feature='{_feature}'")
-    main(_seed, _feature)
+    main(_seed, _feature, control_pool=args.control_pool)

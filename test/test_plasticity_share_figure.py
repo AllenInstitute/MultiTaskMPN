@@ -128,12 +128,12 @@ class PlasticityShareCohortTests(PlasticityShareFigureTests):
             with (run_dir / f"plasticity_share_var-weighted-unnormalized_{aname}.pkl").open("wb") as f:
                 pickle.dump(cache, f)
 
-    def render_cohort(self, root):
+    def render_cohort(self, root, function=None):
         with patch.object(paper_plot, "LESION_NORM_DIR", root), \
                 patch.object(paper_plot, "_ensure_out_dir"), \
                 patch.object(paper_plot, "_save_fig") as save, \
                 patch("scipy.stats.mannwhitneyu", side_effect=AssertionError("No retesting")):
-            paper_plot.plot_plasticity_share_cohort()
+            (function or paper_plot.plot_plasticity_share_cohort)()
         return save
 
     def test_cohort_overlays_cells_run_medians_and_pooled_medians(self):
@@ -153,13 +153,13 @@ class PlasticityShareCohortTests(PlasticityShareFigureTests):
         figure, path = save.call_args.args[:2]
         self.addCleanup(paper_plot.plt.close, figure)
         self.assertEqual(path.name, "multitask_plasticity_share_cohort.png")
-        self.assertIn("3 runs, 15 cells, 1 beyond y-limits", save.call_args.kwargs["extra"])
+        self.assertIn("3 runs, 17 cells, 1 beyond y-limits", save.call_args.kwargs["extra"])
         axis = figure.axes[0]
         collections = paper_plot.mpl.collections
         points = [c for c in axis.collections if isinstance(c, collections.PathCollection)]
         offsets = np.concatenate([c.get_offsets() for c in points])
-        # 15 pooled cells (the 2.5 clipped to the upper limit) plus 4 pooled medians.
-        self.assertEqual(len(offsets), 15 + 4)
+        # 17 pooled cells (the 2.5 clipped to the upper limit) plus 4 pooled medians.
+        self.assertEqual(len(offsets), 17 + 4)
         high = paper_plot._PLASTICITY_SHARE_YLIM[1]
         self.assertEqual(int(np.sum(offsets[:, 1] == high)), 1)
         # Task order: reaction tasks first (fdgo, reactgo), then delaygo, dmcgo.
@@ -201,6 +201,75 @@ class PlasticityShareCohortTests(PlasticityShareFigureTests):
         self.assertIn("2 runs", save.call_args.kwargs["extra"])
         printed = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
         self.assertIn("task list differs", printed)
+
+
+class PlasticityShareCohortViolinTests(PlasticityShareCohortTests):
+    """The cohort figure with each task's pooled cells as a kernel density."""
+
+    def test_violin_draws_densities_run_medians_and_pooled_medians(self):
+        nan = np.nan
+        # Task order: fdgo, reactgo, delaygo, dmcgo. reactgo pools only two
+        # cells, too few for a density, so it keeps its points.
+        specs = {
+            11: [[0.1, 0.3, nan], [0.2, nan, nan], [0.9, 1.1, nan], [0.8, 1.0, nan]],
+            22: [[0.5, nan, nan], [0.4, nan, nan], [1.3, nan, nan], [nan, nan, nan]],
+            33: [[0.0, 0.2, 0.4], [nan, nan, nan], [2.5, 0.7, nan], [0.6, nan, nan]],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / paper_plot.LESION_ANAME
+            root.mkdir()
+            self.write_runs(base, specs)
+            save = self.render_cohort(root, paper_plot.plot_plasticity_share_cohort_violin)
+        save.assert_called_once()
+        figure, path = save.call_args.args[:2]
+        self.addCleanup(paper_plot.plt.close, figure)
+        self.assertEqual(path.name, "multitask_plasticity_share_cohort_violin.png")
+        self.assertIn("3 runs, 16 cells, 1 beyond y-limits", save.call_args.kwargs["extra"])
+        axis = figure.axes[0]
+        collections = paper_plot.mpl.collections
+        violins = [c for c in axis.collections if isinstance(c, collections.PolyCollection)]
+        self.assertEqual(len(violins), 3)
+        half = paper_plot._PLASTICITY_SHARE_VIOLIN_HALF_WIDTH
+        grey = paper_plot.mpl.colors.to_rgba(paper_plot._LESION_POINT_COLOR,
+                                             paper_plot._PLASTICITY_SHARE_VIOLIN_FILL_ALPHA)
+        # Each density is symmetric about its column, as wide at its peak as
+        # configured, and spans the task's cells within the y-limits (the
+        # 2.5 of delaygo is clipped and left out).
+        spans = {0: (0.0, 0.5), 2: (0.7, 1.3), 3: (0.6, 1.0)}
+        for violin, (position, (low, high)) in zip(violins, spans.items()):
+            vertices = violin.get_paths()[0].vertices
+            self.assertAlmostEqual(vertices[:, 0].max() - position, half, places=6)
+            self.assertAlmostEqual(position - vertices[:, 0].min(), half, places=6)
+            self.assertAlmostEqual(vertices[:, 1].min(), low, places=6)
+            self.assertAlmostEqual(vertices[:, 1].max(), high, places=6)
+            np.testing.assert_allclose(violin.get_facecolor()[0], grey)
+        points = [c for c in axis.collections if isinstance(c, collections.PathCollection)]
+        offsets = np.concatenate([c.get_offsets() for c in points])
+        # reactgo's two cells, the clipped cell at the upper limit, four medians.
+        self.assertEqual(len(offsets), 2 + 1 + 4)
+        self.assertTrue(np.any(np.isclose(offsets[:, 1], 0.2) & (np.abs(offsets[:, 0] - 1) < 0.3)))
+        self.assertEqual(int(np.sum(offsets[:, 1] == paper_plot._PLASTICITY_SHARE_YLIM[1])), 1)
+        pooled = {0: np.median([0.1, 0.3, 0.5, 0.0, 0.2, 0.4]), 1: np.median([0.2, 0.4]),
+                  2: np.median([0.9, 1.1, 1.3, 2.5, 0.7]), 3: np.median([0.8, 1.0, 0.6])}
+        for position, value in pooled.items():
+            self.assertTrue(np.any(np.isclose(offsets, [position, value]).all(axis=1)))
+        dashes = [c for c in axis.collections if isinstance(c, collections.LineCollection)]
+        self.assertEqual([len(c.get_segments()) for c in dashes], [3, 2, 3, 2])
+        legend = axis.get_legend()
+        self.assertEqual(legend.get_title().get_text(), "3 runs")
+        self.assertEqual([text.get_text() for text in legend.get_texts()],
+                         ["Pooled cells (KDE)", "Pooled median", "Run median"])
+        self.assertIs(paper_plot.FIGURES_BY_MODE["lesion"]["plasticity_share_cohort_violin"],
+                      paper_plot.plot_plasticity_share_cohort_violin)
+
+    def test_violin_needs_two_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / paper_plot.LESION_ANAME
+            root.mkdir()
+            self.write(root, self.cache())
+            save = self.render_cohort(root, paper_plot.plot_plasticity_share_cohort_violin)
+        save.assert_not_called()
 
 
 if __name__ == "__main__":

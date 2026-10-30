@@ -147,7 +147,7 @@ class SharingTests(unittest.TestCase):
                                   "cluster_labels": [f"h{k}" for k in range(8)]}}
         summary = lesion_plot._task_specificity_summary(sig_by_type, TASKS, n_perm=20)
         self.assertEqual(summary["schema_version"], lesion_plot.TASK_SPECIFICITY_SCHEMA_VERSION)
-        self.assertEqual(lesion_plot.TASK_SPECIFICITY_SCHEMA_VERSION, 3)
+        self.assertEqual(lesion_plot.TASK_SPECIFICITY_SCHEMA_VERSION, 4)
         self.assertEqual(lesion_plot.TASK_SPECIFICITY_MOD_MODE, "freeze_M")
         self.assertEqual(list(summary["types"]), ["hidden"])
         hidden = summary["types"]["hidden"]

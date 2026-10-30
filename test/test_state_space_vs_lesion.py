@@ -224,6 +224,7 @@ class AnalyzeRunTests(unittest.TestCase):
                 self.assertAlmostEqual(trend["slope"], slope)
                 self.assertAlmostEqual(trend["intercept"], intercept)
         self.assertEqual(entry["schema_version"], 2)
+        self.assertEqual(entry["control_pool"], "all")
         self.assertIsNone(link.descriptive_trend_line(np.ones(4), np.arange(4.)))
         self.assertAlmostEqual(entry["tests"]["eff_mod"]["synapse"]["rho"], -1.0)
         self.assertLess(entry["tests"]["eff_mod"]["synapse"]["p_value"], 0.1)

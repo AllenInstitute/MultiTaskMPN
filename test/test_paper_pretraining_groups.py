@@ -28,6 +28,11 @@ import paper_plot
 
 
 class PretrainingGroupTests(unittest.TestCase):
+    # Post-training learning curve of every fixture seed; it runs past the
+    # linear figure's right panel so both panels have data.
+    LEARNING_ITERATIONS = (1, 10, 100, 1000, 50000)
+    LEARNING_ACCURACY = (.5, .8, .9, .95, 1.)
+
     def setUp(self):
         self.original_groups = paper_plot.PRETRAINING_GROUPS
         self.original_bound = paper_plot.PRETRAINING_BOUND
@@ -54,7 +59,8 @@ class PretrainingGroupTests(unittest.TestCase):
             }
             transfer[ruleset] = {"per_seed_iters": [[1., 10.]], "n_seeds": 1}
             result = {
-                "learning": {"acc_iter_post": [1, 10, 100], "acc_post": [.5, .8, 1.]},
+                "learning": {"acc_iter_post": list(self.LEARNING_ITERATIONS),
+                             "acc_post": list(self.LEARNING_ACCURACY)},
                 "rule_vectors": {
                     "pretrained_tasks": parents, "novel_task": "delayanti",
                     "cos_novel_by_task": {task: values[0] for task, values in cosines.items()},
@@ -173,9 +179,14 @@ class PretrainingGroupTests(unittest.TestCase):
                             finally:
                                 paper_plot.plt.close(figure)
 
-    def test_linear_trajectory_preserves_log_curves_and_uses_separate_output(self):
+    def test_linear_trajectory_breaks_the_iteration_axis(self):
         self.assertIs(paper_plot.ALL_FIGURES["learning_trajectory_linear"],
                       paper_plot.plot_learning_trajectory_linear)
+        split = paper_plot._LEARNING_TRAJECTORY_LINEAR_SPLIT
+        xmax = paper_plot._LEARNING_TRAJECTORY_LINEAR_XMAX
+        iterations = np.asarray(self.LEARNING_ITERATIONS, dtype=float)
+        self.assertLess(split, xmax)
+        self.assertLess(xmax, iterations.max())  # the fixture outlasts both panels
         for bound in ("mb1", "mb2"):
             paper_plot._set_pretraining_bound(bound)
             with self.subTest(bound=bound), tempfile.TemporaryDirectory() as directory:
@@ -197,18 +208,49 @@ class PretrainingGroupTests(unittest.TestCase):
                     self.addCleanup(paper_plot.plt.close, linear_figure)
                     self.assertEqual(log_path.name, "learning_trajectory.png")
                     self.assertEqual(linear_path.name, "learning_trajectory_linear.png")
-                    log_axis, linear_axis = log_figure.axes[0], linear_figure.axes[0]
+                    self.assertIn(f"0-{split} | {split}-{xmax}",
+                                  save.call_args_list[1].kwargs["extra"])
+                    log_axis = log_figure.axes[0]
+                    fast, slow = linear_figure.axes
                     self.assertEqual(log_axis.get_xscale(), "log")
-                    self.assertEqual(linear_axis.get_xscale(), "linear")
-                    np.testing.assert_allclose(log_figure.get_size_inches(), linear_figure.get_size_inches())
-                    self.assertEqual(log_axis.get_ylim(), linear_axis.get_ylim())
-                    self.assertEqual(len(log_axis.lines), len(linear_axis.lines))
-                    for log_line, linear_line in zip(log_axis.lines, linear_axis.lines):
-                        np.testing.assert_array_equal(log_line.get_xdata(), linear_line.get_xdata())
-                        np.testing.assert_array_equal(log_line.get_ydata(), linear_line.get_ydata())
-                        self.assertEqual(log_line.get_color(), linear_line.get_color())
-                        self.assertEqual(log_line.get_alpha(), linear_line.get_alpha())
-                        self.assertEqual(log_line.get_label(), linear_line.get_label())
+                    np.testing.assert_allclose(log_figure.get_size_inches(),
+                                               linear_figure.get_size_inches())
+                    # Two linear panels sharing the log figure's accuracy axis:
+                    # the fast phase at full scale, then the slow one to xmax.
+                    self.assertEqual(fast.get_xlim(), (0, split))
+                    self.assertEqual(slow.get_xlim(), (split, xmax))
+                    for axis in (fast, slow):
+                        self.assertEqual(axis.get_xscale(), "linear")
+                        self.assertEqual(axis.get_ylim(), log_axis.get_ylim())
+                        np.testing.assert_array_equal(axis.get_yticks(), log_axis.get_yticks())
+                    self.assertTrue(fast.spines["left"].get_visible())
+                    self.assertFalse(slow.spines["left"].get_visible())
+                    self.assertEqual(fast.get_ylabel(), "Accuracy (%)")
+                    self.assertEqual(slow.get_ylabel(), "")
+                    self.assertEqual(linear_figure.get_supxlabel(), "Iteration")
+                    self.assertIsNone(fast.get_legend())
+                    self.assertIsNotNone(slow.get_legend())
+                    # One break mark at the foot of each panel's open side.
+                    for axis, x in ((fast, 1), (slow, 0)):
+                        marks = [line for line in axis.lines if line.get_linestyle() == "None"]
+                        self.assertEqual(len(marks), 1)
+                        self.assertIs(marks[0].get_transform(), axis.transAxes)
+                        np.testing.assert_array_equal(marks[0].get_xydata(), [[x, 0]])
+                    # Each panel resamples the seeds on an even grid of its own
+                    # range, keeping the log figure's colors, alphas and labels.
+                    for axis, (start, stop) in ((fast, (1, split)), (slow, (split, xmax))):
+                        curves = [line for line in axis.lines if line.get_linestyle() != "None"]
+                        self.assertEqual(len(curves), len(log_axis.lines))
+                        for log_line, line in zip(log_axis.lines, curves):
+                            x = line.get_xdata()
+                            self.assertEqual((x.min(), x.max()), (start, stop))
+                            np.testing.assert_allclose(np.diff(x), np.diff(x).mean(), atol=1)
+                            np.testing.assert_allclose(
+                                line.get_ydata(),
+                                100 * np.interp(x, iterations, self.LEARNING_ACCURACY))
+                            self.assertEqual(log_line.get_color(), line.get_color())
+                            self.assertEqual(log_line.get_alpha(), line.get_alpha())
+                            self.assertEqual(log_line.get_label(), line.get_label())
 
     def test_control_only_data_does_not_create_motif_figures(self):
         paper_plot._set_pretraining_groups("motifs")

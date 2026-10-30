@@ -169,6 +169,14 @@ def synapse_cluster_similarity(aname, lesion_root=LESION_NORM_ROOT, lesion_perf_
     return tasks, similarity, excluded
 
 
+def lesion_control_pool(aname, lesion_root=LESION_NORM_ROOT):
+    """The random-control pool the run's lesion_plot.py caches were computed
+    with (``control_pool`` of the normalized-effects cache; "all" for caches
+    written before it was recorded, lesion.py's every-unit controls)."""
+    path = resolve_lesion_cache_path(Path(lesion_root) / aname / f"normalized_lesion_effects_{aname}.pkl")
+    return str(load_lesion_pickle(path).get("control_pool", "all"))
+
+
 def lesion_similarities(aname, lesion_root=LESION_NORM_ROOT, lesion_perf_root=LESION_PERF_ROOT):
     """{cluster type: (tasks, matrix[, excluded])} of a run, or None when
     either lesion cache is missing."""
@@ -205,16 +213,18 @@ def descriptive_trend_line(x, y):
 
 
 def analyze_run(aname, l2_info, tasks, distances, similarities,
-                n_permutations=N_PERMUTATIONS, seed=PERMUTATION_SEED):
+                n_permutations=N_PERMUTATIONS, seed=PERMUTATION_SEED, control_pool="all"):
     """The results entry of one run: per task pair (``pairs``, i < j in the
     structure cache's task order) the centroid distances per representation
     and the lesion-profile similarities per cluster type, and under
     ``tests[representation][cluster_type]`` the Spearman Mantel test of
     distance against similarity, under ``trend_lines`` (same keys) its
-    descriptive OLS guide."""
+    descriptive OLS guide; ``control_pool`` names the random-control pool
+    of the lesion caches the similarities came from."""
     upper = np.triu_indices(len(tasks), 1)
     entry = {
         "schema_version": SCHEMA_VERSION, "aname": aname, "l2_info": l2_info,
+        "control_pool": str(control_pool),
         "tasks": list(tasks), "pairs": [(tasks[i], tasks[j]) for i, j in zip(*upper)],
         "n_permutations": int(n_permutations), "permutation_seed": int(seed),
         "distance_definition": "euclidean distance between full-dimensional context-end task centroids",
@@ -285,7 +295,8 @@ def run_all(state_space_dir=STATE_SPACE_DIR, lesion_root=LESION_NORM_ROOT,
             print(f"{aname}: no lesion caches under {Path(lesion_root) / aname}; skipped")
             continue
         entry = analyze_run(aname, l2_info, tasks, distances, similarities,
-                            n_permutations=n_permutations, seed=seed)
+                            n_permutations=n_permutations, seed=seed,
+                            control_pool=lesion_control_pool(aname, lesion_root))
         results[aname] = entry
         test = entry["tests"]["eff_mod"]["synapse"]
         print(f"{aname}: W*M distance vs synapse lesion similarity rho = {test['rho']:+.3f} "

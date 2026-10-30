@@ -44,7 +44,10 @@ class TaskSpecificityFigureTests(unittest.TestCase):
                 "threshold_counts": threshold_counts, "size_correlation": correlation,
                 "effect": np.zeros((6, counts.size))}
 
-    def cache(self):
+    def cache(self, pools=None, control_pool="all"):
+        """A schema-4 cache; `pools` adds counts under other control pools
+        ({pool: {type: counts}}) beside the "all" pool's, which are the
+        significance counts."""
         tasks = [f"t{k}" for k in range(6)]
         relations = ["response rule", "timing", "other"]
         types = {
@@ -63,9 +66,14 @@ class TaskSpecificityFigureTests(unittest.TestCase):
                            "sharing": self.sharing(relations, [0.3, 0.3, 0.3]),
                            **self.robustness([2, 3, 1], [50, 200, 1000], -0.3, 0.05)},
         }
-        return {"schema_version": 3, "aname": paper_plot.LESION_ANAME, "tasks": tasks,
+        pool_counts = {"all": {name: entry["dispersion"]["counts"].copy()
+                                for name, entry in types.items()}}
+        for pool, by_type in (pools or {}).items():
+            pool_counts[pool] = {name: np.asarray(counts) for name, counts in by_type.items()}
+        return {"schema_version": 4, "aname": paper_plot.LESION_ANAME, "tasks": tasks,
                 "n_perm": 4, "modulation_lesion_mode": "freeze_M",
-                "effect_thresholds": list(self.THRESHOLDS), "types": types}
+                "effect_thresholds": list(self.THRESHOLDS), "types": types,
+                "control_pool": control_pool, "pool_counts": pool_counts}
 
     def render(self, cache, show_legend=True):
         with tempfile.TemporaryDirectory() as directory:
@@ -146,7 +154,7 @@ class TaskSpecificityFigureTests(unittest.TestCase):
         for figure in figures.values():
             self.assertEqual(figure.legends, [])
         for problem in ("missing", "run", "schema", "mode", "type", "counts", "null", "pmf",
-                        "threshold", "sizes", "rho"):
+                        "threshold", "sizes", "rho", "pool", "pool_shape", "pool_all"):
             cache = self.cache()
             if problem == "missing":
                 cache = None
@@ -168,6 +176,12 @@ class TaskSpecificityFigureTests(unittest.TestCase):
                 cache["types"]["hidden"]["cluster_sizes"] = np.array([3.0, 1.0, 5.0])
             elif problem == "rho":
                 cache["types"]["hidden"]["size_correlation"].pop("significant")
+            elif problem == "pool":          # schema 4 records the control pool
+                cache.pop("control_pool")
+            elif problem == "pool_shape":
+                cache["pool_counts"]["all"]["hidden"] = np.array([0, 1])
+            elif problem == "pool_all":      # the all pool's counts are always saved
+                cache["pool_counts"] = {"responsive": cache["pool_counts"]["all"]}
             else:
                 cache["types"]["hidden"]["dispersion"]["counts"] = np.array([0, 9, 1, 1])
             with self.subTest(problem=problem):
@@ -178,17 +192,20 @@ class TaskSpecificitySeedsTests(TaskSpecificityFigureTests):
     """The median impaired-task count of every sibling run, per cluster type."""
 
     def write_run(self, base, seed, hidden_counts, modulation_counts, p_hidden=0.01,
-                  threshold=None, rho=None):
+                  threshold=None, rho=None, pools=None, control_pool="all"):
         """Cache one run: the significance counts per type, and optionally
-        `threshold` ({type: counts at 0.05}) and `rho` ({type: (significant,
-        threshold) size correlations})."""
+        `threshold` ({type: counts at 0.05}), `rho` ({type: (significant,
+        threshold) size correlations}) and `pools` ({pool: {type: counts}}
+        under other control pools)."""
         import re
         aname = re.sub(r"seed\d+", f"seed{seed}", paper_plot.LESION_ANAME)
-        cache = self.cache()
+        cache = self.cache(pools=pools, control_pool=control_pool)
         cache["aname"] = aname
         cache["types"]["hidden"]["dispersion"]["counts"] = np.array(hidden_counts)
         cache["types"]["hidden"]["dispersion"]["p_perm"] = p_hidden
         cache["types"]["modulation"]["dispersion"]["counts"] = np.array(modulation_counts)
+        cache["pool_counts"]["all"] = {"hidden": np.array(hidden_counts),
+                                       "modulation": np.array(modulation_counts)}
         for type_name, counts in (("hidden", hidden_counts), ("modulation", modulation_counts)):
             entry = cache["types"][type_name]
             sizes = np.arange(1, len(counts) + 1, dtype=float)
@@ -545,3 +562,99 @@ class TaskSharingCohortTests(TaskSpecificityFigureTests):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TaskSpecificityPoolTests(TaskSpecificitySeedsTests):
+    """The median impaired-task count of every run under each random-control
+    pool, per cluster type."""
+
+    def test_pool_seeds_draw_each_pools_medians_per_type(self):
+        from scipy.stats import wilcoxon
+
+        responsive = ({"hidden": [0, 0, 1, 2], "modulation": [1, 2, 3]},
+                      {"hidden": [0, 1, 1], "modulation": [2, 2, 4]},
+                      {"hidden": [1, 1, 1], "modulation": [3, 3, 3]})
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = self.write_run(base, 11, [0, 1, 1, 5], [2, 4, 6],
+                                  pools={"responsive": responsive[0]})
+            self.write_run(base, 22, [1, 2, 3], [3, 5, 5], pools={"responsive": responsive[1]})
+            self.write_run(base, 33, [1, 1, 2], [5, 5, 6], pools={"responsive": responsive[2]})
+            save, output = self.render_seeds(root, paper_plot.plot_task_specificity_pool_seeds)
+        save.assert_called_once()
+        figure, path = save.call_args.args[:2]
+        self.addCleanup(paper_plot.plt.close, figure)
+        self.assertEqual(path.name, "multitask_task_specificity_pool_seeds.png")
+        axis = figure.axes[0]
+        # Two types x two pools: the columns are labelled by pool, the types
+        # named below each pair.
+        self.assertEqual([label.get_text() for label in axis.get_xticklabels()],
+                         ["All units", "Responsive", "All units", "Responsive"])
+        texts = [text.get_text() for text in axis.texts]
+        self.assertEqual([text for text in texts if text in ("Hidden", "Synapse")],
+                         ["Hidden", "Synapse"])
+        collections = paper_plot.mpl.collections
+        dots = [c for c in axis.collections
+                if isinstance(c, collections.PathCollection) and len(c.get_offsets())]
+        offsets = np.concatenate([c.get_offsets() for c in dots])
+        columns = sorted(set(np.round(offsets[:, 0]).astype(int).tolist()))
+        self.assertEqual(len(columns), 4)
+        # Per-run medians: hidden all 1, 2, 1 / responsive 0.5, 1, 1;
+        # synapse all 4, 5, 5 / responsive 2, 2, 3.
+        by_column = [sorted(offsets[np.isclose(np.round(offsets[:, 0]), column), 1].tolist())
+                     for column in columns]
+        self.assertEqual(by_column, [[1, 1, 2], [0.5, 1, 1], [4, 5, 5], [2, 2, 3]])
+        self.assertFalse(any(np.allclose(c.get_facecolors()[0][:3], 1.0) for c in dots))
+        # The paired test between the responsive and the all pool, per type.
+        expected = [wilcoxon([0.5 - 1, 1 - 2, 1 - 1]).pvalue, wilcoxon([2 - 4, 2 - 5, 3 - 5]).pvalue]
+        p_texts = [text for text in texts if text.startswith("p")]
+        self.assertEqual(p_texts, [f"p = {p:.3f}" for p in expected])
+        extra = save.call_args.kwargs["extra"]
+        self.assertIn("hidden: median 1 (all), 1 (responsive)", extra)
+        self.assertIn("modulation: median 5 (all), 2 (responsive)", extra)
+        self.assertIn("modulation responsive vs all paired Wilcoxon p", extra)
+        self.assertIn("3 runs", axis.get_legend().get_title().get_text())
+        printed = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
+        self.assertIn("all control pool", printed)
+        self.assertIs(paper_plot.FIGURES_BY_MODE["lesion"]["task_specificity_pool_seeds"],
+                      paper_plot.plot_task_specificity_pool_seeds)
+
+    def test_pool_seeds_need_a_second_pool_in_every_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = self.write_run(base, 11, [0, 1, 1, 5], [2, 4, 6])
+            self.write_run(base, 22, [1, 2, 3], [3, 5, 5],
+                           pools={"responsive": {"hidden": [0, 1, 1], "modulation": [2, 2, 4]}})
+            save, output = self.render_seeds(root, paper_plot.plot_task_specificity_pool_seeds)
+        save.assert_not_called()
+        self.assertIn("all control pool only", output.call_args.args[0])
+        self.assertIn("lesion_controls.py", output.call_args.args[0])
+
+    def test_runs_of_another_control_pool_are_left_out(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = self.write_run(base, 11, [0, 1, 1, 5], [2, 4, 6])
+            self.write_run(base, 22, [1, 2, 3], [3, 5, 5])
+            self.write_run(base, 33, [1, 1, 2], [5, 5, 6], control_pool="responsive")
+            save, output = self.render_seeds(root)
+        save.assert_called_once()
+        self.addCleanup(paper_plot.plt.close, save.call_args.args[0])
+        self.assertIn("2 runs", save.call_args.args[0].axes[0].get_legend().get_title().get_text())
+        printed = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
+        self.assertIn("control pool (responsive) differs", printed)
+
+    def test_loader_keeps_every_pools_counts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = self.write_run(base, 11, [0, 1, 1, 5], [2, 4, 6],
+                                  pools={"responsive": {"hidden": [0, 0, 1, 2]},
+                                         "all_same_trials": {"hidden": [0, 1, 1, 4],
+                                                             "modulation": [2, 3, 6]}})
+            with patch("builtins.print"):
+                saved = paper_plot._load_task_specificity(root, root.name)
+        self.assertEqual(saved["control_pool"], "all")
+        hidden = saved["types"]["hidden"]["pool_counts"]
+        self.assertEqual(set(hidden), {"all", "responsive", "all_same_trials"})
+        np.testing.assert_array_equal(hidden["responsive"], [0, 0, 1, 2])
+        np.testing.assert_array_equal(hidden["all"], [0, 1, 1, 5])
+        self.assertEqual(set(saved["types"]["modulation"]["pool_counts"]), {"all", "all_same_trials"})

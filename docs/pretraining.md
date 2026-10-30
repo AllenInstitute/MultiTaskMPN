@@ -46,9 +46,18 @@ selected lambda, `m_time_scale` and feature string. Output filenames do not
 encode the variant, so rendering another selection replaces the same figures.
 
 `python figures/paper_plot.py --only learning_trajectory_linear` exports
-`learning_trajectory_linear_n.png`: the same seed and mean curves as
-`learning_trajectory_n.png`, with a linear iteration axis instead of a log axis.
-Both are included in `pretraining` mode and honor the group/bound options.
+`learning_trajectory_linear_n.png`: the seeds and condition means of
+`learning_trajectory_n.png` on a broken linear iteration axis. The left panel
+shows the first 1000 iterations at full scale
+(`_LEARNING_TRAJECTORY_LINEAR_SPLIT`), where the relevant motif saturates and
+the irrelevant motif does most of its climbing; the right panel continues to
+40000 (`_LEARNING_TRAJECTORY_LINEAR_XMAX`), by which the irrelevant motif's
+mean has reached its plateau in both λ cohorts (about 16k iterations at 0.99,
+28k at 0.9). One unbroken axis to the end of training (80k) squeezed
+everything that happens into its first percent. Each panel resamples the seeds
+on its own linear grid, so its sample points differ from the log figure's
+log-spaced grid, and the saved message names the two ranges. Both figures are
+included in `pretraining` mode and honor the group/bound options.
 `rule_vectors_n.png` is drawn at the `learning_trajectory` size (the six-bar
 `all` layout keeps that height and width per bar). Each bar keeps its two-line
 "MemoryAnti ↔ partner" tick label, in a 5 pt font so that neighbouring labels

@@ -4232,6 +4232,11 @@ _PLASTICITY_SHARE_RUN_MEDIAN_COLOR = "0.15"
 # Task labels slant at this angle from horizontal: low enough that the long
 # names stay short vertically, high enough that neighbors do not overlap.
 _PLASTICITY_SHARE_TICK_ROTATION = 45
+# Cohort violin: each task's pooled cells within the y-limits as a Gaussian
+# kernel density, this half-width at its peak, filled in the lesion grey.
+_PLASTICITY_SHARE_VIOLIN_HALF_WIDTH = 0.42
+_PLASTICITY_SHARE_VIOLIN_FILL_ALPHA = 0.35
+_PLASTICITY_SHARE_VIOLIN_POINTS = 200
 
 
 def _load_plasticity_share(directory=None, aname=None):
@@ -4279,13 +4284,14 @@ def _load_plasticity_share(directory=None, aname=None):
 
 
 def _draw_plasticity_share_axes(ax, tasks, family, cells, medians, run_medians=None,
-                                point_alpha=0.45):
+                                point_alpha=0.45, violins=False):
     """Draw one plasticity-share panel: one column per task, no-working-memory
-    tasks first, `cells[i]` (the task's share values) as pale points with
-    values beyond _PLASTICITY_SHARE_YLIM as hollow triangles at the edge, both
-    in _LESION_POINT_COLOR, `medians[i]` as the red dash and, when given,
-    `run_medians[i]` (one value per run) as short near-black dashes. Returns
-    the number of clipped cells."""
+    tasks first, `cells[i]` (the task's share values) as pale points, or with
+    `violins` as the kernel density of _draw_plasticity_share_violin (points
+    where it declines), with values beyond _PLASTICITY_SHARE_YLIM as hollow
+    triangles at the edge, all in _LESION_POINT_COLOR, `medians[i]` as the
+    red dash and, when given, `run_medians[i]` (one value per run) as short
+    near-black dashes. Returns the number of clipped cells."""
     order = ([index for index, kind in enumerate(family) if kind == "reaction"]
              + [index for index, kind in enumerate(family) if kind == "memory"])
     n_no_memory = sum(kind == "reaction" for kind in family)
@@ -4300,8 +4306,9 @@ def _draw_plasticity_share_axes(ax, tasks, family, cells, medians, run_medians=N
         if values.size:
             jitter = np.linspace(-0.22, 0.22, values.size) if values.size > 1 else np.zeros(1)
             inside = (values >= low) & (values <= high)
-            ax.scatter(position + jitter[inside], values[inside], color=_LESION_POINT_COLOR,
-                       edgecolors="none", s=14, alpha=point_alpha, zorder=2)
+            if not (violins and _draw_plasticity_share_violin(ax, position, values[inside])):
+                ax.scatter(position + jitter[inside], values[inside], color=_LESION_POINT_COLOR,
+                           edgecolors="none", s=14, alpha=point_alpha, zorder=2)
             for beyond, marker, edge in ((values > high, "^", high), (values < low, "v", low)):
                 if beyond.any():
                     n_clipped += int(beyond.sum())
@@ -4330,6 +4337,29 @@ def _draw_plasticity_share_axes(ax, tasks, family, cells, medians, run_medians=N
     ax.spines[["top", "right"]].set_visible(False)
     ax.tick_params(axis="y", labelsize=7)
     return n_clipped
+
+
+def _draw_plasticity_share_violin(ax, position, values):
+    """Fill the Gaussian kernel density (scipy's Scott bandwidth) of `values`,
+    one task's cells within the y-limits, around column `position` over the
+    range of the values, _PLASTICITY_SHARE_VIOLIN_HALF_WIDTH wide at its
+    peak, in the lesion grey. Every column is scaled to that same peak
+    width, so the shapes compare and the counts do not. Returns False and
+    draws nothing below three values or when they do not spread, so the
+    caller shows the points instead."""
+    from scipy.stats import gaussian_kde
+
+    values = np.asarray(values, dtype=float)
+    if values.size < 3 or np.ptp(values) == 0:
+        return False
+    grid = np.linspace(values.min(), values.max(), _PLASTICITY_SHARE_VIOLIN_POINTS)
+    density = gaussian_kde(values)(grid)
+    half = _PLASTICITY_SHARE_VIOLIN_HALF_WIDTH * density / density.max()
+    ax.fill_betweenx(grid, position - half, position + half,
+                     facecolor=mpl.colors.to_rgba(_LESION_POINT_COLOR,
+                                                  _PLASTICITY_SHARE_VIOLIN_FILL_ALPHA),
+                     edgecolor=_LESION_POINT_COLOR, linewidth=0.6, zorder=2)
+    return True
 
 
 def _plasticity_share_median_handle(label="Task median"):
@@ -4399,35 +4429,93 @@ def plot_plasticity_share_cohort():
     dash is the median of the pooled cells. Values beyond the y-limits are
     hollow triangles at the edge; run medians beyond them are drawn at the
     edge. The legend title gives the run count. Only saved values are drawn;
-    the figure is skipped below two runs.
+    the figure is skipped below two runs. plot_plasticity_share_cohort_violin
+    draws the same pooled cells as per-task densities.
     """
     _ensure_out_dir()
     runs = _plasticity_share_cohort_runs()
     if len(runs) < 2:
         print(f"  Skipped: {len(runs)} run(s) with saved plasticity-share caches; need >= 2.")
         return
-    tasks, family = runs[0]["tasks"], runs[0]["family"]
+    cells, run_medians, medians = _plasticity_share_cohort_cells(runs)
+    fig, ax = plt.subplots(1, 1, figsize=_PLASTICITY_SHARE_FIGSIZE)
+    n_clipped = _draw_plasticity_share_axes(ax, runs[0]["tasks"], runs[0]["family"], cells,
+                                            medians, run_medians, point_alpha=0.3)
+    _plasticity_share_cohort_legend(
+        ax, [_plasticity_share_median_handle("Pooled median"),
+             _plasticity_share_run_median_handle()], len(runs))
+    fig.tight_layout()
+    n_cells = int(sum(values.size for values in cells))
+    _save_fig(fig, _multitask_out("plasticity_share_cohort.png"),
+              extra=f"  {len(runs)} runs, {n_cells} cells, {n_clipped} beyond y-limits")
+
+
+def _plasticity_share_cohort_cells(runs):
+    """Per task of the cohort `runs` (one task list): the finite saved cells
+    of every run pooled, the saved task medians of the runs that have cells
+    for the task, and the median of the pooled cells (NaN without cells)."""
     cells, run_medians = [], []
-    for index in range(len(tasks)):
+    for index in range(len(runs[0]["tasks"])):
         rows = [saved["share"][index] for saved in runs]
         cells.append(np.concatenate([row[np.isfinite(row)] for row in rows]))
         run_medians.append(np.array([saved["medians"][index] for saved, row in zip(runs, rows)
                                      if np.isfinite(row).any()]))
     medians = [float(np.median(values)) if values.size else np.nan for values in cells]
+    return cells, run_medians, medians
+
+
+def _plasticity_share_run_median_handle():
+    return mpl.lines.Line2D([], [], color=_PLASTICITY_SHARE_RUN_MEDIAN_COLOR, linewidth=0.7,
+                            label="Run median")
+
+
+def _plasticity_share_cohort_legend(ax, handles, n_runs):
+    """Legend of the cohort figures, titled with the run count and placed
+    outside, to the right of the axes: with every run pooled no band of the
+    axes stays empty."""
+    _legend(ax, handles=handles, loc="upper left", bbox_to_anchor=(1.0, 1.0),
+            borderaxespad=0.0, fontsize=6, frameon=False, title=f"{n_runs} runs",
+            title_fontsize=6)
+
+
+def plot_plasticity_share_cohort_violin():
+    """
+    Figure: multitask_plasticity_share_cohort_violin.png — the cohort
+    plasticity-share figure with each task's pooled cells drawn as a
+    distribution instead of points.
+
+    Same layout and data as plot_plasticity_share_cohort: one column per
+    task, no-working-memory tasks first, the saved significant (task, synapse
+    cluster) cells of every sibling run of LESION_ANAME pooled per task.
+    Each column is the Gaussian kernel density of the pooled cells within the
+    y-limits (scipy's Scott bandwidth) over their range, every column scaled
+    to the same peak width, so the shapes compare and the counts do not;
+    cells beyond the y-limits stay hollow triangles at the edge and are left
+    out of the density. The short near-black dashes are the runs' saved task
+    medians and the red dash the median of the pooled cells, as in the point
+    version. A task with fewer than three cells within the limits, or with
+    all of them equal, shows its points instead. Skipped below two runs.
+    """
+    _ensure_out_dir()
+    runs = _plasticity_share_cohort_runs()
+    if len(runs) < 2:
+        print(f"  Skipped: {len(runs)} run(s) with saved plasticity-share caches; need >= 2.")
+        return
+    cells, run_medians, medians = _plasticity_share_cohort_cells(runs)
     fig, ax = plt.subplots(1, 1, figsize=_PLASTICITY_SHARE_FIGSIZE)
-    n_clipped = _draw_plasticity_share_axes(ax, tasks, family, cells, medians, run_medians,
-                                            point_alpha=0.3)
-    run_handle = mpl.lines.Line2D([], [], color=_PLASTICITY_SHARE_RUN_MEDIAN_COLOR, linewidth=0.7,
-                                  label="Run median")
-    # With every run pooled no band of the axes stays empty, so the legend
-    # sits outside, to the right of the axes.
-    _legend(ax, handles=[_plasticity_share_median_handle("Pooled median"), run_handle],
-            loc="upper left", bbox_to_anchor=(1.0, 1.0), borderaxespad=0.0, fontsize=6,
-            frameon=False, title=f"{len(runs)} runs", title_fontsize=6)
+    n_clipped = _draw_plasticity_share_axes(ax, runs[0]["tasks"], runs[0]["family"], cells,
+                                            medians, run_medians, point_alpha=0.3, violins=True)
+    density_handle = mpl.patches.Patch(
+        facecolor=mpl.colors.to_rgba(_LESION_POINT_COLOR, _PLASTICITY_SHARE_VIOLIN_FILL_ALPHA),
+        edgecolor=_LESION_POINT_COLOR, linewidth=0.6, label="Pooled cells (KDE)")
+    _plasticity_share_cohort_legend(
+        ax, [density_handle, _plasticity_share_median_handle("Pooled median"),
+             _plasticity_share_run_median_handle()], len(runs))
     fig.tight_layout()
     n_cells = int(sum(values.size for values in cells))
-    _save_fig(fig, _multitask_out("plasticity_share_cohort.png"),
-              extra=f"  {len(runs)} runs, {n_cells} cells, {n_clipped} beyond y-limits")
+    _save_fig(fig, _multitask_out("plasticity_share_cohort_violin.png"),
+              extra=(f"  {len(runs)} runs, {n_cells} cells, {n_clipped} beyond y-limits "
+                     "(left out of the densities)"))
 
 
 # ─── Figure: Task-pair sharing of impaired clusters, over runs ──────────────
@@ -5846,8 +5934,9 @@ _TASK_SPECIFICITY_LABELS = {"input": "Input neuron clusters", "hidden": "Hidden 
 _TASK_SPECIFICITY_COLORS = {"input": c_vals[1], "hidden": c_vals[0], "modulation": c_vals[4]}
 _TASK_SPECIFICITY_TICK_LABELS = {"input": "Input", "hidden": "Hidden", "modulation": "Synapse"}
 # The cache lesion_plot.py writes (its TASK_SPECIFICITY_SCHEMA_VERSION); its
-# synapse clusters must impair tasks through the lesion heatmap's mode.
-_TASK_SPECIFICITY_SCHEMA_VERSION = 3
+# synapse clusters must impair tasks through the lesion heatmap's mode, and
+# since schema 4 it records the control pool and the counts under every pool.
+_TASK_SPECIFICITY_SCHEMA_VERSION = 4
 # Counts figure: the dots and the gray mixing-null histogram behind them.
 _TASK_SPECIFICITY_DOT_SIZE = 12
 _TASK_SPECIFICITY_NULL_COLOR = "0.86"
@@ -5884,13 +5973,17 @@ def _load_task_specificity(directory, aname, report_missing=True):
     dispersion test from lesion_plot.py's task-specificity cache in
     `directory`: {"tasks", "types": {type: {"counts", "p_dispersion",
     "null_count_pmf", "cluster_sizes", "threshold_counts",
-    "all_threshold_counts", "size_correlation"}}}, where null_count_pmf is
+    "all_threshold_counts", "size_correlation", "pool_counts"}},
+    "control_pool"}, where null_count_pmf is
     the saved exact distribution of one cluster's count (0..T tasks) under
     the mixing null, threshold_counts the saved counts at
     _TASK_SPECIFICITY_FIGURE_THRESHOLD (all_threshold_counts those at every
     saved threshold) and size_correlation the saved Spearman rho of cluster
     size with the significance count ("significant") and with that threshold
-    count ("threshold"). None with a note when the cache is incompatible, and
+    count ("threshold"), pool_counts the saved counts under every control
+    pool the run has ({pool: counts}, "all" always among them) and
+    control_pool the pool the cache's own statistics used. None with a note
+    when the cache is incompatible, and
     when it is missing unless `report_missing` is False. The cache's
     per-relation task-pair sharing statistics are read by _load_task_sharing
     instead."""
@@ -5934,32 +6027,53 @@ def _load_task_specificity(directory, aname, report_missing=True):
                     or any(value.shape != counts.shape or value.min() < 0
                            or value.max() > len(tasks) for value in all_counts.values())):
                 raise ValueError(f"{type_name}: invalid cluster sizes or threshold counts")
+            pool_counts = {}
+            for pool, by_type in saved["pool_counts"].items():
+                if type_name not in by_type:
+                    continue
+                values = np.asarray(by_type[type_name], dtype=int)
+                if values.shape != counts.shape or values.min() < 0 or values.max() > len(tasks):
+                    raise ValueError(f"{type_name}: invalid counts under the {pool} control pool")
+                pool_counts[str(pool)] = values
+            if "all" not in pool_counts:
+                raise ValueError(f"{type_name}: no counts under the all control pool")
             types[type_name] = {"counts": counts, "p_dispersion": p_disp,
                                 "null_count_pmf": pmf, "cluster_sizes": sizes,
                                 "threshold_counts": threshold_counts,
                                 "all_threshold_counts": all_counts,
-                                "size_correlation": size_rho}
+                                "size_correlation": size_rho,
+                                "pool_counts": pool_counts}
         if not types:
             raise ValueError("no cluster types saved")
+        control_pool = str(saved["control_pool"])
     except (OSError, KeyError, TypeError, ValueError) as error:
         print(f"  Skipped: incompatible {path.name}: {error}. Run multiple_task/lesion_plot.py again.")
         return None
-    return {"tasks": tasks, "types": types}
+    return {"tasks": tasks, "types": types, "control_pool": control_pool}
 
 
 def _task_specificity_runs():
     """{aname: _load_task_specificity(...)} over the sibling runs of
-    LESION_ANAME whose caches validate and hold the same cluster types as the
-    first such run; a disagreeing run is left out with a note."""
+    LESION_ANAME whose caches validate and hold the same cluster types and
+    were computed with the same control pool as the first such run; a
+    disagreeing run is left out with a note. The pool is printed once."""
     runs = {}
     for directory in _sibling_run_dirs():
         saved = _load_task_specificity(directory, directory.name, report_missing=False)
         if saved is None:
             continue
-        if runs and set(saved["types"]) != set(next(iter(runs.values()))["types"]):
+        first = next(iter(runs.values()), None)
+        if first is not None and set(saved["types"]) != set(first["types"]):
             print(f"  Skipped {directory.name}: its cluster types differ from the other runs.")
             continue
+        if first is not None and saved["control_pool"] != first["control_pool"]:
+            print(f"  Skipped {directory.name}: its control pool ({saved['control_pool']}) differs "
+                  f"from the other runs ({first['control_pool']}).")
+            continue
         runs[directory.name] = saved
+    if runs:
+        print(f"  Task-specificity caches of {len(runs)} run(s), "
+              f"{next(iter(runs.values()))['control_pool']} control pool.")
     return runs
 
 
@@ -6243,6 +6357,83 @@ def plot_task_specificity_size():
               extra=f"  {len(kept)} runs; " + "; ".join(notes))
 
 
+# Control pools whose counts the pool figure draws, in column order, and
+# their labels: lesion.py's controls from every unit (All units),
+# lesion_controls.py's from the responsive units on a seeded test set
+# (Responsive) and, when it was also run with --pool all, from every unit on
+# those same trials.
+_TASK_SPECIFICITY_POOL_ORDER = ("all", "responsive", "all_same_trials")
+_TASK_SPECIFICITY_POOL_LABELS = {"all": "All units", "responsive": "Responsive",
+                                 "all_same_trials": "All units, same trials"}
+# Three columns per type share 3.6 in, so the pool labels slant.
+_TASK_SPECIFICITY_POOL_TICK_ROTATION = 30
+
+
+def plot_task_specificity_pool_seeds():
+    """
+    Figure: multitask_task_specificity_pool_seeds.png — the seeds figure's
+    median impaired-task count under each random-control pool, per cluster
+    type. lesion.py draws its size-matched random controls from every unit,
+    more than half of which are unresponsive, so those controls barely hurt
+    the network and a cluster is "significant" against a half-silent set;
+    lesion_controls.py draws them from the responsive units only, on a
+    seeded test set (and, run with --pool all, from every unit on those same
+    trials). lesion_plot.py saves every cluster's count under each pool the
+    run has (`pool_counts`); this figure draws, per cluster type, one column
+    per pool present in every run (_TASK_SPECIFICITY_POOL_ORDER), each run a
+    grey point at the median of its clusters' counts, a run's columns joined,
+    the median and interquartile range over runs in red, and over each type
+    the two-sided paired Wilcoxon signed-rank p of the runs' medians between
+    the second pool and the first, computed here. Skipped below two runs, or
+    when the runs hold counts for one pool only (run lesion_controls.py and
+    lesion_plot.py --control-pool responsive first).
+    """
+    _ensure_out_dir()
+    runs = _task_specificity_runs()
+    if len(runs) < 2:
+        print(f"  Skipped: {len(runs)} run(s) with saved task-specificity caches; need >= 2.")
+        return
+    types = _task_specificity_types(runs)
+    pools = [pool for pool in _TASK_SPECIFICITY_POOL_ORDER
+             if all(pool in saved["types"][name]["pool_counts"]
+                    for saved in runs.values() for name in types)]
+    if len(pools) < 2:
+        print(f"  Skipped: the runs hold counts for the {', '.join(pools)} control pool only; "
+              "run multiple_task/lesion_controls.py and lesion_plot.py --control-pool "
+              "responsive first.")
+        return
+    groups = [[(_TASK_SPECIFICITY_POOL_LABELS[pool],
+                np.array([np.median(saved["types"][name]["pool_counts"][pool])
+                          for saved in runs.values()]))
+               for pool in pools] for name in types]
+    fig, ax = plt.subplots(1, 1, figsize=_TASK_SPECIFICITY_SIZE_FIGSIZE)
+    positions = _draw_sibling_cohort(ax, groups, len(runs), color=_LESION_POINT_COLOR)
+    plt.setp(ax.get_xticklabels(), rotation=_TASK_SPECIFICITY_POOL_TICK_ROTATION, ha="right",
+             rotation_mode="anchor", fontsize=6)
+    top = max(values.max() for group in groups for _, values in group)
+    # Room above the points for the type name and, under it, the p text; the
+    # slanted pool labels take the space below the axis.
+    ax.set_ylim(0, top + 3.2)
+    ax.yaxis.set_major_locator(mticker.MaxNLocator(integer=True))
+    ax.set_yticks([tick for tick in ax.get_yticks() if 0 <= tick <= top + 0.5])
+    notes, tests = [], []
+    for name, group, first in zip(types, groups, positions[::len(pools)]):
+        center = first + (len(pools) - 1) / 2
+        ax.text(center, top + 2.3, _TASK_SPECIFICITY_TICK_LABELS[name], ha="center",
+                va="bottom", fontsize=7)
+        values = dict(zip(pools, [column for _, column in group]))
+        p_value, p_text = _wilcoxon_vs_zero(values[pools[1]] - values[pools[0]])
+        ax.text(center, top + 1.0, p_text, ha="center", va="bottom", fontsize=6)
+        notes.append(f"{name}: median " + ", ".join(f"{np.median(values[pool]):g} ({pool})"
+                                                     for pool in pools))
+        tests.append(f"{name} {pools[1]} vs {pools[0]} paired Wilcoxon p = {p_value:.2g}")
+    ax.set_ylabel("Median tasks impaired\nper cluster", fontsize=7)
+    _seeds_legend(ax, _task_specificity_run_handles(), len(runs))
+    fig.tight_layout()
+    _save_fig(fig, _multitask_out("task_specificity_pool_seeds.png"),
+              extra=f"  {len(runs)} runs; " + "; ".join(notes + tests))
+
+
 # ─── Figure: Transfer speed ──────────────────────────────────────────────────
 
 PRETRAINING_ANALYSIS_DIR = Path("pretraining_analysis")
@@ -6300,6 +6491,26 @@ _RULE_VECTORS_X_MARGIN = 0.025
 _TRANSFER_SPEED_FIGSIZE = (3.3, 2.2 * 2 / 3 * 1.1)
 _TRANSFER_SPEED_YTICKS = (50, 75, 100)
 _LEARNING_TRAJECTORY_YTICKS = (0, 50, 100)
+# learning_trajectory resamples every seed on a log-spaced iteration grid of
+# this many points, so its log axis is evenly sampled.
+_LEARNING_TRAJECTORY_LOG_GRID_POINTS = 400
+# learning_trajectory_linear breaks its iteration axis into two linear panels,
+# each with its own grid of this many points: the left one holds the first
+# _LEARNING_TRAJECTORY_LINEAR_SPLIT iterations at full scale (the relevant
+# motif saturates and the irrelevant one does most of its climbing there), the
+# right one the slow phase up to _LEARNING_TRAJECTORY_LINEAR_XMAX, by which the
+# irrelevant motif's mean has reached its plateau in both cohorts (about 16k
+# iterations at lambda 0.99, 28k at 0.9). One unbroken linear axis to the end
+# of training (80k) squeezed everything that happens into its first percent.
+_LEARNING_TRAJECTORY_LINEAR_GRID_POINTS = 300
+_LEARNING_TRAJECTORY_LINEAR_SPLIT = 1000
+_LEARNING_TRAJECTORY_LINEAR_XMAX = 40000
+_LEARNING_TRAJECTORY_LINEAR_WIDTH_RATIOS = (1, 1)
+_LEARNING_TRAJECTORY_LINEAR_GAP = 0.05  # between the panels, in axes widths
+# The axis break: a short slanted stroke at the foot of each panel's open side.
+_LEARNING_TRAJECTORY_BREAK_MARK = dict(
+    marker=[(-1, -0.5), (1, 0.5)], markersize=7, linestyle="none",
+    color="k", mec="k", mew=1, clip_on=False)
 _BACKBONE_PROBE_FIGSIZE = (3.4, 2.0)
 PRETRAINING_BOUND = "mb1"
 PRETRAINING_LAMBDA = "0.99"
@@ -6601,31 +6812,21 @@ def plot_backbone_probe():
     _save_fig(fig, OUT_DIR / "backbone_probe.png", extra=f" ({'; '.join(counts)})")
 
 
-def plot_learning_trajectory(*, xscale="log"):
-    """
-    Figure: post-training learning trajectory — accuracy vs training iteration,
-    comparing the relevant and irrelevant motifs plus the DelayAnti and
-    DelayPro single-task controls. Transparent lines are individual seeds and
-    thick lines are condition means.
+def _load_learning_trajectories():
+    """Per-seed post-training learning curves of the selected rulesets.
 
-    Reads per-seed result pickles (learning.acc_iter_post / learning.acc_post).
-    Seeds are resampled onto a shared iteration grid before averaging, so it is
-    robust to slightly different logging cadences across seeds. The linear-axis
-    companion uses the same samples and curves, changing only the x-axis scale.
+    Reads learning.acc_iter_post / learning.acc_post from every result pickle
+    and returns {ruleset: [(iterations, accuracy), ...]}, empty (after printing
+    why) when there is nothing to plot.
     """
-    if xscale not in ("log", "linear"):
-        raise ValueError(f"Unsupported learning-trajectory scale: {xscale!r}")
-    _ensure_out_dir()
     if not PRETRAINING_ANALYSIS_DIR.exists():
         print("  Skipped: pretraining_analysis/ not found.")
-        return
-
+        return {}
     pkls = _pretraining_result_pkls()
     if not pkls:
         print("  Skipped: no pretraining result pickles found.")
-        return
+        return {}
 
-    # Collect each ruleset's per-seed (iterations, accuracy) trajectories.
     by_ruleset_traj = {}  # rs -> list of (iters, acc)
     for p in pkls:
         rs = _pretraining_ruleset_from_result_name(p.name)
@@ -6639,55 +6840,144 @@ def plot_learning_trajectory(*, xscale="log"):
         iters = np.asarray(learn["acc_iter_post"], dtype=float)
         acc = np.asarray(learn["acc_post"], dtype=float)
         by_ruleset_traj.setdefault(rs, []).append((iters, acc))
-
     if not by_ruleset_traj:
         print("  Skipped: no learning trajectories found.")
-        return
+    return by_ruleset_traj
 
-    fig, ax = plt.subplots(
-        1, 1, figsize=_PRETRAINING_TRAJECTORY_FIGSIZE)
 
-    for rs in sorted(by_ruleset_traj.keys()):
-        trajs = by_ruleset_traj[rs]
-        label, color = _PRETRAINING_RULESET_STYLES.get(
-            rs, (rs, "#718096"))
+def _learning_trajectory_span(trajs):
+    """Iteration range every seed of a ruleset covers (from 1 at the earliest)."""
+    lo = max(t[0].min() for t in trajs)
+    hi = min(t[0].max() for t in trajs)
+    return max(lo, 1.0), hi
 
-        # Shared iteration grid = intersection of every seed's [min, max] range,
-        # log-spaced so the (log-x) curve is evenly sampled; interpolate each
-        # seed onto it, then average.
-        lo = max(t[0].min() for t in trajs)
-        hi = min(t[0].max() for t in trajs)
-        grid = np.unique(np.round(np.geomspace(max(lo, 1.0), hi, 400)).astype(int))
-        grid = grid[grid >= 1].astype(float)
-        resampled = np.array([np.interp(grid, it, ac) for (it, ac) in trajs])
 
-        for seed_curve in resampled:
-            ax.plot(grid, seed_curve * 100, "-", color=color,
+def _learning_trajectory_grid(lo, hi, n_points, *, spacing):
+    """Integer iteration grid over [lo, hi], "log"- or "linear"-spaced."""
+    space = {"log": np.geomspace, "linear": np.linspace}[spacing]
+    grid = np.unique(np.round(space(lo, hi, n_points)).astype(int))
+    return grid[grid >= 1].astype(float)
+
+
+def _draw_learning_trajectories(ax, trajs, grid, color, label):
+    """Every seed's curve (transparent) and their mean (thick), resampled on
+    `grid` so seeds with slightly different logging cadences average cleanly."""
+    resampled = np.array([np.interp(grid, it, ac) for (it, ac) in trajs])
+    for seed_curve in resampled:
+        ax.plot(grid, seed_curve * 100, "-", color=color,
                 linewidth=0.9, alpha=0.18)
+    ax.plot(grid, resampled.mean(axis=0) * 100, "-", color=color,
+            linewidth=2.2, label=label)
 
-        mean_vals = resampled.mean(axis=0) * 100
-        ax.plot(grid, mean_vals, "-", color=color, linewidth=2.2, label=label)
 
-    ax.set_xlabel("Iteration")
-    ax.set_ylabel("Accuracy (%)")
-    ax.set_xscale(xscale)
+def _style_learning_trajectory_axes(ax):
+    """Accuracy axis shared by the two learning-trajectory figures."""
     # ylim tops at 105 for headroom; explicit ticks stop at 100 so no >100% tick.
     ax.set_yticks(_LEARNING_TRAJECTORY_YTICKS)
     ax.set_ylim([0, 105])
     ax.tick_params(axis="both", labelsize=7)
-    _legend(ax, fontsize=6, frameon=True)
     ax.spines[["top", "right"]].set_visible(False)
 
+
+def plot_learning_trajectory():
+    """
+    Figure: post-training learning trajectory — accuracy vs training iteration
+    on a log axis, comparing the relevant and irrelevant motifs plus the
+    DelayAnti and DelayPro single-task controls. Transparent lines are
+    individual seeds and thick lines are condition means.
+
+    Reads per-seed result pickles (learning.acc_iter_post / learning.acc_post).
+    Seeds are resampled onto a shared log-spaced iteration grid before
+    averaging, so it is robust to slightly different logging cadences across
+    seeds. `learning_trajectory_linear` draws the same seeds on a broken
+    linear axis.
+    """
+    _ensure_out_dir()
+    by_ruleset_traj = _load_learning_trajectories()
+    if not by_ruleset_traj:
+        return
+
+    fig, ax = plt.subplots(
+        1, 1, figsize=_PRETRAINING_TRAJECTORY_FIGSIZE)
+    for rs in sorted(by_ruleset_traj.keys()):
+        trajs = by_ruleset_traj[rs]
+        label, color = _PRETRAINING_RULESET_STYLES.get(
+            rs, (rs, "#718096"))
+        # Shared iteration grid = intersection of every seed's [min, max] range,
+        # log-spaced so the (log-x) curve is evenly sampled.
+        lo, hi = _learning_trajectory_span(trajs)
+        grid = _learning_trajectory_grid(
+            lo, hi, _LEARNING_TRAJECTORY_LOG_GRID_POINTS, spacing="log")
+        _draw_learning_trajectories(ax, trajs, grid, color, label)
+
+    ax.set_xlabel("Iteration")
+    ax.set_ylabel("Accuracy (%)")
+    ax.set_xscale("log")
+    _style_learning_trajectory_axes(ax)
+    _legend(ax, fontsize=6, frameon=True)
     fig.tight_layout()
-    filename = "learning_trajectory_linear.png" if xscale == "linear" else "learning_trajectory.png"
-    out_path = OUT_DIR / filename
-    _save_fig(fig, out_path)
+    _save_fig(fig, OUT_DIR / "learning_trajectory.png")
 
 
 def plot_learning_trajectory_linear():
-    """Plot the same post-training learning curves with a linear iteration axis."""
-    plot_learning_trajectory(xscale="linear")
+    """
+    Figure: the `learning_trajectory` curves on a broken linear iteration axis.
 
+    The left panel holds the first _LEARNING_TRAJECTORY_LINEAR_SPLIT iterations
+    at full scale, where the relevant motif saturates and the irrelevant motif
+    does most of its climbing; the right panel continues to
+    _LEARNING_TRAJECTORY_LINEAR_XMAX, by which every condition's mean has
+    reached its plateau. The break keeps the slow phase from squeezing the fast
+    one into the axis edge, which one linear axis to the end of training does.
+    Each panel resamples the seeds on its own linear grid; the seeds, colors
+    and means are those of the log figure.
+    """
+    _ensure_out_dir()
+    by_ruleset_traj = _load_learning_trajectories()
+    if not by_ruleset_traj:
+        return
+
+    split, xmax = _LEARNING_TRAJECTORY_LINEAR_SPLIT, _LEARNING_TRAJECTORY_LINEAR_XMAX
+    # constrained layout, not tight: it reserves room for the shared supxlabel.
+    fig, (fast, slow) = plt.subplots(
+        1, 2, figsize=_PRETRAINING_TRAJECTORY_FIGSIZE, sharey=True,
+        layout="constrained",
+        gridspec_kw={"width_ratios": _LEARNING_TRAJECTORY_LINEAR_WIDTH_RATIOS,
+                     "wspace": _LEARNING_TRAJECTORY_LINEAR_GAP})
+    for rs in sorted(by_ruleset_traj.keys()):
+        trajs = by_ruleset_traj[rs]
+        label, color = _PRETRAINING_RULESET_STYLES.get(
+            rs, (rs, "#718096"))
+        lo, hi = _learning_trajectory_span(trajs)
+        for ax, start, stop in ((fast, lo, min(hi, split)),
+                                (slow, split, min(hi, xmax))):
+            if stop <= start:
+                continue  # the seeds end before this panel begins
+            grid = _learning_trajectory_grid(
+                start, stop, _LEARNING_TRAJECTORY_LINEAR_GRID_POINTS,
+                spacing="linear")
+            _draw_learning_trajectories(ax, trajs, grid, color, label)
+
+    fast.set_xlim(0, split)
+    slow.set_xlim(split, xmax)
+    for ax in (fast, slow):
+        _style_learning_trajectory_axes(ax)
+    # Three labels fit the left panel (0, 500, 1000) and two the right (20000,
+    # 40000) at 7 pt; four five-digit labels collide there.
+    fast.xaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=2))
+    slow.xaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=2))
+    # The right panel continues the left one's accuracy axis, so it draws no
+    # spine or ticks of its own; a slanted mark at the foot of each side of the
+    # gap shows the break.
+    slow.spines["left"].set_visible(False)
+    slow.tick_params(axis="y", left=False)
+    fast.plot([1], [0], transform=fast.transAxes, **_LEARNING_TRAJECTORY_BREAK_MARK)
+    slow.plot([0], [0], transform=slow.transAxes, **_LEARNING_TRAJECTORY_BREAK_MARK)
+    fast.set_ylabel("Accuracy (%)")
+    fig.supxlabel("Iteration", fontsize=mpl.rcParams["axes.labelsize"])
+    _legend(slow, fontsize=6, frameon=True)
+    _save_fig(fig, OUT_DIR / "learning_trajectory_linear.png",
+              extra=f" (iterations 0-{split} | {split}-{xmax})")
 
 # ─── Figure: Rule vectors ────────────────────────────────────────────────────
 
@@ -13399,6 +13689,8 @@ FIGURES_BY_MODE = {
         "om_vs_lesion_seeds": plot_om_vs_lesion_seeds,
         "plasticity_share": plot_plasticity_share,
         "plasticity_share_cohort": plot_plasticity_share_cohort,
+        # The cohort's pooled cells as per-task densities.
+        "plasticity_share_cohort_violin": plot_plasticity_share_cohort_violin,
         "causal_vs_activity_tasks": plot_causal_vs_activity,
         "causal_vs_activity_seeds": plot_causal_vs_activity_seeds,
         "task_specificity": plot_task_specificity,
@@ -13407,6 +13699,7 @@ FIGURES_BY_MODE = {
         # count follows cluster size.
         "task_specificity_threshold_seeds": plot_task_specificity_threshold_seeds,
         "task_specificity_size": plot_task_specificity_size,
+        "task_specificity_pool_seeds": plot_task_specificity_pool_seeds,
         "task_sharing_cohort": plot_task_sharing_cohort,
         # Links the state-space task geometry to the lesion dependence
         # (multiple_task/state_space_vs_lesion.py).
