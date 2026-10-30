@@ -1,14 +1,17 @@
 # MultiTaskMPN
 
 Training and analysis of **Multi-Plastic Networks (MPNs)** on a battery of
-cognitive tasks. A single recurrent network with Hebbian-like synaptic
-plasticity learns many tasks at once; the structure of its plastic weights is
+cognitive tasks. A single feedforward network with Hebbian-like synaptic
+plasticity, whose only memory is the state of its plastic synapses, learns
+many tasks at once; the structure of its plastic weights is
 then analyzed to understand how task-specific computation is organized.
 
 ## Model
 
-The core model is `DeepMultiPlasticNet` ([core/mpn.py](core/mpn.py)): a recurrent
-network whose effective weights are modulated by a fast plasticity matrix **M**:
+The core model is `DeepMultiPlasticNet` ([core/mpn.py](core/mpn.py)): a
+feedforward network (input projection, plastic layer, readout; the hidden
+state carries no memory of its own, see [SCHEME.md](SCHEME.md)) whose
+effective weights are modulated by a fast plasticity matrix **M**:
 
 ```
 W_eff(t) = W + W ⊙ M(t)     (multiplicative)   or   W + M(t)   (additive)
@@ -19,7 +22,9 @@ pre/post-vector, or full matrix). The multi-task, pretraining and flex-task
 scripts learn η; the single- and two-task scripts keep it fixed. Every script
 fixes λ = 1 − Δt/`m_time_scale`, with Δt = 40 ms. The network has three
 weight matrices: `W_initial_linear` (input projection), `mp_layer1.W`
-(recurrent plastic weights) and `W_output` (readout).
+(plastic weights from the projected input to the hidden layer) and
+`W_output` (readout). The optional recurrent hidden-to-hidden term
+(`recurrent_layer_add`) is off in every saved cohort.
 
 | Experiment | hidden | batch | L2 | `m_time_scale` (λ) |
 |---|---|---|---|---|
@@ -155,6 +160,11 @@ with the λ tag when λ ≠ 0.99
   geometry analyses and figures.
 - [docs/pretraining.md](docs/pretraining.md): the transfer experiment, its
   figure options and output directories.
+- [docs/biology.md](docs/biology.md): the data behind the biological
+  reference panels of the introductory figure (MICrONS connectivity, Allen
+  Synaptic Physiology dynamics) and which panels are schematics.
+- [docs/paper_figures.md](docs/paper_figures.md): which figure and cache
+  each panel of the composed paper figures comes from.
 - [SCHEME.md](SCHEME.md): timing convention and figure color scheme.
 
 ## Acknowledgements

@@ -773,9 +773,15 @@ _ONETASK_PERIOD_COLORS = [
 # index saved pickles — which is exactly why the mapping happens at DISPLAY time:
 # pickles solved before this convention still carry period_title="Fixation", and
 # `_period_display` normalizes them on the way to the axes.
+# The third period is "Memory" in the same vocabulary (SCHEME.md: Memory, not
+# Delay); the fixed-point pickles title it "Delay" and key it "longdelay", and
+# both render as Memory here, so the period titles and the "Memory PC" axes of
+# the fixed-point figures match the trial bars and the cross-period heatmaps.
 _PERIOD_DISPLAY_RENAMES = {
     "fixation": "Context",
     "longfixation": "Context",
+    "delay": "Memory",
+    "longdelay": "Memory",
 }
 
 
@@ -8681,8 +8687,8 @@ def plot_onetask_long_fixed_points():
                 ax.set_ylim(y0 - py, y1 + py)
 
     # Shared x/y labels for the whole grid (all panels share the same axes).
-    fig.supxlabel("Delay PC1", fontsize=11)
-    fig.supylabel("Delay PC2", fontsize=11)
+    fig.supxlabel("Memory PC1", fontsize=11)
+    fig.supylabel("Memory PC2", fontsize=11)
 
     fig.tight_layout()
     out_path = OUT_DIR / "onetask_long_fixed_points.png"
@@ -8850,8 +8856,8 @@ def _render_grad_fixed_points(d, rep_key, out_path, basis=None):
                          overlay=overlay)
 
     # Shared x/y labels for the whole grid (all panels share the delay basis).
-    fig.supxlabel("Delay PC1", fontsize=11)
-    fig.supylabel("Delay PC2", fontsize=11)
+    fig.supxlabel("Memory PC1", fontsize=11)
+    fig.supylabel("Memory PC2", fontsize=11)
 
     # (equal-aspect panels are incompatible with tight_layout; bbox_inches on
     # save handles trimming.)
@@ -9077,6 +9083,14 @@ _GRAD_FP_3D_OVERLAY_COLOR = "0.55"
 # pick the SAME anchor point (they must, or a panel can draw a point outside its
 # own axes box).
 _GRAD_FP_TRAJ_STIM = 0
+
+# Marker fill of the one-task 3D fixed-point figures (onetask_grad_fixed_points_3d
+# and its RNN control). True draws every candidate solid, as the two-task 3D
+# figures do, and leaves convergence quality to onetask_interp_fixed_points
+# (residual per angle) and onetask_fixed_point_classification; False fills only
+# the strict fixed points (leak-normalized residual <= rel_tol_undamped) and
+# draws the approximate and failed candidates hollow, the 2D figures' encoding.
+ONETASK_GRAD_FP_3D_SOLID_CANDIDATES = True
 
 
 def _grad_fp_3d_anchor_xyz(results, periods, draw_periods, proj_by_period,
@@ -9557,17 +9571,21 @@ def _draw_grad_fp_3d_row(fig, results, periods, proj_by_period, z_by_period,
             _pane.pane.set_visible(False)
 
 
-def _render_grad_fixed_points_3d(d, rep_key, out_path, basis=None):
+def _render_grad_fixed_points_3d(d, rep_key, out_path, basis=None, solid_candidates=None):
     """Single-rule 3D grad fixed-point figure (one row of period panels) from an
-    already-loaded pickle dict `d`: the x-y plane is a delay-period PCA of the
+    already-loaded pickle dict `d`: the x-y plane is a memory-period PCA of the
     fixed points, and the z-axis is the TARGET (expected) cos-output for each
-    fixed point's stimulus, cos θ. z is ~0 for fixation/stimulus/delay and equals
+    fixed point's stimulus, cos θ. z is ~0 for context/stimulus/memory and equals
     cos θ only in the Response panel — the ring lifts off the z=0 plane only
     there.
 
     `basis`: an optional stored 2-component PCA to project into. When None (the
-    normal one-task path), load this pickle's saved delay-period basis. A supplied
-    basis is used by the vanilla-RNN control so it can share the MPN coordinates."""
+    normal one-task path), load this pickle's saved memory-period basis. A supplied
+    basis is used by the vanilla-RNN control so it can share the MPN coordinates.
+    `solid_candidates`: draw every candidate solid (True) or only the strict fixed
+    points, the rest hollow (False); None takes ONETASK_GRAD_FP_3D_SOLID_CANDIDATES."""
+    if solid_candidates is None:
+        solid_candidates = ONETASK_GRAD_FP_3D_SOLID_CANDIDATES
     _ensure_out_dir()
     results = d["results"]
     periods = list(results.keys())
@@ -9609,7 +9627,7 @@ def _render_grad_fixed_points_3d(d, rep_key, out_path, basis=None):
     _draw_grad_fp_3d_row(fig, results, periods, proj, zc, traj, n_stim, lim, zmax,
                          n_rows=1, row_idx=0, n_col=n_col,
                          show_period_titles=True, row_label=None,
-                         pc_label=pc_label)
+                         pc_label=pc_label, solid_candidates=solid_candidates)
     # Per-panel z-labels now (no shared right-margin label), so use full width.
     fig.subplots_adjust(left=0.02, right=0.98, bottom=0.02, top=0.92, wspace=0.12)
     _save_fig(fig, out_path)
@@ -9633,7 +9651,10 @@ def plot_onetask_grad_fixed_points_3d():
       onetask_grad_fixed_points_3d_modulation.png
       onetask_grad_fixed_points_3d_emodulation.png
       onetask_grad_fixed_points_3d_hidden.png
-    Reads fixed_points_grad_{aname}.pkl.
+    Reads fixed_points_grad_{aname}.pkl. Every candidate is drawn solid when
+    ONETASK_GRAD_FP_3D_SOLID_CANDIDATES is True (the default; convergence is
+    reported by onetask_interp_fixed_points and
+    onetask_fixed_point_classification), else only the strict fixed points.
     """
     _plot_onetask_grad_fixed_points_3d("fixed_M", "onetask_grad_fixed_points_3d_modulation.png")
     _plot_onetask_grad_fixed_points_3d("fixed_WM", "onetask_grad_fixed_points_3d_emodulation.png")
@@ -9970,7 +9991,7 @@ _STABILITY_PHASE_ORDER = {
 _STABILITY_PHASE_LABELS = {
     "longfixation": "Context",
     "longstimulus": "Stimulus",
-    "longdelay": "Delay",
+    "longdelay": "Memory",
     "longresponse": "Response",
 }
 _STABILITY_PROBE_SUFFIXES = (

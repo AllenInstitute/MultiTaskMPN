@@ -188,6 +188,30 @@ class FixedPointPCATests(unittest.TestCase):
         finally:
             paper.plt.close(fig)
 
+    def test_one_task_3d_fill_follows_the_switch(self):
+        """The one-task 3D renderer takes its marker fill from
+        ONETASK_GRAD_FP_3D_SOLID_CANDIDATES unless told otherwise."""
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "fixed_points_grad_synthetic.pkl"
+            source.write_bytes(pickle.dumps(self.data))
+            export.export_fixed_point_pca(source)
+            data = paper._load_pkl_or_skip(source)
+            self.assertTrue(paper.ONETASK_GRAD_FP_3D_SOLID_CANDIDATES)
+            for switch, explicit, expected in ((True, None, True), (False, None, False),
+                                               (False, True, True), (True, False, False)):
+                with self.subTest(switch=switch, explicit=explicit), \
+                        patch.object(paper, "ONETASK_GRAD_FP_3D_SOLID_CANDIDATES", switch), \
+                        patch.object(paper, "_draw_grad_fp_3d_row") as draw, \
+                        patch.object(paper, "_ensure_out_dir"), \
+                        patch.object(paper, "_save_fig"):
+                    try:
+                        kwargs = {} if explicit is None else {"solid_candidates": explicit}
+                        paper._render_grad_fixed_points_3d(
+                            data, "fixed_hidden", Path(directory) / "3d.png", **kwargs)
+                        self.assertEqual(draw.call_args.kwargs["solid_candidates"], expected)
+                    finally:
+                        paper.plt.close("all")
+
     def test_interp_plot_distinguishes_strict_approximate_and_failed(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "fixed_points_grad_synthetic.pkl"

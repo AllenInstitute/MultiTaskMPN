@@ -543,7 +543,9 @@ def plot_mouse_shape(out_dir=OUT_DIR, style="gradient", margin=8):
 # induction plus two recovery pulses), one slot each, and the x axis is
 # labeled with each pulse's real time after the first presynaptic spike
 # (SCHEME.md: trial time in ms); the uneven time gaps between slots are
-# left to the tick labels, with no break glyph. Within a slot one unit spans
+# left to the tick labels, with no break glyph. For the recovery pulses that
+# time assumes the protocol's 250 ms pause, while the pooled trials include
+# pauses of 125 ms to 4 s (docs/biology.md). Within a slot one unit spans
 # one 20 ms inter-pulse interval, and - as in the paper - each mean waveform
 # is centered on its pulse's dot column rather than placed at its absolute
 # latency (a PSP peaks 3-4 ms after the spike, which would otherwise shift
