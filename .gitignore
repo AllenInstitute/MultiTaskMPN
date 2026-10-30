@@ -64,11 +64,14 @@ SCHEME.md
 # Codex
 .codex/
 
-# Normalized lesion output
+# Normalized lesion output (lesion.py's controls, and one directory per
+# activity-matched control pool)
 multiple_tasks_norm/
+multiple_tasks_norm_*/
 
-# Paper figures
+# Paper figures (and the renders of another lesion control pool)
 paper_plot/
+paper_plot_*/
 
 # Cartoon figures (incl. the mouse.png reference the silhouette is traced from)
 # and the recorded traces the biology/ scripts write beside them

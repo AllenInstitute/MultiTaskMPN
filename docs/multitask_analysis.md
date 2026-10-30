@@ -27,7 +27,8 @@ python multiple_task/run_pipeline.py --feature L21e3 --seed 299 365 487 501 934
 # more training). A run counts as completed when all four steps wrote their
 # last file: cluster_info and cluster_info_mod, lesion_prune_results, the
 # lesion_controls pickle of --control-pool (responsive by default) and the
-# two lesion_interaction pickles; a run missing any is redone from step 1,
+# two lesion_interaction pickles of each plotted pool (multiple_tasks_norm/
+# and multiple_tasks_norm_<pool>/); a run missing any is redone from step 1,
 # or with --resume only its missing steps are run (how runs lesioned before
 # the controls step existed get their controls and plots).
 # --skip-completed needs --feature or --seed; to spread a cohort over nodes,
@@ -63,8 +64,9 @@ correctly spelled files take precedence when both exist. Conflicting new/old
 keys in one cache raise an error rather than losing data. New results use only
 the corrected spelling; this compatibility does not bypass schema validation.
 Mode runs retain the existing
-behavior of clearing top-level `paper_plot/` outputs; `--only` preserves other
-figures.
+behavior of clearing top-level `paper_plot/` outputs (`paper_plot_<pool>/`
+under `--control-pool`, see [Activity-matched controls](#activity-matched-controls));
+`--only` preserves other figures.
 
 The `multiple_tasks` and `lesion` figures read one L2 cohort of the
 `everything_seed*_L2<l2>+hidden300+batch128+angle` runs, selected by
@@ -392,7 +394,8 @@ removed.
 `python multiple_task/state_space_vs_lesion.py` links the state-space and
 lesion analyses over the task pairs. For every run with both a state-space
 structure cache (`state_space/state_space_structure_<aname>_noise0.01.pkl`)
-and lesion caches (`multiple_tasks_norm/<aname>/`), it relates the Euclidean
+and lesion caches (`multiple_tasks_norm/<aname>/`, `lesion.py`'s controls),
+it relates the Euclidean
 distance between the two tasks' full-dimensional context-end centroids (hidden
 state and W ⊙ M, the saved distance matrices) to the similarity of their
 lesion-effect profiles: for neuron clusters the saved `causal_similarity` of
@@ -440,7 +443,8 @@ python figures/paper_plot.py --only om_vs_lesion
 ```
 Use `--seed all` in the first command to update every matching run's OM results.
 This reuses completed lesion experiments, but clears and regenerates the selected
-runs' post-processing outputs in `multiple_tasks_norm/`.
+runs' post-processing outputs in the control pool's cache directory
+(`multiple_tasks_norm/` by default).
 
 ## Activity-matched controls
 
@@ -485,8 +489,10 @@ python multiple_task/lesion_plot.py --seed all --feature L21e4 --control-pool re
 ```
 
 `lesion_plot.py --control-pool responsive` overlays that pickle on the
-lesion pickle in memory (`core/lesion_cache.overlay_lesion_controls`): every
-single-cluster analysis (normalized effects, causal dependency, cluster
+lesion pickle in memory (`core/lesion_cache.overlay_lesion_controls`) and
+writes its caches to `multiple_tasks_norm_responsive/<aname>/` instead of
+`multiple_tasks_norm/` (`lesion_cache.norm_root`), so the historical caches
+stay in place: every single-cluster analysis (normalized effects, causal dependency, cluster
 correlation, plasticity share, OM profiles, causal-vs-activity, task
 specificity and sharing) then reads the activity-matched controls, while the
 combined lesions keep `lesion.py`'s: the OM scatters and the OM profile
@@ -496,10 +502,21 @@ combined effects under `lesion.py`'s (their caches record
 from `lesion.py`'s pickle so that its three terms share one control.
 `state_space_vs_lesion.py` records the pool of the caches it reads
 (`control_pool` per run). Its default, `lesion_plot.DEFAULT_CONTROL_POOL`
-(`all`), reproduces the historical analyses; `run_pipeline.py` computes and
-reads the responsive pool (`--control-pool`, `--control-repeats`) as its
-third and fourth steps, and `--resume` lets runs lesioned before the step
-existed get their controls and plots without a second lesion pass. Every
+(`all`), reproduces the historical analyses; `run_pipeline.py` computes the
+responsive pool as its third step (`--control-pool`, `--control-repeats`)
+and its fourth step plots both pools, `lesion.py`'s into
+`multiple_tasks_norm/` and the responsive one into its own directory, and
+`--resume` lets runs lesioned before the step existed get their controls and
+plots without a second lesion pass. `paper_plot.py` reads
+`multiple_tasks_norm/` by default (`LESION_CONTROL_POOL = "all"`), so its
+lesion figures keep showing the historical analyses; `--control-pool
+responsive` reads `multiple_tasks_norm_responsive/` and writes to
+`paper_plot_responsive/` under the same figure names, so the two renders
+can be compared and merged later. The pool figure below works from either
+directory, since each pool's task-specificity cache holds the counts under
+every pool available when it was written. `state_space_vs_lesion.py` reads
+`multiple_tasks_norm/` and records that pool; under another pool its two
+figures are skipped with a note. Every
 cache `lesion_plot.py` writes records `control_pool`, `control_repeats` and
 `control_test_seed`; cohort figures in `paper_plot.py` refuse to mix runs
 whose task-specificity caches used different pools. A lesion is significant

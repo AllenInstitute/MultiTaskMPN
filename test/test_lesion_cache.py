@@ -9,7 +9,7 @@ from unittest.mock import patch
 import _bootstrap  # noqa: F401
 import numpy as np
 from core.lesion_cache import (controls_pickle_path, load_lesion_pickle, normalize_lesion_cache,
-                               overlay_lesion_controls, resolve_lesion_cache_path)
+                               norm_root, overlay_lesion_controls, resolve_lesion_cache_path)
 
 
 class LesionCacheTests(unittest.TestCase):
@@ -81,10 +81,14 @@ class LesionCacheTests(unittest.TestCase):
             self.assertFalse(missing.exists())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 class LesionControlsOverlayTests(unittest.TestCase):
+    def test_norm_root_keeps_one_directory_per_pool(self):
+        self.assertEqual(norm_root(), Path("multiple_tasks_norm"))
+        self.assertEqual(norm_root("all", "/data"), Path("/data/multiple_tasks_norm"))
+        self.assertEqual(norm_root("responsive"), Path("multiple_tasks_norm_responsive"))
+        with self.assertRaises(ValueError):
+            norm_root("silent")
+
     """overlay_lesion_controls swaps the single-cluster records of a lesion
     pickle for a lesion_controls pickle's, in memory, after checking that
     both describe the same clusters."""

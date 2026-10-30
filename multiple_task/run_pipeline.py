@@ -8,8 +8,10 @@ Run the full analysis pipeline for each experiment:
   3. lesion_controls         — the single-cluster lesions scored again on a
      seeded test set with activity-matched random controls (--control-pool,
      --control-repeats)
-  4. lesion_plot             — normalized lesion effect plots, reading the
-     controls of --control-pool
+  4. lesion_plot             — normalized lesion effect plots with lesion.py's
+     controls (multiple_tasks_norm/, the historical caches paper_plot reads
+     by default) and, unless --control-pool is all, again with that pool
+     (multiple_tasks_norm_<pool>/)
 
 Run selection: every checkpoint in multiple_tasks/ that matches --feature and
 --seed. With --skip-completed, runs whose four steps have all written their
@@ -20,7 +22,8 @@ the steps whose last output exists and redoes the rest; step 4 is never
 skipped after step 3 ran, since its plots read the controls (so runs
 lesioned before step 3 existed get their controls and plots without a
 second lesion pass). lesion.main overwrites its outputs by name and lesion_plot.main clears
-multiple_tasks_norm/<run>/, so no partial state is reused.
+the run's directory under its pool's cache root, so no partial state is
+reused.
 """
 import argparse
 import re
@@ -29,6 +32,7 @@ from pathlib import Path
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 from run_logging import tee_output
+import lesion_cache
 import multiple_task_analysis
 import sibling_delay_analysis
 import lesion
@@ -38,7 +42,6 @@ import lesion_plot
 CHECKPOINT_DIR = Path("multiple_tasks")
 ANALYSIS_DIR = Path("multiple_tasks_analysis")
 PERF_DIR = Path("multiple_tasks_perf")
-NORM_DIR = Path("multiple_tasks_norm")
 CHECKPOINT_PATTERN = re.compile(
     r"savednet_everything_seed(\d+)_([^+]+)\+hidden\d+\+batch\d+\+angle\.pt")
 # The control pool the pipeline computes (step 3) and reads (step 4): the
@@ -54,6 +57,12 @@ def run_name(seed, feature):
     return f"everything_seed{seed}_{feature}+hidden300+batch128+angle"
 
 
+def lesion_plot_pools(control_pool):
+    """The control pools step 4 plots: lesion.py's (all) always, and
+    `control_pool` when it is another one."""
+    return ("all",) if control_pool == "all" else ("all", control_pool)
+
+
 def pipeline_markers(aname, root=Path("."), control_pool=DEFAULT_CONTROL_POOL):
     """The last file each pipeline step writes for a run, keyed by step.
 
@@ -61,7 +70,8 @@ def pipeline_markers(aname, root=Path("."), control_pool=DEFAULT_CONTROL_POOL):
     comes earlier, and the lesion steps need both); lesion.main ends with
     lesion_prune_results; lesion_controls.main with the lesion_controls
     pickle of `control_pool`; lesion_plot.main ends with the two
-    lesion_interaction pickles.
+    lesion_interaction pickles, in the cache directory of each pool it is
+    run with (lesion_cache.norm_root).
     """
     root = Path(root)
     analysis_dir = root / ANALYSIS_DIR / aname
@@ -71,8 +81,9 @@ def pipeline_markers(aname, root=Path("."), control_pool=DEFAULT_CONTROL_POOL):
                                    analysis_dir / f"cluster_info_mod_{aname}.pkl"],
         "lesion": [perf_dir / f"lesion_prune_results_{aname}.pkl"],
         "lesion_controls": [perf_dir / f"lesion_controls_{control_pool}_{aname}.pkl"],
-        "lesion_plot": [root / NORM_DIR / aname / f"lesion_interaction_{vtag}_{aname}.pkl"
-                        for vtag in ("norm", "unnorm")],
+        "lesion_plot": [lesion_cache.norm_root(pool, root) / aname
+                        / f"lesion_interaction_{vtag}_{aname}.pkl"
+                        for pool in lesion_plot_pools(control_pool) for vtag in ("norm", "unnorm")],
     }
 
 
@@ -165,14 +176,16 @@ def run_pipeline(seed, feature, families=(), sibling_method=None, resume=False,
         lesion_controls.main(seed, feature, pool=control_pool, repeats=control_repeats)
         print(f"    done ({time.time() - t3:.1f}s)")
 
-    print(f"\n--- Step 4/4: lesion_plot ({control_pool} pool) ---")
+    pools = lesion_plot_pools(control_pool)
+    print(f"\n--- Step 4/4: lesion_plot ({', '.join(pools)} pool{'s' if len(pools) > 1 else ''}) ---")
     # The plots read the controls, so new controls always get new plots.
     if done("lesion_plot") and not controls_ran:
         print("    skipped: outputs exist (--resume)")
     else:
-        t4 = time.time()
-        lesion_plot.main(seed, feature, control_pool=control_pool)
-        print(f"    done ({time.time() - t4:.1f}s)")
+        for pool in pools:
+            t4 = time.time()
+            lesion_plot.main(seed, feature, control_pool=pool)
+            print(f"    {pool} pool done ({time.time() - t4:.1f}s)")
 
     print(f"\n  Pipeline complete: {aname} ({time.time() - t0:.1f}s total)")
 
@@ -196,7 +209,8 @@ def parse_args(argv=None):
                              "redone from step 1).")
     parser.add_argument("--control-pool", choices=lesion_controls.CONTROL_POOLS,
                         default=DEFAULT_CONTROL_POOL,
-                        help="Random-control pool step 3 computes and step 4 reads "
+                        help="Random-control pool step 3 computes and step 4 plots in "
+                             "addition to lesion.py's, into multiple_tasks_norm_<pool>/ "
                              f"(default: {DEFAULT_CONTROL_POOL}).")
     parser.add_argument("--control-repeats", type=int, default=DEFAULT_CONTROL_REPEATS,
                         help="Random controls per (side, size) and task in step 3 "

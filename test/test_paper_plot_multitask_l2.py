@@ -188,23 +188,69 @@ class MultitaskL2ControlTests(unittest.TestCase):
         finally:
             os.chdir(previous_cwd)
 
+    def test_control_pool_switches_the_lesion_cache_root_and_output_dir(self):
+        """--control-pool responsive reads multiple_tasks_norm_responsive/ and
+        writes paper_plot_responsive/; the default keeps the historical
+        caches and figures untouched."""
+        write_cache(self.root / "multiple_tasks_perf", aname(921, "1e4"))
+        write_cache(self.root / "multiple_tasks_norm", aname(921, "1e4"), "normalized_lesion_effects")
+        write_cache(self.root / "multiple_tasks_norm_responsive", aname(11, "1e4"),
+                    "normalized_lesion_effects")
+        module = self.load_module()
+        self.assertEqual((module.LESION_CONTROL_POOL, module.OUT_DIR), ("all", Path("paper_plot")))
+        previous_cwd = Path.cwd()
+        try:
+            os.chdir(self.root)
+            with patch("builtins.print"):
+                module._set_lesion_control_pool("responsive")
+                module._set_multitask_l2("1e4")
+            self.assertEqual(module.LESION_NORM_ROOT, Path("multiple_tasks_norm_responsive"))
+            self.assertEqual(module._MULTITASK_CACHE_ROOTS["lesion"],
+                             (Path("multiple_tasks_perf"), Path("multiple_tasks_norm_responsive")))
+            self.assertEqual(module.OUT_DIR, Path("paper_plot_responsive"))
+            self.assertEqual(module.LESION_NORM_DIR,
+                             Path("multiple_tasks_norm_responsive") / module.LESION_ANAME)
+            self.assertEqual([d.name for d in module._sibling_run_dirs()], [aname(11, "1e4")])
+            with patch("builtins.print"):
+                module._set_lesion_control_pool("all")
+                module._set_multitask_l2("1e4")
+            self.assertEqual(module.LESION_NORM_DIR, Path("multiple_tasks_norm") / aname(921, "1e4"))
+            self.assertEqual(module.OUT_DIR, Path("paper_plot"))
+            self.assertEqual([d.name for d in module._sibling_run_dirs()], [aname(921, "1e4")])
+        finally:
+            os.chdir(previous_cwd)
+        with self.assertRaises(ValueError):
+            module._set_lesion_control_pool("silent")
+
     def test_command_line_override_switches_cohort_before_plotting(self):
         modes = {mode: {name: Mock(name=name) for name in group}
                  for mode, group in paper_plot.FIGURES_BY_MODE.items()}
         figures = {name: fn for group in modes.values() for name, fn in group.items()}
-        for arguments, expected_calls in ((["lesion"], []),
-                                          (["--multitask-l2", paper_plot.MULTITASK_L2, "lesion"], []),
-                                          (["--multitask-l2", "1e4", "lesion"], ["1e4"])):
+        cases = ((["lesion"], [], []),
+                 (["--multitask-l2", paper_plot.MULTITASK_L2, "lesion"], [], []),
+                 (["--multitask-l2", "1e4", "lesion"], ["1e4"], []),
+                 (["--control-pool", "all", "lesion"], [], []),
+                 # Another pool re-resolves the lesion run under its cache root.
+                 (["--control-pool", "responsive", "lesion"], [paper_plot.MULTITASK_L2],
+                  ["responsive"]),
+                 (["--control-pool", "responsive", "--multitask-l2", "1e4", "lesion"], ["1e4"],
+                  ["responsive"]))
+        for arguments, expected_calls, expected_pools in cases:
             with self.subTest(arguments=arguments), \
                     patch.object(paper_plot, "FIGURES_BY_MODE", modes), \
                     patch.object(paper_plot, "ALL_FIGURES", figures), \
                     patch.object(paper_plot, "OUT_DIR", self.root), \
                     patch.object(paper_plot, "_set_pretraining_bound"), \
                     patch.object(paper_plot, "_set_multitask_l2") as setter, \
+                    patch.object(paper_plot, "_set_lesion_control_pool") as pool_setter, \
                     patch("sys.argv", ["paper_plot.py", *arguments]), \
                     patch("builtins.print") as output:
                 paper_plot.main()
                 self.assertEqual([call.args[0] for call in setter.call_args_list], expected_calls)
+                self.assertEqual([call.args[0] for call in pool_setter.call_args_list],
+                                 expected_pools)
+                self.assertTrue(any("lesion controls: all pool" in str(call.args[0])
+                                    for call in output.call_args_list if call.args))
                 self.assertTrue(any(
                     f"lesion: {paper_plot.LESION_ANAME} (L2={paper_plot.MULTITASK_L2}" in str(call.args[0])
                     for call in output.call_args_list if call.args))

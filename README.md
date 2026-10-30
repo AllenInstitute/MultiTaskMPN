@@ -112,6 +112,8 @@ python pretrain/pretraining_post.py --feature L21e3lam0.9
 # Paper figures: everything, one mode, or one figure
 python figures/paper_plot.py
 python figures/paper_plot.py multiple_tasks lesion --multitask-l2 1e4
+# lesion figures from the activity-matched controls, into paper_plot_responsive/
+python figures/paper_plot.py lesion --multitask-l2 1e4 --control-pool responsive
 python figures/paper_plot.py pretraining --pretraining-lambda 0.9
 python figures/paper_plot.py --only state_space_vs_lesion
 ```
@@ -137,11 +139,11 @@ with the λ tag when λ ≠ 0.99
 |---|---|
 | `multiple_tasks/` | Multi-task checkpoints, recorded activity, learning curves |
 | `multiple_tasks_analysis/` | Clustering results and per-run analysis figures |
-| `multiple_tasks_perf/`, `multiple_tasks_norm/` | Lesion results (with the activity-matched controls of `lesion_controls.py`) and lesion plots |
+| `multiple_tasks_perf/`, `multiple_tasks_norm/`, `multiple_tasks_norm_responsive/` | Lesion results (with the activity-matched controls of `lesion_controls.py`), lesion plots with `lesion.py`'s controls and with the activity-matched ones |
 | `state_space/`, `two_in_multiples/` | State-space and sibling-task geometry caches |
 | `onetask/`, `twotasks/` | Single- and two-task runs and analyses |
 | `pretraining/`, `pretraining_analysis/` | Pretraining runs and analysis caches |
-| `paper_plot/` | Publication figures |
+| `paper_plot/`, `paper_plot_responsive/` | Publication figures (the second holds the lesion figures rendered from the activity-matched controls) |
 | `cartoon_plot/` | Schematic cartoons (`figures/cartoon.py`) |
 | `log/` | stdout/stderr copies of the training, pipeline and pretraining runs (`core/run_logging.py`) |
 

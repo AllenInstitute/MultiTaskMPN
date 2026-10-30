@@ -11,14 +11,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import _bootstrap  # noqa: F401
+import lesion_cache
 from script_namespace import load_script_namespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "multiple_task" / "run_pipeline.py"
-FUNCTIONS = ["run_name", "pipeline_markers", "is_completed", "discover_runs",
-             "select_runs", "run_pipeline", "parse_args", "main"]
-CONSTANTS = ["CHECKPOINT_DIR", "ANALYSIS_DIR", "PERF_DIR", "NORM_DIR", "CHECKPOINT_PATTERN",
+FUNCTIONS = ["run_name", "lesion_plot_pools", "pipeline_markers", "is_completed",
+             "discover_runs", "select_runs", "run_pipeline", "parse_args", "main"]
+CONSTANTS = ["CHECKPOINT_DIR", "ANALYSIS_DIR", "PERF_DIR", "CHECKPOINT_PATTERN",
              "DEFAULT_CONTROL_POOL", "DEFAULT_CONTROL_REPEATS", "STEPS"]
 # lesion_controls' pool constants, read by the markers and the CLI defaults.
 CONTROLS_STUB = SimpleNamespace(CONTROL_POOLS=("responsive", "all"), DEFAULT_POOL="responsive",
@@ -35,7 +37,7 @@ class RunPipelineSelectionTests(unittest.TestCase):
         cls.ns = load_script_namespace(
             SOURCE, FUNCTIONS, CONSTANTS,
             extra={"argparse": argparse, "sibling_delay_analysis": SIBLING_STUB,
-                   "lesion_controls": CONTROLS_STUB})
+                   "lesion_controls": CONTROLS_STUB, "lesion_cache": lesion_cache})
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -76,11 +78,17 @@ class RunPipelineSelectionTests(unittest.TestCase):
              f"multiple_tasks_perf/{aname}/lesion_prune_results_{aname}.pkl",
              f"multiple_tasks_perf/{aname}/lesion_controls_responsive_{aname}.pkl",
              f"multiple_tasks_norm/{aname}/lesion_interaction_norm_{aname}.pkl",
-             f"multiple_tasks_norm/{aname}/lesion_interaction_unnorm_{aname}.pkl"])
-        # The controls marker follows the pool the pipeline is run with.
-        self.assertEqual(
-            self.ns["pipeline_markers"](aname, self.root, "all")["lesion_controls"][0].name,
-            f"lesion_controls_all_{aname}.pkl")
+             f"multiple_tasks_norm/{aname}/lesion_interaction_unnorm_{aname}.pkl",
+             f"multiple_tasks_norm_responsive/{aname}/lesion_interaction_norm_{aname}.pkl",
+             f"multiple_tasks_norm_responsive/{aname}/lesion_interaction_unnorm_{aname}.pkl"])
+        # The controls marker follows the pool the pipeline is run with, and
+        # with the all pool lesion_plot runs once, into multiple_tasks_norm/.
+        markers = self.ns["pipeline_markers"](aname, self.root, "all")
+        self.assertEqual(markers["lesion_controls"][0].name, f"lesion_controls_all_{aname}.pkl")
+        self.assertEqual([path.parent.parent.name for path in markers["lesion_plot"]],
+                         ["multiple_tasks_norm", "multiple_tasks_norm"])
+        self.assertEqual(self.ns["lesion_plot_pools"]("all"), ("all",))
+        self.assertEqual(self.ns["lesion_plot_pools"]("responsive"), ("all", "responsive"))
 
     def test_discover_runs_orders_by_feature_then_seed(self):
         for seed, feature in [(101, "L21e4"), (11, "L21e4"), (86, "L21e3"), (921, "L21e4")]:
@@ -149,7 +157,8 @@ class RunPipelineSelectionTests(unittest.TestCase):
         ns = load_script_namespace(
             SOURCE, FUNCTIONS, CONSTANTS,
             extra={"argparse": argparse, "sibling_delay_analysis": SIBLING_STUB,
-                   "lesion_controls": controls, "time": __import__("time"), **stubs})
+                   "lesion_controls": controls, "lesion_cache": lesion_cache,
+                   "time": __import__("time"), **stubs})
         return ns, calls
 
     def _run_from_root(self, run_pipeline, *args, **kwargs):
@@ -172,13 +181,18 @@ class RunPipelineSelectionTests(unittest.TestCase):
         self._write_markers(749, "L21e4", steps=["multiple_task_analysis", "lesion"])
         self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=True,
                             control_pool="responsive", control_repeats=7)
-        self.assertEqual([name for name, _, _ in calls], ["lesion_controls", "lesion_plot"])
+        # lesion_plot runs for lesion.py's controls first (the historical
+        # caches), then for the activity-matched pool.
+        self.assertEqual([name for name, _, _ in calls],
+                         ["lesion_controls", "lesion_plot", "lesion_plot"])
         self.assertEqual(calls[0][1:], ((749, "L21e4"), {"pool": "responsive", "repeats": 7}))
-        self.assertEqual(calls[1][1:], ((749, "L21e4"), {"control_pool": "responsive"}))
+        self.assertEqual(calls[1][1:], ((749, "L21e4"), {"control_pool": "all"}))
+        self.assertEqual(calls[2][1:], ((749, "L21e4"), {"control_pool": "responsive"}))
         calls.clear()
         self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=False)
         self.assertEqual([name for name, _, _ in calls],
-                         ["multiple_task_analysis", "lesion", "lesion_controls", "lesion_plot"])
+                         ["multiple_task_analysis", "lesion", "lesion_controls", "lesion_plot",
+                          "lesion_plot"])
         self.assertEqual(calls[1][1:], ((749, "L21e4"), {}))
         self.assertEqual(calls[2][2], {"pool": "responsive", "repeats": 30})
 
@@ -190,11 +204,17 @@ class RunPipelineSelectionTests(unittest.TestCase):
         self._write_markers(749, "L21e4",
                             steps=["multiple_task_analysis", "lesion", "lesion_plot"])
         self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=True)
-        self.assertEqual([name for name, _, _ in calls], ["lesion_controls", "lesion_plot"])
+        self.assertEqual([name for name, _, _ in calls],
+                         ["lesion_controls", "lesion_plot", "lesion_plot"])
         calls.clear()
         self._write_markers(749, "L21e4")
         self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=True)
         self.assertEqual(calls, [])
+        # With the all pool the plots are made once, with lesion.py's controls.
+        self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=False, control_pool="all")
+        self.assertEqual([(name, kwargs) for name, _, kwargs in calls][-2:],
+                         [("lesion_controls", {"pool": "all", "repeats": 30}),
+                          ("lesion_plot", {"control_pool": "all"})])
 
     def test_main_warns_before_redoing_lesioned_runs_without_resume(self):
         """Selecting a lesioned run without --resume redoes hours of work; the

@@ -56,8 +56,20 @@ def load_lesion_pickle(path):
 
 # Pools a lesion_controls pickle can draw its random controls from.
 CONTROL_POOLS = ("all", "responsive")
+NORM_ROOT_NAME = "multiple_tasks_norm"
 SINGLE_CLUSTER_RECORDS = ("lesion", "random_lesion", "lesion_unnorm", "random_lesion_unnorm")
 MOD_BASELINE_NAMES = ("mod_nolesion", "mod_cNone")
+
+
+def norm_root(pool="all", root=Path(".")):
+    """Directory of lesion_plot.py's per-run caches for one control pool:
+    multiple_tasks_norm/ for lesion.py's every-unit controls (the historical
+    layout, what paper_plot.py and state_space_vs_lesion.py read by default)
+    and multiple_tasks_norm_<pool>/ for a lesion_controls pool, so the
+    caches of the two pools never overwrite each other."""
+    if pool not in CONTROL_POOLS:
+        raise ValueError(f"pool must be one of {CONTROL_POOLS}, got {pool!r}")
+    return Path(root) / (NORM_ROOT_NAME if pool == "all" else f"{NORM_ROOT_NAME}_{pool}")
 
 
 def controls_pickle_path(lesion_pickle_path, pool):

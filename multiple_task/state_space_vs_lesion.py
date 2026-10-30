@@ -5,7 +5,8 @@ Links the state-space and lesion analyses over the task pairs. For every run
 that has both a state-space structure cache
 (``state_space/state_space_structure_<aname>_noise0.01.pkl``, from
 ``state_space_structure.py``) and lesion caches (``multiple_tasks_norm/<aname>/``,
-from ``lesion_plot.py``), it relates, over the 105 task pairs, the distance
+from ``lesion_plot.py`` with lesion.py's every-unit controls, the ``all``
+pool, which every entry records), it relates, over the 105 task pairs, the distance
 between the two tasks' full-dimensional context-end centroids (hidden state
 and W * M, the saved distance matrices) to the similarity of their
 lesion-effect profiles:

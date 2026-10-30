@@ -2,8 +2,10 @@
 Paper figure generation for the MultiTaskMPN project.
 
 Each public function produces one publication-ready figure and saves it
-to the `paper_plot/` directory. Run the script directly to generate all
-figures, or import individual functions as needed.
+to the `paper_plot/` directory (`paper_plot_<pool>/` when the lesion figures
+are rendered from another lesion control pool, `--control-pool`). Run the
+script directly to generate all figures, or import individual functions as
+needed.
 
 Figures are grouped into modes by the experiment they depend on:
     one_task         single-task training analyses
@@ -56,7 +58,8 @@ from core.sibling_geometry import (DELAYDM_METRIC_NAME, DMC_SWEEP_METRIC_NAME,
                                    best_task_specific_pc_pair, task_offsets,
                                    translation_metrics)
 from core.state_space_geometry import task_centroid_separation
-from core.lesion_cache import load_lesion_pickle, normalize_lesion_cache, resolve_lesion_cache_path
+from core.lesion_cache import (CONTROL_POOLS, load_lesion_pickle, normalize_lesion_cache, norm_root,
+                               resolve_lesion_cache_path)
 from pretrain.pretraining_utils import variant_addon
 
 # ─── Global style ────────────────────────────────────────────────────────────
@@ -189,7 +192,8 @@ def _load_twotask_glob_or_skip(pattern):
 # All figure output goes here; the run identifiers ("aname") below select which
 # trained run each mode's figures are drawn from. They are grouped by experiment
 # family so a run can be swapped in one place.
-OUT_DIR = Path("paper_plot")
+_OUT_DIR_NAME = "paper_plot"
+OUT_DIR = Path(_OUT_DIR_NAME)
 
 
 # ── Multi-task (one full multi-task network) ──
@@ -210,7 +214,15 @@ MULTITASK_L2_CHOICES = ("1e3", "1e4")
 _MULTITASK_RUN_SUFFIX = "+hidden300+batch128+angle"
 MULTITASK_ANALYSIS_ROOT = Path("multiple_tasks_analysis")
 LESION_PERF_ROOT = Path("multiple_tasks_perf")
-LESION_NORM_ROOT = Path("multiple_tasks_norm")
+# Random-control pool of the lesion caches the lesion figures read
+# (`--control-pool`): "all" is lesion.py's every-unit controls, the
+# historical results in multiple_tasks_norm/, and the default; "responsive"
+# is lesion_controls.py's activity-matched pool, whose caches lesion_plot.py
+# keeps in multiple_tasks_norm_responsive/. A pool other than all also moves
+# OUT_DIR to paper_plot_<pool>/, so the two renders coexist under the same
+# figure names (_set_lesion_control_pool).
+LESION_CONTROL_POOL = "all"
+LESION_NORM_ROOT = norm_root(LESION_CONTROL_POOL)
 # Designated example seed per cohort and figure category; None means "the
 # cached seed with the most complete caches, lowest seed on ties". For
 # L2=1e-4, seed 749 is the clustering example and seed 921 the lesion example
@@ -313,6 +325,20 @@ def _check_same_cohort(l2, **runs):
                            f"cohort; got {mismatched}")
 
 
+def _set_lesion_control_pool(pool):
+    """Select the random-control pool of the lesion caches: the root the
+    lesion figures read, the root that decides which seeds count as cached,
+    and the output directory. Does not re-resolve the lesion run; call
+    _set_multitask_l2 afterwards, as main() does."""
+    global LESION_CONTROL_POOL, LESION_NORM_ROOT, OUT_DIR
+    if pool not in CONTROL_POOLS:
+        raise ValueError(f"control pool must be one of {CONTROL_POOLS}, got {pool!r}")
+    LESION_CONTROL_POOL = pool
+    LESION_NORM_ROOT = norm_root(pool)
+    _MULTITASK_CACHE_ROOTS["lesion"] = (LESION_PERF_ROOT, LESION_NORM_ROOT)
+    OUT_DIR = Path(_OUT_DIR_NAME if pool == "all" else f"{_OUT_DIR_NAME}_{pool}")
+
+
 def _set_multitask_l2(l2):
     """Select the L2 cohort and re-resolve every multi-task run name and path.
 
@@ -337,8 +363,9 @@ def _set_multitask_l2(l2):
 
 # Clustering run (`multiple_tasks` figures) and its analysis directory, and the
 # lesion run shared by every single-run figure of the `lesion` mode with its
-# multiple_tasks_perf / multiple_tasks_norm directories. All six are assigned by
-# _set_multitask_l2 from the cohort above.
+# multiple_tasks_perf directory and its directory under LESION_NORM_ROOT (the
+# lesion control pool's cache root, _set_lesion_control_pool). All six are
+# assigned by _set_multitask_l2 from the cohort above.
 ANAME = DATA_DIR = LESION_ANAME = LESION_DIR = LESION_NORM_DIR = None
 _set_multitask_l2(MULTITASK_L2)
 # State-space example figures automatically select one run from the tanh,
@@ -4713,6 +4740,12 @@ def _state_space_vs_lesion_entry(combined, aname):
         # Schema 2 adds the saved OLS guide line of every panel.
         if entry["schema_version"] != 2 or entry["aname"] != aname:
             raise ValueError("schema or run does not match")
+        # state_space_vs_lesion.py reads the lesion caches of one pool (all,
+        # unless it is pointed elsewhere) and records it; a render of another
+        # pool must not show these numbers as that pool's.
+        if entry.get("control_pool", "all") != LESION_CONTROL_POOL:
+            raise ValueError(f"computed from the {entry.get('control_pool', 'all')} control "
+                             f"pool, not {LESION_CONTROL_POOL}")
         if entry["similarity_definitions"]["synapse"] != _SSL_SYNAPSE_DEFINITION:
             raise ValueError("synapse lesion similarity of another lesion mode (rerun the script)")
         n_pairs = len(entry["pairs"])
@@ -5290,7 +5323,8 @@ def plot_row_cluster_same_period():
 
 
 # ─── Figure: Cluster tuning vs lesion effect ─────────────────────────────────
-# LESION_NORM_DIR (multiple_tasks_norm/{LESION_ANAME}) is set by _set_multitask_l2.
+# LESION_NORM_DIR (LESION_NORM_ROOT/{LESION_ANAME}, the lesion control pool's
+# cache root) is set by _set_multitask_l2.
 CLUSTER_CORR_SCHEMA_VERSION = 2
 CLUSTER_CORR_X_DEFINITION = "pearson_corr_of_cluster_mean_tuning_profiles"
 CLUSTER_CORR_Y_DEFINITION = "one_minus_pearson_corr_of_z_scored_effect_profiles"
@@ -5460,7 +5494,7 @@ def _plot_cluster_corr_vs_lesion_variants(variants):
     """Render exact saved scatter variants without recomputing their analysis."""
     _ensure_out_dir()
     if not LESION_NORM_DIR.exists():
-        print("  Skipped: multiple_tasks_norm dir not found. Run lesion_plot.py first.")
+        print(f"  Skipped: {LESION_NORM_DIR} not found. Run lesion_plot.py first.")
         return
 
     for suffix, output_name, expected_entry in variants:
@@ -13831,6 +13865,17 @@ def main():
              "cached seed; aggregate figures summarize every cached seed.",
     )
     parser.add_argument(
+        "--control-pool",
+        choices=CONTROL_POOLS,
+        default=None,
+        help="Random-control pool of the lesion caches the lesion figures read "
+             f"(default: LESION_CONTROL_POOL = {LESION_CONTROL_POOL}): all is "
+             "lesion.py's every-unit controls (multiple_tasks_norm/, the "
+             "historical results), responsive the activity-matched controls of "
+             "lesion_controls.py (multiple_tasks_norm_responsive/). A pool other "
+             "than all writes to paper_plot_<pool>/ instead of paper_plot/.",
+    )
+    parser.add_argument(
         "--pretraining-bound",
         type=_parse_pretraining_bound,
         choices=("mb1", "mb2"),
@@ -13891,9 +13936,13 @@ def main():
     _set_pretraining_bound(args.pretraining_bound)
     _set_pretraining_lambda(args.pretraining_lambda)
     _set_pretraining_groups(args.pretraining_groups)
-    # Re-resolve the multi-task run names only when the cohort is overridden;
-    # the import-time selection already reflects MULTITASK_L2.
-    if args.multitask_l2 is not None and args.multitask_l2 != MULTITASK_L2:
+    # Re-resolve the multi-task run names only when the cohort or the lesion
+    # control pool is overridden; the import-time selection already reflects
+    # MULTITASK_L2 and LESION_CONTROL_POOL.
+    if args.control_pool is not None and args.control_pool != LESION_CONTROL_POOL:
+        _set_lesion_control_pool(args.control_pool)
+        _set_multitask_l2(args.multitask_l2 or MULTITASK_L2)
+    elif args.multitask_l2 is not None and args.multitask_l2 != MULTITASK_L2:
         _set_multitask_l2(args.multitask_l2)
 
     # Apply the legend toggle globally; every figure routes through _legend(),
@@ -13967,6 +14016,8 @@ def main():
     print("Experiment(s):")
     if {"multiple_tasks", "lesion"} & set(printed_modes):
         print(f"  multi-task cohort: {multitask_feature()} (shared by multiple_tasks and lesion)")
+    if "lesion" in printed_modes:
+        print(f"  lesion controls: {LESION_CONTROL_POOL} pool ({LESION_NORM_ROOT}/)")
     for m in printed_modes:
         print(f"  {m}: {mode_experiment.get(m, '?')}")
     print(f"Output: {OUT_DIR}/")

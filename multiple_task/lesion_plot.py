@@ -95,7 +95,10 @@ synapse clusters are selectively important for specific tasks. Produces:
     with cluster size and so does the chance of significance. Saved to
     task_specificity_{aname}.pkl for paper_plot.py.
 
-Outputs saved to ./multiple_tasks_norm/{aname}/.
+Outputs saved to multiple_tasks_norm/{aname}/ with lesion.py's controls
+(--control-pool all) and to multiple_tasks_norm_<pool>/{aname}/ with a
+lesion_controls.py pool (lesion_cache.norm_root), so the historical caches
+and the activity-matched ones coexist.
 
 The paper-facing normalized-effect cache records freeze_M as the primary
 modulation lesion (`primary_modulation_mode`), the mode paper_plot's lesion
@@ -119,7 +122,7 @@ matching that feature. Single-run filters must still select exactly one run
 — anything ambiguous or unmatched is an error. `--control-pool responsive`
 reads the activity-matched controls of lesion_controls.py instead of
 lesion.py's (DEFAULT_CONTROL_POOL; see the random-control pool note below).
-All old files in multiple_tasks_norm/{aname}/ are cleared once the run's
+All old files in the pool's output directory are cleared once the run's
 pickles have been read, so stale figures never survive a re-plot and a run
 without the requested controls keeps its caches (with `--seed all` such a
 run is skipped and named at the end).
@@ -140,7 +143,7 @@ import clustering
 from modulation_variants import (LESION_MODULATION_TYPES, MODULATION_TYPE_COLORS,
                                  MODULATION_VARIANCE_WEIGHTS)
 from lesion_cache import (CONTROL_POOLS, MOD_BASELINE_NAMES, controls_pickle_path,
-                          load_lesion_pickle, overlay_lesion_controls)
+                          load_lesion_pickle, norm_root, overlay_lesion_controls)
 
 mpl.rcParams.update({
     "font.family": "sans-serif",
@@ -974,8 +977,10 @@ def _save_modulation_causal_vs_activity(results, normalized_effects, cluster_inf
 # "responsive" pool) or, for a same-trials comparison, from every unit
 # ("all"). main(control_pool=...) overlays that pickle on the lesion pickle in
 # memory (lesion_cache.overlay_lesion_controls; the combined lesions keep
-# lesion.py's controls), and every cache written below records the pool,
-# repeat count and test seed it was computed with (_control_meta).
+# lesion.py's controls), writes its caches into that pool's own directory
+# (lesion_cache.norm_root: multiple_tasks_norm/ for all, otherwise
+# multiple_tasks_norm_<pool>/), and every cache written below records the
+# pool, repeat count and test seed it was computed with (_control_meta).
 DEFAULT_CONTROL_POOL = "all"
 # Control standard deviations below this (an accuracy fraction) are floored
 # before a lesion is tested: a saturated or degenerate control set has no
@@ -1377,7 +1382,7 @@ def main(seed, feature, control_pool=None):
     print(f"aname: {aname}")
 
     pickle_dir = f"./multiple_tasks_perf/{aname}"
-    save_dir = f"./multiple_tasks_norm/{aname}"
+    save_dir = str(norm_root(control_pool) / aname)
 
     pickle_name = f"{pickle_dir}/lesion_prune_results_{aname}.pkl"
     # lesion.py's pickle (controls from every unit, on its own trials) and the
@@ -3914,8 +3919,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         description="Regenerate the lesion post-processing figures for ONE "
-                    "completed lesion run (reads multiple_tasks_perf/, writes "
-                    "multiple_tasks_norm/; cheap — no model forwards). Use "
+                    "completed lesion run (reads multiple_tasks_perf/, writes the "
+                    "control pool's cache directory, multiple_tasks_norm/ by "
+                    "default; cheap — no model forwards). Use "
                     "--seed all with --feature to batch re-plot every saved "
                     "run for that feature. "
                     "Run from the repository root.")
@@ -3927,8 +3933,9 @@ if __name__ == "__main__":
                         help="Feature tag of the run to plot (e.g. 'L21e4').")
     parser.add_argument("--control-pool", choices=CONTROL_POOLS, default=None,
                         help="Random controls the single-cluster analyses read: lesion.py's "
-                             "(all) or lesion_controls.py's activity-matched ones "
-                             "(responsive; needs that run's lesion_controls pickle). "
+                             "(all, caches in multiple_tasks_norm/) or lesion_controls.py's "
+                             "activity-matched ones (responsive; needs that run's "
+                             "lesion_controls pickle, caches in multiple_tasks_norm_responsive/). "
                              f"Default: {DEFAULT_CONTROL_POOL}.")
     args = parser.parse_args()
 
