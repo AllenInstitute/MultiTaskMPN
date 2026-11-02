@@ -1465,6 +1465,13 @@ ACTIVATION_DIAGNOSIS_PATH = (
     Path("multiple_task") / "activation_function_diagnosis_results.json"
 )
 MODULATION_BOUND_L2_STRENGTHS = (1e-5, 1e-4, 1e-3, 1e-2)
+# The M retention of the regular multi-task cohorts: m_time_scale 4000 ms,
+# lambda = 0.99 per 40 ms step (SCHEME.md). Runs trained at another retention
+# carry a lambda tag (L21e4lam0.9, 400 ms) and are a separate cohort, so the
+# readers that select runs by configuration rather than by feature tag check
+# this value too. core/mpn.py has no default for a missing m_time_scale (it
+# falls back to lam_clamp), so a config without it is skipped, not pooled.
+MULTITASK_M_TIME_SCALE_MS = 4000
 _MODULATION_BOUND_SPECS = (
     ("mb1", (-1.0, 1.0), r"$M \in [-1, 1]$ (mb1)", "#0072B2"),
     ("mb2", (-2.0, 2.0), r"$M \in [-2, 2]$ (mb2)", "#D55E00"),
@@ -1544,14 +1551,48 @@ def plot_l2_vs_accuracy():
     _save_fig(fig, out_path, extra=f" (Tanh n={len(tanh_results)})")
 
 
+def _regular_multitask_config(config):
+    """The L2 strength, M bounds and M retention of a regular multi-task run's
+    saved config, or None when the config is not one.
+
+    A regular run trains the ``everything`` ruleset with one 300-unit hidden
+    layer behind a 300-dimensional learned input projection (``dmpn`` with
+    ``input_layer_add``), Tanh activation, L2 weight regularization and the
+    standard batch-128 setup. Older mb1 configs omit ``m_bounds`` because
+    (-1, 1) is the model default. ``m_time_scale`` is returned as saved and is
+    None when absent: core/mpn.py then falls back to ``lam_clamp``, so a
+    missing value is not the 4000 ms default.
+    """
+    task_params = config["task_params"]
+    train_params = config["train_params"]
+    net_params = config["net_params"]
+    hidden_dims = net_params["n_neurons"][1:-1]
+    if (task_params.get("ruleset") != "everything"
+            or len(hidden_dims) != 1 or hidden_dims[0] != 300
+            or net_params.get("linear_embed", 300) != 300
+            or net_params.get("activation") != "tanh"
+            or net_params.get("net_type") != "dmpn"
+            or not net_params.get("input_layer_add", False)
+            or train_params.get("weight_reg") != "L2"
+            or train_params.get("batch_size") != 128
+            or train_params.get("n_batches") != 128):
+        return None
+    ml_params = net_params.get("ml_params", {})
+    bounds = tuple(float(value) for value in ml_params.get("m_bounds", (-1.0, 1.0)))
+    m_time_scale = ml_params.get("m_time_scale")
+    return {
+        "l2": float(train_params["reg_lambda"]),
+        "bounds": bounds,
+        "m_time_scale": None if m_time_scale is None else float(m_time_scale),
+    }
+
+
 def _modulation_bound_accuracy_groups(
         result_dict, config_dir=Path("multiple_tasks")):
     """Collect matched regular-run overall accuracies by L2 and M bound.
 
-    A regular run has the unadorned ``L21eX`` feature (historical mb1) or only
-    the ``mb2`` suffix, one 300-unit hidden layer, a 300-dimensional learned
-    input projection, Tanh activation, and the standard batch-128 setup. Older
-    mb1 configs omit ``m_bounds`` because ``(-1, 1)`` is the model default.
+    A regular run (_regular_multitask_config) has the unadorned ``L21eX``
+    feature (historical mb1) or only the ``mb2`` suffix.
     """
     import json as _json
     import re as _re
@@ -1577,32 +1618,18 @@ def _modulation_bound_accuracy_groups(
         try:
             with config_path.open() as handle:
                 config = _json.load(handle)
-            task_params = config["task_params"]
-            train_params = config["train_params"]
-            net_params = config["net_params"]
-            hidden_dims = net_params["n_neurons"][1:-1]
-            if (task_params.get("ruleset") != "everything"
-                    or len(hidden_dims) != 1 or hidden_dims[0] != 300
-                    or net_params.get("linear_embed", 300) != 300
-                    or net_params.get("activation") != "tanh"
-                    or net_params.get("net_type") != "dmpn"
-                    or not net_params.get("input_layer_add", False)
-                    or train_params.get("weight_reg") != "L2"
-                    or train_params.get("batch_size") != 128
-                    or train_params.get("n_batches") != 128):
+            regular = _regular_multitask_config(config)
+            if regular is None:
                 continue
 
-            l2_value = float(train_params["reg_lambda"])
             matched_l2 = next(
                 (strength for strength in MODULATION_BOUND_L2_STRENGTHS
-                 if np.isclose(l2_value, strength, rtol=1e-9, atol=0)),
+                 if np.isclose(regular["l2"], strength, rtol=1e-9, atol=0)),
                 None,
             )
             if matched_l2 is None:
                 continue
-            raw_bounds = net_params.get("ml_params", {}).get(
-                "m_bounds", (-1.0, 1.0))
-            bounds = tuple(float(value) for value in raw_bounds)
+            bounds = regular["bounds"]
             bound_name = bounds_to_name.get(bounds)
             expected_bound_name = "mb2" if match.group(2) else "mb1"
             if bound_name is None or bound_name != expected_bound_name:
@@ -2018,12 +2045,37 @@ def plot_l2e4_activation_modulation_common_accuracy():
 
 # ─── Figure: L2=1e-4 projection-dimension comparison ─────────────────────────
 
+def _task_accuracies_percent(model_name, result):
+    """The valid per-task accuracies (%) of one performance entry, or None
+    when the entry predates per-task scoring. Missing or invalid task scores
+    are reported and left out rather than replaced by zero."""
+    task_scores = result.get("acc_per_task")
+    if not isinstance(task_scores, dict):
+        print(f"  Note: {model_name} has no acc_per_task; rerun multiple_task_performance.py.")
+        return None
+    valid = {}
+    for task, score in task_scores.items():
+        if score is None:
+            continue
+        try:
+            value = float(score)
+            if not np.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError("task accuracy must be finite and in [0, 1]")
+        except (ValueError, TypeError) as error:
+            print(f"  Note: skipped {model_name}/{task}: {error}.")
+            continue
+        valid[task] = value * 100.0
+    return valid
+
+
 def _projection_accuracy_groups(result_dict, config_dir=Path("multiple_tasks"), *, vary_hidden=False,
                                 per_task=False):
-    """Group saved widths at Tanh/L2=1e-4, fixing the other width to 300.
+    """Group saved widths at Tanh/L2=1e-4/4000 ms retention, fixing the other width to 300.
 
     By default vary projection at hidden300; vary_hidden selects hidden widths
-    at projection300. Only single-hidden-layer configurations are included.
+    at projection300. Only single-hidden-layer configurations trained at the
+    regular M retention (MULTITASK_M_TIME_SCALE_MS) are included, so a lambda
+    cohort such as L21e4lam0.9 never joins the 300-wide group.
     Model identifiers locate configuration files only; feature tags and cached
     filename-derived dimensions are not used to select or group runs.
     per_task returns dimension -> task name -> accuracy list; missing or invalid
@@ -2045,6 +2097,9 @@ def _projection_accuracy_groups(result_dict, config_dir=Path("multiple_tasks"), 
                     or train_params["weight_reg"] != "L2"
                     or not np.isclose(float(train_params["reg_lambda"]), 1e-4,
                                       rtol=1e-9, atol=0)):
+                continue
+            m_time_scale = float(net_params["ml_params"]["m_time_scale"])
+            if not np.isclose(m_time_scale, MULTITASK_M_TIME_SCALE_MS, rtol=1e-9, atol=0):
                 continue
             if not net_params["input_layer_add"]:
                 continue
@@ -2068,21 +2123,11 @@ def _projection_accuracy_groups(result_dict, config_dir=Path("multiple_tasks"), 
             continue
         if per_task:
             task_groups = accuracies.setdefault(dimension, {})
-            task_scores = result.get("acc_per_task")
-            if not isinstance(task_scores, dict):
-                print(f"  Note: {model_name} has no acc_per_task; rerun multiple_task_performance.py.")
+            task_scores = _task_accuracies_percent(model_name, result)
+            if task_scores is None:
                 continue
-            for task, score in task_scores.items():
-                if score is None:
-                    continue
-                try:
-                    value = float(score)
-                    if not np.isfinite(value) or not 0 <= value <= 1:
-                        raise ValueError("task accuracy must be finite and in [0, 1]")
-                except (ValueError, TypeError) as error:
-                    print(f"  Note: skipped {model_name}/{task}: {error}.")
-                    continue
-                task_groups.setdefault(task, []).append(value * 100.0)
+            for task, value in task_scores.items():
+                task_groups.setdefault(task, []).append(value)
         else:
             accuracies.setdefault(dimension, []).append(accuracy * 100.0)
     return dict(sorted(accuracies.items()))
@@ -2112,25 +2157,16 @@ def plot_hidden_dim_task_accuracy():
     _plot_dimension_task_accuracy(vary_hidden=True)
 
 
-def _plot_dimension_task_accuracy(*, vary_hidden):
-    """Show 15 compact task panels with seed dots and connected seed means.
-
-    Use paper task names/order and index positions labeled by actual dimensions.
-    Each panel has an adaptive y range. Missing task/dimension pairs remain NaN;
-    tasks without any scores retain an empty panel rather than disappearing.
-    """
-    import json as _json
-
-    _ensure_out_dir()
-    if not PERF_RESULT_PATH.exists():
-        print(f"  Skipped: {PERF_RESULT_PATH} not found. Run multiple_task_performance.py first.")
-        return
-    with PERF_RESULT_PATH.open() as handle:
-        result_dict = _json.load(handle)
-    groups = _projection_accuracy_groups(result_dict, vary_hidden=vary_hidden, per_task=True)
-    if not any(groups.values()):
-        print("  Skipped: no metadata-matched per-task accuracies; rerun multiple_task_performance.py.")
-        return
+def _plot_task_accuracy_columns(groups, column_labels, xlabel, out_name, *,
+                                column_p_text=None):
+    """Fifteen stacked task panels, one column per group: every run a dot and
+    the across-run means connected, titled with the paper task names in their
+    order. `groups` maps each column's key, in column order, to task ->
+    accuracy list (%); `column_labels` are the columns' tick labels. Each
+    panel has an adaptive y range; a task without any score keeps an empty
+    panel rather than disappearing. `column_p_text` maps a task to a short
+    text (a test between its columns) drawn as that panel's right-hand title.
+    Shared by the width sweeps and the retention comparison."""
     fig, axes = plt.subplots(len(_TASK_DISPLAY), 1, figsize=(3.5, 11.5), sharex=True)
     positions = np.arange(len(groups))
     for ax, (task, display_name) in zip(axes, _TASK_DISPLAY.items()):
@@ -2144,6 +2180,8 @@ def _plot_dimension_task_accuracy(*, vary_hidden):
                 markerfacecolor="white", markeredgecolor="k", markeredgewidth=0.6,
                 markersize=3, zorder=4)
         ax.set_title(display_name, loc="left", fontsize=7, pad=2)
+        if column_p_text and task in column_p_text:
+            ax.set_title(column_p_text[task], loc="right", fontsize=6, pad=2, color="0.3")
         all_values = [value for values in entries for value in values]
         if all_values:
             lo, hi = min(all_values), max(all_values)
@@ -2162,15 +2200,37 @@ def _plot_dimension_task_accuracy(*, vary_hidden):
         ax.tick_params(axis="both", labelsize=6, length=2)
         ax.spines[["top", "right"]].set_visible(False)
         ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
-        print(f"  {display_name}: " + ", ".join(f"{dimension} n={len(values)}"
-                                       for dimension, values in zip(groups, entries)))
+        print(f"  {display_name}: " + ", ".join(f"{key} n={len(values)}"
+                                       for key, values in zip(groups, entries)))
     axes[-1].set_xticks(positions)
-    axes[-1].set_xticklabels([str(dimension) for dimension in groups])
-    axes[-1].set_xlabel("Hidden dimension" if vary_hidden else "Projection dimension")
+    axes[-1].set_xticklabels(column_labels)
+    axes[-1].set_xlabel(xlabel)
     fig.supylabel("Task test accuracy (%)", x=0.02, fontsize=9)
     fig.subplots_adjust(left=0.18, right=0.98, top=0.98, bottom=0.045, hspace=0.9)
+    _save_fig(fig, _multitask_out(out_name))
+
+
+def _plot_dimension_task_accuracy(*, vary_hidden):
+    """Show 15 compact task panels with seed dots and connected seed means
+    across the saved widths, at index positions labeled by the actual
+    dimensions (see _plot_task_accuracy_columns)."""
+    import json as _json
+
+    _ensure_out_dir()
+    if not PERF_RESULT_PATH.exists():
+        print(f"  Skipped: {PERF_RESULT_PATH} not found. Run multiple_task_performance.py first.")
+        return
+    with PERF_RESULT_PATH.open() as handle:
+        result_dict = _json.load(handle)
+    groups = _projection_accuracy_groups(result_dict, vary_hidden=vary_hidden, per_task=True)
+    if not any(groups.values()):
+        print("  Skipped: no metadata-matched per-task accuracies; rerun multiple_task_performance.py.")
+        return
     dimension_name = "hidden" if vary_hidden else "projection"
-    _save_fig(fig, _multitask_out(f"{dimension_name}_dim_task_accuracy.png"))
+    _plot_task_accuracy_columns(
+        groups, [str(dimension) for dimension in groups],
+        "Hidden dimension" if vary_hidden else "Projection dimension",
+        f"{dimension_name}_dim_task_accuracy.png")
 
 
 def _plot_dimension_accuracy(*, vary_hidden):
@@ -2227,6 +2287,199 @@ def _plot_dimension_accuracy(*, vary_hidden):
         f"{count_prefix}{dimension} n={len(entries)}" for dimension, entries in accuracies.items()
     )
     _save_fig(fig, out_path, extra=f" ({counts})")
+
+
+# ─── Figure: M retention comparison (lambda 0.99 vs 0.9) ─────────────────────
+
+# The two M retentions of the regular L2 = 1e-4 cohort: feature tag,
+# m_time_scale (ms) and tick label. The 4000 ms cohort is the historical one
+# and carries no tag; multiple_task.py tags every other retention after the
+# bound tag (400 ms -> lam0.9, SCHEME.md). lambda = 1 - 40 ms / m_time_scale.
+_RETENTION_SPECS = (
+    ("L21e4", MULTITASK_M_TIME_SCALE_MS, "$\\lambda = 0.99$\n(4000 ms)"),
+    ("L21e4lam0.9", 400, "$\\lambda = 0.9$\n(400 ms)"),
+)
+RETENTION_L2_STRENGTH = 1e-4
+# Runs each cohort needs before the Mann-Whitney U test between them is run.
+_RETENTION_MIN_RUNS_FOR_TEST = 2
+
+
+def _retention_accuracy_groups(result_dict, config_dir=Path("multiple_tasks"), *,
+                               per_task=False):
+    """Collect the regular L2 = 1e-4 runs' accuracies (%) by M retention.
+
+    Returns feature tag -> accuracy list in _RETENTION_SPECS order (both keys
+    always present) or, with per_task, tag -> task -> accuracy list. A run
+    counts when its feature tag is one of the two and its saved config is a
+    regular run (_regular_multitask_config) at RETENTION_L2_STRENGTH with the
+    default M bounds. A config whose m_time_scale disagrees with its tag is
+    reported and skipped rather than trusted either way.
+    """
+    import json as _json
+
+    expected_time_scale = {tag: time_scale for tag, time_scale, _ in _RETENTION_SPECS}
+    groups = {tag: ({} if per_task else []) for tag in expected_time_scale}
+    for model_name, result in result_dict.items():
+        tag = _performance_feature_tag(model_name, result)
+        if tag not in expected_time_scale:
+            continue
+        config_path = config_dir / f"param_{model_name}_param.json"
+        try:
+            with config_path.open() as handle:
+                regular = _regular_multitask_config(_json.load(handle))
+            if (regular is None
+                    or not np.isclose(regular["l2"], RETENTION_L2_STRENGTH, rtol=1e-9, atol=0)
+                    or regular["bounds"] != (-1.0, 1.0)):
+                continue
+            if (regular["m_time_scale"] is None
+                    or not np.isclose(regular["m_time_scale"], expected_time_scale[tag],
+                                      rtol=1e-9, atol=0)):
+                raise ValueError(
+                    f"feature {tag!r} disagrees with m_time_scale={regular['m_time_scale']}")
+            accuracy = float(result["acc"])
+            if not np.isfinite(accuracy) or not 0 <= accuracy <= 1:
+                raise ValueError(f"invalid overall accuracy: {accuracy!r}")
+        except (OSError, KeyError, TypeError, ValueError) as error:
+            print(f"  Note: skipped {model_name}: invalid or missing retention "
+                  f"metadata/result ({error}).")
+            continue
+        if per_task:
+            task_scores = _task_accuracies_percent(model_name, result)
+            if task_scores is None:
+                continue
+            for task, value in task_scores.items():
+                groups[tag].setdefault(task, []).append(value)
+        else:
+            groups[tag].append(accuracy * 100.0)
+    return groups
+
+
+def _retention_p_value(first, second):
+    """Two-sided Mann-Whitney U p value between two cohorts' accuracies, NaN
+    when either holds fewer than _RETENTION_MIN_RUNS_FOR_TEST runs."""
+    from scipy.stats import mannwhitneyu
+
+    if min(len(first), len(second)) < _RETENTION_MIN_RUNS_FOR_TEST:
+        return float("nan")
+    return float(mannwhitneyu(first, second, alternative="two-sided").pvalue)
+
+
+def _holm_adjusted(p_values):
+    """Holm step-down adjusted p values (family-wise error over the finite
+    entries); NaN entries stay NaN and do not count toward the family."""
+    p_values = np.asarray(p_values, dtype=float)
+    adjusted = np.full(p_values.shape, np.nan)
+    finite = np.flatnonzero(np.isfinite(p_values))
+    order = finite[np.argsort(p_values[finite])]
+    running = 0.0
+    for rank, index in enumerate(order):
+        running = max(running, (order.size - rank) * p_values[index])
+        adjusted[index] = min(1.0, running)
+    return adjusted
+
+
+def _load_retention_groups(per_task):
+    """The retention groups of the saved performance results, or None (with
+    the reason printed) when there is nothing to plot."""
+    import json as _json
+
+    _ensure_out_dir()
+    if not PERF_RESULT_PATH.exists():
+        print(f"  Skipped: {PERF_RESULT_PATH} not found. Run multiple_task_performance.py first.")
+        return None
+    with PERF_RESULT_PATH.open() as handle:
+        result_dict = _json.load(handle)
+    groups = _retention_accuracy_groups(result_dict, per_task=per_task)
+    if not any(groups.values()):
+        print("  Skipped: no metadata-matched regular L2 = 1e-4 accuracies at "
+              "either retention; rerun multiple_task_performance.py.")
+        return None
+    missing = [tag for tag, values in groups.items() if not values]
+    if missing:
+        print("  Note: evaluate the missing cohort with: python "
+              "multiple_task/multiple_task_performance.py --merge "
+              + " ".join(f"--feature {tag}" for tag in missing))
+    return groups
+
+
+def plot_retention_accuracy():
+    """Figure: overall test accuracy of the regular L2 = 1e-4 runs at the two
+    M retentions, lambda = 0.99 (4000 ms, the historical cohort) and
+    lambda = 0.9 (400 ms), one dot per seed and the across-seed mean as a
+    white diamond, titled with the two-sided Mann-Whitney U test between
+    them. Same layout as plot_modulation_bound_accuracy's panels."""
+    groups = _load_retention_groups(per_task=False)
+    if groups is None:
+        return
+
+    positions = np.arange(len(_RETENTION_SPECS), dtype=float)
+    fig, ax = plt.subplots(1, 1, figsize=(2.3, 3))
+    means, all_values, missing = [], [], []
+    for position, (tag, _, _) in zip(positions, _RETENTION_SPECS):
+        values = np.asarray(groups[tag], dtype=float)
+        if values.size == 0:
+            means.append(np.nan)
+            missing.append(tag)
+            continue
+        means.append(float(values.mean()))
+        all_values.extend(values.tolist())
+        jitter = (np.linspace(-0.06, 0.06, values.size)
+                  if values.size > 1 else np.zeros(1))
+        ax.scatter(position + jitter, values, **_SCATTER_POINT_STYLE)
+    means = np.asarray(means, dtype=float)
+    finite_means = np.isfinite(means)
+    ax.plot(positions[finite_means], means[finite_means], color="k",
+            linewidth=1.2, marker="D", markerfacecolor="white",
+            markeredgecolor="k", markeredgewidth=0.8, markersize=4, zorder=4)
+    p_value = _retention_p_value(*(groups[tag] for tag, _, _ in _RETENTION_SPECS))
+    if np.isfinite(p_value):
+        ax.set_title(f"Mann-Whitney {_permutation_p_text(p_value)}", fontsize=7, pad=3)
+    if missing:
+        ax.text(0.98, 0.08, "No " + "/".join(missing) + " performance data",
+                transform=ax.transAxes, ha="right", va="bottom",
+                fontsize=6.5, color="0.42")
+
+    lo, hi = min(all_values), max(all_values)
+    pad = max((hi - lo) * 0.08, 2.0)
+    ax.set_ylim(np.floor(max(0.0, lo - pad) / 5.0) * 5.0,
+                np.ceil(min(100.0, hi + pad) / 5.0) * 5.0)
+    ax.yaxis.set_major_locator(mpl.ticker.MultipleLocator(5))
+    ax.set_xticks(positions)
+    ax.set_xticklabels([label for _, _, label in _RETENTION_SPECS])
+    ax.set_xlim(-0.5, len(_RETENTION_SPECS) - 0.5)
+    ax.set_xlabel("Modulation retention")
+    ax.set_ylabel("Test accuracy (%)")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
+    fig.tight_layout()
+    counts = ", ".join(f"{tag} n={len(groups[tag])}" for tag, _, _ in _RETENTION_SPECS)
+    _save_fig(fig, _multitask_out("retention_accuracy.png"),
+              extra=f" ({counts}; Mann-Whitney p={p_value:.3g})")
+
+
+def plot_retention_task_accuracy():
+    """Figure: per-task test accuracy at the two M retentions, fifteen
+    stacked task panels (see _plot_task_accuracy_columns). Each panel's
+    right-hand title is the two-sided Mann-Whitney U test between the
+    retentions, Holm-adjusted across the tasks tested."""
+    groups = _load_retention_groups(per_task=True)
+    if groups is None:
+        return
+    first, second = (groups[tag] for tag, _, _ in _RETENTION_SPECS)
+    tasks = list(_TASK_DISPLAY)
+    raw = np.array([_retention_p_value(first.get(task, []), second.get(task, []))
+                    for task in tasks])
+    adjusted = _holm_adjusted(raw)
+    p_text = {}
+    for task, p_raw, p_adj in zip(tasks, raw, adjusted):
+        if np.isfinite(p_adj):
+            p_text[task] = f"Holm {_short_p(p_adj)}"
+            print(f"  {_TASK_DISPLAY[task]}: Mann-Whitney p={p_raw:.3g}, "
+                  f"Holm-adjusted p={p_adj:.3g}")
+    _plot_task_accuracy_columns(
+        groups, [label for _, _, label in _RETENTION_SPECS],
+        "Modulation retention", "retention_task_accuracy.png",
+        column_p_text=p_text)
 
 
 # ─── Figure: State space PCA ─────────────────────────────────────────────────
@@ -13776,6 +14029,8 @@ FIGURES_BY_MODE = {
     "acc_plot": {
         "l2_accuracy": plot_l2_vs_accuracy,
         "modulation_bound_accuracy": plot_modulation_bound_accuracy,
+        "retention_accuracy": plot_retention_accuracy,
+        "retention_task_accuracy": plot_retention_task_accuracy,
         "l2e4_activation_accuracy": plot_l2e4_activation_accuracy,
         "l2e4_activation_embedding_offset":
             plot_l2e4_activation_embedding_offset,

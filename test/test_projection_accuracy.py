@@ -17,7 +17,8 @@ class ProjectionAccuracyTests(unittest.TestCase):
     def setUp(self):
         self.config = {
             "net_params": {"n_neurons": [1, 300, 1], "activation": "tanh",
-                           "linear_embed": 200, "input_layer_add": True},
+                           "linear_embed": 200, "input_layer_add": True,
+                           "ml_params": {"m_time_scale": 4000}},
             "train_params": {"weight_reg": "L2", "reg_lambda": 1e-4},
         }
 
@@ -104,6 +105,7 @@ class ProjectionAccuracyTests(unittest.TestCase):
         for section, key, value in (("net_params", "activation", "relu"),
                                     ("train_params", "reg_lambda", 1e-3),
                                     ("train_params", "weight_reg", "L1"),
+                                    ("net_params", "ml_params", {"m_time_scale": 400}),
                                     ("net_params", "n_neurons", [1, 100, 100, 1])):
             with self.subTest(key=key):
                 config = copy.deepcopy(self.config)
@@ -130,11 +132,21 @@ class ProjectionAccuracyTests(unittest.TestCase):
             ("net_params", "input_layer_add", False),
             ("train_params", "weight_reg", "L1"),
             ("train_params", "reg_lambda", 1e-3),
+            ("net_params", "ml_params", {"m_time_scale": 400}),
         ):
             with self.subTest(field=field):
                 config = copy.deepcopy(self.config)
                 config[section][field] = value
                 self.assertEqual(self.group({"L21e4": config}, {"L21e4": {"acc": 0.9}}), {})
+
+    def test_missing_retention_is_skipped_not_defaulted(self):
+        """core/mpn.py falls back to lam_clamp without m_time_scale, so a config
+        that lacks it is not assumed to be the 4000 ms cohort."""
+        config = copy.deepcopy(self.config)
+        del config["net_params"]["ml_params"]
+        self.assertEqual(self.group({"run": config}, {"run": {"acc": 0.9}}), {})
+        config["net_params"]["ml_params"] = {}
+        self.assertEqual(self.group({"run": config}, {"run": {"acc": 0.9}}), {})
 
     def test_missing_metadata_does_not_fall_back_to_labels(self):
         config = copy.deepcopy(self.config)
