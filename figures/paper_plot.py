@@ -2301,7 +2301,7 @@ _RETENTION_SPECS = (
 )
 RETENTION_L2_STRENGTH = 1e-4
 # Runs each cohort needs before the Mann-Whitney U test between them is run.
-_RETENTION_MIN_RUNS_FOR_TEST = 2
+_MANN_WHITNEY_MIN_RUNS = 2
 
 
 def _retention_accuracy_groups(result_dict, config_dir=Path("multiple_tasks"), *,
@@ -2354,12 +2354,12 @@ def _retention_accuracy_groups(result_dict, config_dir=Path("multiple_tasks"), *
     return groups
 
 
-def _retention_p_value(first, second):
-    """Two-sided Mann-Whitney U p value between two cohorts' accuracies, NaN
-    when either holds fewer than _RETENTION_MIN_RUNS_FOR_TEST runs."""
+def _mann_whitney_p(first, second):
+    """Two-sided Mann-Whitney U p value between two groups of per-run values,
+    NaN when either holds fewer than _MANN_WHITNEY_MIN_RUNS runs."""
     from scipy.stats import mannwhitneyu
 
-    if min(len(first), len(second)) < _RETENTION_MIN_RUNS_FOR_TEST:
+    if min(len(first), len(second)) < _MANN_WHITNEY_MIN_RUNS:
         return float("nan")
     return float(mannwhitneyu(first, second, alternative="two-sided").pvalue)
 
@@ -2431,7 +2431,7 @@ def plot_retention_accuracy():
     ax.plot(positions[finite_means], means[finite_means], color="k",
             linewidth=1.2, marker="D", markerfacecolor="white",
             markeredgecolor="k", markeredgewidth=0.8, markersize=4, zorder=4)
-    p_value = _retention_p_value(*(groups[tag] for tag, _, _ in _RETENTION_SPECS))
+    p_value = _mann_whitney_p(*(groups[tag] for tag, _, _ in _RETENTION_SPECS))
     if np.isfinite(p_value):
         ax.set_title(f"Mann-Whitney {_permutation_p_text(p_value)}", fontsize=7, pad=3)
     if missing:
@@ -2467,7 +2467,7 @@ def plot_retention_task_accuracy():
         return
     first, second = (groups[tag] for tag, _, _ in _RETENTION_SPECS)
     tasks = list(_TASK_DISPLAY)
-    raw = np.array([_retention_p_value(first.get(task, []), second.get(task, []))
+    raw = np.array([_mann_whitney_p(first.get(task, []), second.get(task, []))
                     for task in tasks])
     adjusted = _holm_adjusted(raw)
     p_text = {}
@@ -2633,8 +2633,8 @@ _STATE_SPACE_LEGEND = [
 
 # The two cohorts of the context-end PCA figures, drawn side by side: the
 # default example cohort on the left and the cohort with the strongest
-# category structure (state_space_category_test) on the right, each with its
-# own automatically selected run.
+# category structure (state_space_category_vs_untrained) on the right, each
+# with its own automatically selected run.
 STATE_SPACE_STRONG_L2 = 1e-2
 STATE_SPACE_PCA_COHORTS = (STATE_SPACE_EXAMPLE_L2, STATE_SPACE_STRONG_L2)
 
@@ -2733,7 +2733,7 @@ def plot_state_space_combined():
     run of the L2 = STATE_SPACE_EXAMPLE_L2 cohort with the best
     high-dimensional task-center separation; and the run of the
     L2 = STATE_SPACE_STRONG_L2 cohort, whose category structure is the
-    strongest (state_space_category_test), selected by the same criterion
+    strongest (state_space_category_vs_untrained), selected by the same criterion
     (STATE_SPACE_PCA_COHORTS; the rankings are saved as
     state_space_centroid_scores.json and state_space_centroid_scores_L21e2.json).
 
@@ -3329,13 +3329,14 @@ def plot_state_space_rdm():
     the lower triangle of the symmetric matrix is drawn. Tasks are ordered by
     the mean matrix's average-linkage tree drawn above it, so same-category
     tasks that cluster appear as blocks; tick labels sit on their category
-    color. The legend reports the number of runs, the category separation S
-    of the mean matrix with its one-sided label-permutation p, and the median
-    seed-to-seed Spearman correlation of the runs' matrices (how far the mean
-    stands for every run). Each representation's color scale is exported as a
-    separate colorbar figure (multitask_state_space_rdm_colorbar_{key}.png) in
-    the style of the task-variance heatmap colorbar. The single selected run's
-    matrix is plot_state_space_rdm_example.
+    color. The legend names the representation and the cohort; the category
+    separation S of the mean matrix with its label-permutation p and the
+    seed-to-seed Spearman correlation of the runs' matrices are drawn by
+    plot_state_space_rdm_stats (and printed with the save message). Each
+    representation's color scale is exported as a separate colorbar figure
+    (multitask_state_space_rdm_colorbar_{key}.png) in the style of the
+    task-variance heatmap colorbar. The single selected run's matrix is
+    plot_state_space_rdm_example.
     """
     _ensure_out_dir()
     combined = _load_pkl_or_skip(STATE_SPACE_STRUCTURE_RESULT_PATH, _STATE_SPACE_STRUCTURE_HINT)
@@ -3349,16 +3350,82 @@ def plot_state_space_rdm():
             print(f"  Skipped {key}: not in the cohort means.")
             continue
         entry = cohort["representations"][key]
-        separation, consistency = entry["separation"], entry["consistency"]
         text = (f"{title}, mean of {cohort['n_runs']} runs at "
-                rf"$L_2 = 10^{{{int(round(np.log10(STATE_SPACE_EXAMPLE_L2)))}}}$: "
-                f"S = {separation['score']:.3f}, {_permutation_p_text(separation['p_value'])}\n"
-                rf"seed-to-seed Spearman $\rho$ median {consistency['median']:.2f} "
-                f"({consistency['min']:.2f} to {consistency['max']:.2f})")
+                rf"$L_2 = 10^{{{int(round(np.log10(STATE_SPACE_EXAMPLE_L2)))}}}$")
         _plot_state_space_rdm_panel(cohort["all_rules"], entry, text,
                                     f"state_space_rdm_{key}.png",
                                     f"state_space_rdm_colorbar_{key}.png",
                                     "Distance / mean distance", key)
+
+
+# The statistics figure of the cohort-mean RDM: two histograms side by side.
+_STATE_SPACE_RDM_STATS_FIGSIZE = (3.6, 1.8)
+_STATE_SPACE_RDM_STATS_BINS = 40
+# Fill of a permutation-null histogram: the gray of the null bands, darkened
+# enough to stand on white.
+_NULL_HIST_COLOR = "0.72"
+
+
+def plot_state_space_rdm_stats():
+    """
+    Figure: the statistics behind the cohort-mean RDM (plot_state_space_rdm)
+    of the L2 = STATE_SPACE_EXAMPLE_L2 cohort, as two histograms:
+      multitask_state_space_rdm_stats_eff_mod.png
+
+    Left: the label-permutation null of the category separation S of the
+    mean matrix (one count per permutation, gray) with the observed S as a
+    red line; the title gives S and its one-sided p. Right: the Spearman
+    rank correlation between every two runs' task distance matrices (one
+    count per run pair, blue) with its median as a red line: how far the
+    mean matrix stands for every run. Read from the combined
+    state_space_structure.py results; cohort means saved without the null
+    array or the run-pair correlations are skipped with the hint to rerun it.
+    """
+    _ensure_out_dir()
+    combined = _load_pkl_or_skip(STATE_SPACE_STRUCTURE_RESULT_PATH, _STATE_SPACE_STRUCTURE_HINT)
+    if combined is None:
+        return
+    cohort = _state_space_cohort_structure(combined, STATE_SPACE_EXAMPLE_L2)
+    if cohort is None:
+        return
+    cohort_text = rf"{cohort['n_runs']} runs at $L_2 = 10^{{{int(round(np.log10(STATE_SPACE_EXAMPLE_L2)))}}}$"
+    for key, title in _STATE_SPACE_RDM_PANELS:
+        if key not in cohort["representations"]:
+            print(f"  Skipped {key}: not in the cohort means.")
+            continue
+        entry = cohort["representations"][key]
+        separation, consistency = entry["separation"], entry["consistency"]
+        if separation.get("null") is None or consistency.get("pairwise_spearman") is None:
+            print(f"  Skipped {key}: the cohort means hold no permutation null or run-pair "
+                  f"correlations. {_STATE_SPACE_STRUCTURE_HINT}")
+            continue
+        null = np.asarray(separation["null"], dtype=float)
+        pairwise = np.asarray(consistency["pairwise_spearman"], dtype=float)
+        p_text = _permutation_p_text(separation["p_value"])
+
+        fig, (ax_null, ax_rho) = plt.subplots(1, 2, figsize=_STATE_SPACE_RDM_STATS_FIGSIZE)
+        ax_null.hist(null, bins=_STATE_SPACE_RDM_STATS_BINS, color=_NULL_HIST_COLOR,
+                     linewidth=0)
+        ax_null.axvline(separation["score"], color=_TREND_LINE_COLOR, linewidth=1.5)
+        ax_null.set_title(f"S = {separation['score']:.3f}, {p_text}", fontsize=8, pad=4)
+        ax_null.set_xlabel("Category separation S\nof the mean matrix", fontsize=8)
+        ax_null.set_ylabel(f"Label permutations\n(of {null.size})", fontsize=8)
+
+        ax_rho.hist(pairwise, bins=_STATE_SPACE_RDM_STATS_BINS, color=_SCATTER_POINT_COLOR,
+                    linewidth=0)
+        ax_rho.axvline(consistency["median"], color=_TREND_LINE_COLOR, linewidth=1.5)
+        ax_rho.set_title(rf"median $\rho$ = {consistency['median']:.2f}", fontsize=8, pad=4)
+        ax_rho.set_xlabel("Spearman $\\rho$\nbetween runs' matrices", fontsize=8)
+        ax_rho.set_ylabel(f"Run pairs\n(of {pairwise.size})", fontsize=8)
+        for ax in (ax_null, ax_rho):
+            ax.spines[["top", "right"]].set_visible(False)
+            ax.tick_params(labelsize=7)
+        fig.tight_layout()
+        _save_fig(fig, _multitask_out(f"state_space_rdm_stats_{key}.png"),
+                  extra=(f"  ({title}, {cohort_text}: S = {separation['score']:.4f}, {p_text}; "
+                         rf"{pairwise.size} run pairs, Spearman $\rho$ median "
+                         f"{consistency['median']:.3f} ({consistency['min']:.2f} to "
+                         f"{consistency['max']:.2f}))"))
 
 
 def plot_state_space_rdm_example():
@@ -3417,36 +3484,13 @@ def _l2_tick_label(strength):
     return rf"$10^{{{int(round(np.log10(strength)))}}}$"
 
 
-def plot_state_space_category_test():
-    """
-    Figure: multitask_state_space_category_test.png — the category-balanced
-    separation S of every analyzed run, per L2 cohort, for the hidden state
-    and the effective modulation.
-
-    One point per run (filled when its saved one-sided label-permutation p is
-    below 0.05), its null's 95th percentile as a gray tick behind it, and the
-    median over the cohort's runs as a dash. S near zero means the six paper
-    categories group the context-end centroids no better than a random
-    regrouping of the same sizes. Read from the combined
-    state_space_structure.py results; nothing is recomputed.
-    """
-    _ensure_out_dir()
-    combined = _load_pkl_or_skip(STATE_SPACE_STRUCTURE_RESULT_PATH, _STATE_SPACE_STRUCTURE_HINT)
-    if combined is None:
-        return
-    grouped = _state_space_runs_by_l2(combined["runs"])
-    columns = [(_l2_tick_label(strength), f"L2 {strength:.0e}", list(grouped[strength].values()))
-               for strength in STATE_SPACE_L2_STRENGTHS]
-    _plot_separation_columns(columns, np.arange(len(columns)), figsize=(4.6, 2.4),
-                             out_name="state_space_category_test.png")
-
-
 def _draw_separation_column(ax, position, runs, key):
     """One column of a category-separation figure at x = `position`: the saved
     S of representation `key` of every run (or untrained network) in `runs`
     as a point, filled when its one-sided label-permutation p is below 0.05,
     the range of their null 95th percentiles as a gray band behind them, and
-    their median as a dash. Returns the "significant/total" count."""
+    their median as a dash. Returns the "significant/total" count and the
+    scores."""
     entries = [run["representations"][key] for run in runs if key in run["representations"]]
     scores = [entry["separation"]["score"] for entry in entries]
     quantiles = [entry["separation"]["null_quantile_95"] for entry in entries]
@@ -3466,26 +3510,46 @@ def _draw_separation_column(ax, position, runs, key):
     if scores:
         ax.hlines(np.median(scores), position - 0.3, position + 0.3,
                   color=_TREND_LINE_COLOR, linewidth=1.8, zorder=4)
-    return f"{significant}/{len(entries)}"
+    return f"{significant}/{len(entries)}", scores
 
 
-def _plot_separation_columns(columns, positions, figsize, out_name, divider=None):
+# Fraction of the y range added above the highest point of a
+# category-separation figure for the p text over each column.
+_SEPARATION_P_HEADROOM = 0.15
+
+
+def _plot_separation_columns(columns, positions, figsize, out_name, divider=None,
+                             reference=None):
     """A two-panel category-separation figure (hidden state, effective
     modulation): one column per (tick label, summary name, runs) of `columns`
     at `positions`, each drawn by _draw_separation_column, with the
     significant/total count under its tick label, an optional dotted vertical
     line at x = `divider`, one shared legend and the counts in the save
-    message."""
+    message. With `reference`, the index of one column, every other column
+    carries above it the two-sided Mann-Whitney p of its scores against that
+    column's (_mann_whitney_p, _short_p), also in the save message, and the
+    y range gains headroom for the text."""
     fig, axs = plt.subplots(1, len(_STATE_SPACE_STRUCTURE_PANELS), figsize=figsize, sharey=True)
     summaries = []
     for ax, (key, title) in zip(axs, _STATE_SPACE_STRUCTURE_PANELS):
         ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
-        counts = [_draw_separation_column(ax, position, runs, key)
-                  for position, (_, _, runs) in zip(positions, columns)]
+        drawn = [_draw_separation_column(ax, position, runs, key)
+                 for position, (_, _, runs) in zip(positions, columns)]
+        counts = [count for count, _ in drawn]
         if divider is not None:
             ax.axvline(divider, color="0.35", linestyle=":", linewidth=0.8, zorder=1)
-        summaries.append(f"{key}: " + ", ".join(
-            f"{name} {count}" for (_, name, _), count in zip(columns, counts)))
+        summary = [f"{name} {count}" for (_, name, _), count in zip(columns, counts)]
+        if reference is not None:
+            reference_scores = drawn[reference][1]
+            for index, (position, (_, scores)) in enumerate(zip(positions, drawn)):
+                if index == reference:
+                    continue
+                p_text = _short_p(_mann_whitney_p(scores, reference_scores))
+                ax.text(position, 0.98, p_text, ha="center", va="top", fontsize=6,
+                        color="0.3", transform=mpl.transforms.blended_transform_factory(
+                            ax.transData, ax.transAxes))
+                summary[index] += f" ({p_text} vs {columns[reference][1]})"
+        summaries.append(f"{key}: " + ", ".join(summary))
         ax.set_xticks(positions)
         ax.set_xticklabels([f"{label}\n{count}" for (label, _, _), count
                             in zip(columns, counts)], fontsize=7)
@@ -3494,6 +3558,9 @@ def _plot_separation_columns(columns, positions, figsize, out_name, divider=None
         ax.set_title(title, fontsize=9, pad=4)
         ax.spines[["top", "right"]].set_visible(False)
         ax.tick_params(axis="y", labelsize=7)
+    if reference is not None:
+        bottom, top = axs[0].get_ylim()
+        axs[0].set_ylim(top=top + _SEPARATION_P_HEADROOM * (top - bottom))
     axs[0].set_ylabel("Category separation S", fontsize=8)
     band = mpl.patches.Patch(color="0.82", label="null 95th percentile (range over runs)")
     median = mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8,
@@ -3520,21 +3587,24 @@ def _untrained_structure_entries(combined, aname):
 def plot_state_space_category_vs_untrained():
     """
     Figure: multitask_state_space_category_vs_untrained.png — the category
-    separation S of untrained networks beside the trained runs of every L2
-    cohort, for the hidden state and the effective modulation W * M.
+    separation S of untrained networks beside the trained runs of the two
+    cohorts of the PCA figures (STATE_SPACE_PCA_COHORTS: L2 = 1e-4 and
+    1e-2), for the hidden state and the effective modulation W * M.
 
     The left column holds the untrained networks of state_space_shift.py
     --untrained built from the selected L2 = STATE_SPACE_EXAMPLE_L2 example
     run's config, or from another run of its training setting
     (_untrained_source), one point per init seed (fresh random weights, eta
-    at its initial value, same evaluation trials); a dotted line and a wider gap set
-    it apart from the four trained cohorts, which are drawn exactly as in
-    plot_state_space_category_test. Every column shows one point per network,
+    at its initial value, same evaluation trials); a dotted line and a wider
+    gap set it apart from the two trained cohorts. Every column shows one
+    point per network,
     filled when its saved one-sided label-permutation p is below 0.05, the
     range of the networks' null 95th percentiles as a gray band, and the
-    median as a dash; the tick label counts the significant networks. The
-    untrained column is the baseline the rule-cue inputs give through random
-    weights, so the trained cohorts' excess over it is what training adds.
+    median as a dash; the tick label counts the significant networks, and
+    above each trained column is the two-sided Mann-Whitney p of its runs' S
+    against the untrained networks'. The untrained column is the baseline
+    the rule-cue inputs give through random weights, so the trained cohorts'
+    excess over it is what training adds.
     Read from the combined state_space_structure.py results (``untrained``
     and ``runs``); nothing is recomputed. Skipped, with the commands to run,
     when no untrained network of that config has been analyzed.
@@ -3557,11 +3627,12 @@ def plot_state_space_category_vs_untrained():
     grouped = _state_space_runs_by_l2(combined["runs"])
     columns = [("Untrained", "untrained", untrained)] + [
         (_l2_tick_label(strength), f"L2 {strength:.0e}", list(grouped[strength].values()))
-        for strength in STATE_SPACE_L2_STRENGTHS]
+        for strength in STATE_SPACE_PCA_COHORTS]
     # The untrained column sits one and a half steps left of the first cohort.
-    positions = np.array([0.0] + [1.5 + index for index in range(len(STATE_SPACE_L2_STRENGTHS))])
-    _plot_separation_columns(columns, positions, figsize=(5.6, 2.4),
-                             out_name="state_space_category_vs_untrained.png", divider=0.75)
+    positions = np.array([0.0] + [1.5 + index for index in range(len(STATE_SPACE_PCA_COHORTS))])
+    _plot_separation_columns(columns, positions, figsize=(4.2, 2.4),
+                             out_name="state_space_category_vs_untrained.png", divider=0.75,
+                             reference=0)
 
 
 def _state_space_figure_legend(fig, handles, ncol=None, top=0.92):
@@ -14076,8 +14147,8 @@ FIGURES_BY_MODE = {
         # Category structure and task-vector additivity of the context-end
         # task centroids, from state_space_structure.py.
         "state_space_rdm": plot_state_space_rdm,
+        "state_space_rdm_stats": plot_state_space_rdm_stats,
         "state_space_rdm_example": plot_state_space_rdm_example,
-        "state_space_category_test": plot_state_space_category_test,
         "state_space_category_vs_untrained": plot_state_space_category_vs_untrained,
     },
     "acc_plot": {
@@ -14317,7 +14388,8 @@ def main():
             f"(auto-selects best high-dimensional task-center separation within L2={STATE_SPACE_EXAMPLE_L2:.0e}; "
             f"the PCA figures put the untrained control left of it and the "
             f"L2={STATE_SPACE_STRONG_L2:.0e} cohort's selection right; "
-            "R-values and the category test split across L2 1e-5/1e-4/1e-3/1e-2 cohorts; "
+            "R-values split across L2 1e-5/1e-4/1e-3/1e-2 cohorts; the category test puts "
+            "the untrained networks beside the PCA figures' cohorts; "
             "distance-angle p is the saved task-label permutation p)"
         ),
         "acc_plot": "(aggregated across seeds)",

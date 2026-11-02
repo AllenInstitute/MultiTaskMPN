@@ -85,12 +85,12 @@ class RetentionAccuracyTests(unittest.TestCase):
         self.assertEqual(groups, {"L21e4": {"fdgo": [50.0]}, "L21e4lam0.9": {"fdgo": [100.0]}})
 
     def test_mann_whitney_needs_two_runs_per_cohort(self):
-        self.assertTrue(np.isnan(paper_plot._retention_p_value([90.0], [70.0, 71.0])))
-        self.assertTrue(np.isnan(paper_plot._retention_p_value([], [])))
-        separated = paper_plot._retention_p_value([90.0, 91.0, 92.0, 93.0, 94.0],
+        self.assertTrue(np.isnan(paper_plot._mann_whitney_p([90.0], [70.0, 71.0])))
+        self.assertTrue(np.isnan(paper_plot._mann_whitney_p([], [])))
+        separated = paper_plot._mann_whitney_p([90.0, 91.0, 92.0, 93.0, 94.0],
                                                   [70.0, 71.0, 72.0, 73.0, 74.0])
         self.assertAlmostEqual(separated, 2 / 252, places=6)
-        self.assertGreater(paper_plot._retention_p_value([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]), 0.5)
+        self.assertGreater(paper_plot._mann_whitney_p([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]), 0.5)
 
     def test_holm_adjustment(self):
         np.testing.assert_allclose(paper_plot._holm_adjusted([0.01, 0.04, 0.03]),

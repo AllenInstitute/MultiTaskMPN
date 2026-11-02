@@ -53,8 +53,8 @@ python multiple_task/state_space_structure.py
 python figures/paper_plot.py --only state_space_combined
 python figures/paper_plot.py --only state_space_category_vs_untrained
 python figures/paper_plot.py --only state_space_rdm
+python figures/paper_plot.py --only state_space_rdm_stats
 python figures/paper_plot.py --only state_space_rdm_example
-python figures/paper_plot.py --only state_space_category_test
 
 ```
 
@@ -97,15 +97,20 @@ statistics and the cohort means to `state_space/state_space_structure_results.pk
 `paper_plot.py` draws them in `state_space` mode: `state_space_rdm` (the
 lower triangle of the L2 = `STATE_SPACE_EXAMPLE_L2` cohort's mean W ⊙ M
 matrix, ordered by its tree drawn above it, task labels on their category
-color, run count, S, p and the seed-to-seed consistency in the legend, and
-the "distance / mean distance" color scale as a separate
+color, the representation and run count in the legend, and the
+"distance / mean distance" color scale as a separate
 `multitask_state_space_rdm_colorbar_eff_mod` figure in the style of
-`heatmap_colorbar`), `state_space_rdm_example` (the same drawing of the
+`heatmap_colorbar`), `state_space_rdm_stats` (the statistics of that mean
+matrix as two histograms, `multitask_state_space_rdm_stats_eff_mod`: the
+label-permutation null of its category separation S with the observed S as
+a red line and S and p in the title, and the Spearman correlation between
+every two runs' matrices with the median as a red line; cohort means saved
+without these arrays are skipped), `state_space_rdm_example` (the same drawing of the
 selected single run's W ⊙ M matrix in its own distance units,
 `multitask_state_space_rdm_example_eff_mod` with its own colorbar figure),
-and `state_space_category_test` (every run's S per L2 cohort for the hidden
-state and W ⊙ M, filled when p < 0.05, the range of the runs' null 95th
-percentiles as a gray band, the cohort median as a dash). The task-vector
+and `state_space_category_vs_untrained` (every run's S for the hidden state
+and W ⊙ M in the PCA figures' two L2 cohorts beside the untrained networks,
+described below). The task-vector
 statistics are computed and cached but have no paper figure; raw M stays in
 the caches.
 
@@ -179,13 +184,17 @@ and task-vector tests as a trained run (`state_space/untrained/state_space_struc
 and stores their summaries under `untrained` in
 `state_space_structure_results.pkl`, apart from `runs` and the L2 `cohorts`,
 which they never enter. `python figures/paper_plot.py --only state_space_category_vs_untrained`
-draws `multitask_state_space_category_vs_untrained.png`: the
-`state_space_category_test` figure (hidden state and W ⊙ M, one point per
-network, filled when its permutation p < 0.05, null 95th-percentile band,
-median dash) with an "Untrained" column of the example config's untrained
-networks to the left of the four L2 cohorts, set apart by a gap and a dotted
-line. It is skipped, with the commands above, until the structure results
-hold an untrained network of that training setting.
+draws `multitask_state_space_category_vs_untrained.png`: the category
+separation S of every run of the PCA figures' two cohorts (L2 = 1e-4 and
+1e-2, `STATE_SPACE_PCA_COHORTS`) for the hidden state and W ⊙ M, one point
+per network, filled when its permutation p < 0.05, the range of the runs'
+null 95th percentiles as a gray band and the median as a dash, with an
+"Untrained" column of the example config's untrained networks to their
+left, set apart by a gap and a dotted line, and above each trained column
+the two-sided Mann-Whitney p of its runs' S against the untrained
+networks' (also in the save message). It is skipped, with the
+commands above, until the structure results hold an untrained network of
+that training setting.
 
 Distance-angle regression uses ordinary least squares with a fitted intercept:
 `angle = intercept + slope * distance`. The existing `(r, slope, p)` tuples
