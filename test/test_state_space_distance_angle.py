@@ -379,6 +379,29 @@ class StateSpaceDistanceAngleFigureTests(unittest.TestCase):
         self.assertEqual(figure.axes[1 + list(paper_plot.STATE_SPACE_L2_STRENGTHS).index(1e-4)]
                          .get_title(), r"$L_2 = 10^{-4}$")
 
+    def test_r_values_figure_accepts_untrained_networks_of_the_runs_setting(self):
+        run = "everything_seed202_L21e4+hidden300+batch128+angle"
+        sibling = "everything_seed921_L21e4+hidden300+batch128+angle"
+        other = "everything_seed921_L21e4lam0.9+hidden300+batch128+angle"
+        result_dict = {f"run{index}": _distance_angle_entry() for index in range(2)}
+        untrained = {}
+        for seed, config in ((0, sibling), (1, sibling), (0, other)):
+            entry = _distance_angle_entry()
+            entry.update(untrained=True, init_seed=seed, config_source=config, l2_info=None)
+            untrained[f"{config}_init{seed}"] = entry
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "untrained_results.pkl"
+            with path.open("wb") as stream:
+                pickle.dump(untrained, stream)
+            figure, _, output = self._draw_r_values(result_dict, path, selected=(run, 0.1, {}))
+        self.assertEqual(figure.axes[0].get_title(), "Untrained")
+        # Two networks of the sibling run per bar; the other setting's is left out.
+        dots = [collection for collection in figure.axes[0].collections
+                if isinstance(collection, paper_plot.mpl.collections.PathCollection)]
+        self.assertEqual(len(dots), 10)
+        self.assertTrue(any(f"built from {sibling}'s config stand for {run}" in call.args[0]
+                            for call in output.call_args_list))
+
 
 if __name__ == "__main__":
     unittest.main()

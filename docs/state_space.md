@@ -41,15 +41,16 @@ python figures/paper_plot.py --only state_space_vs_lesion
 python figures/paper_plot.py --only state_space_vs_lesion_seeds
 # rank state-space seeds and plot the best example without clearing other figures
 python figures/paper_plot.py --only state_space_combined
-# untrained controls (fresh weights, the selected L2 = 1e-4 example run's
-# config; seed 202 on the 2026-10-23 caches, printed by paper_plot when the
-# control is missing), one per seed, then rerun the structure analysis so
-# their category tests are included
+# untrained controls (fresh weights, the config of the selected L2 = 1e-4
+# example run or of any run of its setting; seed 202 on the 2026-10-23
+# caches, printed by paper_plot when no run of the setting has one), one per
+# seed, then rerun the structure analysis so their category tests are
+# included; the PCA figures take their Untrained panel from the first seed
 python multiple_task/state_space_shift.py --untrained \
   --checkpoint multiple_tasks/savednet_everything_seed202_L21e4+hidden300+batch128+angle.pt \
   --init-seed 0 1 2 3 4 5 6 7
 python multiple_task/state_space_structure.py
-python figures/paper_plot.py --only state_space_untrained
+python figures/paper_plot.py --only state_space_combined
 python figures/paper_plot.py --only state_space_category_vs_untrained
 python figures/paper_plot.py --only state_space_rdm
 python figures/paper_plot.py --only state_space_rdm_example
@@ -118,30 +119,39 @@ summarized in `paper_plot/multitask_state_space_centroid_scores.json`; missing
 high-dimensional centers are reported, never replaced with a 2D score.
 The best seed supplies all three PCA example panels, with names breaking ties.
 Each of the three PCA figures (`multitask_state_space_{hidden,mod,eff_mod}.png`,
-`--only state_space_combined`) has two panels: on the left that selected
-L2 = 1e-4 run, on the right the run of the L2 = 1e-2 cohort
-(`STATE_SPACE_STRONG_L2`), whose category structure is the strongest,
-selected by the same criterion; that cohort's ranking is saved as
-`paper_plot/multitask_state_space_centroid_scores_L21e2.json`. The two panels
-are separate PCA spaces with their own axes, titled by their L2, under one
-color key; a figure is skipped when either cohort has no analyzed run.
+`--only state_space_combined`) has three panels: on the left the untrained
+control (titled "Untrained", described below; without its cache the figure
+holds the two trained panels and the command to build it is printed), in
+the middle that selected L2 = 1e-4 run, on the right the run of the
+L2 = 1e-2 cohort (`STATE_SPACE_STRONG_L2`), whose category structure is the
+strongest, selected by the same criterion; that cohort's ranking is saved
+as `paper_plot/multitask_state_space_centroid_scores_L21e2.json`. The
+panels are separate PCA spaces with their own axes, the trained ones titled
+by their L2, under one color key; a figure is skipped when either trained
+cohort has no analyzed run.
 
-`python figures/paper_plot.py --only state_space_untrained` draws the untrained
-control, `multitask_state_space_untrained.png`: the same context-end PCA of an
-untrained network, one panel per representation (hidden state, M, W ⊙ M) at
-the trained figures' panel size and colors. The network has the architecture
-and config of the selected L2 = 1e-4 example run but fresh random weights
-(seed `UNTRAINED_INIT_SEED` = 0, η at its initial value 1.0); no trained
-weight is used, and the training run's own initialization was never saved.
+The Untrained panel of each PCA figure is the same context-end PCA of an
+untrained network (hidden state, M or W ⊙ M), at the trained panels' size
+and colors. The network has the architecture and config of the selected
+L2 = 1e-4 example run but fresh random weights (seed `UNTRAINED_INIT_SEED`
+= 0, η at its initial value 1.0); no trained weight is used, and the
+training run's own initialization was never saved.
 It runs on the same evaluation trials, so its task separation is what the
 rule-cue inputs produce through random weights. L2 acts only during training,
 so one untrained network serves every cohort. Generate the caches first, one
 network per `--init-seed` (eight here; each takes about as long as one
-trained run), from the selected example run's checkpoint. That run is
-re-ranked whenever the cohort's caches change (seed 921 among the first
-seven L2 = 1e-4 runs, seed 202 among the 25 analyzed on 2026-10-23), and
-the untrained figures only read controls built from the current one; when
-they are missing, the skipped figures print the command:
+trained run), from the checkpoint of the selected example run or of any run
+of its training setting: an untrained network depends only on the setting's
+`net_params` and the init seed (`core/network_loading.build_network`), so
+the controls built from one run are the same networks for every run of the
+setting. The example run is re-ranked whenever the cohort's caches change
+(seed 921 among the first seven L2 = 1e-4 runs, seed 202 among the 25
+analyzed on 2026-10-23); the figures with untrained networks read the
+current run's own controls when it has them and otherwise those of the
+first run of its setting in name order (`paper_plot._untrained_source`,
+which prints the run it used), so re-ranking never requires rebuilding
+them. When no run of the setting has controls, the skipped figures print
+the command:
 ```bash
 python multiple_task/state_space_shift.py --untrained \
   --checkpoint multiple_tasks/savednet_everything_seed202_L21e4+hidden300+batch128+angle.pt \
@@ -159,9 +169,10 @@ no-learning control of the distance-angle relation: the rule cue is on for the
 whole trial, so the Hebbian step carries the cue as well, and distinct cues
 could tie M distance to step angle without any training. The subdirectory
 keeps these files out of the trained runs' structure glob, seed rankings and
-R-value cohorts, and the batch run's cleanup leaves it in place. The PCA figure draws the network
-of `STATE_SPACE_UNTRAINED_INIT_SEED` (0); its save message reports the
-category separation S of each representation's untrained centroids.
+R-value cohorts, and the batch run's cleanup leaves it in place. The PCA
+figures draw the network of `STATE_SPACE_UNTRAINED_INIT_SEED` (0); the
+category separation S of every untrained network is in the category figure
+below.
 
 `state_space_structure.py` gives every untrained network the same category
 and task-vector tests as a trained run (`state_space/untrained/state_space_structure_<aname>_init<seed>_noise0.01.pkl`)
@@ -174,7 +185,7 @@ network, filled when its permutation p < 0.05, null 95th-percentile band,
 median dash) with an "Untrained" column of the example config's untrained
 networks to the left of the four L2 cohorts, set apart by a gap and a dotted
 line. It is skipped, with the commands above, until the structure results
-hold an untrained network of that config.
+hold an untrained network of that training setting.
 
 Distance-angle regression uses ordinary least squares with a fitted intercept:
 `angle = intercept + slope * distance`. The existing `(r, slope, p)` tuples
@@ -202,8 +213,9 @@ bar per representation and L2 cohort, raw M included (Hebbian-only bars
 hatched, one dot per run, filled when its permutation p < 0.05), preceded by
 an "Untrained" panel of the same bars when `state_space/untrained/` holds
 distance-angle results of networks built from the selected example run's
-config (one dot per init seed; without them the four cohort panels are drawn
-and the command to add the control is printed). Caches
+config or from another run of its setting (one dot per init seed; without
+them the four cohort panels are drawn and the command to add the control is
+printed). Caches
 without the permutation test or the Hebbian steps are skipped, never refitted;
 regenerate them with `state_space_shift.py`.
 

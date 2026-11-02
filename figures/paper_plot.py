@@ -2638,12 +2638,20 @@ _STATE_SPACE_LEGEND = [
 STATE_SPACE_STRONG_L2 = 1e-2
 STATE_SPACE_PCA_COHORTS = (STATE_SPACE_EXAMPLE_L2, STATE_SPACE_STRONG_L2)
 
-# Figure size of one two-panel state-space PCA figure. With the square axes
-# boxes, the two-line y label of the left panel, the panel titles and the
-# two-row color key across the top this lands each drawn box at about 1.6 in,
-# the size of one `_render_multitask_cue_interp_2d` subpanel (its 1.8 in
-# column minus labels).
-_STATE_SPACE_FIGSIZE = (4.4, 2.5)
+# Figure size of a state-space PCA figure by panel count: 2.0 in per panel
+# plus a 0.4 in margin, 2.5 in high. With the square axes boxes, the two-line
+# y label of the left panel, the panel titles and the two-row color key
+# across the top this lands each drawn box at about 1.6 in, the size of one
+# `_render_multitask_cue_interp_2d` subpanel (its 1.8 in column minus labels).
+_STATE_SPACE_PANEL_WIDTH_IN = 2.0
+_STATE_SPACE_MARGIN_WIDTH_IN = 0.4
+_STATE_SPACE_FIGURE_HEIGHT_IN = 2.5
+
+
+def _state_space_figsize(n_panels):
+    """(width, height) in inches of a state-space PCA figure of `n_panels`."""
+    return (_STATE_SPACE_PANEL_WIDTH_IN * n_panels + _STATE_SPACE_MARGIN_WIDTH_IN,
+            _STATE_SPACE_FIGURE_HEIGHT_IN)
 
 # The three context-end PCA representations, as (cache key, display name).
 _STATE_SPACE_PCA_REPRESENTATIONS = (
@@ -2692,17 +2700,22 @@ def _state_space_legend_handles():
             for lab, col in _STATE_SPACE_LEGEND]
 
 
-def _plot_state_space_figure(cohort_data, key, ylabel_prefix, out_name):
+def _l2_panel_title(strength):
+    """The title of a trained cohort's PCA panel, by its L2 strength."""
+    return rf"$L_2 = 10^{{{int(round(np.log10(strength)))}}}$"
+
+
+def _plot_state_space_figure(panels, key, ylabel_prefix, out_name):
     """One context-end PCA figure of representation `key`: one panel per
-    (strength, PCA cache) of `cohort_data`, left to right, each titled by its
-    L2 strength, with one color key across the top of the figure (gated by
-    SHOW_LEGEND like every legend; inside the axes it covered task clusters
-    in some runs). The panels are separate PCA spaces, so each keeps its own
-    axes; only the left one names the representation in its y label."""
-    fig, axs = plt.subplots(1, len(cohort_data), figsize=_STATE_SPACE_FIGSIZE)
-    for index, (ax, (strength, data)) in enumerate(zip(np.atleast_1d(axs), cohort_data)):
+    (title, PCA cache) of `panels`, left to right, with one color key across
+    the top of the figure (gated by SHOW_LEGEND like every legend; inside
+    the axes it covered task clusters in some runs). The panels are separate
+    PCA spaces, so each keeps its own axes; only the left one names the
+    representation in its y label."""
+    fig, axs = plt.subplots(1, len(panels), figsize=_state_space_figsize(len(panels)))
+    for index, (ax, (title, data)) in enumerate(zip(np.atleast_1d(axs), panels)):
         _draw_state_space_panel(ax, data, key, ylabel_prefix if index == 0 else None)
-        ax.set_title(rf"$L_2 = 10^{{{int(round(np.log10(strength)))}}}$", fontsize=8, pad=4)
+        ax.set_title(title, fontsize=8, pad=4)
     _state_space_figure_legend(fig, _state_space_legend_handles(), ncol=3, top=0.88)
     _save_fig(fig, _multitask_out(out_name))
 
@@ -2710,25 +2723,41 @@ def _plot_state_space_figure(cohort_data, key, ylabel_prefix, out_name):
 def plot_state_space_combined():
     """
     Figures: context-end PCA colored by task category — hidden state, raw
-    modulation and effective modulation, as THREE figures of two panels each:
+    modulation and effective modulation, as THREE figures of up to three
+    panels each:
       multitask_state_space_hidden.png
       multitask_state_space_mod.png
       multitask_state_space_eff_mod.png
 
-    The left panel is the run of the L2 = STATE_SPACE_EXAMPLE_L2 cohort with
-    the best high-dimensional task-center separation, the right panel the run
-    of the L2 = STATE_SPACE_STRONG_L2 cohort, whose category structure is the
+    From the left: the untrained control, when its PCA cache exists; the
+    run of the L2 = STATE_SPACE_EXAMPLE_L2 cohort with the best
+    high-dimensional task-center separation; and the run of the
+    L2 = STATE_SPACE_STRONG_L2 cohort, whose category structure is the
     strongest (state_space_category_test), selected by the same criterion
     (STATE_SPACE_PCA_COHORTS; the rankings are saved as
     state_space_centroid_scores.json and state_space_centroid_scores_L21e2.json).
+
+    The untrained control is a network with the architecture and config of
+    the example run, or of another run of its training setting
+    (_untrained_source), but fresh random weights drawn from
+    STATE_SPACE_UNTRAINED_INIT_SEED and eta at its initial value, run on the
+    same evaluation trials by state_space_shift.py --untrained; no trained
+    weight is used, and the training run's own initialization was never
+    saved. Any task separation there comes from the rule-cue inputs passing
+    through random weights, and since L2 acts only during training, one
+    such network is the baseline of every cohort. Without its cache the
+    figures hold the two trained panels and the command to build it is
+    printed.
     The panels are separate PCA spaces whose PCs are not comparable, so each
     keeps its own axes; ``mod`` plots M and ``eff_mod`` plots M elementwise
     multiplied by the learned plastic weight matrix W. A figure needs both
-    cohorts: when either has no analyzed run or no PCA cache, the three
-    figures are skipped with a message rather than drawn with one panel.
+    trained cohorts: when either has no analyzed run or no PCA cache, the
+    three figures are skipped with a message rather than drawn with one
+    trained panel.
     """
     _ensure_out_dir()
-    cohort_data = []
+    panels = []
+    anames = []
     for strength in STATE_SPACE_PCA_COHORTS:
         selected = _load_best_state_space_trial(strength)
         if selected is None:
@@ -2740,21 +2769,29 @@ def plot_state_space_combined():
             print(f"  Skipped: state-space PCA pickle for {aname} not found. "
                   "Run state_space_shift.py first.")
             return
-        cohort_data.append((strength, data))
+        anames.append(aname)
+        panels.append((_l2_panel_title(strength), data))
+    # The untrained control stands for the example cohort, the first of
+    # STATE_SPACE_PCA_COHORTS; L2 acts only during training, so it is the
+    # baseline of every cohort.
+    untrained = _load_state_space_untrained_pca(anames[0])
+    if untrained is None:
+        print("  The PCA figures are drawn without an untrained panel.")
+    else:
+        panels.insert(0, ("Untrained", untrained))
 
     for key, ylabel_prefix in _STATE_SPACE_PCA_REPRESENTATIONS:
-        _plot_state_space_figure(cohort_data, key, ylabel_prefix, f"state_space_{key}.png")
+        _plot_state_space_figure(panels, key, ylabel_prefix, f"state_space_{key}.png")
 
 
 # Untrained control of the PCA figures: state_space_shift.py --untrained
 # writes the PCA of a freshly initialized network with a run's architecture
 # and config into this subdirectory, out of reach of the trained caches'
-# readers. Three square panels at the trained figures' panel size.
+# readers; the network is the Untrained panel of the trained PCA figures.
 STATE_SPACE_UNTRAINED_DIR = STATE_SPACE_DIR / "untrained"
-# The untrained network drawn in the PCA figure, by the seed of its weights
+# The untrained network drawn in the PCA figures, by the seed of its weights
 # (state_space_shift.UNTRAINED_INIT_SEED, the default of --init-seed).
 STATE_SPACE_UNTRAINED_INIT_SEED = 0
-_STATE_SPACE_UNTRAINED_FIGSIZE = (6.4, 2.5)
 
 
 def _untrained_command(aname, init_seeds=(STATE_SPACE_UNTRAINED_INIT_SEED,)):
@@ -2764,69 +2801,72 @@ def _untrained_command(aname, init_seeds=(STATE_SPACE_UNTRAINED_INIT_SEED,)):
             f"--checkpoint multiple_tasks/savednet_{aname}.pt --init-seed {seeds}")
 
 
+def _run_configuration(aname):
+    """The training setting of multi-task run `aname`: its name without the
+    seed (everything_seed921_L21e4+hidden300+batch128+angle and
+    everything_seed202_L21e4+hidden300+batch128+angle both give
+    everything_L21e4+hidden300+batch128+angle), shared by every run of one
+    setting. A name without a seed is its own setting."""
+    import re
+    return re.sub(r"_seed\d+_", "_", aname, count=1)
+
+
+def _untrained_source(aname, sources):
+    """The run among `sources` (runs whose config built untrained networks)
+    whose controls stand for run `aname`: `aname` itself when it is one,
+    otherwise the first, in name order, of the same training setting
+    (_run_configuration), or None when there is none. An untrained network
+    depends only on the setting's net_params and its init seed
+    (core/network_loading.build_network), so the controls built from any
+    run of the setting are the same networks and are not rebuilt when the
+    example run is re-ranked. Every reader takes one source, so no init
+    seed is counted twice."""
+    sources = {source for source in sources if source}
+    if aname in sources:
+        return aname
+    setting = _run_configuration(aname)
+    same_setting = sorted(source for source in sources
+                          if _run_configuration(source) == setting)
+    return same_setting[0] if same_setting else None
+
+
+def _note_untrained_source(aname, source):
+    """Say whose controls stand for `aname` when they are another run's."""
+    if source != aname:
+        print(f"  Untrained controls built from {source}'s config stand for {aname} "
+              "(same training setting).")
+
+
+def _untrained_pca_cache_sources(init_seed):
+    """{aname: PCA cache path} of the untrained networks with weights from
+    `init_seed`, keyed by the run whose config built them (from the cache
+    names, state_space_shift.untrained_file_stem)."""
+    prefix = "state_space_pca_"
+    suffix = f"_init{init_seed}_noise{STATE_SPACE_NOISE_LEVEL}.pkl"
+    return {path.name[len(prefix):-len(suffix)]: path
+            for path in STATE_SPACE_UNTRAINED_DIR.glob(f"{prefix}*{suffix}")}
+
+
 def _load_state_space_untrained_pca(aname, init_seed=STATE_SPACE_UNTRAINED_INIT_SEED):
-    """The PCA cache of the untrained network built from run `aname`'s config
-    with weights from `init_seed`, or None (with a message) when it is
-    missing or not marked untrained."""
-    path = (STATE_SPACE_UNTRAINED_DIR
-            / f"state_space_pca_{aname}_init{init_seed}_noise{STATE_SPACE_NOISE_LEVEL}.pkl")
+    """The PCA cache of the untrained network with weights from `init_seed`
+    built from run `aname`'s config, or from another run of the same
+    training setting (_untrained_source), or None (with a message) when
+    there is none or it is not marked untrained."""
     command = _untrained_command(aname, (init_seed,))
-    if not path.exists():
-        print(f"  Skipped: no untrained-network PCA cache for {aname} "
-              f"(init seed {init_seed}). Run: {command}")
+    caches = _untrained_pca_cache_sources(init_seed)
+    source = _untrained_source(aname, caches)
+    if source is None:
+        print(f"  Skipped: no untrained-network PCA cache for {aname} or another run of "
+              f"its setting (init seed {init_seed}). Run: {command}")
         return None
+    path = caches[source]
     with path.open("rb") as stream:
         data = pickle.load(stream)
     if data.get("untrained") is not True:
         print(f"  Skipped: {path} is not marked as an untrained network. Run: {command}")
         return None
+    _note_untrained_source(aname, source)
     return data
-
-
-def plot_state_space_untrained():
-    """
-    Figure: multitask_state_space_untrained.png — the context-end PCA of an
-    UNTRAINED network, one panel per representation (hidden state, raw
-    modulation M, effective modulation W * M), drawn like the trained PCA
-    figures (plot_state_space_combined): same colors, panel size and color key.
-
-    The network has the architecture and config of the selected
-    L2 = STATE_SPACE_EXAMPLE_L2 example run (the left panels of the trained
-    figures) but fresh random weights drawn from STATE_SPACE_UNTRAINED_INIT_SEED and eta
-    at its initial value; no trained weight is used, and the training run's
-    own initialization was never saved. It runs on the same evaluation trials
-    (EVALUATION_SEED), so any task separation here comes from the rule-cue
-    inputs passing through random weights, the baseline the trained figures
-    are compared against. The L2 strength only acts during training, so one
-    untrained network stands for every cohort. Each panel is its own PCA
-    space; the save message adds the category separation S of each
-    representation's full-dimensional task centroids. Read from
-    state_space/untrained/; nothing is recomputed from network activity.
-    """
-    _ensure_out_dir()
-    selected = _load_best_state_space_trial()
-    if selected is None:
-        return
-    aname = selected[0]
-    data = _load_state_space_untrained_pca(aname)
-    if data is None:
-        return
-
-    fig, axs = plt.subplots(1, len(_STATE_SPACE_PCA_REPRESENTATIONS),
-                            figsize=_STATE_SPACE_UNTRAINED_FIGSIZE)
-    scores = []
-    categories = [_RULE_MOTIF[rule][1] for rule in data["all_rules"]]
-    for index, (ax, (key, title)) in enumerate(zip(axs, _STATE_SPACE_PCA_REPRESENTATIONS)):
-        _draw_state_space_panel(ax, data, key, "Untrained" if index == 0 else None)
-        ax.set_title(title, fontsize=8, pad=4)
-        centroids = data["pca_results"][key].get("task_centroids")
-        if centroids is not None:
-            score = task_centroid_separation(centroids, categories)["score"]
-            scores.append(f"{key} S = {score:.4f}")
-    _state_space_figure_legend(fig, _state_space_legend_handles(), ncol=3, top=0.88)
-    _save_fig(fig, _multitask_out("state_space_untrained.png"),
-              extra=(f"  (config of {aname}, init seed {data.get('init_seed')}; "
-                     f"{', '.join(scores)})"))
 
 
 def _state_space_r_values_by_l2(result_dict, data_types):
@@ -2887,9 +2927,10 @@ STATE_SPACE_UNTRAINED_RVAL_PATH = STATE_SPACE_UNTRAINED_DIR / RVAL_RESULT_PATH.n
 
 def _untrained_r_values(data_types):
     """{data type: [{"r", "p_perm", "aname"}]} of the untrained networks built
-    from the selected example run's config (the networks of the untrained
-    PCA and category figures), or None, with the command to run, when there
-    are none."""
+    from the selected example run's config, or from another run of its
+    training setting (_untrained_source; the networks of the PCA figures'
+    Untrained panel and of the category figure), or None, with the command
+    to run, when there are none."""
     if not STATE_SPACE_UNTRAINED_RVAL_PATH.exists():
         print(f"  No untrained distance-angle results ({STATE_SPACE_UNTRAINED_RVAL_PATH}); "
               "drawing the trained cohorts only. Add them with: "
@@ -2902,16 +2943,22 @@ def _untrained_r_values(data_types):
     if selected is None:
         return None
     aname = selected[0]
+    untrained = {stem: entry for stem, entry in results.items()
+                 if entry.get("untrained") is True}
+    source = _untrained_source(aname, (entry.get("config_source")
+                                       for entry in untrained.values()))
     group = {data_type: [] for data_type in data_types}
     legacy = 0
-    for stem in sorted(results):
-        entry = results[stem]
-        if entry.get("untrained") is True and entry.get("config_source") == aname:
+    for stem in sorted(untrained):
+        entry = untrained[stem]
+        if source is not None and entry.get("config_source") == source:
             legacy += _add_r_value_entry(group, stem, entry, data_types)
     if not any(group.values()):
-        print(f"  No untrained distance-angle results built from {aname}'s config; drawing "
-              f"the trained cohorts only. Add them with: {_untrained_command(aname)}")
+        print(f"  No untrained distance-angle results built from {aname}'s config or another "
+              f"run of its setting; drawing the trained cohorts only. Add them with: "
+              f"{_untrained_command(aname)}")
         return None
+    _note_untrained_source(aname, source)
     if legacy:
         print(f"  Skipped {legacy} untrained network/representation entries without a saved "
               "permutation test.")
@@ -3457,11 +3504,17 @@ def _plot_separation_columns(columns, positions, figsize, out_name, divider=None
 
 def _untrained_structure_entries(combined, aname):
     """The structure summaries of the untrained networks built from run
-    `aname`'s config (one per init seed), in name order; empty when the
+    `aname`'s config, or from another run of its training setting
+    (_untrained_source), one per init seed, in name order; empty when the
     combined results hold none (or predate the untrained analysis)."""
     untrained = combined.get("untrained") or {}
-    return [untrained[stem] for stem in sorted(untrained)
-            if untrained[stem].get("config_source") == aname]
+    source = _untrained_source(aname, (entry.get("config_source")
+                                       for entry in untrained.values()))
+    entries = [untrained[stem] for stem in sorted(untrained)
+               if source is not None and untrained[stem].get("config_source") == source]
+    if entries:
+        _note_untrained_source(aname, source)
+    return entries
 
 
 def plot_state_space_category_vs_untrained():
@@ -3472,8 +3525,9 @@ def plot_state_space_category_vs_untrained():
 
     The left column holds the untrained networks of state_space_shift.py
     --untrained built from the selected L2 = STATE_SPACE_EXAMPLE_L2 example
-    run's config, one point per init seed (fresh random weights, eta at its
-    initial value, same evaluation trials); a dotted line and a wider gap set
+    run's config, or from another run of its training setting
+    (_untrained_source), one point per init seed (fresh random weights, eta
+    at its initial value, same evaluation trials); a dotted line and a wider gap set
     it apart from the four trained cohorts, which are drawn exactly as in
     plot_state_space_category_test. Every column shows one point per network,
     filled when its saved one-sided label-permutation p is below 0.05, the
@@ -3496,7 +3550,8 @@ def plot_state_space_category_vs_untrained():
     untrained = _untrained_structure_entries(combined, aname)
     if not untrained:
         print(f"  Skipped: the structure results hold no untrained network built from "
-              f"{aname}'s config. Run: {_untrained_command(aname)}; then "
+              f"{aname}'s config or another run of its setting. Run: "
+              f"{_untrained_command(aname)}; then "
               "python multiple_task/state_space_structure.py")
         return
     grouped = _state_space_runs_by_l2(combined["runs"])
@@ -3510,7 +3565,7 @@ def plot_state_space_category_vs_untrained():
 
 
 def _state_space_figure_legend(fig, handles, ncol=None, top=0.92):
-    """One frameless legend across the top of a two-panel figure (an axes
+    """One frameless legend across the top of a multi-panel figure (an axes
     legend would make tight_layout reserve its width for one panel), gated by
     SHOW_LEGEND like every legend: `ncol` columns (default: one row) and the
     figure laid out underneath, below the `top` fraction of its height."""
@@ -4965,7 +5020,7 @@ def plot_task_sharing_cohort():
     median = mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8,
                               label="median over runs")
     # One legend across the top of the stacked panels (shared with the
-    # two-panel state-space figures, which lay out the same way).
+    # state-space PCA figures, which lay out the same way).
     _state_space_figure_legend(fig, [filled, hollow, median], ncol=3, top=0.95)
     _save_fig(fig, _multitask_out("task_sharing_cohort.png"),
               extra=f"  {len(runs)} runs; " + " | ".join(summaries))
@@ -14016,7 +14071,6 @@ FIGURES_BY_MODE = {
     },
     "state_space": {
         "state_space_combined": plot_state_space_combined,
-        "state_space_untrained": plot_state_space_untrained,
         "state_space_dist_angle": plot_state_space_dist_angle,
         "state_space_r_values": plot_state_space_r_values,
         # Category structure and task-vector additivity of the context-end
@@ -14261,7 +14315,8 @@ def main():
         "lesion": f"{LESION_ANAME} (L2={MULTITASK_L2} cohort; *_seeds figures over its cached seeds)",
         "state_space": (
             f"(auto-selects best high-dimensional task-center separation within L2={STATE_SPACE_EXAMPLE_L2:.0e}; "
-            f"the PCA figures pair it with the L2={STATE_SPACE_STRONG_L2:.0e} cohort's selection; "
+            f"the PCA figures put the untrained control left of it and the "
+            f"L2={STATE_SPACE_STRONG_L2:.0e} cohort's selection right; "
             "R-values and the category test split across L2 1e-5/1e-4/1e-3/1e-2 cohorts; "
             "distance-angle p is the saved task-label permutation p)"
         ),

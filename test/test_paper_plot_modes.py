@@ -253,7 +253,6 @@ class PaperPlotModeTests(unittest.TestCase):
     def test_state_space_figures_have_their_own_mode(self):
         expected = {
             "state_space_combined",
-            "state_space_untrained",
             "state_space_dist_angle",
             "state_space_r_values",
             "state_space_rdm",
@@ -385,22 +384,32 @@ class PaperPlotModeTests(unittest.TestCase):
                              side_effect=selections.get) as selector, \
                 patch.object(paper_plot, "_load_state_space_pca",
                              side_effect=pca_data.get) as loader, \
-                patch.object(paper_plot, "_plot_state_space_figure") as plot_figure:
+                patch.object(paper_plot, "_load_state_space_untrained_pca",
+                             return_value=None) as untrained_loader, \
+                patch.object(paper_plot, "_plot_state_space_figure") as plot_figure, \
+                patch("builtins.print") as output:
             paper_plot.plot_state_space_combined()
         self.assertEqual([call.args[0] for call in selector.call_args_list], [1e-4, 1e-2])
         self.assertEqual([call.args[0] for call in loader.call_args_list],
                          ["weak_good", "strong_good"])
+        # The untrained control stands for the example (1e-4) run; without
+        # its cache the two trained panels are drawn.
+        self.assertEqual(untrained_loader.call_args.args, ("weak_good",))
+        self.assertIn("without an untrained panel", output.call_args.args[0])
         self.assertEqual([call.args[3] for call in plot_figure.call_args_list],
                          ["state_space_hidden.png", "state_space_mod.png",
                           "state_space_eff_mod.png"])
         for call in plot_figure.call_args_list:
-            self.assertEqual([strength for strength, _ in call.args[0]], [1e-4, 1e-2])
+            self.assertEqual([title for title, _ in call.args[0]],
+                             [r"$L_2 = 10^{-4}$", r"$L_2 = 10^{-2}$"])
             self.assertEqual([data is good for _, data in call.args[0]], [True, True])
-        # Without the strong cohort nothing is drawn: a figure needs both panels.
+        # Without the strong cohort nothing is drawn: a figure needs both
+        # trained panels.
         with patch.object(paper_plot, "_ensure_out_dir"), \
                 patch.object(paper_plot, "_load_best_state_space_trial",
                              side_effect={1e-4: ("weak_good", 0.8, {})}.get), \
                 patch.object(paper_plot, "_load_state_space_pca", side_effect=pca_data.get), \
+                patch.object(paper_plot, "_load_state_space_untrained_pca", return_value=None), \
                 patch.object(paper_plot, "_plot_state_space_figure") as plot_figure, \
                 patch("builtins.print"):
             paper_plot.plot_state_space_combined()
@@ -454,10 +463,13 @@ class PaperPlotModeTests(unittest.TestCase):
 
     def test_state_space_pca_outputs_include_raw_modulation(self):
         data = {"pca_results": {}}
+        untrained = {"pca_results": {}, "untrained": True}
         with patch.object(paper_plot, "_ensure_out_dir"), \
                 patch.object(paper_plot, "_load_best_state_space_trial",
                              return_value=("selected", 0.5, {})), \
                 patch.object(paper_plot, "_load_state_space_pca", return_value=data), \
+                patch.object(paper_plot, "_load_state_space_untrained_pca",
+                             return_value=untrained), \
                 patch.object(paper_plot, "_plot_state_space_figure") as plot_figure:
             paper_plot.plot_state_space_combined()
 
@@ -469,6 +481,12 @@ class PaperPlotModeTests(unittest.TestCase):
                 ("eff_mod", "Eff. modulation", "state_space_eff_mod.png"),
             ],
         )
+        # With its cache the untrained control is the first panel of each figure.
+        for call in plot_figure.call_args_list:
+            self.assertEqual([title for title, _ in call.args[0]],
+                             ["Untrained", r"$L_2 = 10^{-4}$", r"$L_2 = 10^{-2}$"])
+            self.assertIs(call.args[0][0][1], untrained)
+            self.assertEqual([panel is data for _, panel in call.args[0][1:]], [True, True])
 
     def test_state_space_panels_are_square_at_the_sweep_subpanel_size(self):
         rules = ["fdgo", "delaydm1", "dmcgo"]
@@ -480,34 +498,42 @@ class PaperPlotModeTests(unittest.TestCase):
                 "ctx_rule_labels": np.repeat(np.arange(3), 4),
             }},
         }
-        with patch.object(paper_plot, "_ensure_out_dir"), \
-                patch.object(paper_plot, "_save_fig") as save_fig:
-            paper_plot._plot_state_space_figure(
-                [(1e-4, data), (1e-2, data)], "eff_mod", "Eff. modulation",
-                "state_space_eff_mod.png")
-        figure = save_fig.call_args.args[0]
-        self.addCleanup(paper_plot.plt.close, figure)
-        self.assertEqual(Path(save_fig.call_args.args[1]).name, "multitask_state_space_eff_mod.png")
-        self.assertEqual(tuple(figure.get_size_inches()), paper_plot._STATE_SPACE_FIGSIZE)
-        # One panel per cohort, titled by its L2; the representation is named
-        # once, on the left panel; one color key for the whole figure.
-        self.assertEqual(len(figure.axes), 2)
-        self.assertEqual([axis.get_title() for axis in figure.axes],
-                         [r"$L_2 = 10^{-4}$", r"$L_2 = 10^{-2}$"])
-        self.assertEqual([axis.get_ylabel() for axis in figure.axes],
-                         ["Eff. modulation\nPC2", "PC2"])
-        self.assertEqual(len(figure.legends), 1)
-        self.assertEqual([text.get_text() for text in figure.legends[0].get_texts()],
-                         [label for label, _ in paper_plot._STATE_SPACE_LEGEND])
-        # Each drawn box matches a rule-cue sweep subpanel (about 1.6 in).
-        figure.canvas.draw()
-        for axis in figure.axes:
-            self.assertEqual(axis.get_box_aspect(), 1)
-            box = axis.get_window_extent().transformed(
-                figure.dpi_scale_trans.inverted())
-            self.assertAlmostEqual(box.width, box.height, places=2)
-            self.assertGreater(box.width, 1.5)
-            self.assertLess(box.width, 1.75)
+        self.assertEqual(paper_plot._state_space_figsize(2), (4.4, 2.5))
+        self.assertEqual(paper_plot._state_space_figsize(3), (6.4, 2.5))
+        trained = [(paper_plot._l2_panel_title(1e-4), data),
+                   (paper_plot._l2_panel_title(1e-2), data)]
+        for panels in (trained, [("Untrained", data)] + trained):
+            with self.subTest(n_panels=len(panels)), \
+                    patch.object(paper_plot, "_ensure_out_dir"), \
+                    patch.object(paper_plot, "_save_fig") as save_fig:
+                paper_plot._plot_state_space_figure(
+                    panels, "eff_mod", "Eff. modulation", "state_space_eff_mod.png")
+                figure = save_fig.call_args.args[0]
+                self.addCleanup(paper_plot.plt.close, figure)
+                self.assertEqual(Path(save_fig.call_args.args[1]).name,
+                                 "multitask_state_space_eff_mod.png")
+                self.assertEqual(tuple(figure.get_size_inches()),
+                                 paper_plot._state_space_figsize(len(panels)))
+                # One panel per entry, titled as given (the trained cohorts by
+                # their L2); the representation is named once, on the left
+                # panel; one color key for the whole figure.
+                self.assertEqual([axis.get_title() for axis in figure.axes],
+                                 [title for title, _ in panels])
+                self.assertEqual([axis.get_ylabel() for axis in figure.axes],
+                                 ["Eff. modulation\nPC2"] + ["PC2"] * (len(panels) - 1))
+                self.assertEqual(len(figure.legends), 1)
+                self.assertEqual([text.get_text() for text in figure.legends[0].get_texts()],
+                                 [label for label, _ in paper_plot._STATE_SPACE_LEGEND])
+                # Each drawn box matches a rule-cue sweep subpanel (about
+                # 1.6 in) whatever the panel count.
+                figure.canvas.draw()
+                for axis in figure.axes:
+                    self.assertEqual(axis.get_box_aspect(), 1)
+                    box = axis.get_window_extent().transformed(
+                        figure.dpi_scale_trans.inverted())
+                    self.assertAlmostEqual(box.width, box.height, places=2)
+                    self.assertGreater(box.width, 1.5)
+                    self.assertLess(box.width, 1.75)
 
     @staticmethod
     def _untrained_cache(untrained=True):
@@ -523,53 +549,72 @@ class PaperPlotModeTests(unittest.TestCase):
             } for key in ("hidden", "mod", "eff_mod")},
         }
 
-    def _draw_untrained(self, cache):
+    def _load_untrained(self, cache, selected="run", source="run"):
+        """Load the untrained PCA cache of the selected run `selected` (the
+        Untrained panel of the PCA figures) with `cache` saved as the control
+        built from run `source`'s config."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             if cache is not None:
-                with (root / "state_space_pca_run_init0_noise0.01.pkl").open("wb") as stream:
+                with (root / f"state_space_pca_{source}_init0_noise0.01.pkl").open("wb") as stream:
                     pickle.dump(cache, stream)
-            with patch.object(paper_plot, "_ensure_out_dir"), \
-                    patch.object(paper_plot, "STATE_SPACE_UNTRAINED_DIR", root), \
-                    patch.object(paper_plot, "_load_best_state_space_trial",
-                                 return_value=("run", 0.1, {})), \
-                    patch.object(paper_plot, "_save_fig") as save_fig, \
+            with patch.object(paper_plot, "STATE_SPACE_UNTRAINED_DIR", root), \
                     patch("builtins.print") as output:
-                paper_plot.plot_state_space_untrained()
-        return save_fig, output
+                data = paper_plot._load_state_space_untrained_pca(selected)
+        return data, output
 
-    def test_state_space_untrained_figure_has_one_panel_per_representation(self):
-        save_fig, _ = self._draw_untrained(self._untrained_cache())
-        figure = save_fig.call_args.args[0]
-        self.addCleanup(paper_plot.plt.close, figure)
-        self.assertEqual(Path(save_fig.call_args.args[1]).name,
-                         "multitask_state_space_untrained.png")
-        self.assertEqual([axis.get_title() for axis in figure.axes],
-                         ["Hidden state", "Modulation", "Eff. modulation"])
-        self.assertEqual([axis.get_ylabel() for axis in figure.axes],
-                         ["Untrained\nPC2", "PC2", "PC2"])
-        self.assertEqual(len(figure.legends), 1)
-        extra = save_fig.call_args.kwargs["extra"]
-        self.assertIn("config of run, init seed 0", extra)
-        self.assertIn("eff_mod S = ", extra)
-        # The trained PCA figures' panel size (about 1.6 in square boxes).
-        figure.canvas.draw()
-        for axis in figure.axes:
-            box = axis.get_window_extent().transformed(figure.dpi_scale_trans.inverted())
-            self.assertAlmostEqual(box.width, box.height, places=2)
-            self.assertGreater(box.width, 1.5)
-            self.assertLess(box.width, 1.75)
+    def test_state_space_untrained_cache_is_loaded_for_the_pca_figures(self):
+        data, output = self._load_untrained(self._untrained_cache())
+        self.assertEqual(data["init_seed"], 0)
+        self.assertEqual(set(data["pca_results"]), {"hidden", "mod", "eff_mod"})
+        output.assert_not_called()
 
-    def test_state_space_untrained_figure_skips_missing_or_trained_caches(self):
+    def test_state_space_untrained_cache_is_skipped_when_missing_or_trained(self):
         for cache, reason in ((None, "no untrained-network PCA cache"),
                               (self._untrained_cache(untrained=False), "not marked")):
             with self.subTest(reason=reason):
-                save_fig, output = self._draw_untrained(cache)
-                save_fig.assert_not_called()
+                data, output = self._load_untrained(cache)
+                self.assertIsNone(data)
                 message = output.call_args.args[0]
                 self.assertIn(reason, message)
                 self.assertIn("state_space_shift.py --untrained --checkpoint "
                               "multiple_tasks/savednet_run.pt --init-seed 0", message)
+
+    def test_untrained_source_prefers_the_run_and_then_its_setting(self):
+        run = "everything_seed202_L21e4+hidden300+batch128+angle"
+        siblings = [f"everything_seed{seed}_L21e4+hidden300+batch128+angle"
+                    for seed in (921, 101)]
+        other = "everything_seed921_L21e4lam0.9+hidden300+batch128+angle"
+        self.assertEqual(paper_plot._run_configuration(run),
+                         "everything_L21e4+hidden300+batch128+angle")
+        self.assertEqual(paper_plot._run_configuration(siblings[0]),
+                         paper_plot._run_configuration(run))
+        self.assertNotEqual(paper_plot._run_configuration(other),
+                            paper_plot._run_configuration(run))
+        # The run's own controls first, then the first run of its setting in
+        # name order; a lambda = 0.9 run is another setting.
+        self.assertEqual(paper_plot._untrained_source(run, siblings + [run, other]), run)
+        self.assertEqual(paper_plot._untrained_source(run, siblings + [other, None]),
+                         siblings[1])
+        self.assertIsNone(paper_plot._untrained_source(run, [other]))
+        # A name without a seed is its own setting.
+        self.assertEqual(paper_plot._untrained_source("run", ["other", "run"]), "run")
+        self.assertIsNone(paper_plot._untrained_source("run", ["other"]))
+
+    def test_state_space_untrained_cache_of_the_runs_setting_stands_in(self):
+        run = "everything_seed202_L21e4+hidden300+batch128+angle"
+        sibling = "everything_seed921_L21e4+hidden300+batch128+angle"
+        other = "everything_seed921_L21e4lam0.9+hidden300+batch128+angle"
+        cache = {**self._untrained_cache(), "config_source": sibling}
+        data, output = self._load_untrained(cache, selected=run, source=sibling)
+        self.assertEqual(data["config_source"], sibling)
+        self.assertIn(f"built from {sibling}'s config stand for {run}",
+                      output.call_args.args[0])
+        # A control of another setting does not stand in.
+        data, output = self._load_untrained({**cache, "config_source": other},
+                                            selected=run, source=other)
+        self.assertIsNone(data)
+        self.assertIn("another run of its setting", output.call_args.args[0])
 
     def test_state_space_dist_angle_renders_saved_nonzero_intercepts(self):
         entry = {"rval_dict": {}, "scatter": {}}
@@ -837,11 +882,11 @@ class PaperPlotModeTests(unittest.TestCase):
                                     **self._separation_summary(0.5, 0.01)}
         return {"runs": runs, "untrained": untrained}
 
-    def _draw_category_vs_untrained(self, combined):
+    def _draw_category_vs_untrained(self, combined, selected="run"):
         with patch.object(paper_plot, "_ensure_out_dir"), \
                 patch.object(paper_plot, "_load_pkl_or_skip", return_value=combined), \
                 patch.object(paper_plot, "_load_best_state_space_trial",
-                             return_value=("run", 0.1, {})), \
+                             return_value=(selected, 0.1, {})), \
                 patch.object(paper_plot, "_save_fig") as save_fig, \
                 patch("builtins.print") as output:
             paper_plot.plot_state_space_category_vs_untrained()
@@ -881,6 +926,21 @@ class PaperPlotModeTests(unittest.TestCase):
                 message = output.call_args.args[0]
                 self.assertIn("--untrained --checkpoint multiple_tasks/savednet_run.pt", message)
                 self.assertIn("state_space_structure.py", message)
+
+    def test_state_space_category_vs_untrained_accepts_the_runs_setting(self):
+        run = "everything_seed202_L21e4+hidden300+batch128+angle"
+        sibling = "everything_seed921_L21e4+hidden300+batch128+angle"
+        combined = self._structure_with_untrained()
+        for entry in combined["untrained"].values():
+            if entry["config_source"] == "run":
+                entry["config_source"] = sibling
+        save_fig, output = self._draw_category_vs_untrained(combined, selected=run)
+        figure = save_fig.call_args.args[0]
+        self.addCleanup(paper_plot.plt.close, figure)
+        labels = [label.get_text() for label in figure.axes[0].get_xticklabels()]
+        self.assertEqual(labels[0], "Untrained\n0/2")
+        self.assertTrue(any(f"built from {sibling}'s config stand for {run}" in call.args[0]
+                            for call in output.call_args_list))
 
     def test_removed_cross_seed_summary_is_not_available(self):
         self.assertFalse(hasattr(paper_plot, "plot_cross_seed_summary"))
