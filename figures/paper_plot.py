@@ -3015,14 +3015,16 @@ def _untrained_r_values(data_types, path=None, minimum_schema=STATE_SPACE_RESULT
 
 
 # Bars of the R-value figure: (saved name, label, color, hatched). A hatched
-# bar is the Hebbian-only first step of the full-step bar of the same color
-# (state_space_shift.DISTANCE_ANGLE_REPRESENTATIONS).
+# bar is the first step of the same-colored full-step bar with the linear
+# decay removed, M[t] - lam * M[t-1] (state_space_shift.STEP_HEBBIAN): the
+# bound clipping and the M activation of the update stay in it, so it is not
+# the Hebbian term alone, and the labels name what is removed.
 _STATE_SPACE_R_BARS = (
     ("hidden", "Hidden", _SCATTER_POINT_COLOR, False),
     ("mod", "Mod.", "#dd6b20", False),
     ("eff_mod", "Eff.\nMod.", "#38a169", False),
-    ("mod_hebb", "Mod.\nHebb", "#dd6b20", True),
-    ("eff_mod_hebb", "Eff. Mod.\nHebb", "#38a169", True),
+    ("mod_hebb", "Mod.\n- decay", "#dd6b20", True),
+    ("eff_mod_hebb", "Eff. Mod.\n- decay", "#38a169", True),
 )
 _STATE_SPACE_HEBB_HATCH = "///"
 
@@ -3066,11 +3068,13 @@ def plot_state_space_r_values():
     analyzed run, one panel per L2 strength and one bar per representation:
     hidden state, raw modulation and effective modulation with the full first
     step, then (hatched, same colors) the two modulation representations with
-    the Hebbian term of the step only (the decay-term control explained in
-    plot_state_space_dist_angle). Bars are the mean over runs with
-    the sample SD; the dots are the runs, filled when the run's saved two-sided
-    task-label permutation p is below 0.05 and hollow otherwise. Nothing is
-    recomputed; runs whose cache has no saved permutation test are left out.
+    the linear decay removed from the step, M[t] - lam * M[t-1] (the
+    decay-term control explained in plot_state_space_dist_angle; the bound
+    clipping stays in it, so it is not the Hebbian term alone). Bars are the
+    mean over runs with the sample SD; the dots are the runs, filled when the
+    run's saved two-sided task-label permutation p is below 0.05 and hollow
+    otherwise. Nothing is recomputed; runs whose cache has no saved
+    permutation test are left out.
 
     When the untrained networks built from the selected example run's config
     have distance-angle results (state_space_shift.py --untrained), a first
@@ -3105,7 +3109,7 @@ def plot_state_space_r_values():
                          markeredgecolor="k", markersize=4,
                          label=rf"p $\geq$ {_STATE_SPACE_SIGNIFICANCE}"),
         mpl.patches.Patch(facecolor="white", edgecolor="k", hatch=_STATE_SPACE_HEBB_HATCH,
-                          label="Hebbian term only (decay term removed)"),
+                          label=r"- decay: $M[t] - \lambda M[t-1]$, the linear decay removed (clipping kept)"),
     ]
     _state_space_figure_legend(fig, handles)
     _save_fig(fig, _multitask_out("state_space_r_values.png"))
@@ -3122,7 +3126,8 @@ STATE_SPACE_TRANSPLANT_UNTRAINED_RVAL_PATH = (
     STATE_SPACE_TRANSPLANT_DIR / "untrained" / "transplant_results.pkl")
 STATE_SPACE_TRANSPLANT_SCHEMA = 1
 # Bars of the transplant figure: the three representations with the full
-# transplant step (the experiment records the decay term, no Hebbian-only bar).
+# transplant step, the full update (the decay term's share is saved in
+# step_norms instead of a decay-removed bar).
 _STATE_SPACE_TRANSPLANT_BARS = tuple(bar for bar in _STATE_SPACE_R_BARS if not bar[3])
 
 
@@ -3238,11 +3243,12 @@ def _draw_distance_angle_panel(ax, panel, title):
 
 # Panels of the distance-angle figure: (saved name, title). The last two share
 # their initial conditions (x) and are drawn on one y range: the full first
-# step of W * M and its Hebbian term alone (state_space_shift.py).
+# step of W * M and that step with the linear decay removed
+# (state_space_shift.py).
 _STATE_SPACE_DIST_ANGLE_PANELS = (
     ("hidden", "Hidden state"),
     ("eff_mod", "Eff. modulation"),
-    ("eff_mod_hebb", "Eff. modulation,\nHebbian term only"),
+    ("eff_mod_hebb", "Eff. modulation,\ndecay removed"),
 )
 
 
@@ -3256,14 +3262,17 @@ def plot_state_space_dist_angle():
     supplies the hidden-state and effective-modulation PCA figures.
 
     Three panels: the hidden state and the effective modulation W * M with
-    the full first step x[t] - x[t-1], then W * M with the Hebbian term of
-    that step only. The modulation update is
-    M[t] = lam * M[t-1] + eta * post (x) pre, so the full step contains
+    the full first step x[t] - x[t-1], then W * M with the linear decay
+    removed from that step. The modulation update is
+    M[t] = lam * M[t-1] + eta * post (x) pre, clamped to the M bounds, so the
+    full step contains
     -(1 - lam) * M[t-1]: a component along the initial condition itself,
     which would relate the step angle to the initial-condition distance
     without any task-dependent computation. The third panel removes it
-    (x[t] - lam * x[t-1]), so a correlation that survives there is carried by
-    the task pairs' post- and presynaptic activity at stimulus onset. The two
+    (x[t] - lam * x[t-1]). What is left is the Hebbian outer product together
+    with the bound clipping and the M activation of that step, not the Hebbian
+    term alone (which is why the panel names what is removed), so a
+    correlation that survives there is not carried by the decay. The two
     W * M panels share their x coordinates and are drawn on one y range, so
     the change in angles is visible. Each point is one task pair: x = mean
     Euclidean distance between the two tasks' pre-stimulus states (end of the
@@ -3272,7 +3281,8 @@ def plot_state_space_dist_angle():
     free-intercept OLS fit state_space_shift.py computed; the p is its
     two-sided task-label permutation (Mantel-type) p, because task pairs share
     tasks. Nothing is refit; caches without the saved fit, the permutation
-    test or the Hebbian step are skipped with a message to rerun the analysis.
+    test or the decay-removed step are skipped with a message to rerun the
+    analysis.
     The saved message appends the decay term's share of the full W * M step.
     """
     _ensure_out_dir()
@@ -3289,7 +3299,7 @@ def plot_state_space_dist_angle():
     fig, axs = plt.subplots(1, len(panels), figsize=(2.7 * len(panels), 2.6))
     for ax, (panel, title) in zip(axs, panels):
         _draw_distance_angle_panel(ax, panel, title)
-    # One y range for the full and the Hebbian-only step of W * M.
+    # One y range for the full and the decay-removed step of W * M.
     modulation = [panel for panel, _ in panels[1:]]
     low = min(float(panel["y"].min()) for panel in modulation)
     high = max(float(panel["y"].max()) for panel in modulation)

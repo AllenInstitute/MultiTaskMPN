@@ -43,10 +43,13 @@ M[t] = lam * M[t-1] + eta * post (x) pre, clamped to the M bounds
 -(1 - lam) * M[t-1]: a term along the initial condition itself, which relates
 the step angle to the initial-condition distance without any task-dependent
 computation. The ``mod_hebb`` and ``eff_mod_hebb`` representations therefore
-use the Hebbian part only, x[t] - lam * x[t-1] with lam read from the
-checkpoint, so that comparing them with ``mod`` and ``eff_mod`` shows how much
-of the correlation the decay term accounts for. The hidden state has no decay
-term and keeps the one definition.
+use the step with the linear decay removed, x[t] - lam * x[t-1] with lam read
+from the checkpoint, so that comparing them with ``mod`` and ``eff_mod`` shows
+how much of the correlation the decay term accounts for. That remainder is
+not the Hebbian outer product alone: the bound clipping and the M activation
+of the update stay in it, so figures and messages name it by what is removed
+("decay removed"); the saved keys keep their names. The hidden state has no
+decay term and keeps the one definition.
 
 For this analysis only, every task's first stimulus is aligned to the same
 requested 500-ms Context duration (rounded down to whole simulation steps).
@@ -142,7 +145,8 @@ NOISE_LEVEL = 0.01
 # Distance-angle analysis. Each representation compares the task pairs'
 # initial conditions x[t-1] (end of Context) with their first post-stimulus
 # step. STEP_FULL is x[t] - x[t-1]; STEP_HEBBIAN is x[t] - lam * x[t-1], the
-# modulation update without its decay term (see the module docstring), and
+# modulation update with its linear decay removed (clipping and M activation
+# included, see the module docstring; the saved kind string is kept), and
 # applies to M and W * M only, since the hidden state has no decay term.
 STEP_FULL = "full"
 STEP_HEBBIAN = "hebbian"
@@ -159,7 +163,7 @@ N_STIMULUS_DIRECTIONS = 8
 # (Mantel-type, two-sided), as the lesion analyses do for cluster pairs.
 DISTANCE_ANGLE_N_PERMUTATIONS = 10000
 DISTANCE_ANGLE_PERMUTATION_SEED = 0
-# Results entries carrying the permutation test and the Hebbian-only steps.
+# Results entries carrying the permutation test and the decay-removed steps.
 # 3: the modulation trajectories are aligned to the hidden state's clock
 # (align_modulation_to_hidden); earlier entries used the recorded,
 # pre-update M, one step early.
@@ -448,8 +452,10 @@ def _task_pair_distance_angle(data, rule_indices, stimulus_labels, onset_by_rule
 
 def _step_norm_summary(data, rule_indices, onset_by_rule, n_rules, retention=None):
     """Mean trial norms of the initial condition and the first step and, with
-    ``retention``, of the step's decay term (1 - lam) * x[t-1] and Hebbian
-    term x[t] - lam * x[t-1]: how much of the full step the decay contributes."""
+    ``retention``, of the step's decay term (1 - lam) * x[t-1] and of the
+    remainder x[t] - lam * x[t-1] (saved as ``hebbian_term``: the Hebbian
+    outer product with the clipping and M activation of that step): how much
+    of the full step the decay contributes."""
     sums = {"initial": 0.0, "full_step": 0.0}
     if retention is not None:
         sums.update(decay_term=0.0, hebbian_term=0.0)
@@ -526,7 +532,7 @@ def distance_angle_analysis(source_data, rule_indices, stimulus_labels, onset_by
                 "definition": ("x[t] - x[t-1]" if step_kind == STEP_FULL
                                else "x[t] - lam * x[t-1] (decay term removed)"),
             },
-            # The decay/Hebbian split describes the source's full step, so it
+            # The decay/remainder split describes the source's full step, so it
             # is attached to the modulation representations only.
             "step_norms": _step_norm_summary(
                 data, rule_indices, onset_by_rule, n_rules,
@@ -870,7 +876,7 @@ def eval_one(netpathname, output_dir=None):
 
 def _distance_angle_for_states(states, output_dir, file_stem):
     """Distance between initial conditions vs. angle between first steps
-    (closer to Fig 4C of Driscoll et al.), for the full and Hebbian steps, of
+    (closer to Fig 4C of Driscoll et al.), for the full and decay-removed steps, of
     one ``states`` dict (``_context_states``), with its diagnostic figure in
     ``output_dir`` named after ``file_stem``. Returns (rval_dict,
     scatter_dict) of ``distance_angle_analysis``."""
@@ -1145,7 +1151,7 @@ def summarize(output_dir=None):
     ax.set_xticks(positions)
     ax.set_xticklabels(present, rotation=45, ha='right')
     ax.set_ylabel('R-value')
-    ax.set_title('Mean R-values across networks\n(hatched: Hebbian term only)')
+    ax.set_title('Mean R-values across networks\n(hatched: linear decay removed)')
     ax.axhline(y=0, color='black', linestyle='--', alpha=0.3)
     ax.grid(axis='y', alpha=0.3)
 

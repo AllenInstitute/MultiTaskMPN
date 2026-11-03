@@ -204,10 +204,10 @@ This writes only to `state_space/untrained/`: per seed the PCA cache
 `init_seed` and `config_source`) and its diagnostic figures, and the networks'
 own distance-angle results, `initial_condition_distance_vs_angle_results.pkl`
 keyed by `<aname>_init<seed>`, with the fields of a trained run's entry
-(permutation test and Hebbian-only steps included), the same marks, and
+(permutation test and decay-removed steps included), the same marks, and
 `l2_info` None (the config's L2 kept as `config_l2_info`). This is the
 no-learning control of the distance-angle relation: the rule cue is on for the
-whole trial, so the Hebbian step carries the cue as well, and distinct cues
+whole trial, so the decay-removed step carries the cue as well, and distinct cues
 could tie M distance to step angle without any training. The subdirectory
 keeps these files out of the trained runs' structure glob, seed rankings and
 R-value cohorts, and the batch run's cleanup leaves it in place. The PCA
@@ -246,22 +246,30 @@ above), each entry holds `mod_hebb` and `eff_mod_hebb`. The modulation update is
 M[t] = λ M[t−1] + η post ⊗ pre, clamped to the M bounds, so the full step
 contains −(1 − λ) M[t−1]: a component along the initial condition itself, which
 ties the step angle to the initial-condition distance without any
-task-dependent computation. The Hebbian-only step x[t] − λ x[t−1] removes it,
-with λ read from the checkpoint's `mp_layer1.lam` (saved as `retention`);
-`step_norms` records the mean trial norms of the initial condition, the full
-step and, for the modulation representations, its decay and Hebbian terms.
+task-dependent computation. The decay-removed step x[t] − λ x[t−1] takes it
+out, with λ read from the checkpoint's `mp_layer1.lam` (saved as
+`retention`). What remains is not the Hebbian outer product alone: the update
+is clamped to the M bounds (and passed through the M activation), and those
+corrections stay in the remainder; after a native step the transplant
+diagnostics of the 2026-11-03 cohort put a median 5% of M entries at the
+bounds at L2 = 1e-4 and 12% at L2 = 1e-5. The figures therefore name the step
+by what is removed ("- decay", "decay removed"; earlier versions said
+"Hebbian term only"), while the saved keys `mod_hebb`, `eff_mod_hebb` and
+`hebbian_term` keep their names. `step_norms` records the mean trial norms of
+the initial condition, the full step and, for the modulation representations,
+its decay term and that remainder.
 `paper_plot.py` draws saved values only: `state_space_dist_angle` shows three
 panels of the selected run, the hidden state and W ⊙ M with the full first
-step and W ⊙ M with the Hebbian term only (the two W ⊙ M panels on one y
+step and W ⊙ M with the decay removed (the two W ⊙ M panels on one y
 range), each with r and the permutation p; `state_space_r_values` shows one
-bar per representation and L2 cohort, raw M included (Hebbian-only bars
+bar per representation and L2 cohort, raw M included (decay-removed bars
 hatched, one dot per run, filled when its permutation p < 0.05), preceded by
 an "Untrained" panel of the same bars when `state_space/untrained/` holds
 distance-angle results of networks built from the selected example run's
 config or from another run of its setting (one dot per init seed; without
 them the four cohort panels are drawn and the command to add the control is
 printed). Caches
-without the permutation test or the Hebbian steps are skipped, never refitted;
+without the permutation test or the decay-removed steps are skipped, never refitted;
 regenerate them with `state_space_shift.py`.
 
 **Modulation transplant (`state_space_transplant.py`, 2026-11-03).** The
@@ -298,7 +306,12 @@ the cross-task angles, drawn as a dotted line in the per-network
 diagnostic scatter); `step_norms` keeps the mean norms of the start
 state, of the native and transplanted steps and of the decay term
 (1 − λ) M, and the share of M entries at the bounds after native and
-transplanted steps; zero-norm steps are skipped, never given an angle. r
+transplanted steps; zero-norm steps are skipped, never given an angle. On
+the 2026-11-03 cohort the decay term is 3% of the native M step at L2 = 1e-5
+and 1e-4, 5% at 1e-3 and 9% at 1e-2 (run means), and the median share of M
+entries at the bounds after the native step is 12%, 5%, 3% and 1% at
+L2 = 1e-5, 1e-4, 1e-3 and 1e-2: neither is one number across the cohorts, so
+report them per cohort. r
 and p remain an association of two task-pair matrices: the intervention is
 on M, but the correlation is not a test of a causal effect, and moving the
 state does not show that a task's behavior or rule moves with it. The two
@@ -318,7 +331,8 @@ with the marks of the distance-angle untrained entries (`untrained`,
 `init_seed`, `config_source`, `l2_info` None). `python figures/paper_plot.py
 --only state_space_transplant_r_values` draws
 `multitask_state_space_transplant_r_values.png` like `state_space_r_values`:
-one bar per representation (hidden state, M, W ⊙ M; no Hebbian-only bar)
+one bar per representation (hidden state, M, W ⊙ M, the full update; no
+decay-removed bar, the decay term's share is in `step_norms`)
 and L2 cohort with one dot per run, filled when its permutation p < 0.05,
 preceded by an "Untrained" panel when `state_space/transplant/untrained/`
 holds networks of the selected example run's setting

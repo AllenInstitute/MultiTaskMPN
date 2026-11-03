@@ -1,5 +1,5 @@
 """Distance-angle statistics of state_space_shift.py: the task-label
-permutation test, the vectorized pair statistics, the Hebbian-only step, the
+permutation test, the vectorized pair statistics, the decay-removed step, the
 single-checkpoint CLI and the paper figures that read the saved values."""
 
 import pickle
@@ -294,7 +294,7 @@ class StateSpaceDistanceAngleFigureTests(unittest.TestCase):
                                  "r = 0.50\npermutation p = 0.020"])
         self.assertEqual([ax.get_title() for ax in figure.axes],
                          ["Hidden state", "Eff. modulation",
-                          "Eff. modulation,\nHebbian term only"])
+                          "Eff. modulation,\ndecay removed"])
         # The two W * M panels share one y range; the hidden panel keeps its own.
         self.assertEqual(figure.axes[1].get_ylim(), figure.axes[2].get_ylim())
         self.assertNotEqual(figure.axes[0].get_ylim(), figure.axes[1].get_ylim())
@@ -306,7 +306,7 @@ class StateSpaceDistanceAngleFigureTests(unittest.TestCase):
                               _distance_angle_entry(with_permutation=False))
         save_fig.assert_not_called()
 
-    def test_dist_angle_figure_skips_caches_without_the_hebbian_step(self):
+    def test_dist_angle_figure_skips_caches_without_the_decay_removed_step(self):
         save_fig = self._draw(paper_plot.plot_state_space_dist_angle,
                               _distance_angle_entry(with_hebb=False))
         save_fig.assert_not_called()
@@ -323,7 +323,7 @@ class StateSpaceDistanceAngleFigureTests(unittest.TestCase):
         self.addCleanup(paper_plot.plt.close, figure)
         return figure, save_fig, output
 
-    def test_r_values_figure_hatches_hebbian_bars_and_fills_significant_runs(self):
+    def test_r_values_figure_hatches_decay_removed_bars_and_fills_significant_runs(self):
         result_dict = {f"run{index}": _distance_angle_entry() for index in range(2)}
         with tempfile.TemporaryDirectory() as tmp:
             # Without untrained results the four cohort panels stay as they were.
