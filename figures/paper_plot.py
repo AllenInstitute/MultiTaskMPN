@@ -2608,13 +2608,46 @@ def _load_best_state_space_trial(strength=STATE_SPACE_EXAMPLE_L2):
     return aname, score, result_dict[aname]
 
 
+# The state-space caches' modulation states must be on the hidden state's
+# clock (state_space_shift.M_ALIGNMENT and DISTANCE_ANGLE_SCHEMA_VERSION):
+# the network records M before each update, so caches written before the
+# alignment took M one step early. Such caches are skipped, never drawn.
+STATE_SPACE_M_ALIGNMENT = "post_update"
+STATE_SPACE_RESULTS_SCHEMA = 3
+_STATE_SPACE_STALE_HINT = ("Re-run multiple_task/state_space_shift.py (then "
+                           "state_space_structure.py): the cache predates the alignment of "
+                           "M to the hidden state.")
+
+
+def _state_space_cache_is_aligned(data, path):
+    """True when PCA cache `data` (from `path`) carries the alignment marker;
+    otherwise says why it is skipped."""
+    if data.get("m_alignment") == STATE_SPACE_M_ALIGNMENT:
+        return True
+    print(f"  Skipped: {path} has no aligned modulation states. {_STATE_SPACE_STALE_HINT}")
+    return False
+
+
+def _state_space_entry_is_current(entry, name):
+    """True when distance-angle results entry `entry` (of run `name`) was
+    written with aligned modulation states (schema STATE_SPACE_RESULTS_SCHEMA
+    or later); otherwise says why it is skipped."""
+    if entry.get("schema_version", 0) >= STATE_SPACE_RESULTS_SCHEMA:
+        return True
+    print(f"  Skipped: the distance-angle entry of {name} is schema "
+          f"{entry.get('schema_version', 'unknown')}. {_STATE_SPACE_STALE_HINT}")
+    return False
+
+
 def _load_state_space_pca(aname):
-    """Load state_space_shift's shared PCA and original-feature task centers."""
+    """Load state_space_shift's shared PCA and original-feature task centers,
+    or None when the cache is missing or its modulation is not aligned."""
     path = STATE_SPACE_DIR / f"state_space_pca_{aname}_noise{STATE_SPACE_NOISE_LEVEL}.pkl"
     if not path.exists():
         return None
     with path.open("rb") as stream:
-        return pickle.load(stream)
+        data = pickle.load(stream)
+    return data if _state_space_cache_is_aligned(data, path) else None
 
 
 # Legend for the state-space panels: one entry per DISTINCT color in
@@ -2865,16 +2898,21 @@ def _load_state_space_untrained_pca(aname, init_seed=STATE_SPACE_UNTRAINED_INIT_
     if data.get("untrained") is not True:
         print(f"  Skipped: {path} is not marked as an untrained network. Run: {command}")
         return None
+    if not _state_space_cache_is_aligned(data, path):
+        return None
     _note_untrained_source(aname, source)
     return data
 
 
-def _state_space_r_values_by_l2(result_dict, data_types):
+def _state_space_r_values_by_l2(result_dict, data_types,
+                                minimum_schema=STATE_SPACE_RESULTS_SCHEMA,
+                                rerun="multiple_task/state_space_shift.py"):
     """Per analyzed L2 strength and representation, the runs' saved
     distance-angle r and two-sided task-label permutation p as
     {"r", "p_perm", "aname"} dicts. Runs of other strengths are left out; a
-    run whose cache predates the permutation test (no saved p) is left out
-    with a message rather than drawn with a made-up significance."""
+    run whose cache predates the permutation test (no saved p) or
+    `minimum_schema` is left out with a message (naming the `rerun` script)
+    rather than drawn with a made-up significance."""
     grouped = {
         strength: {data_type: [] for data_type in data_types}
         for strength in STATE_SPACE_L2_STRENGTHS
@@ -2892,21 +2930,29 @@ def _state_space_r_values_by_l2(result_dict, data_types):
         )
         if strength is None:
             continue
-        legacy += _add_r_value_entry(grouped[strength], aname, results, data_types)
+        legacy += _add_r_value_entry(grouped[strength], aname, results, data_types,
+                                     minimum_schema)
     if legacy:
         print(f"  Skipped {legacy} run/representation entries without a saved task-label "
-              "permutation test (legacy cache). Re-run multiple_task/state_space_shift.py.")
+              "permutation test or aligned modulation states (legacy cache). "
+              f"Re-run {rerun}.")
     return grouped
 
 
-def _add_r_value_entry(group, name, results, data_types):
+def _add_r_value_entry(group, name, results, data_types,
+                       minimum_schema=STATE_SPACE_RESULTS_SCHEMA):
     """Append one results entry's saved r and permutation p to `group`
     ({data type: [{"r", "p_perm", "aname"}]}) for each of `data_types` it
     holds. Returns the number of data types left out because the entry has
-    no saved permutation test (legacy cache)."""
+    no saved permutation test or is older than `minimum_schema` (for the
+    distance-angle results, the modulation alignment; legacy cache)."""
     legacy = 0
+    current = results.get("schema_version", 0) >= minimum_schema
     for data_type in data_types:
         if data_type not in results.get("rval_dict", {}):
+            continue
+        if not current:
+            legacy += 1
             continue
         permutation = (results.get("scatter") or {}).get(data_type, {}).get("permutation")
         if not permutation or "p_value" not in permutation:
@@ -2925,19 +2971,23 @@ def _add_r_value_entry(group, name, results, data_types):
 STATE_SPACE_UNTRAINED_RVAL_PATH = STATE_SPACE_UNTRAINED_DIR / RVAL_RESULT_PATH.name
 
 
-def _untrained_r_values(data_types):
+def _untrained_r_values(data_types, path=None, minimum_schema=STATE_SPACE_RESULTS_SCHEMA,
+                        command=_untrained_command):
     """{data type: [{"r", "p_perm", "aname"}]} of the untrained networks built
     from the selected example run's config, or from another run of its
     training setting (_untrained_source; the networks of the PCA figures'
     Untrained panel and of the category figure), or None, with the command
-    to run, when there are none."""
-    if not STATE_SPACE_UNTRAINED_RVAL_PATH.exists():
-        print(f"  No untrained distance-angle results ({STATE_SPACE_UNTRAINED_RVAL_PATH}); "
-              "drawing the trained cohorts only. Add them with: "
-              "python multiple_task/state_space_shift.py --untrained --checkpoint "
-              "multiple_tasks/savednet_<example aname>.pt --init-seed 0 1 2 3 4 5 6 7")
+    to run, when there are none. `path` is the untrained networks' results
+    pickle (default: the distance-angle results,
+    STATE_SPACE_UNTRAINED_RVAL_PATH), `minimum_schema` the entry version
+    the figure needs and `command(aname, init_seeds)` the command that adds
+    the networks."""
+    path = STATE_SPACE_UNTRAINED_RVAL_PATH if path is None else path
+    if not path.exists():
+        print(f"  No untrained results ({path}); drawing the trained cohorts only. "
+              f"Add them with: {command('<example aname>', range(8))}")
         return None
-    with STATE_SPACE_UNTRAINED_RVAL_PATH.open("rb") as stream:
+    with path.open("rb") as stream:
         results = pickle.load(stream)
     selected = _load_best_state_space_trial()
     if selected is None:
@@ -2952,16 +3002,15 @@ def _untrained_r_values(data_types):
     for stem in sorted(untrained):
         entry = untrained[stem]
         if source is not None and entry.get("config_source") == source:
-            legacy += _add_r_value_entry(group, stem, entry, data_types)
+            legacy += _add_r_value_entry(group, stem, entry, data_types, minimum_schema)
     if not any(group.values()):
-        print(f"  No untrained distance-angle results built from {aname}'s config or another "
-              f"run of its setting; drawing the trained cohorts only. Add them with: "
-              f"{_untrained_command(aname)}")
+        print(f"  No untrained results built from {aname}'s config or another run of its "
+              f"setting; drawing the trained cohorts only. Add them with: {command(aname)}")
         return None
     _note_untrained_source(aname, source)
     if legacy:
         print(f"  Skipped {legacy} untrained network/representation entries without a saved "
-              "permutation test.")
+              "permutation test or aligned modulation states (legacy cache).")
     return group
 
 
@@ -2978,17 +3027,18 @@ _STATE_SPACE_R_BARS = (
 _STATE_SPACE_HEBB_HATCH = "///"
 
 
-def _draw_r_value_panel(ax, runs, title, jitter):
-    """One panel of the R-value figure: per bar of _STATE_SPACE_R_BARS the
-    mean r of `runs` ({data type: [{"r", "p_perm"}]}) with the sample SD, and
-    one dot per run or network, filled when its permutation p is below 0.05.
+def _draw_r_value_panel(ax, runs, title, jitter, bars=_STATE_SPACE_R_BARS):
+    """One panel of the R-value figure: per bar of `bars` (saved name,
+    label, color, hatched; _STATE_SPACE_R_BARS by default) the mean r of
+    `runs` ({data type: [{"r", "p_perm"}]}) with the sample SD, and one dot
+    per run or network, filled when its permutation p is below 0.05.
     Returns the lowest r drawn (0 when none)."""
     lowest = 0.0
-    if not any(runs[name] for name, _, _, _ in _STATE_SPACE_R_BARS):
+    if not any(runs[name] for name, _, _, _ in bars):
         ax.text(0.5, 0.5, "No data", ha="center", va="center",
                 transform=ax.transAxes, color="0.4")
-    positions = np.arange(len(_STATE_SPACE_R_BARS))
-    for position, (name, _, color, hatched) in zip(positions, _STATE_SPACE_R_BARS):
+    positions = np.arange(len(bars))
+    for position, (name, _, color, hatched) in zip(positions, bars):
         values = np.array([run["r"] for run in runs[name]], dtype=float)
         if values.size == 0:
             continue
@@ -3004,7 +3054,7 @@ def _draw_r_value_panel(ax, runs, title, jitter):
                        edgecolors="k", linewidths=0.6)
     ax.set_title(title)
     ax.set_xticks(positions)
-    ax.set_xticklabels([label for _, label, _, _ in _STATE_SPACE_R_BARS], fontsize=7)
+    ax.set_xticklabels([label for _, label, _, _ in bars], fontsize=7)
     ax.spines[["top", "right"]].set_visible(False)
     ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
     return lowest
@@ -3061,6 +3111,79 @@ def plot_state_space_r_values():
     _save_fig(fig, _multitask_out("state_space_r_values.png"))
 
 
+# The modulation transplant experiment (multiple_task/state_space_transplant.py):
+# its results pickles, in the transplant/ subdirectory of the state-space
+# directory (the untrained networks' in untrained/ below it), and the entry
+# version the figure needs.
+_STATE_SPACE_TRANSPLANT_SCRIPT = "multiple_task/state_space_transplant.py"
+STATE_SPACE_TRANSPLANT_DIR = STATE_SPACE_DIR / "transplant"
+STATE_SPACE_TRANSPLANT_RVAL_PATH = STATE_SPACE_TRANSPLANT_DIR / "transplant_results.pkl"
+STATE_SPACE_TRANSPLANT_UNTRAINED_RVAL_PATH = (
+    STATE_SPACE_TRANSPLANT_DIR / "untrained" / "transplant_results.pkl")
+STATE_SPACE_TRANSPLANT_SCHEMA = 1
+# Bars of the transplant figure: the three representations with the full
+# transplant step (the experiment records the decay term, no Hebbian-only bar).
+_STATE_SPACE_TRANSPLANT_BARS = tuple(bar for bar in _STATE_SPACE_R_BARS if not bar[3])
+
+
+def _transplant_untrained_command(aname, init_seeds=(STATE_SPACE_UNTRAINED_INIT_SEED,)):
+    """The command that runs the transplant experiment on untrained networks
+    built from run `aname`'s config."""
+    seeds = " ".join(str(seed) for seed in init_seeds)
+    return (f"python {_STATE_SPACE_TRANSPLANT_SCRIPT} --untrained "
+            f"--checkpoint multiple_tasks/savednet_{aname}.pt --init-seed {seeds}")
+
+
+def plot_state_space_transplant_r_values():
+    """
+    Figure: multitask_state_space_transplant_r_values.png — the r of the
+    modulation transplant experiment (multiple_task/state_space_transplant.py)
+    of every analyzed run, laid out as plot_state_space_r_values: one panel
+    per L2 strength, preceded by an "Untrained" panel when the untrained
+    networks of the selected example run's setting have results, one bar
+    per representation (hidden state, raw and effective modulation) with
+    the mean over runs and the sample SD, and one dot per run, filled when
+    its saved two-sided task-label permutation p is below 0.05. The r is
+    the correlation, over the 105 task pairs, between the distance of two
+    tasks' Context-end M and the angle between the first steps the network
+    takes from either state under one and the same input (a trial of the
+    host task, averaged over both hosting directions), so the angle
+    reflects the state change alone: the input, rule cue included, is the
+    same in both branches, where the matched-stimulus figure's trials only
+    share a stimulus label. Nothing is recomputed; entries older than
+    STATE_SPACE_TRANSPLANT_SCHEMA are left out.
+    """
+    _ensure_out_dir()
+    result_dict = _load_pkl_or_skip(STATE_SPACE_TRANSPLANT_RVAL_PATH,
+                                    f"Run python {_STATE_SPACE_TRANSPLANT_SCRIPT} first.")
+    if result_dict is None:
+        return
+    names = [name for name, _, _, _ in _STATE_SPACE_TRANSPLANT_BARS]
+    grouped = _state_space_r_values_by_l2(result_dict, names, STATE_SPACE_TRANSPLANT_SCHEMA,
+                                          _STATE_SPACE_TRANSPLANT_SCRIPT)
+    panels = [(_l2_panel_title(strength), grouped[strength])
+              for strength in STATE_SPACE_L2_STRENGTHS]
+    untrained = _untrained_r_values(names, STATE_SPACE_TRANSPLANT_UNTRAINED_RVAL_PATH,
+                                    STATE_SPACE_TRANSPLANT_SCHEMA, _transplant_untrained_command)
+    if untrained is not None:
+        panels.insert(0, ("Untrained", untrained))
+    fig, axs = plt.subplots(1, len(panels), figsize=(1.9 * len(panels), 3.2), sharey=True)
+    jitter = np.random.default_rng(42)
+    lowest = min(_draw_r_value_panel(ax, runs, title, jitter, _STATE_SPACE_TRANSPLANT_BARS)
+                 for ax, (title, runs) in zip(axs, panels))
+    axs[0].set_ylabel("R-value")
+    axs[0].set_ylim(min(0.0, lowest - 0.05), 1.05)
+    handles = [
+        mpl.lines.Line2D([], [], marker="o", linestyle="none", color="k", markersize=4,
+                         label=f"permutation p < {_STATE_SPACE_SIGNIFICANCE}"),
+        mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
+                         markeredgecolor="k", markersize=4,
+                         label=rf"p $\geq$ {_STATE_SPACE_SIGNIFICANCE}"),
+    ]
+    _state_space_figure_legend(fig, handles)
+    _save_fig(fig, _multitask_out("state_space_transplant_r_values.png"))
+
+
 _DISTANCE_ANGLE_XLABEL = "Distance between\ninitial conditions"
 _DISTANCE_ANGLE_YLABEL = "Angle between first step\nof trajectories (deg.)"
 
@@ -3068,8 +3191,11 @@ _DISTANCE_ANGLE_YLABEL = "Angle between first step\nof trajectories (deg.)"
 def _distance_angle_panel(entry, key):
     """The saved task-pair coordinates and statistics of one representation
     (`key`) of a distance-angle results entry written by state_space_shift.py,
-    or None with a message when the cache predates the free-intercept fit or
-    the task-label permutation test. Nothing is refitted or recomputed."""
+    or None with a message when the cache predates the free-intercept fit,
+    the task-label permutation test or the modulation alignment. Nothing is
+    refitted or recomputed."""
+    if not _state_space_entry_is_current(entry, key):
+        return None
     scatter = (entry.get("scatter") or {}).get(key)
     if scatter is None:
         print(f"  Skipped: no saved scatter for {key} (legacy cache). "
@@ -3428,6 +3554,108 @@ def plot_state_space_rdm_stats():
                          f"{consistency['max']:.2f}))"))
 
 
+# The same two statistics across the L2 cohorts: two panels of one column
+# per cohort of STATE_SPACE_L2_STRENGTHS.
+_STATE_SPACE_RDM_VS_L2_FIGSIZE = (4.8, 2.2)
+# Half-width of the x jitter of the run-pair points of one column.
+_STATE_SPACE_RDM_VS_L2_JITTER = 0.25
+
+
+def _cohort_rdm_stats(combined, key):
+    """(strength, n_runs, separation, consistency) of every L2 cohort of
+    STATE_SPACE_L2_STRENGTHS whose mean of representation `key` holds the
+    run-pair correlations, in L2 order; cohorts without a mean or without
+    the correlations (an older cache) are skipped with a message."""
+    rows = []
+    for strength in STATE_SPACE_L2_STRENGTHS:
+        cohort = _state_space_cohort_structure(combined, strength)
+        if cohort is None or key not in cohort["representations"]:
+            continue
+        entry = cohort["representations"][key]
+        if entry["consistency"].get("pairwise_spearman") is None:
+            print(f"  Skipped L2={strength:.0e} {key}: the cohort mean holds no run-pair "
+                  f"correlations. {_STATE_SPACE_STRUCTURE_HINT}")
+            continue
+        rows.append((strength, cohort["n_runs"], entry["separation"], entry["consistency"]))
+    return rows
+
+
+def plot_state_space_rdm_stats_vs_l2():
+    """
+    Figure: the statistics of the cohort-mean RDM (plot_state_space_rdm_stats)
+    across the L2 cohorts (STATE_SPACE_L2_STRENGTHS), for the effective
+    modulation:
+      multitask_state_space_rdm_stats_vs_l2_eff_mod.png
+
+    Left: the category separation S of each cohort's mean task distance
+    matrix, filled when its one-sided label-permutation p is below 0.05 and
+    with the p above it, over the null's 95th percentile as a gray dash.
+    Right: the Spearman rank correlation between every two runs' matrices of
+    each cohort, one point per run pair (x jittered), with the median as a
+    red dash: how reproducible the task geometry is across seeds. Tick
+    labels count the cohort's runs. Read from the combined
+    state_space_structure.py results; cohorts saved without the run-pair
+    correlations are skipped with the hint to rerun it.
+    """
+    _ensure_out_dir()
+    combined = _load_pkl_or_skip(STATE_SPACE_STRUCTURE_RESULT_PATH, _STATE_SPACE_STRUCTURE_HINT)
+    if combined is None:
+        return
+    if not combined.get("cohorts"):
+        print(f"  Skipped: structure results hold no cohort means. {_STATE_SPACE_STRUCTURE_HINT}")
+        return
+    for key, _ in _STATE_SPACE_RDM_PANELS:
+        rows = _cohort_rdm_stats(combined, key)
+        if not rows:
+            print(f"  Skipped {key}: no cohort mean with run-pair correlations.")
+            continue
+        positions = np.arange(len(rows))
+        jitter = np.random.RandomState(0)
+        fig, (ax_s, ax_rho) = plt.subplots(1, 2, figsize=_STATE_SPACE_RDM_VS_L2_FIGSIZE)
+        summaries = []
+        for position, (strength, n_runs, separation, consistency) in zip(positions, rows):
+            p_value = separation["p_value"]
+            ax_s.hlines(separation["null_quantile_95"], position - 0.3, position + 0.3,
+                        color="0.82", linewidth=3, zorder=1)
+            _significance_marker(ax_s, position, separation["score"],
+                                 p_value < _STATE_SPACE_SIGNIFICANCE, size=22)
+            ax_s.text(position, 0.98, _short_p(p_value), ha="center", va="top", fontsize=6,
+                      color="0.3", transform=mpl.transforms.blended_transform_factory(
+                          ax_s.transData, ax_s.transAxes))
+            pairwise = np.asarray(consistency["pairwise_spearman"], dtype=float)
+            offsets = jitter.uniform(-_STATE_SPACE_RDM_VS_L2_JITTER,
+                                     _STATE_SPACE_RDM_VS_L2_JITTER, pairwise.size)
+            ax_rho.scatter(position + offsets, pairwise, s=6, color=_SCATTER_POINT_COLOR,
+                           alpha=0.5, edgecolors="none", zorder=2)
+            ax_rho.hlines(consistency["median"], position - 0.3, position + 0.3,
+                          color=_TREND_LINE_COLOR, linewidth=1.8, zorder=4)
+            summaries.append(f"L2 {strength:.0e}: {n_runs} runs, S = {separation['score']:.4f} "
+                             f"({_permutation_p_text(p_value)}), {pairwise.size} run pairs, "
+                             f"rho median {consistency['median']:.3f}")
+        labels = [f"{_l2_tick_label(strength)}\nn={n_runs}" for strength, n_runs, _, _ in rows]
+        for ax in (ax_s, ax_rho):
+            ax.set_xticks(positions)
+            ax.set_xticklabels(labels, fontsize=7)
+            ax.set_xlim(positions[0] - 0.6, positions[-1] + 0.6)
+            ax.set_xlabel(r"$L_2$", fontsize=8)
+            ax.spines[["top", "right"]].set_visible(False)
+            ax.tick_params(axis="y", labelsize=7)
+        ax_s.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
+        bottom, top = ax_s.get_ylim()
+        ax_s.set_ylim(top=top + _SEPARATION_P_HEADROOM * (top - bottom))
+        ax_s.set_ylabel("Category separation S\nof the mean matrix", fontsize=8)
+        ax_rho.set_ylabel("Spearman $\\rho$\nbetween runs' matrices", fontsize=8)
+        band = mpl.lines.Line2D([], [], color="0.82", linewidth=3, label="null 95th percentile")
+        pair = mpl.lines.Line2D([], [], marker="o", linestyle="none", color=_SCATTER_POINT_COLOR,
+                                alpha=0.5, markersize=3, label="run pair")
+        median = mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8,
+                                  label="median over run pairs")
+        _state_space_figure_legend(fig, _significance_legend_handles() + [band, pair, median],
+                                   ncol=3, top=0.86)
+        _save_fig(fig, _multitask_out(f"state_space_rdm_stats_vs_l2_{key}.png"),
+                  extra="  " + "; ".join(summaries))
+
+
 def plot_state_space_rdm_example():
     """
     Figure: the 15 x 15 Euclidean distance matrix between the full-dimensional
@@ -3587,16 +3815,16 @@ def _untrained_structure_entries(combined, aname):
 def plot_state_space_category_vs_untrained():
     """
     Figure: multitask_state_space_category_vs_untrained.png — the category
-    separation S of untrained networks beside the trained runs of the two
-    cohorts of the PCA figures (STATE_SPACE_PCA_COHORTS: L2 = 1e-4 and
-    1e-2), for the hidden state and the effective modulation W * M.
+    separation S of untrained networks beside the trained runs of every L2
+    cohort (STATE_SPACE_L2_STRENGTHS), for the hidden state and the
+    effective modulation W * M.
 
     The left column holds the untrained networks of state_space_shift.py
     --untrained built from the selected L2 = STATE_SPACE_EXAMPLE_L2 example
     run's config, or from another run of its training setting
     (_untrained_source), one point per init seed (fresh random weights, eta
     at its initial value, same evaluation trials); a dotted line and a wider
-    gap set it apart from the two trained cohorts. Every column shows one
+    gap set it apart from the four trained cohorts. Every column shows one
     point per network,
     filled when its saved one-sided label-permutation p is below 0.05, the
     range of the networks' null 95th percentiles as a gray band, and the
@@ -3627,10 +3855,10 @@ def plot_state_space_category_vs_untrained():
     grouped = _state_space_runs_by_l2(combined["runs"])
     columns = [("Untrained", "untrained", untrained)] + [
         (_l2_tick_label(strength), f"L2 {strength:.0e}", list(grouped[strength].values()))
-        for strength in STATE_SPACE_PCA_COHORTS]
+        for strength in STATE_SPACE_L2_STRENGTHS]
     # The untrained column sits one and a half steps left of the first cohort.
-    positions = np.array([0.0] + [1.5 + index for index in range(len(STATE_SPACE_PCA_COHORTS))])
-    _plot_separation_columns(columns, positions, figsize=(4.2, 2.4),
+    positions = np.array([0.0] + [1.5 + index for index in range(len(STATE_SPACE_L2_STRENGTHS))])
+    _plot_separation_columns(columns, positions, figsize=(5.6, 2.4),
                              out_name="state_space_category_vs_untrained.png", divider=0.75,
                              reference=0)
 
@@ -14144,10 +14372,12 @@ FIGURES_BY_MODE = {
         "state_space_combined": plot_state_space_combined,
         "state_space_dist_angle": plot_state_space_dist_angle,
         "state_space_r_values": plot_state_space_r_values,
+        "state_space_transplant_r_values": plot_state_space_transplant_r_values,
         # Category structure and task-vector additivity of the context-end
         # task centroids, from state_space_structure.py.
         "state_space_rdm": plot_state_space_rdm,
         "state_space_rdm_stats": plot_state_space_rdm_stats,
+        "state_space_rdm_stats_vs_l2": plot_state_space_rdm_stats_vs_l2,
         "state_space_rdm_example": plot_state_space_rdm_example,
         "state_space_category_vs_untrained": plot_state_space_category_vs_untrained,
     },
@@ -14388,8 +14618,9 @@ def main():
             f"(auto-selects best high-dimensional task-center separation within L2={STATE_SPACE_EXAMPLE_L2:.0e}; "
             f"the PCA figures put the untrained control left of it and the "
             f"L2={STATE_SPACE_STRONG_L2:.0e} cohort's selection right; "
-            "R-values split across L2 1e-5/1e-4/1e-3/1e-2 cohorts; the category test puts "
-            "the untrained networks beside the PCA figures' cohorts; "
+            "R-values (matched-stimulus and modulation-transplant) and the category test "
+            "split across L2 1e-5/1e-4/1e-3/1e-2 cohorts, "
+            "the category test with the untrained networks beside them; "
             "distance-angle p is the saved task-label permutation p)"
         ),
         "acc_plot": "(aggregated across seeds)",

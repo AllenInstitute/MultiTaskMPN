@@ -23,6 +23,18 @@ Analyses:
     A positive correlation indicates an association between more distant
     initial states and more different initial motion directions, not causation.
 
+Time alignment. The network records M before it is updated
+(core/mpn.py: ``network_step`` runs ``forward``, which logs the M that
+processes x[t], and updates M afterwards), while the recorded hidden state
+h[t] is the response to x[t]. The recorded M[t] is therefore the state
+before the update that x[t] drives. Both analyses need M on the hidden
+state's clock, so ``align_modulation_to_hidden`` shifts the recorded M and
+W ⊙ M trajectories by one step (M[t] := the state after x[t]'s update) and
+drops the last step of every representation, which has no recorded
+successor. Caches and results entries carry ``m_alignment`` (``M_ALIGNMENT``)
+and schema version ``DISTANCE_ANGLE_SCHEMA_VERSION``; readers skip earlier
+caches, whose modulation context states and first steps were one step early.
+
 The PCA runs on three representations: hidden states, raw modulation M, and
 effective modulation (W ⊙ M). The distance-angle analysis adds, for M and
 W ⊙ M, a second step definition. The modulation update is
@@ -148,7 +160,13 @@ N_STIMULUS_DIRECTIONS = 8
 DISTANCE_ANGLE_N_PERMUTATIONS = 10000
 DISTANCE_ANGLE_PERMUTATION_SEED = 0
 # Results entries carrying the permutation test and the Hebbian-only steps.
-DISTANCE_ANGLE_SCHEMA_VERSION = 2
+# 3: the modulation trajectories are aligned to the hidden state's clock
+# (align_modulation_to_hidden); earlier entries used the recorded,
+# pre-update M, one step early.
+DISTANCE_ANGLE_SCHEMA_VERSION = 3
+# Marker of PCA caches and results entries whose M and W * M are on the hidden
+# state's clock (the state after each input's update).
+M_ALIGNMENT = "post_update"
 
 # Evaluation trials per task (one batch of every rule).
 TRIALS_PER_RULE = 50
@@ -347,11 +365,36 @@ def _modulation_retention(state_dict, load_net_params, dt_ms):
     return lam
 
 
+def align_modulation_to_hidden(hidden, *modulations):
+    """Put recorded modulation trajectories on the hidden state's clock.
+
+    ``hidden`` is (trials, time, ...) with hidden[t] the response to input
+    x[t]; each of ``modulations`` is (trials, time, ...) as the network
+    records it, with M[t] the state that processed x[t], before the update
+    x[t] drives (core/mpn.py, network_step). Returns ``hidden`` followed by
+    the modulations shifted by one step, so that index t of every array is
+    the state after x[t]: hidden[:, :-1] and M[:, 1:]. The last recorded
+    step has no successor and is dropped from every array (as views, no
+    copy). Raises ValueError when the lengths differ or fewer than two steps
+    were recorded.
+    """
+    n_steps = hidden.shape[1]
+    if n_steps < 2:
+        raise ValueError("Aligning M to the hidden state needs at least two recorded steps.")
+    for modulation in modulations:
+        if modulation.shape[1] != n_steps:
+            raise ValueError("The hidden state and M were recorded over different step counts.")
+    return (hidden[:, :-1],) + tuple(modulation[:, 1:] for modulation in modulations)
+
+
 def _first_step(data, trial_indices, onset, retention=None):
     """Initial conditions x[t-1] and first steps of the given trials, where t
-    is the first stimulus step ``onset``. With ``retention`` (lam) the step is
-    x[t] - lam * x[t-1], the modulation update without its decay term;
-    without it the full step x[t] - x[t-1]. Both in float64."""
+    is the first stimulus step ``onset`` and every representation is on the
+    hidden state's clock (align_modulation_to_hidden): x[t-1] is the state
+    after the last Context input and x[t] the state after the first stimulus
+    input. With ``retention`` (lam) the step is x[t] - lam * x[t-1], the
+    modulation update without its decay term; without it the full step
+    x[t] - x[t-1]. Both in float64."""
     initial = np.asarray(data[trial_indices, onset - 1, :], dtype=np.float64)
     following = np.asarray(data[trial_indices, onset, :], dtype=np.float64)
     coefficient = 1.0 if retention is None else float(retention)
@@ -519,17 +562,22 @@ def _draw_distance_angle_figure(scatter_dict, rval_dict, out_path):
     plt.close(fig)
 
 
-def _context_states(netpathname, untrained_init_seed=None):
-    """Run one checkpoint's network on the evaluation trials and return what
-    the analyses need, as a dict: the run's identifiers (aname, hidden_size,
-    l2_info), lam (``retention``), dt, the fixed Context length, the accuracy,
-    the task names, each trial's task index and first-stimulus label, the
-    task epochs, and the (trials x time x features) trajectories of the
-    hidden state, M and W * M. With ``untrained_init_seed`` the network is
-    untrained (see network_loading.build_network); the evaluation trials do
-    not depend on it, since they are drawn after reseeding with
-    EVALUATION_SEED. Full hidden and modulation trajectories are retained on
-    CPU.
+def prepare_evaluation(netpathname, untrained_init_seed=None, evaluation_seed=EVALUATION_SEED):
+    """Build the network of checkpoint ``netpathname`` and draw the evaluation
+    trials every state-space analysis runs on.
+
+    The network (trained, or untrained with ``untrained_init_seed``; see
+    network_loading.build_network) is moved to ``device`` in eval mode. The
+    trials are drawn after reseeding NumPy, torch and the task generator
+    with ``evaluation_seed``: TRIALS_PER_RULE per task, input noise
+    NOISE_LEVEL, every task's Context aligned to FIXED_FIXATION_MS (the
+    trials do not depend on the network). Returns a dict: the run's
+    identifiers (``aname``, ``hidden_size``, ``l2_info``), ``model``,
+    ``state_dict``, the converted ``task_params``, the trial tensors
+    ``inputs``, ``outputs`` and ``masks`` on the CPU, the ``trials`` objects,
+    each trial's task index (``rule_indices``), ``retention`` (lam),
+    ``dt_ms``, ``fixed_fixation_steps`` and ``evaluation_seed``. Shared with
+    state_space_transplant.py so both experiments see the same trials.
     """
     hidden_size, l2_info = mpf.parse_hidden_and_l2(netpathname)
 
@@ -552,8 +600,8 @@ def _context_states(netpathname, untrained_init_seed=None):
     model.eval()
 
     task_params["sigma_x"] = NOISE_LEVEL
-    np.random.seed(EVALUATION_SEED)
-    torch.manual_seed(EVALUATION_SEED)
+    np.random.seed(evaluation_seed)
+    torch.manual_seed(evaluation_seed)
 
     task_params_c, _, _ = mpn_tasks.convert_and_init_multitask_params(
         (task_params, train_params, net_params)
@@ -563,8 +611,8 @@ def _context_states(netpathname, untrained_init_seed=None):
 
     # setup the evaluation dataset generator
     task_params_c['hp']['batch_size_train'] = TRIALS_PER_RULE
-    task_params_c['hp']['seed'] = EVALUATION_SEED
-    task_params_c['hp']['rng'] = np.random.RandomState(EVALUATION_SEED)
+    task_params_c['hp']['seed'] = evaluation_seed
+    task_params_c['hp']['rng'] = np.random.RandomState(evaluation_seed)
     dt_ms = task_params_c['hp']['dt']
     retention = _modulation_retention(state_dict, load_net_params, dt_ms)
     print(f"Modulation retention lam = {retention:.6g} per {dt_ms:g} ms step")
@@ -596,9 +644,50 @@ def _context_states(netpathname, untrained_init_seed=None):
         f"{FIXED_FIXATION_MS} ms)"
     )
 
-    test_input = test_input.to(device)
-    test_output = test_output.to(device)
-    test_mask = test_mask.to(device)
+    return {
+        "aname": aname,
+        "hidden_size": hidden_size,
+        "l2_info": l2_info,
+        "model": model,
+        "state_dict": state_dict,
+        "task_params": task_params_c,
+        "inputs": test_input,
+        "outputs": test_output,
+        "masks": test_mask,
+        "trials": test_trials,
+        "rule_indices": test_rule_idxs,
+        "retention": retention,
+        "dt_ms": dt_ms,
+        "fixed_fixation_steps": fixed_fixation_steps,
+        "evaluation_seed": evaluation_seed,
+    }
+
+
+def _context_states(netpathname, untrained_init_seed=None):
+    """Run one checkpoint's network on the evaluation trials and return what
+    the analyses need, as a dict: the run's identifiers (aname, hidden_size,
+    l2_info), lam (``retention``), dt, the fixed Context length, the accuracy,
+    the task names, each trial's task index and first-stimulus label, the
+    task epochs, and the (trials x time x features) trajectories of the
+    hidden state, M and W * M, all on the hidden state's clock
+    (align_modulation_to_hidden: index t is the state after input x[t], and
+    the last recorded step is dropped). With ``untrained_init_seed`` the network is
+    untrained (see network_loading.build_network); the evaluation trials do
+    not depend on it, since they are drawn after reseeding with
+    EVALUATION_SEED. Full hidden and modulation trajectories are retained on
+    CPU.
+    """
+    evaluation = prepare_evaluation(netpathname, untrained_init_seed)
+    model, state_dict = evaluation["model"], evaluation["state_dict"]
+    aname, hidden_size, l2_info = (evaluation["aname"], evaluation["hidden_size"],
+                                   evaluation["l2_info"])
+    task_params_c, test_trials = evaluation["task_params"], evaluation["trials"]
+    test_rule_idxs = evaluation["rule_indices"]
+    retention, dt_ms = evaluation["retention"], evaluation["dt_ms"]
+    fixed_fixation_steps = evaluation["fixed_fixation_steps"]
+    test_input = evaluation["inputs"].to(device)
+    test_output = evaluation["outputs"].to(device)
+    test_mask = evaluation["masks"].to(device)
 
     with torch.no_grad():
         # Accuracy needs only the outputs, so compute it without retaining the
@@ -629,12 +718,15 @@ def _context_states(netpathname, untrained_init_seed=None):
     Ms = Ms_orig.reshape(Ms_orig.shape[0], Ms_orig.shape[1], -1)
     eff_Ms = eff_Ms_orig.reshape(eff_Ms_orig.shape[0], eff_Ms_orig.shape[1], -1)
     hs = db_test["hidden1"].numpy()
-    print(f"Ms_orig.shape: {Ms_orig.shape}; Ms.shape: {Ms.shape}; hs.shape: {hs.shape}")
+    # The recorded M[t] is the state before x[t]'s update; put M and W * M on
+    # the hidden state's clock (views: the 30 GiB trace is not copied).
+    hs, Ms, eff_Ms = align_modulation_to_hidden(hs, Ms, eff_Ms)
+    print(f"Ms_orig.shape: {Ms_orig.shape}; aligned Ms.shape: {Ms.shape}; hs.shape: {hs.shape}")
 
     # All remaining work is NumPy/scikit-learn.  Release CUDA storage before
     # the comparatively long PCA and pairwise geometry calculations.
-    del model, checkpoint, state_dict, db_test
-    del test_input, test_output, test_mask, test_data
+    del model, evaluation, state_dict, db_test
+    del test_input, test_output, test_mask
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -642,7 +734,7 @@ def _context_states(netpathname, untrained_init_seed=None):
     _, labels_stim1, _, rules_epochs = helper.generate_response_stimulus(task_params_c, test_trials)
     all_rules = list(task_params_c['rules'])
     assert set(all_rules).issubset(set(RULE_MOTIF_MAPPING.keys()))
-    del test_trials_extra, test_trials
+    del test_trials
 
     return {
         "aname": aname,
@@ -745,6 +837,7 @@ def _save_context_pca(states, output_dir, extra=None, file_stem=None):
         "aname": aname,
         "accuracy": states["accuracy"],
         "untrained": False,
+        "m_alignment": M_ALIGNMENT,
     }
     cache.update(extra or {})
     pca_save_path = output_dir / f"state_space_pca_{file_stem}_noise{NOISE_LEVEL}.pkl"
@@ -850,6 +943,7 @@ def _result_entry(evaluation):
      fixed_fixation_steps, fixed_fixation_ms, retention) = evaluation
     return aname, {
         "schema_version": DISTANCE_ANGLE_SCHEMA_VERSION,
+        "m_alignment": M_ALIGNMENT,
         "hidden_size": hidden_size,
         "l2_info": l2_info,
         "rval_dict": rval_dict,

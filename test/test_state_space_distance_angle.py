@@ -243,7 +243,8 @@ def _distance_angle_entry(with_permutation=True, with_hebb=True):
     """A results entry as state_space_shift.py saves it, with ten task pairs."""
     rng = np.random.default_rng(0)
     names = ["hidden", "mod", "eff_mod"] + (["mod_hebb", "eff_mod_hebb"] if with_hebb else [])
-    entry = {"l2_info": 1e-4, "rval_dict": {}, "scatter": {}}
+    entry = {"l2_info": 1e-4, "schema_version": state_space.DISTANCE_ANGLE_SCHEMA_VERSION,
+             "rval_dict": {}, "scatter": {}}
     for index, name in enumerate(names):
         x = rng.uniform(1, 3, 10)
         entry["rval_dict"][name] = (0.9 - 0.1 * index, 10.0, 0.001)
@@ -401,6 +402,18 @@ class StateSpaceDistanceAngleFigureTests(unittest.TestCase):
         self.assertEqual(len(dots), 10)
         self.assertTrue(any(f"built from {sibling}'s config stand for {run}" in call.args[0]
                             for call in output.call_args_list))
+
+    def test_entries_written_before_the_modulation_alignment_are_skipped(self):
+        # Schema 2 entries took M one step early (the recorded, pre-update
+        # state): neither figure draws them.
+        stale = {**_distance_angle_entry(), "schema_version": 2}
+        save_fig = self._draw(paper_plot.plot_state_space_dist_angle, stale)
+        save_fig.assert_not_called()
+        with patch("builtins.print") as output:
+            grouped = paper_plot._state_space_r_values_by_l2(
+                {"stale": stale, "current": _distance_angle_entry()}, ["hidden", "eff_mod"])
+        self.assertEqual([run["aname"] for run in grouped[1e-4]["hidden"]], ["current"])
+        self.assertIn("aligned modulation states", output.call_args.args[0])
 
 
 if __name__ == "__main__":

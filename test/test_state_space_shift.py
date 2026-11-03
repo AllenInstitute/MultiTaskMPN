@@ -177,6 +177,7 @@ class StateSpaceContextRecordTests(unittest.TestCase):
 
         saved_names = {"hidden", "mod", "eff_mod", "mod_hebb", "eff_mod_hebb"}
         self.assertEqual(result[0], aname)
+        self.assertEqual(artifact["m_alignment"], state_space.M_ALIGNMENT)
         self.assertEqual(set(result[3]), saved_names)
         self.assertEqual(set(result[4]), saved_names)
         self.assertAlmostEqual(result[7], 0.99, places=6)
@@ -218,10 +219,15 @@ class StateSpaceContextRecordTests(unittest.TestCase):
         # A trained run's cache is marked as such and records its accuracy.
         self.assertIs(artifact["untrained"], False)
         self.assertEqual(artifact["accuracy"], 1.0)
-        for name, states in (("hidden", hidden), ("mod", modulation),
-                             ("eff_mod", modulation * weights)):
+        # The context-end hidden state is the response to the last Context
+        # input; the context-end M and W * M are the recorded states after
+        # that input's update (align_modulation_to_hidden), one recorded step
+        # later.
+        for name, states, step in (("hidden", hidden, context_steps - 1),
+                                   ("mod", modulation, context_steps),
+                                   ("eff_mod", modulation * weights, context_steps)):
             record = artifact["pca_results"][name]
-            expected = states[:, context_steps - 1].numpy().reshape(len(rules), 2, -1)
+            expected = states[:, step].numpy().reshape(len(rules), 2, -1)
             np.testing.assert_allclose(record["task_centroids"],
                                        expected.mean(axis=1, dtype=np.float64))
             np.testing.assert_array_equal(record["task_trial_counts"], [2] * len(rules))
@@ -240,6 +246,39 @@ class StateSpaceContextRecordTests(unittest.TestCase):
                     if paper_plot._RULE_MOTIF[rule][1] == color
                 ])
                 np.testing.assert_allclose(collection.get_offsets(), record["X_2d"][selected])
+
+    def test_align_modulation_to_hidden_shifts_m_by_one_step_without_copying(self):
+        # hidden[t] responds to x[t]; the recorded M[t] is the state before
+        # x[t]'s update, so the aligned M[t] is the recorded M[t + 1].
+        hidden = np.arange(2 * 5 * 3, dtype=float).reshape(2, 5, 3)
+        recorded = 100 + np.arange(2 * 5 * 4, dtype=float).reshape(2, 5, 4)
+        effective = 2 * recorded
+        aligned_hidden, aligned_m, aligned_eff = state_space.align_modulation_to_hidden(
+            hidden, recorded, effective)
+        self.assertEqual((aligned_hidden.shape, aligned_m.shape, aligned_eff.shape),
+                         ((2, 4, 3), (2, 4, 4), (2, 4, 4)))
+        np.testing.assert_array_equal(aligned_hidden, hidden[:, :4])
+        np.testing.assert_array_equal(aligned_m, recorded[:, 1:])
+        np.testing.assert_array_equal(aligned_eff, effective[:, 1:])
+        self.assertTrue(np.shares_memory(aligned_m, recorded))
+        self.assertTrue(np.shares_memory(aligned_hidden, hidden))
+        # The first stimulus step of the aligned M (onset t) is the update
+        # that x[t] drives: recorded M[t + 1] - M[t].
+        onset = 2
+        initial, step = state_space._first_step(aligned_m, np.array([0, 1]), onset)
+        np.testing.assert_array_equal(initial, recorded[:, onset])
+        np.testing.assert_array_equal(step, recorded[:, onset + 1] - recorded[:, onset])
+        with self.assertRaises(ValueError):
+            state_space.align_modulation_to_hidden(hidden, recorded[:, :4])
+        with self.assertRaises(ValueError):
+            state_space.align_modulation_to_hidden(hidden[:, :1], recorded[:, :1])
+
+    def test_results_entries_carry_the_alignment_schema(self):
+        self.assertEqual(state_space.DISTANCE_ANGLE_SCHEMA_VERSION, 3)
+        _, entry = state_space._result_entry(
+            ("run", 300, 1e-4, {}, {}, 12, 480.0, 0.99))
+        self.assertEqual(entry["schema_version"], 3)
+        self.assertEqual(entry["m_alignment"], state_space.M_ALIGNMENT)
 
     def test_free_intercept_regression_matches_standard_ols(self):
         from scipy.stats import linregress

@@ -54,7 +54,19 @@ python figures/paper_plot.py --only state_space_combined
 python figures/paper_plot.py --only state_space_category_vs_untrained
 python figures/paper_plot.py --only state_space_rdm
 python figures/paper_plot.py --only state_space_rdm_stats
+python figures/paper_plot.py --only state_space_rdm_stats_vs_l2
 python figures/paper_plot.py --only state_space_rdm_example
+# modulation transplant: the first-step change that the Context-end M alone
+# produces under one and the same input (seconds per network; the trained
+# cohort, then the untrained networks of the example run's setting)
+python multiple_task/state_space_transplant.py
+python multiple_task/state_space_transplant.py --untrained \
+  --checkpoint multiple_tasks/savednet_everything_seed202_L21e4+hidden300+batch128+angle.pt \
+  --init-seed 0 1 2 3 4 5 6 7
+python figures/paper_plot.py --only state_space_transplant_r_values
+# the same on another draw of the evaluation trials, into its own results file
+python multiple_task/state_space_transplant.py --evaluation-seed 7 \
+  --checkpoint multiple_tasks/savednet_everything_seed202_L21e4+hidden300+batch128+angle.pt
 
 ```
 
@@ -74,6 +86,25 @@ interrupted batch keeps what it finished.
 analyzes only the named checkpoints and merges their entries into the results
 pickle of `DIR` (default `state_space/`) without clearing anything, which is
 how one run is tested in a scratch directory.
+
+**Time alignment of M (schema 3, 2026-11-02).** The network records M before
+each update (`core/mpn.py`: `network_step` runs `forward`, which logs the M
+that processes x[t], and updates M afterwards), while the recorded hidden
+state h[t] is the response to x[t]; the recorded M[t] is therefore the state
+before the update x[t] drives, one step behind h. `_context_states` puts M
+and W ⊙ M on the hidden state's clock (`align_modulation_to_hidden`:
+index t becomes the state after x[t], the recorded M[t + 1]; the last
+recorded step, which has no successor, is dropped from every
+representation). So the context-end M is the state after the last Context
+input and the first step of M is the update the first stimulus input
+drives. Caches written before this (no `m_alignment` marker, results
+schema 2) took both one step early: the modulation context states were
+missing the last Context update and the "first step" was that last Context
+update rather than the stimulus-driven one, which also makes their
+distance-angle r for M and W ⊙ M suspect, since the step and the initial
+condition were then both set by the rule-cue input. `state_space_structure.py`
+and `paper_plot.py` skip such caches and entries with a message; regenerate
+them with the batch run and the untrained command above.
 
 `python multiple_task/state_space_structure.py` reads every PCA cache and
 tests, for the hidden state, M and W ⊙ M of each run, two properties of the
@@ -105,12 +136,17 @@ matrix as two histograms, `multitask_state_space_rdm_stats_eff_mod`: the
 label-permutation null of its category separation S with the observed S as
 a red line and S and p in the title, and the Spearman correlation between
 every two runs' matrices with the median as a red line; cohort means saved
-without these arrays are skipped), `state_space_rdm_example` (the same drawing of the
+without these arrays are skipped), `state_space_rdm_stats_vs_l2` (the same
+two statistics for every L2 cohort, `multitask_state_space_rdm_stats_vs_l2_eff_mod`:
+S of each cohort's mean matrix, filled when p < 0.05 with the p above it and
+the null 95th percentile as a gray dash, and every run pair's Spearman
+correlation with the cohort median; tick labels count the runs),
+`state_space_rdm_example` (the same drawing of the
 selected single run's W ⊙ M matrix in its own distance units,
 `multitask_state_space_rdm_example_eff_mod` with its own colorbar figure),
 and `state_space_category_vs_untrained` (every run's S for the hidden state
-and W ⊙ M in the PCA figures' two L2 cohorts beside the untrained networks,
-described below). The task-vector
+and W ⊙ M per L2 cohort beside the untrained networks, described below).
+The task-vector
 statistics are computed and cached but have no paper figure; raw M stays in
 the caches.
 
@@ -185,9 +221,8 @@ and stores their summaries under `untrained` in
 `state_space_structure_results.pkl`, apart from `runs` and the L2 `cohorts`,
 which they never enter. `python figures/paper_plot.py --only state_space_category_vs_untrained`
 draws `multitask_state_space_category_vs_untrained.png`: the category
-separation S of every run of the PCA figures' two cohorts (L2 = 1e-4 and
-1e-2, `STATE_SPACE_PCA_COHORTS`) for the hidden state and W ⊙ M, one point
-per network, filled when its permutation p < 0.05, the range of the runs'
+separation S of every run of the four L2 cohorts for the hidden state and
+W ⊙ M, one point per network, filled when its permutation p < 0.05, the range of the runs'
 null 95th percentiles as a gray band and the median as a dash, with an
 "Untrained" column of the example config's untrained networks to their
 left, set apart by a gap and a dotted line, and above each trained column
@@ -205,8 +240,9 @@ nominal OLS slope-test value, which assumes independent task pairs), while
 reported test, `permutation`: a two-sided task-label permutation (Mantel-type)
 p of `r` from 10,000 relabelings of the 15 tasks
 (`DISTANCE_ANGLE_N_PERMUTATIONS`, seed 0), because the 105 pairs share tasks.
-Besides `hidden`, `mod` and `eff_mod`, whose first step is x[t] − x[t−1], each
-entry holds `mod_hebb` and `eff_mod_hebb`. The modulation update is
+Besides `hidden`, `mod` and `eff_mod`, whose first step is x[t] − x[t−1] with
+every representation on the hidden state's clock (see the time alignment
+above), each entry holds `mod_hebb` and `eff_mod_hebb`. The modulation update is
 M[t] = λ M[t−1] + η post ⊗ pre, clamped to the M bounds, so the full step
 contains −(1 − λ) M[t−1]: a component along the initial condition itself, which
 ties the step angle to the initial-condition distance without any
@@ -227,6 +263,67 @@ them the four cohort panels are drawn and the command to add the control is
 printed). Caches
 without the permutation test or the Hebbian steps are skipped, never refitted;
 regenerate them with `state_space_shift.py`.
+
+**Modulation transplant (`state_space_transplant.py`, 2026-11-03).** The
+distance-angle relation above pairs trials of two tasks by their stimulus
+label only, so the two first steps it compares are responses to inputs that
+differ in modality, exact direction, strength, a second stimulus and the
+rule cue; part of the angle is an input difference. The transplant
+experiment holds the input fixed and changes only the state. It reuses the
+evaluation trials of `state_space_shift.py` (`prepare_evaluation`: same
+seed, trials, noise and Context alignment), runs every trial through its
+Context period and clones the plastic layer's live M after the last
+Context update (the aligned context-end state; the network has one plastic
+layer and no hidden recurrence, so M is its whole memory). For an ordered
+task pair (host A, donor B) the k-th trial of A hosts the k-th trial of B:
+from M_A and from M_B the network takes one step under the host's onset
+input, and the first step is F(M) − M for M (the network's own update,
+decay, M activation and clipping included), W ⊙ (F(M) − M) for W ⊙ M, and
+h(M, x_on) − h(M, x_ctx) for the hidden state (the response to the onset
+input minus the response to the host's last Context input, both read with
+M frozen), so each branch subtracts its own starting point and the jump
+the transplant itself causes is not counted. The angle between the two
+branches' steps is averaged over the paired trials and over both hosting
+directions (both kept in `angles_deg_by_host`), the distance is
+‖M_A − M_B‖ over the paired trials for every representation, and the 105
+pairs give the same free-intercept OLS r and task-label permutation p as
+above. The x axis is the M distance for every representation: the question
+is how the response change follows the state change. Controls recorded
+with every network: the self transplant (M_A into its own trials) must
+reproduce the uninterrupted run's onset response and M to 1e-4
+(`native_check`; the run aborts otherwise); same-task transplants (the
+(k − 1)-th trial of the host's own task donates) give the angle that
+Context input noise alone produces (`within_task_angle_deg`, the floor of
+the cross-task angles, drawn as a dotted line in the per-network
+diagnostic scatter); `step_norms` keeps the mean norms of the start
+state, of the native and transplanted steps and of the decay term
+(1 − λ) M, and the share of M entries at the bounds after native and
+transplanted steps; zero-norm steps are skipped, never given an angle. r
+and p remain an association of two task-pair matrices: the intervention is
+on M, but the correlation is not a test of a causal effect, and moving the
+state does not show that a task's behavior or rule moves with it. The two
+branches of one comparison see the same input tensor, but the inputs
+themselves (stimuli, Context noise, hence M) depend on the evaluation
+seed; `--evaluation-seed N` reruns everything on another draw into
+`transplant_results_evalN.pkl`. Outputs go to `state_space/transplant/`,
+which the batch cleanup of `state_space_shift.py` leaves alone:
+`transplant_results.pkl` keyed by run name (schema 1, `experiment`
+`modulation_transplant`, `evaluation_seed`, `rval_dict`, `scatter`,
+`step_norms`, `native_check`) and one diagnostic scatter per network
+(`transplant_<aname>.png`); without arguments the cohort is analyzed from
+scratch, `--checkpoint` merges the named runs, and
+`--untrained --checkpoint PATH --init-seed S ...` writes untrained
+networks of that run's config to `state_space/transplant/untrained/`
+with the marks of the distance-angle untrained entries (`untrained`,
+`init_seed`, `config_source`, `l2_info` None). `python figures/paper_plot.py
+--only state_space_transplant_r_values` draws
+`multitask_state_space_transplant_r_values.png` like `state_space_r_values`:
+one bar per representation (hidden state, M, W ⊙ M; no Hebbian-only bar)
+and L2 cohort with one dot per run, filled when its permutation p < 0.05,
+preceded by an "Untrained" panel when `state_space/transplant/untrained/`
+holds networks of the selected example run's setting
+(`paper_plot._untrained_source`, as for the other untrained panels). The
+matched-stimulus figures above stay as the correlational counterpart.
 
 `python figures/paper_plot.py --only sibling_cue_interp` draws the multi-task analog
 of the two-task pro/anti interpolation for the two sibling families (each

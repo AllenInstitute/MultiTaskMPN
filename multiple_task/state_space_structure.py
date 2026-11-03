@@ -67,6 +67,20 @@ N_PERMUTATIONS = 10000
 PERMUTATION_SEED = 0
 LINKAGE_METHOD = "average"
 SCHEMA_VERSION = 1
+# PCA caches must carry this marker (state_space_shift.M_ALIGNMENT): their M
+# and W * M context states are on the hidden state's clock. Earlier caches
+# took the modulation one step early and are skipped.
+M_ALIGNMENT = "post_update"
+
+
+def is_aligned_cache(data, path):
+    """True when PCA cache ``data`` (from ``path``) has aligned modulation
+    states; otherwise says why it is skipped."""
+    if data.get("m_alignment") == M_ALIGNMENT:
+        return True
+    print(f"Skipped {path}: its modulation states predate the alignment to the hidden "
+          "state (no m_alignment marker). Re-run multiple_task/state_space_shift.py.")
+    return False
 COMBINED_RESULT_NAME = "state_space_structure_results.pkl"
 # Subdirectory of the untrained networks' PCA caches (state_space_shift.py
 # UNTRAINED_DIR_NAME); the per-run glob below never descends into it.
@@ -251,6 +265,8 @@ def analyze_untrained(state_space_dir=STATE_SPACE_DIR, n_permutations=N_PERMUTAT
         if data.get("untrained") is not True:
             print(f"Skipped {path}: not marked as an untrained network.")
             continue
+        if not is_aligned_cache(data, path):
+            continue
         stem = cache_stem(path, noise_level)
         result = analyze_run(data, n_permutations=n_permutations, seed=seed)
         result.update(untrained=True, init_seed=data.get("init_seed"),
@@ -361,6 +377,8 @@ def run_all(state_space_dir=STATE_SPACE_DIR, n_permutations=N_PERMUTATIONS,
     for path in paths:
         with path.open("rb") as stream:
             data = pickle.load(stream)
+        if not is_aligned_cache(data, path):
+            continue
         result = analyze_run(data, n_permutations=n_permutations, seed=seed)
         out_path = structure_cache_path(result["aname"], state_space_dir, noise_level)
         with out_path.open("wb") as stream:

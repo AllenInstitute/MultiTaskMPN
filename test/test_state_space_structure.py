@@ -41,6 +41,7 @@ def _pca_cache(aname, l2_info, seed):
         "noise_level": 0.01,
         "l2_info": l2_info,
         "aname": aname,
+        "m_alignment": structure.M_ALIGNMENT,
     }
 
 
@@ -235,6 +236,31 @@ class RunAllTests(unittest.TestCase):
         printed = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
         self.assertIn("not marked as an untrained network", printed)
         self.assertIn("Untrained networks: 2", printed)
+
+    def test_run_all_skips_caches_whose_modulation_is_not_aligned(self):
+        aligned = "everything_seed1_L21e4+hidden300+batch128+angle"
+        stale = "everything_seed2_L21e4+hidden300+batch128+angle"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            untrained_dir = root / structure.UNTRAINED_DIR_NAME
+            untrained_dir.mkdir()
+            with (root / f"state_space_pca_{aligned}_noise0.01.pkl").open("wb") as stream:
+                pickle.dump(_pca_cache(aligned, 1e-4, 0), stream)
+            old = _pca_cache(stale, 1e-4, 1)
+            old.pop("m_alignment")
+            with (root / f"state_space_pca_{stale}_noise0.01.pkl").open("wb") as stream:
+                pickle.dump(old, stream)
+            old_untrained = {**_pca_cache(aligned, 1e-4, 2), "untrained": True, "init_seed": 0,
+                             "config_source": aligned, "m_alignment": "pre_update"}
+            with (untrained_dir / f"state_space_pca_{aligned}_init0_noise0.01.pkl").open("wb") as stream:
+                pickle.dump(old_untrained, stream)
+            with patch("builtins.print") as output:
+                combined = structure.run_all(root, n_permutations=5)
+            self.assertFalse(structure.structure_cache_path(stale, root).exists())
+        self.assertEqual(list(combined["runs"]), [aligned])
+        self.assertEqual(combined["untrained"], {})
+        messages = [call.args[0] for call in output.call_args_list if call.args]
+        self.assertEqual(sum("predate the alignment" in message for message in messages), 2)
 
     def test_run_all_without_untrained_networks_records_none(self):
         aname = "everything_seed1_L21e4+hidden300+batch128+angle"

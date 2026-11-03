@@ -255,8 +255,10 @@ class PaperPlotModeTests(unittest.TestCase):
             "state_space_combined",
             "state_space_dist_angle",
             "state_space_r_values",
+            "state_space_transplant_r_values",
             "state_space_rdm",
             "state_space_rdm_stats",
+            "state_space_rdm_stats_vs_l2",
             "state_space_rdm_example",
             "state_space_category_vs_untrained",
         }
@@ -270,6 +272,7 @@ class PaperPlotModeTests(unittest.TestCase):
         for index, strength in enumerate(paper_plot.STATE_SPACE_L2_STRENGTHS):
             result_dict[f"run{index}"] = {
                 "l2_info": strength,
+                "schema_version": paper_plot.STATE_SPACE_RESULTS_SCHEMA,
                 "rval_dict": {
                     "hidden": (0.1 + index, 1.0, 0.01),
                     "mod": (0.2 + index, 1.0, 0.01),
@@ -436,7 +439,8 @@ class PaperPlotModeTests(unittest.TestCase):
     def test_state_space_selection_uses_original_analysis_and_ignores_separate_cache(self):
         data = self._state_space_pca([[0, 0, -5], [0, 0, -4],
                                       [0, 0, 4], [0, 0, 5]])
-        data.update(aname="new_run", l2_info=1e-4)
+        data.update(aname="new_run", l2_info=1e-4,
+                    m_alignment=paper_plot.STATE_SPACE_M_ALIGNMENT)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for prefix, content in (("state_space_context", {"obsolete": True}),
@@ -542,6 +546,7 @@ class PaperPlotModeTests(unittest.TestCase):
         labels = np.repeat(np.arange(len(rules)), 4)
         return {
             "all_rules": rules, "untrained": untrained, "init_seed": 0,
+            "m_alignment": paper_plot.STATE_SPACE_M_ALIGNMENT,
             "pca_results": {key: {
                 "X_2d": rng.normal(size=(labels.size, 2)),
                 "ctx_rule_labels": labels,
@@ -601,6 +606,21 @@ class PaperPlotModeTests(unittest.TestCase):
         self.assertEqual(paper_plot._untrained_source("run", ["other", "run"]), "run")
         self.assertIsNone(paper_plot._untrained_source("run", ["other"]))
 
+    def test_state_space_caches_without_aligned_modulation_are_skipped(self):
+        stale = self._untrained_cache()
+        stale.pop("m_alignment")
+        data, output = self._load_untrained(stale)
+        self.assertIsNone(data)
+        self.assertIn("no aligned modulation states", output.call_args.args[0])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (root / "state_space_pca_run_noise0.01.pkl").open("wb") as stream:
+                pickle.dump(stale, stream)
+            with patch.object(paper_plot, "STATE_SPACE_DIR", root), \
+                    patch("builtins.print") as output:
+                self.assertIsNone(paper_plot._load_state_space_pca("run"))
+        self.assertIn("state_space_shift.py", output.call_args.args[0])
+
     def test_state_space_untrained_cache_of_the_runs_setting_stands_in(self):
         run = "everything_seed202_L21e4+hidden300+batch128+angle"
         sibling = "everything_seed921_L21e4+hidden300+batch128+angle"
@@ -617,7 +637,8 @@ class PaperPlotModeTests(unittest.TestCase):
         self.assertIn("another run of its setting", output.call_args.args[0])
 
     def test_state_space_dist_angle_renders_saved_nonzero_intercepts(self):
-        entry = {"rval_dict": {}, "scatter": {}}
+        entry = {"schema_version": paper_plot.STATE_SPACE_RESULTS_SCHEMA,
+                 "rval_dict": {}, "scatter": {}}
         for key, intercept in (("hidden", 15.), ("eff_mod", -3.), ("eff_mod_hebb", 2.)):
             entry["rval_dict"][key] = (0.9, 2., 0.02)
             entry["scatter"][key] = {
@@ -647,7 +668,8 @@ class PaperPlotModeTests(unittest.TestCase):
 
     def test_state_space_dist_angle_rejects_legacy_zero_intercept_cache(self):
         for regression in ({}, {"through_origin": True, "intercept": 0.}):
-            entry = {"rval_dict": {"hidden": (0.9, 2., 0.02)}, "scatter": {
+            entry = {"schema_version": paper_plot.STATE_SPACE_RESULTS_SCHEMA,
+                     "rval_dict": {"hidden": (0.9, 2., 0.02)}, "scatter": {
                 "hidden": {"dists": np.array([2., 3., 4.]),
                            "angles_deg": np.array([4., 6., 8.]),
                            "regression": regression},
@@ -827,6 +849,95 @@ class PaperPlotModeTests(unittest.TestCase):
         self.assertIn("3 run pairs", save_fig.call_args.kwargs["extra"])
         self.assertIn("S = 0.4200, p < 0.001", save_fig.call_args.kwargs["extra"])
 
+    def _rdm_stats_by_l2_combined(self):
+        """Cohort means of the four L2 strengths: 2, 3, 4 and 5 runs, S of
+        0.1, 0.2, 0.3 and 0.4 (the first not significant) and the run pairs'
+        correlations spread from 0.7 to 0.9."""
+        rules = ["fdgo", "delaydm1", "delaygo", "dmcgo"]
+        centers = np.array([[0., 0.], [10., 0.], [1., 0.], [10., 1.]])
+        cohorts = {}
+        for index, strength in enumerate(paper_plot.STATE_SPACE_L2_STRENGTHS):
+            n_runs = index + 2
+            structure = self._state_space_structure(rules, centers,
+                                                    p_value=0.3 if index == 0 else 0.001)
+            cohort = {"n_runs": n_runs, "anames": [f"run{run}" for run in range(n_runs)],
+                      "all_rules": rules, "representations": structure["representations"]}
+            pairwise = np.linspace(0.7, 0.9, n_runs * (n_runs - 1) // 2)
+            for entry in cohort["representations"].values():
+                entry["separation"]["score"] = 0.1 * (index + 1)
+                entry["consistency"] = {
+                    "median": float(np.median(pairwise)), "min": 0.7, "max": 0.9,
+                    "n_runs": n_runs, "n_run_pairs": int(pairwise.size),
+                    "pairwise_spearman": pairwise}
+            cohorts[strength] = cohort
+        return {"runs": {}, "cohorts": cohorts}
+
+    def _draw_rdm_stats_vs_l2(self, combined):
+        with patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(paper_plot, "_load_pkl_or_skip", return_value=combined), \
+                patch.object(paper_plot, "_save_fig") as save_fig, \
+                patch("builtins.print") as output:
+            paper_plot.plot_state_space_rdm_stats_vs_l2()
+        return save_fig, output
+
+    def test_state_space_rdm_stats_vs_l2_draws_one_column_per_cohort(self):
+        save_fig, _ = self._draw_rdm_stats_vs_l2(self._rdm_stats_by_l2_combined())
+        save_fig.assert_called_once()
+        figure = save_fig.call_args.args[0]
+        self.addCleanup(paper_plot.plt.close, figure)
+        self.assertEqual(Path(save_fig.call_args.args[1]).name,
+                         "multitask_state_space_rdm_stats_vs_l2_eff_mod.png")
+        s_axis, rho_axis = figure.axes
+        for axis in (s_axis, rho_axis):
+            np.testing.assert_allclose(axis.get_xticks(), [0, 1, 2, 3])
+            labels = [label.get_text() for label in axis.get_xticklabels()]
+            self.assertEqual([label.split("\n")[0] for label in labels],
+                             [paper_plot._l2_tick_label(strength)
+                              for strength in paper_plot.STATE_SPACE_L2_STRENGTHS])
+            self.assertEqual([label.split("\n")[1] for label in labels],
+                             ["n=2", "n=3", "n=4", "n=5"])
+        # One S marker per cohort, hollow for the non-significant first
+        # cohort, filled otherwise, with its p above and the gray null dash.
+        markers = [collection for collection in s_axis.collections
+                   if isinstance(collection, paper_plot.mpl.collections.PathCollection)]
+        np.testing.assert_allclose([marker.get_offsets()[0] for marker in markers],
+                                   [(0, 0.1), (1, 0.2), (2, 0.3), (3, 0.4)])
+        faces = [paper_plot.mpl.colors.to_hex(marker.get_facecolor()[0]) for marker in markers]
+        self.assertEqual(faces[0], "#ffffff")
+        self.assertEqual(faces[1:], [paper_plot.mpl.colors.to_hex(paper_plot._SCATTER_POINT_COLOR)] * 3)
+        self.assertEqual([text.get_text() for text in s_axis.texts if text.get_text().startswith("p")],
+                         ["p=.30", "p=.001", "p=.001", "p=.001"])
+        dashes = [collection for collection in s_axis.collections
+                  if isinstance(collection, paper_plot.mpl.collections.LineCollection)]
+        self.assertEqual(len(dashes), 4)
+        self.assertGreater(s_axis.get_ylim()[1], 0.4 * 1.1)
+        # One point per run pair (1, 3, 6 and 10 pairs) and a median dash per cohort.
+        points = [collection for collection in rho_axis.collections
+                  if isinstance(collection, paper_plot.mpl.collections.PathCollection)]
+        self.assertEqual([len(collection.get_offsets()) for collection in points], [1, 3, 6, 10])
+        for position, collection in enumerate(points):
+            xs = collection.get_offsets()[:, 0]
+            self.assertTrue(np.all(np.abs(xs - position) <= paper_plot._STATE_SPACE_RDM_VS_L2_JITTER))
+        medians = [collection for collection in rho_axis.collections
+                   if isinstance(collection, paper_plot.mpl.collections.LineCollection)]
+        self.assertEqual(len(medians), 4)
+        extra = save_fig.call_args.kwargs["extra"]
+        self.assertIn("L2 1e-04: 3 runs, S = 0.2000 (p = 0.001), 3 run pairs", extra)
+
+    def test_state_space_rdm_stats_vs_l2_skips_cohorts_without_the_correlations(self):
+        combined = self._rdm_stats_by_l2_combined()
+        for entry in combined["cohorts"][1e-3]["representations"].values():
+            entry["consistency"].pop("pairwise_spearman")
+        save_fig, output = self._draw_rdm_stats_vs_l2(combined)
+        figure = save_fig.call_args.args[0]
+        self.addCleanup(paper_plot.plt.close, figure)
+        self.assertEqual(len(figure.axes[0].get_xticks()), 3)
+        self.assertTrue(any("Skipped L2=1e-03" in call.args[0] for call in output.call_args_list))
+        for combined in ({"runs": {}}, {"runs": {}, "cohorts": {}}):
+            save_fig, output = self._draw_rdm_stats_vs_l2(combined)
+            save_fig.assert_not_called()
+            self.assertIn("state_space_structure.py", output.call_args.args[0])
+
     def test_state_space_rdm_stats_skips_cohort_means_without_the_arrays(self):
         without_pairs = self._rdm_stats_cohort(pairwise=None)
         without_null = self._rdm_stats_cohort()
@@ -924,19 +1035,18 @@ class PaperPlotModeTests(unittest.TestCase):
                          ["Hidden state", "Eff. modulation"])
         for axis in figure.axes:
             labels = [label.get_text() for label in axis.get_xticklabels()]
-            # The untrained column, then the PCA figures' two cohorts only
-            # (1e-4 and 1e-2).
+            # The untrained column, then every L2 cohort.
             self.assertEqual(labels[0], "Untrained\n0/2")
             self.assertEqual([label.split("\n")[0] for label in labels[1:]],
                              [paper_plot._l2_tick_label(strength)
-                              for strength in paper_plot.STATE_SPACE_PCA_COHORTS])
-            self.assertEqual([label.split("\n")[1] for label in labels[1:]], ["2/2"] * 2)
-            np.testing.assert_allclose(axis.get_xticks(), [0.0, 1.5, 2.5])
-            # Two untrained networks of the example config and the two
-            # cohorts' four trained runs.
+                              for strength in paper_plot.STATE_SPACE_L2_STRENGTHS])
+            self.assertEqual([label.split("\n")[1] for label in labels[1:]], ["2/2"] * 4)
+            np.testing.assert_allclose(axis.get_xticks(), [0.0, 1.5, 2.5, 3.5, 4.5])
+            # Two untrained networks of the example config and the four
+            # cohorts' eight trained runs.
             points = [collection for collection in axis.collections
                       if isinstance(collection, paper_plot.mpl.collections.PathCollection)]
-            self.assertEqual(len(points), 6)
+            self.assertEqual(len(points), 10)
             dividers = [line for line in axis.lines
                         if np.allclose(line.get_xdata(), [0.75, 0.75])]
             self.assertEqual(len(dividers), 1)
@@ -947,12 +1057,12 @@ class PaperPlotModeTests(unittest.TestCase):
             expected = paper_plot._short_p(paper_plot._mann_whitney_p([0.2, 0.2], [0.0, 0.002]))
             p_texts = {text.get_position()[0]: text.get_text() for text in axis.texts
                        if text.get_text().startswith("p")}
-            self.assertEqual(p_texts, {1.5: expected, 2.5: expected})
+            self.assertEqual(p_texts, {1.5: expected, 2.5: expected, 3.5: expected, 4.5: expected})
             self.assertGreater(axis.get_ylim()[1], 0.4 * 1.1)
         extra = save_fig.call_args.kwargs["extra"]
         self.assertIn("untrained 0/2", extra)
         self.assertIn(f"L2 1e-02 2/2 ({expected} vs untrained)", extra)
-        self.assertNotIn("L2 1e-05", extra)
+        self.assertIn("L2 1e-05 2/2", extra)
 
     def test_state_space_category_vs_untrained_skips_without_untrained_networks(self):
         for untrained in ({}, {"other_init0": {"config_source": "other", "init_seed": 0,
