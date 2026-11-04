@@ -273,6 +273,7 @@ class PaperPlotModeTests(unittest.TestCase):
             result_dict[f"run{index}"] = {
                 "l2_info": strength,
                 "schema_version": paper_plot.STATE_SPACE_RESULTS_SCHEMA,
+                     "m_alignment": paper_plot.STATE_SPACE_M_ALIGNMENT,
                 "rval_dict": {
                     "hidden": (0.1 + index, 1.0, 0.01),
                     "mod": (0.2 + index, 1.0, 0.01),
@@ -638,6 +639,7 @@ class PaperPlotModeTests(unittest.TestCase):
 
     def test_state_space_dist_angle_renders_saved_nonzero_intercepts(self):
         entry = {"schema_version": paper_plot.STATE_SPACE_RESULTS_SCHEMA,
+                     "m_alignment": paper_plot.STATE_SPACE_M_ALIGNMENT,
                  "rval_dict": {}, "scatter": {}}
         for key, intercept in (("hidden", 15.), ("eff_mod", -3.), ("eff_mod_hebb", 2.)):
             entry["rval_dict"][key] = (0.9, 2., 0.02)
@@ -669,6 +671,7 @@ class PaperPlotModeTests(unittest.TestCase):
     def test_state_space_dist_angle_rejects_legacy_zero_intercept_cache(self):
         for regression in ({}, {"through_origin": True, "intercept": 0.}):
             entry = {"schema_version": paper_plot.STATE_SPACE_RESULTS_SCHEMA,
+                     "m_alignment": paper_plot.STATE_SPACE_M_ALIGNMENT,
                      "rval_dict": {"hidden": (0.9, 2., 0.02)}, "scatter": {
                 "hidden": {"dists": np.array([2., 3., 4.]),
                            "angles_deg": np.array([4., 6., 8.]),
@@ -715,6 +718,7 @@ class PaperPlotModeTests(unittest.TestCase):
             },
         }
         return {"aname": "selected", "all_rules": list(rules), "l2_info": 1e-4,
+                "m_alignment": paper_plot.STATE_SPACE_M_ALIGNMENT,
                 "representations": {"hidden": representation,
                                     "eff_mod": copy.deepcopy(representation)}}
 
@@ -774,7 +778,7 @@ class PaperPlotModeTests(unittest.TestCase):
                   "representations": structure["representations"]}
         for entry in cohort["representations"].values():
             entry["consistency"] = {"median": 0.91, "min": 0.76, "max": 0.95, "n_runs": 2}
-        combined = {"runs": {}, "cohorts": {1e-2: {"n_runs": 0}, 1e-4: cohort}}
+        combined = {"m_alignment": paper_plot.STATE_SPACE_M_ALIGNMENT, "runs": {}, "cohorts": {1e-2: {"n_runs": 0}, 1e-4: cohort}}
         with patch.object(paper_plot, "_ensure_out_dir"), \
                 patch.object(paper_plot, "_load_pkl_or_skip", return_value=combined), \
                 patch.object(paper_plot, "_load_best_state_space_trial") as selector, \
@@ -814,7 +818,7 @@ class PaperPlotModeTests(unittest.TestCase):
                                     "n_run_pairs": 3}
             if pairwise is not None:
                 entry["consistency"]["pairwise_spearman"] = np.array(pairwise)
-        return {"runs": {}, "cohorts": {1e-4: cohort}}
+        return {"m_alignment": paper_plot.STATE_SPACE_M_ALIGNMENT, "runs": {}, "cohorts": {1e-4: cohort}}
 
     def _draw_rdm_stats(self, combined):
         with patch.object(paper_plot, "_ensure_out_dir"), \
@@ -870,7 +874,7 @@ class PaperPlotModeTests(unittest.TestCase):
                     "n_runs": n_runs, "n_run_pairs": int(pairwise.size),
                     "pairwise_spearman": pairwise}
             cohorts[strength] = cohort
-        return {"runs": {}, "cohorts": cohorts}
+        return {"m_alignment": paper_plot.STATE_SPACE_M_ALIGNMENT, "runs": {}, "cohorts": cohorts}
 
     def _draw_rdm_stats_vs_l2(self, combined):
         with patch.object(paper_plot, "_ensure_out_dir"), \
@@ -933,7 +937,7 @@ class PaperPlotModeTests(unittest.TestCase):
         self.addCleanup(paper_plot.plt.close, figure)
         self.assertEqual(len(figure.axes[0].get_xticks()), 3)
         self.assertTrue(any("Skipped L2=1e-03" in call.args[0] for call in output.call_args_list))
-        for combined in ({"runs": {}}, {"runs": {}, "cohorts": {}}):
+        for combined in ({"runs": {}}, {"m_alignment": paper_plot.STATE_SPACE_M_ALIGNMENT, "runs": {}, "cohorts": {}}):
             save_fig, output = self._draw_rdm_stats_vs_l2(combined)
             save_fig.assert_not_called()
             self.assertIn("state_space_structure.py", output.call_args.args[0])
@@ -950,7 +954,7 @@ class PaperPlotModeTests(unittest.TestCase):
                 self.assertIn("state_space_structure.py", output.call_args.args[0])
 
     def test_state_space_rdm_skips_results_without_cohort_means(self):
-        for combined in ({"runs": {}}, {"runs": {}, "cohorts": {1e-3: {"n_runs": 1}}}):
+        for combined in ({"runs": {}}, {"m_alignment": paper_plot.STATE_SPACE_M_ALIGNMENT, "runs": {}, "cohorts": {1e-3: {"n_runs": 1}}}):
             with self.subTest(combined=combined), \
                     patch.object(paper_plot, "_ensure_out_dir"), \
                     patch.object(paper_plot, "_load_pkl_or_skip", return_value=combined), \
@@ -1013,7 +1017,8 @@ class PaperPlotModeTests(unittest.TestCase):
         # An untrained network of another run's config is not drawn.
         untrained["other_init0"] = {"config_source": "other", "init_seed": 0,
                                     **self._separation_summary(0.5, 0.01)}
-        return {"runs": runs, "untrained": untrained}
+        return {"m_alignment": paper_plot.STATE_SPACE_M_ALIGNMENT,
+                "runs": runs, "untrained": untrained}
 
     def _draw_category_vs_untrained(self, combined, selected="run"):
         with patch.object(paper_plot, "_ensure_out_dir"), \

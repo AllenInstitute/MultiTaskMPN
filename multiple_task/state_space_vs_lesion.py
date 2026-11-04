@@ -49,6 +49,7 @@ import numpy as np
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 from lesion_cache import load_lesion_pickle, normalize_lesion_cache, resolve_lesion_cache_path
 from state_space_geometry import mantel_spearman_permutation
+from state_space_cache import M_ALIGNMENT, require_aligned
 
 STATE_SPACE_DIR = Path("state_space")
 LESION_NORM_ROOT = Path("multiple_tasks_norm")
@@ -86,6 +87,7 @@ def load_structure_distances(path):
     path = Path(path)
     with path.open("rb") as stream:
         saved = pickle.load(stream)
+    require_aligned(saved, path.name)
     tasks = list(saved["all_rules"])
     if len(set(tasks)) != len(tasks):
         raise ValueError(f"{path.name}: duplicate task names")
@@ -214,18 +216,22 @@ def descriptive_trend_line(x, y):
 
 
 def analyze_run(aname, l2_info, tasks, distances, similarities,
-                n_permutations=N_PERMUTATIONS, seed=PERMUTATION_SEED, control_pool="all"):
+                n_permutations=N_PERMUTATIONS, seed=PERMUTATION_SEED, control_pool="all",
+                *, m_alignment):
     """The results entry of one run: per task pair (``pairs``, i < j in the
     structure cache's task order) the centroid distances per representation
     and the lesion-profile similarities per cluster type, and under
     ``tests[representation][cluster_type]`` the Spearman Mantel test of
     distance against similarity, under ``trend_lines`` (same keys) its
     descriptive OLS guide; ``control_pool`` names the random-control pool
-    of the lesion caches the similarities came from."""
+    of the lesion caches the similarities came from. The caller must pass the
+    validated structure distances' time-alignment marker as ``m_alignment``."""
+    require_aligned({"m_alignment": m_alignment}, "structure distances")
     upper = np.triu_indices(len(tasks), 1)
     entry = {
         "schema_version": SCHEMA_VERSION, "aname": aname, "l2_info": l2_info,
         "control_pool": str(control_pool),
+        "m_alignment": m_alignment,
         "tasks": list(tasks), "pairs": [(tasks[i], tasks[j]) for i, j in zip(*upper)],
         "n_permutations": int(n_permutations), "permutation_seed": int(seed),
         "distance_definition": "euclidean distance between full-dimensional context-end task centroids",
@@ -297,7 +303,8 @@ def run_all(state_space_dir=STATE_SPACE_DIR, lesion_root=LESION_NORM_ROOT,
             continue
         entry = analyze_run(aname, l2_info, tasks, distances, similarities,
                             n_permutations=n_permutations, seed=seed,
-                            control_pool=lesion_control_pool(aname, lesion_root))
+                            control_pool=lesion_control_pool(aname, lesion_root),
+                            m_alignment=M_ALIGNMENT)
         results[aname] = entry
         test = entry["tests"]["eff_mod"]["synapse"]
         print(f"{aname}: W*M distance vs synapse lesion similarity rho = {test['rho']:+.3f} "

@@ -116,6 +116,7 @@ import color_func
 import helper
 import multiple_task_performance as mpf
 from state_space_geometry import mantel_pearson_permutation, pair_values_to_matrix
+from state_space_cache import M_ALIGNMENT, DISTANCE_ANGLE_SCHEMA_VERSION, distance_angle_is_current
 
 c_vals = color_func.rainbow_generate(15)
 
@@ -167,10 +168,7 @@ DISTANCE_ANGLE_PERMUTATION_SEED = 0
 # 3: the modulation trajectories are aligned to the hidden state's clock
 # (align_modulation_to_hidden); earlier entries used the recorded,
 # pre-update M, one step early.
-DISTANCE_ANGLE_SCHEMA_VERSION = 3
-# Marker of PCA caches and results entries whose M and W * M are on the hidden
-# state's clock (the state after each input's update).
-M_ALIGNMENT = "post_update"
+# The version and alignment marker are shared with every result reader.
 
 # Evaluation trials per task (one batch of every rule).
 TRIALS_PER_RULE = 50
@@ -477,12 +475,15 @@ def _step_norm_summary(data, rule_indices, onset_by_rule, n_rules, retention=Non
     return {key: float(value / count) for key, value in sums.items()}
 
 
-def _permutation_test_or_reason(pairs, distances, angles, n_rules):
+def _permutation_test_or_reason(pairs, distances, angles, n_rules,
+                                pair_requirement="share a stimulus"):
     """The task-label permutation test of r over the task pairs, or the reason
     it was skipped (an incomplete pair set cannot be relabeled)."""
     expected = n_rules * (n_rules - 1) // 2
     if len(pairs) != expected:
-        return None, f"only {len(pairs)} of {expected} task pairs share a stimulus"
+        return None, f"only {len(pairs)} of {expected} task pairs {pair_requirement}"
+    if len(distances) < 2 or np.ptp(distances) == 0 or np.ptp(angles) == 0:
+        return None, "Pearson correlation is undefined: fewer than two pairs or constant distances/angles"
     return mantel_pearson_permutation(
         pair_values_to_matrix(distances, pairs, n_rules),
         pair_values_to_matrix(angles, pairs, n_rules),
@@ -1085,6 +1086,12 @@ def summarize(output_dir=None):
     with _results_path(output_dir).open("rb") as f:
         result_dict = pickle.load(f)
 
+    current = {name: entry for name, entry in result_dict.items()
+               if distance_angle_is_current(entry)}
+    if len(current) != len(result_dict):
+        print(f"Skipped {len(result_dict) - len(current)} stale distance-angle entries "
+              "(schema or m_alignment); rerun only those networks with state_space_shift.py.")
+    result_dict = current
     names = [name for name, _, _ in DISTANCE_ANGLE_REPRESENTATIONS]
     collected = {name: {"r": [], "slope": [], "p_nominal": [], "p_perm": []}
                  for name in names}

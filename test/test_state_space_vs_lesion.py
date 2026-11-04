@@ -33,6 +33,7 @@ def _similarity_matrix(rng, n):
 def _structure_cache(aname, l2_info, seed):
     rng = np.random.default_rng(seed)
     return {"aname": aname, "l2_info": l2_info, "all_rules": list(RULES),
+            "m_alignment": link.M_ALIGNMENT,
             "representations": {representation: {"distances": _distance_matrix(rng, len(RULES))}
                                 for representation in link.REPRESENTATIONS}}
 
@@ -201,7 +202,7 @@ class AnalyzeRunTests(unittest.TestCase):
             aname, 1e-4, RULES, {name: value["distances"] for name, value in cache["representations"].items()},
             {"neuron": (shuffled_tasks, neuron[np.ix_(order, order)]),
              "synapse": (RULES, synapse, "mod_c21")},
-            n_permutations=25, seed=1)
+            n_permutations=25, seed=1, m_alignment=cache["m_alignment"])
         self.assertEqual(entry["aname"], aname)
         self.assertEqual(entry["l2_info"], 1e-4)
         self.assertEqual(len(entry["pairs"]), len(UPPER[0]))
@@ -231,7 +232,8 @@ class AnalyzeRunTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "different tasks"):
             link.analyze_run(aname, 1e-4, RULES,
                              {"hidden": cache["representations"]["hidden"]["distances"]},
-                             {"neuron": (RULES[:-1] + ["unknown"], neuron)}, n_permutations=5)
+                             {"neuron": (RULES[:-1] + ["unknown"], neuron)}, n_permutations=5,
+                             m_alignment=cache["m_alignment"])
 
 
 class RunAllTests(unittest.TestCase):
@@ -288,7 +290,7 @@ class PaperFigureTests(unittest.TestCase):
                 {"neuron": (RULES, _similarity_matrix(rng, len(RULES))),
                  "synapse": (RULES, -distances["eff_mod"] + 0.1 * _similarity_matrix(rng, len(RULES)),
                              "mod_c21")},
-                n_permutations=20, seed=0)
+                n_permutations=20, seed=0, m_alignment=cache["m_alignment"])
         return combined
 
     def render(self, function, combined, anames, show_legend=True):

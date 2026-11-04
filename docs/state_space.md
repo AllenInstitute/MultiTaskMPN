@@ -56,7 +56,7 @@ python figures/paper_plot.py --only state_space_rdm
 python figures/paper_plot.py --only state_space_rdm_stats
 python figures/paper_plot.py --only state_space_rdm_stats_vs_l2
 python figures/paper_plot.py --only state_space_rdm_example
-# modulation transplant: the first-step change that the Context-end M alone
+# modulation transplant: the response-direction change that the Context-end M alone
 # produces under one and the same input (seconds per network; the trained
 # cohort, then the untrained networks of the example run's setting)
 python multiple_task/state_space_transplant.py
@@ -104,7 +104,13 @@ update rather than the stimulus-driven one, which also makes their
 distance-angle r for M and W ⊙ M suspect, since the step and the initial
 condition were then both set by the rule-cue input. `state_space_structure.py`
 and `paper_plot.py` skip such caches and entries with a message; regenerate
-them with the batch run and the untrained command above.
+them with the batch run and the untrained command above. Already aligned
+PCA and distance-angle caches do not need network evaluation again.
+`m_alignment` is propagated to structure summaries/cohorts and lesion-link
+results and checked by their readers. To refresh these derived files from
+aligned PCA and existing lesion caches, run `state_space_structure.py` then
+`state_space_vs_lesion.py`; neither evaluates a network. Source summaries and
+paper distance-angle plots share the same schema/alignment checks.
 
 `python multiple_task/state_space_structure.py` reads every PCA cache and
 tests, for the hidden state, M and W ⊙ M of each run, two properties of the
@@ -285,13 +291,14 @@ Context update (the aligned context-end state; the network has one plastic
 layer and no hidden recurrence, so M is its whole memory). For an ordered
 task pair (host A, donor B) the k-th trial of A hosts the k-th trial of B:
 from M_A and from M_B the network takes one step under the host's onset
-input, and the first step is F(M) − M for M (the network's own update,
+input. The response vectors are F(M) − M for M (the network's own update,
 decay, M activation and clipping included), W ⊙ (F(M) − M) for W ⊙ M, and
 h(M, x_on) − h(M, x_ctx) for the hidden state (the response to the onset
 input minus the response to the host's last Context input, both read with
-M frozen), so each branch subtracts its own starting point and the jump
+M frozen). The hidden vector is a frozen-M stimulus-response difference,
+not the historical h[t] − h[t−1]. Each branch subtracts its own baseline and the jump
 the transplant itself causes is not counted. The angle between the two
-branches' steps is averaged over the paired trials and over both hosting
+branches' response vectors is averaged over the paired trials and over both hosting
 directions (both kept in `angles_deg_by_host`), the distance is
 ‖M_A − M_B‖ over the paired trials for every representation, and the 105
 pairs give the same free-intercept OLS r and task-label permutation p as
@@ -301,12 +308,18 @@ with every network: the self transplant (M_A into its own trials) must
 reproduce the uninterrupted run's onset response and M to 1e-4
 (`native_check`; the run aborts otherwise); same-task transplants (the
 (k − 1)-th trial of the host's own task donates) give the angle that
-Context input noise alone produces (`within_task_angle_deg`, the floor of
-the cross-task angles, drawn as a dotted line in the per-network
+Context input noise alone produces (`within_task_angle_deg`, a noise
+baseline, not a guaranteed lower bound; drawn as a dotted line in the per-network
 diagnostic scatter); `step_norms` keeps the mean norms of the start
 state, of the native and transplanted steps and of the decay term
 (1 − λ) M, and the share of M entries at the bounds after native and
-transplanted steps; zero-norm steps are skipped, never given an angle. On
+transplanted steps. Zero-norm responses are skipped separately for each
+representation, never given an angle. A task pair requires defined mean
+angles in both hosting directions. Incomplete pair matrices retain their
+descriptive r when defined but skip the permutation test with a recorded
+reason. Empty or constant data produce an explicitly undefined r instead
+of aborting the network batch. The paper r summary omits entries whose r
+or permutation test is undefined, reporting the reason. On
 the 2026-11-03 cohort the decay term is 3% of the native M step at L2 = 1e-5
 and 1e-4, 5% at 1e-3 and 9% at 1e-2 (run means), and the median share of M
 entries at the bounds after the native step is 12%, 5%, 3% and 1% at
@@ -331,12 +344,14 @@ with the marks of the distance-angle untrained entries (`untrained`,
 `init_seed`, `config_source`, `l2_info` None). `python figures/paper_plot.py
 --only state_space_transplant_r_values` draws
 `multitask_state_space_transplant_r_values.png` like `state_space_r_values`:
-one bar per representation (hidden state, M, W ⊙ M, the full update; no
+one bar per representation (frozen-M hidden response, full M and W ⊙ M updates; no
 decay-removed bar, the decay term's share is in `step_norms`)
 and L2 cohort with one dot per run, filled when its permutation p < 0.05,
 preceded by an "Untrained" panel when `state_space/transplant/untrained/`
-holds networks of the selected example run's setting
-(`paper_plot._untrained_source`, as for the other untrained panels). The
+holds networks of a matching trained transplant configuration. Selection
+uses the transplant results' own `config_source` metadata, prefers the
+example L2 cohort, and uses one source so init seeds are not counted twice;
+it does not require the natural-trajectory PCA ranking or caches. The
 matched-stimulus figures above stay as the correlational counterpart.
 
 `python figures/paper_plot.py --only sibling_cue_interp` draws the multi-task analog
@@ -731,4 +746,3 @@ balanced splits in 20-21 of 25), while DMCGo's separate less (1.67 [0.99,
 the ring in only 9 of 25 runs. The DMCGo delay state is therefore not a
 clean category memory in most runs, which the DMC endpoint figure, drawn
 in the plane that separates the response categories best, does not show.
-

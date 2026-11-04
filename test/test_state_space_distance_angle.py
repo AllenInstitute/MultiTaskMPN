@@ -244,6 +244,7 @@ def _distance_angle_entry(with_permutation=True, with_hebb=True):
     rng = np.random.default_rng(0)
     names = ["hidden", "mod", "eff_mod"] + (["mod_hebb", "eff_mod_hebb"] if with_hebb else [])
     entry = {"l2_info": 1e-4, "schema_version": state_space.DISTANCE_ANGLE_SCHEMA_VERSION,
+             "m_alignment": state_space.M_ALIGNMENT,
              "rval_dict": {}, "scatter": {}}
     for index, name in enumerate(names):
         x = rng.uniform(1, 3, 10)

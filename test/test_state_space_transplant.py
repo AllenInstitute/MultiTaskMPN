@@ -154,7 +154,7 @@ class TransplantAnalysisTests(unittest.TestCase):
             self.assertTrue(np.all(scatter["angles_deg"] > 0))
             self.assertEqual(set(scatter["within_task_angles_deg"]), set(RULES))
             # Same-task donors differ by input noise only: their angle is the
-            # floor of the cross-task angles.
+            # smaller than the cross-task angles in this fixture.
             self.assertGreater(scatter["within_task_angle_deg"], 0.0)
             self.assertLess(scatter["within_task_angle_deg"], scatter["angles_deg"].min())
             self.assertEqual(scatter["n_steps_skipped"], 0)
@@ -314,7 +314,7 @@ class TransplantFigureTests(unittest.TestCase):
                     patch.object(paper_plot, "STATE_SPACE_TRANSPLANT_UNTRAINED_RVAL_PATH",
                                  untrained_path), \
                     patch.object(paper_plot, "_load_best_state_space_trial",
-                                 return_value=(selected, 0.1, {})), \
+                                 side_effect=AssertionError("transplant must not read PCA ranking")), \
                     patch.object(paper_plot, "_save_fig") as save_fig, \
                     patch("builtins.print") as output:
                 paper_plot.plot_state_space_transplant_r_values()
@@ -360,6 +360,23 @@ class TransplantFigureTests(unittest.TestCase):
         figure = save_fig.call_args.args[0]
         self.assertEqual(len(figure.axes), len(paper_plot.STATE_SPACE_L2_STRENGTHS))
         self.assertIn("state_space_transplant.py --untrained", output.call_args_list[0].args[0])
+
+    def test_compatible_sources_do_not_double_count_untrained_init_seeds(self):
+        run = "everything_seed999_L21e4+hidden300+batch128+angle"
+        sources = [run.replace("seed999", "seed202"), run.replace("seed999", "seed921")]
+        untrained = {}
+        for source in sources:
+            for seed in (0, 1):
+                entry = _transplant_entry()
+                entry.update(untrained=True, init_seed=seed, config_source=source, l2_info=None)
+                untrained[f"{source}_init{seed}"] = entry
+        save_fig, output = self._draw({run: _transplant_entry()}, untrained)
+        panel = save_fig.call_args.args[0].axes[0]
+        self.assertEqual(panel.get_title(), "Untrained")
+        dots = [collection for collection in panel.collections
+                if isinstance(collection, paper_plot.mpl.collections.PathCollection)]
+        self.assertEqual(len(dots), 6)  # two init seeds for each of three representations
+        self.assertTrue(any(sources[0] in call.args[0] for call in output.call_args_list))
 
     def test_entries_below_the_transplant_schema_are_left_out(self):
         result_dict = {"old": _transplant_entry(schema=0), "run0": _transplant_entry()}

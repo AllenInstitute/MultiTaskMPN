@@ -58,6 +58,9 @@ from core.sibling_geometry import (DELAYDM_METRIC_NAME, DMC_SWEEP_METRIC_NAME,
                                    best_task_specific_pc_pair, task_offsets,
                                    translation_metrics)
 from core.state_space_geometry import task_centroid_separation
+from core.state_space_cache import (M_ALIGNMENT as STATE_SPACE_M_ALIGNMENT,
+                                    DISTANCE_ANGLE_SCHEMA_VERSION as STATE_SPACE_RESULTS_SCHEMA,
+                                    distance_angle_is_current, is_aligned, require_aligned)
 from core.lesion_cache import (CONTROL_POOLS, load_lesion_pickle, normalize_lesion_cache, norm_root,
                                resolve_lesion_cache_path)
 from pretrain.pretraining_utils import variant_addon
@@ -2612,8 +2615,6 @@ def _load_best_state_space_trial(strength=STATE_SPACE_EXAMPLE_L2):
 # clock (state_space_shift.M_ALIGNMENT and DISTANCE_ANGLE_SCHEMA_VERSION):
 # the network records M before each update, so caches written before the
 # alignment took M one step early. Such caches are skipped, never drawn.
-STATE_SPACE_M_ALIGNMENT = "post_update"
-STATE_SPACE_RESULTS_SCHEMA = 3
 _STATE_SPACE_STALE_HINT = ("Re-run multiple_task/state_space_shift.py (then "
                            "state_space_structure.py): the cache predates the alignment of "
                            "M to the hidden state.")
@@ -2632,7 +2633,7 @@ def _state_space_entry_is_current(entry, name):
     """True when distance-angle results entry `entry` (of run `name`) was
     written with aligned modulation states (schema STATE_SPACE_RESULTS_SCHEMA
     or later); otherwise says why it is skipped."""
-    if entry.get("schema_version", 0) >= STATE_SPACE_RESULTS_SCHEMA:
+    if distance_angle_is_current(entry):
         return True
     print(f"  Skipped: the distance-angle entry of {name} is schema "
           f"{entry.get('schema_version', 'unknown')}. {_STATE_SPACE_STALE_HINT}")
@@ -2947,16 +2948,25 @@ def _add_r_value_entry(group, name, results, data_types,
     no saved permutation test or is older than `minimum_schema` (for the
     distance-angle results, the modulation alignment; legacy cache)."""
     legacy = 0
-    current = results.get("schema_version", 0) >= minimum_schema
+    current = (results.get("schema_version", 0) >= minimum_schema
+               and (minimum_schema != STATE_SPACE_RESULTS_SCHEMA or is_aligned(results)))
     for data_type in data_types:
         if data_type not in results.get("rval_dict", {}):
             continue
         if not current:
             legacy += 1
             continue
-        permutation = (results.get("scatter") or {}).get(data_type, {}).get("permutation")
+        scatter = (results.get("scatter") or {}).get(data_type, {})
+        reason = scatter.get("regression", {}).get("skipped") or scatter.get("permutation_skipped")
+        if reason:
+            print(f"  Skipped {name}/{data_type} in r summary: {reason}.")
+            continue
+        permutation = scatter.get("permutation")
         if not permutation or "p_value" not in permutation:
             legacy += 1
+            continue
+        if not np.isfinite([results["rval_dict"][data_type][0], permutation["p_value"]]).all():
+            print(f"  Skipped {name}/{data_type}: undefined r or permutation p.")
             continue
         group[data_type].append({
             "r": float(results["rval_dict"][data_type][0]),
@@ -2972,7 +2982,7 @@ STATE_SPACE_UNTRAINED_RVAL_PATH = STATE_SPACE_UNTRAINED_DIR / RVAL_RESULT_PATH.n
 
 
 def _untrained_r_values(data_types, path=None, minimum_schema=STATE_SPACE_RESULTS_SCHEMA,
-                        command=_untrained_command):
+                        command=_untrained_command, trained_results=None):
     """{data type: [{"r", "p_perm", "aname"}]} of the untrained networks built
     from the selected example run's config, or from another run of its
     training setting (_untrained_source; the networks of the PCA figures'
@@ -2981,7 +2991,8 @@ def _untrained_r_values(data_types, path=None, minimum_schema=STATE_SPACE_RESULT
     pickle (default: the distance-angle results,
     STATE_SPACE_UNTRAINED_RVAL_PATH), `minimum_schema` the entry version
     the figure needs and `command(aname, init_seeds)` the command that adds
-    the networks."""
+    the networks. With `trained_results`, choose a compatible source from
+    those results alone, without depending on the natural-trajectory PCA ranking."""
     path = STATE_SPACE_UNTRAINED_RVAL_PATH if path is None else path
     if not path.exists():
         print(f"  No untrained results ({path}); drawing the trained cohorts only. "
@@ -2989,12 +3000,28 @@ def _untrained_r_values(data_types, path=None, minimum_schema=STATE_SPACE_RESULT
         return None
     with path.open("rb") as stream:
         results = pickle.load(stream)
-    selected = _load_best_state_space_trial()
-    if selected is None:
-        return None
-    aname = selected[0]
     untrained = {stem: entry for stem, entry in results.items()
-                 if entry.get("untrained") is True}
+                 if entry.get("untrained") is True
+                 and entry.get("schema_version", 0) >= minimum_schema}
+    if trained_results is None:
+        selected = _load_best_state_space_trial()
+        if selected is None:
+            return None
+        aname = selected[0]
+    else:
+        candidates = sorted(name for name, entry in trained_results.items()
+                            if entry.get("schema_version", 0) >= minimum_schema
+                            and entry.get("l2_info") is not None)
+        candidates.sort(key=lambda name: not np.isclose(
+            float(trained_results[name]["l2_info"]), STATE_SPACE_EXAMPLE_L2,
+            rtol=1e-6, atol=0.0))
+        sources = {entry.get("config_source") for entry in untrained.values()}
+        aname = next((name for name in candidates
+                      if _untrained_source(name, sources) is not None), None)
+        if aname is None:
+            print("  No untrained transplant results match the trained configurations; "
+                  "drawing the trained cohorts only.")
+            return None
     source = _untrained_source(aname, (entry.get("config_source")
                                        for entry in untrained.values()))
     group = {data_type: [] for data_type in data_types}
@@ -3125,9 +3152,9 @@ STATE_SPACE_TRANSPLANT_RVAL_PATH = STATE_SPACE_TRANSPLANT_DIR / "transplant_resu
 STATE_SPACE_TRANSPLANT_UNTRAINED_RVAL_PATH = (
     STATE_SPACE_TRANSPLANT_DIR / "untrained" / "transplant_results.pkl")
 STATE_SPACE_TRANSPLANT_SCHEMA = 1
-# Bars of the transplant figure: the three representations with the full
-# transplant step, the full update (the decay term's share is saved in
-# step_norms instead of a decay-removed bar).
+# Bars of the transplant figure: the frozen-M hidden response and the full
+# M / W * M updates (the decay term's share is saved in step_norms instead
+# of a decay-removed bar).
 _STATE_SPACE_TRANSPLANT_BARS = tuple(bar for bar in _STATE_SPACE_R_BARS if not bar[3])
 
 
@@ -3145,13 +3172,14 @@ def plot_state_space_transplant_r_values():
     modulation transplant experiment (multiple_task/state_space_transplant.py)
     of every analyzed run, laid out as plot_state_space_r_values: one panel
     per L2 strength, preceded by an "Untrained" panel when the untrained
-    networks of the selected example run's setting have results, one bar
+    networks of a matching transplant configuration have results, one bar
     per representation (hidden state, raw and effective modulation) with
     the mean over runs and the sample SD, and one dot per run, filled when
     its saved two-sided task-label permutation p is below 0.05. The r is
     the correlation, over the 105 task pairs, between the distance of two
-    tasks' Context-end M and the angle between the first steps the network
-    takes from either state under one and the same input (a trial of the
+    tasks' Context-end M and the angle between response vectors from either
+    state under one and the same input: the full M update, W times that
+    update, or h(M, x_on) - h(M, x_ctx) with M frozen (a trial of the
     host task, averaged over both hosting directions), so the angle
     reflects the state change alone: the input, rule cue included, is the
     same in both branches, where the matched-stimulus figure's trials only
@@ -3169,7 +3197,8 @@ def plot_state_space_transplant_r_values():
     panels = [(_l2_panel_title(strength), grouped[strength])
               for strength in STATE_SPACE_L2_STRENGTHS]
     untrained = _untrained_r_values(names, STATE_SPACE_TRANSPLANT_UNTRAINED_RVAL_PATH,
-                                    STATE_SPACE_TRANSPLANT_SCHEMA, _transplant_untrained_command)
+                                    STATE_SPACE_TRANSPLANT_SCHEMA, _transplant_untrained_command,
+                                    trained_results=result_dict)
     if untrained is not None:
         panels.insert(0, ("Untrained", untrained))
     fig, axs = plt.subplots(1, len(panels), figsize=(1.9 * len(panels), 3.2), sharey=True)
@@ -3332,13 +3361,22 @@ _STATE_SPACE_RDM_FIGSIZE = (3.0, 3.5)
 _STATE_SPACE_SIGNIFICANCE = 0.05
 
 
+def _load_aligned_structure(path):
+    """Read derived geometry only when its alignment provenance is explicit."""
+    data = _load_pkl_or_skip(path, _STATE_SPACE_STRUCTURE_HINT)
+    if data is not None and not is_aligned(data):
+        print(f"  Skipped: {path} has no aligned structure provenance. "
+              f"{_STATE_SPACE_STRUCTURE_HINT}")
+        return None
+    return data
+
+
 def _load_state_space_structure(aname):
     """Load state_space_structure.py's per-run cache, or None."""
     path = STATE_SPACE_DIR / f"state_space_structure_{aname}_noise{STATE_SPACE_NOISE_LEVEL}.pkl"
     if not path.exists():
         return None
-    with path.open("rb") as stream:
-        return pickle.load(stream)
+    return _load_aligned_structure(path)
 
 
 def _permutation_p_text(p_value):
@@ -3475,7 +3513,7 @@ def plot_state_space_rdm():
     plot_state_space_rdm_example.
     """
     _ensure_out_dir()
-    combined = _load_pkl_or_skip(STATE_SPACE_STRUCTURE_RESULT_PATH, _STATE_SPACE_STRUCTURE_HINT)
+    combined = _load_aligned_structure(STATE_SPACE_STRUCTURE_RESULT_PATH)
     if combined is None:
         return
     cohort = _state_space_cohort_structure(combined, STATE_SPACE_EXAMPLE_L2)
@@ -3518,7 +3556,7 @@ def plot_state_space_rdm_stats():
     array or the run-pair correlations are skipped with the hint to rerun it.
     """
     _ensure_out_dir()
-    combined = _load_pkl_or_skip(STATE_SPACE_STRUCTURE_RESULT_PATH, _STATE_SPACE_STRUCTURE_HINT)
+    combined = _load_aligned_structure(STATE_SPACE_STRUCTURE_RESULT_PATH)
     if combined is None:
         return
     cohort = _state_space_cohort_structure(combined, STATE_SPACE_EXAMPLE_L2)
@@ -3608,7 +3646,7 @@ def plot_state_space_rdm_stats_vs_l2():
     correlations are skipped with the hint to rerun it.
     """
     _ensure_out_dir()
-    combined = _load_pkl_or_skip(STATE_SPACE_STRUCTURE_RESULT_PATH, _STATE_SPACE_STRUCTURE_HINT)
+    combined = _load_aligned_structure(STATE_SPACE_STRUCTURE_RESULT_PATH)
     if combined is None:
         return
     if not combined.get("cohorts"):
@@ -3848,7 +3886,7 @@ def plot_state_space_category_vs_untrained():
     when no untrained network of that config has been analyzed.
     """
     _ensure_out_dir()
-    combined = _load_pkl_or_skip(STATE_SPACE_STRUCTURE_RESULT_PATH, _STATE_SPACE_STRUCTURE_HINT)
+    combined = _load_aligned_structure(STATE_SPACE_STRUCTURE_RESULT_PATH)
     if combined is None:
         return
     selected = _load_best_state_space_trial()
@@ -5360,6 +5398,7 @@ def _state_space_vs_lesion_entry(combined, aname):
               f"{_STATE_SPACE_VS_LESION_HINT}")
         return None
     try:
+        require_aligned(entry, "state-space-vs-lesion result")
         # Schema 2 adds the saved OLS guide line of every panel.
         if entry["schema_version"] != 2 or entry["aname"] != aname:
             raise ValueError("schema or run does not match")

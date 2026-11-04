@@ -50,6 +50,7 @@ import pickle
 import numpy as np
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
+from state_space_cache import M_ALIGNMENT, is_aligned, require_aligned
 from state_space_geometry import (
     category_separation_permutation,
     category_separation_permutation_from_distances,
@@ -70,13 +71,13 @@ SCHEMA_VERSION = 1
 # PCA caches must carry this marker (state_space_shift.M_ALIGNMENT): their M
 # and W * M context states are on the hidden state's clock. Earlier caches
 # took the modulation one step early and are skipped.
-M_ALIGNMENT = "post_update"
+# M_ALIGNMENT is shared with the upstream producer and downstream readers.
 
 
 def is_aligned_cache(data, path):
     """True when PCA cache ``data`` (from ``path``) has aligned modulation
     states; otherwise says why it is skipped."""
-    if data.get("m_alignment") == M_ALIGNMENT:
+    if is_aligned(data):
         return True
     print(f"Skipped {path}: its modulation states predate the alignment to the hidden "
           "state (no m_alignment marker). Re-run multiple_task/state_space_shift.py.")
@@ -162,10 +163,12 @@ def analyze_representation(record, all_rules, categories, n_permutations=N_PERMU
 def analyze_run(data, n_permutations=N_PERMUTATIONS, seed=PERMUTATION_SEED,
                 representations=REPRESENTATIONS):
     """Full structure result of one PCA cache (``pickle.load`` of the file)."""
+    require_aligned(data, "PCA cache")
     all_rules = list(data["all_rules"])
     categories, category_names = task_categories(data)
     result = {
         "schema_version": SCHEMA_VERSION,
+        "m_alignment": M_ALIGNMENT,
         "aname": data["aname"],
         "l2_info": float(data["l2_info"]),
         "noise_level": data.get("noise_level", STATE_SPACE_NOISE_LEVEL),
@@ -192,7 +195,9 @@ _FACTOR_SUMMARY_KEYS = _POOLED_SUMMARY_KEYS + ("shared_variance_fraction",)
 
 def summarize_run(result):
     """The run's statistics without the null arrays, for the combined file."""
-    summary = {"l2_info": result["l2_info"], "aname": result["aname"], "representations": {}}
+    require_aligned(result, "structure result")
+    summary = {"l2_info": result["l2_info"], "aname": result["aname"],
+               "m_alignment": result["m_alignment"], "representations": {}}
     for representation, entry in result["representations"].items():
         factors = entry["factor_vectors"]
         summary["representations"][representation] = {
@@ -217,12 +222,15 @@ def cohort_mean_structure(results, n_permutations=N_PERMUTATIONS, seed=PERMUTATI
     anames = sorted(results)
     if not anames:
         raise ValueError("A cohort needs at least one run.")
+    for aname in anames:
+        require_aligned(results[aname], f"structure result {aname}")
     first = results[anames[0]]
     for aname in anames[1:]:
         if (results[aname]["all_rules"] != first["all_rules"]
                 or results[aname]["categories"] != first["categories"]):
             raise ValueError(f"{aname} lists its tasks differently from {anames[0]}.")
     cohort = {
+        "m_alignment": M_ALIGNMENT,
         "anames": anames,
         "n_runs": len(anames),
         "all_rules": list(first["all_rules"]),
@@ -365,6 +373,7 @@ def run_all(state_space_dir=STATE_SPACE_DIR, n_permutations=N_PERMUTATIONS,
             "run python multiple_task/state_space_shift.py first.")
     combined = {
         "schema_version": SCHEMA_VERSION,
+        "m_alignment": M_ALIGNMENT,
         "noise_level": noise_level,
         "n_permutations": int(n_permutations),
         "permutation_seed": int(seed),

@@ -1,5 +1,5 @@
 """
-Modulation transplant: does the Context-end M set the first-step direction?
+Modulation transplant: how does Context-end M change response directions?
 
 The distance-angle analysis of state_space_shift.py relates the distance
 between two tasks' Context-end states to the angle between their first
@@ -16,8 +16,7 @@ M of the plastic layer is cloned after the last Context update (the aligned
 Context-end state of state_space_shift.py). For an ordered task pair (host
 A, donor B) the k-th trial of A hosts the k-th trial of B: from M_A (the
 host trial's own state) and from M_B (the donor's) the network takes one
-step under the host's onset input x_on, and the first step of each
-representation is
+step under the host's onset input x_on. The response vectors are
 
     modulation        v(M) = F_x_on(M) - M, with F the network's own update
                       (Hebbian term, decay, M activation and clipping);
@@ -28,7 +27,7 @@ representation is
 
 Each branch subtracts its own starting point, so the jump the transplant
 itself causes is not counted. The angle between v(M_A) and v(M_B) is the
-change of the first step that the state change alone produces; the
+change of response direction that the state change alone produces; the
 distance is ||M_A - M_B|| over the paired trials. Both directions (A
 hosting B, B hosting A) are kept and averaged into one value per unordered
 pair, and the pairs give Pearson r (free-intercept OLS) with the task-label
@@ -40,8 +39,8 @@ Controls recorded with every network. The self transplant (M_A into its own
 trials) must reproduce the uninterrupted run's onset response and M to
 NATIVE_CHECK_TOLERANCE, which the run checks and aborts on. Same-task
 transplants (the k-th trial of A hosting the (k-1)-th) give the angle that
-Context input noise alone produces, the floor of the cross-task angles. Per
-representation the mean norms of the first step (native and transplanted),
+Context input noise alone produces, a noise baseline (not a lower bound). Per
+representation the mean norms of the response vectors (native and transplanted),
 of the decay term (1 - lam) M and of the start state are kept, with the
 share of M entries at the bounds after the step. Steps of (numerically)
 zero norm are skipped, never given an angle.
@@ -129,7 +128,7 @@ def modulation_after_steps(model, inputs, n_steps):
 def branch_step(model, m_start, x_context, x_onset):
     """One step of ``model`` from the modulation states ``m_start`` (trials x
     post x pre) under the host trials' last Context input ``x_context`` and
-    onset input ``x_onset`` (trials x channels). Returns the first-step
+    onset input ``x_onset`` (trials x channels). Returns the response
     vectors of the three representations (float64 arrays, trials x
     features; see the module docstring), the frozen-M Context response
     ``h_context`` (float64), the onset response ``h_onset`` and the updated
@@ -208,14 +207,14 @@ def transplant_analysis(model, inputs, rule_indices, all_rules, context_steps, r
 
     Returns (rval_dict, scatter_dict, step_norms, native_check). rval_dict
     maps each representation to (Pearson r, slope, nominal OLS p) of the
-    first-step angle over the M distance across the unordered task pairs.
+    response angle over the M distance across the unordered task pairs.
     scatter_dict holds per representation the pairs' distances and mean
     angles, the angles of both hosting directions (``angles_deg_by_host``:
     first task hosting, second task hosting), the task names, the OLS fit,
     the task-label permutation test, the same-task control angle (mean and
     per task), the count of skipped zero-norm steps and the definitions.
     step_norms holds per representation the mean norms of the start state
-    and of the native and transplanted first steps, for the modulation
+    and of the native and transplanted response vectors, for the modulation
     representations the decay term's norm, and for raw M the share of
     entries at the bounds after native and transplanted steps. native_check
     holds the self-transplant differences.
@@ -272,27 +271,35 @@ def transplant_analysis(model, inputs, rule_indices, all_rules, context_steps, r
                     float(np.linalg.norm(branch[name], axis=1).mean()))
             directional[(host, donor)] = entry
 
-    pairs, distances, by_host = [], [], {name: [] for name in REPRESENTATIONS}
-    for first in range(n_rules):
-        for second in range(first + 1, n_rules):
-            forward, backward = directional[(first, second)], directional[(second, first)]
-            angles = {name: (forward["angles"][name], backward["angles"][name])
-                      for name in REPRESENTATIONS}
-            if not all(np.isfinite(pair).all() for pair in angles.values()):
-                continue
-            pairs.append((first, second))
-            distances.append(0.5 * (forward["distance"] + backward["distance"]))
-            for name in REPRESENTATIONS:
-                by_host[name].append(angles[name])
-    distances = np.asarray(distances, dtype=float)
-
     rval_dict, scatter_dict = {}, {}
     for name in REPRESENTATIONS:
-        angles_by_host = np.asarray(by_host[name], dtype=float).reshape(-1, 2)
+        # Undefined hidden responses must not discard valid modulation updates.
+        pairs, distances, by_host = [], [], []
+        for first in range(n_rules):
+            for second in range(first + 1, n_rules):
+                forward, backward = directional[(first, second)], directional[(second, first)]
+                angles = (forward["angles"][name], backward["angles"][name])
+                if not np.isfinite(angles).all():
+                    continue
+                pairs.append((first, second))
+                distances.append(0.5 * (forward["distance"] + backward["distance"]))
+                by_host.append(angles)
+        distances = np.asarray(distances, dtype=float)
+        angles_by_host = np.asarray(by_host, dtype=float).reshape(-1, 2)
         angles = angles_by_host.mean(axis=1)
-        _, _, r_value, slope, intercept, p_value = helper.linear_regression(
-            distances, angles, log=False, through_origin=False)
-        permutation, reason = shift._permutation_test_or_reason(pairs, distances, angles, n_rules)
+        regression_reason = None
+        if distances.size < 2:
+            regression_reason = "fewer than two task pairs have defined response angles in both directions"
+        elif np.ptp(distances) == 0 or np.ptp(angles) == 0:
+            regression_reason = "Pearson correlation is undefined for constant distances or angles"
+        if regression_reason:
+            r_value = slope = intercept = p_value = float("nan")
+        else:
+            _, _, r_value, slope, intercept, p_value = helper.linear_regression(
+                distances, angles, log=False, through_origin=False)
+        permutation, reason = shift._permutation_test_or_reason(
+            pairs, distances, angles, n_rules,
+            pair_requirement="have defined response angles in both directions")
         rval_dict[name] = (r_value, slope, p_value)
         scatter_dict[name] = {
             "dists": distances,
@@ -303,6 +310,7 @@ def transplant_analysis(model, inputs, rule_indices, all_rules, context_steps, r
                 "through_origin": False,
                 "intercept": float(intercept),
                 "p_value_method": "OLS slope t-test assuming independent task pairs",
+                "skipped": regression_reason,
             },
             "permutation": permutation,
             "permutation_skipped": reason,
@@ -318,8 +326,8 @@ def transplant_analysis(model, inputs, rule_indices, all_rules, context_steps, r
                   for name in REPRESENTATIONS}
     for name in ("mod", "eff_mod"):
         step_norms[name]["decay_term"] = (1.0 - float(retention)) * step_norms[name]["initial"]
-    step_norms["mod"]["clipped_fraction_native"] = float(np.nanmean(clipped["native"]))
-    step_norms["mod"]["clipped_fraction_transplant"] = float(np.nanmean(clipped["transplant"]))
+    step_norms["mod"]["clipped_fraction_native"] = _mean_angle(np.asarray(clipped["native"]))
+    step_norms["mod"]["clipped_fraction_transplant"] = _mean_angle(np.asarray(clipped["transplant"]))
     return rval_dict, scatter_dict, step_norms, native_check
 
 
@@ -337,17 +345,24 @@ def _draw_transplant_figure(scatter_dict, rval_dict, out_path):
         permutation = entry["permutation"]
         perm_text = (f"permutation p={permutation['p_value']:.4f}" if permutation
                      else f"permutation skipped: {entry['permutation_skipped']}")
-        if x.size >= 2:
+        if x.size >= 2 and np.isfinite(slope):
             x_fit = np.linspace(x.min(), x.max(), 50)
             ax.plot(x_fit, entry["regression"]["intercept"] + slope * x_fit, color="red",
                     label=(f"Fit: slope={slope:.2f}, r={r_value:.2f}, nominal p={p_value:.3f}\n"
                            f"{perm_text}"))
-        ax.axhline(entry["within_task_angle_deg"], color="k", linestyle=":",
-                   label=f"same-task donors: {entry['within_task_angle_deg']:.2f} deg")
+        if entry["regression"].get("skipped"):
+            ax.text(0.03, 0.97, "Undefined r: " + entry["regression"]["skipped"],
+                    transform=ax.transAxes, va="top", fontsize=6, wrap=True)
+        elif not permutation:
+            ax.text(0.03, 0.97, perm_text, transform=ax.transAxes, va="top", fontsize=6, wrap=True)
+        if np.isfinite(entry["within_task_angle_deg"]):
+            ax.axhline(entry["within_task_angle_deg"], color="k", linestyle=":",
+                       label=f"same-task donors: {entry['within_task_angle_deg']:.2f} deg")
         ax.set_xlabel("Distance between the transplanted M states")
-        ax.set_ylabel("Angle between the first steps\nfrom M_A and M_B, same input (deg.)")
+        ax.set_ylabel("Angle between response vectors\nfrom M_A and M_B, same input (deg.)")
         ax.set_title(f"{name}: {entry['step']['definition']}")
-        ax.legend(frameon=True, loc="best", fontsize=6)
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend(frameon=True, loc="best", fontsize=6)
     fig.tight_layout()
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
@@ -545,26 +560,33 @@ def summarize(result_dict, label):
         return
     for name in REPRESENTATIONS:
         r_values = np.array([entry["rval_dict"][name][0] for entry in entries])
+        r_values = r_values[np.isfinite(r_values)]
         p_values = np.array([entry["scatter"][name]["permutation"]["p_value"]
                              for entry in entries if entry["scatter"][name]["permutation"]])
-        floors = np.array([entry["scatter"][name]["within_task_angle_deg"] for entry in entries])
-        angles = np.array([entry["scatter"][name]["angles_deg"].mean() for entry in entries])
-        print(f"\n{name}: r mean={r_values.mean():.3f}, sd={r_values.std(ddof=1) if r_values.size > 1 else 0.0:.3f}, "
-              f"min={r_values.min():.3f}, max={r_values.max():.3f}")
+        controls = np.array([entry["scatter"][name]["within_task_angle_deg"] for entry in entries])
+        angles = np.array([_mean_angle(entry["scatter"][name]["angles_deg"]) for entry in entries])
+        if r_values.size:
+            print(f"\n{name}: r mean={r_values.mean():.3f}, sd={r_values.std(ddof=1) if r_values.size > 1 else 0.0:.3f}, "
+                  f"min={r_values.min():.3f}, max={r_values.max():.3f} "
+                  f"({r_values.size}/{len(entries)} defined)")
+        else:
+            print(f"\n{name}: r undefined for all {len(entries)} networks")
         if p_values.size:
             print(f"  permutation p < 0.05: {np.count_nonzero(p_values < 0.05)}/{p_values.size}")
-        print(f"  cross-task angle mean={angles.mean():.2f} deg; same-task control "
-              f"mean={floors.mean():.2f} deg")
+        print(f"  cross-task angle mean={_mean_angle(angles):.2f} deg; same-task control "
+              f"mean={_mean_angle(controls):.2f} deg")
     clipped = np.array([[entry["step_norms"]["mod"]["clipped_fraction_native"],
                          entry["step_norms"]["mod"]["clipped_fraction_transplant"]]
                         for entry in entries])
     decay = np.array([entry["step_norms"]["mod"]["decay_term"]
-                      / entry["step_norms"]["mod"]["native_step"] for entry in entries])
+                      / entry["step_norms"]["mod"]["native_step"] for entry in entries
+                      if entry["step_norms"]["mod"]["native_step"] >= ZERO_STEP_NORM])
     checks = np.array([[entry["native_check"]["max_abs_hidden_diff"],
                         entry["native_check"]["max_abs_m_diff"]] for entry in entries])
     print(f"\nM entries at the bounds after the step: native median {np.median(clipped[:, 0]):.3f}, "
           f"transplanted median {np.median(clipped[:, 1]):.3f}")
-    print(f"Decay term / native M step: mean {decay.mean():.3f}, max {decay.max():.3f}")
+    print(f"Decay term / native M step: mean {_mean_angle(decay):.3f}, "
+          f"max {decay.max() if decay.size else float('nan'):.3f}")
     print(f"Self-transplant max abs difference: hidden {checks[:, 0].max():.2e}, M {checks[:, 1].max():.2e}")
 
 
