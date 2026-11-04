@@ -99,7 +99,7 @@ class UndefinedTransplantResponseTests(unittest.TestCase):
             inputs[:, CONTEXT_STEPS] = inputs[:, CONTEXT_STEPS - 1]
         elif mode == "constant":
             inputs[:] = inputs[0].clone()
-        with patch.object(shift, "DISTANCE_ANGLE_N_PERMUTATIONS", 20):
+        with patch.object(transplant, "DISTANCE_ANGLE_N_PERMUTATIONS", 20):
             return transplant.transplant_analysis(model, inputs, indices, RULES, CONTEXT_STEPS, 0.9)
 
     def test_zero_hidden_response_does_not_drop_modulation_pairs(self):

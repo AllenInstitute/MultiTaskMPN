@@ -1,16 +1,19 @@
-"""High-dimensional task-centroid geometry for state-space examples.
+"""Task-centroid geometry and distance-angle statistics for state-space analyses.
 
-Everything here works on the per-task context-end centroids that
+The structure helpers work on the per-task context-end centroids that
 ``state_space_shift.py`` saves (one row per task, all original features):
 the category-balanced separation score and its label-permutation test, the
 task-by-task distance matrix with its average-linkage ordering, and the
 additivity of task-difference vectors along the factors that distinguish the
-tasks. No PCA, whitening or feature normalization is applied anywhere.
+tasks. Distance-angle helpers fit paired values and test their correlation
+by permuting task labels. No PCA or whitening is applied here; cohort distance
+matrices are normalized by their mean task-pair distance when requested.
 """
 
 import numpy as np
 from scipy.cluster.hierarchy import leaves_list, linkage
 from scipy.spatial.distance import pdist, squareform
+from scipy.stats import linregress
 
 
 # Pairs of tasks that differ in exactly one task factor, listed as (from, to)
@@ -443,6 +446,70 @@ def mantel_pearson_permutation(x_matrix, y_matrix, n_permutations=10000, seed=0)
         "sided": "two-sided",
         "statistic": "pearson",
         "null_statistic": "Pearson r over item pairs under permuted item labels (Mantel)",
+    }
+
+
+# Shared by the natural-trajectory and modulation-transplant analyses.
+DISTANCE_ANGLE_N_PERMUTATIONS = 10000
+DISTANCE_ANGLE_PERMUTATION_SEED = 0
+
+
+def distance_angle_statistics(pairs, distances, angles, all_rules,
+                              n_permutations=DISTANCE_ANGLE_N_PERMUTATIONS,
+                              seed=DISTANCE_ANGLE_PERMUTATION_SEED,
+                              pair_requirement="share a stimulus"):
+    """OLS and task-label permutation statistics for already constructed pairs.
+
+    Pairing and response definitions belong to the calling experiment.
+    Never drop nonfinite points here: a fixed-pair timecourse must retain its
+    pair set. Incomplete finite sets can have OLS results but no permutation
+    test. Returns the saved (r, slope, nominal p) tuple and common scatter fields.
+    """
+    pairs, all_rules = list(pairs), list(all_rules)
+    distances, angles = np.asarray(distances, dtype=float), np.asarray(angles, dtype=float)
+    if distances.shape != (len(pairs),) or angles.shape != distances.shape:
+        raise ValueError("Need one distance and one angle per task pair.")
+    reason = None
+    if distances.size < 2:
+        reason = "fewer than two task pairs"
+    elif not np.isfinite(angles).all():
+        reason = "undefined angles in the supplied task pairs"
+    elif not np.isfinite(distances).all():
+        reason = "undefined distances in the supplied task pairs"
+    elif np.ptp(distances) == 0 or np.ptp(angles) == 0:
+        reason = "constant distances or angles"
+    if reason:
+        r_value = slope = intercept = p_value = float("nan")
+    else:
+        # The previous helper.linear_regression(..., log=False,
+        # through_origin=False) used this same SciPy fit.
+        fit = linregress(distances, angles)
+        r_value, slope, intercept, p_value = fit.rvalue, fit.slope, fit.intercept, fit.pvalue
+    permutation = None
+    n_rules = len(all_rules)
+    expected = n_rules * (n_rules - 1) // 2
+    if len(pairs) != expected:
+        skipped = f"only {len(pairs)} of {expected} task pairs {pair_requirement}"
+    elif reason:
+        skipped = reason
+    else:
+        permutation = mantel_pearson_permutation(
+            pair_values_to_matrix(distances, pairs, n_rules),
+            pair_values_to_matrix(angles, pairs, n_rules),
+            n_permutations=n_permutations, seed=seed)
+        skipped = None
+    return (r_value, slope, p_value), {
+        "dists": distances,
+        "angles_deg": angles,
+        "pair_rules": [(all_rules[first], all_rules[second]) for first, second in pairs],
+        "regression": {
+            "through_origin": False,
+            "intercept": float(intercept),
+            "p_value_method": "OLS slope t-test assuming independent task pairs",
+            "skipped": reason,
+        },
+        "permutation": permutation,
+        "permutation_skipped": skipped,
     }
 
 

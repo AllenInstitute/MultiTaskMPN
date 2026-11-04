@@ -22,6 +22,10 @@ Analyses:
     the one to report (``DISTANCE_ANGLE_N_PERMUTATIONS`` permutations).
     A positive correlation indicates an association between more distant
     initial states and more different initial motion directions, not causation.
+    With --steps N, repeat for local updates at stimulus steps 1..N, keeping
+    the first step's context-end distances and task-pair set fixed. This is
+    not the cumulative displacement from context end. The window must stay
+    within every task's first post-context phase.
 
 Time alignment. The network records M before it is updated
 (core/mpn.py: ``network_step`` runs ``forward``, which logs the M that
@@ -61,6 +65,10 @@ directory's top-level files and analyzes the whole cohort; with
 ``--checkpoint PATH [PATH ...]`` it analyzes only those runs and merges their
 entries into the results pickle without clearing anything, and ``--out-dir``
 redirects every output (for example to test one run in a scratch directory).
+``--steps 5 --skip-pca`` adds a five-step timecourse, recording only Context,
+the requested stimulus window and one extra step for M alignment. It merges
+results even in cohort mode, preserving PCA and derived caches; full-trial
+accuracy is not evaluated. Existing top-level statistics remain the first step.
 ``--untrained --checkpoint PATH`` instead runs the context-end PCA and the
 distance-angle analysis on untrained networks with that run's architecture
 and config, one per ``--init-seed`` (fresh weights, default seed
@@ -84,7 +92,6 @@ hidden layer, and L2 regularization 1e-5, 1e-4, 1e-3, or 1e-2 (feature tags
 """
 from pathlib import Path
 import argparse
-import json
 import numpy as np
 import pickle
 import gc
@@ -110,12 +117,18 @@ from sklearn.decomposition import IncrementalPCA
 import torch
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
-import mpn_tasks
-from network_loading import build_network
 import color_func
 import helper
 import multiple_task_performance as mpf
-from state_space_geometry import mantel_pearson_permutation, pair_values_to_matrix
+import state_space_evaluation as evaluation_utils
+from state_space_evaluation import (
+    STATE_SPACE_DIR, NOISE_LEVEL, EVALUATION_SEED, FIXED_FIXATION_MS, TRIALS_PER_RULE,
+    TARGET_ACTIVATION, TARGET_PROJECTION_DIM, TARGET_HIDDEN_DIM, TARGET_FEATURE_REG_LAMBDAS,
+    UNTRAINED_DIR_NAME, UNTRAINED_INIT_SEED, untrained_file_stem,
+)
+from state_space_geometry import (
+    distance_angle_statistics, DISTANCE_ANGLE_N_PERMUTATIONS, DISTANCE_ANGLE_PERMUTATION_SEED,
+)
 from state_space_cache import M_ALIGNMENT, DISTANCE_ANGLE_SCHEMA_VERSION, distance_angle_is_current
 
 c_vals = color_func.rainbow_generate(15)
@@ -124,24 +137,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 
-# Default paper cohort.  ``linear_embed`` is the input width of the plastic
-# layer (called the projection dimension elsewhere in the repository), while
-# n_neurons[1] is its output/hidden width.
-TARGET_ACTIVATION = "tanh"
-TARGET_PROJECTION_DIM = 300
-TARGET_HIDDEN_DIM = 300
-FIXED_FIXATION_MS = 500
-EVALUATION_SEED = 42
 PCA_BATCH_SIZE = 16
-TARGET_FEATURE_REG_LAMBDAS = {
-    "L21e5": 1e-5,
-    "L21e4": 1e-4,
-    "L21e3": 1e-3,
-    "L21e2": 1e-2,
-}
-STATE_SPACE_DIR = Path("state_space")
 RESULTS_NAME = "initial_condition_distance_vs_angle_results.pkl"
-NOISE_LEVEL = 0.01
 
 # Distance-angle analysis. Each representation compares the task pairs'
 # initial conditions x[t-1] (end of Context) with their first post-stimulus
@@ -160,24 +157,6 @@ DISTANCE_ANGLE_REPRESENTATIONS = (
     ("eff_mod_hebb", "eff_mod", STEP_HEBBIAN),
 )
 N_STIMULUS_DIRECTIONS = 8
-# Task pairs share tasks, so r is tested by permuting the task labels
-# (Mantel-type, two-sided), as the lesion analyses do for cluster pairs.
-DISTANCE_ANGLE_N_PERMUTATIONS = 10000
-DISTANCE_ANGLE_PERMUTATION_SEED = 0
-# Results entries carrying the permutation test and the decay-removed steps.
-# 3: the modulation trajectories are aligned to the hidden state's clock
-# (align_modulation_to_hidden); earlier entries used the recorded,
-# pre-update M, one step early.
-# The version and alignment marker are shared with every result reader.
-
-# Evaluation trials per task (one batch of every rule).
-TRIALS_PER_RULE = 50
-
-# Untrained control (eval_untrained): a fresh initialization of a run's
-# architecture and config, drawn after seeding with UNTRAINED_INIT_SEED, whose
-# PCA cache goes to <output dir>/UNTRAINED_DIR_NAME/.
-UNTRAINED_DIR_NAME = "untrained"
-UNTRAINED_INIT_SEED = 0
 
 # rule -> (paper-style computation category, plotting color)
 # https://www.nature.com/articles/s41593-024-01668-6/figures/4
@@ -216,64 +195,6 @@ CATEGORY_STYLES = [
     ("Integration", "#805ad5"),
     ("Category", "#ff1493"),
 ]
-
-
-def _checkpoint_aname(checkpoint_path):
-    """Return the run identifier encoded by a savednet checkpoint path."""
-    stem = Path(checkpoint_path).stem
-    prefix = "savednet_"
-    if not stem.startswith(prefix):
-        raise ValueError(f"Expected a {prefix}*.pt checkpoint, got {checkpoint_path}")
-    return stem[len(prefix):]
-
-
-def _raw_config_path(checkpoint_path):
-    checkpoint_path = Path(checkpoint_path)
-    aname = _checkpoint_aname(checkpoint_path)
-    return checkpoint_path.with_name(f"param_{aname}_param.json")
-
-
-def _matches_target_cohort(checkpoint_path):
-    """Whether a checkpoint belongs to the default state-space cohort.
-
-    Dimensions and activation are read from the saved parameter JSON rather
-    than inferred from the filename.  The exact feature tag is checked as an
-    additional guard against silently mixing regularization cohorts.
-    """
-    config_path = _raw_config_path(checkpoint_path)
-    if not config_path.exists():
-        return False
-
-    try:
-        feature = mpf.parse_feature(str(checkpoint_path))
-    except ValueError:
-        return False
-
-    with config_path.open() as f:
-        config = json.load(f)
-
-    net_params = config.get("net_params", {})
-    train_params = config.get("train_params", {})
-    n_neurons = net_params.get("n_neurons", [])
-    if len(n_neurons) != 3:
-        return False
-
-    target_reg_lambda = TARGET_FEATURE_REG_LAMBDAS.get(feature)
-    return (
-        target_reg_lambda is not None
-        and str(net_params.get("activation", "")).casefold() == TARGET_ACTIVATION
-        and net_params.get("input_layer_add") is True
-        and int(net_params.get("linear_embed", -1)) == TARGET_PROJECTION_DIM
-        and int(n_neurons[1]) == TARGET_HIDDEN_DIM
-        and train_params.get("weight_reg") == "L2"
-        and np.isclose(float(train_params.get("reg_lambda", np.nan)),
-                       target_reg_lambda)
-    )
-
-
-def _select_target_checkpoints(checkpoint_paths):
-    """Filter checkpoint paths to the default cohort, preserving input order."""
-    return [path for path in checkpoint_paths if _matches_target_cohort(path)]
 
 
 def _clean_state_space_results(output_dir=STATE_SPACE_DIR):
@@ -344,29 +265,6 @@ def _context_pca_record(states, rule_labels, n_rules, batch_size=PCA_BATCH_SIZE)
     }
 
 
-def _modulation_retention(state_dict, load_net_params, dt_ms):
-    """The plastic layer's retention lam per step, read from the checkpoint.
-
-    Only a scalar lam is supported (every training script uses one). When the
-    saved net params carry ``m_time_scale``, lam must equal 1 - dt / tau, so a
-    checkpoint whose two records disagree is rejected rather than analyzed
-    with the wrong decay term.
-    """
-    lam = state_dict.get("mp_layer1.lam")
-    if lam is None:
-        raise KeyError("Checkpoint has no mp_layer1.lam; the decay term cannot be removed.")
-    lam = np.asarray(torch.as_tensor(lam).detach().cpu().numpy(), dtype=np.float64)
-    if lam.size != 1:
-        raise ValueError(f"Only a scalar lam is supported, got shape {lam.shape}.")
-    lam = float(lam.reshape(-1)[0])
-    if not 0.0 < lam < 1.0:
-        raise ValueError(f"lam must lie in (0, 1), got {lam}.")
-    m_time_scale = (load_net_params or {}).get("ml_params", {}).get("m_time_scale")
-    if m_time_scale is not None and not np.isclose(lam, 1.0 - dt_ms / m_time_scale, atol=1e-6):
-        raise ValueError(f"lam {lam} disagrees with m_time_scale {m_time_scale} ms at dt {dt_ms} ms.")
-    return lam
-
-
 def align_modulation_to_hidden(hidden, *modulations):
     """Put recorded modulation trajectories on the hidden state's clock.
 
@@ -389,21 +287,21 @@ def align_modulation_to_hidden(hidden, *modulations):
     return (hidden[:, :-1],) + tuple(modulation[:, 1:] for modulation in modulations)
 
 
-def _first_step(data, trial_indices, onset, retention=None):
-    """Initial conditions x[t-1] and first steps of the given trials, where t
-    is the first stimulus step ``onset`` and every representation is on the
-    hidden state's clock (align_modulation_to_hidden): x[t-1] is the state
-    after the last Context input and x[t] the state after the first stimulus
-    input. With ``retention`` (lam) the step is x[t] - lam * x[t-1], the
-    modulation update without its decay term; without it the full step
-    x[t] - x[t-1]. Both in float64."""
+def _step_vectors(data, trial_indices, onset, retention=None, step=1):
+    """Context-end initial states and the update at stimulus step `step`.
+    Arrays use the aligned, post-input clock. The initial state always comes
+    from onset - 1; only the update moves forward. With retention, remove
+    this step's linear decay, using its immediate predecessor."""
+    if step < 1 or onset < 1 or onset + step > data.shape[1]:
+        raise ValueError("Requested stimulus step is outside the aligned trajectory.")
     initial = np.asarray(data[trial_indices, onset - 1, :], dtype=np.float64)
-    following = np.asarray(data[trial_indices, onset, :], dtype=np.float64)
+    previous = np.asarray(data[trial_indices, onset + step - 2, :], dtype=np.float64)
+    following = np.asarray(data[trial_indices, onset + step - 1, :], dtype=np.float64)
     coefficient = 1.0 if retention is None else float(retention)
-    return initial, following - coefficient * initial
+    return initial, following - coefficient * previous
 
 
-def _cross_pair_statistics(initial_1, initial_2, step_1, step_2):
+def _cross_pair_statistics(initial_1, initial_2, step_1, step_2, compute_distance=True):
     """Mean Euclidean distance between the initial conditions and mean angle
     (degrees) between the steps over every cross-task trial pair, skipping
     pairs in which either step is (numerically) zero. Returns None when no
@@ -416,13 +314,14 @@ def _cross_pair_statistics(initial_1, initial_2, step_1, step_2):
     with np.errstate(divide="ignore", invalid="ignore"):
         cosines = (step_1 @ step_2.T) / np.outer(norms_1, norms_2)
     angles = np.degrees(np.arccos(np.clip(cosines, -1.0, 1.0)))
-    distances = cdist(initial_1, initial_2)
-    return float(distances[valid].mean()), float(angles[valid].mean()), int(valid.sum())
+    distance = float(cdist(initial_1, initial_2)[valid].mean()) if compute_distance else float("nan")
+    return distance, float(angles[valid].mean()), int(valid.sum())
 
 
 def _task_pair_distance_angle(data, rule_indices, stimulus_labels, onset_by_rule,
-                              n_rules, retention=None, n_stimuli=N_STIMULUS_DIRECTIONS):
-    """Per task pair: the mean initial-condition distance and first-step angle,
+                              n_rules, retention=None, n_stimuli=N_STIMULUS_DIRECTIONS,
+                              step=1, compute_distance=True):
+    """Per task pair: the mean context-end distance and angle at stimulus step,
     averaged over cross-task trial pairs within each shared stimulus index and
     then equally over the stimulus indices. Returns (pairs, distances,
     angles) with ``pairs`` the (idx1, idx2) task indices, idx1 < idx2; a pair
@@ -436,9 +335,10 @@ def _task_pair_distance_angle(data, rule_indices, stimulus_labels, onset_by_rule
                 trials_2 = np.flatnonzero((stimulus_labels == stimulus) & (rule_indices == idx2))
                 if trials_1.size == 0 or trials_2.size == 0:
                     continue
-                initial_1, step_1 = _first_step(data, trials_1, onset_by_rule[idx1], retention)
-                initial_2, step_2 = _first_step(data, trials_2, onset_by_rule[idx2], retention)
-                statistics = _cross_pair_statistics(initial_1, initial_2, step_1, step_2)
+                initial_1, step_1 = _step_vectors(data, trials_1, onset_by_rule[idx1], retention, step)
+                initial_2, step_2 = _step_vectors(data, trials_2, onset_by_rule[idx2], retention, step)
+                statistics = _cross_pair_statistics(initial_1, initial_2, step_1, step_2,
+                                                    compute_distance=compute_distance)
                 if statistics is not None:
                     per_stimulus.append(statistics[:2])
             if per_stimulus:
@@ -448,8 +348,8 @@ def _task_pair_distance_angle(data, rule_indices, stimulus_labels, onset_by_rule
     return pairs, np.asarray(distances, dtype=float), np.asarray(angles, dtype=float)
 
 
-def _step_norm_summary(data, rule_indices, onset_by_rule, n_rules, retention=None):
-    """Mean trial norms of the initial condition and the first step and, with
+def _step_norm_summary(data, rule_indices, onset_by_rule, n_rules, retention=None, step=1):
+    """Mean trial norms of the context-end initial state and the chosen step and, with
     ``retention``, of the step's decay term (1 - lam) * x[t-1] and of the
     remainder x[t] - lam * x[t-1] (saved as ``hebbian_term``: the Hebbian
     outer product with the clipping and M activation of that step): how much
@@ -462,38 +362,24 @@ def _step_norm_summary(data, rule_indices, onset_by_rule, n_rules, retention=Non
         trials = np.flatnonzero(rule_indices == rule_index)
         if trials.size == 0:
             continue
-        initial, full_step = _first_step(data, trials, onset_by_rule[rule_index])
+        onset = onset_by_rule[rule_index]
+        initial, full_step = _step_vectors(data, trials, onset, step=step)
         sums["initial"] += np.linalg.norm(initial, axis=1).sum()
         sums["full_step"] += np.linalg.norm(full_step, axis=1).sum()
         if retention is not None:
-            sums["decay_term"] += (1.0 - retention) * np.linalg.norm(initial, axis=1).sum()
+            previous = np.asarray(data[trials, onset + step - 2], dtype=np.float64)
+            sums["decay_term"] += (1.0 - retention) * np.linalg.norm(previous, axis=1).sum()
             sums["hebbian_term"] += np.linalg.norm(
-                full_step + (1.0 - retention) * initial, axis=1).sum()
+                full_step + (1.0 - retention) * previous, axis=1).sum()
         count += trials.size
     if count == 0:
         raise ValueError("No trials to summarize.")
     return {key: float(value / count) for key, value in sums.items()}
 
 
-def _permutation_test_or_reason(pairs, distances, angles, n_rules,
-                                pair_requirement="share a stimulus"):
-    """The task-label permutation test of r over the task pairs, or the reason
-    it was skipped (an incomplete pair set cannot be relabeled)."""
-    expected = n_rules * (n_rules - 1) // 2
-    if len(pairs) != expected:
-        return None, f"only {len(pairs)} of {expected} task pairs {pair_requirement}"
-    if len(distances) < 2 or np.ptp(distances) == 0 or np.ptp(angles) == 0:
-        return None, "Pearson correlation is undefined: fewer than two pairs or constant distances/angles"
-    return mantel_pearson_permutation(
-        pair_values_to_matrix(distances, pairs, n_rules),
-        pair_values_to_matrix(angles, pairs, n_rules),
-        n_permutations=DISTANCE_ANGLE_N_PERMUTATIONS,
-        seed=DISTANCE_ANGLE_PERMUTATION_SEED), None
-
-
 def distance_angle_analysis(source_data, rule_indices, stimulus_labels, onset_by_rule,
-                            all_rules, retention):
-    """Initial-condition distance vs first-step angle for every entry of
+                            all_rules, retention, step=1, initial_scatter=None):
+    """Context-end distance vs angle at a stimulus step for every entry of
     DISTANCE_ANGLE_REPRESENTATIONS.
 
     ``source_data`` maps "hidden", "mod" and "eff_mod" to (trials x time x
@@ -501,7 +387,9 @@ def distance_angle_analysis(source_data, rule_indices, stimulus_labels, onset_by
     (Pearson r, slope, nominal OLS p) tuples per saved name; scatter_dict holds
     per saved name the task-pair coordinates with their task names, the OLS
     fit, the task-label permutation test of r, the step definition and the
-    step-norm summary.
+    step-norm summary. Later steps use `initial_scatter` to keep exactly the
+    first step\'s distances and task pairs. If a later angle is undefined,
+    its r is undefined rather than computed on a different set of task pairs.
     """
     all_rules = list(all_rules)
     n_rules = len(all_rules)
@@ -510,23 +398,23 @@ def distance_angle_analysis(source_data, rule_indices, stimulus_labels, onset_by
         step_retention = retention if step_kind == STEP_HEBBIAN else None
         data = source_data[source]
         pairs, distances, angles = _task_pair_distance_angle(
-            data, rule_indices, stimulus_labels, onset_by_rule, n_rules, step_retention)
-        _, _, r_value, slope, intercept, p_value = helper.linear_regression(
-            distances, angles, log=False, through_origin=False)
-        permutation, skipped = _permutation_test_or_reason(pairs, distances, angles, n_rules)
-        rval_dict[name] = (r_value, slope, p_value)
+            data, rule_indices, stimulus_labels, onset_by_rule, n_rules, step_retention,
+            step=step, compute_distance=initial_scatter is None)
+        if initial_scatter is not None:
+            baseline = initial_scatter[name]
+            angle_by_pair = dict(zip(pairs, angles))
+            rule_index = {rule: index for index, rule in enumerate(all_rules)}
+            pairs = [(rule_index[a], rule_index[b]) for a, b in baseline["pair_rules"]]
+            distances = np.asarray(baseline["dists"], dtype=float).copy()
+            angles = np.array([angle_by_pair.get(pair, np.nan) for pair in pairs])
+        rval_dict[name], scatter = distance_angle_statistics(
+            pairs, distances, angles, all_rules,
+            n_permutations=DISTANCE_ANGLE_N_PERMUTATIONS,
+            seed=DISTANCE_ANGLE_PERMUTATION_SEED)
         scatter_dict[name] = {
-            "dists": distances,
-            "angles_deg": angles,
-            "pair_rules": [(all_rules[idx1], all_rules[idx2]) for idx1, idx2 in pairs],
-            "regression": {
-                "through_origin": False,
-                "intercept": float(intercept),
-                "p_value_method": "OLS slope t-test assuming independent task pairs",
-            },
-            "permutation": permutation,
-            "permutation_skipped": skipped,
+            **scatter,
             "step": {
+                "index": int(step),
                 "kind": step_kind,
                 "source": source,
                 "retention": step_retention,
@@ -537,7 +425,7 @@ def distance_angle_analysis(source_data, rule_indices, stimulus_labels, onset_by
             # is attached to the modulation representations only.
             "step_norms": _step_norm_summary(
                 data, rule_indices, onset_by_rule, n_rules,
-                retention if source != "hidden" else None),
+                retention if source != "hidden" else None, step=step),
         }
     return rval_dict, scatter_dict
 
@@ -555,7 +443,7 @@ def _draw_distance_angle_figure(scatter_dict, rval_dict, out_path):
         permutation = entry["permutation"]
         perm_text = (f"permutation p={permutation['p_value']:.4f}" if permutation
                      else f"permutation skipped: {entry['permutation_skipped']}")
-        if x.size >= 2:
+        if x.size >= 2 and np.isfinite(slope):
             x_fit = np.linspace(x.min(), x.max(), 50)
             ax.plot(x_fit, entry["regression"]["intercept"] + slope * x_fit, color="red",
                     label=(f"Fit: slope={slope:.2f}, r={r_value:.2f}, nominal p={p_value:.3f}\n"
@@ -563,114 +451,33 @@ def _draw_distance_angle_figure(scatter_dict, rval_dict, out_path):
         ax.set_xlabel("Distance between initial conditions")
         ax.set_ylabel("Angle between first step of trajectories (deg.)")
         ax.set_title(f"{name} ({entry['step']['definition']})")
-        ax.legend(frameon=True, loc="best", fontsize=6)
+        if np.isfinite(slope):
+            ax.legend(frameon=True, loc="best", fontsize=6)
     fig.tight_layout()
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
 
 
-def prepare_evaluation(netpathname, untrained_init_seed=None, evaluation_seed=EVALUATION_SEED):
-    """Build the network of checkpoint ``netpathname`` and draw the evaluation
-    trials every state-space analysis runs on.
-
-    The network (trained, or untrained with ``untrained_init_seed``; see
-    network_loading.build_network) is moved to ``device`` in eval mode. The
-    trials are drawn after reseeding NumPy, torch and the task generator
-    with ``evaluation_seed``: TRIALS_PER_RULE per task, input noise
-    NOISE_LEVEL, every task's Context aligned to FIXED_FIXATION_MS (the
-    trials do not depend on the network). Returns a dict: the run's
-    identifiers (``aname``, ``hidden_size``, ``l2_info``), ``model``,
-    ``state_dict``, the converted ``task_params``, the trial tensors
-    ``inputs``, ``outputs`` and ``masks`` on the CPU, the ``trials`` objects,
-    each trial's task index (``rule_indices``), ``retention`` (lam),
-    ``dt_ms``, ``fixed_fixation_steps`` and ``evaluation_seed``. Shared with
-    state_space_transplant.py so both experiments see the same trials.
-    """
-    hidden_size, l2_info = mpf.parse_hidden_and_l2(netpathname)
-
-    netpathname = Path(netpathname)
-    aname = _checkpoint_aname(netpathname)
-    with _raw_config_path(netpathname).open() as f:
-        raw_cfg_param = json.load(f)
-
-    task_params, train_params, net_params = raw_cfg_param["task_params"], raw_cfg_param["train_params"], raw_cfg_param["net_params"]
-
-    # Keep the checkpoint copy on CPU; only the live model needs to occupy GPU
-    # memory.  This also makes the frozen W used below immediately NumPy-safe.
-    checkpoint = torch.load(netpathname, map_location="cpu", weights_only=False)
-    load_net_params = checkpoint["net_params"]
-    print(checkpoint["state_dict"].keys())
-    print(load_net_params)
-
-    model, state_dict = build_network(checkpoint, untrained_init_seed)
-    model.to(device)
-    model.eval()
-
-    task_params["sigma_x"] = NOISE_LEVEL
-    np.random.seed(evaluation_seed)
-    torch.manual_seed(evaluation_seed)
-
-    task_params_c, _, _ = mpn_tasks.convert_and_init_multitask_params(
-        (task_params, train_params, net_params)
-    )
-
-    all_tasks = task_params_c['rules']
-
-    # setup the evaluation dataset generator
-    task_params_c['hp']['batch_size_train'] = TRIALS_PER_RULE
-    task_params_c['hp']['seed'] = evaluation_seed
-    task_params_c['hp']['rng'] = np.random.RandomState(evaluation_seed)
-    dt_ms = task_params_c['hp']['dt']
-    retention = _modulation_retention(state_dict, load_net_params, dt_ms)
-    print(f"Modulation retention lam = {retention:.6g} per {dt_ms:g} ms step")
-    fixed_fixation_steps = max(1, int(FIXED_FIXATION_MS / dt_ms))
-
-    test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(
-        task_params_c,
-        TRIALS_PER_RULE,
-        rules=all_tasks,
-        mode_input="random",
-        device="cpu",
-        verbose=False,
-        fixed_fixation_steps=fixed_fixation_steps,
-    )
-    test_input, test_output, test_mask = test_data
-    _, test_trials, test_rule_idxs = test_trials_extra
-
-    fixation_endpoints = {
-        int(trial.epochs['fix1'][1]) for trial in test_trials
-    }
-    if fixation_endpoints != {fixed_fixation_steps}:
-        raise RuntimeError(
-            "State-space trials were not aligned to one fixation endpoint: "
-            f"{sorted(fixation_endpoints)}"
-        )
-    print(
-        f"Fixed fixation across tasks: {fixed_fixation_steps} steps "
-        f"({fixed_fixation_steps * dt_ms:g} ms; requested "
-        f"{FIXED_FIXATION_MS} ms)"
-    )
-
-    return {
-        "aname": aname,
-        "hidden_size": hidden_size,
-        "l2_info": l2_info,
-        "model": model,
-        "state_dict": state_dict,
-        "task_params": task_params_c,
-        "inputs": test_input,
-        "outputs": test_output,
-        "masks": test_mask,
-        "trials": test_trials,
-        "rule_indices": test_rule_idxs,
-        "retention": retention,
-        "dt_ms": dt_ms,
-        "fixed_fixation_steps": fixed_fixation_steps,
-        "evaluation_seed": evaluation_seed,
-    }
+def _validate_step_window(rules_epochs, n_steps, aligned_length=None, trial_lengths=None):
+    """Keep every local update within the first post-context task phase."""
+    if n_steps < 1:
+        raise ValueError("n_steps must be positive.")
+    for rule, epochs in rules_epochs.items():
+        onset = int(epochs["fix1"][1])
+        boundaries = [int(value) for interval in epochs.values() for edge in interval
+                      if edge is not None for value in np.asarray(edge).reshape(-1)
+                      if int(value) > onset]
+        if trial_lengths is not None:
+            boundaries.append(int(np.min(trial_lengths[rule])))
+        if boundaries and onset + n_steps > min(boundaries):
+            raise ValueError(
+                f"{rule}: {n_steps} stimulus steps cross the next task-phase boundary "
+                f"({min(boundaries) - onset} steps after onset).")
+        if aligned_length is not None and onset + n_steps > aligned_length:
+            raise ValueError(f"{rule}: trajectory is too short for {n_steps} stimulus steps.")
 
 
-def _context_states(netpathname, untrained_init_seed=None):
+def _context_states(netpathname, untrained_init_seed=None, trace_steps=None):
     """Run one checkpoint's network on the evaluation trials and return what
     the analyses need, as a dict: the run's identifiers (aname, hidden_size,
     l2_info), lam (``retention``), dt, the fixed Context length, the accuracy,
@@ -682,9 +489,10 @@ def _context_states(netpathname, untrained_init_seed=None):
     untrained (see network_loading.build_network); the evaluation trials do
     not depend on it, since they are drawn after reseeding with
     EVALUATION_SEED. Full hidden and modulation trajectories are retained on
-    CPU.
+    CPU. With trace_steps, record only Context + that many stimulus steps
+    + one extra step for post-update M alignment; omit full-trial accuracy.
     """
-    evaluation = prepare_evaluation(netpathname, untrained_init_seed)
+    evaluation = evaluation_utils.prepare_evaluation(netpathname, untrained_init_seed, device=device)
     model, state_dict = evaluation["model"], evaluation["state_dict"]
     aname, hidden_size, l2_info = (evaluation["aname"], evaluation["hidden_size"],
                                    evaluation["l2_info"])
@@ -692,16 +500,28 @@ def _context_states(netpathname, untrained_init_seed=None):
     test_rule_idxs = evaluation["rule_indices"]
     retention, dt_ms = evaluation["retention"], evaluation["dt_ms"]
     fixed_fixation_steps = evaluation["fixed_fixation_steps"]
-    test_input = evaluation["inputs"].to(device)
-    test_output = evaluation["outputs"].to(device)
-    test_mask = evaluation["masks"].to(device)
+    _, labels_stim1, _, rules_epochs = helper.generate_response_stimulus(task_params_c, test_trials)
+    all_rules = list(task_params_c["rules"])
+    assert set(all_rules).issubset(set(RULE_MOTIF_MAPPING.keys()))
+    trace_input = evaluation["inputs"]
+    trial_lengths = {rule: getattr(trial, "tdim", trace_input.shape[1])
+                     for rule, trial in zip(all_rules, test_trials)}
+    if trace_steps is not None:
+        _validate_step_window(rules_epochs, trace_steps, trace_input.shape[1] - 1, trial_lengths)
+        # M is logged before each input: one extra record supplies the state
+        # after the last analyzed stimulus update.
+        trace_input = trace_input[:, :fixed_fixation_steps + trace_steps + 1]
+    test_input = trace_input.to(device)
 
     with torch.no_grad():
-        # Accuracy needs only the outputs, so compute it without retaining the
-        # enormous M trajectory on CUDA.
-        net_out, _, _ = model.iterate_sequence_batch(test_input, run_mode="minimal")
-        acc, _ = model.compute_acc(net_out, test_output, test_mask, test_input, isvalid=True, mode=model.acc_measure)
-        del net_out
+        acc = float("nan")
+        if trace_steps is None:
+            # Full-trial accuracy is only part of the PCA workflow.
+            net_out, _, _ = model.iterate_sequence_batch(test_input, run_mode="minimal")
+            acc, _ = model.compute_acc(
+                net_out, evaluation["outputs"].to(device), evaluation["masks"].to(device),
+                test_input, isvalid=True, mode=model.acc_measure)
+            del net_out
 
         # A 750 x ~118 x 300 x 300 float32 M trace is about 30 GiB.  Save each
         # time step directly to CPU so the selected 300x300 cohort can run on a
@@ -715,7 +535,7 @@ def _context_states(netpathname, untrained_init_seed=None):
         )
         del tracked_out, tracked_hidden
 
-    print(f"acc: {acc:.2f}")
+    print(f"acc: {acc:.2f}" if trace_steps is None else "Short trace: full-trial accuracy not evaluated.")
 
     # db_test is already on CPU.  NumPy views avoid another full copy of M.
     Ms_orig = db_test["M1"].numpy()
@@ -733,14 +553,11 @@ def _context_states(netpathname, untrained_init_seed=None):
     # All remaining work is NumPy/scikit-learn.  Release CUDA storage before
     # the comparatively long PCA and pairwise geometry calculations.
     del model, evaluation, state_dict, db_test
-    del test_input, test_output, test_mask
+    del test_input, trace_input
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    _, labels_stim1, _, rules_epochs = helper.generate_response_stimulus(task_params_c, test_trials)
-    all_rules = list(task_params_c['rules'])
-    assert set(all_rules).issubset(set(RULE_MOTIF_MAPPING.keys()))
     del test_trials
 
     return {
@@ -755,6 +572,7 @@ def _context_states(netpathname, untrained_init_seed=None):
         "rule_indices": test_rule_idxs,
         "stimulus_labels": labels_stim1.flatten(),
         "rules_epochs": rules_epochs,
+        "trial_lengths": trial_lengths,
         "hidden": hs,
         "mod": Ms,
         "eff_mod": eff_Ms,
@@ -791,13 +609,6 @@ def _draw_context_pca_figure(X_2d, ctx_rule_labels, all_rules, out_path):
     fig.tight_layout()
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
-
-
-def untrained_file_stem(aname, init_seed):
-    """File-name stem of an untrained network built from run ``aname``'s
-    config with weights from ``init_seed``: one cache per seed, so several
-    initializations of one config never overwrite each other."""
-    return f"{aname}_init{int(init_seed)}"
 
 
 def _save_context_pca(states, output_dir, extra=None, file_stem=None):
@@ -854,40 +665,56 @@ def _save_context_pca(states, output_dir, extra=None, file_stem=None):
     return pca_save_path
 
 
-def eval_one(netpathname, output_dir=None):
-    """Analyze one checkpoint's Context geometry and first-step directions.
+def eval_one(netpathname, output_dir=None, n_steps=1, skip_pca=False):
+    """Analyze one checkpoint's Context geometry and stimulus-step directions.
 
-    Save PCA coordinates, high-dimensional task centers and diagnostic plots
-    under ``output_dir`` (STATE_SPACE_DIR by default).
-    Return (aname, hidden_size, l2_info, rval_dict, scatter_dict,
-    fixed_fixation_steps, fixed_fixation_ms, retention): the distance-angle
-    results of ``distance_angle_analysis`` and the checkpoint's lam.
-    Full hidden and modulation trajectories are retained on CPU during analysis.
+    Save PCA and diagnostic plots under output_dir (STATE_SPACE_DIR by default).
+    With skip_pca, retain only the short trace and preserve existing PCA caches.
+    Return the original eight first-step fields, plus a timecourse when n_steps > 1.
     """
     output_dir = Path(STATE_SPACE_DIR if output_dir is None else output_dir)
-    states = _context_states(netpathname)
-    _save_context_pca(states, output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    states = (_context_states(netpathname, trace_steps=n_steps) if skip_pca
+              else _context_states(netpathname))
+    if not skip_pca:
+        _save_context_pca(states, output_dir)
     result = _evaluation_tuple(states, *_distance_angle_for_states(
-        states, output_dir, states["aname"]))
+        states, output_dir, states["aname"], n_steps=n_steps))
     # Cleanup to prevent CPU memory compounding across experiments.
     del states
     gc.collect()
     return result
 
 
-def _distance_angle_for_states(states, output_dir, file_stem):
-    """Distance between initial conditions vs. angle between first steps
-    (closer to Fig 4C of Driscoll et al.), for the full and decay-removed steps, of
-    one ``states`` dict (``_context_states``), with its diagnostic figure in
-    ``output_dir`` named after ``file_stem``. Returns (rval_dict,
-    scatter_dict) of ``distance_angle_analysis``."""
+def _distance_angle_for_states(states, output_dir, file_stem, n_steps=1):
+    """First-step distance-angle results and diagnostic; optionally attach
+    the local-step timecourse to states, reusing the first-step distances."""
     all_rules = states["all_rules"]
+    _validate_step_window(states["rules_epochs"], n_steps, states["hidden"].shape[1],
+                          states.get("trial_lengths"))
     onset_by_rule = {idx: int(states["rules_epochs"][rule]['fix1'][1])
                      for idx, rule in enumerate(all_rules)}
     source_data = {name: states[name] for name in ("hidden", "mod", "eff_mod")}
     rval_dict, scatter_dict = distance_angle_analysis(
         source_data, states["rule_indices"], states["stimulus_labels"], onset_by_rule,
         all_rules, states["retention"])
+    if n_steps > 1:
+        by_step = {1: {"rval_dict": rval_dict, "scatter": scatter_dict}}
+        for step in range(2, n_steps + 1):
+            step_r, step_scatter = distance_angle_analysis(
+                source_data, states["rule_indices"], states["stimulus_labels"],
+                onset_by_rule, all_rules, states["retention"],
+                step=step, initial_scatter=scatter_dict)
+            by_step[step] = {"rval_dict": step_r, "scatter": step_scatter}
+            print(f"  Stimulus step {step}: " + ", ".join(
+                f"{name} r={values[0]:.3f}" for name, values in step_r.items()))
+        states["timecourse"] = {
+            "schema_version": 1,
+            "n_steps": n_steps,
+            "dt_ms": states["dt_ms"],
+            "distance_reference": "context_end_step1_pairs",
+            "by_step": by_step,
+        }
     _draw_distance_angle_figure(
         scatter_dict, rval_dict,
         Path(output_dir) / f"initial_condition_distance_vs_angle_{file_stem}_1_noise{NOISE_LEVEL}.png")
@@ -901,14 +728,15 @@ def _distance_angle_for_states(states, output_dir, file_stem):
 
 
 def _evaluation_tuple(states, rval_dict, scatter_dict):
-    """The (aname, hidden_size, l2_info, rval_dict, scatter_dict,
-    fixed_fixation_steps, fixed_fixation_ms, retention) tuple of eval_one."""
-    return (states["aname"], states["hidden_size"], states["l2_info"], rval_dict, scatter_dict,
-            states["fixed_fixation_steps"], states["fixed_fixation_steps"] * states["dt_ms"],
-            states["retention"])
+    """Original eight first-step fields, optionally followed by the timecourse."""
+    result = (states["aname"], states["hidden_size"], states["l2_info"], rval_dict, scatter_dict,
+              states["fixed_fixation_steps"], states["fixed_fixation_steps"] * states["dt_ms"],
+              states["retention"])
+    return result + (states["timecourse"],) if "timecourse" in states else result
 
 
-def eval_untrained(netpathname, output_dir=None, init_seed=UNTRAINED_INIT_SEED):
+def eval_untrained(netpathname, output_dir=None, init_seed=UNTRAINED_INIT_SEED,
+                   n_steps=1, skip_pca=False):
     """Context-end PCA and distance-angle analysis of an untrained network
     with the architecture and config of the checkpoint ``netpathname``: fresh
     weights drawn after seeding with ``init_seed``, none of the trained
@@ -932,11 +760,15 @@ def eval_untrained(netpathname, output_dir=None, init_seed=UNTRAINED_INIT_SEED):
     the entries in the untrained subdirectory's own results pickle.
     """
     untrained_dir = Path(STATE_SPACE_DIR if output_dir is None else output_dir) / UNTRAINED_DIR_NAME
-    states = _context_states(netpathname, untrained_init_seed=init_seed)
+    untrained_dir.mkdir(parents=True, exist_ok=True)
+    states = (_context_states(netpathname, untrained_init_seed=init_seed, trace_steps=n_steps)
+              if skip_pca else _context_states(netpathname, untrained_init_seed=init_seed))
     stem = untrained_file_stem(states["aname"], init_seed)
     marks = {"untrained": True, "init_seed": int(init_seed), "config_source": states["aname"]}
-    _save_context_pca(states, untrained_dir, extra=marks, file_stem=stem)
-    rval_dict, scatter_dict = _distance_angle_for_states(states, untrained_dir, stem)
+    if not skip_pca:
+        _save_context_pca(states, untrained_dir, extra=marks, file_stem=stem)
+    rval_dict, scatter_dict = _distance_angle_for_states(
+        states, untrained_dir, stem, n_steps=n_steps)
     _, entry = _result_entry(_evaluation_tuple(states, rval_dict, scatter_dict))
     entry.update(marks, l2_info=None, config_l2_info=entry["l2_info"])
     del states
@@ -947,8 +779,8 @@ def eval_untrained(netpathname, output_dir=None, init_seed=UNTRAINED_INIT_SEED):
 def _result_entry(evaluation):
     """The results-pickle entry of one ``eval_one`` return value."""
     (aname, hidden_size, l2_info, rval_dict, scatter_dict,
-     fixed_fixation_steps, fixed_fixation_ms, retention) = evaluation
-    return aname, {
+     fixed_fixation_steps, fixed_fixation_ms, retention, *extra) = evaluation
+    entry = {
         "schema_version": DISTANCE_ANGLE_SCHEMA_VERSION,
         "m_alignment": M_ALIGNMENT,
         "hidden_size": hidden_size,
@@ -961,6 +793,9 @@ def _result_entry(evaluation):
         "n_permutations": DISTANCE_ANGLE_N_PERMUTATIONS,
         "permutation_seed": DISTANCE_ANGLE_PERMUTATION_SEED,
     }
+    if extra:
+        entry["timecourse"] = extra[0]
+    return aname, entry
 
 
 def _results_path(output_dir=None):
@@ -972,14 +807,14 @@ def _save_results(result_dict, output_dir=None):
         pickle.dump(result_dict, f)
 
 
-def run_all(output_dir=None):
-    """Analyze the whole target cohort after clearing the top-level files of
-    ``output_dir`` (STATE_SPACE_DIR by default). The results pickle is
-    rewritten after every run, so an interrupted batch keeps what it finished.
+def run_all(output_dir=None, n_steps=1, skip_pca=False):
+    """Analyze the target cohort, clearing top-level files unless skip_pca.
+    With skip_pca, merge distance-angle entries and preserve other files.
+    Save after every run so an interrupted batch keeps what it finished.
     """
     output_dir = Path(STATE_SPACE_DIR if output_dir is None else output_dir)
     all_pt_paths = mpf.list_pt_files("./multiple_tasks", recursive=False)
-    pt_paths = _select_target_checkpoints(all_pt_paths)
+    pt_paths = evaluation_utils.select_target_checkpoints(all_pt_paths)
     target_features = ",".join(TARGET_FEATURE_REG_LAMBDAS)
     if not pt_paths:
         raise FileNotFoundError(
@@ -994,29 +829,29 @@ def run_all(output_dir=None):
         f"hidden={TARGET_HIDDEN_DIM}, features={target_features}"
     )
     for path in pt_paths:
-        print(f"  {_checkpoint_aname(path)}")
+        print(f"  {evaluation_utils.checkpoint_aname(path)}")
 
-    # This script is the sole producer of top-level state_space result files.
-    # The user requested a clean regeneration, so remove every previous file
-    # only after confirming that the target cohort is nonempty.
+    if skip_pca:
+        # Supplement distance-angle results without deleting PCA or any derived caches.
+        return run_checkpoints(pt_paths, output_dir, n_steps=n_steps, skip_pca=True)
     _clean_state_space_results(output_dir)
 
     result_dict = {}
     for netpathname in pt_paths:
-        aname, entry = _result_entry(eval_one(netpathname, output_dir))
+        aname, entry = _result_entry(eval_one(netpathname, output_dir, n_steps=n_steps, skip_pca=skip_pca))
         result_dict[aname] = entry
         _save_results(result_dict, output_dir)
     return result_dict
 
 
-def run_checkpoints(checkpoint_paths, output_dir=None):
+def run_checkpoints(checkpoint_paths, output_dir=None, n_steps=1, skip_pca=False):
     """Analyze only the given ``savednet_*.pt`` checkpoints and merge their
     entries into the results pickle of ``output_dir`` (STATE_SPACE_DIR by
     default), which is created if needed and never cleared. A checkpoint
     outside the default cohort is analyzed with a warning, since the caller
     named it explicitly."""
     output_dir = Path(STATE_SPACE_DIR if output_dir is None else output_dir)
-    paths = _existing_checkpoints(checkpoint_paths)
+    paths = evaluation_utils.existing_checkpoints(checkpoint_paths)
     output_dir.mkdir(parents=True, exist_ok=True)
     results_path = _results_path(output_dir)
     result_dict = {}
@@ -1024,24 +859,13 @@ def run_checkpoints(checkpoint_paths, output_dir=None):
         with results_path.open("rb") as f:
             result_dict = pickle.load(f)
     for path in paths:
-        if not _matches_target_cohort(path):
+        if not evaluation_utils.matches_target_cohort(path):
             print(f"Warning: {path} is outside the default state-space cohort.")
-        aname, entry = _result_entry(eval_one(path, output_dir))
+        aname, entry = _result_entry(eval_one(path, output_dir, n_steps=n_steps, skip_pca=skip_pca))
         result_dict[aname] = entry
         _save_results(result_dict, output_dir)
         print(f"Merged {aname} into {results_path} ({len(result_dict)} run(s))")
     return result_dict
-
-
-def _existing_checkpoints(checkpoint_paths):
-    """The given paths as Paths, checked to be savednet_*.pt files."""
-    paths = [Path(path) for path in checkpoint_paths]
-    missing = [str(path) for path in paths if not path.is_file()]
-    if missing:
-        raise FileNotFoundError(f"Checkpoint(s) not found: {missing}")
-    for path in paths:
-        _checkpoint_aname(path)
-    return paths
 
 
 def untrained_dir_of(output_dir=None):
@@ -1049,14 +873,15 @@ def untrained_dir_of(output_dir=None):
     return Path(STATE_SPACE_DIR if output_dir is None else output_dir) / UNTRAINED_DIR_NAME
 
 
-def run_untrained(checkpoint_paths, output_dir=None, init_seeds=(UNTRAINED_INIT_SEED,)):
+def run_untrained(checkpoint_paths, output_dir=None, init_seeds=(UNTRAINED_INIT_SEED,),
+                  n_steps=1, skip_pca=False):
     """``eval_untrained`` for each named checkpoint and each of ``init_seeds``:
     untrained networks with that run's architecture and config, one per
     seed, written to <output_dir>/untrained/, whose own distance-angle
     results pickle (RESULTS_NAME) gains one entry per network, keyed by its
     file stem, and is rewritten after every network. Nothing else in
     ``output_dir`` is touched. Returns the merged results."""
-    paths = _existing_checkpoints(checkpoint_paths)
+    paths = evaluation_utils.existing_checkpoints(checkpoint_paths)
     seeds = [int(seed) for seed in init_seeds]
     if not seeds or len(set(seeds)) != len(seeds):
         raise ValueError(f"Need one or more distinct init seeds, got {seeds}.")
@@ -1068,10 +893,10 @@ def run_untrained(checkpoint_paths, output_dir=None, init_seeds=(UNTRAINED_INIT_
         with results_path.open("rb") as f:
             result_dict = pickle.load(f)
     for path in paths:
-        if not _matches_target_cohort(path):
+        if not evaluation_utils.matches_target_cohort(path):
             print(f"Warning: {path} is outside the default state-space cohort.")
         for seed in seeds:
-            stem, entry = eval_untrained(path, output_dir, seed)
+            stem, entry = eval_untrained(path, output_dir, seed, n_steps=n_steps, skip_pca=skip_pca)
             result_dict[stem] = entry
             _save_results(result_dict, untrained_dir)
             print(f"Merged {stem} into {results_path} ({len(result_dict)} network(s))")
@@ -1189,7 +1014,17 @@ def _parse_args(argv=None):
         "--init-seed", type=int, nargs="+", default=None, metavar="SEED",
         help=f"seeds of the untrained weights, one network per seed (default: "
              f"{UNTRAINED_INIT_SEED}); only with --untrained")
+    parser.add_argument(
+        "--steps", type=int, default=1, metavar="N",
+        help="analyze local update angles at stimulus steps 1..N, holding the "
+             "Context-end distances and first-step task pairs fixed (default: 1)")
+    parser.add_argument(
+        "--skip-pca", action="store_true",
+        help="record only the short stimulus window and update distance-angle results; "
+             "preserve existing PCA and derived caches, including in cohort mode")
     args = parser.parse_args(argv)
+    if args.steps < 1:
+        parser.error("--steps must be positive")
     if args.untrained and not args.checkpoint:
         parser.error("--untrained needs --checkpoint to name the run whose config it uses")
     if args.init_seed is not None and not args.untrained:
@@ -1203,13 +1038,14 @@ def main(argv=None):
     args = _parse_args(argv)
     output_dir = Path(args.out_dir)
     if args.untrained:
-        run_untrained(args.checkpoint, output_dir, args.init_seed)
+        run_untrained(args.checkpoint, output_dir, args.init_seed,
+                      n_steps=args.steps, skip_pca=args.skip_pca)
         summarize(untrained_dir_of(output_dir))
         return
     if args.checkpoint:
-        run_checkpoints(args.checkpoint, output_dir)
+        run_checkpoints(args.checkpoint, output_dir, n_steps=args.steps, skip_pca=args.skip_pca)
     else:
-        run_all(output_dir)
+        run_all(output_dir, n_steps=args.steps, skip_pca=args.skip_pca)
     summarize(output_dir)
 
 

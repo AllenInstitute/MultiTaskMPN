@@ -14,6 +14,8 @@ import numpy as np
 import torch
 import network_loading
 import state_space_shift as state_space
+import state_space_evaluation as evaluation_utils
+import state_space_geometry as geometry
 import paper_plot
 
 
@@ -87,7 +89,7 @@ class StateSpaceCohortTests(unittest.TestCase):
             missing_config = self.add_run(
                 root, "everything_seed998_L21e3+hidden300+batch128+angle")
 
-            selected = state_space._select_target_checkpoints(
+            selected = evaluation_utils.select_target_checkpoints(
                 variants + [target_l21e5, target_l21e4, wrong_feature,
                             target_l21e3, mismatched_feature_and_config,
                             target_l21e2, missing_config])
@@ -97,7 +99,7 @@ class StateSpaceCohortTests(unittest.TestCase):
 
     def test_checkpoint_name_validation(self):
         with self.assertRaisesRegex(ValueError, "savednet"):
-            state_space._checkpoint_aname("multiple_tasks/model.pt")
+            evaluation_utils.checkpoint_aname("multiple_tasks/model.pt")
 
     def test_cleanup_removes_top_level_files_but_preserves_directories(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -159,16 +161,16 @@ class StateSpaceContextRecordTests(unittest.TestCase):
                             "mp_layer1.W": weights,
                             "mp_layer1.lam": torch.tensor(0.99)}}), \
                     patch.object(network_loading.mpn, "DeepMultiPlasticNet", return_value=model), \
-                    patch.object(state_space.mpn_tasks, "convert_and_init_multitask_params",
+                    patch.object(evaluation_utils.mpn_tasks, "convert_and_init_multitask_params",
                                  return_value=(converted, {}, {})), \
-                    patch.object(state_space.mpn_tasks, "generate_trials_wrap",
+                    patch.object(evaluation_utils.mpn_tasks, "generate_trials_wrap",
                                  return_value=(tensors, (None, trials, labels))), \
                     patch.object(state_space.helper, "generate_response_stimulus",
                                  return_value=(None, np.zeros(n_trials, dtype=int), None,
                                                {rule: trials[0].epochs for rule in rules})), \
-                    patch.object(state_space.helper, "linear_regression",
-                                 return_value=(np.array([0., 1.]), np.array([12., 13.]),
-                                               0.8, 1.0, 12.0, 0.01)) as regression, \
+                    patch.object(geometry, "linregress",
+                                 return_value=SimpleNamespace(
+                                     rvalue=0.8, slope=1.0, intercept=12.0, pvalue=0.01)) as regression, \
                     patch.object(state_space.plt.Figure, "savefig", autospec=True,
                                  side_effect=capture_figure):
                 result = state_space.eval_one(root / f"savednet_{aname}.pt")
@@ -182,9 +184,7 @@ class StateSpaceContextRecordTests(unittest.TestCase):
         self.assertEqual(set(result[4]), saved_names)
         self.assertAlmostEqual(result[7], 0.99, places=6)
         self.assertEqual(regression.call_count, 5)
-        self.assertTrue(all(call.kwargs["through_origin"] is False
-                            and call.kwargs["log"] is False
-                            for call in regression.call_args_list))
+        self.assertTrue(all(len(call.args) == 2 for call in regression.call_args_list))
         n_pairs = len(rules) * (len(rules) - 1) // 2
         for name in saved_names:
             scatter = result[4][name]
@@ -265,7 +265,7 @@ class StateSpaceContextRecordTests(unittest.TestCase):
         # The first stimulus step of the aligned M (onset t) is the update
         # that x[t] drives: recorded M[t + 1] - M[t].
         onset = 2
-        initial, step = state_space._first_step(aligned_m, np.array([0, 1]), onset)
+        initial, step = state_space._step_vectors(aligned_m, np.array([0, 1]), onset)
         np.testing.assert_array_equal(initial, recorded[:, onset])
         np.testing.assert_array_equal(step, recorded[:, onset + 1] - recorded[:, onset])
         with self.assertRaises(ValueError):
@@ -487,10 +487,10 @@ class UntrainedNetworkTests(unittest.TestCase):
             with results_path.open("wb") as stream:
                 pickle.dump({"kept_init9": {"init_seed": 9}}, stream)
             with patch.object(state_space, "eval_untrained",
-                              side_effect=lambda path, out, seed: (f"net_init{seed}",
+                              side_effect=lambda path, out, seed, **kwargs: (f"net_init{seed}",
                                                                    {"init_seed": seed})
                               ) as evaluate, \
-                    patch.object(state_space, "_matches_target_cohort", return_value=True):
+                    patch.object(evaluation_utils, "matches_target_cohort", return_value=True):
                 merged = state_space.run_untrained([str(checkpoint)], root, init_seeds=[2, 0])
                 with self.assertRaises(ValueError):
                     state_space.run_untrained([str(checkpoint)], root, init_seeds=[1, 1])

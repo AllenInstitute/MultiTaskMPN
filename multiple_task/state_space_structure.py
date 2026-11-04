@@ -33,8 +33,9 @@ an untrained network has no L2 strength, since L2 only acts during training.
 
 Nothing is recomputed from network activity: the centroids come from the PCA
 caches, so this runs in minutes on CPU. Run it after ``state_space_shift.py``
-(whose batch run clears the top-level ``state_space/`` files, including the
-caches written here) and before ``figures/paper_plot.py state_space``.
+and before ``figures/paper_plot.py --only state_space_rdm``. A full
+shift batch clears the top-level ``state_space/`` files, including caches
+written here; ``--skip-pca`` preserves them and needs no structure rerun.
 
 Outputs, in ``state_space/``:
   state_space_structure_<aname>_noise0.01.pkl   per run, with the null arrays
@@ -52,7 +53,6 @@ import numpy as np
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 from state_space_cache import M_ALIGNMENT, is_aligned, require_aligned
 from state_space_geometry import (
-    category_separation_permutation,
     category_separation_permutation_from_distances,
     factor_vector_consistency,
     mean_task_distance_matrix,
@@ -68,7 +68,7 @@ N_PERMUTATIONS = 10000
 PERMUTATION_SEED = 0
 LINKAGE_METHOD = "average"
 SCHEMA_VERSION = 1
-# PCA caches must carry this marker (state_space_shift.M_ALIGNMENT): their M
+# PCA caches must carry this marker (state_space_cache.M_ALIGNMENT): their M
 # and W * M context states are on the hidden state's clock. Earlier caches
 # took the modulation one step early and are skipped.
 # M_ALIGNMENT is shared with the upstream producer and downstream readers.
@@ -83,7 +83,7 @@ def is_aligned_cache(data, path):
           "state (no m_alignment marker). Re-run multiple_task/state_space_shift.py.")
     return False
 COMBINED_RESULT_NAME = "state_space_structure_results.pkl"
-# Subdirectory of the untrained networks' PCA caches (state_space_shift.py
+# Subdirectory of the untrained networks' PCA caches (state_space_evaluation.py
 # UNTRAINED_DIR_NAME); the per-run glob below never descends into it.
 UNTRAINED_DIR_NAME = "untrained"
 _PCA_PREFIX = "state_space_pca_"
@@ -148,13 +148,15 @@ def analyze_representation(record, all_rules, categories, n_permutations=N_PERMU
         raise ValueError("Task centroids must have one row per task.")
     distances = task_centroid_distances(centroids)
     tree = task_centroid_linkage(distances, method=LINKAGE_METHOD)
+    separation = category_separation_permutation_from_distances(
+        distances, categories, n_permutations=n_permutations, seed=seed)
+    separation["n_features"] = int(centroids.shape[1])
     return {
         "distances": distances,
         "linkage": tree["linkage"],
         "leaf_order": tree["leaf_order"],
         "linkage_method": tree["method"],
-        "separation": category_separation_permutation(
-            centroids, categories, n_permutations=n_permutations, seed=seed),
+        "separation": separation,
         "factor_vectors": factor_vector_consistency(
             centroids, all_rules, n_permutations=n_permutations, seed=seed),
     }

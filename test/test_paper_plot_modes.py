@@ -255,6 +255,7 @@ class PaperPlotModeTests(unittest.TestCase):
             "state_space_combined",
             "state_space_dist_angle",
             "state_space_r_values",
+            "state_space_r_timecourse",
             "state_space_transplant_r_values",
             "state_space_rdm",
             "state_space_rdm_stats",

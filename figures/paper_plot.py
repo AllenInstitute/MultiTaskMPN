@@ -2612,7 +2612,7 @@ def _load_best_state_space_trial(strength=STATE_SPACE_EXAMPLE_L2):
 
 
 # The state-space caches' modulation states must be on the hidden state's
-# clock (state_space_shift.M_ALIGNMENT and DISTANCE_ANGLE_SCHEMA_VERSION):
+# clock (state_space_cache.M_ALIGNMENT and DISTANCE_ANGLE_SCHEMA_VERSION):
 # the network records M before each update, so caches written before the
 # alignment took M one step early. Such caches are skipped, never drawn.
 _STATE_SPACE_STALE_HINT = ("Re-run multiple_task/state_space_shift.py (then "
@@ -2824,7 +2824,7 @@ def plot_state_space_combined():
 # readers; the network is the Untrained panel of the trained PCA figures.
 STATE_SPACE_UNTRAINED_DIR = STATE_SPACE_DIR / "untrained"
 # The untrained network drawn in the PCA figures, by the seed of its weights
-# (state_space_shift.UNTRAINED_INIT_SEED, the default of --init-seed).
+# (state_space_evaluation.UNTRAINED_INIT_SEED, the default of --init-seed).
 STATE_SPACE_UNTRAINED_INIT_SEED = 0
 
 
@@ -2874,7 +2874,7 @@ def _note_untrained_source(aname, source):
 def _untrained_pca_cache_sources(init_seed):
     """{aname: PCA cache path} of the untrained networks with weights from
     `init_seed`, keyed by the run whose config built them (from the cache
-    names, state_space_shift.untrained_file_stem)."""
+    names, state_space_evaluation.untrained_file_stem)."""
     prefix = "state_space_pca_"
     suffix = f"_init{init_seed}_noise{STATE_SPACE_NOISE_LEVEL}.pkl"
     return {path.name[len(prefix):-len(suffix)]: path
@@ -3279,6 +3279,112 @@ _STATE_SPACE_DIST_ANGLE_PANELS = (
     ("eff_mod", "Eff. modulation"),
     ("eff_mod_hebb", "Eff. modulation,\ndecay removed"),
 )
+
+
+def _state_space_timecourses(results):
+    """Current multi-step entries only; single-step caches cannot supply a curve."""
+    current = {}
+    for name, entry in results.items():
+        course = entry.get("timecourse", {})
+        n_steps = course.get("n_steps", 0)
+        dt_ms = course.get("dt_ms", 0)
+        if (distance_angle_is_current(entry)
+                and course.get("schema_version") == 1
+                and course.get("distance_reference") == "context_end_step1_pairs"
+                and n_steps >= 2 and np.isfinite(dt_ms) and dt_ms > 0
+                and all(k in course.get("by_step", {}) for k in range(1, n_steps + 1))):
+            current[name] = entry
+    if len(current) != len(results):
+        print(f"  Skipped {len(results) - len(current)} entries without a current timecourse. "
+              "Run multiple_task/state_space_shift.py --steps 5 --skip-pca "
+              "(with --untrained --checkpoint PATH --init-seed ... for controls).")
+    return current
+
+
+def plot_state_space_r_timecourse():
+    """Local-step r versus stimulus step: untrained, then four L2 cohorts.
+
+    Same three representations as state_space_dist_angle. Distances and task
+    pairs stay fixed at their first-step values. Lines show the mean across
+    networks, shading the sample SD; no per-time significance annotations.
+    All panels use the common recorded horizon. An undefined r in any run
+    leaves that cohort/time point undefined rather than changing its sample.
+    """
+    _ensure_out_dir()
+    results = _load_pkl_or_skip(
+        RVAL_RESULT_PATH, "Run multiple_task/state_space_shift.py --steps 5 --skip-pca.")
+    trained = _state_space_timecourses(results or {})
+    controls = {}
+    if STATE_SPACE_UNTRAINED_RVAL_PATH.exists():
+        with STATE_SPACE_UNTRAINED_RVAL_PATH.open("rb") as stream:
+            controls = _state_space_timecourses(pickle.load(stream))
+        controls = {name: entry for name, entry in controls.items()
+                    if entry.get("untrained") is True}
+    # One compatible source, without PCA ranking or duplicate initializations
+    # from equivalent checkpoint configs.
+    candidates = sorted(trained, key=lambda name: (
+        not np.isclose(float(trained[name].get("l2_info") or 0), STATE_SPACE_EXAMPLE_L2,
+                       rtol=1e-6, atol=0.0), name))
+    sources = {entry.get("config_source") for entry in controls.values()}
+    source = next((matched for name in candidates
+                   if (matched := _untrained_source(name, sources)) is not None), None)
+    if not trained:
+        source = next(iter(sorted(s for s in sources if s)), None)
+    controls = {name: entry for name, entry in controls.items()
+                if source is not None and entry.get("config_source") == source}
+    panels = [("Untrained", controls)]
+    for strength in STATE_SPACE_L2_STRENGTHS:
+        runs = {name: entry for name, entry in trained.items()
+                if entry.get("l2_info") is not None
+                and np.isclose(float(entry["l2_info"]), strength, rtol=1e-6, atol=0.0)}
+        panels.append((_l2_panel_title(strength), runs))
+    courses = [entry["timecourse"] for _, runs in panels for entry in runs.values()]
+    if not courses:
+        print("  Skipped timecourse figure: no multi-step results. "
+              "Run multiple_task/state_space_shift.py --steps 5 --skip-pca.")
+        return
+    if len({course["dt_ms"] for course in courses}) != 1:
+        print("  Skipped timecourse figure: inconsistent simulation time steps across networks.")
+        return
+    n_steps = min(course["n_steps"] for course in courses)
+    if len({course["n_steps"] for course in courses}) != 1:
+        print(f"  Different recorded horizons: drawing the common first {n_steps} steps.")
+    dt_ms = courses[0]["dt_ms"]
+    steps = np.arange(1, n_steps + 1)
+    names = {name for name, _ in _STATE_SPACE_DIST_ANGLE_PANELS}
+    lines = [bar for bar in _STATE_SPACE_R_BARS if bar[0] in names]
+    fig, axs = plt.subplots(1, len(panels), figsize=(2.25 * len(panels), 3.0), sharey=True)
+    for ax, (title, runs) in zip(axs, panels):
+        for key, _, color, decay_removed in lines:
+            if not runs:
+                continue
+            values = np.array([
+                [entry["timecourse"]["by_step"][int(k)]["rval_dict"]
+                 .get(key, (np.nan,))[0] for k in steps]
+                for entry in runs.values()], dtype=float)
+            mean = values.mean(axis=0)
+            spread = values.std(axis=0, ddof=1) if len(runs) > 1 else np.zeros(n_steps)
+            if not np.isfinite(values).all():
+                print(f"  {title}/{key}: undefined r; gaps preserve the fixed cohort.")
+            ax.plot(steps, mean, color=color, linestyle="--" if decay_removed else "-",
+                    marker="o", markersize=3)
+            ax.fill_between(steps, mean - spread, mean + spread, color=color, alpha=0.12)
+        if not runs:
+            ax.text(0.5, 0.5, "No multi-step data", ha="center", va="center",
+                    transform=ax.transAxes, color="0.4")
+        ax.set_title(f"{title} (n={len(runs)})")
+        ax.set_xlabel(f"Stimulus step ({dt_ms:g} ms/step)")
+        ax.set_xticks(steps)
+        ax.axhline(0, color="0.7", linewidth=0.6)
+        ax.spines[["top", "right"]].set_visible(False)
+    axs[0].set_ylabel("Distance–angle Pearson r")
+    axs[0].set_ylim(-1.05, 1.05)
+    handles = [mpl.lines.Line2D([], [], color=color,
+                                linestyle="--" if decay_removed else "-",
+                                label=label.replace("\n", " "))
+               for _, label, color, decay_removed in lines]
+    _state_space_figure_legend(fig, handles, top=0.9)
+    _save_fig(fig, _multitask_out("state_space_r_timecourse.png"))
 
 
 def plot_state_space_dist_angle():
@@ -14421,6 +14527,7 @@ FIGURES_BY_MODE = {
         "state_space_combined": plot_state_space_combined,
         "state_space_dist_angle": plot_state_space_dist_angle,
         "state_space_r_values": plot_state_space_r_values,
+        "state_space_r_timecourse": plot_state_space_r_timecourse,
         "state_space_transplant_r_values": plot_state_space_transplant_r_values,
         # Category structure and task-vector additivity of the context-end
         # task centroids, from state_space_structure.py.

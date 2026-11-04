@@ -70,6 +70,14 @@ python multiple_task/state_space_transplant.py --evaluation-seed 7 \
 
 ```
 
+The three analysis entry points share a small set of helpers.
+`multiple_task/state_space_evaluation.py` owns checkpoint selection, evaluation
+settings, network/trial preparation and untrained file naming; shift and
+transplant both call it. `core/state_space_geometry.distance_angle_statistics`
+owns the common OLS fit, task-label permutation test and scatter metadata.
+Each experiment retains its own task pairing and response definitions.
+Structure reuses its task distance matrix for the category test.
+
 The state-space workflow is `state_space_shift.py` -> `state_space_structure.py`
 -> `paper_plot.py`, with `state_space_vs_lesion.py` after
 `state_space_structure.py` for the runs that also have lesion caches (see
@@ -78,7 +86,7 @@ The analysis saves original-feature task centroids, trial counts and display
 PCA together in `state_space/state_space_pca_<aname>_noise0.01.pkl`, alongside
 the existing distance-angle results. Display PCA is fitted in batches; the
 analysis otherwise retains its full-trajectory workflow and memory requirements.
-The batch analysis clears top-level files in `state_space/` before regenerating
+Without `--skip-pca`, the batch analysis clears top-level files in `state_space/` before regenerating
 the four standard L2 cohorts, so `state_space_structure.py` has to be rerun
 after it; it rewrites the distance-angle results pickle after every run, so an
 interrupted batch keeps what it finished.
@@ -86,6 +94,56 @@ interrupted batch keeps what it finished.
 analyzes only the named checkpoints and merges their entries into the results
 pickle of `DIR` (default `state_space/`) without clearing anything, which is
 how one run is tested in a scratch directory.
+
+**Multi-step direction analysis.** To supplement aligned results without
+recomputing PCA or deleting structure/lesion caches:
+
+```bash
+python multiple_task/state_space_shift.py --steps 5 --skip-pca
+python multiple_task/state_space_shift.py --steps 5 --skip-pca --untrained \
+  --checkpoint multiple_tasks/savednet_everything_seed202_L21e4+hidden300+batch128+angle.pt \
+  --init-seed 0 1 2 3 4 5 6 7
+python figures/paper_plot.py --only state_space_r_timecourse
+```
+
+The default remains `--steps 1`. With multiple steps, the results pickle gains
+a `timecourse` field per network, including the time step and per-step scatter,
+r and task-label permutation results. Its existing top-level fields and
+`multitask_state_space_dist_angle(_n)` still describe step 1.
+
+For each representation, the context-end distances and task-pair list are
+fixed to their first-step values. Step k compares the local updates
+`x[onset+k-1] - x[onset+k-2]`, not the cumulative displacement from context end.
+The decay-removed update uses that step's immediate predecessor,
+`x[t] - lam*x[t-1]`. Angles retain the original equal weighting over shared
+stimulus labels and all valid cross-task trial pairs within each label.
+If an entire pair has no defined angle at a later step, its angle and that
+step's r are undefined, with the original pair list retained. Partial
+zero-length updates are omitted within a pair as in the first-step analysis.
+
+The short forward records Context + N + 1 inputs: the extra record is needed
+to recover M after the Nth stimulus update. It skips full-trial accuracy.
+The window is checked against every task's next epoch boundary and trial
+length; a window crossing into another phase raises an error rather than
+silently changing the analysis.
+
+`multitask_state_space_r_timecourse(_n)` shows r(k), with untrained controls
+and four L2 cohorts, for the same three representations as the original
+scatter: hidden, effective modulation, and effective modulation with linear
+decay removed. Lines are means across networks, shading is sample SD, and
+the x axis counts stimulus steps (40 ms per step for these networks).
+It uses one compatible untrained configuration without PCA ranking.
+Old single-step entries are explicitly skipped. Different horizons are
+truncated to their common length; different simulation time steps are rejected.
+An undefined r in any network leaves a gap at that cohort/time point, keeping
+the cohort fixed. No per-time significance stars are drawn; the saved
+permutation p-values are pointwise and are not corrected for multiple time
+points.
+
+This tests whether the distance–direction association persists beyond onset.
+The natural trajectories still have task-specific inputs, including rule
+cues, so this remains correlational evidence. The separate M transplant
+experiment and context-centroid structure analysis are unchanged.
 
 **Time alignment of M (schema 3, 2026-11-02).** The network records M before
 each update (`core/mpn.py`: `network_step` runs `forward`, which logs the M
@@ -284,7 +342,7 @@ label only, so the two first steps it compares are responses to inputs that
 differ in modality, exact direction, strength, a second stimulus and the
 rule cue; part of the angle is an input difference. The transplant
 experiment holds the input fixed and changes only the state. It reuses the
-evaluation trials of `state_space_shift.py` (`prepare_evaluation`: same
+evaluation trials of `state_space_shift.py` (`state_space_evaluation.prepare_evaluation`: same
 seed, trials, noise and Context alignment), runs every trial through its
 Context period and clones the plastic layer's live M after the last
 Context update (the aligned context-end state; the network has one plastic

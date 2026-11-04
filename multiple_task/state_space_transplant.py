@@ -30,8 +30,8 @@ itself causes is not counted. The angle between v(M_A) and v(M_B) is the
 change of response direction that the state change alone produces; the
 distance is ||M_A - M_B|| over the paired trials. Both directions (A
 hosting B, B hosting A) are kept and averaged into one value per unordered
-pair, and the pairs give Pearson r (free-intercept OLS) with the task-label
-permutation p of state_space_shift.py. The x axis is the M distance for
+pair, and the pairs give Pearson r (free-intercept OLS) with the shared
+task-label permutation p. The x axis is the M distance for
 every representation: the question is how the response change follows the
 state change, not how each representation's own distance does.
 
@@ -78,9 +78,11 @@ import matplotlib.pyplot as plt
 import torch
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
-import helper
 import multiple_task_performance as mpf
-import state_space_shift as shift
+import state_space_evaluation as evaluation_utils
+from state_space_geometry import (
+    distance_angle_statistics, DISTANCE_ANGLE_N_PERMUTATIONS, DISTANCE_ANGLE_PERMUTATION_SEED,
+)
 
 TRANSPLANT_DIR_NAME = "transplant"
 RESULTS_NAME = "transplant_results.pkl"
@@ -287,33 +289,14 @@ def transplant_analysis(model, inputs, rule_indices, all_rules, context_steps, r
         distances = np.asarray(distances, dtype=float)
         angles_by_host = np.asarray(by_host, dtype=float).reshape(-1, 2)
         angles = angles_by_host.mean(axis=1)
-        regression_reason = None
-        if distances.size < 2:
-            regression_reason = "fewer than two task pairs have defined response angles in both directions"
-        elif np.ptp(distances) == 0 or np.ptp(angles) == 0:
-            regression_reason = "Pearson correlation is undefined for constant distances or angles"
-        if regression_reason:
-            r_value = slope = intercept = p_value = float("nan")
-        else:
-            _, _, r_value, slope, intercept, p_value = helper.linear_regression(
-                distances, angles, log=False, through_origin=False)
-        permutation, reason = shift._permutation_test_or_reason(
-            pairs, distances, angles, n_rules,
+        rval_dict[name], scatter = distance_angle_statistics(
+            pairs, distances, angles, all_rules,
+            n_permutations=DISTANCE_ANGLE_N_PERMUTATIONS,
+            seed=DISTANCE_ANGLE_PERMUTATION_SEED,
             pair_requirement="have defined response angles in both directions")
-        rval_dict[name] = (r_value, slope, p_value)
         scatter_dict[name] = {
-            "dists": distances,
-            "angles_deg": angles,
+            **scatter,
             "angles_deg_by_host": angles_by_host,
-            "pair_rules": [(all_rules[first], all_rules[second]) for first, second in pairs],
-            "regression": {
-                "through_origin": False,
-                "intercept": float(intercept),
-                "p_value_method": "OLS slope t-test assuming independent task pairs",
-                "skipped": regression_reason,
-            },
-            "permutation": permutation,
-            "permutation_skipped": reason,
             "within_task_angle_deg": _mean_angle(within[name]),
             "within_task_angles_deg": {rule: float(within[name][index])
                                        for index, rule in enumerate(all_rules)},
@@ -368,41 +351,41 @@ def _draw_transplant_figure(scatter_dict, rval_dict, out_path):
     plt.close(fig)
 
 
-def results_name(evaluation_seed=shift.EVALUATION_SEED):
+def results_name(evaluation_seed=evaluation_utils.EVALUATION_SEED):
     """The results pickle of an evaluation seed: RESULTS_NAME for the
     standard seed, otherwise named after the seed so a check never
     overwrites the main results."""
-    if int(evaluation_seed) == shift.EVALUATION_SEED:
+    if int(evaluation_seed) == evaluation_utils.EVALUATION_SEED:
         return RESULTS_NAME
     return f"transplant_results_eval{int(evaluation_seed)}.pkl"
 
 
 def _figure_stem(stem, evaluation_seed):
     """The diagnostic figure's stem, marked by any non-standard seed."""
-    if int(evaluation_seed) == shift.EVALUATION_SEED:
+    if int(evaluation_seed) == evaluation_utils.EVALUATION_SEED:
         return stem
     return f"{stem}_eval{int(evaluation_seed)}"
 
 
 def transplant_dir_of(output_dir=None):
     """The experiment's subdirectory of the state-space directory."""
-    return Path(shift.STATE_SPACE_DIR if output_dir is None else output_dir) / TRANSPLANT_DIR_NAME
+    return Path(evaluation_utils.STATE_SPACE_DIR if output_dir is None else output_dir) / TRANSPLANT_DIR_NAME
 
 
 def untrained_dir_of(output_dir=None):
     """The untrained networks' subdirectory of the experiment's directory."""
-    return transplant_dir_of(output_dir) / shift.UNTRAINED_DIR_NAME
+    return transplant_dir_of(output_dir) / evaluation_utils.UNTRAINED_DIR_NAME
 
 
 def analyze_network(evaluation, directory, file_stem):
     """Run the experiment on a prepared evaluation
-    (state_space_shift.prepare_evaluation), save the diagnostic figure
+    (state_space_evaluation.prepare_evaluation), save the diagnostic figure
     ``transplant_<file_stem>.png`` in ``directory`` and return the results
     entry."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     all_rules = list(evaluation["task_params"]["rules"])
-    inputs = evaluation["inputs"].to(shift.device)
+    inputs = evaluation["inputs"].to(next(evaluation["model"].parameters()).device)
     context_steps = int(evaluation["fixed_fixation_steps"])
     rval_dict, scatter_dict, step_norms, native_check = transplant_analysis(
         evaluation["model"], inputs, evaluation["rule_indices"], all_rules,
@@ -428,30 +411,30 @@ def analyze_network(evaluation, directory, file_stem):
         "fixed_fixation_steps": context_steps,
         "fixed_fixation_ms": context_steps * evaluation["dt_ms"],
         "evaluation_seed": int(evaluation["evaluation_seed"]),
-        "trials_per_rule": shift.TRIALS_PER_RULE,
-        "noise_level": shift.NOISE_LEVEL,
+        "trials_per_rule": evaluation_utils.TRIALS_PER_RULE,
+        "noise_level": evaluation_utils.NOISE_LEVEL,
         "all_rules": all_rules,
         "rval_dict": rval_dict,
         "scatter": scatter_dict,
         "step_norms": step_norms,
         "native_check": native_check,
-        "n_permutations": shift.DISTANCE_ANGLE_N_PERMUTATIONS,
-        "permutation_seed": shift.DISTANCE_ANGLE_PERMUTATION_SEED,
+        "n_permutations": DISTANCE_ANGLE_N_PERMUTATIONS,
+        "permutation_seed": DISTANCE_ANGLE_PERMUTATION_SEED,
         "untrained": False,
     }
 
 
 def _release(evaluation):
-    """Drop a prepared evaluation and its network from memory."""
-    del evaluation
+    """Release the evaluation's objects before collecting unused CUDA storage."""
+    evaluation.clear()
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
 
-def eval_one(netpathname, output_dir=None, evaluation_seed=shift.EVALUATION_SEED):
+def eval_one(netpathname, output_dir=None, evaluation_seed=evaluation_utils.EVALUATION_SEED):
     """The experiment on one trained checkpoint. Returns (aname, entry)."""
-    evaluation = shift.prepare_evaluation(netpathname, evaluation_seed=evaluation_seed)
+    evaluation = evaluation_utils.prepare_evaluation(netpathname, evaluation_seed=evaluation_seed)
     aname = evaluation["aname"]
     entry = analyze_network(evaluation, transplant_dir_of(output_dir),
                             _figure_stem(aname, evaluation_seed))
@@ -459,17 +442,17 @@ def eval_one(netpathname, output_dir=None, evaluation_seed=shift.EVALUATION_SEED
     return aname, entry
 
 
-def eval_untrained(netpathname, output_dir=None, init_seed=shift.UNTRAINED_INIT_SEED,
-                   evaluation_seed=shift.EVALUATION_SEED):
+def eval_untrained(netpathname, output_dir=None, init_seed=evaluation_utils.UNTRAINED_INIT_SEED,
+                   evaluation_seed=evaluation_utils.EVALUATION_SEED):
     """The experiment on an untrained network with the config of checkpoint
     ``netpathname`` and fresh weights from ``init_seed``
     (network_loading.build_network), on the same trials. Returns (file stem,
     entry): the entry carries the marks of state_space_shift.py's untrained
     entries (``untrained``, ``init_seed``, ``config_source``; ``l2_info``
     None with the config's L2 as ``config_l2_info``)."""
-    evaluation = shift.prepare_evaluation(netpathname, untrained_init_seed=init_seed,
-                                          evaluation_seed=evaluation_seed)
-    stem = shift.untrained_file_stem(evaluation["aname"], init_seed)
+    evaluation = evaluation_utils.prepare_evaluation(
+        netpathname, untrained_init_seed=init_seed, evaluation_seed=evaluation_seed)
+    stem = evaluation_utils.untrained_file_stem(evaluation["aname"], init_seed)
     entry = analyze_network(evaluation, untrained_dir_of(output_dir),
                             _figure_stem(stem, evaluation_seed))
     entry.update(untrained=True, init_seed=int(init_seed), config_source=evaluation["aname"],
@@ -493,11 +476,11 @@ def _save_results(result_dict, path):
         pickle.dump(result_dict, stream)
 
 
-def run_all(output_dir=None, evaluation_seed=shift.EVALUATION_SEED):
-    """The whole state-space cohort (state_space_shift.py's selection) into
+def run_all(output_dir=None, evaluation_seed=evaluation_utils.EVALUATION_SEED):
+    """The whole cohort from the shared state-space selection into
     a fresh results pickle, rewritten after every run."""
     all_pt_paths = mpf.list_pt_files("./multiple_tasks", recursive=False)
-    pt_paths = shift._select_target_checkpoints(all_pt_paths)
+    pt_paths = evaluation_utils.select_target_checkpoints(all_pt_paths)
     if not pt_paths:
         raise FileNotFoundError("No checkpoint of the state-space cohort found under multiple_tasks/.")
     print(f"Selected {len(pt_paths)}/{len(all_pt_paths)} state-space checkpoints")
@@ -511,14 +494,14 @@ def run_all(output_dir=None, evaluation_seed=shift.EVALUATION_SEED):
     return result_dict
 
 
-def run_checkpoints(checkpoint_paths, output_dir=None, evaluation_seed=shift.EVALUATION_SEED):
+def run_checkpoints(checkpoint_paths, output_dir=None, evaluation_seed=evaluation_utils.EVALUATION_SEED):
     """The named checkpoints, merged into the results pickle, which is never
     cleared. A checkpoint outside the cohort is analyzed with a warning."""
-    paths = shift._existing_checkpoints(checkpoint_paths)
+    paths = evaluation_utils.existing_checkpoints(checkpoint_paths)
     results_path = transplant_dir_of(output_dir) / results_name(evaluation_seed)
     result_dict = _load_results(results_path)
     for path in paths:
-        if not shift._matches_target_cohort(path):
+        if not evaluation_utils.matches_target_cohort(path):
             print(f"Warning: {path} is outside the default state-space cohort.")
         aname, entry = eval_one(path, output_dir, evaluation_seed)
         result_dict[aname] = entry
@@ -527,18 +510,18 @@ def run_checkpoints(checkpoint_paths, output_dir=None, evaluation_seed=shift.EVA
     return result_dict
 
 
-def run_untrained(checkpoint_paths, output_dir=None, init_seeds=(shift.UNTRAINED_INIT_SEED,),
-                  evaluation_seed=shift.EVALUATION_SEED):
+def run_untrained(checkpoint_paths, output_dir=None, init_seeds=(evaluation_utils.UNTRAINED_INIT_SEED,),
+                  evaluation_seed=evaluation_utils.EVALUATION_SEED):
     """``eval_untrained`` for each named checkpoint and init seed, merged
     into the untrained subdirectory's own results pickle."""
-    paths = shift._existing_checkpoints(checkpoint_paths)
+    paths = evaluation_utils.existing_checkpoints(checkpoint_paths)
     seeds = [int(seed) for seed in init_seeds]
     if not seeds or len(set(seeds)) != len(seeds):
         raise ValueError(f"Need one or more distinct init seeds, got {seeds}.")
     results_path = untrained_dir_of(output_dir) / results_name(evaluation_seed)
     result_dict = _load_results(results_path)
     for path in paths:
-        if not shift._matches_target_cohort(path):
+        if not evaluation_utils.matches_target_cohort(path):
             print(f"Warning: {path} is outside the default state-space cohort.")
         for seed in seeds:
             stem, entry = eval_untrained(path, output_dir, seed, evaluation_seed)
@@ -598,29 +581,29 @@ def _parse_args(argv=None):
         help="analyze only these savednet_*.pt checkpoints and merge them into the "
              "results pickle (default: the whole state-space cohort, from scratch)")
     parser.add_argument(
-        "--out-dir", default=str(shift.STATE_SPACE_DIR), metavar="DIR",
+        "--out-dir", default=str(evaluation_utils.STATE_SPACE_DIR), metavar="DIR",
         help=f"state-space directory; outputs go to its {TRANSPLANT_DIR_NAME}/ subdirectory "
-             f"(default: {shift.STATE_SPACE_DIR}/)")
+             f"(default: {evaluation_utils.STATE_SPACE_DIR}/)")
     parser.add_argument(
         "--untrained", action="store_true",
         help="instead analyze untrained networks with the config of each --checkpoint "
              "(fresh weights from --init-seed), written to "
-             f"<out-dir>/{TRANSPLANT_DIR_NAME}/{shift.UNTRAINED_DIR_NAME}/")
+             f"<out-dir>/{TRANSPLANT_DIR_NAME}/{evaluation_utils.UNTRAINED_DIR_NAME}/")
     parser.add_argument(
         "--init-seed", type=int, nargs="+", default=None, metavar="SEED",
         help=f"seeds of the untrained weights, one network per seed (default: "
-             f"{shift.UNTRAINED_INIT_SEED}); only with --untrained")
+             f"{evaluation_utils.UNTRAINED_INIT_SEED}); only with --untrained")
     parser.add_argument(
-        "--evaluation-seed", type=int, default=shift.EVALUATION_SEED, metavar="SEED",
+        "--evaluation-seed", type=int, default=evaluation_utils.EVALUATION_SEED, metavar="SEED",
         help="seed of the evaluation trials; another value writes a results pickle named "
-             f"after it (default: {shift.EVALUATION_SEED}, the state-space trials)")
+             f"after it (default: {evaluation_utils.EVALUATION_SEED}, the state-space trials)")
     args = parser.parse_args(argv)
     if args.untrained and not args.checkpoint:
         parser.error("--untrained needs --checkpoint to name the run whose config it uses")
     if args.init_seed is not None and not args.untrained:
         parser.error("--init-seed only applies with --untrained")
     if args.init_seed is None:
-        args.init_seed = [shift.UNTRAINED_INIT_SEED]
+        args.init_seed = [evaluation_utils.UNTRAINED_INIT_SEED]
     return args
 
 

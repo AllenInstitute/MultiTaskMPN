@@ -13,6 +13,7 @@ import torch
 
 import _bootstrap  # noqa: F401
 import state_space_shift as state_space
+import state_space_evaluation as evaluation_utils
 import state_space_geometry as geometry
 import paper_plot
 
@@ -107,10 +108,10 @@ class PairStatisticsTests(unittest.TestCase):
     def test_first_step_removes_the_decay_term_with_retention(self):
         data = np.random.default_rng(2).normal(size=(5, 4, 3))
         trials, onset = np.array([0, 2]), 2
-        initial, full = state_space._first_step(data, trials, onset)
+        initial, full = state_space._step_vectors(data, trials, onset)
         np.testing.assert_allclose(initial, data[trials, 1])
         np.testing.assert_allclose(full, data[trials, 2] - data[trials, 1])
-        _, hebbian = state_space._first_step(data, trials, onset, retention=0.9)
+        _, hebbian = state_space._step_vectors(data, trials, onset, retention=0.9)
         np.testing.assert_allclose(hebbian, data[trials, 2] - 0.9 * data[trials, 1])
         np.testing.assert_allclose(hebbian - full, 0.1 * initial)
 
@@ -165,33 +166,33 @@ class PairStatisticsTests(unittest.TestCase):
                          {"initial", "full_step"})
 
     def test_permutation_is_skipped_for_an_incomplete_pair_set(self):
-        permutation, reason = state_space._permutation_test_or_reason(
-            [(0, 1), (0, 2)], np.array([1., 2.]), np.array([3., 4.]), 3)
-        self.assertIsNone(permutation)
-        self.assertIn("2 of 3", reason)
+        _, scatter = geometry.distance_angle_statistics(
+            [(0, 1), (0, 2)], np.array([1., 2.]), np.array([3., 4.]), ["a", "b", "c"])
+        self.assertIsNone(scatter["permutation"])
+        self.assertIn("2 of 3", scatter["permutation_skipped"])
 
 
 class RetentionTests(unittest.TestCase):
     def test_reads_scalar_lam_and_checks_it_against_m_time_scale(self):
         state_dict = {"mp_layer1.lam": torch.tensor(0.99)}
-        self.assertAlmostEqual(state_space._modulation_retention(
+        self.assertAlmostEqual(evaluation_utils.modulation_retention(
             state_dict, {"ml_params": {"m_time_scale": 4000}}, 40), 0.99, places=6)
-        self.assertAlmostEqual(state_space._modulation_retention(state_dict, {}, 40), 0.99,
+        self.assertAlmostEqual(evaluation_utils.modulation_retention(state_dict, {}, 40), 0.99,
                                places=6)
         with self.assertRaisesRegex(ValueError, "disagrees"):
-            state_space._modulation_retention(state_dict, {"ml_params": {"m_time_scale": 400}}, 40)
+            evaluation_utils.modulation_retention(state_dict, {"ml_params": {"m_time_scale": 400}}, 40)
         with self.assertRaises(KeyError):
-            state_space._modulation_retention({}, {}, 40)
+            evaluation_utils.modulation_retention({}, {}, 40)
         with self.assertRaisesRegex(ValueError, "scalar"):
-            state_space._modulation_retention({"mp_layer1.lam": torch.full((3,), 0.99)}, {}, 40)
+            evaluation_utils.modulation_retention({"mp_layer1.lam": torch.full((3,), 0.99)}, {}, 40)
         with self.assertRaisesRegex(ValueError, r"\(0, 1\)"):
-            state_space._modulation_retention({"mp_layer1.lam": torch.tensor(1.0)}, {}, 40)
+            evaluation_utils.modulation_retention({"mp_layer1.lam": torch.tensor(1.0)}, {}, 40)
 
 
 class CheckpointRunTests(unittest.TestCase):
     def test_run_checkpoints_merges_into_existing_results_without_clearing(self):
-        def fake_eval(path, output_dir):
-            return (state_space._checkpoint_aname(path), 300, 1e-4,
+        def fake_eval(path, output_dir, **kwargs):
+            return (evaluation_utils.checkpoint_aname(path), 300, 1e-4,
                     {"hidden": (0.5, 1.0, 0.01)}, {"hidden": {}}, 12, 480.0, 0.99)
 
         old = "everything_seed1_L21e4+hidden300+batch128+angle"
@@ -206,7 +207,7 @@ class CheckpointRunTests(unittest.TestCase):
             checkpoint = root / f"savednet_{new}.pt"
             checkpoint.touch()
             with patch.object(state_space, "eval_one", side_effect=fake_eval), \
-                    patch.object(state_space, "_matches_target_cohort", return_value=True):
+                    patch.object(evaluation_utils, "matches_target_cohort", return_value=True):
                 result = state_space.run_checkpoints([str(checkpoint)], out)
             with (out / state_space.RESULTS_NAME).open("rb") as stream:
                 saved = pickle.load(stream)
@@ -232,11 +233,11 @@ class CheckpointRunTests(unittest.TestCase):
                 patch.object(state_space, "run_all") as run_all, \
                 patch.object(state_space, "summarize") as summarize:
             state_space.main(["--checkpoint", "a.pt", "--out-dir", "scratch"])
-            run_checkpoints.assert_called_once_with(["a.pt"], Path("scratch"))
+            run_checkpoints.assert_called_once_with(["a.pt"], Path("scratch"), n_steps=1, skip_pca=False)
             run_all.assert_not_called()
             summarize.assert_called_once_with(Path("scratch"))
             state_space.main([])
-            run_all.assert_called_once_with(state_space.STATE_SPACE_DIR)
+            run_all.assert_called_once_with(state_space.STATE_SPACE_DIR, n_steps=1, skip_pca=False)
 
 
 def _distance_angle_entry(with_permutation=True, with_hebb=True):

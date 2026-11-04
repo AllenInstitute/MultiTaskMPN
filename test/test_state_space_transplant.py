@@ -4,6 +4,7 @@
 import pickle
 import tempfile
 import unittest
+import weakref
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,7 +14,7 @@ import torch
 
 import mpn
 import paper_plot
-import state_space_shift as shift
+import state_space_evaluation as evaluation_utils
 import state_space_transplant as transplant
 
 RULES = ["fdgo", "fdanti", "delaygo", "delayanti"]
@@ -56,7 +57,7 @@ def _trials(trials_per_rule=3, steps=5, seed=1):
 
 
 def _evaluation(model, inputs, rule_indices, aname, evaluation_seed=42):
-    """A prepared evaluation as state_space_shift.prepare_evaluation returns it."""
+    """A prepared evaluation as state_space_evaluation.prepare_evaluation returns it."""
     return {"aname": aname, "hidden_size": 5, "l2_info": 1e-4, "model": model,
             "state_dict": {}, "task_params": {"rules": RULES}, "inputs": inputs,
             "outputs": None, "masks": None, "trials": None, "rule_indices": rule_indices,
@@ -149,7 +150,7 @@ class TransplantAnalysisTests(unittest.TestCase):
             self.assertIsNone(scatter["permutation_skipped"])
             self.assertTrue(0 < scatter["permutation"]["p_value"] <= 1)
             self.assertEqual(scatter["permutation"]["n_permutations"],
-                             shift.DISTANCE_ANGLE_N_PERMUTATIONS)
+                             transplant.DISTANCE_ANGLE_N_PERMUTATIONS)
             self.assertIs(scatter["regression"]["through_origin"], False)
             self.assertTrue(np.all(scatter["angles_deg"] > 0))
             self.assertEqual(set(scatter["within_task_angles_deg"]), set(RULES))
@@ -192,7 +193,17 @@ class OutputTests(unittest.TestCase):
 
     aname = "everything_seed202_L21e4+hidden5+batch128+angle"
 
-    def _prepare(self, path, untrained_init_seed=None, evaluation_seed=shift.EVALUATION_SEED):
+    def test_release_drops_model_before_emptying_cuda_cache(self):
+        evaluation = {"model": _tiny_network()}
+        model_ref = weakref.ref(evaluation["model"])
+        with patch.object(torch.cuda, "is_available", return_value=True), \
+                patch.object(torch.cuda, "empty_cache",
+                             side_effect=lambda: self.assertIsNone(model_ref())) as empty_cache:
+            transplant._release(evaluation)
+        empty_cache.assert_called_once()
+        self.assertEqual(evaluation, {})
+
+    def _prepare(self, path, untrained_init_seed=None, evaluation_seed=evaluation_utils.EVALUATION_SEED):
         seed = 0 if untrained_init_seed is None else 10 + untrained_init_seed
         model = _tiny_network(seed=seed)
         inputs, rule_indices = _trials()
@@ -204,9 +215,8 @@ class OutputTests(unittest.TestCase):
             checkpoint = root / f"savednet_{self.aname}.pt"
             checkpoint.touch()
             out = root / "state_space"
-            with patch.object(shift, "prepare_evaluation", side_effect=self._prepare), \
-                    patch.object(shift, "_matches_target_cohort", return_value=True), \
-                    patch.object(shift, "device", torch.device("cpu")), \
+            with patch.object(evaluation_utils, "prepare_evaluation", side_effect=self._prepare), \
+                    patch.object(evaluation_utils, "matches_target_cohort", return_value=True), \
                     patch("builtins.print"):
                 trained = transplant.run_checkpoints([str(checkpoint)], out)
                 untrained = transplant.run_untrained([str(checkpoint)], out, init_seeds=(0, 1))
@@ -228,7 +238,7 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(entry["experiment"], transplant.EXPERIMENT)
         self.assertIs(entry["untrained"], False)
         self.assertEqual(entry["l2_info"], 1e-4)
-        self.assertEqual(entry["evaluation_seed"], shift.EVALUATION_SEED)
+        self.assertEqual(entry["evaluation_seed"], evaluation_utils.EVALUATION_SEED)
         self.assertEqual(entry["all_rules"], RULES)
         self.assertEqual(entry["fixed_fixation_ms"], CONTEXT_STEPS * 40)
         self.assertEqual(set(entry["rval_dict"]), set(transplant.REPRESENTATIONS))
@@ -254,9 +264,9 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(top_level, ["transplant"])
 
     def test_results_names_follow_the_evaluation_seed(self):
-        self.assertEqual(transplant.results_name(shift.EVALUATION_SEED), "transplant_results.pkl")
+        self.assertEqual(transplant.results_name(evaluation_utils.EVALUATION_SEED), "transplant_results.pkl")
         self.assertEqual(transplant.results_name(7), "transplant_results_eval7.pkl")
-        self.assertEqual(transplant.transplant_dir_of(), shift.STATE_SPACE_DIR / "transplant")
+        self.assertEqual(transplant.transplant_dir_of(), evaluation_utils.STATE_SPACE_DIR / "transplant")
         self.assertEqual(transplant.untrained_dir_of("x"), Path("x") / "transplant" / "untrained")
 
     def test_cli_untrained_needs_a_checkpoint_and_owns_the_init_seed(self):
@@ -267,7 +277,7 @@ class OutputTests(unittest.TestCase):
                 transplant._parse_args(["--checkpoint", "a.pt", "--init-seed", "4"])
         args = transplant._parse_args([])
         self.assertEqual((args.checkpoint, args.untrained, args.init_seed, args.evaluation_seed),
-                         (None, False, [shift.UNTRAINED_INIT_SEED], shift.EVALUATION_SEED))
+                         (None, False, [evaluation_utils.UNTRAINED_INIT_SEED], evaluation_utils.EVALUATION_SEED))
         with patch.object(transplant, "run_untrained", return_value={}) as run_untrained, \
                 patch.object(transplant, "run_checkpoints", return_value={}) as run_checkpoints, \
                 patch.object(transplant, "run_all", return_value={}) as run_all, \
@@ -278,8 +288,8 @@ class OutputTests(unittest.TestCase):
             transplant.main([])
         self.assertEqual(run_untrained.call_args.args, (["a.pt"], Path("scratch"), [3, 4], 9))
         self.assertEqual(run_checkpoints.call_args.args,
-                         (["a.pt"], shift.STATE_SPACE_DIR, shift.EVALUATION_SEED))
-        self.assertEqual(run_all.call_args.args, (shift.STATE_SPACE_DIR, shift.EVALUATION_SEED))
+                         (["a.pt"], evaluation_utils.STATE_SPACE_DIR, evaluation_utils.EVALUATION_SEED))
+        self.assertEqual(run_all.call_args.args, (evaluation_utils.STATE_SPACE_DIR, evaluation_utils.EVALUATION_SEED))
 
 
 def _transplant_entry(offset=0.0, schema=transplant.TRANSPLANT_SCHEMA_VERSION):
