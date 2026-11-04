@@ -56,8 +56,8 @@ of the update stay in it, so figures and messages name it by what is removed
 decay term and keeps the one definition.
 
 For this analysis only, every task's first stimulus is aligned to the same
-requested 500-ms Context duration (rounded down to whole simulation steps).
-The shared task generator retains its
+Context duration, ``--context-ms`` (default FIXED_FIXATION_MS, 480 ms; rounded
+down to whole simulation steps). The shared task generator retains its
 original variable-timing behavior unless this script explicitly opts in.
 
 Outputs saved to ./state_space/. Without arguments the script clears that
@@ -65,6 +65,10 @@ directory's top-level files and analyzes the whole cohort; with
 ``--checkpoint PATH [PATH ...]`` it analyzes only those runs and merges their
 entries into the results pickle without clearing anything, and ``--out-dir``
 redirects every output (for example to test one run in a scratch directory).
+A Context length other than the default writes to ``state_space/context<ms>ms/``
+instead (``context_dir_of``), with the same layout, so the lengths never share
+a results pickle; ``paper_plot.py --only state_space_r_vs_context`` draws the
+r of every length found.
 ``--steps 5 --skip-pca`` adds a five-step timecourse, recording only Context,
 the requested stimulus window and one extra step for M alignment. It merges
 results even in cohort mode, preserving PCA and derived caches; full-trial
@@ -124,7 +128,7 @@ import state_space_evaluation as evaluation_utils
 from state_space_evaluation import (
     STATE_SPACE_DIR, NOISE_LEVEL, EVALUATION_SEED, FIXED_FIXATION_MS, TRIALS_PER_RULE,
     TARGET_ACTIVATION, TARGET_PROJECTION_DIM, TARGET_HIDDEN_DIM, TARGET_FEATURE_REG_LAMBDAS,
-    UNTRAINED_DIR_NAME, UNTRAINED_INIT_SEED, untrained_file_stem,
+    UNTRAINED_DIR_NAME, UNTRAINED_INIT_SEED, untrained_file_stem, context_dir_of,
 )
 from state_space_geometry import (
     distance_angle_statistics, DISTANCE_ANGLE_N_PERMUTATIONS, DISTANCE_ANGLE_PERMUTATION_SEED,
@@ -477,7 +481,8 @@ def _validate_step_window(rules_epochs, n_steps, aligned_length=None, trial_leng
             raise ValueError(f"{rule}: trajectory is too short for {n_steps} stimulus steps.")
 
 
-def _context_states(netpathname, untrained_init_seed=None, trace_steps=None):
+def _context_states(netpathname, untrained_init_seed=None, trace_steps=None,
+                    context_ms=FIXED_FIXATION_MS):
     """Run one checkpoint's network on the evaluation trials and return what
     the analyses need, as a dict: the run's identifiers (aname, hidden_size,
     l2_info), lam (``retention``), dt, the fixed Context length, the accuracy,
@@ -491,8 +496,10 @@ def _context_states(netpathname, untrained_init_seed=None, trace_steps=None):
     EVALUATION_SEED. Full hidden and modulation trajectories are retained on
     CPU. With trace_steps, record only Context + that many stimulus steps
     + one extra step for post-update M alignment; omit full-trial accuracy.
+    ``context_ms`` is the Context length of the evaluation trials.
     """
-    evaluation = evaluation_utils.prepare_evaluation(netpathname, untrained_init_seed, device=device)
+    evaluation = evaluation_utils.prepare_evaluation(netpathname, untrained_init_seed, device=device,
+                                                     context_ms=context_ms)
     model, state_dict = evaluation["model"], evaluation["state_dict"]
     aname, hidden_size, l2_info = (evaluation["aname"], evaluation["hidden_size"],
                                    evaluation["l2_info"])
@@ -665,17 +672,19 @@ def _save_context_pca(states, output_dir, extra=None, file_stem=None):
     return pca_save_path
 
 
-def eval_one(netpathname, output_dir=None, n_steps=1, skip_pca=False):
+def eval_one(netpathname, output_dir=None, n_steps=1, skip_pca=False,
+             context_ms=FIXED_FIXATION_MS):
     """Analyze one checkpoint's Context geometry and stimulus-step directions.
 
     Save PCA and diagnostic plots under output_dir (STATE_SPACE_DIR by default).
     With skip_pca, retain only the short trace and preserve existing PCA caches.
     Return the original eight first-step fields, plus a timecourse when n_steps > 1.
+    ``context_ms`` is the Context length of the evaluation trials.
     """
     output_dir = Path(STATE_SPACE_DIR if output_dir is None else output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    states = (_context_states(netpathname, trace_steps=n_steps) if skip_pca
-              else _context_states(netpathname))
+    states = (_context_states(netpathname, trace_steps=n_steps, context_ms=context_ms) if skip_pca
+              else _context_states(netpathname, context_ms=context_ms))
     if not skip_pca:
         _save_context_pca(states, output_dir)
     result = _evaluation_tuple(states, *_distance_angle_for_states(
@@ -736,7 +745,7 @@ def _evaluation_tuple(states, rval_dict, scatter_dict):
 
 
 def eval_untrained(netpathname, output_dir=None, init_seed=UNTRAINED_INIT_SEED,
-                   n_steps=1, skip_pca=False):
+                   n_steps=1, skip_pca=False, context_ms=FIXED_FIXATION_MS):
     """Context-end PCA and distance-angle analysis of an untrained network
     with the architecture and config of the checkpoint ``netpathname``: fresh
     weights drawn after seeding with ``init_seed``, none of the trained
@@ -761,8 +770,10 @@ def eval_untrained(netpathname, output_dir=None, init_seed=UNTRAINED_INIT_SEED,
     """
     untrained_dir = Path(STATE_SPACE_DIR if output_dir is None else output_dir) / UNTRAINED_DIR_NAME
     untrained_dir.mkdir(parents=True, exist_ok=True)
-    states = (_context_states(netpathname, untrained_init_seed=init_seed, trace_steps=n_steps)
-              if skip_pca else _context_states(netpathname, untrained_init_seed=init_seed))
+    states = (_context_states(netpathname, untrained_init_seed=init_seed, trace_steps=n_steps,
+                              context_ms=context_ms)
+              if skip_pca else _context_states(netpathname, untrained_init_seed=init_seed,
+                                               context_ms=context_ms))
     stem = untrained_file_stem(states["aname"], init_seed)
     marks = {"untrained": True, "init_seed": int(init_seed), "config_source": states["aname"]}
     if not skip_pca:
@@ -807,10 +818,11 @@ def _save_results(result_dict, output_dir=None):
         pickle.dump(result_dict, f)
 
 
-def run_all(output_dir=None, n_steps=1, skip_pca=False):
+def run_all(output_dir=None, n_steps=1, skip_pca=False, context_ms=FIXED_FIXATION_MS):
     """Analyze the target cohort, clearing top-level files unless skip_pca.
     With skip_pca, merge distance-angle entries and preserve other files.
     Save after every run so an interrupted batch keeps what it finished.
+    ``context_ms`` is the Context length of the evaluation trials.
     """
     output_dir = Path(STATE_SPACE_DIR if output_dir is None else output_dir)
     all_pt_paths = mpf.list_pt_files("./multiple_tasks", recursive=False)
@@ -833,23 +845,27 @@ def run_all(output_dir=None, n_steps=1, skip_pca=False):
 
     if skip_pca:
         # Supplement distance-angle results without deleting PCA or any derived caches.
-        return run_checkpoints(pt_paths, output_dir, n_steps=n_steps, skip_pca=True)
+        return run_checkpoints(pt_paths, output_dir, n_steps=n_steps, skip_pca=True,
+                               context_ms=context_ms)
     _clean_state_space_results(output_dir)
 
     result_dict = {}
     for netpathname in pt_paths:
-        aname, entry = _result_entry(eval_one(netpathname, output_dir, n_steps=n_steps, skip_pca=skip_pca))
+        aname, entry = _result_entry(eval_one(netpathname, output_dir, n_steps=n_steps,
+                                              skip_pca=skip_pca, context_ms=context_ms))
         result_dict[aname] = entry
         _save_results(result_dict, output_dir)
     return result_dict
 
 
-def run_checkpoints(checkpoint_paths, output_dir=None, n_steps=1, skip_pca=False):
+def run_checkpoints(checkpoint_paths, output_dir=None, n_steps=1, skip_pca=False,
+                    context_ms=FIXED_FIXATION_MS):
     """Analyze only the given ``savednet_*.pt`` checkpoints and merge their
     entries into the results pickle of ``output_dir`` (STATE_SPACE_DIR by
     default), which is created if needed and never cleared. A checkpoint
     outside the default cohort is analyzed with a warning, since the caller
-    named it explicitly."""
+    named it explicitly. ``context_ms`` is the Context length of the
+    evaluation trials."""
     output_dir = Path(STATE_SPACE_DIR if output_dir is None else output_dir)
     paths = evaluation_utils.existing_checkpoints(checkpoint_paths)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -861,7 +877,8 @@ def run_checkpoints(checkpoint_paths, output_dir=None, n_steps=1, skip_pca=False
     for path in paths:
         if not evaluation_utils.matches_target_cohort(path):
             print(f"Warning: {path} is outside the default state-space cohort.")
-        aname, entry = _result_entry(eval_one(path, output_dir, n_steps=n_steps, skip_pca=skip_pca))
+        aname, entry = _result_entry(eval_one(path, output_dir, n_steps=n_steps, skip_pca=skip_pca,
+                                              context_ms=context_ms))
         result_dict[aname] = entry
         _save_results(result_dict, output_dir)
         print(f"Merged {aname} into {results_path} ({len(result_dict)} run(s))")
@@ -874,13 +891,14 @@ def untrained_dir_of(output_dir=None):
 
 
 def run_untrained(checkpoint_paths, output_dir=None, init_seeds=(UNTRAINED_INIT_SEED,),
-                  n_steps=1, skip_pca=False):
+                  n_steps=1, skip_pca=False, context_ms=FIXED_FIXATION_MS):
     """``eval_untrained`` for each named checkpoint and each of ``init_seeds``:
     untrained networks with that run's architecture and config, one per
     seed, written to <output_dir>/untrained/, whose own distance-angle
     results pickle (RESULTS_NAME) gains one entry per network, keyed by its
     file stem, and is rewritten after every network. Nothing else in
-    ``output_dir`` is touched. Returns the merged results."""
+    ``output_dir`` is touched. ``context_ms`` is the Context length of the
+    evaluation trials. Returns the merged results."""
     paths = evaluation_utils.existing_checkpoints(checkpoint_paths)
     seeds = [int(seed) for seed in init_seeds]
     if not seeds or len(set(seeds)) != len(seeds):
@@ -896,7 +914,8 @@ def run_untrained(checkpoint_paths, output_dir=None, init_seeds=(UNTRAINED_INIT_
         if not evaluation_utils.matches_target_cohort(path):
             print(f"Warning: {path} is outside the default state-space cohort.")
         for seed in seeds:
-            stem, entry = eval_untrained(path, output_dir, seed, n_steps=n_steps, skip_pca=skip_pca)
+            stem, entry = eval_untrained(path, output_dir, seed, n_steps=n_steps, skip_pca=skip_pca,
+                                         context_ms=context_ms)
             result_dict[stem] = entry
             _save_results(result_dict, untrained_dir)
             print(f"Merged {stem} into {results_path} ({len(result_dict)} network(s))")
@@ -940,6 +959,10 @@ def summarize(output_dir=None):
 
     print("=" * 80)
     print(f"Summary of {len(result_dict)} networks")
+    context_lengths = sorted({(entry["fixed_fixation_steps"], entry["fixed_fixation_ms"])
+                              for entry in result_dict.values() if "fixed_fixation_ms" in entry})
+    print("Context length: " + ", ".join(f"{ms:g} ms ({steps} steps)"
+                                         for steps, ms in context_lengths))
     print("=" * 80)
     present = [name for name in names if collected[name]["r"]]
     for name in present:
@@ -1002,8 +1025,13 @@ def _parse_args(argv=None):
              "results pickle of --out-dir without clearing it (default: the whole "
              "cohort, after clearing the top-level files of --out-dir)")
     parser.add_argument(
-        "--out-dir", default=str(STATE_SPACE_DIR), metavar="DIR",
-        help=f"directory for every output (default: {STATE_SPACE_DIR}/)")
+        "--out-dir", default=None, metavar="DIR",
+        help=f"directory for every output (default: {STATE_SPACE_DIR}/, or "
+             f"{STATE_SPACE_DIR}/context<ms>ms/ with a non-default --context-ms)")
+    parser.add_argument(
+        "--context-ms", type=float, default=FIXED_FIXATION_MS, metavar="MS",
+        help="Context length of the evaluation trials in ms, rounded down to whole "
+             f"simulation steps (default: {FIXED_FIXATION_MS})")
     parser.add_argument(
         "--untrained", action="store_true",
         help="instead analyze untrained networks with the architecture and config of "
@@ -1025,6 +1053,10 @@ def _parse_args(argv=None):
     args = parser.parse_args(argv)
     if args.steps < 1:
         parser.error("--steps must be positive")
+    if not args.context_ms > 0:
+        parser.error("--context-ms must be positive")
+    if args.out_dir is None:
+        args.out_dir = str(context_dir_of(STATE_SPACE_DIR, args.context_ms))
     if args.untrained and not args.checkpoint:
         parser.error("--untrained needs --checkpoint to name the run whose config it uses")
     if args.init_seed is not None and not args.untrained:
@@ -1039,13 +1071,14 @@ def main(argv=None):
     output_dir = Path(args.out_dir)
     if args.untrained:
         run_untrained(args.checkpoint, output_dir, args.init_seed,
-                      n_steps=args.steps, skip_pca=args.skip_pca)
+                      n_steps=args.steps, skip_pca=args.skip_pca, context_ms=args.context_ms)
         summarize(untrained_dir_of(output_dir))
         return
     if args.checkpoint:
-        run_checkpoints(args.checkpoint, output_dir, n_steps=args.steps, skip_pca=args.skip_pca)
+        run_checkpoints(args.checkpoint, output_dir, n_steps=args.steps, skip_pca=args.skip_pca,
+                        context_ms=args.context_ms)
     else:
-        run_all(output_dir, n_steps=args.steps, skip_pca=args.skip_pca)
+        run_all(output_dir, n_steps=args.steps, skip_pca=args.skip_pca, context_ms=args.context_ms)
     summarize(output_dir)
 
 

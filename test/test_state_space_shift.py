@@ -409,7 +409,8 @@ class UntrainedNetworkTests(unittest.TestCase):
                                  return_value=(rval_dict, scatter_dict)) as distance_angle:
                 stem, entry = state_space.eval_untrained(
                     root / f"savednet_{self.aname}.pt", root, init_seed=3)
-            self.assertEqual(context_states.call_args.kwargs, {"untrained_init_seed": 3})
+            self.assertEqual(context_states.call_args.kwargs,
+                             {"untrained_init_seed": 3, "context_ms": state_space.FIXED_FIXATION_MS})
             # The distance-angle control runs on the same states, with its
             # diagnostic figure named after the untrained network.
             self.assertEqual(distance_angle.call_args.args,

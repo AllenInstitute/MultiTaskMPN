@@ -145,6 +145,43 @@ The natural trajectories still have task-specific inputs, including rule
 cues, so this remains correlational evidence. The separate M transplant
 experiment and context-centroid structure analysis are unchanged.
 
+**Context length sweep (`--context-ms`, 2026-11-04).** The evaluation trials
+align every task's Context to `FIXED_FIXATION_MS` (480 ms, 12 steps; earlier
+written as 500 ms, which rounds down to the same 12 steps). While that is
+short against the modulation time constant (100 steps at λ = 0.99) the
+Context-end M grows about linearly with it, so the distances, angles, slopes
+and the decay term's share of the step all scale with the length, whereas r
+need not. `--context-ms N` runs every analysis of `state_space_shift.py` on
+trials with an N-ms Context (rounded down to whole steps) and writes to
+`state_space/context<N>ms/` (`state_space_evaluation.context_dir_of`; the
+default length keeps `state_space/`), a directory of the same layout with its
+own results pickle, `untrained/` and diagnostic figures, so lengths never
+share a pickle; `--out-dir` still overrides it. The stimuli and timings are
+the same draws at every length (the alignment shifts the generated trial and
+adds the input noise afterwards).
+
+```bash
+for ms in 240 960; do
+  python multiple_task/state_space_shift.py --steps 5 --skip-pca --context-ms $ms
+  python multiple_task/state_space_shift.py --steps 5 --skip-pca --context-ms $ms --untrained \
+    --checkpoint multiple_tasks/savednet_everything_seed202_L21e4+hidden300+batch128+angle.pt \
+    --init-seed 0 1 2 3 4 5 6 7
+done
+python figures/paper_plot.py --only state_space_r_vs_context
+```
+
+`multitask_state_space_r_vs_context(_n)` reads the default directory and
+every `context*ms/` directory (the length from the entries'
+`fixed_fixation_ms`; a directory with no current entry or with several
+lengths is skipped with a message) and draws, in the layout of the timecourse
+figure (Untrained, then the four L2 cohorts), the mean r over runs at each
+length with the sample SD, one line per bar of `state_space_r_values`
+(decay-removed steps dashed), on a log2 axis of the length. Each length's
+Untrained panel uses its own `untrained/` results (one source config); a
+length without them leaves a gap. The figure is skipped below two lengths.
+`state_space_structure.py`, `state_space_vs_lesion.py`, the transplant
+experiment and every other figure read the default directory only.
+
 **Time alignment of M (schema 3, 2026-11-02).** The network records M before
 each update (`core/mpn.py`: `network_step` runs `forward`, which logs the M
 that processes x[t], and updates M afterwards), while the recorded hidden

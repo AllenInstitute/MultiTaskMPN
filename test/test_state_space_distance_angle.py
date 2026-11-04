@@ -233,11 +233,13 @@ class CheckpointRunTests(unittest.TestCase):
                 patch.object(state_space, "run_all") as run_all, \
                 patch.object(state_space, "summarize") as summarize:
             state_space.main(["--checkpoint", "a.pt", "--out-dir", "scratch"])
-            run_checkpoints.assert_called_once_with(["a.pt"], Path("scratch"), n_steps=1, skip_pca=False)
+            run_checkpoints.assert_called_once_with(["a.pt"], Path("scratch"), n_steps=1, skip_pca=False,
+                                                    context_ms=state_space.FIXED_FIXATION_MS)
             run_all.assert_not_called()
             summarize.assert_called_once_with(Path("scratch"))
             state_space.main([])
-            run_all.assert_called_once_with(state_space.STATE_SPACE_DIR, n_steps=1, skip_pca=False)
+            run_all.assert_called_once_with(state_space.STATE_SPACE_DIR, n_steps=1, skip_pca=False,
+                                            context_ms=state_space.FIXED_FIXATION_MS)
 
 
 def _distance_angle_entry(with_permutation=True, with_hebb=True):

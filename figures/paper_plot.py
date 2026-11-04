@@ -3019,7 +3019,7 @@ def _untrained_r_values(data_types, path=None, minimum_schema=STATE_SPACE_RESULT
         aname = next((name for name in candidates
                       if _untrained_source(name, sources) is not None), None)
         if aname is None:
-            print("  No untrained transplant results match the trained configurations; "
+            print(f"  No untrained results in {path} match the trained configurations; "
                   "drawing the trained cohorts only.")
             return None
     source = _untrained_source(aname, (entry.get("config_source")
@@ -3385,6 +3385,115 @@ def plot_state_space_r_timecourse():
                for _, label, color, decay_removed in lines]
     _state_space_figure_legend(fig, handles, top=0.9)
     _save_fig(fig, _multitask_out("state_space_r_timecourse.png"))
+
+
+# Context-length sweep: state_space_shift.py --context-ms writes every
+# Context length other than the default to its own context<ms>ms/ directory
+# beside the default one (state_space_evaluation.context_dir_of).
+_STATE_SPACE_CONTEXT_DIR_GLOB = "context*ms"
+
+
+def _state_space_results_by_context():
+    """{Context length in ms: (distance-angle results, their directory)} of
+    the default state-space directory and every context<ms>ms/ directory
+    under it, the length read from the current entries' fixed_fixation_ms;
+    a directory without a current entry or with entries of several lengths
+    is skipped with a message."""
+    by_context = {}
+    directories = [STATE_SPACE_DIR, *sorted(STATE_SPACE_DIR.glob(_STATE_SPACE_CONTEXT_DIR_GLOB))]
+    for directory in directories:
+        path = directory / RVAL_RESULT_PATH.name
+        if not path.exists():
+            continue
+        with path.open("rb") as stream:
+            results = pickle.load(stream)
+        lengths = {float(entry["fixed_fixation_ms"]) for entry in results.values()
+                   if distance_angle_is_current(entry) and "fixed_fixation_ms" in entry}
+        if len(lengths) != 1:
+            print(f"  Skipped {path}: " + ("no current distance-angle entry." if not lengths else
+                                           f"entries of several Context lengths {sorted(lengths)}."))
+            continue
+        by_context[lengths.pop()] = (results, directory)
+    return by_context
+
+
+def _context_untrained_command(length, directory):
+    """The command that builds untrained networks for the Context length of
+    `directory`: _untrained_command, with --context-ms unless it is the
+    default directory."""
+    def command(aname, init_seeds=(STATE_SPACE_UNTRAINED_INIT_SEED,)):
+        suffix = "" if directory == STATE_SPACE_DIR else f" --context-ms {length:g}"
+        return _untrained_command(aname, init_seeds) + suffix
+    return command
+
+
+def plot_state_space_r_vs_context():
+    """
+    Figure: multitask_state_space_r_vs_context.png — the distance-angle r
+    against the Context length of the evaluation trials: the default
+    state-space directory (FIXED_FIXATION_MS) and every context<ms>ms/
+    directory that state_space_shift.py --context-ms wrote, in the layout
+    of plot_state_space_r_timecourse (Untrained, then the four L2 cohorts)
+    with one line per bar of plot_state_space_r_values (decay-removed steps
+    dashed): the mean r over the runs at each length, shaded by the sample
+    SD, on a log2 axis of the length. Each length's Untrained panel takes
+    that length's own untrained/ results (one source config, as in
+    plot_state_space_r_values); a length without them leaves a gap. Nothing
+    is recomputed; the figure is skipped below two lengths.
+    """
+    _ensure_out_dir()
+    by_context = _state_space_results_by_context()
+    if len(by_context) < 2:
+        print("  Skipped r vs Context figure: distance-angle results of fewer than two Context "
+              "lengths. Run multiple_task/state_space_shift.py --context-ms <ms> (with --steps 5 "
+              "--skip-pca, and --untrained ... for the controls) for each other length.")
+        return
+    names = [name for name, _, _, _ in _STATE_SPACE_R_BARS]
+    lengths = sorted(by_context)
+    # {panel title: the runs of that panel at each length, None when absent}
+    panels = {"Untrained": []}
+    panels.update((_l2_panel_title(strength), []) for strength in STATE_SPACE_L2_STRENGTHS)
+    for length in lengths:
+        results, directory = by_context[length]
+        grouped = _state_space_r_values_by_l2(results, names)
+        panels["Untrained"].append(_untrained_r_values(
+            names, directory / "untrained" / RVAL_RESULT_PATH.name,
+            command=_context_untrained_command(length, directory), trained_results=results))
+        for strength in STATE_SPACE_L2_STRENGTHS:
+            panels[_l2_panel_title(strength)].append(grouped[strength])
+    fig, axs = plt.subplots(1, len(panels), figsize=(2.25 * len(panels), 3.0),
+                            sharex=True, sharey=True)
+    lowest = 0.0
+    for ax, (title, runs_by_length) in zip(axs, panels.items()):
+        for name, _, color, decay_removed in _STATE_SPACE_R_BARS:
+            values = [np.array([run["r"] for run in runs[name]], dtype=float) if runs else np.array([])
+                      for runs in runs_by_length]
+            mean = np.array([v.mean() if v.size else np.nan for v in values])
+            spread = np.array([v.std(ddof=1) if v.size > 1 else 0.0 for v in values])
+            lowest = min(lowest, float(np.nanmin(mean - spread)) if np.isfinite(mean).any() else 0.0)
+            ax.plot(lengths, mean, color=color, linestyle="--" if decay_removed else "-",
+                    marker="o", markersize=3)
+            ax.fill_between(lengths, mean - spread, mean + spread, color=color, alpha=0.12)
+        counts = [max(len(runs[name]) for name in names) if runs else 0 for runs in runs_by_length]
+        if not any(counts):
+            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, color="0.4")
+        n_text = f"n={counts[0]}" if len(set(counts)) == 1 else f"n={min(counts)}-{max(counts)}"
+        ax.set_title(f"{title} ({n_text})")
+        ax.set_xscale("log", base=2)
+        ax.set_xticks(lengths)
+        ax.set_xticklabels([f"{length:g}" for length in lengths])
+        ax.minorticks_off()
+        ax.set_xlabel("Context length (ms)")
+        ax.axhline(0, color="0.7", linewidth=0.6)
+        ax.spines[["top", "right"]].set_visible(False)
+    axs[0].set_ylabel("Distance–angle Pearson r")
+    axs[0].set_ylim(min(0.0, lowest - 0.05), 1.05)
+    handles = [mpl.lines.Line2D([], [], color=color, linestyle="--" if decay_removed else "-",
+                                label=label.replace("\n", " "))
+               for _, label, color, decay_removed in _STATE_SPACE_R_BARS]
+    _state_space_figure_legend(fig, handles, top=0.9)
+    _save_fig(fig, _multitask_out("state_space_r_vs_context.png"),
+              extra=f" (Context lengths {', '.join(f'{length:g}' for length in lengths)} ms)")
 
 
 def plot_state_space_dist_angle():
@@ -14528,6 +14637,7 @@ FIGURES_BY_MODE = {
         "state_space_dist_angle": plot_state_space_dist_angle,
         "state_space_r_values": plot_state_space_r_values,
         "state_space_r_timecourse": plot_state_space_r_timecourse,
+        "state_space_r_vs_context": plot_state_space_r_vs_context,
         "state_space_transplant_r_values": plot_state_space_transplant_r_values,
         # Category structure and task-vector additivity of the context-end
         # task centroids, from state_space_structure.py.

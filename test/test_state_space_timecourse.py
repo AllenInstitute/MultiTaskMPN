@@ -178,8 +178,11 @@ class ShortForwardTests(unittest.TestCase):
                 results = state_space.run_all(out, n_steps=5, skip_pca=True)
                 stem, control = state_space.eval_untrained(checkpoint, out, 3, n_steps=5, skip_pca=True)
             pca.assert_not_called()
-            self.assertEqual(context.call_args_list[0].kwargs, {"trace_steps": 5})
-            self.assertEqual(context.call_args.kwargs, {"untrained_init_seed": 3, "trace_steps": 5})
+            context_ms = state_space.FIXED_FIXATION_MS
+            self.assertEqual(context.call_args_list[0].kwargs,
+                             {"trace_steps": 5, "context_ms": context_ms})
+            self.assertEqual(context.call_args.kwargs,
+                             {"untrained_init_seed": 3, "trace_steps": 5, "context_ms": context_ms})
             self.assertEqual(sentinel.read_bytes(), b"unchanged")
             self.assertEqual(results["old"], {"kept": True})
             self.assertEqual(results[states["aname"]]["timecourse"]["n_steps"], 5)
@@ -191,7 +194,8 @@ class ShortForwardTests(unittest.TestCase):
         with patch.object(state_space, "run_all") as run, \
                 patch.object(state_space, "summarize"):
             state_space.main(["--steps", "5", "--skip-pca"])
-        run.assert_called_once_with(state_space.STATE_SPACE_DIR, n_steps=5, skip_pca=True)
+        run.assert_called_once_with(state_space.STATE_SPACE_DIR, n_steps=5, skip_pca=True,
+                                    context_ms=state_space.FIXED_FIXATION_MS)
         with patch("sys.stderr"), self.assertRaises(SystemExit):
             state_space._parse_args(["--steps", "0"])
 

@@ -21,7 +21,11 @@ import multiple_task_performance as mpf
 TARGET_ACTIVATION = "tanh"
 TARGET_PROJECTION_DIM = 300
 TARGET_HIDDEN_DIM = 300
-FIXED_FIXATION_MS = 500
+# Context length of the evaluation trials (12 steps at dt = 40 ms; earlier
+# written as 500 ms, which rounds down to the same 12 steps). Another length
+# (state_space_shift.py --context-ms) writes to its own directory, see
+# context_dir_of.
+FIXED_FIXATION_MS = 480
 EVALUATION_SEED = 42
 TARGET_FEATURE_REG_LAMBDAS = {
     "L21e5": 1e-5,
@@ -40,6 +44,23 @@ TRIALS_PER_RULE = 50
 # PCA cache goes to <output dir>/UNTRAINED_DIR_NAME/.
 UNTRAINED_DIR_NAME = "untrained"
 UNTRAINED_INIT_SEED = 0
+
+
+def context_steps(context_ms, dt_ms):
+    """Whole simulation steps of a requested Context length, at least one."""
+    if not context_ms > 0:
+        raise ValueError(f"The Context length must be positive, got {context_ms} ms.")
+    return max(1, int(context_ms / dt_ms))
+
+
+def context_dir_of(base_dir, context_ms):
+    """The state-space directory of a Context length: ``base_dir`` itself for
+    the default FIXED_FIXATION_MS, otherwise its ``context<ms>ms/``
+    subdirectory, so every length keeps its own results and caches."""
+    base_dir = Path(base_dir)
+    if float(context_ms) == float(FIXED_FIXATION_MS):
+        return base_dir
+    return base_dir / f"context{context_ms:g}ms"
 
 
 def checkpoint_aname(checkpoint_path):
@@ -124,7 +145,7 @@ def modulation_retention(state_dict, load_net_params, dt_ms):
 
 
 def prepare_evaluation(netpathname, untrained_init_seed=None, evaluation_seed=EVALUATION_SEED,
-                       device=None):
+                       device=None, context_ms=FIXED_FIXATION_MS):
     """Build the network of checkpoint ``netpathname`` and draw the evaluation
     trials every state-space analysis runs on.
 
@@ -132,7 +153,8 @@ def prepare_evaluation(netpathname, untrained_init_seed=None, evaluation_seed=EV
     network_loading.build_network) is moved to ``device`` in eval mode. The
     trials are drawn after reseeding NumPy, torch and the task generator
     with ``evaluation_seed``: TRIALS_PER_RULE per task, input noise
-    NOISE_LEVEL, every task's Context aligned to FIXED_FIXATION_MS (the
+    NOISE_LEVEL, every task's Context aligned to ``context_ms`` (default
+    FIXED_FIXATION_MS; rounded down to whole steps, see context_steps; the
     trials do not depend on the network). Returns a dict: the run's
     identifiers (``aname``, ``hidden_size``, ``l2_info``), ``model``,
     ``state_dict``, the converted ``task_params``, the trial tensors
@@ -181,7 +203,7 @@ def prepare_evaluation(netpathname, untrained_init_seed=None, evaluation_seed=EV
     dt_ms = task_params_c['hp']['dt']
     retention = modulation_retention(state_dict, load_net_params, dt_ms)
     print(f"Modulation retention lam = {retention:.6g} per {dt_ms:g} ms step")
-    fixed_fixation_steps = max(1, int(FIXED_FIXATION_MS / dt_ms))
+    fixed_fixation_steps = context_steps(context_ms, dt_ms)
 
     test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(
         task_params_c,
@@ -206,7 +228,7 @@ def prepare_evaluation(netpathname, untrained_init_seed=None, evaluation_seed=EV
     print(
         f"Fixed fixation across tasks: {fixed_fixation_steps} steps "
         f"({fixed_fixation_steps * dt_ms:g} ms; requested "
-        f"{FIXED_FIXATION_MS} ms)"
+        f"{context_ms:g} ms)"
     )
 
     return {
