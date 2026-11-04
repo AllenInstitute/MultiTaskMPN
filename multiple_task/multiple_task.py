@@ -122,7 +122,7 @@ M_BOUNDS = (-1.0, 1.0)
 # L21e4mb2lam0.9 with bounds (-2, 2)), so such runs never share a name, or an
 # exact --feature filter, with the lambda = 0.99 cohorts.
 DT_MS = 40
-M_TIME_SCALE = 4000
+M_TIME_SCALE = 800
 LEGACY_M_LAMBDA = 0.99
 train = True                    # whether or not to train the network
 verbose = True
