@@ -291,27 +291,34 @@ def align_modulation_to_hidden(hidden, *modulations):
     return (hidden[:, :-1],) + tuple(modulation[:, 1:] for modulation in modulations)
 
 
-def _step_vectors(data, trial_indices, onset, retention=None, step=1):
+def _step_vectors(data, trial_indices, onset, retention=None, step=1, with_initial=True):
     """Context-end initial states and the update at stimulus step `step`.
     Arrays use the aligned, post-input clock. The initial state always comes
     from onset - 1; only the update moves forward. With retention, remove
-    this step's linear decay, using its immediate predecessor."""
+    this step's linear decay, using its immediate predecessor. Without
+    ``with_initial`` the initial state is None: later steps keep the first
+    step's distances and need only the update."""
     if step < 1 or onset < 1 or onset + step > data.shape[1]:
         raise ValueError("Requested stimulus step is outside the aligned trajectory.")
-    initial = np.asarray(data[trial_indices, onset - 1, :], dtype=np.float64)
+    initial = (np.asarray(data[trial_indices, onset - 1, :], dtype=np.float64)
+               if with_initial else None)
     previous = np.asarray(data[trial_indices, onset + step - 2, :], dtype=np.float64)
     following = np.asarray(data[trial_indices, onset + step - 1, :], dtype=np.float64)
     coefficient = 1.0 if retention is None else float(retention)
     return initial, following - coefficient * previous
 
 
-def _cross_pair_statistics(initial_1, initial_2, step_1, step_2, compute_distance=True):
+def _cross_pair_statistics(initial_1, initial_2, step_1, step_2, compute_distance=True,
+                           norms_1=None, norms_2=None):
     """Mean Euclidean distance between the initial conditions and mean angle
     (degrees) between the steps over every cross-task trial pair, skipping
     pairs in which either step is (numerically) zero. Returns None when no
-    pair remains."""
-    norms_1 = np.linalg.norm(step_1, axis=1)
-    norms_2 = np.linalg.norm(step_2, axis=1)
+    pair remains. ``norms_1`` and ``norms_2`` are the steps' trial norms when
+    the caller has them already."""
+    if norms_1 is None:
+        norms_1 = np.linalg.norm(step_1, axis=1)
+    if norms_2 is None:
+        norms_2 = np.linalg.norm(step_2, axis=1)
     valid = (norms_1 >= 1e-12)[:, None] & (norms_2 >= 1e-12)[None, :]
     if not valid.any():
         return None
@@ -330,19 +337,32 @@ def _task_pair_distance_angle(data, rule_indices, stimulus_labels, onset_by_rule
     then equally over the stimulus indices. Returns (pairs, distances,
     angles) with ``pairs`` the (idx1, idx2) task indices, idx1 < idx2; a pair
     without any shared stimulus is left out."""
+    # Every (task, stimulus) group of trials meets the same group of every
+    # other task: extract its vectors and step norms once, not once per
+    # partner (the extraction from the trials x time x features trace
+    # dominated the runtime).
+    groups = {}
+    for rule_index in range(n_rules):
+        for stimulus in range(n_stimuli):
+            trials = np.flatnonzero((stimulus_labels == stimulus) & (rule_indices == rule_index))
+            if trials.size == 0:
+                continue
+            initial, step_vectors = _step_vectors(data, trials, onset_by_rule[rule_index], retention,
+                                                  step, with_initial=compute_distance)
+            groups[(rule_index, stimulus)] = (initial, step_vectors,
+                                              np.linalg.norm(step_vectors, axis=1))
     pairs, distances, angles = [], [], []
     for idx1 in range(n_rules):
         for idx2 in range(idx1 + 1, n_rules):
             per_stimulus = []
             for stimulus in range(n_stimuli):
-                trials_1 = np.flatnonzero((stimulus_labels == stimulus) & (rule_indices == idx1))
-                trials_2 = np.flatnonzero((stimulus_labels == stimulus) & (rule_indices == idx2))
-                if trials_1.size == 0 or trials_2.size == 0:
+                if (idx1, stimulus) not in groups or (idx2, stimulus) not in groups:
                     continue
-                initial_1, step_1 = _step_vectors(data, trials_1, onset_by_rule[idx1], retention, step)
-                initial_2, step_2 = _step_vectors(data, trials_2, onset_by_rule[idx2], retention, step)
+                initial_1, step_1, norms_1 = groups[(idx1, stimulus)]
+                initial_2, step_2, norms_2 = groups[(idx2, stimulus)]
                 statistics = _cross_pair_statistics(initial_1, initial_2, step_1, step_2,
-                                                    compute_distance=compute_distance)
+                                                    compute_distance=compute_distance,
+                                                    norms_1=norms_1, norms_2=norms_2)
                 if statistics is not None:
                     per_stimulus.append(statistics[:2])
             if per_stimulus:
@@ -398,9 +418,17 @@ def distance_angle_analysis(source_data, rule_indices, stimulus_labels, onset_by
     all_rules = list(all_rules)
     n_rules = len(all_rules)
     rval_dict, scatter_dict = {}, {}
+    step_norms_by_source = {}
     for name, source, step_kind in DISTANCE_ANGLE_REPRESENTATIONS:
         step_retention = retention if step_kind == STEP_HEBBIAN else None
         data = source_data[source]
+        if source not in step_norms_by_source:
+            # The decay/remainder split describes the source's full step, so
+            # it is attached to the modulation representations only and is the
+            # same for both step definitions of a source.
+            step_norms_by_source[source] = _step_norm_summary(
+                data, rule_indices, onset_by_rule, n_rules,
+                retention if source != "hidden" else None, step=step)
         pairs, distances, angles = _task_pair_distance_angle(
             data, rule_indices, stimulus_labels, onset_by_rule, n_rules, step_retention,
             step=step, compute_distance=initial_scatter is None)
@@ -425,11 +453,7 @@ def distance_angle_analysis(source_data, rule_indices, stimulus_labels, onset_by
                 "definition": ("x[t] - x[t-1]" if step_kind == STEP_FULL
                                else "x[t] - lam * x[t-1] (decay term removed)"),
             },
-            # The decay/remainder split describes the source's full step, so it
-            # is attached to the modulation representations only.
-            "step_norms": _step_norm_summary(
-                data, rule_indices, onset_by_rule, n_rules,
-                retention if source != "hidden" else None, step=step),
+            "step_norms": dict(step_norms_by_source[source]),
         }
     return rval_dict, scatter_dict
 

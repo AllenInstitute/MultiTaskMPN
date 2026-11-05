@@ -63,6 +63,17 @@ class TimecourseStatisticsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             state_space._step_vectors(data, trials, 2, step=3)
 
+    def test_step_norms_are_summarized_once_per_source(self):
+        states = _states()
+        with patch.object(state_space, "_step_norm_summary",
+                          wraps=state_space._step_norm_summary) as summary:
+            _, scatter = _analysis(states)
+        self.assertEqual(summary.call_count, 3)  # hidden, mod, eff_mod
+        for source in ("mod", "eff_mod"):
+            self.assertEqual(scatter[source]["step_norms"], scatter[f"{source}_hebb"]["step_norms"])
+            self.assertIsNot(scatter[source]["step_norms"], scatter[f"{source}_hebb"]["step_norms"])
+        self.assertEqual(set(scatter["hidden"]["step_norms"]), {"initial", "full_step"})
+
     def test_timecourse_preserves_first_step_and_fixed_distances(self):
         states = _states()
         original_r, original_scatter = _analysis(states)

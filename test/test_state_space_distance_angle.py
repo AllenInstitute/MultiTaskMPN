@@ -104,6 +104,10 @@ class PairStatisticsTests(unittest.TestCase):
         self.assertEqual(got[2], 8)
         self.assertIsNone(state_space._cross_pair_statistics(
             h0_1, h0_2, np.zeros_like(dh1), dh2))
+        # Precomputed step norms (cached per task and stimulus) change nothing.
+        self.assertEqual(state_space._cross_pair_statistics(
+            h0_1, h0_2, dh1, dh2, norms_1=np.linalg.norm(dh1, axis=1),
+            norms_2=np.linalg.norm(dh2, axis=1)), got)
 
     def test_first_step_removes_the_decay_term_with_retention(self):
         data = np.random.default_rng(2).normal(size=(5, 4, 3))
@@ -114,6 +118,9 @@ class PairStatisticsTests(unittest.TestCase):
         _, hebbian = state_space._step_vectors(data, trials, onset, retention=0.9)
         np.testing.assert_allclose(hebbian, data[trials, 2] - 0.9 * data[trials, 1])
         np.testing.assert_allclose(hebbian - full, 0.1 * initial)
+        no_initial, step = state_space._step_vectors(data, trials, onset, with_initial=False)
+        self.assertIsNone(no_initial)
+        np.testing.assert_array_equal(step, full)
 
     def test_hebbian_step_angles_follow_the_update_rule(self):
         """States built as x[t] = lam x[t-1] + outer(post, pre): the Hebbian-
