@@ -587,7 +587,7 @@ class PaperFigureTests(unittest.TestCase):
 
     def test_stale_control_requests_statistics_only(self):
         control = dict(self._untrained_payload(), version=4)
-        save, printed = self._render(paper_plot.plot_row_cluster_same_task,
+        save, printed = self._render(paper_plot.plot_row_cluster_same_task_seeds,
                                      self._payload(), untrained=control)
         save.assert_called_once()
         message = str(printed.call_args_list)
@@ -598,7 +598,8 @@ class PaperFigureTests(unittest.TestCase):
 
     def test_stars_read_corrected_q_not_raw_p(self):
         stats = {"pct_same_cluster": 50.0, "chance_mean": 0.25,
-                 "p_perm": 0.001, "q_fdr": 0.2}
+                 "p_perm": 0.001, "q_fdr": 0.2,
+                 "per_run": {"a": {"observed": 1, "expected": 0.5, "n_cells": 2}}}
         fig, ax = paper_plot.plt.subplots()
         self.addCleanup(paper_plot.plt.close, fig)
         paper_plot._draw_row_sharing_bars(ax, 0, {"input": stats})
@@ -607,18 +608,16 @@ class PaperFigureTests(unittest.TestCase):
         paper_plot._draw_row_sharing_bars(ax, 1, {"input": stats})
         self.assertEqual([text.get_text() for text in ax.texts], ["*"])
 
-    def test_both_variants_use_network_means_with_unequal_pair_counts(self):
+    def test_bars_use_network_means_with_unequal_pair_counts(self):
         stats = {"pct_same_cluster": 50.0, "chance_mean": 0.5,
                  "per_run": {"a": {"observed": 1, "expected": 1, "n_cells": 1},
                              "b": {"observed": 0, "expected": 0, "n_cells": 3}}}
-        original = paper_plot._row_sharing_bar_values(stats, per_run=False)
-        seeds = paper_plot._row_sharing_bar_values(stats, per_run=True)
-        self.assertEqual(original[:2], (50.0, 50.0))
-        self.assertEqual(seeds[:2], original[:2])
-        self.assertAlmostEqual(seeds[2], np.std([100, 0], ddof=1))
+        height, chance, spread = paper_plot._row_sharing_bar_values(stats)
+        self.assertEqual((height, chance), (50.0, 50.0))
+        self.assertAlmostEqual(spread, np.std([100, 0], ddof=1))
 
     def test_same_task_bars_per_task_with_stars_on_corrected_tests(self):
-        save, _ = self._render(paper_plot.plot_row_cluster_same_task, self._payload())
+        save, _ = self._render(paper_plot.plot_row_cluster_same_task_seeds, self._payload())
         save.assert_called_once()
         ax = save.call_args.args[0].axes[0]
         self.assertEqual([tick.get_text() for tick in ax.get_xticklabels()],
@@ -629,8 +628,8 @@ class PaperFigureTests(unittest.TestCase):
         self.assertIn("no period pairs", save.call_args.kwargs["extra"])
 
     def test_untrained_networks_get_a_hollow_twin_of_every_bar(self):
-        for plot in (paper_plot.plot_row_cluster_same_task,
-                     paper_plot.plot_row_cluster_same_period):
+        for plot in (paper_plot.plot_row_cluster_same_task_seeds,
+                     paper_plot.plot_row_cluster_same_period_seeds):
             with self.subTest(plot=plot.__name__):
                 save, _ = self._render(plot, self._payload(), untrained=self._untrained_payload())
                 save.assert_called_once()
@@ -657,9 +656,7 @@ class PaperFigureTests(unittest.TestCase):
         shared, chance = paper_plot._row_sharing_run_values(stats)
         np.testing.assert_allclose(shared, [20 / 3] * 3 + [0.0] * 3)
         self.assertTrue(np.all(chance > 0))
-        self.assertEqual(paper_plot._row_sharing_bar_values(stats, per_run=False),
-                         (stats["pct_same_cluster"], 100 * stats["chance_mean"], 0.0))
-        height, dash, spread = paper_plot._row_sharing_bar_values(stats, per_run=True)
+        height, dash, spread = paper_plot._row_sharing_bar_values(stats)
         self.assertAlmostEqual(height, 10 / 3)
         self.assertAlmostEqual(dash, chance.mean())
         self.assertAlmostEqual(spread, float(np.std(shared, ddof=1)))
@@ -688,10 +685,10 @@ class PaperFigureTests(unittest.TestCase):
         self.assertLess(ax.get_ylim()[0], float(shared.mean() - shared.std(ddof=1)))
 
     def test_same_period_bars_per_period_with_stars_on_corrected_tests(self):
-        save, _ = self._render(paper_plot.plot_row_cluster_same_period, self._payload())
+        save, _ = self._render(paper_plot.plot_row_cluster_same_period_seeds, self._payload())
         save.assert_called_once()
         self.assertEqual(Path(save.call_args.args[1]).name,
-                         "multitask_row_cluster_same_period.png")
+                         "multitask_row_cluster_same_period_seeds.png")
         ax = save.call_args.args[0].axes[0]
         self.assertEqual([tick.get_text() for tick in ax.get_xticklabels()],
                          ["Stimulus 1", "Stimulus 2", "Memory 1", "Memory 2", "Response"])
@@ -703,8 +700,6 @@ class PaperFigureTests(unittest.TestCase):
 
     def test_skips_a_missing_or_older_result(self):
         for plot in (paper_plot.plot_row_cluster_organization,
-                     paper_plot.plot_row_cluster_same_task,
-                     paper_plot.plot_row_cluster_same_period,
                      paper_plot.plot_row_cluster_same_task_seeds,
                      paper_plot.plot_row_cluster_same_period_seeds):
             save, printed = self._render(plot, None)

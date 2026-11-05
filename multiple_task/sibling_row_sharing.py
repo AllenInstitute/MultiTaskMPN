@@ -38,7 +38,7 @@ The statistic is the equal mean of each network's sharing fraction; chance
 is its permutation-null mean. Stars use BH-adjusted two-sided permutation p
 values, corrected within a cohort and analysis type over all unique reported
 tests (individual, all-pooled and sibling-group-pooled, across representations).
-Original and seeds paper figures use these same means and q values; seeds adds SD.
+The paper's seeds figures show these means and q values with SD across networks.
 These are conditional tests of row organization, not evidence of causality or
 a direct test of trained versus untrained networks.
 

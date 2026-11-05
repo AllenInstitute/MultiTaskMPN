@@ -77,8 +77,7 @@ def main():
     print("PAPER_SELECTION", paper_plot.multitask_feature(), "legend", paper_plot.SHOW_LEGEND)
     with patch.object(paper_plot, "_save_fig", side_effect=compare_figure), \
             patch.object(paper_plot, "_ensure_out_dir"):
-        for name in ("organization", "same_task", "same_period", "same_task_seeds",
-                     "same_period_seeds"):
+        for name in ("organization", "same_task_seeds", "same_period_seeds"):
             getattr(paper_plot, f"plot_row_cluster_{name}")()
 
 

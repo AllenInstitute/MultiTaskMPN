@@ -12,7 +12,8 @@ Figures are grouped into modes by the experiment they depend on:
     multiple_tasks   multi-task clustering and network structure
     lesion           multi-task lesion effects and cluster comparisons
     state_space      multi-task state-space geometry analyses
-    acc_plot         accuracy comparisons (L2, activation, projection/hidden dims)
+    acc_plot         accuracy comparisons (L2, M bounds/retention, activation,
+                     projection/hidden dims)
     two_in_multiple  sibling-task delay geometry and rule-cue sweeps in the multi-task
                      network, and their statistics over the cohort
     pretraining      pretraining → post-training transfer analyses
@@ -2168,10 +2169,12 @@ def _plot_task_accuracy_columns(groups, column_labels, xlabel, out_name, *,
     order. `groups` maps each column's key, in column order, to task ->
     accuracy list (%); `column_labels` are the columns' tick labels. Each
     panel has an adaptive y range; a task without any score keeps an empty
-    panel rather than disappearing. `column_p_text` maps a task to a short
-    text (a test between its columns) drawn as that panel's right-hand title.
+    panel rather than disappearing. `column_p_text` maps a task to comparison
+    text drawn in a reserved column to the right of its panel.
     Shared by the width sweeps and the retention comparison."""
-    fig, axes = plt.subplots(len(_TASK_DISPLAY), 1, figsize=(3.5, 11.5), sharex=True)
+    has_statistics = bool(column_p_text)
+    fig, axes = plt.subplots(len(_TASK_DISPLAY), 1,
+                             figsize=(5.3 if has_statistics else 3.5, 11.5), sharex=True)
     positions = np.arange(len(groups))
     for ax, (task, display_name) in zip(axes, _TASK_DISPLAY.items()):
         entries = [tasks.get(task, []) for tasks in groups.values()]
@@ -2185,7 +2188,8 @@ def _plot_task_accuracy_columns(groups, column_labels, xlabel, out_name, *,
                 markersize=3, zorder=4)
         ax.set_title(display_name, loc="left", fontsize=7, pad=2)
         if column_p_text and task in column_p_text:
-            ax.set_title(column_p_text[task], loc="right", fontsize=6, pad=2, color="0.3")
+            ax.text(1.05, 0.5, column_p_text[task], transform=ax.transAxes,
+                    ha="left", va="center", fontsize=6, color="0.3")
         all_values = [value for values in entries for value in values]
         if all_values:
             lo, hi = min(all_values), max(all_values)
@@ -2210,7 +2214,9 @@ def _plot_task_accuracy_columns(groups, column_labels, xlabel, out_name, *,
     axes[-1].set_xticklabels(column_labels)
     axes[-1].set_xlabel(xlabel)
     fig.supylabel("Task test accuracy (%)", x=0.02, fontsize=9)
-    fig.subplots_adjust(left=0.18, right=0.98, top=0.98, bottom=0.045, hspace=0.9)
+    fig.subplots_adjust(left=0.12 if has_statistics else 0.18,
+                        right=0.62 if has_statistics else 0.98,
+                        top=0.98, bottom=0.045, hspace=0.9)
     _save_fig(fig, _multitask_out(out_name))
 
 
@@ -2293,14 +2299,15 @@ def _plot_dimension_accuracy(*, vary_hidden):
     _save_fig(fig, out_path, extra=f" ({counts})")
 
 
-# ─── Figure: M retention comparison (lambda 0.99 vs 0.9) ─────────────────────
+# ─── Figure: M retention comparison (lambda 0.99, 0.95, 0.9) ─────────────────
 
-# The two M retentions of the regular L2 = 1e-4 cohort: feature tag,
+# The three M retentions of the regular L2 = 1e-4 cohort: feature tag,
 # m_time_scale (ms) and tick label. The 4000 ms cohort is the historical one
 # and carries no tag; multiple_task.py tags every other retention after the
 # bound tag (400 ms -> lam0.9, SCHEME.md). lambda = 1 - 40 ms / m_time_scale.
 _RETENTION_SPECS = (
     ("L21e4", MULTITASK_M_TIME_SCALE_MS, "$\\lambda = 0.99$\n(4000 ms)"),
+    ("L21e4lam0.95", 800, "$\\lambda = 0.95$\n(800 ms)"),
     ("L21e4lam0.9", 400, "$\\lambda = 0.9$\n(400 ms)"),
 )
 RETENTION_L2_STRENGTH = 1e-4
@@ -2312,9 +2319,9 @@ def _retention_accuracy_groups(result_dict, config_dir=Path("multiple_tasks"), *
                                per_task=False):
     """Collect the regular L2 = 1e-4 runs' accuracies (%) by M retention.
 
-    Returns feature tag -> accuracy list in _RETENTION_SPECS order (both keys
+    Returns feature tag -> accuracy list in _RETENTION_SPECS order (all keys
     always present) or, with per_task, tag -> task -> accuracy list. A run
-    counts when its feature tag is one of the two and its saved config is a
+    counts when its feature tag is listed there and its saved config is a
     regular run (_regular_multitask_config) at RETENTION_L2_STRENGTH with the
     default M bounds. A config whose m_time_scale disagrees with its tag is
     reported and skipped rather than trusted either way.
@@ -2382,6 +2389,29 @@ def _holm_adjusted(p_values):
     return adjusted
 
 
+def _retention_pairwise_tests(groups, *, per_task=False):
+    """(task, pair label, raw p, Holm p) for every retention pair.
+
+    Holm correction covers all valid tests in one figure: three overall,
+    or up to 45 across the fifteen tasks. Pairs with fewer than two networks
+    in either group have NaN p values and do not enter the correction.
+    """
+    from itertools import combinations
+
+    pairs = list(combinations(_RETENTION_SPECS, 2))
+    records = []
+    for task in _TASK_DISPLAY if per_task else (None,):
+        for (first, first_scale, _), (second, second_scale, _) in pairs:
+            left = groups[first].get(task, []) if per_task else groups[first]
+            right = groups[second].get(task, []) if per_task else groups[second]
+            # All retention cohorts use 40 ms steps, lambda = 1 - dt / time_scale.
+            label = f"{1 - 40 / first_scale:g} vs {1 - 40 / second_scale:g}"
+            records.append((task, label, _mann_whitney_p(left, right)))
+    adjusted = _holm_adjusted([p for _, _, p in records])
+    return [(task, label, p_raw, p_adj)
+            for (task, label, p_raw), p_adj in zip(records, adjusted)]
+
+
 def _load_retention_groups(per_task):
     """The retention groups of the saved performance results, or None (with
     the reason printed) when there is nothing to plot."""
@@ -2396,7 +2426,7 @@ def _load_retention_groups(per_task):
     groups = _retention_accuracy_groups(result_dict, per_task=per_task)
     if not any(groups.values()):
         print("  Skipped: no metadata-matched regular L2 = 1e-4 accuracies at "
-              "either retention; rerun multiple_task_performance.py.")
+              "any retention; rerun multiple_task_performance.py.")
         return None
     missing = [tag for tag, values in groups.items() if not values]
     if missing:
@@ -2407,17 +2437,18 @@ def _load_retention_groups(per_task):
 
 
 def plot_retention_accuracy():
-    """Figure: overall test accuracy of the regular L2 = 1e-4 runs at the two
-    M retentions, lambda = 0.99 (4000 ms, the historical cohort) and
-    lambda = 0.9 (400 ms), one dot per seed and the across-seed mean as a
-    white diamond, titled with the two-sided Mann-Whitney U test between
-    them. Same layout as plot_modulation_bound_accuracy's panels."""
+    """Overall accuracy at lambda = 0.99, 0.95 and 0.9 (L2 = 1e-4).
+
+    One dot per seed, with the across-seed mean as a white diamond. The title
+    reports two-sided Mann-Whitney U tests, Holm-adjusted across all three
+    retention pairs with sufficient data.
+    """
     groups = _load_retention_groups(per_task=False)
     if groups is None:
         return
 
     positions = np.arange(len(_RETENTION_SPECS), dtype=float)
-    fig, ax = plt.subplots(1, 1, figsize=(2.3, 3))
+    fig, ax = plt.subplots(1, 1, figsize=(3.5, 3.4))
     means, all_values, missing = [], [], []
     for position, (tag, _, _) in zip(positions, _RETENTION_SPECS):
         values = np.asarray(groups[tag], dtype=float)
@@ -2435,9 +2466,14 @@ def plot_retention_accuracy():
     ax.plot(positions[finite_means], means[finite_means], color="k",
             linewidth=1.2, marker="D", markerfacecolor="white",
             markeredgecolor="k", markeredgewidth=0.8, markersize=4, zorder=4)
-    p_value = _mann_whitney_p(*(groups[tag] for tag, _, _ in _RETENTION_SPECS))
-    if np.isfinite(p_value):
-        ax.set_title(f"Mann-Whitney {_permutation_p_text(p_value)}", fontsize=7, pad=3)
+    comparisons = _retention_pairwise_tests(groups)
+    annotations = []
+    for _, label, p_raw, p_adj in comparisons:
+        if np.isfinite(p_adj):
+            annotations.append(f"{label}: {_short_p(p_adj)}")
+            print(f"  {label}: Mann-Whitney p={p_raw:.3g}, Holm-adjusted p={p_adj:.3g}")
+    if annotations:
+        ax.set_title("Mann-Whitney, Holm\n" + "\n".join(annotations), fontsize=7, pad=3)
     if missing:
         ax.text(0.98, 0.08, "No " + "/".join(missing) + " performance data",
                 transform=ax.transAxes, ha="right", va="bottom",
@@ -2457,33 +2493,29 @@ def plot_retention_accuracy():
     ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
     fig.tight_layout()
     counts = ", ".join(f"{tag} n={len(groups[tag])}" for tag, _, _ in _RETENTION_SPECS)
-    _save_fig(fig, _multitask_out("retention_accuracy.png"),
-              extra=f" ({counts}; Mann-Whitney p={p_value:.3g})")
+    _save_fig(fig, _multitask_out("retention_accuracy.png"), extra=f" ({counts})")
 
 
 def plot_retention_task_accuracy():
-    """Figure: per-task test accuracy at the two M retentions, fifteen
-    stacked task panels (see _plot_task_accuracy_columns). Each panel's
-    right-hand title is the two-sided Mann-Whitney U test between the
-    retentions, Holm-adjusted across the tasks tested."""
+    """Per-task accuracy at lambda = 0.99, 0.95 and 0.9, in fifteen panels.
+
+    Each panel's right column reports two-sided Mann-Whitney U tests for its
+    three retention pairs, Holm-adjusted jointly across all tasks and pairs
+    with sufficient data (up to 45 tests).
+    """
     groups = _load_retention_groups(per_task=True)
     if groups is None:
         return
-    first, second = (groups[tag] for tag, _, _ in _RETENTION_SPECS)
-    tasks = list(_TASK_DISPLAY)
-    raw = np.array([_mann_whitney_p(first.get(task, []), second.get(task, []))
-                    for task in tasks])
-    adjusted = _holm_adjusted(raw)
     p_text = {}
-    for task, p_raw, p_adj in zip(tasks, raw, adjusted):
+    for task, label, p_raw, p_adj in _retention_pairwise_tests(groups, per_task=True):
         if np.isfinite(p_adj):
-            p_text[task] = f"Holm {_short_p(p_adj)}"
-            print(f"  {_TASK_DISPLAY[task]}: Mann-Whitney p={p_raw:.3g}, "
+            p_text.setdefault(task, []).append(f"{label}: Holm {_short_p(p_adj)}")
+            print(f"  {_TASK_DISPLAY[task]}, {label}: Mann-Whitney p={p_raw:.3g}, "
                   f"Holm-adjusted p={p_adj:.3g}")
     _plot_task_accuracy_columns(
         groups, [label for _, _, label in _RETENTION_SPECS],
         "Modulation retention", "retention_task_accuracy.png",
-        column_p_text=p_text)
+        column_p_text={task: "\n".join(lines) for task, lines in p_text.items()})
 
 
 # ─── Figure: State space PCA ─────────────────────────────────────────────────
@@ -5850,7 +5882,7 @@ _ROW_SAME_TASK_Y_TOP = 112                # head room for the stars above 100%
 # networks each representation's slot holds a trained and an untrained bar.
 _ROW_SHARING_GROUP_IN = {False: 0.42, True: 0.55}
 _ROW_SHARING_CHANCE_COLOR = "0.25"
-# Whiskers of the `_seeds` twins: the SD over runs of each run's %.
+# Whiskers of the sharing bars: the SD over runs of each run's %.
 _ROW_SHARING_SPREAD_COLOR = "0.15"
 _ROW_SHARING_SIGNIFICANCE = 0.05
 
@@ -5958,7 +5990,7 @@ def plot_row_cluster_organization():
     The text above a column is the raw two-sided Mann-Whitney p of trained
     against untrained, or, without untrained networks, the two-sided
     Wilcoxon signed-rank p of the trained runs against 1. These organization
-    p values are not the BH-adjusted q values of the four sharing bar figures.
+    p values are not the BH-adjusted q values of the two sharing bar figures.
     The saved message
     adds the trained runs' paired Wilcoxon p of task-minus-period enrichment
     between representations. Read from
@@ -6065,20 +6097,17 @@ def _row_sharing_run_values(stats):
     return shared, chance
 
 
-def _row_sharing_bar_values(stats, per_run):
-    """Saved mean sharing and null mean, plus sample SD for the seeds variant.
-    Both variants weight networks equally and use the same saved test."""
-    if not per_run:
-        return stats["pct_same_cluster"], 100 * stats["chance_mean"], 0.0
+def _row_sharing_bar_values(stats):
+    """Saved network-mean sharing and null mean, plus sample SD across networks."""
     shared, _ = _row_sharing_run_values(stats)
     spread = float(shared.std(ddof=1)) if shared.size > 1 else 0.0
     return stats["pct_same_cluster"], 100 * stats["chance_mean"], spread
 
 
-def _draw_row_sharing_bars(ax, x0, trained, untrained=None, per_run=False):
+def _draw_row_sharing_bars(ax, x0, trained, untrained=None):
     """Run-mean bars, restricted-null chance dashes and BH q stars.
-    Trained bars are filled; optional untrained twins are hollow. The seeds
-    variant adds sample SD across networks. Returns the highest drawn y."""
+    Trained bars are filled; optional untrained twins are hollow. Whiskers
+    show sample SD across networks. Returns the highest drawn y."""
     split = untrained is not None
     width = _ROW_SAME_TASK_BAR * (0.45 if split else 0.9)
     top = 0.0
@@ -6093,7 +6122,7 @@ def _draw_row_sharing_bars(ax, x0, trained, untrained=None, per_run=False):
         for stats, x, style in bars:
             if stats is None:
                 continue
-            height, chance, spread = _row_sharing_bar_values(stats, per_run)
+            height, chance, spread = _row_sharing_bar_values(stats)
             ax.bar(x, height, width=width * 0.92, zorder=2, **style)
             if spread > 0:
                 ax.errorbar(x, height, yerr=spread, color=_ROW_SHARING_SPREAD_COLOR,
@@ -6108,18 +6137,18 @@ def _draw_row_sharing_bars(ax, x0, trained, untrained=None, per_run=False):
     return top
 
 
-def _row_sharing_bar_figure(groups, labels, ylabel, untrained, per_run=False):
+def _row_sharing_bar_figure(groups, labels, ylabel, untrained):
     """(fig, ax) of a per-task / per-period row-sharing figure: one
     `_draw_row_sharing_bars` group per (trained, untrained) entry of `groups`,
     labeled `labels` on x, with percentage ticks and the legend; `untrained`
-    says whether the untrained networks are drawn. Both variants show means
-    over networks; `per_run` adds SD whiskers and expands the axis as needed."""
+    says whether the untrained networks are drawn. Bars show means over
+    networks with SD whiskers; the axis expands to keep both ends visible."""
     fig, ax = plt.subplots(1, 1, figsize=(1.0 + _ROW_SHARING_GROUP_IN[untrained] * len(groups),
                                           2.4))
     top = _ROW_SAME_TASK_Y_TOP
     for position, (trained, control) in enumerate(groups):
         top = max(top, _draw_row_sharing_bars(ax, position, trained,
-                                              control if untrained else None, per_run=per_run))
+                                              control if untrained else None))
     ax.set_xticks(np.arange(len(groups)))
     ax.set_xticklabels(labels, rotation=40, ha="right", fontsize=6)
     ax.set_xlim(-0.6, len(groups) - 0.4)
@@ -6140,9 +6169,8 @@ def _row_sharing_bar_figure(groups, labels, ylabel, untrained, per_run=False):
                                          label="untrained (hollow)"))
     handles.append(mpl.lines.Line2D([], [], color=_ROW_SHARING_CHANCE_COLOR, linewidth=1.0,
                                     label="chance"))
-    if per_run:
-        handles.append(mpl.lines.Line2D([], [], color=_ROW_SHARING_SPREAD_COLOR, linewidth=0.7,
-                                        marker="_", markersize=4, label="mean ± SD over runs"))
+    handles.append(mpl.lines.Line2D([], [], color=_ROW_SHARING_SPREAD_COLOR, linewidth=0.7,
+                                    marker="_", markersize=4, label="mean ± SD over runs"))
     handles.append(mpl.lines.Line2D([], [], linestyle="none", marker="$*$", color="k",
                                     markersize=5,
                                     label=f"permutation, BH-FDR q < {_ROW_SHARING_SIGNIFICANCE}"))
@@ -6163,34 +6191,16 @@ def _row_sharing_untrained_note(untrained):
             + (f" ({provenance})" if provenance else ""))
 
 
-def plot_row_cluster_same_task():
+def plot_row_cluster_same_task_seeds():
     """Per task, mean across networks of the fraction of phase pairs in one
-    row cluster. All available pairs enter, identically across representations.
+    row cluster, with sample SD across networks. All available pairs enter,
+    identically across representations.
     The dash is the null mean from shuffling row labels among tasks within
     each phase. Stars use saved two-sided permutation p values adjusted by BH
     within each cohort and analysis type (the result records the full family).
     Hollow twins show untrained controls with their own null and test; stars
     do not compare trained with untrained. Single-phase tasks have no pairs.
     Reads version-5 sibling_row_sharing results; see sibling_row_sharing.py."""
-    _plot_row_cluster_same_task(per_run=False)
-
-
-def plot_row_cluster_same_task_seeds():
-    """Same means, null dashes and BH q stars as row_cluster_same_task.
-    Adds sample SD across networks, including the untrained controls."""
-    _plot_row_cluster_same_task(per_run=True)
-
-
-def _row_sharing_variant(per_run):
-    """Filename suffix and save note; both variants show equal network means."""
-    if per_run:
-        return "_seeds", "; bars: mean over runs, whiskers: SD over runs"
-    return "", "; bars: mean over runs"
-
-
-def _plot_row_cluster_same_task(per_run):
-    """The body of plot_row_cluster_same_task (`per_run` False) and of
-    plot_row_cluster_same_task_seeds (True)."""
     _ensure_out_dir()
     data = _load_row_cluster_sharing()
     if data is None:
@@ -6205,34 +6215,23 @@ def _plot_row_cluster_same_task(per_run):
     fig, _ = _row_sharing_bar_figure(
         [(entry["tasks"][rule], control.get(rule, {})) for rule in tasks],
         [_TASK_DISPLAY.get(rule, rule) for rule in tasks],
-        "Period pairs of one task\nin one row cluster", untrained is not None, per_run=per_run)
+        "Period pairs of one task\nin one row cluster", untrained is not None)
     missing = [_TASK_DISPLAY.get(rule, rule) for rule in _TASK_DISPLAY if rule not in tasks]
-    suffix, note = _row_sharing_variant(per_run)
-    _save_fig(fig, _multitask_out(f"row_cluster_same_task{suffix}.png"),
+    _save_fig(fig, _multitask_out("row_cluster_same_task_seeds.png"),
               extra=(f"  {len(data['experiments'])} {data['feature']} runs, {len(tasks)} tasks"
-                     + _row_sharing_untrained_note(untrained) + note
+                     + _row_sharing_untrained_note(untrained)
+                     + "; bars: mean over runs, whiskers: SD over runs"
                      + (f"; no period pairs: {', '.join(missing)}" if missing else "")
                      + "; restricted permutation, BH-FDR within cohort and analysis type"))
 
 
-def plot_row_cluster_same_period():
-    """Per phase, mean across networks of the fraction of task pairs in one
-    row cluster. All available pairs enter, including single-phase tasks.
-    The null shuffles row labels among available phases within each task.
-    Chance, BH q stars and untrained twins follow row_cluster_same_task.
-    Phase labels use the heatmap colors."""
-    _plot_row_cluster_same_period(per_run=False)
-
-
 def plot_row_cluster_same_period_seeds():
-    """Same means, null dashes and BH q stars as row_cluster_same_period,
-    with sample SD across networks."""
-    _plot_row_cluster_same_period(per_run=True)
-
-
-def _plot_row_cluster_same_period(per_run):
-    """The body of plot_row_cluster_same_period (`per_run` False) and of
-    plot_row_cluster_same_period_seeds (True)."""
+    """Per phase, mean across networks of the fraction of task pairs in one
+    row cluster, with sample SD across networks. All available pairs enter,
+    including single-phase tasks.
+    The null shuffles row labels among available phases within each task.
+    Chance, BH q stars and untrained twins follow row_cluster_same_task_seeds.
+    Phase labels use the heatmap colors."""
     _ensure_out_dir()
     data = _load_row_cluster_sharing()
     if data is None:
@@ -6247,15 +6246,15 @@ def _plot_row_cluster_same_period(per_run):
     fig, ax = _row_sharing_bar_figure(
         [(entry["periods"][phase], control.get(phase, {})) for phase in periods],
         [_PHASE_DISPLAY.get(phase, phase) for phase in periods],
-        "Task pairs of one period\nin one row cluster", untrained is not None, per_run=per_run)
+        "Task pairs of one period\nin one row cluster", untrained is not None)
     for label, phase in zip(ax.get_xticklabels(), periods):
         if phase in _PHASE_COLORS:
             label.set_bbox(dict(facecolor=_PHASE_COLORS[phase], edgecolor="none",
                                 boxstyle="round,pad=0.15", alpha=0.8))
-    suffix, note = _row_sharing_variant(per_run)
-    _save_fig(fig, _multitask_out(f"row_cluster_same_period{suffix}.png"),
+    _save_fig(fig, _multitask_out("row_cluster_same_period_seeds.png"),
               extra=(f"  {len(data['experiments'])} {data['feature']} runs, "
-                     f"{len(periods)} periods" + _row_sharing_untrained_note(untrained) + note
+                     f"{len(periods)} periods" + _row_sharing_untrained_note(untrained)
+                     + "; bars: mean over runs, whiskers: SD over runs"
                      + "; restricted permutation, BH-FDR within cohort and analysis type"))
 
 
@@ -14662,8 +14661,6 @@ FIGURES_BY_MODE = {
         "overmembership_examples": plot_overmembership_examples,
         "input_weight_correlation": plot_input_weight_correlation,
         "row_cluster_organization": plot_row_cluster_organization,
-        "row_cluster_same_task": plot_row_cluster_same_task,
-        "row_cluster_same_period": plot_row_cluster_same_period,
         "row_cluster_same_task_seeds": plot_row_cluster_same_task_seeds,
         "row_cluster_same_period_seeds": plot_row_cluster_same_period_seeds,
     },

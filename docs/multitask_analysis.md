@@ -39,6 +39,30 @@ python multiple_task/run_pipeline.py --feature L21e4 --skip-completed
 python multiple_task/run_pipeline.py --feature L21e4 --skip-completed --resume
 ```
 
+## Accuracy across modulation retentions
+
+The `acc_plot` figures `retention_accuracy` and `retention_task_accuracy`
+compare lambda = 0.99, 0.95 and 0.9 at L2 = 1e-4, with the same default
+network architecture and modulation bounds. The feature tags are `L21e4`,
+`L21e4lam0.95` and `L21e4lam0.9`; their saved `m_time_scale` values must be
+4000, 800 and 400 ms respectively. Each dot is one network and the connected
+diamonds are the across-network means. These figures use performance results,
+not clustering or lesion caches.
+
+```bash
+# Add the newly trained cohort without replacing the existing evaluations.
+python multiple_task/multiple_task_performance.py --feature L21e4lam0.95 --merge
+python figures/paper_plot.py --only retention_accuracy
+python figures/paper_plot.py --only retention_task_accuracy
+```
+
+Both figures report two-sided Mann-Whitney U tests for all three retention
+pairs. Holm correction covers the three overall comparisons in the first
+figure, and all 15 tasks times three pairs (up to 45 comparisons) jointly in
+the second. A pair needs at least two networks in each group; unavailable
+comparisons have no p value and do not enter the correction. Missing cohorts
+keep their axis position and produce a message with the evaluation command.
+
 ## Figures
 
 The `lesion` figure mode contains `lesion_heatmap`, `lesion_cluster_sizes`,
@@ -688,9 +712,7 @@ python multiple_task/sibling_row_sharing.py --feature L21e4 --untrained
 # paper figures: rows grouped by period or by task, and the per-task and
 # per-period views
 python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_organization
-python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_same_task
-python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_same_period
-# the same two mean-over-network figures, adding sample SD over networks
+# mean sharing and sample SD over networks
 python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_same_task_seeds
 python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_same_period_seeds
 ```
@@ -799,17 +821,18 @@ enrichment panels (period/task), network dots, median and chance=1.
 Its tests are unchanged: trained versus untrained uses raw, two-sided
 Mann–Whitney p values; without controls it displays the saved Wilcoxon
 comparison against 1. These p values are not BH-adjusted q values.
-The permutation tests above apply to the four bar figures:
+The permutation tests above apply to the two sharing bar figures:
 
-- `multitask_row_cluster_same_task.png`: per-task mean sharing, restricted
-  null chance dash, and a star for **q_fdr < 0.05**.
-- `multitask_row_cluster_same_period.png`: the corresponding per-phase
-  view, with phase-colored tick labels.
-- `multitask_row_cluster_same_task_seeds.png` and
-  `multitask_row_cluster_same_period_seeds.png`: the **same means, chance
-  dashes and q values**, adding sample SD across networks. Both ends of
-  each SD whisker are displayed even when they extend outside 0–100%;
-  SD describes spread and is not a confidence interval.
+- `multitask_row_cluster_same_task_seeds.png`: per-task mean sharing with
+  sample SD across networks, restricted-null chance dash, and a star for
+  **q_fdr < 0.05**.
+- `multitask_row_cluster_same_period_seeds.png`: the corresponding
+  per-phase view, with phase-colored tick labels.
+
+Both ends of each SD whisker are displayed even when they extend outside
+0–100%; SD describes spread and is not a confidence interval. Only the
+seeds versions are retained: the former mean-only figures duplicated their
+means, chance dashes and significance tests.
 
 A star identifies a departure from the conditional null; the bar relative
 to the dash shows the direction. It neither establishes causality nor
@@ -818,7 +841,7 @@ use separate within-cohort tests. Their difference in significance is not
 itself a significant difference between cohorts.
 
 The v5 results checked on **2026-11-05** cover 17 trained L21e3 networks
-and five untrained networks (seed 749 config, init seeds 0–4). All five
+and five untrained networks (seed 749 config, init seeds 0–4). The three retained
 `paper_plot/multitask_row_cluster_*_n.png` figures matched an in-memory
 render from these caches pixel for pixel. For this cohort:
 
@@ -826,11 +849,11 @@ render from these caches pixel for pixel. For this cohort:
   input, 1.74x for hidden and 0.93x for M; same-task enrichment is 0.92x,
   0.88x and 4.03x. This is a relative preference for phase organization in
   input/hidden and task organization in M, not an exclusive division.
-- The same-task figures show M sharing above its restricted null in 11 of
+- The same-task figure shows M sharing above its restricted null in 11 of
   the 13 tasks with phase pairs after BH correction. DelayPro and DelayAnti
   have low M sharing but are not significantly below chance (q=0.149 and
   q=0.546); the older signed-rank claims for these two tasks do not hold.
-- The same-period figures show 100% input/hidden sharing in both memory
+- The same-period figure shows 100% input/hidden sharing in both memory
   phases, against permutation means of about 28–33%. M also has above-null
   sharing in Stimulus 1, so it is not devoid of phase organization.
 - Untrained networks already show strong M task organization (median 4.36x
@@ -842,7 +865,7 @@ The L21e4 sharing cache was still v4 at that check; these numerical conclusions
 apply to L21e3. The manual, read-only check is
 `python test/row_cluster_results_check.py`: it checks the cohort currently
 selected by `paper_plot.py`, verifies saved counts and means, and compares
-all five PNGs with in-memory renders without changing caches or figures.
+all three PNGs with in-memory renders without changing caches or figures.
 
 The untrained control asks whether training makes this organization or the
 architecture alone does, for instance because M, with its 4 s memory, keeps

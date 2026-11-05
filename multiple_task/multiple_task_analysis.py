@@ -86,7 +86,6 @@ mpl.rcParams.update({
 from sklearn.metrics.pairwise import cosine_similarity
 from scipy.spatial.distance import pdist, squareform
 import torch
-from torch.serialization import add_safe_globals
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import helper
@@ -309,10 +308,9 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
     del bs, ref, same_per_k
 
     # %%
-    add_safe_globals([np.core.multiarray._reconstruct])
-
     netpathname = "multiple_tasks/" + f"savednet_{aname}.pt"
-    checkpoint = torch.load(netpathname, map_location="cpu")
+    # Our local training checkpoints include NumPy config arrays as well as weights.
+    checkpoint = torch.load(netpathname, map_location="cpu", weights_only=False)
     print(checkpoint["state_dict"].keys())
     print(checkpoint["net_params"])
 

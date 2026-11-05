@@ -115,10 +115,11 @@ ADDON_NAME = "L21e4"            # +hidden{N_HIDDEN}+batch{n_batches}+{acc} appen
 # the effective ADDON_NAME automatically ("mb2"), keeping such runs distinct.
 M_BOUNDS = (-1.0, 1.0)
 # Time constant of M's decay: lambda = 1 - DT_MS / M_TIME_SCALE, fixed during
-# training (lam_train is False). Every saved multi-task cohort used the
-# historical 4000 ms (lambda = 0.99), so those run names carry no lambda tag.
+# training (lam_train is False). Historical multi-task cohorts use
+# 4000 ms (lambda = 0.99), so those run names carry no lambda tag.
 # Any other value is encoded in the effective ADDON_NAME automatically, after
-# the bound tag, as in pretrain/pretraining.py (400 ms -> L21e4lam0.9, or
+# the bound tag, as in pretrain/pretraining.py (800 ms -> L21e4lam0.95;
+# 400 ms -> L21e4lam0.9, or
 # L21e4mb2lam0.9 with bounds (-2, 2)), so such runs never share a name, or an
 # exact --feature filter, with the lambda = 0.99 cohorts.
 DT_MS = 40
