@@ -62,16 +62,26 @@ Writes multiple_tasks_diagnosis/sibling_row_sharing_{tag}.{pkl,json}, the
 per-pair figure sibling_row_sharing_pairs_{tag}.png (the layout of
 multiple_task_diagnosis.py's figure, one row per pair), the summary figure
 sibling_row_sharing_summary_{tag}.png and the same-task figure
-sibling_row_sharing_same_task_{tag}.png, with the tag
-{feature}[_seed{seed}][_untrained]. A run replaces its own tag's files only.
+sibling_row_sharing_same_task_{tag}.png, with the tag {feature}[_seed{seed}].
+A run replaces its own tag's files only.
+
 With --untrained it analyzes the untrained controls under
-multiple_tasks_analysis/untrained/ (`untrained_clustering.py`; --seed is then
-the config's run and every init seed of it enters) instead of the trained
-runs.
+multiple_tasks_analysis/untrained/ (`untrained_clustering.py`) instead of the
+trained runs. L2 acts only during training, so an untrained network built
+from an L21e4 run's config is the same network as one built from an L21e3
+run's config with the same init seed: one set of controls serves every L2
+cohort of an architecture. The run therefore takes every untrained network
+whose config shares --feature's architecture (the feature tag without its L2
+strength, core/multitask_naming.py) and writes the result under the tag
+``untrained_sharing_tag(feature)``: `untrained` for the default architecture
+(L21e5 to L21e2), `lam0.9_untrained` for the lambda = 0.9 cohort. --seed is
+then the config's run and every init seed of it enters (tag
+`untrained_seed{seed}`).
 
 Usage:
     python multiple_task/sibling_row_sharing.py --feature L21e4
     python multiple_task/sibling_row_sharing.py --feature L21e3
+    # the untrained controls of every L2 cohort of the default architecture
     python multiple_task/sibling_row_sharing.py --feature L21e4 --untrained
 """
 import json
@@ -84,6 +94,8 @@ matplotlib.use("Agg")  # headless-safe: figures are saved, never shown
 import matplotlib.pyplot as plt
 from scipy.stats import wilcoxon
 
+import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
+from multitask_naming import architecture_tag, untrained_sharing_tag
 import multiple_task_diagnosis as diag
 
 OUT_DIR = diag.OUT_DIR
@@ -723,19 +735,25 @@ def _print_organization(organization):
 
 def main(feature="L21e4", seed=None, untrained=False):
     """Analyze every clustered run of `feature` (or one `seed`), or with
-    `untrained` every untrained control of them, save the results and draw
-    the three figures."""
+    `untrained` every untrained control of `feature`'s architecture (module
+    docstring), save the results and draw the three figures."""
     tag = feature if feature else "all"
     if seed is not None:
         tag += f"_seed{seed}"
     root = None
     if untrained:
-        tag += "_untrained"
+        if not feature:
+            raise ValueError("--untrained needs --feature to name the architecture of the controls.")
         root = UNTRAINED_DIR
+        tag = untrained_sharing_tag(feature)
+        if seed is not None:
+            tag = f"{tag}_seed{seed}"
+        anames = diag._discover_anames(seed=seed, root=root,
+                                       architecture=architecture_tag(feature))
+    else:
+        anames = diag._discover_anames(feature, seed)
     removed = _clear_previous_results(tag)
     print(f"Cleared {len(removed)} previous {tag} result file(s) from {OUT_DIR}/")
-
-    anames = diag._discover_anames(feature, seed, root=root)
     print(f"Discovered {len(anames)} {'untrained ' if untrained else ''}experiment(s) "
           f"(feature={feature}, seed={seed})")
     experiments = []
@@ -775,7 +793,11 @@ def main(feature="L21e4", seed=None, untrained=False):
 
     payload = {
         "version": RESULT_VERSION,
-        "feature": feature,
+        # The untrained controls belong to an architecture, not to one L2
+        # cohort (module docstring); their config runs' features are listed.
+        "feature": None if untrained else feature,
+        "architecture": architecture_tag(feature) if feature else None,
+        "config_features": sorted({diag._run_feature(aname) for aname, _ in experiments}),
         "seed": seed,
         "mod_g_index": diag.MOD_G_INDEX,
         "experiments": [aname for aname, _ in experiments],

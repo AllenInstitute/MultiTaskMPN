@@ -61,6 +61,7 @@ from core.state_space_geometry import task_centroid_separation
 from core.state_space_cache import (M_ALIGNMENT as STATE_SPACE_M_ALIGNMENT,
                                     DISTANCE_ANGLE_SCHEMA_VERSION as STATE_SPACE_RESULTS_SCHEMA,
                                     distance_angle_is_current, is_aligned, require_aligned)
+from core.multitask_naming import architecture_tag, untrained_sharing_tag
 from core.lesion_cache import (CONTROL_POOLS, load_lesion_pickle, normalize_lesion_cache, norm_root,
                                resolve_lesion_cache_path)
 from pretrain.pretraining_utils import variant_addon
@@ -5823,8 +5824,10 @@ def plot_input_weight_correlation():
 # Read from multiple_task/sibling_row_sharing.py, which saves one result per
 # cohort as multiple_tasks_diagnosis/sibling_row_sharing_{feature}.pkl (every
 # clustered run of that cohort) and, for the untrained networks of
-# untrained_clustering.py, as sibling_row_sharing_{feature}_untrained.pkl;
-# nothing is recomputed here. A row of the
+# untrained_clustering.py, as sibling_row_sharing_untrained.pkl (one control
+# set per architecture, shared by every L2 cohort of it; `lam0.9_untrained`
+# for the lambda = 0.9 cohort, see core/multitask_naming.py); nothing is
+# recomputed here. A row of the
 # clustered input / hidden / modulation heatmaps is one task in one trial
 # period, and these figures ask whether the row clusters group the rows by
 # period or by task.
@@ -5861,21 +5864,37 @@ def _row_sharing_commands(untrained=False):
             f"multiple_task/sibling_row_sharing.py --feature {feature} --untrained")
 
 
+def _row_sharing_path(untrained=False):
+    """The selected cohort's row-cluster sharing result file, or with
+    `untrained` that of the untrained controls of its architecture, which
+    every L2 cohort of that architecture shares (core/multitask_naming.py)."""
+    feature = multitask_feature()
+    tag = untrained_sharing_tag(feature) if untrained else feature
+    return MULTITASK_DIAGNOSIS_ROOT / f"sibling_row_sharing_{tag}.pkl"
+
+
 def _load_row_cluster_sharing(untrained=False):
     """The selected cohort's saved row-cluster sharing result, or with
-    `untrained` that of its untrained controls (untrained_clustering.py); None
-    with a message when it is missing or older than the organization check."""
+    `untrained` that of its architecture's untrained controls
+    (untrained_clustering.py); None with a message when it is missing, older
+    than the organization check or of another cohort or architecture."""
     feature = multitask_feature()
-    tag = f"{feature}_untrained" if untrained else feature
-    path = MULTITASK_DIAGNOSIS_ROOT / f"sibling_row_sharing_{tag}.pkl"
+    path = _row_sharing_path(untrained)
     command = f"Run {_row_sharing_commands(untrained)}"
     data = _load_pkl_or_skip(path, f"{command}.")
     if data is None:
         return None
-    if (data.get("version") != _ROW_SHARING_RESULT_VERSION or data.get("feature") != feature
+    if untrained:
+        matches = (data.get("feature") is None
+                   and data.get("architecture") == architecture_tag(feature))
+        expected = f"{architecture_tag(feature) or 'default'}-architecture untrained"
+    else:
+        matches = data.get("feature") == feature
+        expected = f"{feature} cohort"
+    if (data.get("version") != _ROW_SHARING_RESULT_VERSION or not matches
             or data.get("seed") is not None or bool(data.get("untrained")) != untrained):
-        print(f"  Skipped: {path} is not a version-{_ROW_SHARING_RESULT_VERSION} {tag} "
-              f"cohort result. {command}.")
+        print(f"  Skipped: {path} is not a version-{_ROW_SHARING_RESULT_VERSION} {expected} "
+              f"result. {command}.")
         return None
     return data
 
@@ -5883,7 +5902,7 @@ def _load_row_cluster_sharing(untrained=False):
 def _load_untrained_row_sharing():
     """The untrained controls' row-cluster sharing result, or None with a
     message when there is none, so a figure draws the trained runs alone."""
-    path = MULTITASK_DIAGNOSIS_ROOT / f"sibling_row_sharing_{multitask_feature()}_untrained.pkl"
+    path = _row_sharing_path(untrained=True)
     if path.exists():
         return _load_row_cluster_sharing(untrained=True)
     print(f"  No untrained control ({path.name}); drawing the trained runs only. "
@@ -5919,7 +5938,8 @@ def plot_row_cluster_organization():
     clustered input, hidden and modulation heatmaps (one row per task and
     trial period) grouped by period or by task, and does training make them
     so? Every clustered run of the MULTITASK_L2 cohort, every task, beside
-    untrained networks of one run's config when they are clustered.
+    the untrained networks of the cohort's architecture when they are
+    clustered (one set per architecture, shared by every L2 cohort of it).
 
     Left panel: two rows of one period from different tasks; right panel: two
     rows of one task from different periods. Each point is one network's fold
@@ -5931,13 +5951,15 @@ def plot_row_cluster_organization():
     1e-4 runs). The y axis is logarithmic. In each representation's column
     the trained runs (filled, red median dash) sit left of the untrained
     networks (hollow, gray median dash: untrained_clustering.py, fresh
-    weights of the designated run's config, clustered by the same pipeline).
+    weights of one run's config of the same architecture, clustered by the
+    same pipeline; the saved message names the config and init seeds).
     The text above a column is the two-sided Mann-Whitney p of trained
     against untrained, or, without untrained networks, the two-sided
     Wilcoxon signed-rank p of the trained runs against 1. The saved message
     adds the trained runs' paired Wilcoxon p of task-minus-period enrichment
     between representations. Read from
-    multiple_tasks_diagnosis/sibling_row_sharing_{feature}[_untrained].pkl
+    multiple_tasks_diagnosis/sibling_row_sharing_{feature}.pkl and the
+    architecture's shared control sibling_row_sharing_untrained.pkl
     (multiple_task/sibling_row_sharing.py); skipped without the trained
     result, drawn without the untrained networks when theirs is missing.
     """
@@ -6128,7 +6150,8 @@ def plot_row_cluster_same_task():
     hollow twin on its right with their % and chance (their stars need at
     least six networks). Tasks with a single clustered period (ReactPro,
     ReactAnti) have no cells. Read from
-    multiple_tasks_diagnosis/sibling_row_sharing_{feature}[_untrained].pkl
+    multiple_tasks_diagnosis/sibling_row_sharing_{feature}.pkl and the
+    architecture's shared control sibling_row_sharing_untrained.pkl
     (multiple_task/sibling_row_sharing.py).
     """
     _ensure_out_dir()

@@ -80,7 +80,27 @@ class UntrainedDiscoveryTests(unittest.TestCase):
             loaded = diagnosis._load_experiment(f"{ANAME}_init0", root=root)
             np.testing.assert_array_equal(loaded["modulation"]["row_labels"], labels)
 
-    def test_the_sharing_analysis_of_untrained_runs_writes_its_own_tag(self):
+    def test_untrained_runs_are_selected_by_architecture(self):
+        names = np.array(["fdgo-stim1", "fdanti-stim1", "fdgo-go1", "fdanti-go1"])
+        labels = np.array([0, 1, 2, 2])
+        slow = "everything_seed32_L21e4lam0.9+hidden300+batch128+angle"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_run(root, f"{ANAME}_init0", labels, names)
+            _write_run(root, f"{slow}_init0", labels, names)
+            # The default architecture: the L21e4 config's network serves the
+            # L21e3 cohort too; the lambda = 0.9 network is another architecture.
+            self.assertEqual(diagnosis._discover_anames(root=root, architecture=""),
+                             [f"{ANAME}_init0"])
+            self.assertEqual(diagnosis._discover_anames(root=root, architecture="lam0.9"),
+                             [f"{slow}_init0"])
+            self.assertEqual(diagnosis._discover_anames(root=root, architecture="", seed=32), [])
+        self.assertEqual(diagnosis._run_feature(f"{slow}_init0"), "L21e4lam0.9")
+        self.assertEqual(diagnosis._run_feature(ANAME), "L21e4")
+        with self.assertRaises(ValueError):
+            diagnosis._run_feature("run0")
+
+    def test_the_sharing_analysis_of_untrained_runs_serves_every_l2_cohort(self):
         names = np.array(["fdgo-stim1", "fdanti-stim1", "fdgo-go1", "fdanti-go1"])
         labels = np.array([0, 1, 2, 2])
         with tempfile.TemporaryDirectory() as directory:
@@ -89,18 +109,46 @@ class UntrainedDiscoveryTests(unittest.TestCase):
                 _write_run(root, f"{ANAME}_init{init_seed}", labels, names)
             out.mkdir()
             (out / "sibling_row_sharing_L21e4.pkl").write_text("trained")
+            (out / "sibling_row_sharing_L21e4_untrained.pkl").write_text("legacy")
             with patch.object(sharing, "UNTRAINED_DIR", root), \
                     patch.object(sharing, "OUT_DIR", out), \
-                    patch("builtins.print"):
-                sharing.main(feature="L21e4", untrained=True)
+                    patch("builtins.print") as printed:
+                # The L21e3 cohort's control is the L21e4 config's networks.
+                sharing.main(feature="L21e3", untrained=True)
+                self.assertIsNone(sharing.main(feature="L21e4lam0.9", untrained=True))
+                with self.assertRaises(ValueError):
+                    sharing.main(feature=None, untrained=True)
+            self.assertIn("Discovered 0 untrained experiment(s)", str(printed.call_args_list))
             self.assertEqual((out / "sibling_row_sharing_L21e4.pkl").read_text(), "trained")
-            with open(out / "sibling_row_sharing_L21e4_untrained.pkl", "rb") as stream:
+            self.assertEqual((out / "sibling_row_sharing_L21e4_untrained.pkl").read_text(),
+                             "legacy")
+            self.assertFalse((out / "sibling_row_sharing_L21e3_untrained.pkl").exists())
+            with open(out / "sibling_row_sharing_untrained.pkl", "rb") as stream:
                 payload = pickle.load(stream)
+            self.assertTrue((out / "sibling_row_sharing_summary_untrained.png").stat().st_size > 0)
         self.assertTrue(payload["untrained"])
         self.assertIsNone(payload["seed"])
+        self.assertIsNone(payload["feature"])
+        self.assertEqual(payload["architecture"], "")
+        self.assertEqual(payload["config_features"], ["L21e4"])
         self.assertEqual(len(payload["experiments"]), 3)
         self.assertEqual(set(payload["organization"]["representations"]),
                          {"input", "hidden", "modulation"})
+
+
+class NamingTests(unittest.TestCase):
+    def test_architecture_tag_drops_the_l2_strength_only(self):
+        from multitask_naming import architecture_tag, untrained_sharing_tag
+
+        for feature in ("L21e4", "L21e3", "L21e2", "L21e5"):
+            self.assertEqual(architecture_tag(feature), "")
+            self.assertEqual(untrained_sharing_tag(feature), "untrained")
+        self.assertEqual(architecture_tag("L21e4lam0.9"), "lam0.9")
+        self.assertEqual(architecture_tag("L21e4mb2lam0.9"), "mb2lam0.9")
+        self.assertEqual(architecture_tag("L21e4bottleneck100"), "bottleneck100")
+        self.assertEqual(untrained_sharing_tag("L21e4lam0.9"), "lam0.9_untrained")
+        with self.assertRaises(ValueError):
+            architecture_tag("lam0.9")
 
 
 if __name__ == "__main__":

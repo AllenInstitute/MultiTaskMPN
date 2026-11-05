@@ -383,14 +383,17 @@ class PaperFigureTests(unittest.TestCase):
             data["modulation"] = dict(data["modulation"],
                                       row_labels=np.repeat([0, 0, 1, 1], 3))
             return data
-        return dict(self._payload(), untrained=True, organization=sharing.summarize_organization(
-            [(f"init{seed}", experiment()) for seed in range(6)]))
+        return dict(self._payload(), untrained=True, feature=None, architecture="",
+                    config_features=["L21e4"],
+                    organization=sharing.summarize_organization(
+                        [(f"init{seed}", experiment()) for seed in range(6)]))
 
     def _render(self, plot, payload, untrained=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             feature = paper_plot.multitask_feature()
-            for tag, saved in ((feature, payload), (f"{feature}_untrained", untrained)):
+            for tag, saved in ((feature, payload),
+                               (paper_plot.untrained_sharing_tag(feature), untrained)):
                 if saved is not None:
                     with open(root / f"sibling_row_sharing_{tag}.pkl", "wb") as stream:
                         pickle.dump(saved, stream)
@@ -458,6 +461,23 @@ class PaperFigureTests(unittest.TestCase):
         self.assertIn("No untrained control", str(printed.call_args_list))
         self.assertIn("untrained_clustering.py", str(printed.call_args_list))
         self.assertIn("0 untrained networks", save.call_args.kwargs["extra"])
+
+    def test_the_untrained_control_is_shared_across_l2_but_not_architectures(self):
+        # The control file carries no feature: whichever L2 cohort is
+        # selected, the same file is read...
+        with patch.object(paper_plot, "MULTITASK_L2", "1e4"):
+            save, _ = self._render(paper_plot.plot_row_cluster_organization,
+                                   dict(self._payload(), feature="L21e4"),
+                                   untrained=self._untrained_payload())
+        self.assertIn("6 untrained networks", save.call_args.kwargs["extra"])
+        # ...but a control of another architecture is refused.
+        save, printed = self._render(paper_plot.plot_row_cluster_organization, self._payload(),
+                                     untrained=dict(self._untrained_payload(),
+                                                    architecture="lam0.9"))
+        self.assertIn("0 untrained networks", save.call_args.kwargs["extra"])
+        self.assertIn("default-architecture untrained", str(printed.call_args_list))
+        self.assertEqual(paper_plot._row_sharing_path(untrained=True).name,
+                         "sibling_row_sharing_untrained.pkl")
 
     def test_same_task_bars_per_task_with_stars_on_the_excess(self):
         save, _ = self._render(paper_plot.plot_row_cluster_same_task, self._payload())

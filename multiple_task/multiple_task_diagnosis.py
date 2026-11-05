@@ -65,6 +65,9 @@ from pathlib import Path
 
 import numpy as np
 import matplotlib
+
+import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
+from multitask_naming import architecture_tag
 matplotlib.use("Agg")  # headless-safe: figures are saved, never shown
 import matplotlib.pyplot as plt
 
@@ -155,29 +158,45 @@ def _clear_previous_results(tag):
 
 # ─── Experiment discovery & loading ──────────────────────────────────────────
 
-def _discover_anames(feature=None, seed=None, root=None):
+# A run's identifier (multiple_task.run_name), or an untrained control's with
+# its _init{k} suffix: groups are the seed and the feature tag.
+_ANAME_PATTERN = (r"everything_seed(\d+)_([^+]+)\+hidden\d+\+batch\d+\+angle"
+                  r"(?:_init\d+)?")
+
+
+def _run_feature(aname):
+    """The feature tag of a run or untrained-control identifier (e.g. 'L21e4'
+    of everything_seed749_L21e4+hidden300+batch128+angle_init0)."""
+    m = re.fullmatch(_ANAME_PATTERN, aname)
+    if not m:
+        raise ValueError(f"Not a multi-task run identifier: {aname!r}")
+    return m.group(2)
+
+
+def _discover_anames(feature=None, seed=None, root=None, architecture=None):
     """Experiment identifiers under `root` (default MULTI_DIR) that have
     cluster info: trained runs, or under multiple_tasks_analysis/untrained/
     the untrained controls, whose names end in _init{k}
     (multiple_task_analysis.output_names).
 
     Filters by regularization `feature` (e.g. 'L21e4') and/or `seed` when given,
-    mirroring multiple_task_analysis.py's CLI. Sorted for deterministic output.
+    mirroring multiple_task_analysis.py's CLI, or by `architecture`, the
+    feature tag without its L2 strength (core/multitask_naming.py: '' for
+    L21e4 and L21e3 alike, 'lam0.9' for L21e4lam0.9), which selects every L2
+    cohort of one architecture. Sorted for deterministic output.
     """
     root = MULTI_DIR if root is None else Path(root)
     anames = []
     # The mod pickle is 'cluster_info_mod_...'; this glob only matches the
     # neuron-cluster pickle 'cluster_info_everything_...'.
     for p in sorted(root.glob("everything_seed*/cluster_info_everything_seed*.pkl")):
-        m = re.match(
-            r"cluster_info_(everything_seed(\d+)_([^+]+)\+hidden\d+\+batch\d+\+angle"
-            r"(?:_init\d+)?)\.pkl",
-            p.name,
-        )
+        m = re.match(rf"cluster_info_({_ANAME_PATTERN})\.pkl", p.name)
         if not m:
             continue
         aname, s, f = m.group(1), int(m.group(2)), m.group(3)
         if feature is not None and f != feature:
+            continue
+        if architecture is not None and architecture_tag(f) != architecture:
             continue
         if seed is not None and s != seed:
             continue

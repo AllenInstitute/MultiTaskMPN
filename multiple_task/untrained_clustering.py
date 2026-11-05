@@ -14,6 +14,14 @@ results; no lesion step runs. A network takes about 80 min on a GPU node
 killed batch with --skip-completed skips the finished networks and redoes the
 interrupted one from the start.
 
+L2 acts only during training, so the networks depend on the config's
+architecture (hidden width, modulation bounds and decay), not on its L2
+strength: the five networks of seed 749's L21e4 config are, init seed for
+init seed, the networks any L21e3, L21e2 or L21e5 config would give, and
+`sibling_row_sharing.py --untrained` pools them as the control of every L2
+cohort of that architecture (core/multitask_naming.py). Cluster a new set
+only for another architecture, such as the lambda = 0.9 cohort.
+
 Usage:
     python multiple_task/untrained_clustering.py --feature L21e4 --seed 749 \\
         --init-seed 0 1 2 3 4

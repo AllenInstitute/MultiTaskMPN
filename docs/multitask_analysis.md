@@ -681,7 +681,8 @@ python multiple_task/multiple_task_diagnosis.py --feature L21e4
 python multiple_task/sibling_row_sharing.py --feature L21e4
 # untrained control: cluster fresh networks of one run's config (about 80 min
 # each on a GPU node; add --skip-completed to resume a killed batch), then
-# their row-cluster organization
+# their row-cluster organization; one set serves every L2 cohort of the
+# architecture (see below), so the L21e3 figures draw these networks too
 python multiple_task/untrained_clustering.py --feature L21e4 --seed 749 --init-seed 0 1 2 3 4
 python multiple_task/sibling_row_sharing.py --feature L21e4 --untrained
 # paper figures: rows grouped by period or by task, and the per-task and
@@ -813,7 +814,19 @@ every output under
 `..._init<k>` (`multiple_task_analysis.output_names`), where no trained-run
 reader looks. `--skip-completed` leaves out the networks whose two cluster
 pickles exist; no lesion step runs. `sibling_row_sharing.py --untrained`
-then analyzes those networks (tag `<feature>_untrained`). An untrained
+then analyzes those networks. L2 acts only during training, so the untrained
+network of an L21e4 config is, init seed for init seed, the untrained
+network of any L21e3, L21e2 or L21e5 config (verified weight for weight on
+2026-11-04); one set of controls therefore serves every L2 cohort of an
+architecture. The analysis takes every untrained network whose config shares
+`--feature`'s architecture (the feature tag without its L2 strength,
+`core/multitask_naming.py`: `L21e4` and `L21e3` both give the default
+architecture, `L21e4lam0.9` the lambda = 0.9 one) and writes
+`sibling_row_sharing_untrained.pkl` (`sibling_row_sharing_lam0.9_untrained.pkl`
+for the lambda = 0.9 cohort), which the figures of every `--multitask-l2`
+read; `config_features` in the result lists the configs the networks came
+from (it replaces the per-cohort `sibling_row_sharing_<feature>_untrained`
+files of the first version). An untrained
 network of seed 749's config is not degenerate: hidden std 0.12 (trained
 0.16), M std 0.38, and up to about a quarter of its synapses reach their bounds
 late in long trials, as in the trained network (`modulation_feedback.py`). The
