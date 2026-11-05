@@ -99,6 +99,8 @@ python multiple_task/run_pipeline.py --feature L21e4 --skip-completed --resume
 python multiple_task/state_space_shift.py
 python multiple_task/state_space_structure.py
 python multiple_task/state_space_vs_lesion.py
+# or every state-space analysis and figure end to end (see docs/state_space.md)
+python multiple_task/run_state_space_pipeline.py
 # sibling-task fixed-point geometry over every cached run (after
 # sibling_delay_analysis.py, see docs/state_space.md)
 python multiple_task/sibling_cohort.py --feature L21e4

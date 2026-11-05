@@ -30,6 +30,14 @@ python figures/paper_plot.py --only sibling_cohort_cue_transfer
 python figures/paper_plot.py --only sibling_cohort_category_axis
 python figures/paper_plot.py --only sibling_cohort_category_memory
 
+# every state-space analysis below end to end, each in its own process: shift
+# with the 5-step timecourse, the untrained controls, structure, the lesion
+# link, the Context lengths 240 and 960 ms, the transplant experiment and the
+# state_space figures (which clears paper_plot/ like every mode run);
+# --stages resumes a subset, --dry-run lists the commands, --fresh moves an
+# existing state_space/ aside first
+python multiple_task/run_state_space_pipeline.py
+
 # additional state-space analysis
 python multiple_task/state_space_shift.py
 # category structure and task-vector additivity of the saved task centroids
@@ -106,6 +114,9 @@ python multiple_task/state_space_shift.py --steps 5 --skip-pca --untrained \
 python figures/paper_plot.py --only state_space_r_timecourse
 ```
 
+`--steps 5` without `--skip-pca` computes the same timecourse from the full
+trace in the one pass that also writes the PCA caches (the batch clears the
+top-level files first); `run_state_space_pipeline.py` runs it that way.
 The default remains `--steps 1`. With multiple steps, the results pickle gains
 a `timecourse` field per network, including the time step and per-step scatter,
 r and task-label permutation results. Its existing top-level fields and

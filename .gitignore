@@ -46,6 +46,7 @@ pretrain/fig/
 pretrain/fig_seed/
 pretrain/**/*.png
 state_space/
+state_space_old_*/
 mnist/
 flextask/
 data/
