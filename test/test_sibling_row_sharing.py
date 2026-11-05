@@ -1,4 +1,4 @@
-"""Tests for the seven-pair sibling row-cluster sharing and its summary."""
+"""Tests for restricted row-sharing statistics, paper plots and legacy diagnostics."""
 
 import json
 import pickle
@@ -119,87 +119,177 @@ class SummaryTests(unittest.TestCase):
 
 class SameTaskTests(unittest.TestCase):
     def setUp(self):
-        self.same_task = sharing.summarize_same_task(
-            [(f"run{seed}", _task_experiment()) for seed in range(6)])
+        self.experiments = [(f"run{seed}", _task_experiment()) for seed in range(6)]
+        self.same_task = sharing.summarize_same_task(self.experiments, n_permutations=2000)
 
-    def test_cross_phase_chance_counts_only_two_different_tasks(self):
-        rep_data = {"tb_break_name": np.array(["a-stim1", "b-stim1", "a-go1", "b-go1"]),
-                    "row_labels": np.array([0, 1, 1, 2])}
-        # (a-stim1, b-go1) apart, (b-stim1, a-go1) together; a's own rows,
-        # also apart, do not count.
-        self.assertEqual(sharing._cross_phase_chance(rep_data, "stim1", "go1"), 0.5)
-        self.assertTrue(np.isnan(sharing._cross_phase_chance(rep_data, "stim1", "delay1")))
-
-    def test_a_task_sharing_its_rows_beyond_chance(self):
-        # Pro / anti cells per run: DelayPro and DelayAnti one each
-        # (stimulus, response), ReactCategoryPro and Anti three each; only
-        # ReactCategoryPro's stimulus and response rows share, at chance 0.
+    def test_sharing_is_compared_to_the_restricted_null(self):
         pooled = self.same_task["Pro / anti"]["pooled"]["modulation"]
         self.assertEqual((pooled["n_same"], pooled["n_total"]), (6, 48))
         self.assertAlmostEqual(pooled["pct_same_cluster"], 12.5)
-        self.assertEqual(pooled["chance_mean"], 0.0)
-        self.assertLess(pooled["p_excess"], sharing.SIGNIFICANCE)
+        self.assertGreater(pooled["chance_mean"], 0)
+        self.assertLess(pooled["q_fdr"], sharing.SIGNIFICANCE)
         tasks = self.same_task["Pro / anti"]["tasks"]
         self.assertEqual(list(tasks), ["fdgo", "fdanti", "dmcgo", "dmcnogo"])
-        self.assertAlmostEqual(tasks["dmcgo"]["hidden"]["pct_same_cluster"], 100 / 3)
-        self.assertEqual((tasks["fdgo"]["input"]["pct_same_cluster"],
-                          tasks["fdgo"]["input"]["p_excess"]), (0.0, 1.0))
+        stats = tasks["dmcgo"]["hidden"]
+        self.assertAlmostEqual(stats["pct_same_cluster"], 100 / 3)
+        self.assertAlmostEqual(stats["chance_mean"], 1 / 108, delta=0.004)
+        self.assertLess(stats["q_fdr"], sharing.SIGNIFICANCE)
 
-    def test_cells_at_chance_one_are_left_out_and_counted(self):
-        # IntegrationModality1 and 2 have ten phase pairs each; their two
-        # memory rows share at chance 1, so nine cells per task and run remain.
+    def test_chance_one_pairs_are_kept_in_every_representation(self):
         modality = self.same_task["Modality"]
-        self.assertEqual(modality["n_unspecific_cells"],
-                         {"input": 12, "hidden": 12, "modulation": 12})
-        self.assertEqual(modality["tasks"]["delaydm1"]["input"]["n_total"], 54)
-        self.assertEqual(modality["pooled"]["input"]["n_same"], 0)
+        for rep in sharing.REPRESENTATIONS:
+            self.assertEqual(modality["tasks"]["delaydm1"][rep]["n_total"], 60)
+            self.assertEqual(modality["pooled"][rep]["n_same"], 12)
+            self.assertAlmostEqual(modality["pooled"][rep]["pct_same_cluster"], 10)
+        self.assertNotIn("n_unspecific_cells", modality)
 
-    def test_figure_puts_the_pooled_block_first_and_marks_the_excess(self):
+    def test_figure_puts_the_pooled_block_first_and_marks_corrected_tests(self):
         with patch.object(sharing.plt.Figure, "savefig", autospec=True) as save:
             sharing.plot_same_task(self.same_task, Path("same_task.png"), "test")
         axes = save.call_args.args[0].axes[:2]
         self.assertEqual([tick.get_text() for tick in axes[0].get_xticklabels()],
                          ["All", "DelayPro", "DelayAnti", "ReactCategoryPro",
                           "ReactCategoryAnti"])
-        self.assertEqual([tick.get_text() for tick in axes[1].get_xticklabels()],
-                         ["All", "IntegrationModality1", "IntegrationModality2"])
-        # Stars over the pooled block and ReactCategoryPro, three bars each.
         self.assertEqual([text.get_text() for text in axes[0].texts], ["*"] * 6)
-        self.assertIn("left out", axes[1].get_title(loc="left"))
+        self.assertNotIn("left out", axes[1].get_title(loc="left"))
         self.assertEqual(axes[0].get_xlim(), axes[1].get_xlim())
 
 
 class SamePeriodTests(unittest.TestCase):
-    def setUp(self):
-        self.same_period = sharing.summarize_same_period_all(_experiments())
-
-    def test_cross_period_chance_counts_only_two_different_phases(self):
-        rep_data = {"tb_break_name": np.array(["a-stim1", "b-stim1", "a-go1", "b-go1"]),
-                    "row_labels": np.array([0, 1, 1, 2])}
-        # (a-stim1, b-go1) apart, (a-go1, b-stim1) together; the two tasks'
-        # rows of one phase, also apart, do not count.
-        self.assertEqual(sharing._cross_period_chance(rep_data, "a", "b"), 0.5)
-        self.assertTrue(np.isnan(sharing._cross_period_chance(rep_data, "a", "c")))
-
-    def test_every_phase_counts_its_task_pairs_against_their_chance(self):
-        # Memory 1: DMC go/nogo and DelayDM 1/2, six pairs, all in one cluster;
-        # Response: six tasks, 15 pairs, only DelayPro/DelayAnti together.
-        # No two tasks share rows of two different phases: chance 0.
-        periods = self.same_period["periods"]
+    def test_every_phase_keeps_all_task_pairs(self):
+        entry = sharing.summarize_same_period_all(_experiments(), n_permutations=2000)
+        periods = entry["periods"]
         self.assertEqual(list(periods), ["stim1", "stim2", "delay1", "delay2", "go1"])
         memory = periods["delay1"]["input"]
-        self.assertEqual((memory["n_same"], memory["n_total"], memory["chance_mean"]),
-                         (36, 36, 0.0))
-        self.assertLess(memory["p_excess"], sharing.SIGNIFICANCE)
+        self.assertEqual((memory["n_same"], memory["n_total"]), (36, 36))
+        self.assertGreater(memory["chance_mean"], 0)
+        self.assertLess(memory["q_fdr"], sharing.SIGNIFICANCE)
         response = periods["go1"]["modulation"]
         self.assertEqual((response["n_same"], response["n_total"]), (6, 90))
-        self.assertLess(response["p_excess"], sharing.SIGNIFICANCE)
-        stimulus = periods["stim1"]["hidden"]
-        self.assertEqual((stimulus["n_same"], stimulus["p_excess"]), (0, 1.0))
-        pooled = self.same_period["pooled"]["input"]
+        # Sharing by two response rows once per run is not automatically significant.
+        self.assertGreater(response["p_perm"], sharing.SIGNIFICANCE)
+        pooled = entry["pooled"]["input"]
         self.assertEqual((pooled["n_same"], pooled["n_total"]), (48, 228))
-        self.assertEqual(self.same_period["n_unspecific_cells"],
-                         {"input": 0, "hidden": 0, "modulation": 0})
+        self.assertNotIn("n_unspecific_cells", entry)
+
+
+class RestrictedPermutationTests(unittest.TestCase):
+    @staticmethod
+    def data(names, labels):
+        return {rep: {"tb_break_name": np.array(names), "row_labels": np.array(labels)}
+                for rep in sharing.REPRESENTATIONS}
+
+    def test_row_shuffle_preserves_blocks_and_missing_slots(self):
+        blocks = np.array(["stim1", "go1", "stim1", "go1", "go1"])
+        indices = sharing._restricted_permutations(blocks, 50, np.random.default_rng(2))
+        np.testing.assert_array_equal(blocks[indices], np.tile(blocks, (50, 1)))
+        np.testing.assert_array_equal(np.sort(indices, axis=1),
+                                      np.tile(np.arange(5), (50, 1)))
+        self.assertGreater(len(np.unique(indices, axis=0)), 1)
+
+    def test_single_phase_tasks_and_missing_phases_are_retained(self):
+        data = self.data(["a-stim1", "a-go1", "b-go1", "c-go1"], [0, 1, 1, 1])
+        tasks = sharing.summarize_same_task_all([("run", data)], n_permutations=100)
+        periods = sharing.summarize_same_period_all([("run", data)], n_permutations=100)
+        self.assertEqual(list(tasks["tasks"]), ["a"])
+        self.assertEqual(tasks["pooled"]["input"]["n_total"], 1)
+        self.assertEqual(list(periods["periods"]), ["go1"])
+        self.assertEqual(periods["pooled"]["input"]["n_total"], 3)
+        self.assertEqual(periods["pooled"]["input"]["n_same"], 3)
+
+    def test_all_one_cluster_is_chance_one_with_p_one(self):
+        data = self.data(_NAMES, np.zeros(len(_NAMES), dtype=int))
+        for summarize in (sharing.summarize_same_task_all, sharing.summarize_same_period_all):
+            entry = summarize([("run", data)], n_permutations=100)
+            for stats in entry["pooled"].values():
+                self.assertEqual(stats["pct_same_cluster"], 100)
+                self.assertEqual(stats["chance_mean"], 1)
+                self.assertEqual(stats["p_perm"], 1)
+                self.assertEqual(stats["q_fdr"], 1)
+
+    def test_pair_counts_do_not_depend_on_representation_labels(self):
+        data = _task_experiment()
+        data["input"] = dict(data["input"], row_labels=np.zeros(len(_NAMES), dtype=int))
+        for summarize in (sharing.summarize_same_task_all, sharing.summarize_same_period_all):
+            entry = summarize([("run", data)], n_permutations=100)
+            counts = [entry["pooled"][rep]["n_total"] for rep in sharing.REPRESENTATIONS]
+            self.assertEqual(len(set(counts)), 1)
+            self.assertEqual(entry["pooled"]["input"]["pct_same_cluster"], 100)
+
+    def test_missing_or_duplicate_rows_fail_instead_of_changing_comparison(self):
+        for invalid in ("missing_rep", "missing_row", "duplicate_row"):
+            data = _experiment()
+            if invalid == "missing_rep":
+                del data["hidden"]
+            elif invalid == "missing_row":
+                data["hidden"] = {key: value[:-1] for key, value in data["hidden"].items()}
+            else:
+                names = _NAMES.copy()
+                names[0] = names[1]
+                data["hidden"] = dict(data["hidden"], tb_break_name=names)
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                sharing.summarize_same_task_all([("run", data)], n_permutations=10)
+
+    def test_reordered_rows_and_runs_are_reproducible(self):
+        data = _experiment()
+        data["hidden"] = {key: value[::-1] for key, value in data["hidden"].items()}
+        first = sharing.summarize_same_task_all(_experiments(2), n_permutations=100,
+                                               permutation_seed=17)
+        second = sharing.summarize_same_task_all([("run1", data), ("run0", data)],
+                                                n_permutations=100, permutation_seed=17)
+        self.assertEqual(first, second)
+
+    def test_whole_row_null_preserves_dependent_pairs(self):
+        # Two tasks, two phases. Enumerate all four within-phase permutations.
+        data = self.data(["a-stim1", "a-go1", "b-stim1", "b-go1"], [0, 0, 1, 1])
+        permutations = np.array([[0, 1, 2, 3], [2, 1, 0, 3],
+                                 [0, 3, 2, 1], [2, 3, 0, 1]])
+        with patch.object(sharing, "_restricted_permutations", return_value=permutations), \
+                patch.object(sharing, "_permutation_p", wraps=sharing._permutation_p) as test:
+            sharing.summarize_same_task_all([("run", data)], n_permutations=4)
+        # A shuffle matches either both tasks or neither, never just one.
+        np.testing.assert_array_equal(test.call_args_list[0].args[1], [1, 0, 0, 1])
+
+    def test_binary_zero_sharing_uses_the_discrete_null(self):
+        # Each task's two phase labels have null sharing probability 1/8.
+        # Across 17 runs, zero observed successes is not unusual.
+        names = [f"t{i}-{phase}" for i in range(8) for phase in ("stim1", "go1")]
+        labels = [label for i in range(8) for label in (i, (i + 1) % 8)]
+        data = self.data(names, labels)
+        entry = sharing.summarize_same_task_all(
+            [(f"run{i:02d}", data) for i in range(17)], n_permutations=10000)
+        stats = entry["tasks"]["t0"]["input"]
+        self.assertEqual(stats["n_same"], 0)
+        self.assertAlmostEqual(stats["chance_mean"], 1 / 8, delta=0.004)
+        self.assertAlmostEqual(stats["p_perm"], 2 * (7 / 8) ** 17, delta=0.025)
+        self.assertGreater(stats["q_fdr"], 0.05)
+
+    def test_runs_are_equally_weighted_when_pair_counts_differ(self):
+        first = self.data(["a-stim1", "a-go1"], [0, 0])  # 1/1
+        second = self.data(["a-stim1", "a-delay1", "a-go1"], [0, 1, 2])  # 0/3
+        entry = sharing.summarize_same_task_all(
+            [("one", first), ("three", second)], n_permutations=100)
+        stats = entry["tasks"]["a"]["input"]
+        self.assertEqual((stats["n_same"], stats["n_total"]), (1, 4))
+        self.assertEqual(stats["pct_same_cluster"], 50)
+        self.assertEqual(stats["chance_mean"], 0.5)
+
+    def test_add_one_ties_and_bh_adjustment(self):
+        self.assertEqual(sharing._permutation_p(0, np.ones(9)), 0.2)
+        self.assertEqual(sharing._permutation_p(0.5, np.full(9, 0.5 + 1e-15)), 1)
+        stats = [{"p_perm": p} for p in (0.04, 0.001, 0.02, 0.5)]
+        sharing._adjust_fdr(stats)
+        np.testing.assert_allclose([s["q_fdr"] for s in stats], [0.04 * 4 / 3, 0.004, 0.04, 0.5])
+
+    def test_group_and_all_task_views_reuse_identical_tests(self):
+        entry, groups = sharing._sharing_permutations(_experiments(2), "task", 100, 2)
+        self.assertIs(entry["tasks"]["fdgo"], groups["Pro / anti"]["tasks"]["fdgo"])
+        self.assertEqual(entry["permutation"]["n_permutations"], 100)
+        self.assertEqual(entry["permutation"]["permutation_seed"], 2)
+        statistics = list(entry["pooled"].values())
+        statistics += [s for reps in entry["tasks"].values() for s in reps.values()]
+        statistics += [s for group in groups.values() for s in group["pooled"].values()]
+        self.assertTrue(all(s["q_fdr"] >= s["p_perm"] for s in statistics))
 
 
 def _organized_experiment():
@@ -253,10 +343,20 @@ class OrganizationTests(unittest.TestCase):
                          ["fdgo", "fdanti", "delaydm1", "delaydm2", "dmcgo", "dmcnogo"])
         self.assertAlmostEqual(entry["tasks"]["dmcgo"]["modulation"]["pct_same_cluster"],
                                100 / 3)
-        self.assertEqual(entry["n_unspecific_cells"]["input"], 12)
+        self.assertEqual(entry["tasks"]["delaydm1"]["input"]["n_total"], 60)
 
 
 class DriverTests(unittest.TestCase):
+    def test_invalid_rows_do_not_delete_previous_results(self):
+        data = _experiment()
+        del data["hidden"]
+        with patch.object(diagnosis, "_discover_anames", return_value=["run"]), \
+                patch.object(diagnosis, "_load_experiment", return_value=data), \
+                patch.object(sharing, "_clear_previous_results") as clear, \
+                patch("builtins.print"), self.assertRaisesRegex(ValueError, "missing hidden"):
+            sharing.main(n_permutations=10)
+        clear.assert_not_called()
+
     def _write_run(self, root, aname):
         run_dir = root / aname
         run_dir.mkdir(parents=True)
@@ -283,7 +383,7 @@ class DriverTests(unittest.TestCase):
             with patch.object(diagnosis, "MULTI_DIR", analysis), \
                     patch.object(sharing, "OUT_DIR", out), \
                     patch("builtins.print"):
-                sharing.main(feature="L21e4")
+                sharing.main(feature="L21e4", n_permutations=1000)
             for name in kept:
                 self.assertEqual((out / name).read_text(), "old")
             with open(out / "sibling_row_sharing_L21e4.pkl", "rb") as stream:
@@ -301,6 +401,12 @@ class DriverTests(unittest.TestCase):
             self.assertEqual(set(payload["same_task"]), {"Pro / anti", "Modality"})
             self.assertIn("dmcgo", payload["same_task_all"]["tasks"])
             self.assertIn("delay1", payload["same_period_all"]["periods"])
+            self.assertEqual(payload["same_task_all"]["permutation"]["n_permutations"], 1000)
+            self.assertEqual(payload["same_period_all"]["permutation"]["permutation_seed"], 0)
+            stats = payload["same_task_all"]["tasks"]["fdgo"]["input"]
+            self.assertIn("p_perm", stats)
+            self.assertIn("q_fdr", stats)
+            self.assertNotIn("p_excess", stats)
             self.assertEqual(set(payload["organization"]["representations"]),
                              {"input", "hidden", "modulation"})
             for name in ("sibling_row_sharing_pairs_L21e4.png",
@@ -479,14 +585,46 @@ class PaperFigureTests(unittest.TestCase):
         self.assertEqual(paper_plot._row_sharing_path(untrained=True).name,
                          "sibling_row_sharing_untrained.pkl")
 
-    def test_same_task_bars_per_task_with_stars_on_the_excess(self):
+    def test_stale_control_requests_statistics_only(self):
+        control = dict(self._untrained_payload(), version=4)
+        save, printed = self._render(paper_plot.plot_row_cluster_same_task,
+                                     self._payload(), untrained=control)
+        save.assert_called_once()
+        message = str(printed.call_args_list)
+        self.assertIn("is not a version-5", message)
+        self.assertIn("sibling_row_sharing.py --feature", message)
+        self.assertIn("--untrained", message)
+        self.assertNotIn("untrained_clustering.py", message)
+
+    def test_stars_read_corrected_q_not_raw_p(self):
+        stats = {"pct_same_cluster": 50.0, "chance_mean": 0.25,
+                 "p_perm": 0.001, "q_fdr": 0.2}
+        fig, ax = paper_plot.plt.subplots()
+        self.addCleanup(paper_plot.plt.close, fig)
+        paper_plot._draw_row_sharing_bars(ax, 0, {"input": stats})
+        self.assertEqual(len(ax.texts), 0)
+        stats["q_fdr"] = 0.04
+        paper_plot._draw_row_sharing_bars(ax, 1, {"input": stats})
+        self.assertEqual([text.get_text() for text in ax.texts], ["*"])
+
+    def test_both_variants_use_network_means_with_unequal_pair_counts(self):
+        stats = {"pct_same_cluster": 50.0, "chance_mean": 0.5,
+                 "per_run": {"a": {"observed": 1, "expected": 1, "n_cells": 1},
+                             "b": {"observed": 0, "expected": 0, "n_cells": 3}}}
+        original = paper_plot._row_sharing_bar_values(stats, per_run=False)
+        seeds = paper_plot._row_sharing_bar_values(stats, per_run=True)
+        self.assertEqual(original[:2], (50.0, 50.0))
+        self.assertEqual(seeds[:2], original[:2])
+        self.assertAlmostEqual(seeds[2], np.std([100, 0], ddof=1))
+
+    def test_same_task_bars_per_task_with_stars_on_corrected_tests(self):
         save, _ = self._render(paper_plot.plot_row_cluster_same_task, self._payload())
         save.assert_called_once()
         ax = save.call_args.args[0].axes[0]
         self.assertEqual([tick.get_text() for tick in ax.get_xticklabels()],
                          ["DelayPro", "DelayAnti", "IntegrationModality1",
                           "IntegrationModality2", "ReactCategoryPro", "ReactCategoryAnti"])
-        # Only ReactCategoryPro's stimulus and response rows share (chance 0).
+        # Only ReactCategoryPro has significant within-task alignment.
         self.assertEqual([text.get_text() for text in ax.texts], ["*"] * 3)
         self.assertIn("no period pairs", save.call_args.kwargs["extra"])
 
@@ -501,7 +639,55 @@ class PaperFigureTests(unittest.TestCase):
                 self.assertEqual(len(hollow), len(bars) // 2)
                 self.assertIn("6 untrained networks", save.call_args.kwargs["extra"])
 
-    def test_same_period_bars_per_period_with_stars_on_the_excess(self):
+    def test_seed_figures_draw_the_mean_over_runs_with_sd_whiskers(self):
+        # Three runs share the DelayPro/DelayAnti response rows (1 of 15
+        # response pairs), three keep them apart: per-run response % of
+        # 20/3 and 0 in every representation.
+        def apart():
+            data = _experiment()
+            row = int(np.flatnonzero(_NAMES == "fdanti-go1")[0])
+            for rep_data in data.values():
+                rep_data["row_labels"] = rep_data["row_labels"].copy()
+                rep_data["row_labels"][row] = row
+            return data
+        experiments = _experiments(3) + [(f"run{seed}", apart()) for seed in range(3, 6)]
+        payload = dict(self._payload(),
+                       same_period_all=sharing.summarize_same_period_all(experiments))
+        stats = payload["same_period_all"]["periods"]["go1"]["input"]
+        shared, chance = paper_plot._row_sharing_run_values(stats)
+        np.testing.assert_allclose(shared, [20 / 3] * 3 + [0.0] * 3)
+        self.assertTrue(np.all(chance > 0))
+        self.assertEqual(paper_plot._row_sharing_bar_values(stats, per_run=False),
+                         (stats["pct_same_cluster"], 100 * stats["chance_mean"], 0.0))
+        height, dash, spread = paper_plot._row_sharing_bar_values(stats, per_run=True)
+        self.assertAlmostEqual(height, 10 / 3)
+        self.assertAlmostEqual(dash, chance.mean())
+        self.assertAlmostEqual(spread, float(np.std(shared, ddof=1)))
+        for plot, name in ((paper_plot.plot_row_cluster_same_period_seeds,
+                            "multitask_row_cluster_same_period_seeds.png"),
+                           (paper_plot.plot_row_cluster_same_task_seeds,
+                            "multitask_row_cluster_same_task_seeds.png")):
+            with self.subTest(plot=plot.__name__):
+                save, _ = self._render(plot, payload, untrained=self._untrained_payload())
+                save.assert_called_once()
+                self.assertEqual(Path(save.call_args.args[1]).name, name)
+                self.assertIn("whiskers: SD over runs", save.call_args.kwargs["extra"])
+                fig = save.call_args.args[0]
+                self.assertIn("mean ± SD over runs",
+                              [text.get_text() for text in fig.legends[0].get_texts()])
+        # The response bars of the period figure carry the whiskers: one
+        # errorbar per representation (the untrained twins do not vary).
+        save, _ = self._render(paper_plot.plot_row_cluster_same_period_seeds, payload,
+                               untrained=self._untrained_payload())
+        ax = save.call_args.args[0].axes[0]
+        whiskers = [container for container in ax.containers
+                    if isinstance(container, paper_plot.mpl.container.ErrorbarContainer)]
+        self.assertEqual(len(whiskers), 3)
+        response = [bar for bar in ax.patches if abs(bar.get_height() - 10 / 3) < 1e-9]
+        self.assertEqual(len(response), 3)
+        self.assertLess(ax.get_ylim()[0], float(shared.mean() - shared.std(ddof=1)))
+
+    def test_same_period_bars_per_period_with_stars_on_corrected_tests(self):
         save, _ = self._render(paper_plot.plot_row_cluster_same_period, self._payload())
         save.assert_called_once()
         self.assertEqual(Path(save.call_args.args[1]).name,
@@ -509,23 +695,26 @@ class PaperFigureTests(unittest.TestCase):
         ax = save.call_args.args[0].axes[0]
         self.assertEqual([tick.get_text() for tick in ax.get_xticklabels()],
                          ["Stimulus 1", "Stimulus 2", "Memory 1", "Memory 2", "Response"])
-        # Both memory periods and the response share beyond chance (0), in
-        # every representation; the stimulus periods never share.
-        self.assertEqual([text.get_text() for text in ax.texts], ["*"] * 9)
+        expected_stars = sum(stats["q_fdr"] < sharing.SIGNIFICANCE
+                             for by_rep in self._payload()["same_period_all"]["periods"].values()
+                             for stats in by_rep.values())
+        self.assertEqual([text.get_text() for text in ax.texts], ["*"] * expected_stars)
         self.assertEqual(len(ax.patches), 15)
 
     def test_skips_a_missing_or_older_result(self):
         for plot in (paper_plot.plot_row_cluster_organization,
                      paper_plot.plot_row_cluster_same_task,
-                     paper_plot.plot_row_cluster_same_period):
+                     paper_plot.plot_row_cluster_same_period,
+                     paper_plot.plot_row_cluster_same_task_seeds,
+                     paper_plot.plot_row_cluster_same_period_seeds):
             save, printed = self._render(plot, None)
             save.assert_not_called()
             self.assertIn("sibling_row_sharing.py --feature", str(printed.call_args_list))
             payload = self._payload()
-            payload["version"] = 3
+            payload["version"] = 4
             save, printed = self._render(plot, payload)
             save.assert_not_called()
-            self.assertIn("is not a version-4", str(printed.call_args_list))
+            self.assertIn("is not a version-5", str(printed.call_args_list))
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ Each pair, phase and representation is counted and tested against chance
 exactly as in `multiple_task_diagnosis.py` (`diagnose_pair_same_cluster`),
 whose loading, chance level and test this script reuses.
 
-The summary pools each group's pairs by phase type: Stimulus (stim1, stim2),
+The legacy summary pools each group's pairs by phase type: Stimulus (stim1, stim2),
 Memory (delay1, delay2) and Response (go1). Per run it counts the group's
 (pair, phase) cells of that type whose two rows share a cluster and subtracts
 the count chance predicts, the sum of the cells' chance levels; a two-sided
@@ -27,27 +27,20 @@ Runs are independent, but the cells of one run come from one clustering, so
 the per-cell tests are not pooled. A summary cell whose mean chance is at
 least UNSPECIFIC_CHANCE (input and hidden in the memory periods, where every
 task's row falls in one cluster) is reported but not tested: sharing there
-is not specific to the pair.
+is not specific to the pair. These exploratory diagnostics are separate from
+the restricted permutation tests used by the paper's sharing bar figures.
 
-Sharing within a phase says whether a representation groups rows by period;
-the same-task check asks whether it groups them by task. For every task of
-the pairs and every two of its phases, it records whether the task's two
-rows share a row cluster, against the chance that a row of the one phase
-and a row of the other from two different tasks share one
-(`_cross_phase_chance`), so the phase combination is controlled for. The
-cells are pooled per task and per group and tested like the summary
-(per-run excess over chance, Wilcoxon over the runs); cells whose own
-chance is at least UNSPECIFIC_CHANCE (the two memory periods in input and
-hidden) are left out and counted. The same check also runs over every task
-of the runs (`summarize_same_task_all`), the per-task view of the paper.
-
-The same-period check is its mirror over every task (`summarize_same_period_all`):
-for every phase and every two tasks with a row of it, whether the two rows
-share a row cluster, against the chance that a row of the one task and a row
-of the other from two different phases share one (`_cross_period_chance`), so
-how alike the two tasks are anyway is controlled for. Cells are pooled per
-phase and over the phases and tested as above, and cells at chance of at
-least UNSPECIFIC_CHANCE are left out and counted.
+The same-task and same-period checks use all available row pairs, identical
+across representations. Their nulls permute cluster labels among tasks within
+each phase (same task) or among available phases within each task (same period).
+They preserve the row slots and block-specific cluster-label distributions.
+The statistic is the equal mean of each network's sharing fraction; chance
+is its permutation-null mean. Stars use BH-adjusted two-sided permutation p
+values, corrected within a cohort and analysis type over all unique reported
+tests (individual, all-pooled and sibling-group-pooled, across representations).
+Original and seeds paper figures use these same means and q values; seeds adds SD.
+These are conditional tests of row organization, not evidence of causality or
+a direct test of trained versus untrained networks.
 
 The organization check puts the two questions on one scale for every task's
 rows (`summarize_organization`): per run and representation, the fold
@@ -125,10 +118,10 @@ REPRESENTATIONS = tuple(diag._REP_COLORS)
 UNSPECIFIC_CHANCE = 0.95
 SIGNIFICANCE = 0.05
 
-# Saved-result layout of this script: 2 adds the same-task check, 3 its
-# all-task version and the organization check, 4 the same-period check
-# (paper_plot reads only 4).
-RESULT_VERSION = 4
+# Saved-result layout: 2 adds same-task, 3 all-task and organization,
+# 4 same-period, 5 restricted permutations with common row pairs, equal
+# network means and BH-adjusted q values. paper_plot requires version 5.
+RESULT_VERSION = 5
 # Prefixes of the files one run writes, each followed by "{tag}.{suffix}".
 _OUTPUT_PREFIXES = ("sibling_row_sharing_", "sibling_row_sharing_pairs_",
                     "sibling_row_sharing_summary_", "sibling_row_sharing_same_task_")
@@ -242,157 +235,170 @@ def _split_row_names(tb_break_name):
             np.array([part[1] if len(part) == 2 else "" for part in parts]))
 
 
-def _cross_phase_chance(rep_data, phase_a, phase_b):
-    """Chance that one task's `phase_a` and `phase_b` rows share a row
-    cluster in one experiment's representation: the fraction of pairs of a
-    `phase_a` row and a `phase_b` row from two different tasks that carry the
-    same label (NaN without such a pair). It is the baseline a task's own two
-    rows of those phases are read against, as `_same_phase_chance` is for a
-    sibling pair of one phase."""
-    rules, phases = _split_row_names(rep_data["tb_break_name"])
-    labels = np.asarray(rep_data["row_labels"])
-    in_a, in_b = phases == phase_a, phases == phase_b
-    pairs = rules[in_a][:, None] != rules[in_b][None, :]
-    if not pairs.any():
-        return float("nan")
-    return float((labels[in_a][:, None] == labels[in_b][None, :])[pairs].mean())
-
-
-def _same_task_cells(experiments, rules):
-    """{rep: {rule: [cell, ...]}}: one cell per run and pair of a task's
-    phases, with whether the two rows share a row cluster and the chance of
-    that phase combination (`_cross_phase_chance`)."""
-    phase_order = list(diag._PHASE_DISPLAY)
-    cells = {rep: {rule: [] for rule in rules} for rep in REPRESENTATIONS}
-    for aname, data in experiments:
-        for rep in REPRESENTATIONS:
-            if rep not in data:
-                continue
-            row_rules, row_phases = _split_row_names(data[rep]["tb_break_name"])
-            labels = np.asarray(data[rep]["row_labels"])
-            chances = {}
-            for rule in rules:
-                rows = sorted(np.flatnonzero(row_rules == rule),
-                              key=lambda i: (phase_order.index(row_phases[i])
-                                             if row_phases[i] in phase_order
-                                             else len(phase_order)))
-                for k, i in enumerate(rows):
-                    for j in rows[k + 1:]:
-                        phases = (str(row_phases[i]), str(row_phases[j]))
-                        if phases not in chances:
-                            chances[phases] = _cross_phase_chance(data[rep], *phases)
-                        cells[rep][rule].append({
-                            "aname": aname, "phases": list(phases),
-                            "same": bool(labels[i] == labels[j]),
-                            "chance": chances[phases]})
-    return cells
-
-
-def summarize_same_task(experiments):
-    """{group: {"pooled": {rep: stats}, "tasks": {rule: {rep: stats}},
-    "n_unspecific_cells": {rep: count}}}: whether a task's rows of two of
-    its phases share a row cluster more often than two different tasks'
-    rows of those phases, pooled per task and per group (`_summarize_cells`).
-    Cells whose own chance is at least UNSPECIFIC_CHANCE are left out of the
-    stats and counted."""
-    rules = [rule for pairs in PAIR_GROUPS.values() for pair in pairs for rule in pair]
-    cells = _same_task_cells(experiments, rules)
-    return {group: _cell_entry(cells, [rule for pair in pairs for rule in pair], "tasks")
-            for group, pairs in PAIR_GROUPS.items()}
-
-
-def _cell_entry(cells, keys, by):
-    """The stats of `keys` (tasks or phases) from `_same_task_cells` or
-    `_same_period_cells` output: per key under `by` and pooled over `keys`,
-    cells at chance >= UNSPECIFIC_CHANCE left out and counted."""
-    entry = {"pooled": {}, by: {}, "n_unspecific_cells": {}}
+def _aligned_rows(aname, data):
+    """Canonical rows shared by all representations; missing slots stay missing."""
+    names, aligned = None, {}
     for rep in REPRESENTATIONS:
-        pooled, n_unspecific = [], 0
-        for key in keys:
-            specific = [cell for cell in cells[rep][key]
-                        if not cell["chance"] >= UNSPECIFIC_CHANCE]
-            n_unspecific += len(cells[rep][key]) - len(specific)
-            stats = _summarize_cells(specific)
-            if stats is not None:
-                entry[by].setdefault(key, {})[rep] = stats
-            pooled += specific
-        stats = _summarize_cells(pooled)
-        if stats is not None:
-            entry["pooled"][rep] = stats
-        entry["n_unspecific_cells"][rep] = n_unspecific
-    return entry
+        if rep not in data:
+            raise ValueError(f"{aname}: missing {rep} clustering")
+        row_names = np.asarray(data[rep]["tb_break_name"], dtype=str)
+        labels = np.asarray(data[rep]["row_labels"])
+        if (row_names.ndim != 1 or labels.ndim != 1
+                or row_names.size != labels.size
+                or np.unique(row_names).size != row_names.size):
+            raise ValueError(f"{aname}/{rep}: invalid or duplicate row names/labels")
+        order = np.argsort(row_names)
+        current = row_names[order]
+        if names is None:
+            names = current
+        elif not np.array_equal(names, current):
+            raise ValueError(f"{aname}: representations have different task/phase rows")
+        aligned[rep] = labels[order]
+    rules, phases = _split_row_names(names)
+    if np.any(rules == "") or np.any(phases == ""):
+        raise ValueError(f"{aname}: expected task-phase row names")
+    return rules, phases, aligned
 
 
-def _present_rules(experiments):
-    """Every rule with a clustered row in some run, in diag._TASK_DISPLAY
-    order (unknown rules last, by name)."""
-    order = list(diag._TASK_DISPLAY)
-    rules = {str(rule) for _, data in experiments for rep_data in data.values()
-             for rule in _split_row_names(rep_data["tb_break_name"])[0]}
-    return sorted(rules, key=lambda rule: (order.index(rule) if rule in order
-                                           else len(order), rule))
+def _restricted_permutations(blocks, n_permutations, rng):
+    """Independent uniform shuffles within blocks; one map for all representations."""
+    indices = np.broadcast_to(np.arange(len(blocks)),
+                              (n_permutations, len(blocks))).copy()
+    for block in np.unique(blocks):
+        rows = np.flatnonzero(blocks == block)
+        indices[:, rows] = rng.permuted(
+            np.broadcast_to(rows, (n_permutations, rows.size)), axis=1)
+    return indices
 
 
-def summarize_same_task_all(experiments):
-    """The same-task check over every task of the runs (`_cell_entry`), not
-    only the sibling pairs'; a task with one clustered phase has no cells."""
-    rules = _present_rules(experiments)
-    return _cell_entry(_same_task_cells(experiments, rules), rules, "tasks")
+def _permutation_p(observed, null):
+    """Two-sided, inclusive equal-tail Monte Carlo p, with add-one correction."""
+    null = np.asarray(null)
+    tolerance = 1e-12
+    lower = (1 + np.count_nonzero(null <= observed + tolerance)) / (null.size + 1)
+    upper = (1 + np.count_nonzero(null >= observed - tolerance)) / (null.size + 1)
+    return float(min(1.0, 2 * min(lower, upper)))
 
 
-def _cross_period_chance(rep_data, rule_a, rule_b):
-    """Chance that two tasks' rows of one phase share a row cluster in one
-    experiment's representation: the fraction of pairs of a `rule_a` row and
-    a `rule_b` row of two different phases that carry the same label (NaN
-    without such a pair). It is the baseline the two tasks' rows of one phase
-    are read against, as `_cross_phase_chance` is for one task's rows of two
-    phases, so how alike the two tasks are anyway is controlled for."""
-    rules, phases = _split_row_names(rep_data["tb_break_name"])
-    labels = np.asarray(rep_data["row_labels"])
-    in_a, in_b = rules == rule_a, rules == rule_b
-    pairs = phases[in_a][:, None] != phases[in_b][None, :]
-    if not pairs.any():
-        return float("nan")
-    return float((labels[in_a][:, None] == labels[in_b][None, :])[pairs].mean())
+def _adjust_fdr(statistics):
+    """BH-adjust all unique reported tests within one mode and cohort."""
+    finite = [stats for stats in statistics if np.isfinite(stats["p_perm"])]
+    if not finite:
+        return
+    order = np.argsort([stats["p_perm"] for stats in finite])
+    ranked = np.array([finite[i]["p_perm"] for i in order])
+    adjusted = np.minimum.accumulate(
+        (ranked * len(ranked) / np.arange(1, len(ranked) + 1))[::-1])[::-1]
+    for index, q_value in zip(order, np.minimum(adjusted, 1.0)):
+        finite[index]["q_fdr"] = float(q_value)
 
 
-def _same_period_cells(experiments, phases):
-    """{rep: {phase: [cell, ...]}}: one cell per run, phase and pair of tasks
-    with a row of the phase, with whether the two rows share a row cluster and
-    the chance of that task pair (`_cross_period_chance`)."""
-    cells = {rep: {phase: [] for phase in phases} for rep in REPRESENTATIONS}
-    for aname, data in experiments:
+def _sharing_permutations(experiments, mode, n_permutations, permutation_seed):
+    """Fixed row pairs with a label null conditional on the other factor.
+    Average fractions equally across runs, including degenerate runs.
+    Preserve dependence among pairs sharing a row in every permutation."""
+    if mode not in ("task", "period"):
+        raise ValueError("mode must be task or period")
+    if not isinstance(n_permutations, (int, np.integer)) or n_permutations < 1:
+        raise ValueError("n_permutations must be a positive integer")
+    names = [name for name, _ in experiments]
+    if len(names) != len(set(names)):
+        raise ValueError("duplicate experiment names")
+    rng = np.random.default_rng(permutation_seed)
+    accumulated = {}
+    group_rules = {group: {rule for pair in pairs for rule in pair}
+                   for group, pairs in PAIR_GROUPS.items()}
+    for aname, data in sorted(experiments, key=lambda item: item[0]):
+        rules, phases, labels = _aligned_rows(aname, data)
+        i, j = np.triu_indices(len(rules), k=1)
+        same_rule, same_phase = rules[i] == rules[j], phases[i] == phases[j]
+        keep = same_rule & ~same_phase if mode == "task" else same_phase & ~same_rule
+        i, j = i[keep], j[keep]
+        if i.size == 0:
+            continue
+        keys = rules[i] if mode == "task" else phases[i]
+        selectors = {("pooled", "all"): np.ones(i.size, dtype=bool)}
+        selectors.update({("individual", key): keys == key for key in np.unique(keys)})
+        if mode == "task":
+            selectors.update({("group", group): np.isin(keys, list(members))
+                              for group, members in group_rules.items()})
+        permutations = _restricted_permutations(
+            phases if mode == "task" else rules, n_permutations, rng)
         for rep in REPRESENTATIONS:
-            if rep not in data:
-                continue
-            row_rules, row_phases = _split_row_names(data[rep]["tb_break_name"])
-            labels = np.asarray(data[rep]["row_labels"])
-            chances = {}
-            for phase in phases:
-                rows = np.flatnonzero(row_phases == phase)
-                for k, i in enumerate(rows):
-                    for j in rows[k + 1:]:
-                        rules = tuple(sorted((str(row_rules[i]), str(row_rules[j]))))
-                        if rules not in chances:
-                            chances[rules] = _cross_period_chance(data[rep], *rules)
-                        cells[rep][phase].append({
-                            "aname": aname, "rules": list(rules),
-                            "same": bool(labels[i] == labels[j]),
-                            "chance": chances[rules]})
-    return cells
+            shared = labels[rep][i] == labels[rep][j]
+            shuffled = labels[rep][permutations]
+            null_shared = shuffled[:, i] == shuffled[:, j]
+            for key, mask in selectors.items():
+                n_cells = int(mask.sum())
+                if not n_cells:
+                    continue
+                observed = int(shared[mask].sum())
+                null_counts = null_shared[:, mask].sum(axis=1)
+                acc = accumulated.setdefault((key, rep), {
+                    "per_run": {}, "null_sum": np.zeros(n_permutations)})
+                acc["per_run"][aname] = {
+                    "observed": observed, "expected": float(null_counts.mean()),
+                    "n_cells": n_cells}
+                acc["null_sum"] += null_counts / n_cells
+
+    results = {}
+    for (key, rep), acc in accumulated.items():
+        runs = acc["per_run"]
+        observed = float(np.mean([run["observed"] / run["n_cells"]
+                                  for run in runs.values()]))
+        null = acc["null_sum"] / len(runs)
+        results.setdefault(key, {})[rep] = {
+            "pct_same_cluster": 100 * observed,
+            "chance_mean": float(null.mean()),
+            "n_same": sum(run["observed"] for run in runs.values()),
+            "n_total": sum(run["n_cells"] for run in runs.values()),
+            "n_runs": len(runs), "per_run": runs,
+            "p_perm": _permutation_p(observed, null), "q_fdr": float("nan")}
+    _adjust_fdr([stats for by_rep in results.values() for stats in by_rep.values()])
+    by = "tasks" if mode == "task" else "periods"
+    display_order = list(diag._TASK_DISPLAY if mode == "task" else diag._PHASE_DISPLAY)
+    keys = [key for kind, key in results if kind == "individual"]
+    keys.sort(key=lambda key: (display_order.index(key) if key in display_order
+                               else len(display_order), key))
+    metadata = {
+        "null_definition": ("shuffle labels among tasks within each phase" if mode == "task"
+                            else "shuffle labels among available phases within each task"),
+        "test_statistic": "equal mean of per-network sharing fractions",
+        "pair_selection": "all available pairs; identical row sets across representations",
+        "n_permutations": int(n_permutations), "permutation_seed": int(permutation_seed),
+        "p_definition": "two-sided inclusive equal tails with add-one correction",
+        "n_fdr_tests": sum(len(by_rep) for by_rep in results.values()),
+        "fdr_family": ("BH within this cohort and analysis type: all individual, all-pooled "
+                       "and sibling-group-pooled tests across representations; repeated "
+                       "panels of the same test counted once"),
+    }
+    entry = {"pooled": results.get(("pooled", "all"), {}),
+             by: {key: results[("individual", key)] for key in keys},
+             "permutation": metadata}
+    groups = {}
+    if mode == "task":
+        for group, pairs in PAIR_GROUPS.items():
+            groups[group] = {
+                "pooled": results.get(("group", group), {}),
+                "tasks": {rule: entry["tasks"][rule] for pair in pairs for rule in pair
+                          if rule in entry["tasks"]},
+                "permutation": metadata}
+    return entry, groups
 
 
-def summarize_same_period_all(experiments):
-    """{"pooled": {rep: stats}, "periods": {phase: {rep: stats}},
-    "n_unspecific_cells": {rep: count}}: whether two different tasks' rows of
-    one phase share a row cluster more often than the same two tasks' rows of
-    two different phases, per phase of the runs (in diag._PHASE_DISPLAY
-    order) and pooled over them (`_cell_entry`): the per-phase view of the
-    organization check's period class."""
-    present = {str(phase) for _, data in experiments for rep_data in data.values()
-               for phase in _split_row_names(rep_data["tb_break_name"])[1]}
-    phases = [phase for phase in diag._PHASE_DISPLAY if phase in present]
-    return _cell_entry(_same_period_cells(experiments, phases), phases, "periods")
+def summarize_same_task(experiments, n_permutations=10000, permutation_seed=0):
+    """Sibling-group view of the same restricted tests used by the paper."""
+    return _sharing_permutations(experiments, "task", n_permutations, permutation_seed)[1]
+
+
+def summarize_same_task_all(experiments, n_permutations=10000, permutation_seed=0):
+    """Every available task's phase pairs; no label-dependent pair exclusion."""
+    return _sharing_permutations(experiments, "task", n_permutations, permutation_seed)[0]
+
+
+def summarize_same_period_all(experiments, n_permutations=10000, permutation_seed=0):
+    """Every available phase's task pairs, including single-phase tasks."""
+    return _sharing_permutations(experiments, "period", n_permutations, permutation_seed)[0]
 
 
 # Row-pair classes of the organization check: two rows of one period from
@@ -578,10 +584,8 @@ _SAME_TASK_GAP = 0.5                      # extra space after the pooled block
 
 
 def _draw_same_task_block(ax, x0, by_rep, show_runs):
-    """One block: a bar per representation with the % of cells whose two
-    rows share a cluster, a dash at the mean chance, '*' above when the
-    per-run excess differs from zero in either direction (p < SIGNIFICANCE),
-    and one dot per run when `show_runs`."""
+    """Mean sharing over runs, permutation-null chance, and a BH-FDR star.
+    Add one dot per run when `show_runs`."""
     for k, rep in enumerate(REPRESENTATIONS):
         stats = by_rep.get(rep)
         if stats is None:
@@ -599,7 +603,7 @@ def _draw_same_task_block(ax, x0, by_rep, show_runs):
             ax.scatter(x + np.linspace(-0.08, 0.08, per_run.size), per_run, s=3,
                        color="0.15", alpha=0.45, linewidths=0, zorder=3)
             top = max(top, float(per_run.max()))
-        if stats["p_excess"] < SIGNIFICANCE:
+        if stats["q_fdr"] < SIGNIFICANCE:
             ax.text(x, top + 2, "*", ha="center", va="bottom", fontsize=7)
 
 
@@ -637,28 +641,23 @@ def plot_same_task(same_task, out_path, title):
         ax.spines["left"].set_bounds(0, 100)
         ax.spines[["top", "right"]].set_visible(False)
         ax.tick_params(axis="y", labelsize=7)
-        left_out = same_task[group]["n_unspecific_cells"]
-        note = ", ".join(f"{rep} {count}" for rep, count in left_out.items() if count)
-        ax.set_title(f"{group} tasks" + (f" (cells at chance ≥ "
-                                          f"{100 * UNSPECIFIC_CHANCE:.0f}% left out: "
-                                          f"{note})" if note else ""),
-                     fontsize=8, loc="left")
+        ax.set_title(f"{group} tasks", fontsize=8, loc="left")
         ax.set_ylabel("% of phase pairs\nin one cluster", fontsize=7)
     handles = [plt.Rectangle((0, 0), 1, 1, facecolor=color, edgecolor="k",
                              linewidth=0.4, alpha=0.85, label=rep)
                for rep, color in diag._REP_COLORS.items()]
     handles += [
         plt.Line2D([], [], color=diag._CHANCE_COLOR, linewidth=1.2,
-                   label="chance (two tasks' rows of those phases)"),
+                   label="chance (restricted permutation)"),
         plt.Line2D([], [], linestyle="none", marker="o", markersize=2.5,
                    color="0.15", alpha=0.45, label="one run (All)"),
         plt.Line2D([], [], linestyle="none", marker="$*$", markersize=5, color="k",
-                   label=f"differs from chance, Wilcoxon p < {SIGNIFICANCE}"),
+                   label=f"permutation, BH-FDR q < {SIGNIFICANCE}"),
     ]
     fig.legend(handles=handles, loc="outside lower center", ncol=3, frameon=False,
                fontsize=7, handlelength=1.2, columnspacing=1.0)
-    fig.suptitle(f"{title}\n% of (run, phase pair) cells whose two rows of one "
-                 "task share a row cluster", fontsize=9)
+    fig.suptitle(f"{title}\nMean over runs: % of a task's phase pairs "
+                 "in one row cluster", fontsize=9)
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
@@ -685,38 +684,39 @@ def _print_summary(summary):
                 print(f"      {_stats_line(rep, stats)}")
 
 
+def _sharing_stats_line(rep, stats):
+    """The same run-mean statistic and restricted test displayed in the paper."""
+    return (f"{rep:<11s}: mean {stats['pct_same_cluster']:.1f}% over "
+            f"{stats['n_runs']} runs; {stats['n_same']}/{stats['n_total']} total pairs; "
+            f"null mean {100 * stats['chance_mean']:.1f}%; "
+            f"permutation p = {stats['p_perm']:.3g}, BH q = {stats['q_fdr']:.3g}")
+
+
 def _print_same_task(same_task):
     """Per group, the pooled same-task lines, then one line per task and
     representation."""
     print("\n=== Same task, two phases ===")
     for group, entry in same_task.items():
-        left_out = ", ".join(f"{rep} {count}" for rep, count
-                             in entry["n_unspecific_cells"].items() if count)
-        print(f"  [{group}] all tasks"
-              + (f" (cells at chance >= {100 * UNSPECIFIC_CHANCE:.0f}% left out: "
-                 f"{left_out})" if left_out else ""))
+        print(f"  [{group}] all tasks")
         for rep, stats in entry["pooled"].items():
-            print(f"      {_stats_line(rep, stats)}")
+            print(f"      {_sharing_stats_line(rep, stats)}")
         for rule, by_rep in entry["tasks"].items():
             print(f"    {diag._TASK_DISPLAY.get(rule, rule)}")
             for rep, stats in by_rep.items():
-                print(f"      {_stats_line(rep, stats)}")
+                print(f"      {_sharing_stats_line(rep, stats)}")
 
 
 def _print_same_period(same_period):
     """The pooled same-period lines, then one line per phase and
     representation."""
     print("\n=== Same phase, two tasks ===")
-    left_out = ", ".join(f"{rep} {count}" for rep, count
-                         in same_period["n_unspecific_cells"].items() if count)
-    print("  all phases" + (f" (cells at chance >= {100 * UNSPECIFIC_CHANCE:.0f}% left out: "
-                            f"{left_out})" if left_out else ""))
+    print("  all phases")
     for rep, stats in same_period["pooled"].items():
-        print(f"      {_stats_line(rep, stats)}")
+        print(f"      {_sharing_stats_line(rep, stats)}")
     for phase, by_rep in same_period["periods"].items():
         print(f"    {diag._PHASE_DISPLAY.get(phase, phase)}")
         for rep, stats in by_rep.items():
-            print(f"      {_stats_line(rep, stats)}")
+            print(f"      {_sharing_stats_line(rep, stats)}")
 
 
 def _print_organization(organization):
@@ -733,7 +733,8 @@ def _print_organization(organization):
               f"paired Wilcoxon p = {p_value:.2g}")
 
 
-def main(feature="L21e4", seed=None, untrained=False):
+def main(feature="L21e4", seed=None, untrained=False,
+         n_permutations=10000, permutation_seed=0):
     """Analyze every clustered run of `feature` (or one `seed`), or with
     `untrained` every untrained control of `feature`'s architecture (module
     docstring), save the results and draw the three figures."""
@@ -752,8 +753,7 @@ def main(feature="L21e4", seed=None, untrained=False):
                                        architecture=architecture_tag(feature))
     else:
         anames = diag._discover_anames(feature, seed)
-    removed = _clear_previous_results(tag)
-    print(f"Cleared {len(removed)} previous {tag} result file(s) from {OUT_DIR}/")
+
     print(f"Discovered {len(anames)} {'untrained ' if untrained else ''}experiment(s) "
           f"(feature={feature}, seed={seed})")
     experiments = []
@@ -773,15 +773,19 @@ def main(feature="L21e4", seed=None, untrained=False):
                                f"{result['rule_b_display']}", result)
     summary = summarize_by_phase_type(pair_results)
     _print_summary(summary)
-    same_task = summarize_same_task(experiments)
+    same_task_all, same_task = _sharing_permutations(
+        experiments, "task", n_permutations, permutation_seed)
     _print_same_task(same_task)
-    same_task_all = summarize_same_task_all(experiments)
     _print_same_task({"All tasks": same_task_all})
-    same_period_all = summarize_same_period_all(experiments)
+    same_period_all = summarize_same_period_all(
+        experiments, n_permutations, permutation_seed)
     _print_same_period(same_period_all)
     organization = summarize_organization(experiments)
     _print_organization(organization)
 
+    # Validate and compute before replacing any previous result files.
+    removed = _clear_previous_results(tag)
+    print(f"Cleared {len(removed)} previous {tag} result file(s) from {OUT_DIR}/")
     title = f"Sibling row-cluster sharing ({tag}, {len(experiments)} experiments)"
     diag.plot_combined_same_cluster(
         {key: result for results in pair_results.values()
@@ -805,7 +809,7 @@ def main(feature="L21e4", seed=None, untrained=False):
                         for group, pairs in PAIR_GROUPS.items()},
         "untrained": bool(untrained),
         "phase_types": {name: list(phases) for name, phases in PHASE_TYPES.items()},
-        "unspecific_chance": UNSPECIFIC_CHANCE,
+        "unspecific_chance": UNSPECIFIC_CHANCE,  # legacy sibling phase-type summary only
         "pairs": pair_results,
         "summary": summary,
         "same_task": same_task,
@@ -826,8 +830,8 @@ def main(feature="L21e4", seed=None, untrained=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Row-cluster sharing of seven sibling-task pairs, per pair "
-                    "and summarized by phase type.")
+        description="Row-cluster sharing: restricted same-task/same-period "
+                    "permutation tests, organization and legacy sibling-pair diagnostics.")
     parser.add_argument("--feature", type=str, default="L21e4",
                         help="Only analyze models with this exact feature "
                              "(default: 'L21e4').")
@@ -837,5 +841,10 @@ if __name__ == "__main__":
     parser.add_argument("--untrained", action="store_true",
                         help="Analyze the untrained controls of "
                              "untrained_clustering.py instead of the trained runs.")
+    parser.add_argument("--n-permutations", type=int, default=10000,
+                        help="Restricted row-label shuffles for task/period tests (default: 10000).")
+    parser.add_argument("--permutation-seed", type=int, default=0,
+                        help="RNG seed for the restricted permutations (default: 0).")
     args = parser.parse_args()
-    main(feature=args.feature, seed=args.seed, untrained=args.untrained)
+    main(feature=args.feature, seed=args.seed, untrained=args.untrained,
+         n_permutations=args.n_permutations, permutation_seed=args.permutation_seed)

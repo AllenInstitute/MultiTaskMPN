@@ -5826,13 +5826,14 @@ def plot_input_weight_correlation():
 # clustered run of that cohort) and, for the untrained networks of
 # untrained_clustering.py, as sibling_row_sharing_untrained.pkl (one control
 # set per architecture, shared by every L2 cohort of it; `lam0.9_untrained`
-# for the lambda = 0.9 cohort, see core/multitask_naming.py); nothing is
-# recomputed here. A row of the
+# for the lambda = 0.9 cohort, see core/multitask_naming.py). Bar statistics
+# are read directly; organization recomputes trained/untrained comparisons
+# from the saved per-network enrichment values. A row of the
 # clustered input / hidden / modulation heatmaps is one task in one trial
 # period, and these figures ask whether the row clusters group the rows by
 # period or by task.
 MULTITASK_DIAGNOSIS_ROOT = Path("multiple_tasks_diagnosis")
-_ROW_SHARING_RESULT_VERSION = 4
+_ROW_SHARING_RESULT_VERSION = 5
 _ROW_SHARING_REPRESENTATIONS = (("input", "Input\nneurons"), ("hidden", "Hidden\nneurons"),
                                 ("modulation", "Synapses"))
 _ROW_ORGANIZATION_PANELS = (("period", "Same period,\ndifferent task"),
@@ -5849,19 +5850,16 @@ _ROW_SAME_TASK_Y_TOP = 112                # head room for the stars above 100%
 # networks each representation's slot holds a trained and an untrained bar.
 _ROW_SHARING_GROUP_IN = {False: 0.42, True: 0.55}
 _ROW_SHARING_CHANCE_COLOR = "0.25"
+# Whiskers of the `_seeds` twins: the SD over runs of each run's %.
+_ROW_SHARING_SPREAD_COLOR = "0.15"
 _ROW_SHARING_SIGNIFICANCE = 0.05
 
 
 def _row_sharing_commands(untrained=False):
-    """The commands that write the cohort's (or its untrained controls')
-    row-cluster sharing result."""
+    """Recompute statistics from existing cluster caches, without reclustering."""
     feature = multitask_feature()
-    if not untrained:
-        return f"python multiple_task/sibling_row_sharing.py --feature {feature}"
-    seed = MULTITASK_DESIGNATED_SEEDS.get(MULTITASK_L2, {}).get("multiple_tasks") or "<seed>"
-    return (f"python multiple_task/untrained_clustering.py --feature {feature} "
-            f"--seed {seed} --init-seed 0 1 2 3 4, then python "
-            f"multiple_task/sibling_row_sharing.py --feature {feature} --untrained")
+    return (f"python multiple_task/sibling_row_sharing.py --feature {feature}"
+            + (" --untrained" if untrained else ""))
 
 
 def _row_sharing_path(untrained=False):
@@ -5877,7 +5875,7 @@ def _load_row_cluster_sharing(untrained=False):
     """The selected cohort's saved row-cluster sharing result, or with
     `untrained` that of its architecture's untrained controls
     (untrained_clustering.py); None with a message when it is missing, older
-    than the organization check or of another cohort or architecture."""
+    than the current statistical schema or of another cohort or architecture."""
     feature = multitask_feature()
     path = _row_sharing_path(untrained)
     command = f"Run {_row_sharing_commands(untrained)}"
@@ -5905,8 +5903,13 @@ def _load_untrained_row_sharing():
     path = _row_sharing_path(untrained=True)
     if path.exists():
         return _load_row_cluster_sharing(untrained=True)
+    feature = multitask_feature()
+    seed = MULTITASK_DESIGNATED_SEEDS.get(MULTITASK_L2, {}).get("multiple_tasks") or "<seed>"
     print(f"  No untrained control ({path.name}); drawing the trained runs only. "
-          f"Run {_row_sharing_commands(untrained=True)}.")
+          f"Run {_row_sharing_commands(untrained=True)}. "
+          "Only if the untrained cluster caches are missing, first run "
+          f"python multiple_task/untrained_clustering.py --feature {feature} "
+          f"--seed {seed} --init-seed 0 1 2 3 4 --skip-completed.")
     return None
 
 
@@ -5947,15 +5950,16 @@ def plot_row_cluster_organization():
     the fraction of any two rows that do, which is the chance the network's
     cluster sizes give; so 1 (dashed) is chance on both panels, and the
     representations compare although they have different numbers of row
-    clusters (about 9 input, 6 hidden and 13 synapse clusters on the L2 =
-    1e-4 runs). The y axis is logarithmic. In each representation's column
+    clusters. The y axis is logarithmic. In each representation's column
     the trained runs (filled, red median dash) sit left of the untrained
     networks (hollow, gray median dash: untrained_clustering.py, fresh
     weights of one run's config of the same architecture, clustered by the
     same pipeline; the saved message names the config and init seeds).
-    The text above a column is the two-sided Mann-Whitney p of trained
+    The text above a column is the raw two-sided Mann-Whitney p of trained
     against untrained, or, without untrained networks, the two-sided
-    Wilcoxon signed-rank p of the trained runs against 1. The saved message
+    Wilcoxon signed-rank p of the trained runs against 1. These organization
+    p values are not the BH-adjusted q values of the four sharing bar figures.
+    The saved message
     adds the trained runs' paired Wilcoxon p of task-minus-period enrichment
     between representations. Read from
     multiple_tasks_diagnosis/sibling_row_sharing_{feature}.pkl and the
@@ -6052,17 +6056,32 @@ def plot_row_cluster_organization():
                      + (f"; {'; '.join(tests)}" if tests else "")))
 
 
-def _draw_row_sharing_bars(ax, x0, trained, untrained=None):
-    """One group of a per-task / per-period row-sharing figure, centered at
-    `x0`: per representation, the % of the trained runs' cells whose two rows
-    share a row cluster (filled bar) and its mean chance (dash), with a star
-    when the per-run excess over chance differs from zero (two-sided Wilcoxon
-    p < _ROW_SHARING_SIGNIFICANCE). With `untrained` (possibly empty) every
-    representation's slot is split: the trained bar left, the untrained
-    networks' bar (hollow, its own chance dash) right. Both arguments are
-    {rep: sibling_row_sharing._summarize_cells stats}."""
+def _row_sharing_run_values(stats):
+    """Each network's sharing and restricted-null chance percentages,
+    from saved observed/expected counts."""
+    runs = list(stats["per_run"].values())
+    shared = np.array([100.0 * run["observed"] / run["n_cells"] for run in runs])
+    chance = np.array([100.0 * run["expected"] / run["n_cells"] for run in runs])
+    return shared, chance
+
+
+def _row_sharing_bar_values(stats, per_run):
+    """Saved mean sharing and null mean, plus sample SD for the seeds variant.
+    Both variants weight networks equally and use the same saved test."""
+    if not per_run:
+        return stats["pct_same_cluster"], 100 * stats["chance_mean"], 0.0
+    shared, _ = _row_sharing_run_values(stats)
+    spread = float(shared.std(ddof=1)) if shared.size > 1 else 0.0
+    return stats["pct_same_cluster"], 100 * stats["chance_mean"], spread
+
+
+def _draw_row_sharing_bars(ax, x0, trained, untrained=None, per_run=False):
+    """Run-mean bars, restricted-null chance dashes and BH q stars.
+    Trained bars are filled; optional untrained twins are hollow. The seeds
+    variant adds sample SD across networks. Returns the highest drawn y."""
     split = untrained is not None
     width = _ROW_SAME_TASK_BAR * (0.45 if split else 0.9)
+    top = 0.0
     for k, (rep, _) in enumerate(_ROW_SHARING_REPRESENTATIONS):
         center = x0 + (k - 1) * _ROW_SAME_TASK_BAR
         color = _TASK_SPECIFICITY_COLORS[rep]
@@ -6074,28 +6093,39 @@ def _draw_row_sharing_bars(ax, x0, trained, untrained=None):
         for stats, x, style in bars:
             if stats is None:
                 continue
-            height, chance = stats["pct_same_cluster"], 100 * stats["chance_mean"]
+            height, chance, spread = _row_sharing_bar_values(stats, per_run)
             ax.bar(x, height, width=width * 0.92, zorder=2, **style)
+            if spread > 0:
+                ax.errorbar(x, height, yerr=spread, color=_ROW_SHARING_SPREAD_COLOR,
+                            linewidth=0.7, capsize=1.5, capthick=0.7, zorder=4)
             ax.hlines(chance, x - width * 0.46, x + width * 0.46,
                       color=_ROW_SHARING_CHANCE_COLOR, linewidth=1.0, zorder=3)
-            if stats["p_excess"] < _ROW_SHARING_SIGNIFICANCE:
-                ax.text(x, max(height, chance) + 1.5, "*", ha="center", va="bottom",
+            top = max(top, height + spread, chance)
+            if stats["q_fdr"] < _ROW_SHARING_SIGNIFICANCE:
+                ax.text(x, max(height + spread, chance) + 1.5, "*", ha="center", va="bottom",
                         fontsize=6)
+                top = max(top, height + spread + 6, chance + 6)
+    return top
 
 
-def _row_sharing_bar_figure(groups, labels, ylabel, untrained):
+def _row_sharing_bar_figure(groups, labels, ylabel, untrained, per_run=False):
     """(fig, ax) of a per-task / per-period row-sharing figure: one
     `_draw_row_sharing_bars` group per (trained, untrained) entry of `groups`,
-    labeled `labels` on x, on the 0-100% scale, with the legend; `untrained`
-    says whether the untrained networks are drawn."""
+    labeled `labels` on x, with percentage ticks and the legend; `untrained`
+    says whether the untrained networks are drawn. Both variants show means
+    over networks; `per_run` adds SD whiskers and expands the axis as needed."""
     fig, ax = plt.subplots(1, 1, figsize=(1.0 + _ROW_SHARING_GROUP_IN[untrained] * len(groups),
                                           2.4))
+    top = _ROW_SAME_TASK_Y_TOP
     for position, (trained, control) in enumerate(groups):
-        _draw_row_sharing_bars(ax, position, trained, control if untrained else None)
+        top = max(top, _draw_row_sharing_bars(ax, position, trained,
+                                              control if untrained else None, per_run=per_run))
     ax.set_xticks(np.arange(len(groups)))
     ax.set_xticklabels(labels, rotation=40, ha="right", fontsize=6)
     ax.set_xlim(-0.6, len(groups) - 0.4)
-    ax.set_ylim(0, _ROW_SAME_TASK_Y_TOP)
+    # SD is descriptive, not a bounded interval; keep both whisker ends visible.
+    low = float(ax.dataLim.ymin)
+    ax.set_ylim(min(0.0, low - 2 if low < 0 else 0.0), top)
     ax.set_yticks([0, 50, 100])
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda value, _: f"{value:.0f}%"))
     ax.spines["left"].set_bounds(0, 100)
@@ -6108,11 +6138,14 @@ def _row_sharing_bar_figure(groups, labels, ylabel, untrained):
     if untrained:
         handles.append(mpl.patches.Patch(facecolor="white", edgecolor="0.3", linewidth=0.6,
                                          label="untrained (hollow)"))
-    handles += [mpl.lines.Line2D([], [], color=_ROW_SHARING_CHANCE_COLOR, linewidth=1.0,
-                                 label="chance"),
-                mpl.lines.Line2D([], [], linestyle="none", marker="$*$", color="k",
-                                 markersize=5,
-                                 label=f"differs from chance, p < {_ROW_SHARING_SIGNIFICANCE}")]
+    handles.append(mpl.lines.Line2D([], [], color=_ROW_SHARING_CHANCE_COLOR, linewidth=1.0,
+                                    label="chance"))
+    if per_run:
+        handles.append(mpl.lines.Line2D([], [], color=_ROW_SHARING_SPREAD_COLOR, linewidth=0.7,
+                                        marker="_", markersize=4, label="mean ± SD over runs"))
+    handles.append(mpl.lines.Line2D([], [], linestyle="none", marker="$*$", color="k",
+                                    markersize=5,
+                                    label=f"permutation, BH-FDR q < {_ROW_SHARING_SIGNIFICANCE}"))
     # A narrow figure (few groups) wraps its legend onto more rows.
     ncol = len(handles) if len(groups) >= 8 else 4
     n_rows = -(-len(handles) // ncol)
@@ -6131,29 +6164,33 @@ def _row_sharing_untrained_note(untrained):
 
 
 def plot_row_cluster_same_task():
-    """
-    Figure: multitask_row_cluster_same_task.png — the per-task view of the
-    right panel of row_cluster_organization: for each task, how often its own
-    rows of two different trial periods share a row cluster.
+    """Per task, mean across networks of the fraction of phase pairs in one
+    row cluster. All available pairs enter, identically across representations.
+    The dash is the null mean from shuffling row labels among tasks within
+    each phase. Stars use saved two-sided permutation p values adjusted by BH
+    within each cohort and analysis type (the result records the full family).
+    Hollow twins show untrained controls with their own null and test; stars
+    do not compare trained with untrained. Single-phase tasks have no pairs.
+    Reads version-5 sibling_row_sharing results; see sibling_row_sharing.py."""
+    _plot_row_cluster_same_task(per_run=False)
 
-    One group of three bars per task (input neurons, hidden neurons,
-    synapses), each the % of (run, period pair) cells whose two rows share a
-    row cluster. The dark dash is that task's chance: the fraction of a row of
-    the one period and a row of the other from two different tasks sharing a
-    cluster, averaged over the task's cells, so the period combination is
-    controlled for (a stricter baseline than the organization figure's).
-    Cells at chance >= 95% (the two memory periods in input and hidden, where
-    every task's rows share one cluster) are left out. A star marks a per-run
-    excess over chance that differs from zero (two-sided Wilcoxon signed-rank
-    p < 0.05) in either direction; the bar against its dash gives the
-    direction. When the untrained networks are clustered, each bar has a
-    hollow twin on its right with their % and chance (their stars need at
-    least six networks). Tasks with a single clustered period (ReactPro,
-    ReactAnti) have no cells. Read from
-    multiple_tasks_diagnosis/sibling_row_sharing_{feature}.pkl and the
-    architecture's shared control sibling_row_sharing_untrained.pkl
-    (multiple_task/sibling_row_sharing.py).
-    """
+
+def plot_row_cluster_same_task_seeds():
+    """Same means, null dashes and BH q stars as row_cluster_same_task.
+    Adds sample SD across networks, including the untrained controls."""
+    _plot_row_cluster_same_task(per_run=True)
+
+
+def _row_sharing_variant(per_run):
+    """Filename suffix and save note; both variants show equal network means."""
+    if per_run:
+        return "_seeds", "; bars: mean over runs, whiskers: SD over runs"
+    return "", "; bars: mean over runs"
+
+
+def _plot_row_cluster_same_task(per_run):
+    """The body of plot_row_cluster_same_task (`per_run` False) and of
+    plot_row_cluster_same_task_seeds (True)."""
     _ensure_out_dir()
     data = _load_row_cluster_sharing()
     if data is None:
@@ -6168,33 +6205,34 @@ def plot_row_cluster_same_task():
     fig, _ = _row_sharing_bar_figure(
         [(entry["tasks"][rule], control.get(rule, {})) for rule in tasks],
         [_TASK_DISPLAY.get(rule, rule) for rule in tasks],
-        "Period pairs of one task\nin one row cluster", untrained is not None)
+        "Period pairs of one task\nin one row cluster", untrained is not None, per_run=per_run)
     missing = [_TASK_DISPLAY.get(rule, rule) for rule in _TASK_DISPLAY if rule not in tasks]
-    left_out = ", ".join(f"{rep} {count}" for rep, count in entry["n_unspecific_cells"].items()
-                         if count)
-    _save_fig(fig, _multitask_out("row_cluster_same_task.png"),
+    suffix, note = _row_sharing_variant(per_run)
+    _save_fig(fig, _multitask_out(f"row_cluster_same_task{suffix}.png"),
               extra=(f"  {len(data['experiments'])} {data['feature']} runs, {len(tasks)} tasks"
-                     + _row_sharing_untrained_note(untrained)
+                     + _row_sharing_untrained_note(untrained) + note
                      + (f"; no period pairs: {', '.join(missing)}" if missing else "")
-                     + (f"; cells at chance >= 95% left out: {left_out}" if left_out else "")))
+                     + "; restricted permutation, BH-FDR within cohort and analysis type"))
 
 
 def plot_row_cluster_same_period():
-    """
-    Figure: multitask_row_cluster_same_period.png — the per-period view of
-    the left panel of row_cluster_organization: for each trial period, how
-    often the rows of two different tasks in it share a row cluster.
+    """Per phase, mean across networks of the fraction of task pairs in one
+    row cluster. All available pairs enter, including single-phase tasks.
+    The null shuffles row labels among available phases within each task.
+    Chance, BH q stars and untrained twins follow row_cluster_same_task.
+    Phase labels use the heatmap colors."""
+    _plot_row_cluster_same_period(per_run=False)
 
-    One group of three bars per period (input neurons, hidden neurons,
-    synapses), each the % of (run, task pair) cells whose two rows share a
-    row cluster. The dark dash is the chance: the fraction of a row of the
-    one task and a row of the other from two different periods sharing a
-    cluster, averaged over the period's cells, so how alike the two tasks are
-    anyway is controlled for (the mirror of row_cluster_same_task's
-    baseline). Cells at chance >= 95% are left out. Stars, the untrained
-    networks' hollow bars and the input files are as in row_cluster_same_task;
-    the period labels carry the heatmap phase colors.
-    """
+
+def plot_row_cluster_same_period_seeds():
+    """Same means, null dashes and BH q stars as row_cluster_same_period,
+    with sample SD across networks."""
+    _plot_row_cluster_same_period(per_run=True)
+
+
+def _plot_row_cluster_same_period(per_run):
+    """The body of plot_row_cluster_same_period (`per_run` False) and of
+    plot_row_cluster_same_period_seeds (True)."""
     _ensure_out_dir()
     data = _load_row_cluster_sharing()
     if data is None:
@@ -6209,17 +6247,16 @@ def plot_row_cluster_same_period():
     fig, ax = _row_sharing_bar_figure(
         [(entry["periods"][phase], control.get(phase, {})) for phase in periods],
         [_PHASE_DISPLAY.get(phase, phase) for phase in periods],
-        "Task pairs of one period\nin one row cluster", untrained is not None)
+        "Task pairs of one period\nin one row cluster", untrained is not None, per_run=per_run)
     for label, phase in zip(ax.get_xticklabels(), periods):
         if phase in _PHASE_COLORS:
             label.set_bbox(dict(facecolor=_PHASE_COLORS[phase], edgecolor="none",
                                 boxstyle="round,pad=0.15", alpha=0.8))
-    left_out = ", ".join(f"{rep} {count}" for rep, count in entry["n_unspecific_cells"].items()
-                         if count)
-    _save_fig(fig, _multitask_out("row_cluster_same_period.png"),
+    suffix, note = _row_sharing_variant(per_run)
+    _save_fig(fig, _multitask_out(f"row_cluster_same_period{suffix}.png"),
               extra=(f"  {len(data['experiments'])} {data['feature']} runs, "
-                     f"{len(periods)} periods" + _row_sharing_untrained_note(untrained)
-                     + (f"; cells at chance >= 95% left out: {left_out}" if left_out else "")))
+                     f"{len(periods)} periods" + _row_sharing_untrained_note(untrained) + note
+                     + "; restricted permutation, BH-FDR within cohort and analysis type"))
 
 
 # ─── Figure: Cluster tuning vs lesion effect ─────────────────────────────────
@@ -14627,6 +14664,8 @@ FIGURES_BY_MODE = {
         "row_cluster_organization": plot_row_cluster_organization,
         "row_cluster_same_task": plot_row_cluster_same_task,
         "row_cluster_same_period": plot_row_cluster_same_period,
+        "row_cluster_same_task_seeds": plot_row_cluster_same_task_seeds,
+        "row_cluster_same_period_seeds": plot_row_cluster_same_period_seeds,
     },
     "lesion": {
         "lesion_heatmap": plot_lesion_heatmap,

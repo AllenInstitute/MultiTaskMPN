@@ -205,7 +205,8 @@ class PaperPlotModeTests(unittest.TestCase):
             "overmembership_weighted", "overmembership_var_weighted",
             "overmembership_abs_weighted", "overmembership_examples",
             "input_weight_correlation", "row_cluster_organization", "row_cluster_same_task",
-            "row_cluster_same_period",
+            "row_cluster_same_period", "row_cluster_same_task_seeds",
+            "row_cluster_same_period_seeds",
         })
         for name, function in expected.items():
             self.assertIs(paper_plot.ALL_FIGURES[name], function)

@@ -690,6 +690,9 @@ python multiple_task/sibling_row_sharing.py --feature L21e4 --untrained
 python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_organization
 python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_same_task
 python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_same_period
+# the same two mean-over-network figures, adding sample SD over networks
+python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_same_task_seeds
+python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_same_period_seeds
 ```
 
 Three pairs are checked: ReactCategoryPro vs ReactCategoryAnti (dmcgo/dmcnogo),
@@ -722,37 +725,16 @@ whose two rows share a cluster minus the number chance predicts, tested
 over the runs with a two-sided Wilcoxon signed-rank test (the cells of one
 run share one clustering, so their per-cell tests are not pooled). A pooled
 cell whose mean chance is at least 95% (input and hidden in the memory
-periods) is reported but not tested. A third check asks whether rows are
-grouped by task rather than by period: for every task of the pairs and every
-two of its phases, whether the task's two rows share a row cluster, against
-the chance that a row of the one phase and a row of the other from two
-different tasks share one (`_cross_phase_chance`, so the phase combination is
-controlled for), pooled per task and per group and tested the same way;
-cells whose own chance is at least 95% (the two memory periods in input and
-hidden) are left out and counted. It writes
+periods) is reported but not tested. The per-pair and phase-type summaries
+are legacy diagnostics; their signed-rank summaries are not used for the
+paper's same-task/same-period
+stars. Those paper analyses use the restricted permutation tests below.
+The script writes
 `multiple_tasks_diagnosis/sibling_row_sharing_<tag>.{pkl,json}`, the
-per-pair figure `sibling_row_sharing_pairs_<tag>.png`, the summary figure
-`sibling_row_sharing_summary_<tag>.png` and the same-task figure
-`sibling_row_sharing_same_task_<tag>.png`, replacing only its own tag's
-files. A star marks a per-run excess that differs from zero in either
-direction; the bar against its chance dash gives the direction.
-On the 25 L21e4 runs the pooled pro / anti stimulus cells sit at chance in
-every representation because the pairs disagree: DelayPro / DelayAnti and
-MemoryPro / MemoryAnti share their stimulus rows in input and hidden (15-17
-of 25 runs, chance about 33%) but not in modulation (2-3 of 25), the
-category pair the other way round (2 of 25 in input and hidden, 16 of 25 in
-modulation), and the match pair in none. Within a period, input and hidden
-group the rows by period and input (every task's memory rows in one
-cluster), modulation by neither. Across periods, modulation keeps a task's
-rows together: 71% of the pro / anti tasks' phase pairs and 48% of the
-modality tasks' share a cluster, against chances of 11% and 10%, while input
-and hidden stay near chance (20% and 24% against 15% and 18% for pro / anti;
-16% and 27% against 9% and 20% for the modality tasks). DelayPro and
-DelayAnti are the exception: their stimulus and response rows share an input
-cluster in every run (the stimulus stays on) but a modulation cluster in
-none. The modulation keeps a 4 s memory of the trial (lambda = 0.99), longer
-than a period, so part of this grouping may be the trial's history carried
-in M rather than a separate task code.
+per-pair figure `sibling_row_sharing_pairs_<tag>.png`, the phase-type summary
+`sibling_row_sharing_summary_<tag>.png` and the same-task diagnostic
+`sibling_row_sharing_same_task_<tag>.png`. The last diagnostic reuses the
+paper analysis's permutation statistics, including the corrected q values.
 
 The organization check (`summarize_organization`) puts period and task on
 one scale with every task's rows: per run and representation, the fold
@@ -761,45 +743,106 @@ of one task from different periods, sharing a row cluster over any two rows
 sharing one (the chance the run's cluster sizes give, so the
 representations, with their different numbers of row clusters, compare),
 tested against 1 over the runs and, as task minus period enrichment, between
-representations (paired Wilcoxon). On the 25 L21e4 runs the medians are, for
-period and task, input 1.85x and 0.90x, hidden 1.57x and 0.95x, synapses
-1.10x and 3.51x, and every pair of representations differs (p <= 7.5e-5).
-The same-task check is also run over every task (`same_task_all`; ReactPro
-and ReactAnti have one clustered period and so no cells). Its mirror, the
-same-period check (`same_period_all`), asks for every phase and every two
-tasks with a row of it whether the two rows share a row cluster, against the
-chance that a row of the one task and a row of the other from two different
-phases share one (`_cross_period_chance`, so how alike the two tasks are
-anyway is controlled for), pooled per phase and tested the same way; cells at
-chance of at least 95% are left out (on the L21e4 runs 118 input, 92 hidden
-and 445 synapse cells: task pairs whose rows sit in one cluster in every
-period). On the 25 L21e4 runs the period grouping of input and hidden is
-mostly the memory periods: every two tasks' Memory 1 and Memory 2 rows share
-a cluster (input 100%, hidden 99-100%, chance 18-31%), because nothing in the
-input varies there. Stimulus rows share more than chance but far less
-(input 32% and 39% against 15% and 22%, hidden 32% and 46% against 21% and
-31%), and Response rows hardly (input 13% against 16%, below chance; hidden
-27% against 21%). Synapse rows share 2-20% against 4-8% in every period. The
-untrained networks show the same pattern (memory 100%, stimulus 38-55%,
-response 20-25%). Result version 4 holds all three checks.
+representations (paired Wilcoxon). Its baseline is the sharing fraction
+over all row pairs, distinct from the restricted nulls below.
 
-`paper_plot.py` (`multiple_tasks` mode) draws three figures from
-`multiple_tasks_diagnosis/sibling_row_sharing_<MULTITASK_L2 feature>.pkl`,
-skipped with the command to run when it is missing or older than version 4:
-`multitask_row_cluster_organization.png`, the two enrichments side by side
-(same period, different task; same task, different period), one point per
-run in the representation colors, the median as a red dash, chance (1) as a
-dashed line on a log axis and the Wilcoxon p against 1 above each column
-(the Mann-Whitney p against the untrained networks once they exist, below);
-and `multitask_row_cluster_same_task.png`, the per-task view of its right
-panel: for every task with two clustered periods, three bars giving the % of
-its (run, period pair) cells in one row cluster, a dash at the
-period-combination chance of the same-task check (a stricter baseline than
-the organization figure's) and a star where the per-run excess differs from
-zero in either direction; and `multitask_row_cluster_same_period.png`, the
-per-period view of its left panel: for every period, three bars giving the %
-of its (run, task pair) cells in one row cluster with the task-pair chance
-of the same-period check, the period labels in the heatmap phase colors.
+The same-task check runs over every task (`same_task_all`): all unordered
+pairs of its available phase rows enter. ReactPro and ReactAnti have only
+one clustered phase and therefore no same-task pairs. Its mirror,
+`same_period_all`, includes all unordered task pairs with a row in the
+phase, including single-phase tasks. The three representations must have
+identical task×phase row sets within each network (row order may differ);
+missing representations or mismatched rows raise an error. Missing phases
+remain missing. No pair is removed because of its sharing or chance level.
+
+Both checks use a restricted row-label permutation null:
+
+- Same task: independently shuffle cluster labels among tasks within each
+  phase of each network. This preserves each phase's cluster-label counts
+  while testing a task's alignment across phases.
+- Same period: independently shuffle labels among available phases within
+  each task of each network. This preserves each task's cluster-label
+  counts while testing alignment across tasks by phase.
+
+These are conditional exchangeability nulls on the existing row slots,
+not resampling trials or rerunning clustering. A permutation moves whole
+row labels and then recounts all relevant pairs, preserving dependencies
+among pairs sharing a row. The same row permutation is applied to all
+three representations of a network. An unshufflable block stays fixed.
+If every row is in one cluster, sharing and chance are both 100% and p=1;
+such pairs remain in the results.
+
+The statistic is the **equal mean across networks** of each network's
+sharing fraction; the chance dash is the mean of that statistic's null
+distribution. Defaults are 10,000 permutations and RNG seed 0
+(`--n-permutations`, `--permutation-seed`). Two-sided p values use twice
+the smaller inclusive tail with an add-one correction, capped at 1.
+BH-FDR is applied separately for each cohort and analysis type, across all
+representations and all unique reported tests: individual tasks/phases,
+the all-pairs summary, and the sibling-group pooled summaries where
+applicable. Repeated presentations of a task's test are counted once.
+This does not control FDR jointly across L2 cohorts, or test the difference
+between trained and untrained networks. The result saves `p_perm`,
+`q_fdr`, per-network observed/expected counts, and the null definition,
+permutation settings and FDR family under `permutation`.
+
+Result **version 5** holds these checks. Earlier same-task/same-period
+percentages, chance levels and stars used different pair filters and tests;
+they must be regenerated before reporting conclusions. Only rerun
+`sibling_row_sharing.py` for each trained cohort and once per architecture
+with `--untrained`, using the existing cluster pickles. No network forward
+pass, state-space batch or reclustering is needed.
+
+`paper_plot.py` reads these results and skips stale files with a rerun
+command. `multitask_row_cluster_organization.png` retains its two
+enrichment panels (period/task), network dots, median and chance=1.
+Its tests are unchanged: trained versus untrained uses raw, two-sided
+Mann–Whitney p values; without controls it displays the saved Wilcoxon
+comparison against 1. These p values are not BH-adjusted q values.
+The permutation tests above apply to the four bar figures:
+
+- `multitask_row_cluster_same_task.png`: per-task mean sharing, restricted
+  null chance dash, and a star for **q_fdr < 0.05**.
+- `multitask_row_cluster_same_period.png`: the corresponding per-phase
+  view, with phase-colored tick labels.
+- `multitask_row_cluster_same_task_seeds.png` and
+  `multitask_row_cluster_same_period_seeds.png`: the **same means, chance
+  dashes and q values**, adding sample SD across networks. Both ends of
+  each SD whisker are displayed even when they extend outside 0–100%;
+  SD describes spread and is not a confidence interval.
+
+A star identifies a departure from the conditional null; the bar relative
+to the dash shows the direction. It neither establishes causality nor
+proves that training created the organization. Trained and untrained stars
+use separate within-cohort tests. Their difference in significance is not
+itself a significant difference between cohorts.
+
+The v5 results checked on **2026-11-05** cover 17 trained L21e3 networks
+and five untrained networks (seed 749 config, init seeds 0–4). All five
+`paper_plot/multitask_row_cluster_*_n.png` figures matched an in-memory
+render from these caches pixel for pixel. For this cohort:
+
+- The organization figure's median same-period enrichment is 1.87x for
+  input, 1.74x for hidden and 0.93x for M; same-task enrichment is 0.92x,
+  0.88x and 4.03x. This is a relative preference for phase organization in
+  input/hidden and task organization in M, not an exclusive division.
+- The same-task figures show M sharing above its restricted null in 11 of
+  the 13 tasks with phase pairs after BH correction. DelayPro and DelayAnti
+  have low M sharing but are not significantly below chance (q=0.149 and
+  q=0.546); the older signed-rank claims for these two tasks do not hold.
+- The same-period figures show 100% input/hidden sharing in both memory
+  phases, against permutation means of about 28–33%. M also has above-null
+  sharing in Stimulus 1, so it is not devoid of phase organization.
+- Untrained networks already show strong M task organization (median 4.36x
+  versus trained 4.03x; raw Mann–Whitney p=0.256). These data do not establish
+  that training creates or strengthens that overall organization, nor does
+  a nonsignificant comparison establish equivalence.
+
+The L21e4 sharing cache was still v4 at that check; these numerical conclusions
+apply to L21e3. The manual, read-only check is
+`python test/row_cluster_results_check.py`: it checks the cohort currently
+selected by `paper_plot.py`, verifies saved counts and means, and compares
+all five PNGs with in-memory renders without changing caches or figures.
 
 The untrained control asks whether training makes this organization or the
 architecture alone does, for instance because M, with its 4 s memory, keeps
@@ -834,9 +877,12 @@ organization figure draws the untrained networks, hollow with a gray median,
 right of the trained runs in each representation's column, with the
 two-sided Mann-Whitney p of trained against untrained above the column. The
 per-task and per-period figures give every trained bar a hollow twin on its
-right with the untrained networks' % and chance (a Wilcoxon star over the
-networks needs at least six of them). All three draw the trained runs alone,
-with the commands to run, while the untrained result is missing.
+right with the untrained networks' mean sharing and permutation chance.
+There is no six-network threshold for the permutation test; few networks
+still limit generalization across initializations. These figures draw the
+trained runs alone, with the commands to run, while the untrained result is
+missing. Stale v4 controls need only the statistics command; reclustering
+is needed only when the underlying cluster caches are absent.
 
 ## Modulation feedback and saturation
 

@@ -1,0 +1,86 @@
+"""Read-only audit of current row-sharing caches and paper PNGs.
+
+Run from the repository root. Renders figures in memory for pixel comparison;
+does not rerun clustering/permutations or replace any analysis/figure files.
+"""
+import io
+from pathlib import Path
+from unittest.mock import patch
+
+import _bootstrap  # noqa: F401
+import numpy as np
+from PIL import Image
+from scipy.stats import mannwhitneyu
+
+import paper_plot
+
+
+def main():
+    feature = paper_plot.multitask_feature()
+    cohorts = {}
+    for tag, untrained in ((feature, False), ("untrained", True)):
+        data = paper_plot._load_row_cluster_sharing(untrained=untrained)
+        if data is None:
+            raise SystemExit("Current trained and untrained results are required; see rerun hint.")
+        print("CACHE", tag, "version", data["version"], "networks", len(data["experiments"]))
+        cohorts[tag] = data
+        for mode, by in (("same_task_all", "tasks"), ("same_period_all", "periods")):
+            entry = data[mode]
+            print("METHOD", tag, mode, entry["permutation"])
+            for key, reps in [("ALL", entry["pooled"]), *entry[by].items()]:
+                counts = [[(name, run["n_cells"]) for name, run in stats["per_run"].items()]
+                          for stats in reps.values()]
+                assert all(value == counts[0] for value in counts)
+                cells = []
+                for rep, stats in reps.items():
+                    shared, chance = paper_plot._row_sharing_run_values(stats)
+                    np.testing.assert_allclose(shared.mean(), stats["pct_same_cluster"])
+                    np.testing.assert_allclose(chance.mean(), 100 * stats["chance_mean"])
+                    assert 0 <= stats["p_perm"] <= stats["q_fdr"] + 1e-12 <= 1 + 1e-12
+                    cells.append(f"{rep}: {shared.mean():.3f}% / null {chance.mean():.3f}% "
+                                 f"p={stats['p_perm']:.6g} q={stats['q_fdr']:.6g}")
+                print("BAR", tag, mode, key, "; ".join(cells))
+            for rep in ("input", "hidden", "modulation"):
+                above, below = [], []
+                for key, reps in entry[by].items():
+                    stats = reps[rep]
+                    if stats["q_fdr"] < 0.05:
+                        target = (above if stats["pct_same_cluster"] > 100 * stats["chance_mean"]
+                                  else below)
+                        target.append(key)
+                print("SIGNIFICANT", tag, mode, rep, "above", above, "below", below)
+
+    for rep in ("input", "hidden", "modulation"):
+        for pair_class in ("period", "task"):
+            entries = [cohorts[tag]["organization"]["representations"][rep]
+                       for tag in (feature, "untrained")]
+            values = [paper_plot._organization_values(entry, pair_class) for entry in entries]
+            p_value = mannwhitneyu(*values, alternative="two-sided").pvalue
+            print("ORGANIZATION", rep, pair_class,
+                  "trained/untrained medians", [float(np.median(v)) for v in values],
+                  "n", [len(v) for v in values], "raw Mann-Whitney p", float(p_value))
+
+    def compare_figure(fig, out_path, extra=""):
+        path = Path(out_path)
+        if paper_plot.SHOW_LEGEND:
+            path = path.with_name(f"{path.stem}_n{path.suffix}")
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format="png", dpi=300, bbox_inches="tight")
+        buffer.seek(0)
+        with Image.open(buffer) as generated, Image.open(path) as saved:
+            new, old = np.asarray(generated.convert("RGBA")), np.asarray(saved.convert("RGBA"))
+            identical = new.shape == old.shape and np.array_equal(new, old)
+        print("PNG_MATCH", path, identical, "shape", old.shape, extra)
+        paper_plot.plt.close(fig)
+        assert identical, f"{path} does not match the current cache and plotting code"
+
+    print("PAPER_SELECTION", paper_plot.multitask_feature(), "legend", paper_plot.SHOW_LEGEND)
+    with patch.object(paper_plot, "_save_fig", side_effect=compare_figure), \
+            patch.object(paper_plot, "_ensure_out_dir"):
+        for name in ("organization", "same_task", "same_period", "same_task_seeds",
+                     "same_period_seeds"):
+            getattr(paper_plot, f"plot_row_cluster_{name}")()
+
+
+if __name__ == "__main__":
+    main()
