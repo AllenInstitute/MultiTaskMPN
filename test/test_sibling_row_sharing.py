@@ -798,21 +798,6 @@ class PaperFigureTests(unittest.TestCase):
             self.addCleanup(paper_plot.plt.close, save.call_args.args[0])
         return save, printed
 
-    def test_task_bias_subtracts_within_network_and_keeps_zero_and_negative(self):
-        payload = self._payload()
-        entry = sharing.summarize_organization_matched_tasks([("run", _complete_experiment())])
-        for rep in entry["representations"].values():
-            rep["enrichment"].update(task=[6, 2, 1, 0, 3, np.nan], period=[0, 1, 2, 4, 3, 1])
-        payload["organization_matched_tasks"] = entry
-        save, _ = self._render(paper_plot.plot_row_cluster_task_bias_matched_tasks, payload)
-        ax = save.call_args.args[0].axes[0]
-        dots = [c for c in ax.collections if not hasattr(c, "get_segments")]
-        self.assertEqual(len(dots), 3)
-        for dot in dots:
-            np.testing.assert_allclose(dot.get_offsets()[:, 1], [6, 1, -1, -4, 0])
-        self.assertEqual(ax.get_yscale(), "linear")
-        self.assertIn("median delta=0.000", save.call_args.kwargs["extra"])
-
     def test_cut_plot_uses_saved_curves_with_independent_panel_axes(self):
         payload = self._payload()
         payload["cut_robustness_matched_tasks"] = sharing.summarize_cut_robustness_matched_tasks(

@@ -920,21 +920,17 @@ definition: all phases still use first-stimulus-conditioned means and
 variance pooled over conditions and time. The input memory rows can share a
 cluster because their features are near zero; that is not memory coding.
 
-Two further figures assess the matched-task interpretation:
-
-- `multitask_row_cluster_task_bias_matched_tasks_n.png` shows each network's
-  `Delta = E_same_task - E_same_period` using the existing
-  `organization_matched_tasks` values. Positive values indicate task preference,
-  negative values period preference, and zero no preference. Points are networks;
-  dashes are medians of within-network differences, not differences of medians.
-  The linear axis retains zero and negative values. No new hypothesis tests are added.
-- `multitask_row_cluster_cut_robustness_matched_tasks_n.png` focuses on synapses.
-  The complete saved modulation row tree is cut at the prespecified targets
-  K=5,10,15,20,25, **before** selecting the same 25 rows. Its two panels show Delta
-  and cross-task same-period enrichment against the selected 300-pair baseline.
-  Thin lines track individual networks and thick lines show cohort medians, with
-  independent y ranges. These repeated cuts are sensitivity checks, not additional
-  independent samples or new significance tests.
+The further figure `multitask_row_cluster_cut_robustness_matched_tasks_n.png`
+assesses cut sensitivity for synapses. The complete saved modulation row tree
+is cut at the prespecified targets K=5,10,15,20,25, **before** selecting the same
+25 rows. Its two panels show `Delta = E_same_task - E_same_period` and cross-task
+same-period enrichment against the selected 300-pair baseline. Positive Delta
+indicates task preference, negative Delta period preference, and zero no
+preference. Thin lines track individual networks and thick lines show cohort
+medians, with independent linear y ranges retaining zero and negative values.
+Differences are calculated within each network before taking medians. These
+repeated cuts are sensitivity checks, not additional independent samples or
+new significance tests.
 
 The cut supplement is stored as `cut_robustness_matched_tasks` (schema 1).
 `fcluster(..., criterion="maxclust")` retains tied merge heights, so K is an
@@ -954,7 +950,6 @@ permutation tests or including newly finished networks, use:
 ```bash
 python multiple_task/sibling_row_sharing.py --feature L21e4 --cut-robustness-only
 python multiple_task/sibling_row_sharing.py --feature L21e4 --untrained --cut-robustness-only
-python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_task_bias_matched_tasks
 python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_cut_robustness_matched_tasks
 ```
 
@@ -971,7 +966,7 @@ robustness, and skips incomplete modulation caches. Redraw the row-cluster
 figures afterwards. Cut-only updates and plotting alone never add networks.
 
 The **L21e4 snapshot checked on 2026-11-05 after adding init 5 and 6** contains
-25 trained and seven untrained networks (init 0–6). All eight row-cluster PNGs
+25 trained and seven untrained networks (init 0–6). All seven retained row-cluster PNGs
 match in-memory renders from these caches pixel for pixel.
 At the original cut, all 25 trained and all seven untrained modulation networks
 have positive Delta; medians are 1.579 and 3.943, respectively. Input and hidden
@@ -1021,7 +1016,7 @@ comparison or the L21e4 figures above. The manual, read-only check is
 `python test/row_cluster_results_check.py --multitask-l2 1e4`: select the cohort
 used to generate the PNGs and use the same plotting environment. It verifies
 saved counts and means, includes matched summaries and cut statistics when
-present, and compares all available row-cluster PNGs (currently eight for
+present, and compares all available row-cluster PNGs (currently seven for
 L21e4) with in-memory renders without changing caches or figures. Without
 the argument it uses `paper_plot.py`'s default cohort.
 

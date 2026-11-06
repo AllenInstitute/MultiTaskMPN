@@ -6047,54 +6047,6 @@ def plot_row_cluster_organization_matched_tasks():
         "organization_matched_tasks", "row_cluster_organization_matched_tasks.png")
 
 
-def plot_row_cluster_task_bias_matched_tasks():
-    """Per-network task-minus-period enrichment on the same five-task grid.
-
-    Positive means task preference. Differences are paired within each network,
-    not differences between cohort medians. Zero/negative values are retained.
-    """
-    loaded = _load_row_sharing_view("organization_matched_tasks")
-    if loaded is None:
-        return
-    data, entry, _, control = loaded
-    fig, ax = plt.subplots(figsize=(3.3, 2.8))
-    ax.axhline(0, color="0.6", linestyle="--", linewidth=0.7)
-    notes = []
-    for position, (rep, _) in enumerate(_ROW_SHARING_REPRESENTATIONS):
-        color = _TASK_SPECIFICITY_COLORS[rep]
-        for source, offset, face, median_color, cohort in (
-                (entry, -0.2 if control else 0, color, _TREND_LINE_COLOR, "trained"),
-                (control, 0.2, "white", _ROW_ORGANIZATION_UNTRAINED_MEDIAN, "untrained")):
-            if not source:
-                continue
-            enrich = source["representations"][rep]["enrichment"]
-            values = np.subtract(enrich["task"], enrich["period"])
-            values = values[np.isfinite(values)]
-            if not values.size:
-                continue
-            x = position + offset
-            ax.scatter(x + _run_offsets(values.size, 0.035, 0.13), values, s=12,
-                       facecolors=face, edgecolors=color, linewidths=0.6, alpha=0.85, zorder=3)
-            ax.hlines(np.median(values), x - 0.15, x + 0.15, color=median_color,
-                      linewidth=1.8, zorder=4)
-            notes.append(f"{rep} {cohort}: median delta={np.median(values):.3f}, "
-                         f"{np.sum(values > 0)}/{values.size} positive")
-    ax.set_xticks(range(3), [label for _, label in _ROW_SHARING_REPRESENTATIONS])
-    ax.set_xlim(-0.6, 2.6)
-    ax.set_ylabel("Task − period enrichment (Δ)", fontsize=8)
-    ax.set_title("Same five tasks; original clustering\nΔ > 0: task preference", fontsize=8)
-    ax.spines[["top", "right"]].set_visible(False)
-    handles = [mpl.lines.Line2D([], [], marker="o", color=_TREND_LINE_COLOR,
-                                markersize=3, label="trained; median")]
-    if control:
-        handles.append(mpl.lines.Line2D([], [], marker="o", markerfacecolor="white",
-                                        color=_ROW_ORGANIZATION_UNTRAINED_MEDIAN,
-                                        markersize=3, label="untrained; median"))
-    _state_space_figure_legend(fig, handles, ncol=len(handles), top=0.88)
-    _save_fig(fig, _multitask_out("row_cluster_task_bias_matched_tasks.png"),
-              extra=f"  {data['feature']}; " + "; ".join(notes))
-
-
 def plot_row_cluster_cut_robustness_matched_tasks():
     """Synapse task bias and period enrichment after full-tree recuts.
 
@@ -14873,7 +14825,6 @@ FIGURES_BY_MODE = {
         "row_cluster_same_period_matched_tasks_seeds": plot_row_cluster_same_period_matched_tasks_seeds,
         "row_cluster_same_task_matched_tasks_seeds": plot_row_cluster_same_task_matched_tasks_seeds,
         "row_cluster_organization_matched_tasks": plot_row_cluster_organization_matched_tasks,
-        "row_cluster_task_bias_matched_tasks": plot_row_cluster_task_bias_matched_tasks,
         "row_cluster_cut_robustness_matched_tasks": plot_row_cluster_cut_robustness_matched_tasks,
     },
     "lesion": {

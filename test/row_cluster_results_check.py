@@ -94,10 +94,6 @@ def main(argv=None):
                 print("ORGANIZATION", mode, rep, pair_class,
                       "trained/untrained medians", [float(np.median(v)) if v.size else np.nan for v in values],
                       "n", [len(v) for v in values], "raw Mann-Whitney p", float(p_value))
-            for tag, entry in zip((feature, "untrained"), entries):
-                delta = np.subtract(entry["enrichment"]["task"], entry["enrichment"]["period"])
-                print("DELTA", mode, rep, tag, "median", float(np.nanmedian(delta)),
-                      "positive", int(sum(delta > 0)), "finite", int(sum(np.isfinite(delta))))
 
     def compare_figure(fig, out_path, extra=""):
         path = Path(out_path)
@@ -121,7 +117,6 @@ def main(argv=None):
                    "same_task_matched_tasks_seeds": "same_task_matched_tasks",
                    "same_period_matched_tasks_seeds": "same_period_matched_tasks",
                    "organization_matched_tasks": "organization_matched_tasks",
-                   "task_bias_matched_tasks": "organization_matched_tasks",
                    "cut_robustness_matched_tasks": "cut_robustness_matched_tasks"}
         for name, entry_key in figures.items():
             if entry_key in cohorts[feature]:
