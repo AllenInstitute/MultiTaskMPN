@@ -108,7 +108,8 @@ class PaperPlotModeTests(unittest.TestCase):
             run_dirs = [Path(directory) / name for name in ("seed1", "seed2")]
             for run_dir, offset in zip(run_dirs, (0., 2.)):
                 run_dir.mkdir()
-                data = {"prepost_belonging_results": [{
+                data = {"variance_method": paper_plot.VARIANCE_METHOD,
+                        "prepost_belonging_results": [{
                     "bar_name_lst": [["Share-Pre", "Share-Post", "Neither"],
                                      ["Share-Pre-Cluster", "Share-Post-Cluster",
                                       "Share-Both-Cluster", "Neither"]],
@@ -206,6 +207,7 @@ class PaperPlotModeTests(unittest.TestCase):
             "overmembership_abs_weighted", "overmembership_examples",
             "input_weight_correlation", "row_cluster_organization", "row_cluster_same_task_seeds",
             "row_cluster_same_period_seeds",
+            "row_cluster_same_period_synapses",
             "row_cluster_same_period_matched_tasks_seeds",
             "row_cluster_same_task_matched_tasks_seeds", "row_cluster_organization_matched_tasks",
             "row_cluster_cut_robustness_matched_tasks",

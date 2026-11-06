@@ -5,6 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
+from core.task_variance import require_current_variance_result
+
 
 def resolve_lesion_cache_path(path):
     """Prefer a correctly spelled file, falling back to an existing legacy name."""
@@ -48,9 +50,11 @@ def normalize_lesion_cache(value):
 
 
 def load_lesion_pickle(path):
-    """Load a trusted local pickle with legacy filename/key support, read-only."""
+    """Load current-estimator results; legacy spelling support is read-only."""
     with resolve_lesion_cache_path(path).open("rb") as stream:
-        return normalize_lesion_cache(pickle.load(stream))
+        payload = normalize_lesion_cache(pickle.load(stream))
+    require_current_variance_result(payload, path)
+    return payload
 
 # ── Activity-matched controls (lesion_controls.py) ───────────────────────────
 

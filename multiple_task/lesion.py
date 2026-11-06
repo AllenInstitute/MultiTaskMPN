@@ -70,6 +70,7 @@ import torch
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import helper
 import lesion_ops
+from core.task_variance import VARIANCE_METHOD
 from modulation_variants import LESION_MODULATION_TYPES
 
 def main(seed, feature):
@@ -641,6 +642,7 @@ def main(seed, feature):
     _unres_labels_unnorm, _unres_conditions_unnorm = lesion_ops.unresponsive_neuron_conditions(
         cluster_info, VARIANT_UNNORM)
     saved_dict = {
+        "variance_method": VARIANCE_METHOD,
         "lesion": {
             "ihtask_accs": ihtask_accs,
             "all_comb_names_lesion": all_comb_names_lesion,

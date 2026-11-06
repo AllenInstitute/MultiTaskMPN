@@ -2,6 +2,7 @@
 
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import _bootstrap  # noqa: F401
 import numpy as np
@@ -31,9 +32,9 @@ class RuleCueTest(unittest.TestCase):
         inputs[0, 2:4, 2:4] = 1.0   # rule 0: ring 1 in stim1
         inputs[1, 4:, 4:6] = 1.0    # rule 1: ring 2 in go1 (no stim1)
         inputs[2, 2:4, 2:6] = 1.0   # rule 2: both rings in stim1
-        trials = [SimpleNamespace(epochs={"stim1": (2, 4), "go1": (4, None)}),
-                  SimpleNamespace(epochs={"go1": (4, None)}),
-                  SimpleNamespace(epochs={"stim1": (2, 4), "go1": (4, None)})]
+        trials = [SimpleNamespace(tdim=6, epochs={"stim1": (2, 4), "go1": (4, None)}),
+                  SimpleNamespace(tdim=6, epochs={"go1": (4, None)}),
+                  SimpleNamespace(tdim=6, epochs={"stim1": (2, 4), "go1": (4, None)})]
         modality = ablation.first_stimulus_modality(inputs, np.array([0, 1, 2]), trials, rings)
         self.assertEqual(modality, {0: "1", 1: "2", 2: "both"})
 
@@ -41,11 +42,23 @@ class RuleCueTest(unittest.TestCase):
 class RowWindowsTest(unittest.TestCase):
     def test_rows_are_period_major_and_skip_missing_epochs(self):
         trials = [
-            SimpleNamespace(epochs={"fix1": (None, 5), "stim1": (5, 10), "go1": (10, None)}),
-            SimpleNamespace(epochs={"fix1": (None, 5), "go1": (np.array([5, 5]), None)}),
+            SimpleNamespace(tdim=15, epochs={"fix1": (None, 5), "stim1": (5, 10), "go1": (10, None)}),
+            SimpleNamespace(tdim=8, epochs={"fix1": (None, 5), "go1": (np.array([5, 5]), None)}),
         ]
         self.assertEqual(ablation.row_windows(trials),
-                         [(0, "stim1", (5, 10)), (0, "go1", (10, None)), (1, "go1", (5, None))])
+                         [(0, "stim1", (5, 10)), (0, "go1", (10, 15)), (1, "go1", (5, 8))])
+
+    def test_features_preserve_trial_variance_and_exclude_padding(self):
+        values = np.array([[0., 0., 1., 3., 1000., 1000.],
+                           [0., 0., 3., 1., 1000., 1000.]])[..., None]
+        states = {"input1": values, "hidden1": 2 * values, "M1": values[..., None]}
+        trial = SimpleNamespace(tdim=4, epochs={"go1": (2, None)})
+        windows = [window for _, _, window in ablation.row_windows([trial])]
+        with patch.object(ablation.multiple_task_analysis, "record_tracked_states",
+                          return_value=(None, states)):
+            features = ablation.task_features(None, None, windows)
+        for name, expected in (("input", 1.), ("hidden", 4.), ("modulation", 1.)):
+            np.testing.assert_array_equal(features[name], [[expected]])
 
 
 class ReadoutTest(unittest.TestCase):

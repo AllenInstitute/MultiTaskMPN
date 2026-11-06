@@ -21,7 +21,7 @@ class PlasticityShareFigureTests(unittest.TestCase):
         share[2] = [0.9, 1.1, 2.5]      # 2.5 lies above the y-limits
         share[3] = [0.8, -0.9, 1.0]     # -0.9 lies below the y-limits
         medians = np.array([np.nanmedian(row) for row in share])
-        return {"share": share, "sig_zero_w": np.isfinite(share), "tasks": tasks,
+        return {"variance_method": paper_plot.VARIANCE_METHOD, "share": share, "sig_zero_w": np.isfinite(share), "tasks": tasks,
                 "task_family": family, "task_median_share": medians,
                 "mwu_U": 4.0, "mwu_p_one_sided": 0.0125,
                 "mod_type": paper_plot.PLASTICITY_SHARE_MOD_TYPE, "fdr_q": 0.05}

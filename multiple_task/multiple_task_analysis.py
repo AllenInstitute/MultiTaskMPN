@@ -9,8 +9,9 @@ computation.
 This module owns the following analyses:
   1. Weight-structure heatmaps of W_initial_linear, W (recurrent) and W_output,
      plus the end-to-end pathway W_out @ W_mod @ W_in and its SVD spectrum.
-  2. Task-conditioned VARIANCE — per-rule, per-period variance of the input,
-     hidden and modulation activity, giving neuron × task-condition matrices.
+  2. Task-period VARIANCE — per-rule, per-period variance across trials and
+     time of input, hidden and modulation activity, without S1 averaging.
+     Epochs exclude padding beyond each task's actual trial endpoint.
   3. Hierarchical clustering of those matrices along both axes (task conditions
      and neurons / modulation synapses), k chosen by silhouette within a
      tolerance band. Modulation synapses are clustered under five feature
@@ -89,6 +90,7 @@ import torch
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import helper
+from core.task_variance import VARIANCE_METHOD, trial_epoch_bounds
 import clustering
 import clustering_metric
 import color_func
@@ -670,41 +672,11 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
         
         all_rules = np.array(task_params["rules"])
         
-        def generate_response_stimulus(task_params, test_trials):
-            """Per-trial condition labels for every rule, concatenated rule-major.
-
-            Returns (labels_resp, labels_stim1, labels_stim2, rules_epochs), each
-            label array shaped (n_trials, 1) in the same trial order as the
-            generated batch. The response label is the MATCH decision for the
-            match-to-sample family (dmsgo/dmcgo/dmsnogo/dmcnogo) and the resp1
-            angle otherwise; stim2 is NaN-filled for rules that have no second
-            stimulus. `rules_epochs` maps rule name -> its epoch boundaries, which
-            is what the per-period variance breakdown below slices with.
-            """
-            labels_resp, labels_stim1, labels_stim2 = [], [], []
-            rules_epochs = {} 
-            for rule_idx, rule in enumerate(task_params['rules']):
-                rules_epochs[rule] = test_trials[rule_idx].epochs
-                
-                if rule in ('dmsgo','dmcgo','dmsnogo','dmcnogo',):
-                    labels_resp.append(test_trials[rule_idx].meta['matches'])                
-                else:
-                    labels_resp.append(test_trials[rule_idx].meta['resp1'])           
-                    
-                labels_stim1.append(test_trials[rule_idx].meta['stim1']) 
-                
-                try: 
-                    labels_stim2.append(test_trials[rule_idx].meta['stim2'])
-                except KeyError:
-                    labels_stim2.append(np.full_like(test_trials[rule_idx].meta['stim1'], np.nan))
-
-            labels_resp = np.concatenate(labels_resp, axis=0).reshape(-1,1)
-            labels_stim1 = np.concatenate(labels_stim1, axis=0).reshape(-1,1)
-            labels_stim2 = np.concatenate(labels_stim2, axis=0).reshape(-1,1)
-
-            return labels_resp, labels_stim1, labels_stim2, rules_epochs
-        
-        _, labels_stim1, _, rules_epochs = generate_response_stimulus(task_params, test_trials)
+        # A missing endpoint means this task's end, not the padded batch end.
+        rules_epochs = {
+            rule: {phase: trial_epoch_bounds(trial, phase) for phase in trial.epochs}
+            for rule, trial in zip(task_params["rules"], test_trials)
+        }
         
         test_task = helper.find_task(task_params, test_input.detach().cpu().numpy(), 0)
         test_task = np.array([int(c) for c in test_task]).flatten()
@@ -804,14 +776,9 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
             # print('Rule {} (idx {}), {}'.format(all_rules[rule_idx], rule_idx, period_time))
             # print(f"tb_break_name[el]: {tb_break_name[el]}")
             
-            # 2026-03-29: select the stimulus information
-            labels_stim = labels_stim1
-            # labels_stim = labels_stim2 if ("stim2" in tb_break_name[el] or "delay2" in tb_break_name[el]) else labels_stim1
-            
             if len(clustering_data.shape) == 3: # input or hidden 
-                # 2025-11-19: if period_time[1] is None, then go until the end along that axis
                 rule_cluster = clustering_data[test_task == rule_idx, period_time[0]:period_time[1], :]
-                varval = helper.task_variance_period_numpy(rule_cluster, labels_stim[test_task == rule_idx].flatten())
+                varval = helper.task_variance_period_numpy(rule_cluster)
                 cell_vars_rules.append(varval) 
             else:
                 # Only el == 0 reaches here: the reshape below turns the 4D
@@ -825,8 +792,7 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
                     clustering_data = clustering_data.reshape(clustering_data.shape[0], clustering_data.shape[1], -1)
                     rule_cluster = clustering_data[test_task == rule_idx, 
                                                    period_time[0]:period_time[1], :]
-                    varval = helper.task_variance_period_numpy(rule_cluster, 
-                                                               labels_stim[test_task == rule_idx].flatten())
+                    varval = helper.task_variance_period_numpy(rule_cluster)
                     cell_vars_rules.append(varval) 
                         
         cell_vars_rules = np.array(cell_vars_rules)    
@@ -1030,6 +996,7 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
                 # Save raw results.
                 with open(f"{save_dir}/w_threshold_belonging_{savefigure_name_base}.pkl", "wb") as _f:
                     pickle.dump({
+                        "variance_method": VARIANCE_METHOD,
                         "percentiles": W_thresh_percentiles,
                         "results_by_variant": w_threshold_results,
                     }, _f)
@@ -1236,6 +1203,7 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
             # is the last cluster; None when no neuron was flagged.
             unresponsive_label = clustering.unresponsive_label_from_result(result, "col")
             cluster_info_save[clustering_save_name] = {
+                "variance_method": VARIANCE_METHOD,
                 "col_clusters": col_clusters,
                 "row_clusters": row_clusters,
                 "tb_break_name": tb_break_name,
@@ -1426,7 +1394,7 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
             varmean = np.zeros((len(rbreaks_) - 1, len(cbreaks_) - 1))
             for rr in range(len(rbreaks_) - 1):
                 for cc in range(len(cbreaks_) - 1):
-                    # 2025-11-04: mean covariance in this bicluster
+                    # Mean task-period variance feature in this bicluster.
                     varmean_ = np.mean(cell_vars_rules_sorted_norm_ordered[rbreaks_[rr]:rbreaks_[rr+1], 
                                                                            cbreaks_[cc]:cbreaks_[cc+1]])
                     varmean[rr,cc] = varmean_
@@ -3027,6 +2995,7 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
 
             with open(f"{save_dir}/{clustering_name}_prepost_belonging_{savefigure_name}.pkl", "wb") as f:
                 pickle.dump({
+                    "variance_method": VARIANCE_METHOD,
                     "prepost_belonging_results": prepost_belonging_results,
                     "G_lst": G_lst,
                     "clustering_name": clustering_name,
@@ -3304,7 +3273,7 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
             cell_vars_rules_sorted_norm_post = cell_vars_rules_sorted_norm[np.ix_(result_post["row_order"], result_post["col_order"])]
 
             # 2025-11-12: for all G results (after reordering)
-            # up to here, the covariance matrix is determined. 
+            # Reorder the task-period variance feature matrix for each cut.
             cell_vars_rules_sorted_norm_all_lst = []
             for result_all_ in result_all_lst:
                 cell_vars_rules_sorted_norm_all = cell_vars_rules_sorted_norm[np.ix_(result_all_["row_order"], result_all_["col_order"])]
@@ -3563,6 +3532,7 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
                 return clustering.prune_labels_by_k(result, {FIXED_K_OM, int(result["col_k"])})
 
             cluster_info_save_mod[clustering_save_name] = {
+                "variance_method": VARIANCE_METHOD,
                 "result_pre": _prune_saved(result_pre),
                 "result_post": _prune_saved(result_post),
                 "result_all_lst": [_prune_saved(r) for r in result_all_lst],

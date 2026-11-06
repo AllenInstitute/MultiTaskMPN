@@ -20,8 +20,11 @@ def write_cache(root, run, stem="lesion_prune_results"):
     directory = Path(root) / run
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{stem}_{run}.pkl"
+    payload = {"variance_method": "trial_time", "source": run}
+    if stem == "cluster_info":
+        payload = {"input_normalized": payload}
     with path.open("wb") as stream:
-        pickle.dump({"source": run}, stream)
+        pickle.dump(payload, stream)
     return path
 
 
@@ -141,8 +144,10 @@ class MultitaskL2ControlTests(unittest.TestCase):
         previous_cwd = Path.cwd()
         try:
             os.chdir(self.root)
-            self.assertEqual(module._load_cluster_info(), {"source": clustering})
-            self.assertEqual(module._load_lesion_results(), {"source": lesion})
+            self.assertEqual(module._load_cluster_info(),
+                             {"input_normalized": {"variance_method": "trial_time", "source": clustering}})
+            self.assertEqual(module._load_lesion_results(),
+                             {"variance_method": "trial_time", "source": lesion})
             self.assertEqual([d.name for d in module._find_experiment_dirs()], [clustering])
             self.assertEqual([d.name for d in module._sibling_run_dirs()], [lesion])
             module._set_multitask_l2("1e4")

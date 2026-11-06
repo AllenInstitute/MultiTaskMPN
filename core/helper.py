@@ -81,54 +81,17 @@ def value_counts_desc(arr):
     sorted_idx = np.argsort(-counts)  # sort by count descending
     return {unique[i]: counts[i] for i in sorted_idx}
 
-def task_variance_period_numpy_old(h, stim, K=8, time_reduce="mean"):
+def task_variance_period_numpy(h, *, ddof=0):
+    """Per-unit variance across trials AND time, without stimulus averaging.
+
+    ``h`` has shape (trials, time, units), already sliced to the task's actual
+    epoch. Each trial retains its complete stimulus condition. Time variation
+    contributes to the variance, including variation common to all trials.
     """
-    """
-    B, T, N = h.shape
-    # print(f"stim: {stim}")
-
-    m = np.full((K, T, N), np.nan, dtype=h.dtype)
-    for k in range(K):
-        idx = (stim == k)
-        if np.any(idx):
-            m[k] = h[idx].mean(axis=0)
-
-    v_time = np.nanvar(m, axis=0)   # (T,N)
-
-    if time_reduce == "none":
-        return v_time               # (T,N)
-    elif time_reduce == "mean":
-        return v_time.mean(axis=0)  # (N,)
-    elif time_reduce == "sum":
-        return v_time.sum(axis=0)   # (N,)
-    else:
-        raise ValueError
-    
-def task_variance_period_numpy(h, stim, K=8, return_means=False, ddof=0):
-    """
-    Compute task-period variance per unit using the pooled condition-by-time variance:
-    
-        V_n = Var_{k,t}(mu_{k,t,n})
-    
-    where
-        mu_{k,t,n} = mean activity of unit n at time t over trials with stimulus k.
-    """
-    B, T, N = h.shape
-    assert len(stim) == B, "stim length must match number of trials in h"
-
-    # stimulus-conditioned mean trajectories
-    m = np.full((K, T, N), np.nan, dtype=float)
-    for k in range(K):
-        idx = (stim == k)
-        if np.any(idx):
-            m[k] = h[idx].mean(axis=0)
-
-    # pool over condition and time, then compute one variance per unit
-    V = np.nanvar(m, axis=(0, 1), ddof=ddof)   # shape (N,)
-
-    if return_means:
-        return V, m
-    return V
+    h = np.asarray(h)
+    if h.ndim != 3 or h.shape[0] == 0 or h.shape[1] == 0:
+        raise ValueError("Expected a nonempty (trials, time, units) epoch")
+    return np.var(h, axis=(0, 1), dtype=np.float64, ddof=ddof)
 
 
 def find_task(task_params, test_input_np, shift_index):

@@ -3,6 +3,7 @@ single-cluster lesions, scored on a seeded test set and kept in their own
 pickle."""
 
 import argparse
+import os
 import pickle
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ import torch
 import lesion_controls
 import lesion_ops
 from test_lesion_ops import tiny_network
+from core.task_variance import VARIANCE_METHOD, NEURON_VARIANTS, LESION_MODULATION_TYPES
 
 TASKS = ["fdgo", "delaygo"]
 
@@ -243,6 +245,7 @@ class MainTests(unittest.TestCase):
                              / f"lesion_controls_responsive_{aname}.pkl")
             with path.open("rb") as stream:
                 output = pickle.load(stream)
+        self.assertEqual(output["variance_method"], VARIANCE_METHOD)
         self.assertEqual(output["schema_version"], lesion_controls.SCHEMA_VERSION)
         self.assertEqual((output["control_pool"], output["repeat_num"], output["test_seed"]),
                          ("responsive", 2, 5))
@@ -262,6 +265,49 @@ class MainTests(unittest.TestCase):
 
 
 class SelectionTests(unittest.TestCase):
+    def _current_run(self, root, seed=12):
+        aname = lesion_ops.run_name(seed, "L21e4")
+        analysis = root / "multiple_tasks_analysis" / aname
+        analysis.mkdir(parents=True)
+        for prefix, keys in (("cluster_info", NEURON_VARIANTS),
+                             ("cluster_info_mod", LESION_MODULATION_TYPES)):
+            (analysis / f"{prefix}_{aname}.pkl").write_bytes(pickle.dumps(
+                {key: {"variance_method": VARIANCE_METHOD} for key in keys}))
+        payload = {"variance_method": VARIANCE_METHOD,
+                   "schema_version": lesion_controls.SCHEMA_VERSION,
+                   "aname": aname, "control_pool": "responsive", "repeat_num": 30,
+                   "test_seed": 0, "test_n_batch": lesion_controls.TEST_N_BATCH,
+                   "mod_lesion": {"modulation_all_normalized__freeze_M": {}},
+                   **{key: {} for key in lesion_controls.lesion_cache.SINGLE_CLUSTER_RECORDS}}
+        lesion = lesion_controls.lesion_results_path(aname, root)
+        lesion.parent.mkdir(parents=True, exist_ok=True)
+        lesion.write_bytes(pickle.dumps(payload))
+        control = lesion_controls.controls_pickle_path(aname, "responsive", root)
+        control.write_bytes(pickle.dumps(payload))
+        return aname, lesion, control, payload
+
+    def test_skip_requires_current_inputs_settings_and_readable_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            aname, lesion, control, payload = self._current_run(root)
+            self.assertTrue(lesion_controls.is_completed(aname, root=root))
+            for kwargs in ({"repeats": 40}, {"test_seed": 2},
+                           {"mod_types": ["modulation_all_weighted_unnormalized"]}):
+                self.assertFalse(lesion_controls.is_completed(aname, root=root, **kwargs))
+            old = dict(payload)
+            old.pop("variance_method")
+            control.write_bytes(pickle.dumps(old))
+            self.assertFalse(lesion_controls.is_completed(aname, root=root))
+            control.write_bytes(b"unfinished")
+            self.assertFalse(lesion_controls.is_completed(aname, root=root))
+            control.write_bytes(pickle.dumps(payload))
+            os.utime(control, ns=(1, 1))
+            self.assertFalse(lesion_controls.is_completed(aname, root=root))
+            control.write_bytes(pickle.dumps(payload))
+            cluster = root / "multiple_tasks_analysis" / aname / f"cluster_info_{aname}.pkl"
+            cluster.write_bytes(pickle.dumps({"input_normalized": {}}))
+            self.assertFalse(lesion_controls.is_completed(aname, root=root))
+
     def test_runs_are_discovered_filtered_and_skipped(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -271,7 +317,7 @@ class SelectionTests(unittest.TestCase):
                 (root / "multiple_tasks_perf" / aname).mkdir(parents=True)
                 if lesioned:
                     lesion_controls.lesion_results_path(aname, root).touch()
-            lesion_controls.controls_pickle_path(lesion_ops.run_name(12, "L21e4"), "responsive", root).touch()
+            self._current_run(root)
             self.assertEqual(lesion_controls.discover_runs(root),
                              [(11, "L21e4"), (12, "L21e4"), (13, "L21e3")])
             args = lesion_controls.parse_args(["--seed", "all", "--feature", "L21e4"])

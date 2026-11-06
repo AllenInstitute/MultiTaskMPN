@@ -38,10 +38,9 @@ class VarianceWeightingTests(unittest.TestCase):
         rng = np.random.default_rng(0)
         W = rng.normal(size=(3, 4)).astype(np.float32)               # (post, pre)
         M = rng.normal(size=(12, 5, 3, 4)).astype(np.float32)        # (trials, time, post, pre)
-        stimulus = np.repeat(np.arange(4), 3)
         flat = (12, 5, -1)
-        weighted = helper.task_variance_period_numpy((M * W).reshape(flat), stimulus)
-        variance = helper.task_variance_period_numpy(M.reshape(flat), stimulus)
+        weighted = helper.task_variance_period_numpy((M * W).reshape(flat))
+        variance = helper.task_variance_period_numpy(M.reshape(flat))
         squared = mv.weight_modulation_variance(variance[np.newaxis], "modulation_all_weighted", W)
         np.testing.assert_allclose(squared[0], weighted, rtol=1e-5)
 

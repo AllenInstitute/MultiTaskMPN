@@ -50,6 +50,7 @@ import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 from lesion_cache import load_lesion_pickle, normalize_lesion_cache, resolve_lesion_cache_path
 from state_space_geometry import mantel_spearman_permutation
 from state_space_cache import M_ALIGNMENT, require_aligned
+from core.task_variance import VARIANCE_METHOD
 
 STATE_SPACE_DIR = Path("state_space")
 LESION_NORM_ROOT = Path("multiple_tasks_norm")
@@ -230,6 +231,7 @@ def analyze_run(aname, l2_info, tasks, distances, similarities,
     upper = np.triu_indices(len(tasks), 1)
     entry = {
         "schema_version": SCHEMA_VERSION, "aname": aname, "l2_info": l2_info,
+        "variance_method": VARIANCE_METHOD,
         "control_pool": str(control_pool),
         "m_alignment": m_alignment,
         "tasks": list(tasks), "pairs": [(tasks[i], tasks[j]) for i, j in zip(*upper)],

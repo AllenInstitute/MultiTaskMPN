@@ -150,10 +150,11 @@ SIGNIFICANCE = 0.05
 
 # Saved-result layout: 2 adds same-task, 3 all-task and organization,
 # 4 same-period, 5 restricted permutations with common row pairs, equal
-# network means and BH-adjusted q values. paper_plot requires version 5.
+# network means and BH-adjusted q values; 6 requires trial_time variance
+# with actual trial endpoints. paper_plot requires version 6.
 # The matched-task supplement is additive and has its own schema_version;
-# existing v5 all-task results remain valid without it.
-RESULT_VERSION = 5
+# existing v6 all-task results remain valid without it.
+RESULT_VERSION = 6
 # Prefixes of the files one run writes, each followed by "{tag}.{suffix}".
 _OUTPUT_PREFIXES = ("sibling_row_sharing_", "sibling_row_sharing_pairs_",
                     "sibling_row_sharing_summary_", "sibling_row_sharing_same_task_")
@@ -949,6 +950,7 @@ def _update_cut_robustness(tag, root, feature, seed, untrained):
         payload = pickle.load(stream)
     matched_metadata = payload.get("organization_matched_tasks", {})
     if (payload.get("version") != RESULT_VERSION or payload.get("seed") != seed
+            or payload.get("variance_method") != diag.VARIANCE_METHOD
             or bool(payload.get("untrained")) != untrained
             or payload.get("feature") != (None if untrained else feature)
             or payload.get("architecture") != architecture_tag(feature)
@@ -1091,6 +1093,7 @@ def main(feature="L21e4", seed=None, untrained=False,
 
     payload = {
         "version": RESULT_VERSION,
+        "variance_method": diag.VARIANCE_METHOD,
         # The untrained controls belong to an architecture, not to one L2
         # cohort (module docstring); their config runs' features are listed.
         "feature": None if untrained else feature,

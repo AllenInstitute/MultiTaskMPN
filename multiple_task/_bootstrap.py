@@ -1,13 +1,15 @@
-"""Path bootstrap: make core/ importable via flat imports after the dir move.
+"""Make shared code importable when a multiple_task script is run directly.
 
 Importing this module (``import _bootstrap``) prepends the repository's
-``core/`` directory to ``sys.path``, so existing flat imports such as
-``import helper`` / ``import mpn`` continue to resolve. Scripts are still run
-from the repository root (e.g. ``python two_task/two_task.py``).
+root and ``core/`` directory to ``sys.path``. This supports package imports
+such as ``from core.task_variance import ...`` as well as existing flat
+imports such as ``import helper`` / ``import mpn``. Scripts are still run
+from the repository root (e.g. ``python multiple_task/run_pipeline.py``).
 """
 import sys as _sys
 import pathlib as _pathlib
 
-_CORE = _pathlib.Path(__file__).resolve().parent.parent / "core"
-if str(_CORE) not in _sys.path:
-    _sys.path.insert(0, str(_CORE))
+_ROOT = _pathlib.Path(__file__).resolve().parent.parent
+for _directory in (_ROOT, _ROOT / "core"):
+    if str(_directory) not in _sys.path:
+        _sys.path.insert(0, str(_directory))

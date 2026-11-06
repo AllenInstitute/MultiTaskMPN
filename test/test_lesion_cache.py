@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import _bootstrap  # noqa: F401
 import numpy as np
+from core.task_variance import VARIANCE_METHOD
 from core.lesion_cache import (controls_pickle_path, load_lesion_pickle, normalize_lesion_cache,
                                norm_root, overlay_lesion_controls, resolve_lesion_cache_path)
 
@@ -39,17 +40,17 @@ class LesionCacheTests(unittest.TestCase):
             root = Path(directory)
             legacy = root / "cluster_corr_vs_normalized_leison_effect_run.pkl"
             canonical = root / "cluster_corr_vs_normalized_lesion_effect_run.pkl"
-            payload = pickle.dumps({"leison": {"labels": ["pre_noleison"], "value": 0.25}})
+            payload = pickle.dumps({"variance_method": VARIANCE_METHOD, "leison": {"labels": ["pre_noleison"], "value": 0.25}})
             legacy.write_bytes(payload)
             before = legacy.stat()
             self.assertEqual(resolve_lesion_cache_path(canonical), legacy)
             self.assertEqual(load_lesion_pickle(canonical),
-                             {"lesion": {"labels": ["pre_nolesion"], "value": 0.25}})
+                             {"variance_method": VARIANCE_METHOD, "lesion": {"labels": ["pre_nolesion"], "value": 0.25}})
             self.assertEqual(legacy.read_bytes(), payload)
             self.assertEqual(legacy.stat().st_mtime_ns, before.st_mtime_ns)
             self.assertFalse(canonical.exists())
-            canonical.write_bytes(pickle.dumps({"lesion": "new"}))
-            self.assertEqual(load_lesion_pickle(canonical), {"lesion": "new"})
+            canonical.write_bytes(pickle.dumps({"variance_method": VARIANCE_METHOD, "lesion": "new"}))
+            self.assertEqual(load_lesion_pickle(canonical), {"variance_method": VARIANCE_METHOD, "lesion": "new"})
             self.assertEqual(resolve_lesion_cache_path(canonical), canonical)
 
     def test_paper_raw_reader_normalizes_legacy_keys_without_writing(self):
@@ -58,7 +59,7 @@ class LesionCacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / f"lesion_prune_results_{paper_plot.LESION_ANAME}.pkl"
-            payload = pickle.dumps({"leison_unnorm": {
+            payload = pickle.dumps({"variance_method": VARIANCE_METHOD, "leison_unnorm": {
                 "all_comb_names_leison": ["post_noleison", "post_c1"],
                 "lesion_units": {"post_noleison": 0, "post_c1": 3}},
                 "mod_leison": {"example": {"all_comb_names_mod": ["mod_noleison"]}}})
@@ -70,6 +71,19 @@ class LesionCacheTests(unittest.TestCase):
             self.assertEqual(loaded["lesion_unnorm"]["lesion_units"]["post_c1"], 3)
             self.assertIn("mod_lesion", loaded)
             self.assertEqual(path.read_bytes(), payload)
+
+    def test_unmarked_or_mixed_estimator_results_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.pkl"
+            for payload in ({"lesion": {}},
+                            {"input": {"variance_method": VARIANCE_METHOD}, "hidden": {}}):
+                path.write_bytes(pickle.dumps(payload))
+                with self.assertRaisesRegex(ValueError, "stale task-variance"):
+                    load_lesion_pickle(path)
+            payload = {name: {"variance_method": VARIANCE_METHOD, "rho": 0.2}
+                       for name in ("input", "hidden")}
+            path.write_bytes(pickle.dumps(payload))
+            self.assertEqual(load_lesion_pickle(path), payload)
 
     def test_collisions_raise_and_missing_cache_is_not_created(self):
         with self.assertRaisesRegex(ValueError, "Conflicting"):

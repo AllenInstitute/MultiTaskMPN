@@ -139,6 +139,7 @@ import matplotlib as mpl
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import helper
+from core.task_variance import require_current_variance
 import clustering
 from modulation_variants import (LESION_MODULATION_TYPES, MODULATION_TYPE_COLORS,
                                  MODULATION_VARIANCE_WEIGHTS)
@@ -990,9 +991,9 @@ CONTROL_FDR_Q = 0.05
 
 
 def _control_meta(results):
-    """The pool, repeat count and test seed of the controls in `results`, for
-    the caches, so a reader can tell which controls they were computed with."""
-    return {"control_pool": results.get("control_pool", "all"),
+    """Propagate the variance estimator and control settings to derived caches."""
+    return {"variance_method": results.get("variance_method"),
+            "control_pool": results.get("control_pool", "all"),
             "control_repeats": int(results["repeat_num"]) if "repeat_num" in results else None,
             "control_test_seed": results.get("test_seed")}
 
@@ -1750,6 +1751,7 @@ def main(seed, feature, control_pool=None):
     if os.path.exists(_ci_path) and E_dep_unnorm is not None:
         with open(_ci_path, "rb") as _f:
             cluster_info = pickle.load(_f)  # also reused by later sections
+            require_current_variance(cluster_info, aname)
 
         _S_les = {"unnormalized": np.corrcoef(E_dep_unnorm),
                   "normalized": np.corrcoef(E_dep_norm)}
@@ -3352,8 +3354,10 @@ def main(seed, feature, control_pool=None):
     if os.path.exists(cluster_mod_path) and os.path.exists(cluster_path):
         with open(cluster_mod_path, "rb") as f:
             cluster_info_mod = pickle.load(f)
+            require_current_variance(cluster_info_mod, aname)
         with open(cluster_path, "rb") as f:
             cluster_info = pickle.load(f)
+            require_current_variance(cluster_info, aname)
 
         _save_modulation_causal_vs_activity(results, normalized_effects, cluster_info_mod,
                                             all_tasks, aname, save_dir)
@@ -3560,6 +3564,7 @@ def main(seed, feature, control_pool=None):
         except NameError:
             with open(cluster_path, "rb") as f:
                 cluster_info = pickle.load(f)
+                require_current_variance(cluster_info, aname)
 
         _fixed_k_plot = results.get("fixed_k", 20)
 
@@ -3597,6 +3602,7 @@ def main(seed, feature, control_pool=None):
         except NameError:
             with open(cluster_mod_path, "rb") as f:
                 cluster_info_mod = pickle.load(f)
+                require_current_variance(cluster_info_mod, aname)
 
         for mod_type_key, modes_dict in mod_by_type.items():
             if mod_type_key not in cluster_info_mod:
@@ -3881,6 +3887,7 @@ def main(seed, feature, control_pool=None):
 
         with open(f"{save_dir}/lesion_interaction_{vtag}_{aname}.pkl", "wb") as _f:
             pickle.dump({
+                "variance_method": results_all["variance_method"],
                 "interaction_per_task": I_task, "interaction_avg": I_avg,
                 "single_input_effects": SI, "single_hidden_effects": SH,
                 "combined_effects": CE, "om_max": om_max, "om_regression": om_reg,

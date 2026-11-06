@@ -56,7 +56,8 @@ class NormalizedModulationEffectTests(unittest.TestCase):
             base, exported_mode, record = lesion_plot._normalized_modulation_effect_record(
                 f"{base_key}__{mode}", self.raw(mode, accuracy), [])
             entries[f"{base}__{exported_mode}"] = record
-        cache = {"schema_version": 1, "aname": paper_plot.LESION_ANAME, "entries": entries,
+        cache = {"variance_method": paper_plot.VARIANCE_METHOD,
+                 "schema_version": 1, "aname": paper_plot.LESION_ANAME, "entries": entries,
                  "primary_modulation_mode": "zero_W"}
         with patch.object(paper_plot, "_ensure_out_dir"), \
                 patch.object(paper_plot, "_load_pkl_or_skip", return_value=cache), \
@@ -66,10 +67,12 @@ class NormalizedModulationEffectTests(unittest.TestCase):
         save.assert_called_once()
         figure = save.call_args.args[0]
         self.addCleanup(paper_plot.plt.close, figure)
-        np.testing.assert_allclose(figure.axes[2].collections[0].get_array().reshape(2, 2),
-                                   [[50., 70.], [60., 40.]])
-        self.assertEqual([figure.axes[2].xaxis.get_major_formatter()(index)
-                          for index in figure.axes[2].get_xticks()], ["U", "C3"])
+        # The second panel uses freeze_M (accuracy 0.5), even when legacy
+        # primary_modulation_mode metadata says zero_W (accuracy 0.2).
+        np.testing.assert_allclose(figure.axes[1].collections[0].get_array().reshape(2, 2),
+                                   [[20., 40.], [30., 10.]])
+        self.assertEqual([figure.axes[1].xaxis.get_major_formatter()(index)
+                          for index in figure.axes[1].get_xticks()], ["U", "C3"])
 
     def test_mislabeled_interventions_and_mismatched_controls_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "disagrees"):

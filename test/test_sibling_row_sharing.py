@@ -5,11 +5,13 @@ import pickle
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import _bootstrap  # noqa: F401
 import numpy as np
 from scipy.cluster.hierarchy import linkage, fcluster
+from scipy.stats import mannwhitneyu
 
 import multiple_task_diagnosis as diagnosis
 import paper_plot
@@ -535,6 +537,7 @@ class CutRobustnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "sibling_row_sharing_L21e4.pkl"
             payload = {"version": sharing.RESULT_VERSION, "feature": "L21e4", "seed": None,
+                       "variance_method": diagnosis.VARIANCE_METHOD,
                        "architecture": "", "mod_g_index": diagnosis.MOD_G_INDEX,
                        "experiments": ["run"], "old_statistics": {"keep": [0.1, 0.2]},
                        "organization_matched_tasks": sharing.summarize_organization_matched_tasks(
@@ -564,6 +567,7 @@ class CutRobustnessTests(unittest.TestCase):
             with self.subTest(key=key), tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / "sibling_row_sharing_L21e4.pkl"
                 payload = {"version": sharing.RESULT_VERSION, "feature": "L21e4", "seed": None,
+                           "variance_method": diagnosis.VARIANCE_METHOD,
                            "architecture": "", "mod_g_index": diagnosis.MOD_G_INDEX,
                            "experiments": ["run"],
                            "organization_matched_tasks": dict(entry, **{key: ["stale"]})}
@@ -636,10 +640,12 @@ class DriverTests(unittest.TestCase):
         run_dir.mkdir(parents=True)
         data = _complete_experiment()["input"]
         labels, names = data["row_labels"], data["tb_break_name"]
-        neuron = {"result": {"row_tol_labels": labels}, "tb_break_name": names}
+        neuron = {"variance_method": diagnosis.VARIANCE_METHOD,
+                  "result": {"row_tol_labels": labels}, "tb_break_name": names}
         with open(run_dir / f"cluster_info_{aname}.pkl", "wb") as stream:
             pickle.dump({"input_normalized": neuron, "hidden_normalized": neuron}, stream)
-        modulation = {"result_all_lst": [None, {"row_tol_labels": labels}],
+        modulation = {"variance_method": diagnosis.VARIANCE_METHOD,
+                      "result_all_lst": [None, {"row_tol_labels": labels}],
                       "tb_break_name": names}
         with open(run_dir / f"cluster_info_mod_{aname}.pkl", "wb") as stream:
             pickle.dump({"modulation_all_normalized": modulation}, stream)
@@ -756,6 +762,7 @@ class PaperFigureTests(unittest.TestCase):
     def _payload(self):
         return {
             "version": paper_plot._ROW_SHARING_RESULT_VERSION,
+            "variance_method": diagnosis.VARIANCE_METHOD,
             "feature": paper_plot.multitask_feature(),
             "seed": None,
             "experiments": [f"run{seed}" for seed in range(6)],
@@ -928,7 +935,7 @@ class PaperFigureTests(unittest.TestCase):
                                      self._payload(), untrained=control)
         save.assert_called_once()
         message = str(printed.call_args_list)
-        self.assertIn("is not a version-5", message)
+        self.assertIn("is not a version-6", message)
         self.assertIn("sibling_row_sharing.py --feature", message)
         self.assertIn("--untrained", message)
         self.assertNotIn("untrained_clustering.py", message)
@@ -1041,6 +1048,63 @@ class PaperFigureTests(unittest.TestCase):
         self.assertIn("10 task pairs", save.call_args.kwargs["extra"])
         self.assertIn("paired contrast", str(printed.call_args_list))
 
+    def test_synapse_comparison_uses_network_fractions_including_zeros(self):
+        payload, control = self._payload(), self._untrained_payload()
+        samples = ([0.0, 0.0, 100.0], [25.0, 75.0])
+        for source, counts, expected in (
+                (payload, [(0, 1), (0, 9), (1, 1)], samples[0]),
+                (control, [(1, 4), (3, 4)], samples[1])):
+            source["experiments"] = [f"run{i}" for i in range(len(counts))]
+            for reps in source["same_period_all"]["periods"].values():
+                reps["modulation"] = {
+                    "pct_same_cluster": np.mean(expected), "chance_mean": 0.1,
+                    "q_fdr": 0.0,  # old chance stars must not appear
+                    "per_run": {f"run{i}": {"observed": observed, "n_cells": total,
+                                              "expected": 0.1 * total}
+                                for i, (observed, total) in enumerate(counts)}}
+        with patch("scipy.stats.mannwhitneyu", wraps=mannwhitneyu) as compare:
+            save, _ = self._render(paper_plot.plot_row_cluster_same_period_synapses,
+                                   payload, control)
+        self.assertEqual(compare.call_count, 5)
+        for call in compare.call_args_list:
+            for actual, expected in zip(call.args, samples):
+                np.testing.assert_allclose(actual, expected)
+            self.assertEqual(call.kwargs, {"alternative": "two-sided",
+                                           "method": "asymptotic", "use_continuity": True})
+        self.assertEqual(Path(save.call_args.args[1]).name,
+                         "multitask_row_cluster_same_period_synapses.png")
+        ax = save.call_args.args[0].axes[0]
+        np.testing.assert_allclose([bar.get_height() for bar in ax.patches],
+                                   [100 / 3, 50] * 5)
+        self.assertLess(ax.get_ylim()[0], np.mean(samples[0]) - np.std(samples[0], ddof=1))
+        self.assertEqual(len(ax.texts), 5)
+        self.assertTrue(all("p=" in text.get_text() and "q=" in text.get_text()
+                            and "*" not in text.get_text() for text in ax.texts))
+        expected_p = mannwhitneyu(*samples, alternative="two-sided",
+                                  method="asymptotic").pvalue
+        self.assertIn(f"p={expected_p:.6g}, q={expected_p:.6g}",
+                      save.call_args.kwargs["extra"])
+
+    def test_synapse_comparison_corrects_only_the_five_cohort_tests(self):
+        # Different from all saved within-cohort p/q values; BH in period order.
+        with patch("scipy.stats.mannwhitneyu", side_effect=[
+                SimpleNamespace(pvalue=p) for p in (0.04, 0.001, 0.03, 0.8, 0.2)]):
+            save, _ = self._render(paper_plot.plot_row_cluster_same_period_synapses,
+                                   self._payload(), self._untrained_payload())
+        self.assertEqual([text.get_text() for text in save.call_args.args[0].axes[0].texts],
+                         ["p=0.04\nq=0.0667", "p=0.001\nq=0.005", "p=0.03\nq=0.0667",
+                          "p=0.8\nq=0.8", "p=0.2\nq=0.25"])
+
+    def test_synapse_comparison_skips_missing_control_or_period(self):
+        payload, control = self._payload(), self._untrained_payload()
+        del control["same_period_all"]["periods"]["stim1"]
+        for untrained in (None, control):
+            with self.subTest(has_control=untrained is not None):
+                save, printed = self._render(paper_plot.plot_row_cluster_same_period_synapses,
+                                             payload, untrained)
+                save.assert_not_called()
+                self.assertIn("Skipped synapse cohort comparison", str(printed.call_args_list))
+
     def test_matched_task_and_organization_figures_use_their_own_entries(self):
         experiments = [(f"run{i}", _complete_experiment()) for i in range(6)]
         payload = dict(self._payload(),
@@ -1138,7 +1202,20 @@ class PaperFigureTests(unittest.TestCase):
             payload["version"] = 4
             save, printed = self._render(plot, payload)
             save.assert_not_called()
-            self.assertIn("is not a version-5", str(printed.call_args_list))
+            self.assertIn("is not a version-6", str(printed.call_args_list))
+
+    def test_current_schema_without_estimator_provenance_requires_reclustering(self):
+        payload = self._payload()
+        del payload["variance_method"]
+        save, printed = self._render(paper_plot.plot_row_cluster_same_period_seeds, payload)
+        save.assert_not_called()
+        self.assertIn("First rerun clustering", str(printed.call_args_list))
+        control = self._untrained_payload()
+        del control["variance_method"]
+        save, printed = self._render(paper_plot.plot_row_cluster_same_period_seeds,
+                                     self._payload(), untrained=control)
+        save.assert_called_once()
+        self.assertIn("untrained_clustering.py", str(printed.call_args_list))
 
 
 if __name__ == "__main__":

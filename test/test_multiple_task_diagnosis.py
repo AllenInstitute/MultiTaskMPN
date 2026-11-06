@@ -85,14 +85,30 @@ class ChanceLevelTests(unittest.TestCase):
 
 
 class DiagnosisDriverTests(unittest.TestCase):
+    def test_old_or_mixed_neuron_modulation_caches_are_skipped(self):
+        aname = "everything_seed1_L21e4+hidden300+batch128+angle"
+        for prefix in ("cluster_info_", "cluster_info_mod_"):
+            with self.subTest(prefix=prefix), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self._write_run(root, aname)
+                path = root / aname / f"{prefix}{aname}.pkl"
+                data = pickle.loads(path.read_bytes())
+                next(iter(data.values())).pop("variance_method")
+                path.write_bytes(pickle.dumps(data))
+                with patch("builtins.print") as printed:
+                    self.assertIsNone(diagnosis._load_experiment(aname, root=root))
+                self.assertIn("stale task-variance", str(printed.call_args_list))
+
     def _write_run(self, root, aname):
         run_dir = root / aname
         run_dir.mkdir(parents=True)
         labels = _experiment()["input"]["row_labels"]
-        neuron = {"result": {"row_tol_labels": labels}, "tb_break_name": _NAMES}
+        neuron = {"variance_method": diagnosis.VARIANCE_METHOD,
+                  "result": {"row_tol_labels": labels}, "tb_break_name": _NAMES}
         with open(run_dir / f"cluster_info_{aname}.pkl", "wb") as stream:
             pickle.dump({"input_normalized": neuron, "hidden_normalized": neuron}, stream)
-        modulation = {"result_all_lst": [None, {"row_tol_labels": labels}],
+        modulation = {"variance_method": diagnosis.VARIANCE_METHOD,
+                      "result_all_lst": [None, {"row_tol_labels": labels}],
                       "tb_break_name": _NAMES}
         with open(run_dir / f"cluster_info_mod_{aname}.pkl", "wb") as stream:
             pickle.dump({"modulation_all_normalized": modulation}, stream)

@@ -12,6 +12,7 @@ class LesionClusterSizeTests(unittest.TestCase):
     def data(self, hidden_sizes, modulation_sizes):
         names = [f"post_c{index + 1}" for index in range(len(hidden_sizes))]
         return {
+            "variance_method": paper_plot.VARIANCE_METHOD,
             "lesion_unnorm": {
                 "lesion_units": dict(zip(names, hidden_sizes)),
                 "all_comb_names_lesion": ["post_nolesion", *names],

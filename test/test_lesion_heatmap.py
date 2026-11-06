@@ -15,6 +15,7 @@ FREEZE_M = "modulation_all_var_weighted_unnormalized__freeze_M"
 class LesionHeatmapTests(unittest.TestCase):
     def cache(self):
         return {
+            "variance_method": paper_plot.VARIANCE_METHOD,
             "schema_version": 1,
             "aname": paper_plot.LESION_ANAME,
             "entries": {

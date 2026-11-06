@@ -77,7 +77,8 @@ class ModulationPairingTests(unittest.TestCase):
     def test_saved_cache_is_read_by_paper_plot(self):
         rng = np.random.default_rng(3)
         aname = "everything_seed1_L21e4+hidden300+batch128+angle"
-        results = {"mod_lesion": {EFFECT_KEY: {"unresponsive_label": 4}}}
+        results = {"variance_method": paper_plot.VARIANCE_METHOD,
+                   "mod_lesion": {EFFECT_KEY: {"unresponsive_label": 4}}}
         effects = {"entries": {EFFECT_KEY: effect_record(rng)}}
         cluster_info_mod = {lesion_plot.CAUSAL_VS_ACTIVITY_MOD_TYPE: clustering_entry(rng)}
         with tempfile.TemporaryDirectory() as directory, \

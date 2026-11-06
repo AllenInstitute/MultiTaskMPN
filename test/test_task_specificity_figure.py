@@ -70,7 +70,8 @@ class TaskSpecificityFigureTests(unittest.TestCase):
                                 for name, entry in types.items()}}
         for pool, by_type in (pools or {}).items():
             pool_counts[pool] = {name: np.asarray(counts) for name, counts in by_type.items()}
-        return {"schema_version": 4, "aname": paper_plot.LESION_ANAME, "tasks": tasks,
+        return {"variance_method": paper_plot.VARIANCE_METHOD,
+                "schema_version": 4, "aname": paper_plot.LESION_ANAME, "tasks": tasks,
                 "n_perm": 4, "modulation_lesion_mode": "freeze_M",
                 "effect_thresholds": list(self.THRESHOLDS), "types": types,
                 "control_pool": control_pool, "pool_counts": pool_counts}

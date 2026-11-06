@@ -3,8 +3,14 @@
 Details behind the `multiple_tasks` and `lesion` figure modes of
 `paper_plot.py`: which caches each figure reads, what its statistics are, and
 the conventions of the clustering caches. `python multiple_task/run_pipeline.py`
-produces those caches (clustering, lesions, lesion plots); the commands are in
-the README.
+produces the per-run clustering, lesion, control and lesion-plot caches; the
+commands are in the README. Row-sharing summaries and the paper figures are
+separate steps.
+
+The trial-time variance revision invalidates the old clustering-dependent
+results. Numerical observations below labeled as historical were computed
+with S1-conditioned features and must be rechecked after rerunning; their
+presence here does not imply that new results have been generated.
 
 ## Run selection of the pipeline
 
@@ -23,18 +29,20 @@ python multiple_task/multiple_task.py --seed 11 42
 python multiple_task/run_pipeline.py --seed 749 --feature L21e4
 # several seeds of one cohort, run in the given order
 python multiple_task/run_pipeline.py --feature L21e3 --seed 299 365 487 501 934
-# every checkpoint of a cohort that has no pipeline outputs yet (rerun after
-# more training). A run counts as completed when all four steps wrote their
-# last file: cluster_info and cluster_info_mod, lesion_prune_results, the
+# Every checkpoint of a cohort needing current pipeline outputs. Completion
+# requires the current variance marker, the requested --control-repeats,
+# and outputs newer than their inputs:
+# cluster_info and cluster_info_mod, lesion_prune_results, the
 # lesion_controls pickle of --control-pool (responsive by default) and the
 # two lesion_interaction pickles of each plotted pool (multiple_tasks_norm/
-# and multiple_tasks_norm_<pool>/); a run missing any is redone from step 1,
-# or with --resume only its missing steps are run (how runs lesioned before
-# the controls step existed get their controls and plots).
+# and multiple_tasks_norm_<pool>/). With --resume, current steps are reused;
+# missing/outdated steps and their dependents rerun. Without --resume,
+# selected runs restart at clustering.
 # --skip-completed needs --feature or --seed; to spread a cohort over nodes,
 # give each process its own --seed list (two bare runs would pick the same
-# checkpoints). Each run takes about an hour of clustering plus four to six
-# hours of lesions and one to two hours of controls per synapse type.
+# checkpoints). Historical timing was about an hour of clustering plus four
+# to six hours of lesions and one to two hours of controls per synapse type;
+# clustering with the new variance estimator has not yet been timed.
 python multiple_task/run_pipeline.py --feature L21e4 --skip-completed
 python multiple_task/run_pipeline.py --feature L21e4 --skip-completed --resume
 ```
@@ -473,7 +481,8 @@ runs' post-processing outputs in the control pool's cache directory
 ## Activity-matched controls
 
 `lesion.py` compares every cluster lesion with size-matched random lesions
-drawn from all units of that side or layer. More than half of the hidden
+drawn from all units of that side or layer. In the historical S1-conditioned
+analysis (these numerical values need rechecking), more than half of the hidden
 neurons (median 159 of 300 per run) and of the plastic synapses (57%) belong
 to the unresponsive class, so those controls are mostly silent units and
 barely hurt the network (a random zero_W lesion costs about 2 accuracy
@@ -665,7 +674,8 @@ var-weighted clustering (the unresponsive synapse class excluded, as the
 over-membership analysis does), their task-period features in two versions,
 `magnitude` = `log1p(|W|·Var(M))` (primary; the sign of W is a per-synapse
 attribute, not tuning: the signed clustering gives sign-pure clusters and the
-sign alone accounts for about a fifth of the signed variance) and `signed` =
+sign alone accounted for about a fifth of the signed variance in the old
+S1-conditioned analysis; this fraction needs rechecking) and `signed` =
 `signed_log1p(W·Var(M))` (what the clustering saw), and reports the share of
 the total sum of squares explained by least-squares fits of: the presynaptic
 (input) neuron's cluster, the postsynaptic (hidden) neuron's cluster, both
@@ -725,10 +735,11 @@ a chance level: the fraction of pairs of rows of that phase from two
 different tasks that share a cluster in that run and representation,
 averaged over the runs (`_same_phase_chance`), with an exact two-sided
 Poisson-binomial test over the runs' own chance levels
-(`_poisson_binomial_p`). The chance level matters: on the L21e4 runs every
+(`_poisson_binomial_p`). In the historical S1-conditioned L21e4 results, every
 memory-period row of every task falls in one input and one hidden cluster
 (chance 100%), so sharing in the memory periods is not specific to the
-sibling pair, while the modulation chance stays between about 7% and 20%.
+sibling pair, while the modulation chance stayed between about 7% and 20%.
+These numerical observations need confirmation with the trial-time estimator.
 The script writes `multiple_tasks_diagnosis/diagnosis_<tag>.{pkl,json}` and
 its own figure `same_cluster_diagnoses_<tag>.png` (tag `<feature>` or
 `<feature>_seed<seed>`), replacing earlier files of the same tag only, so the
@@ -808,12 +819,41 @@ between trained and untrained networks. The result saves `p_perm`,
 `q_fdr`, per-network observed/expected counts, and the null definition,
 permutation settings and FDR family under `permutation`.
 
-Result **version 5** holds these checks. Earlier same-task/same-period
-percentages, chance levels and stars used different pair filters and tests;
-they must be regenerated before reporting conclusions. Only rerun
+Result **version 6** retains these statistical checks and requires
+`variance_method="trial_time"`: variance is computed directly across trials
+and time, without first averaging trials in S1 direction bins. Each epoch
+ends at its own task's actual trial endpoint, excluding padded timesteps.
+Input, hidden and modulation use the same definition; column normalization
+and clustering settings are unchanged. Derived overmembership, lesion and
+lesion-postprocessing caches also carry the estimator marker; readers reject
+unmarked results instead of mixing them with new clusters. `--resume` and
+`--skip-completed` check provenance, input/output times and the requested
+control repeat count. Changing only `--control-repeats` with `--resume`
+reuses clustering and lesions, then recomputes controls and plots.
+Standalone `lesion_controls.py
+--skip-completed` also checks the requested settings and upstream freshness.
+Reclustering clears the run's old analysis artifacts, preserving independently
+owned sibling-geometry files.
+
+**Migration from v5 requires reclustering trained and untrained networks.**
+Old cluster pickles have no estimator marker and are rejected, including by
+`--skip-completed` and trained-pipeline `--resume`. After reclustering, rerun
 `sibling_row_sharing.py` for each trained cohort and once per architecture
-with `--untrained`, using the existing cluster pickles. No network forward
-pass, state-space batch or reclustering is needed.
+with `--untrained`, then regenerate the paper figures. Updating only the
+sharing statistics cannot repair old variance features. The trained pipeline
+also recomputes lesions and controls when their upstream clusters change.
+The state-space trajectories, distances and transplant analyses are independent
+of this change. The derived `state_space_vs_lesion.py` comparison depends on
+lesion clusters and must be recomputed after the new lesion summaries. Previous numerical
+conclusions from S1-conditioned clustering require confirmation after this
+migration; existing PNGs are historical until regenerated.
+
+Other files in `multiple_tasks_diagnosis/` need the same migration:
+`multiple_task_diagnosis.py` regenerates `diagnosis_*` and
+`same_cluster_diagnoses_*`, and `rule_cue_ablation.py` regenerates its own
+variance-based results. These scripts are not run by `run_pipeline.py`.
+The `modulation_feedback_*` results measure feedback dynamics and saturation
+independently of the variance estimator and can be retained.
 
 `paper_plot.py` reads these results and skips stale files with a rerun
 command. `multitask_row_cluster_organization.png` retains its two
@@ -842,6 +882,23 @@ to the dash shows the direction. It neither establishes causality nor
 proves that training created the organization. Trained and untrained stars
 use separate within-cohort tests. Their difference in significance is not
 itself a significant difference between cohorts.
+
+The follow-up `multitask_row_cluster_same_period_synapses_n.png` extracts only
+the synapse bars from the all-task same-period figure. Means, sample SDs and
+restricted-null chance dashes are unchanged. Its bracket annotations instead
+compare trained with untrained networks within each period: two-sided
+Mann-Whitney U, using tie- and continuity-corrected asymptotic p values, with
+BH correction across the five periods. Both raw p and adjusted q are shown.
+Each network contributes one sharing fraction; task pairs are not independent
+samples and the cohorts are not paired. The tests concern the distributions
+of those fractions, not specifically the difference of their means. Zero
+sharing is retained. Both cohorts are required. These comparisons are computed
+from current v6 per-network counts while plotting; once clustering and sharing
+have been migrated, this extra figure needs no further summary rerun:
+
+```bash
+python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_same_period_synapses
+```
 
 The matched-task supplement, `same_period_matched_tasks`, keeps the original
 full-task clustering and restricts every phase to the same five tasks:
@@ -899,11 +956,12 @@ companion, not new evidence from the unchanged bar heights. These five
 integration tasks are a restricted task family, so the supplements do not
 replace the full-task overview or establish generality across all tasks.
 
-Each of these three summaries has `schema_version=1` inside the version-5 payload, and
+Each of these three summaries has `schema_version=1` inside the version-6 payload, and
 records `task_names`, `phases` and retention of the original clustering.
 The period view also retains its original `tasks` metadata for compatibility.
-Older v5 results still draw the original figures; a supplement asks for a
-rerun if its field is absent. Recompute statistics and draw the supplements:
+Current v6 results without a supplement still draw the original figures;
+a supplement asks for a rerun if its field is absent. After regenerating
+the upstream trial-time cluster caches, compute the supplements:
 
 ```bash
 conda activate mpn
@@ -914,10 +972,9 @@ python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_same_task_mat
 python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_organization_matched_tasks
 ```
 
-This reads existing cluster caches and requires no network forward pass or
-reclustering. It controls task composition, not the upstream feature
-definition: all phases still use first-stimulus-conditioned means and
-variance pooled over conditions and time. The input memory rows can share a
+With current trial-time cluster caches, this step requires no network
+forward pass or reclustering. It controls task composition; all phases use
+variance pooled directly over trials and time. The input memory rows can share a
 cluster because their features are near zero; that is not memory coding.
 
 The further figure `multitask_row_cluster_cut_robustness_matched_tasks_n.png`
@@ -944,7 +1001,7 @@ The saved tree must reproduce the original row partition before any recutting.
 
 Normal summary runs add the cut supplement when trees are available. Missing
 trees skip only this supplement; missing matched rows still skip all matched
-outputs. To add it to existing v5 matched-task results without repeating the
+outputs. To add it to existing v6 matched-task results without repeating the
 permutation tests or including newly finished networks, use:
 
 ```bash
@@ -965,9 +1022,27 @@ It discovers all complete controls, recomputes their statistics and cut
 robustness, and skips incomplete modulation caches. Redraw the row-cluster
 figures afterwards. Cut-only updates and plotting alone never add networks.
 
-The **L21e4 snapshot checked on 2026-11-05 after adding init 5 and 6** contains
-25 trained and seven untrained networks (init 0–6). All seven retained row-cluster PNGs
-match in-memory renders from these caches pixel for pixel.
+The following **historical S1-conditioned L21e4 snapshot**, checked on
+2026-11-05 after adding init 5 and 6, predates the trial-time revision. It
+contained 25 trained and seven untrained networks (init 0–6); at that time
+all eight row-cluster PNGs matched in-memory renders of those caches.
+These values and conclusions must be rechecked after the new analysis;
+they are not results of the trial-time estimator. The old synapse-only
+same-period follow-up compared the cohorts as follows:
+
+| Period | Trained mean | Untrained mean | Raw p | BH q |
+|---|---:|---:|---:|---:|
+| Stimulus 1 | 19.08% | 35.90% | 0.0000788 | 0.000394 |
+| Stimulus 2 | 20.00% | 10.00% | 0.0310 | 0.0517 |
+| Memory 1 | 11.49% | 9.09% | 0.4059 | 0.4059 |
+| Memory 2 | 20.40% | 8.57% | 0.0130 | 0.0326 |
+| Response | 12.15% | 9.80% | 0.1833 | 0.2291 |
+
+In that snapshot, only Stimulus 1 (lower in trained networks) and Memory 2 (higher) met q < 0.05.
+The all-task results therefore do not show a uniform training-associated
+increase in sharing. Task composition varies between periods; these direct
+cohort comparisons are not tests of differences between periods.
+
 At the original cut, all 25 trained and all seven untrained modulation networks
 have positive Delta; medians are 1.579 and 3.943, respectively. Input and hidden
 Delta values are negative in both cohorts. The full-tree recuts achieved exactly
@@ -1011,12 +1086,12 @@ pixel. The following numerical conclusions refer to that historical snapshot:
   that training creates or strengthens that overall organization, nor does
   a nonsignificant comparison establish equivalence.
 
-These historical L21e3 numbers do not describe the current seven-control
-comparison or the L21e4 figures above. The manual, read-only check is
+Neither the historical L21e3 numbers nor the old L21e4 comparison above
+describes the revised trial-time results. The manual, read-only check is
 `python test/row_cluster_results_check.py --multitask-l2 1e4`: select the cohort
 used to generate the PNGs and use the same plotting environment. It verifies
 saved counts and means, includes matched summaries and cut statistics when
-present, and compares all available row-cluster PNGs (currently seven for
+present, and compares all available row-cluster PNGs (up to eight for
 L21e4) with in-memory renders without changing caches or figures. Without
 the argument it uses `paper_plot.py`'s default cohort.
 
@@ -1031,8 +1106,8 @@ the same builder the state-space control uses) and runs the complete
 every output under
 `multiple_tasks_analysis/untrained/<aname>_init<k>/`, named
 `..._init<k>` (`multiple_task_analysis.output_names`), where no trained-run
-reader looks. `--skip-completed` leaves out the networks whose two cluster
-pickles exist; no lesion step runs. `sibling_row_sharing.py --untrained`
+reader looks. `--skip-completed` leaves out networks whose two complete
+cluster pickles carry the current variance marker; no lesion step runs. `sibling_row_sharing.py --untrained`
 then analyzes those networks. L2 acts only during training, so the untrained
 network of an L21e4 config is, init seed for init seed, the untrained
 network of any L21e3, L21e2 or L21e5 config (verified weight for weight on
@@ -1057,8 +1132,9 @@ right with the untrained networks' mean sharing and permutation chance.
 There is no six-network threshold for the permutation test; few networks
 still limit generalization across initializations. These figures draw the
 trained runs alone, with the commands to run, while the untrained result is
-missing. Stale v4 controls need only the statistics command; reclustering
-is needed only when the underlying cluster caches are absent.
+missing. Old v4/v5 summaries require trial-time cluster caches before the
+statistics command can regenerate them. Reclustering is necessary whenever
+those caches are missing or were computed with the old S1-conditioned estimator.
 
 ## Modulation feedback and saturation
 
@@ -1113,22 +1189,22 @@ the mode grows until its synapses clip, which the saturation share counts.
 
 ## Rule-cue ablation
 
-`multiple_task/rule_cue_ablation.py` asks whether the rule cue is what makes
-the clustering rows group as they do (input and hidden rows by period,
-synapse rows by task, in trained and untrained networks alike; see
-[Sibling-task row-cluster sharing](#sibling-task-row-cluster-sharing)). The
-cue is on for the whole trial, so it is a constant that adds no variance to
-the input and hidden features, while M integrates it into a task-specific
-drift. The script runs one network, trained or untrained
+`multiple_task/rule_cue_ablation.py` tests the rule cue's contribution to
+task/period organization. Earlier S1-conditioned analyses suggested period
+grouping for input/hidden and task grouping for modulation; this pattern
+needs confirmation with trial-time features. The persistent rule cue can
+change stimulus responses and accumulated modulation. The script runs one network, trained or untrained
 (`--untrained-init-seed`, `network_loading.build_network`), on the evaluation
 trials of `modulation_feedback.py` (50 per task, `mode_input="random"`, trial
 seed 0) twice, once as they are and once with every rule-cue channel set to
 zero (the cue and its input noise), and computes the input, hidden and
 modulation features of both as the clustering does: per task and period, the
-variance over stimulus conditions and time of the stimulus-conditioned mean
+variance directly across trials and time, with no S1-bin averaging
 (`helper.task_variance_period_numpy`), each column divided by its maximum
 over the rows (the `_normalized` features of the heatmaps), the rows in the
-clustering's period-major order and windows.
+clustering's period-major order and windows. Epochs stop at each task's real
+trial end; padding is excluded. Rule-cue results are now version 3 with a
+`variance_method="trial_time"` marker and must be regenerated as well.
 
 ```bash
 python multiple_task/rule_cue_ablation.py --feature L21e4 --seed 749
@@ -1153,20 +1229,22 @@ records the modality of each task's first stimulus, and `--trial-seed` draws
 another batch with other draws, so a result can be checked against the
 modality draw. It writes
 `multiple_tasks_diagnosis/rule_cue_ablation_<aname>[_init<k>][_trials<s>].{pkl,png}`
-(result version 2): the distance matrices and pair means per condition and
+(result version 3): the distance matrices and pair means per condition and
 representation, the matched-row correlations, the feature ratios and the
 features themselves.
 
-So far only the untrained network of seed 749's config (init seed 0) has
-been analyzed, on trial seeds 0 and 2, which agree. Without the cue the
+The historical S1-conditioned report covered only the untrained network of
+seed 749's config (init seed 0), on trial seeds 0 and 2, which agreed.
+These values have not been recomputed with trial-time variance. Without the cue the
 synapse rows keep their task grouping (same-task relative distance 0.62 with
 the cue, 0.63 without; same-period 1.02 and 0.98), the input rows are
 unchanged (same-period 0.71 and 0.68, same-task 1.03 in both) and the hidden
 rows group more by period (same-period 0.85 to 0.75, same-task 0.96 to
 1.02); the features themselves change most in the modulation (matched-row r
 median 0.33, summed features x0.76) and least in the input (0.60, x0.99).
-The cue is therefore not what groups the synapse rows by task. The trained
-run has not been analyzed, and the remaining candidate, M's carry-over of a
+That report suggested the cue alone did not explain task grouping; this
+interpretation also needs rechecking. The trained run was not analyzed, and
+another candidate, M's carry-over of a
 trial's earlier periods (lambda = 0.99, a 4 s memory), is the question of
 the lambda = 0.9 cohort (`L21e4lam0.9`) and of an untrained network with
 lambda overridden, neither of which has been run through this script.

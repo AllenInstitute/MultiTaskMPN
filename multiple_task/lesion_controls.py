@@ -46,6 +46,7 @@ import torch
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import lesion_cache
 import lesion_ops
+from core.task_variance import VARIANCE_METHOD, cluster_caches_current
 from lesion_cache import load_lesion_pickle
 from modulation_variants import LESION_MODULATION_TYPES
 from run_logging import tee_output
@@ -326,6 +327,7 @@ def main(seed, feature, pool=DEFAULT_POOL, repeats=DEFAULT_REPEATS, mod_types=No
     test_sets = lesion_ops.make_test_sets(task_params_c, tasks, TEST_N_BATCH, device, seed=test_seed)
     rng = np.random.default_rng(test_seed)
     output = {
+        "variance_method": VARIANCE_METHOD,
         "schema_version": SCHEMA_VERSION, "aname": aname, "control_pool": pool,
         "repeat_num": repeats, "test_seed": test_seed, "test_n_batch": TEST_N_BATCH,
         "test_checksums": {task: lesion_ops.test_set_checksum(test_sets[task]) for task in tasks},
@@ -375,6 +377,38 @@ def discover_runs(root=Path(".")):
     return runs
 
 
+def is_completed(aname, pool=DEFAULT_POOL, repeats=DEFAULT_REPEATS,
+                 test_seed=DEFAULT_TEST_SEED, mod_types=None, root=Path(".")):
+    """Current controls for these settings, newer than their lesion/cluster inputs."""
+    path = controls_pickle_path(aname, pool, root)
+    lesion_path = lesion_results_path(aname, root)
+    analysis_dir = Path(root) / "multiple_tasks_analysis" / aname
+    cluster_paths = [analysis_dir / f"cluster_info_{aname}.pkl",
+                     analysis_dir / f"cluster_info_mod_{aname}.pkl"]
+    try:
+        controls = load_lesion_pickle(path)
+        lesions = load_lesion_pickle(lesion_path)
+        if (controls.get("schema_version") != SCHEMA_VERSION
+                or controls.get("aname") != aname
+                or controls.get("control_pool") != pool
+                or controls.get("repeat_num") != repeats
+                or controls.get("test_seed") != test_seed
+                or controls.get("test_n_batch") != TEST_N_BATCH):
+            return False
+        required = (set(lesions["mod_lesion"]) if mod_types is None else
+                    {f"{kind}__{mode}" for kind in mod_types
+                     for mode in lesion_ops.SYNAPSE_LESION_MODES})
+        if not required.issubset(controls.get("mod_lesion", {})):
+            return False
+        if not all(key in controls for key in lesion_cache.SINGLE_CLUSTER_RECORDS):
+            return False
+        return (cluster_caches_current(cluster_paths)
+                and path.stat().st_mtime_ns >= lesion_path.stat().st_mtime_ns
+                >= max(p.stat().st_mtime_ns for p in cluster_paths))
+    except (OSError, EOFError, pickle.UnpicklingError, ValueError, KeyError, TypeError):
+        return False
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Score the single-cluster lesions again on a seeded test set with "
@@ -396,7 +430,7 @@ def parse_args(argv=None):
     parser.add_argument("--test-seed", type=int, default=DEFAULT_TEST_SEED,
                         help=f"Seed of the shared test set and control draws (default: {DEFAULT_TEST_SEED}).")
     parser.add_argument("--skip-completed", action="store_true",
-                        help="Leave out runs whose controls pickle for --pool already exists.")
+                        help="Skip complete current controls matching the requested settings and newer than their inputs.")
     args = parser.parse_args(argv)
     if args.seed == "all" and args.feature is None:
         parser.error("--seed all requires --feature so the batch is explicit")
@@ -414,10 +448,11 @@ def select_runs(args, root=Path(".")):
             raise SystemExit(f"Ambiguous selection: {runs}; pass --feature.")
     if args.skip_completed:
         runs = [run for run in runs
-                if not controls_pickle_path(lesion_ops.run_name(*run), args.pool, root).exists()]
+                if not is_completed(lesion_ops.run_name(*run), args.pool, args.repeats,
+                                    args.test_seed, args.mod_types, root)]
     if not runs:
         raise SystemExit(f"No lesioned run matches seed={args.seed} feature={args.feature!r}"
-                         + (" without a controls pickle" if args.skip_completed else ""))
+                         + (" needing current controls" if args.skip_completed else ""))
     return runs
 
 

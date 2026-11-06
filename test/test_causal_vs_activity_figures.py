@@ -27,6 +27,7 @@ class CausalVsActivityFigureTests(unittest.TestCase):
         # Neuron sides carry neuron_variant and the activity definitions, the
         # modulation side its clustering, lesion mode and synapse definitions.
         return {
+            "variance_method": paper_plot.VARIANCE_METHOD,
             "schema_version": 2,
             **paper_plot._CAUSAL_VS_ACTIVITY_CACHE_FIELDS[side],
             "aname": aname, "side": side, "tasks": tasks,

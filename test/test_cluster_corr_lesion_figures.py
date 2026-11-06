@@ -38,6 +38,7 @@ class ClusterCorrLesionFigureTests(unittest.TestCase):
         tuning = np.array([-0.2, 0.1, 0.4, 0.8, 0.3, 0.6])
         dissim = 1.0 - rho * tuning
         return {
+            "variance_method": paper_plot.VARIANCE_METHOD,
             "schema_version": 2,
             "aname": aname,
             "x_definition": paper_plot.CLUSTER_CORR_X_DEFINITION,

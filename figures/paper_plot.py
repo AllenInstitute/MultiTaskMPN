@@ -63,6 +63,8 @@ from core.state_space_cache import (M_ALIGNMENT as STATE_SPACE_M_ALIGNMENT,
                                     DISTANCE_ANGLE_SCHEMA_VERSION as STATE_SPACE_RESULTS_SCHEMA,
                                     distance_angle_is_current, is_aligned, require_aligned)
 from core.multitask_naming import architecture_tag, untrained_sharing_tag
+from core.task_variance import (VARIANCE_METHOD, require_current_variance,
+                                require_current_variance_result)
 from core.lesion_cache import (CONTROL_POOLS, load_lesion_pickle, normalize_lesion_cache, norm_root,
                                resolve_lesion_cache_path)
 from pretrain.pretraining_utils import variant_addon
@@ -1013,7 +1015,9 @@ def _load_cluster_info():
     if not pkl_path.exists():
         raise FileNotFoundError(f"Cluster info not found: {pkl_path}")
     with open(pkl_path, "rb") as f:
-        return pickle.load(f)
+        payload = pickle.load(f)
+    require_current_variance(payload, pkl_path)
+    return payload
 
 
 # ─── Figure: Clustered variance matrix ───────────────────────────────────────
@@ -1312,7 +1316,13 @@ def _load_cluster_info_mod():
     if not pkl_path.exists():
         return None
     with open(pkl_path, "rb") as f:
-        return pickle.load(f)
+        payload = pickle.load(f)
+    try:
+        require_current_variance(payload, pkl_path)
+    except ValueError as exc:
+        print(f"  Skipped: {exc}")
+        return None
+    return payload
 
 
 # Color floor of the log-scaled |W|*Var(M) heatmap: the same 1e-4 the analysis
@@ -4216,6 +4226,11 @@ def _plot_overmembership_single(pkl_template, out_filename):
             continue
         with open(pkl_path, "rb") as f:
             data = pickle.load(f)
+        try:
+            require_current_variance_result(data, pkl_path)
+        except ValueError as exc:
+            print(f"  Skipped: {exc}")
+            continue
         entry = data["prepost_belonging_results"][0]  # G=100, optimal k
         if bar_name_lst is None:
             bar_name_lst = entry["bar_name_lst"]
@@ -4726,6 +4741,7 @@ def plot_lesion_heatmap():
 
     try:
         data = normalize_lesion_cache(data)
+        require_current_variance_result(data, path)
         if data["schema_version"] != 1 or data["aname"] != LESION_ANAME:
             raise ValueError("normalized-effect cache version/run does not match")
         hidden = data["entries"]["lesion_unnorm"]
@@ -5648,6 +5664,7 @@ def _state_space_vs_lesion_entry(combined, aname):
     try:
         require_aligned(entry, "state-space-vs-lesion result")
         # Schema 2 adds the saved OLS guide line of every panel.
+        require_current_variance_result(entry, aname)
         if entry["schema_version"] != 2 or entry["aname"] != aname:
             raise ValueError("schema or run does not match")
         # state_space_vs_lesion.py reads the lesion caches of one pool (all,
@@ -5865,7 +5882,7 @@ def plot_input_weight_correlation():
 # period, and these figures ask whether the row clusters group the rows by
 # period or by task.
 MULTITASK_DIAGNOSIS_ROOT = Path("multiple_tasks_diagnosis")
-_ROW_SHARING_RESULT_VERSION = 5
+_ROW_SHARING_RESULT_VERSION = 6
 _ROW_SHARING_REPRESENTATIONS = (("input", "Input\nneurons"), ("hidden", "Hidden\nneurons"),
                                 ("modulation", "Synapses"))
 _ROW_ORGANIZATION_PANELS = (("period", "Same period,\ndifferent task"),
@@ -5922,7 +5939,12 @@ def _load_row_cluster_sharing(untrained=False):
         matches = data.get("feature") == feature
         expected = f"{feature} cohort"
     if (data.get("version") != _ROW_SHARING_RESULT_VERSION or not matches
+            or data.get("variance_method") != VARIANCE_METHOD
             or data.get("seed") is not None or bool(data.get("untrained")) != untrained):
+        if data.get("variance_method") != VARIANCE_METHOD:
+            upstream = "untrained_clustering.py" if untrained else "run_pipeline.py"
+            command = (f"First rerun clustering via {upstream} for trial_time variance "
+                       f"and actual trial endpoints; then {command}")
         print(f"  Skipped: {path} is not a version-{_ROW_SHARING_RESULT_VERSION} {expected} "
               f"result. {command}.")
         return None
@@ -6314,7 +6336,7 @@ def plot_row_cluster_same_task_seeds():
     within each cohort and analysis type (the result records the full family).
     Hollow twins show untrained controls with their own null and test; stars
     do not compare trained with untrained. Single-phase tasks have no pairs.
-    Reads version-5 sibling_row_sharing results; see sibling_row_sharing.py."""
+    Reads version-6 trial-time sharing results; see sibling_row_sharing.py."""
     _plot_row_cluster_same_task("same_task_all", "row_cluster_same_task_seeds.png")
 
 
@@ -6362,6 +6384,99 @@ def plot_row_cluster_same_period_seeds():
     Chance, BH q stars and untrained twins follow row_cluster_same_task_seeds.
     Phase labels use the heatmap colors."""
     _plot_row_cluster_same_period("same_period_all", "row_cluster_same_period_seeds.png")
+
+
+def plot_row_cluster_same_period_synapses():
+    """Extract synapse bars and directly compare trained/untrained networks.
+
+    Uses the same per-network sharing fractions, means, SDs and restricted-null
+    dashes as same_period_seeds. Two-sided Mann-Whitney U tests compare network
+    distributions (not task pairs or pooled counts), with tie/continuity-corrected
+    asymptotic p values and BH correction across the displayed periods. The p/q
+    annotations replace the original within-cohort tests against chance.
+    """
+    from scipy.stats import false_discovery_control, mannwhitneyu
+
+    loaded = _load_row_sharing_view("same_period_all")
+    if loaded is None:
+        return
+    data, entry, untrained, control = loaded
+    periods = list(entry["periods"])
+    if (not periods or untrained is None
+            or any("modulation" not in source.get("periods", {}).get(phase, {})
+                   for source in (entry, control) for phase in periods)):
+        print("  Skipped synapse cohort comparison: trained and untrained synapse "
+              "results are required for every period.")
+        return
+    groups = [[source["periods"][phase]["modulation"] for source in (entry, control)]
+              for phase in periods]
+    values = [[_row_sharing_run_values(stats)[0] for stats in group] for group in groups]
+    if any(v.size < 2 or not np.isfinite(v).all() for group in values for v in group):
+        print("  Skipped synapse cohort comparison: need at least two finite "
+              "network values per cohort and period.")
+        return
+    p_values = [mannwhitneyu(*group, alternative="two-sided", method="asymptotic",
+                             use_continuity=True).pvalue for group in values]
+    q_values = false_discovery_control(p_values, method="bh")
+
+    fig, ax = plt.subplots(figsize=(5.4, 3.3))
+    color = _TASK_SPECIFICITY_COLORS["modulation"]
+    low, high = 0.0, 0.0
+    notes = []
+    for position, (phase, group, samples, p, q) in enumerate(
+            zip(periods, groups, values, p_values, q_values)):
+        for stats, offset, face in zip(group, (-0.16, 0.16), (color, "white")):
+            height, chance, spread = _row_sharing_bar_values(stats)
+            x = position + offset
+            ax.bar(x, height, width=0.29, color=face, edgecolor=color,
+                   linewidth=0.8, zorder=2)
+            ax.errorbar(x, height, yerr=spread, color=_ROW_SHARING_SPREAD_COLOR,
+                        linewidth=0.7, capsize=2, capthick=0.7, zorder=4)
+            ax.hlines(chance, x - 0.145, x + 0.145,
+                      color=_ROW_SHARING_CHANCE_COLOR, linewidth=1.0, zorder=3)
+            low, high = min(low, height - spread), max(high, height + spread, chance)
+        notes.append(f"{phase}: trained {samples[0].mean():.3f}% (n={samples[0].size}), "
+                     f"untrained {samples[1].mean():.3f}% (n={samples[1].size}), "
+                     f"difference {samples[0].mean() - samples[1].mean():+.3f} pp, "
+                     f"p={p:.6g}, q={q:.6g}")
+    span = max(20.0, high - low)
+    bracket = high + 0.06 * span
+    for position, p, q in zip(range(len(periods)), p_values, q_values):
+        ax.plot([position - 0.16, position - 0.16, position + 0.16, position + 0.16],
+                [bracket, bracket + 0.025 * span, bracket + 0.025 * span, bracket],
+                color="0.3", linewidth=0.6)
+        ax.text(position, bracket + 0.04 * span,
+                f"p={p:.3g}\nq={q:.3g}",
+                ha="center", va="bottom", fontsize=6.5)
+    ax.set_ylim(low - 0.03 * span if low < 0 else 0, bracket + 0.25 * span)
+    ax.set_xlim(-0.6, len(periods) - 0.4)
+    ax.set_xticks(range(len(periods)), [_PHASE_DISPLAY.get(phase, phase) for phase in periods],
+                  rotation=30, ha="right", fontsize=7)
+    for label, phase in zip(ax.get_xticklabels(), periods):
+        if phase in _PHASE_COLORS:
+            label.set_bbox(dict(facecolor=_PHASE_COLORS[phase], edgecolor="none",
+                                boxstyle="round,pad=0.15", alpha=0.8))
+    ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=100, decimals=0))
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.set_ylabel("Task pairs of one period\nin one synapse row cluster", fontsize=8)
+    ax.set_title("Synapses: trained vs untrained\n"
+                 f"Mann–Whitney U; BH across {len(periods)} periods", fontsize=8)
+    handles = [
+        mpl.patches.Patch(facecolor=color, edgecolor=color,
+                          label=f"trained (n={len(data['experiments'])})"),
+        mpl.patches.Patch(facecolor="white", edgecolor=color,
+                          label=f"untrained (n={len(untrained['experiments'])})"),
+        mpl.lines.Line2D([], [], color=_ROW_SHARING_CHANCE_COLOR, linewidth=1.0,
+                         label="restricted-null chance"),
+        mpl.lines.Line2D([], [], color=_ROW_SHARING_SPREAD_COLOR, linewidth=0.7,
+                         marker="_", markersize=4, label="mean ± SD over runs"),
+    ]
+    _state_space_figure_legend(fig, handles, ncol=2, top=0.92)
+    _save_fig(fig, _multitask_out("row_cluster_same_period_synapses.png"),
+              extra=(f"  {data['feature']}" + _row_sharing_untrained_note(untrained)
+                     + "; bars: mean over runs, whiskers: SD over runs; "
+                     "two-sided Mann-Whitney U (asymptotic, tie/continuity corrected); "
+                     f"BH across {len(periods)} periods; " + "; ".join(notes)))
 
 
 def plot_row_cluster_same_period_matched_tasks_seeds():
@@ -6598,7 +6713,11 @@ def _plot_cluster_corr_vs_lesion_variants(variants):
         if not pkl_path.exists():
             print(f"  Skipped: {pkl_path.name} not found.")
             continue
-        scatter_data = load_lesion_pickle(pkl_path)
+        try:
+            scatter_data = load_lesion_pickle(pkl_path)
+        except ValueError as exc:
+            print(f"  Skipped: {exc}")
+            continue
 
         for name, data in scatter_data.items():
             try:
@@ -14822,6 +14941,7 @@ FIGURES_BY_MODE = {
         "row_cluster_organization": plot_row_cluster_organization,
         "row_cluster_same_task_seeds": plot_row_cluster_same_task_seeds,
         "row_cluster_same_period_seeds": plot_row_cluster_same_period_seeds,
+        "row_cluster_same_period_synapses": plot_row_cluster_same_period_synapses,
         "row_cluster_same_period_matched_tasks_seeds": plot_row_cluster_same_period_matched_tasks_seeds,
         "row_cluster_same_task_matched_tasks_seeds": plot_row_cluster_same_task_matched_tasks_seeds,
         "row_cluster_organization_matched_tasks": plot_row_cluster_organization_matched_tasks,

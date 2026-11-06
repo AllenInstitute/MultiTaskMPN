@@ -75,8 +75,9 @@ through a small `_bootstrap.py` shim.
 Python 3.9+, PyTorch (CUDA optional), NumPy, SciPy, scikit-learn,
 scikit-image, Matplotlib, seaborn, plotly, h5py, hdf5plugin, scienceplots,
 psutil; the `biology/` scripts also need pandas. Training and the lesion
-experiments need a GPU node; the lesion pipeline takes about five hours per
-run plus the lesion controls (one to two hours per synapse clustering type).
+experiments need a GPU node. Historical pipeline timing was about five hours
+per run plus lesion controls (one to two hours per synapse clustering type);
+the revised trial-time clustering has not yet been benchmarked.
 
 ## Quick start
 
@@ -89,12 +90,17 @@ and `--seed S [S ...]` to train explicit seeds, while `pretraining.py` reads
 
 ```bash
 # Multi-task: train, then cluster, lesion, score the lesion controls and
-# plot the checkpoints that have no pipeline outputs yet
+# plot checkpoints needing current pipeline outputs
 python multiple_task/multiple_task.py
 python multiple_task/run_pipeline.py --feature L21e4 --skip-completed
-# activity-matched lesion controls and plots for runs lesioned before the
-# pipeline had that step (see docs/multitask_analysis.md)
+# Reuse current steps; rebuild stale/missing results and their dependents.
+# Old S1-conditioned caches need reclustering (see docs/multitask_analysis.md).
 python multiple_task/run_pipeline.py --feature L21e4 --skip-completed --resume
+# Untrained controls: ten initializations, using seed 749's default config.
+python multiple_task/untrained_clustering.py --feature L21e4 --seed 749 --init-seed 0 1 2 3 4 5 6 7 8 9 --skip-completed
+# After the corresponding clustering batches finish, regenerate sharing summaries.
+python multiple_task/sibling_row_sharing.py --feature L21e4
+python multiple_task/sibling_row_sharing.py --feature L21e4 --untrained
 # state-space geometry of the saved runs and its link to the lesions
 python multiple_task/state_space_shift.py
 python multiple_task/state_space_structure.py

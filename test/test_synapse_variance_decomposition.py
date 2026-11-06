@@ -136,6 +136,7 @@ def _neuron_entry(rng, n_neurons, n_unresponsive, n_tolerance):
     tol_labels[unresponsive] = n_tolerance + 1
     clusters = {label: np.where(tol_labels == label)[0] for label in range(1, n_tolerance + 2)}
     return {
+        "variance_method": decomposition.VARIANCE_METHOD,
         "result": {"col_tol_labels": tol_labels, "col_unresponsive_mask": unresponsive,
                    "col_tol_k": n_tolerance,
                    "col_linkage": linkage(rng.normal(size=(active.size, 4)), method="ward")},
@@ -164,6 +165,7 @@ def _write_run(root, aname, rng, n_input=30, n_hidden=28, n_features=7):
     features[:, negative] *= -1                       # W < 0 flips every period's feature
     features[:, unresponsive] *= 0.01
     cluster_info_mod = {decomposition.MODULATION_TYPE: {
+        "variance_method": decomposition.VARIANCE_METHOD,
         "result_all_name_lst": ["G=100", "G=300", "G=1000"],
         "result_all_lst": [{}, synapse_result, {}],
         "cell_vars_rules_sorted_norm": features, "mod_shape": (n_hidden, n_input),

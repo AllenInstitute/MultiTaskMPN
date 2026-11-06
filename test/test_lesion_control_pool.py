@@ -13,6 +13,7 @@ import numpy as np
 from scipy.stats import t as t_dist
 
 import lesion_plot
+from core.task_variance import VARIANCE_METHOD
 
 TASKS = ["a", "b", "c"]
 
@@ -81,11 +82,12 @@ class ControlTestTests(unittest.TestCase):
         self.assertFalse(lesion_plot._bh_fdr_mask(np.array([0.3, 0.5])).any())
 
     def test_control_meta_reads_the_pool_fields(self):
-        self.assertEqual(lesion_plot._control_meta({"repeat_num": 10}),
-                         {"control_pool": "all", "control_repeats": 10, "control_test_seed": None})
-        self.assertEqual(lesion_plot._control_meta({"control_pool": "responsive", "repeat_num": 30,
+        self.assertEqual(lesion_plot._control_meta({"variance_method": VARIANCE_METHOD, "repeat_num": 10}),
+                         {"variance_method": VARIANCE_METHOD, "control_pool": "all", "control_repeats": 10, "control_test_seed": None})
+        self.assertEqual(lesion_plot._control_meta({"variance_method": VARIANCE_METHOD,
+                                                  "control_pool": "responsive", "repeat_num": 30,
                                                     "test_seed": 4}),
-                         {"control_pool": "responsive", "control_repeats": 30, "control_test_seed": 4})
+                         {"variance_method": VARIANCE_METHOD, "control_pool": "responsive", "control_repeats": 30, "control_test_seed": 4})
 
 
 class TaskSpecificityMaskTests(unittest.TestCase):
@@ -145,6 +147,7 @@ class ControlPoolResultsTests(unittest.TestCase):
                                              "all_tasks": TASKS},
                     "mod_lesion": {}, "repeat_num": 10}
             controls = {**{k: dict(v) for k, v in base.items() if isinstance(v, dict)},
+                        "variance_method": VARIANCE_METHOD,
                         "schema_version": 1, "control_pool": "responsive", "repeat_num": 30,
                         "test_seed": 0}
             with (root / "lesion_controls_responsive_run.pkl").open("wb") as stream:
@@ -197,6 +200,7 @@ class ControlPoolResultsTests(unittest.TestCase):
             base.update({"mod_lesion": {}, "repeat_num": 10})
             stale = {**{k: {"all_comb_names_lesion": ["pre_c7"], "all_tasks": TASKS}
                         for k in ("lesion", "random_lesion", "lesion_unnorm", "random_lesion_unnorm")},
+                     "variance_method": VARIANCE_METHOD,
                      "mod_lesion": {}, "schema_version": 1, "control_pool": "responsive",
                      "repeat_num": 30, "test_seed": 0}
             with (root / "lesion_controls_responsive_run.pkl").open("wb") as stream:

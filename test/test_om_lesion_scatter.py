@@ -114,6 +114,7 @@ class OmLesionScatterTests(unittest.TestCase):
     def cache(self, combined):
         entry = self.summary()
         result = {
+            "variance_method": paper_plot.VARIANCE_METHOD,
             "schema_version": 2, "aname": paper_plot.LESION_ANAME,
             "variant": "unnorm", "min_expected": 3.,
             "y_definition": "task-profile L1/T: mean_t |mod_effect(t) - combined_effect(t)|",

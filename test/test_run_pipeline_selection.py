@@ -2,9 +2,13 @@
 --feature and --seed and, with --skip-completed, leaves out the runs whose
 four steps already wrote their last output, so a rerun after more training
 adds the pipeline outputs of the new checkpoints only; --resume skips the
-steps whose outputs exist."""
+steps whose outputs use the current variance estimator and are newer than their inputs."""
 
 import argparse
+import pickle
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,12 +17,14 @@ from unittest.mock import Mock, patch
 
 import _bootstrap  # noqa: F401
 import lesion_cache
+from core.task_variance import (VARIANCE_METHOD, NEURON_VARIANTS, LESION_MODULATION_TYPES,
+                                cluster_caches_current)
 from script_namespace import load_script_namespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "multiple_task" / "run_pipeline.py"
-FUNCTIONS = ["run_name", "lesion_plot_pools", "pipeline_markers", "is_completed",
+FUNCTIONS = ["run_name", "lesion_plot_pools", "pipeline_markers", "step_is_completed", "is_completed",
              "discover_runs", "select_runs", "run_pipeline", "parse_args", "main"]
 CONSTANTS = ["CHECKPOINT_DIR", "ANALYSIS_DIR", "PERF_DIR", "CHECKPOINT_PATTERN",
              "DEFAULT_CONTROL_POOL", "DEFAULT_CONTROL_REPEATS", "STEPS"]
@@ -31,13 +37,35 @@ SIBLING_STUB = SimpleNamespace(SIBLING_FAMILIES={"delaydm1": None, "dmcgo": None
                                SIBLING_METHODS=("gradient", "long_delay_endpoint"))
 
 
+class RunPipelineStartupTests(unittest.TestCase):
+    def test_import_and_parse_without_test_bootstrap_or_pythonpath(self):
+        # Direct script execution starts with multiple_task/ on sys.path.
+        # A separate interpreter avoids test/_bootstrap.py masking missing paths.
+        script = """
+import run_pipeline
+args = run_pipeline.parse_args([
+    "--feature", "L21e4", "--resume", "--skip-completed",
+])
+assert args.feature == "L21e4"
+assert args.resume and args.skip_completed
+assert args.control_pool == "responsive"
+assert args.control_repeats == 30
+"""
+        completed = subprocess.run(
+            [sys.executable, "-E", "-c", script], cwd=SOURCE.parent,
+            env={**os.environ, "MPLBACKEND": "Agg", "CUDA_VISIBLE_DEVICES": ""},
+            text=True, capture_output=True, timeout=60)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+
 class RunPipelineSelectionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.ns = load_script_namespace(
             SOURCE, FUNCTIONS, CONSTANTS,
-            extra={"argparse": argparse, "sibling_delay_analysis": SIBLING_STUB,
-                   "lesion_controls": CONTROLS_STUB, "lesion_cache": lesion_cache})
+            extra={"argparse": argparse, "pickle": pickle, "sibling_delay_analysis": SIBLING_STUB,
+                   "lesion_controls": CONTROLS_STUB, "lesion_cache": lesion_cache,
+                   "cluster_caches_current": cluster_caches_current})
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -62,7 +90,14 @@ class RunPipelineSelectionTests(unittest.TestCase):
                 if path.name in skip_paths:
                     continue
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.touch()
+                if step == "multiple_task_analysis":
+                    keys = LESION_MODULATION_TYPES if path.name.startswith("cluster_info_mod_") else NEURON_VARIANTS
+                    path.write_bytes(pickle.dumps({key: {"variance_method": VARIANCE_METHOD} for key in keys}))
+                else:
+                    payload = {"variance_method": VARIANCE_METHOD}
+                    if step == "lesion_controls":
+                        payload["repeat_num"] = 30
+                    path.write_bytes(pickle.dumps(payload))
 
     def test_markers_are_the_last_output_of_each_step(self):
         aname = self.ns["run_name"](921, "L21e4")
@@ -156,8 +191,9 @@ class RunPipelineSelectionTests(unittest.TestCase):
         controls.main = Mock(side_effect=lambda *a, **k: calls.append(("lesion_controls", a, k)))
         ns = load_script_namespace(
             SOURCE, FUNCTIONS, CONSTANTS,
-            extra={"argparse": argparse, "sibling_delay_analysis": SIBLING_STUB,
+            extra={"argparse": argparse, "pickle": pickle, "sibling_delay_analysis": SIBLING_STUB,
                    "lesion_controls": controls, "lesion_cache": lesion_cache,
+                   "cluster_caches_current": cluster_caches_current,
                    "time": __import__("time"), **stubs})
         return ns, calls
 
@@ -243,6 +279,41 @@ class RunPipelineSelectionTests(unittest.TestCase):
         finally:
             os.chdir(previous)
 
+    def test_old_variance_caches_are_not_completed_and_resume_rebuilds_dependents(self):
+        ns, calls = self._stubbed_pipeline()
+        self._write_markers(749, "L21e4")
+        aname = ns["run_name"](749, "L21e4")
+        markers = ns["pipeline_markers"](aname, self.root)
+        for path in markers["multiple_task_analysis"]:
+            data = pickle.loads(path.read_bytes())
+            for entry in data.values():
+                entry.pop("variance_method")
+            path.write_bytes(pickle.dumps(data))
+        self.assertFalse(ns["is_completed"](aname, self.root))
+        def rebuild(*args, **kwargs):
+            calls.append(("multiple_task_analysis", args, kwargs))
+            self._write_markers(749, "L21e4", steps=["multiple_task_analysis"])
+        ns["multiple_task_analysis"].main.side_effect = rebuild
+        self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=True)
+        self.assertEqual([name for name, _, _ in calls],
+                         ["multiple_task_analysis", "lesion", "lesion_controls", "lesion_plot", "lesion_plot"])
+
+    def test_current_clusters_do_not_make_older_lesions_current(self):
+        self._write_markers(749, "L21e4")
+        aname = self.ns["run_name"](749, "L21e4")
+        markers = self.ns["pipeline_markers"](aname, self.root)
+        for path in markers["lesion"]:
+            os.utime(path, ns=(1, 1))
+        self.assertFalse(self.ns["is_completed"](aname, self.root))
+
+    def test_newer_unmarked_lesion_results_are_not_current(self):
+        self._write_markers(749, "L21e4")
+        aname = self.ns["run_name"](749, "L21e4")
+        path = self.ns["pipeline_markers"](aname, self.root)["lesion"][0]
+        path.write_bytes(pickle.dumps({"lesion": {}}))
+        self.assertFalse(self.ns["step_is_completed"](
+            "lesion", self.ns["pipeline_markers"](aname, self.root)))
+
     def test_control_pool_flags(self):
         parse_args = self.ns["parse_args"]
         args = parse_args(["--feature", "L21e4"])
@@ -253,6 +324,28 @@ class RunPipelineSelectionTests(unittest.TestCase):
         self.assertEqual((args.control_pool, args.control_repeats, args.resume), ("all", 12, True))
         with patch("sys.stderr"), self.assertRaises(SystemExit):
             parse_args(["--control-pool", "silent"])
+
+    def test_requested_repeats_invalidate_controls_and_plots_only(self):
+        ns, calls = self._stubbed_pipeline()
+        self._write_markers(749, "L21e4")
+        aname = ns["run_name"](749, "L21e4")
+        self.assertTrue(ns["is_completed"](aname, self.root, control_repeats=30))
+        self.assertFalse(ns["is_completed"](aname, self.root, control_repeats=7))
+        self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=True, control_repeats=7)
+        self.assertEqual([name for name, _, _ in calls],
+                         ["lesion_controls", "lesion_plot", "lesion_plot"])
+        self.assertEqual(calls[0][2]["repeats"], 7)
+
+    def test_cli_skip_completed_uses_requested_control_repeats(self):
+        ns, calls = self._stubbed_pipeline()
+        self._checkpoint(749, "L21e4")
+        self._write_markers(749, "L21e4")
+        with patch("sys.argv", ["run_pipeline.py", "--feature", "L21e4", "--resume",
+                                "--skip-completed", "--control-repeats", "7"]):
+            self._run_from_root(ns["main"])
+        self.assertEqual([name for name, _, _ in calls],
+                         ["lesion_controls", "lesion_plot", "lesion_plot"])
+        self.assertEqual(calls[0][2]["repeats"], 7)
 
     def test_skip_completed_needs_feature_or_seed(self):
         parse_args = self.ns["parse_args"]

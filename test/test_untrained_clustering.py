@@ -14,6 +14,7 @@ import multiple_task_analysis
 import multiple_task_diagnosis as diagnosis
 import sibling_row_sharing as sharing
 import untrained_clustering
+from core.task_variance import VARIANCE_METHOD, NEURON_VARIANTS, LESION_MODULATION_TYPES
 
 ANAME = "everything_seed749_L21e4+hidden300+batch128+angle"
 
@@ -41,9 +42,11 @@ class DriverTests(unittest.TestCase):
             with patch.object(multiple_task_analysis, "UNTRAINED_ANALYSIS_DIR", root), \
                     patch.object(multiple_task_analysis, "main") as analysis, \
                     patch("builtins.print"):
-                for path in untrained_clustering.completion_markers(749, "L21e4", 1):
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_text("done")
+                for init_seed, method in ((0, "s1_mean"), (1, VARIANCE_METHOD)):
+                    paths = untrained_clustering.completion_markers(749, "L21e4", init_seed)
+                    for path, keys in zip(paths, (NEURON_VARIANTS, LESION_MODULATION_TYPES)):
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(pickle.dumps({key: {"variance_method": method} for key in keys}))
                 self.assertTrue(untrained_clustering.is_completed(749, "L21e4", 1))
                 self.assertFalse(untrained_clustering.is_completed(749, "L21e4", 0))
                 untrained_clustering.main(["--feature", "L21e4", "--seed", "749",
@@ -56,10 +59,12 @@ class DriverTests(unittest.TestCase):
 def _write_run(root, aname, labels, names):
     run_dir = root / aname
     run_dir.mkdir(parents=True)
-    neuron = {"result": {"row_tol_labels": labels}, "tb_break_name": names}
+    neuron = {"variance_method": VARIANCE_METHOD,
+              "result": {"row_tol_labels": labels}, "tb_break_name": names}
     with open(run_dir / f"cluster_info_{aname}.pkl", "wb") as stream:
         pickle.dump({"input_normalized": neuron, "hidden_normalized": neuron}, stream)
-    modulation = {"result_all_lst": [None, {"row_tol_labels": labels}], "tb_break_name": names}
+    modulation = {"variance_method": VARIANCE_METHOD,
+                  "result_all_lst": [None, {"row_tol_labels": labels}], "tb_break_name": names}
     with open(run_dir / f"cluster_info_mod_{aname}.pkl", "wb") as stream:
         pickle.dump({"modulation_all_normalized": modulation}, stream)
 

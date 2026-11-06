@@ -40,7 +40,9 @@ representations (`diagnose_pair_same_cluster`):
       (contextdelaydm2).
   integration_modality_same_cluster
       IntegrationModality1 (delaydm1) vs IntegrationModality2 (delaydm2).
-The representations have different numbers of row clusters (on the L21e4
+The numerical examples here describe the historical S1-conditioned caches;
+they need confirmation after regenerating trial_time features.
+The representations had different numbers of row clusters (on the L21e4
 runs about 9 input, 6 hidden and 13 modulation clusters for 49 rows), and
 rows of one phase can cluster together whatever the task, so the percentages
 are only read against the chance level of that representation and phase:
@@ -68,6 +70,7 @@ import matplotlib
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 from multitask_naming import architecture_tag
+from core.task_variance import VARIANCE_METHOD, require_current_variance
 matplotlib.use("Agg")  # headless-safe: figures are saved, never shown
 import matplotlib.pyplot as plt
 
@@ -136,9 +139,8 @@ _REP_COLORS = {
 }
 
 
-# Saved-result layout: 2 adds each representation's chance level and the
-# test against it.
-RESULT_VERSION = 2
+# Saved-result layout: 2 adds chance tests; 3 requires trial_time features.
+RESULT_VERSION = 3
 # Prefixes of the files one run writes, each followed by "{tag}.{suffix}".
 _OUTPUT_PREFIXES = ("diagnosis_", "same_cluster_diagnoses_")
 
@@ -223,6 +225,11 @@ def _load_experiment(aname, root=None):
 
     with open(ci_path, "rb") as f:
         ci = pickle.load(f)
+    try:
+        require_current_variance(ci, ci_path)
+    except ValueError as exc:
+        print(f"  [skip] {aname}: {exc}")
+        return None
 
     reps = {}
     for rep, key in (("input", "input_normalized"), ("hidden", "hidden_normalized")):
@@ -239,6 +246,11 @@ def _load_experiment(aname, root=None):
     if mod_path.exists():
         with open(mod_path, "rb") as f:
             cim = pickle.load(f)
+        try:
+            require_current_variance(cim, mod_path)
+        except ValueError as exc:
+            print(f"  [skip] {aname}: {exc}")
+            return None
         mentry = cim.get("modulation_all_normalized")
         result_all = (mentry or {}).get("result_all_lst", [])
         if mentry is not None and len(result_all) > MOD_G_INDEX:
@@ -613,6 +625,7 @@ def main(feature="L21e4", seed=None, which=None):
     # Save results (pkl keeps full detail incl. numpy; json is a portable copy).
     payload = {
         "version": RESULT_VERSION,
+        "variance_method": VARIANCE_METHOD,
         "feature": feature,
         "seed": seed,
         "mod_g_index": MOD_G_INDEX,

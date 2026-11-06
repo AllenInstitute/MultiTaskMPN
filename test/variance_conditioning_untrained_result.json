@@ -1,0 +1,141 @@
+{
+  "metadata": {
+    "checkpoint": "everything_seed749_L21e4+hidden300+batch128+angle",
+    "eval_seed": 0,
+    "trials_per_task": 50,
+    "untrained_init_seed": 0,
+    "sigma_x": 0.0,
+    "scope": "Historical estimator comparison on identical random trials; not revised production results or a paper replication.",
+    "none_epoch_end": "Padded batch end, matching the pre-revision production slices; actual task endpoints were not used."
+  },
+  "networks": {
+    "untrained": {
+      "input": {
+        "phase": {
+          "stim1": {
+            "s1_mean_to_full_total_variance": 0.979119687876023,
+            "weighted_s1_retained_fraction": 0.9692918132599936,
+            "within_s1_fraction": 0.030708218576209104,
+            "normalized_mean_absolute_difference": 0.07090304329162997
+          },
+          "stim2": {
+            "s1_mean_to_full_total_variance": 0.4414446324900821,
+            "weighted_s1_retained_fraction": 0.4221750366031238,
+            "within_s1_fraction": 0.5778249622260323,
+            "normalized_mean_absolute_difference": 0.2816395188950677
+          },
+          "delay1": {
+            "s1_mean_to_full_total_variance": null,
+            "weighted_s1_retained_fraction": null,
+            "within_s1_fraction": null,
+            "normalized_mean_absolute_difference": 1.2918720392113598e-15
+          },
+          "delay2": {
+            "s1_mean_to_full_total_variance": null,
+            "weighted_s1_retained_fraction": null,
+            "within_s1_fraction": null,
+            "normalized_mean_absolute_difference": 1.4148577972124749e-15
+          },
+          "go1": {
+            "s1_mean_to_full_total_variance": 0.791534849974133,
+            "weighted_s1_retained_fraction": 0.7722724659172198,
+            "within_s1_fraction": 0.22772761994075238,
+            "normalized_mean_absolute_difference": 0.060967771077580134
+          }
+        },
+        "normalized_matrix_correlation": 0.9065671665061187,
+        "normalized_mean_absolute_difference": 0.06621334129449492,
+        "row_distance_correlation": 0.8261019721413282,
+        "fixed_cut_row_ari": {
+          "10": 0.9168881099112343,
+          "15": 0.9128934434800795,
+          "20": 0.9271602785857825
+        }
+      },
+      "hidden": {
+        "phase": {
+          "stim1": {
+            "s1_mean_to_full_total_variance": 0.9702411998839797,
+            "weighted_s1_retained_fraction": 0.9626971620115008,
+            "within_s1_fraction": 0.037302846923274215,
+            "normalized_mean_absolute_difference": 0.057839681610719985
+          },
+          "stim2": {
+            "s1_mean_to_full_total_variance": 0.4335672192813237,
+            "weighted_s1_retained_fraction": 0.4159053488855735,
+            "within_s1_fraction": 0.5840946505229114,
+            "normalized_mean_absolute_difference": 0.21357833997331496
+          },
+          "delay1": {
+            "s1_mean_to_full_total_variance": 0.9449765065005269,
+            "weighted_s1_retained_fraction": 0.9307862623336516,
+            "within_s1_fraction": 0.0692138006428554,
+            "normalized_mean_absolute_difference": 0.0050080628551919335
+          },
+          "delay2": {
+            "s1_mean_to_full_total_variance": 0.4847712583148165,
+            "weighted_s1_retained_fraction": 0.4711987555061837,
+            "within_s1_fraction": 0.5288012125257193,
+            "normalized_mean_absolute_difference": 0.017036992224627432
+          },
+          "go1": {
+            "s1_mean_to_full_total_variance": 0.7964516272532327,
+            "weighted_s1_retained_fraction": 0.7777543663224658,
+            "within_s1_fraction": 0.22224564851166206,
+            "normalized_mean_absolute_difference": 0.05233450360272047
+          }
+        },
+        "normalized_matrix_correlation": 0.8948937147927791,
+        "normalized_mean_absolute_difference": 0.05602242382402021,
+        "row_distance_correlation": 0.8015008095503701,
+        "fixed_cut_row_ari": {
+          "10": 0.7421549837259149,
+          "15": 0.823261823369492,
+          "20": 0.8461193360251233
+        }
+      },
+      "synapse": {
+        "phase": {
+          "stim1": {
+            "s1_mean_to_full_total_variance": 0.944148826860213,
+            "weighted_s1_retained_fraction": 0.9384600281611308,
+            "within_s1_fraction": 0.061539979344696745,
+            "normalized_mean_absolute_difference": 0.026161171557447887
+          },
+          "stim2": {
+            "s1_mean_to_full_total_variance": 0.5784853884347145,
+            "weighted_s1_retained_fraction": 0.5647617708843502,
+            "within_s1_fraction": 0.43523822916938326,
+            "normalized_mean_absolute_difference": 0.08226649562177213
+          },
+          "delay1": {
+            "s1_mean_to_full_total_variance": 0.9344156863572906,
+            "weighted_s1_retained_fraction": 0.9248654046345504,
+            "within_s1_fraction": 0.07513460192182976,
+            "normalized_mean_absolute_difference": 0.04555904873711613
+          },
+          "delay2": {
+            "s1_mean_to_full_total_variance": 0.4107204352158568,
+            "weighted_s1_retained_fraction": 0.3911127668436821,
+            "within_s1_fraction": 0.6088872332379778,
+            "normalized_mean_absolute_difference": 0.1702488804238205
+          },
+          "go1": {
+            "s1_mean_to_full_total_variance": 0.719954203281989,
+            "weighted_s1_retained_fraction": 0.7014533894555344,
+            "within_s1_fraction": 0.29854661729154297,
+            "normalized_mean_absolute_difference": 0.07091259238316125
+          }
+        },
+        "normalized_matrix_correlation": 0.8706288510083728,
+        "normalized_mean_absolute_difference": 0.06464307208837713,
+        "row_distance_correlation": 0.8146448071102287,
+        "fixed_cut_row_ari": {
+          "10": 0.9152282167377125,
+          "15": 0.6221727210418094,
+          "20": 0.5532069215625324
+        }
+      }
+    }
+  }
+}

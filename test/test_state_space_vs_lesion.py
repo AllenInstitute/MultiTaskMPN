@@ -39,12 +39,14 @@ def _structure_cache(aname, l2_info, seed):
 
 
 def _tasksim_cache(aname, tasks, similarity):
-    return {"schema_version": 2, "aname": aname, "tasks": list(tasks),
+    return {"variance_method": link.VARIANCE_METHOD,
+            "schema_version": 2, "aname": aname, "tasks": list(tasks),
             "causal_similarity": similarity, "y_definition": link.NEURON_SIMILARITY_DEFINITION}
 
 
 def _effects_cache(aname, tasks, effect, conditions):
-    return {"schema_version": 1, "aname": aname, "primary_modulation_mode": link.SYNAPSE_LESION_MODE,
+    return {"variance_method": link.VARIANCE_METHOD,
+            "schema_version": 1, "aname": aname, "primary_modulation_mode": link.SYNAPSE_LESION_MODE,
             "entries": {link.SYNAPSE_EFFECT_ENTRY: {
                 "effect": effect, "tasks": list(tasks), "conditions": list(conditions),
                 "definition": "random_minus_lesion", "units": "fraction",
@@ -56,7 +58,8 @@ def _prune_results(conditions, unresponsive_label="missing"):
               "mod_lesion_mode": link.SYNAPSE_LESION_MODE}
     if unresponsive_label != "missing":
         record["unresponsive_label"] = unresponsive_label
-    return {"mod_lesion": {link.SYNAPSE_EFFECT_ENTRY: record}}
+    return {"variance_method": link.VARIANCE_METHOD,
+            "mod_lesion": {link.SYNAPSE_EFFECT_ENTRY: record}}
 
 
 def _write(path, value):
@@ -381,6 +384,14 @@ class PaperFigureTests(unittest.TestCase):
         save.assert_not_called()
         printed = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
         self.assertIn("another lesion mode", printed)
+
+    def test_old_variance_summary_is_rejected_even_with_current_state_alignment(self):
+        aname = paper_plot.LESION_ANAME
+        combined = self.results([aname])
+        combined[aname].pop("variance_method")
+        save, output = self.render(paper_plot.plot_state_space_vs_lesion, combined, [aname])
+        save.assert_not_called()
+        self.assertIn("stale task-variance", str(output.call_args_list))
 
     def test_seed_figure_draws_every_sibling_run_with_the_cohort_test(self):
         import re

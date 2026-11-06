@@ -43,7 +43,8 @@ python multiple_task/state_space_shift.py
 # category structure and task-vector additivity of the saved task centroids
 python multiple_task/state_space_structure.py
 # context-end task distance vs lesion-profile similarity, for runs that also
-# have lesion_plot.py caches
+# have current trial_time lesion_plot.py caches. Rerun this link after
+# reclustering/lesion updates; the state-space trajectories can be reused.
 python multiple_task/state_space_vs_lesion.py
 python figures/paper_plot.py --only state_space_vs_lesion
 python figures/paper_plot.py --only state_space_vs_lesion_seeds

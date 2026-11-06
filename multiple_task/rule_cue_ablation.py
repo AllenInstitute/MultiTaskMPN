@@ -3,21 +3,20 @@ Remove the rule cue and see whether the rows of the clustering features
 regroup.
 
 The rows of the clustered heatmaps (multiple_task_analysis.py) are task x
-period conditions. Input and hidden rows group by period, synaptic
-modulation rows by task (sibling_row_sharing.py), in trained and untrained
-networks alike. One proposed reason: the rule cue is on for the whole trial,
-so it is a constant that adds no variance to the input and hidden features,
-while M integrates it into a task-specific drift. This script tests the
-cue's part directly. It runs one network on the evaluation trials of
+period conditions. Earlier S1-conditioned analyses suggested period grouping
+for input/hidden and task grouping for modulation. This pattern needs to be
+rechecked with trial_time features. The rule cue persists through the trial
+and can change stimulus responses and accumulated modulation. This script
+tests the cue's contribution directly. It runs one network on the evaluation trials of
 modulation_feedback.py twice, once as they are and once with every rule-cue
 channel set to zero (the cue and its input noise), and computes the input,
 hidden and modulation features of both as the clustering does: per task and
-period, the variance over stimulus conditions and time of the
-stimulus-conditioned mean (helper.task_variance_period_numpy), each column
+period, the variance across trials and time without stimulus averaging
+(helper.task_variance_period_numpy), each column
 then divided by its maximum over the rows (the "_normalized" features of the
 heatmaps). Rows follow the clustering's order (period-major) and windows; an
-epoch without an end (go1) runs to the last step of the padded batch, as in
-the clustering.
+epoch without an end (go1) stops at that task's actual trial end, as in the
+clustering.
 
 The readout needs no clustering. It uses the clustering's metric, the
 Euclidean distance between two rows, divided by its mean over every two rows
@@ -59,6 +58,7 @@ import matplotlib.pyplot as plt
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import helper
+from core.task_variance import VARIANCE_METHOD, trial_epoch_bounds
 from network_loading import build_network
 from run_logging import tee_output
 import multiple_task_analysis
@@ -66,7 +66,7 @@ import multiple_task_diagnosis as diag
 import modulation_feedback as feedback
 
 OUT_DIR = diag.OUT_DIR
-RESULT_VERSION = 2
+RESULT_VERSION = 3
 # The clustering's periods, in its row order (multiple_task_analysis.py).
 PHASES = ("stim1", "stim2", "delay1", "delay2", "go1")
 # Representation -> key of the network's track_states record.
@@ -133,7 +133,7 @@ def first_stimulus_modality(inputs, rule_indices, trials, rings):
     modality = {}
     for rule_index, trial in enumerate(trials):
         epoch = "stim1" if "stim1" in trial.epochs else "go1"
-        start, end = (_boundary(value) for value in trial.epochs[epoch])
+        start, end = trial_epoch_bounds(trial, epoch)
         window = inputs[rule_indices == rule_index, start:end]
         energy = [float(window[..., ring].abs().mean()) for ring in rings]
         if energy[0] > MODALITY_RATIO * energy[1]:
@@ -147,20 +147,16 @@ def first_stimulus_modality(inputs, rule_indices, trials, rings):
 
 # ─── Features ────────────────────────────────────────────────────────────────
 
-def _boundary(value):
-    return None if value is None else feedback._single_step(value)
-
-
 def row_windows(trials):
     """(rule index, phase, (start, end)) of every row, period-major as in the
-    clustering; `trials` holds one trial object per rule, in rule order. end
-    is None for an epoch that runs to the end of the batch."""
-    return [(rule_index, phase, tuple(_boundary(value) for value in trial.epochs[phase]))
+    clustering; `trials` holds one trial object per rule, in rule order.
+    Windows exclude padding beyond each task's actual trial end."""
+    return [(rule_index, phase, trial_epoch_bounds(trial, phase))
             for phase in PHASES
             for rule_index, trial in enumerate(trials) if phase in trial.epochs]
 
 
-def task_features(model, inputs, stim_labels, windows):
+def task_features(model, inputs, windows):
     """{representation: (len(windows), columns)} variance features of one
     task's trials, one row per (start, end) window."""
     _, states = multiple_task_analysis.record_tracked_states(model, inputs, FORWARD_CHUNK)
@@ -168,14 +164,13 @@ def task_features(model, inputs, stim_labels, windows):
     for name, key in REPRESENTATIONS.items():
         values = states.pop(key)
         values = values.reshape(*values.shape[:2], -1)
-        features[name] = np.stack([helper.task_variance_period_numpy(values[:, start:end],
-                                                                     stim_labels)
+        features[name] = np.stack([helper.task_variance_period_numpy(values[:, start:end])
                                    for start, end in windows])
         del values
     return features
 
 
-def condition_features(model, inputs, rule_indices, stim_labels, windows):
+def condition_features(model, inputs, rule_indices, windows):
     """{representation: (rows, columns)} features of every row of `windows`,
     one task's trials at a time so that only one task's M trajectory is held."""
     rows = {name: [None] * len(windows) for name in REPRESENTATIONS}
@@ -184,7 +179,7 @@ def condition_features(model, inputs, rule_indices, stim_labels, windows):
         if not own_rows:
             continue
         trials = np.flatnonzero(rule_indices == rule_index)
-        features = task_features(model, inputs[trials], stim_labels[trials],
+        features = task_features(model, inputs[trials],
                                  [windows[row][2] for row in own_rows])
         for name, values in features.items():
             for row, value in zip(own_rows, values):
@@ -353,16 +348,12 @@ def analyze_run(seed, feature, untrained_init_seed=None, trial_seed=feedback.EVA
     check_rule_cue(inputs, rule_indices, channels)
     modality = first_stimulus_modality(inputs, rule_indices, trials,
                                        ring_channels(task_params_c["hp"]))
-    # One label per trial, rule-major like the batch (the clustering's labels_stim1).
-    stim_labels = np.concatenate([np.asarray(trial.meta["stim1"]).ravel() for trial in trials])
-    if stim_labels.size != rule_indices.size:
-        raise ValueError("Stimulus labels and trials do not line up.")
     windows = row_windows(trials)
     inputs = inputs.to(device)
     features = {
-        "cue": condition_features(model, inputs, rule_indices, stim_labels, windows),
+        "cue": condition_features(model, inputs, rule_indices, windows),
         "no_cue": condition_features(model, without_rule_cue(inputs, channels), rule_indices,
-                                     stim_labels, windows),
+                                     windows),
     }
     row_tasks = [window[0] for window in windows]
     row_phases = [window[1] for window in windows]
@@ -371,6 +362,7 @@ def analyze_run(seed, feature, untrained_init_seed=None, trial_seed=feedback.EVA
     stem = result_stem(seed, feature, untrained_init_seed, trial_seed)
     payload = {
         "version": RESULT_VERSION,
+        "variance_method": VARIANCE_METHOD,
         "name": stem.removeprefix("rule_cue_ablation_"),
         "seed": seed,
         "feature": feature,

@@ -78,6 +78,9 @@ def load_cluster_info(aname, root=Path(".")):
         cluster_info = pickle.load(stream)
     with (analysis_dir / f"cluster_info_mod_{aname}.pkl").open("rb") as stream:
         cluster_info_mod = pickle.load(stream)
+    from core.task_variance import require_current_variance
+    require_current_variance(cluster_info, analysis_dir)
+    require_current_variance(cluster_info_mod, analysis_dir)
     return cluster_info, cluster_info_mod
 
 
@@ -122,6 +125,7 @@ def add_fixed_k_neuron_clusters(cluster_info, fixed_k):
             cluster_info[base], fixed_k, return_unresponsive_label=True)
         key = f"{base}_k{fixed_k}"
         cluster_info[key] = {
+            "variance_method": cluster_info[base].get("variance_method"),
             "col_clusters": clusters,
             "row_clusters": cluster_info[base]["row_clusters"],
             "tb_break_name": cluster_info[base]["tb_break_name"],

@@ -15,23 +15,28 @@ Run the full analysis pipeline for each experiment:
 
 Run selection: every checkpoint in multiple_tasks/ that matches --feature and
 --seed. With --skip-completed, runs whose four steps have all written their
-last output file (pipeline_markers) are left out, so rerunning the command
+last output file (pipeline_markers), use trial_time cluster features, match
+--control-repeats, and have outputs newer than their inputs are left out, so rerunning the command
 after more training adds the pipeline outputs of the new checkpoints only. A
-run missing any marker is redone from step 1, unless --resume, which skips
-the steps whose last output exists and redoes the rest; step 4 is never
+run with missing or outdated outputs is redone from step 1, unless --resume, which skips
+the steps whose outputs are current and redoes the rest. Recomputed clusters
+invalidate all downstream steps; step 4 is never
 skipped after step 3 ran, since its plots read the controls (so runs
 lesioned before step 3 existed get their controls and plots without a
-second lesion pass). lesion.main overwrites its outputs by name and lesion_plot.main clears
+second lesion pass when their clusters are current). Reclustering clears its old
+analysis artifacts while preserving independent sibling geometry. lesion.main overwrites its outputs by name and lesion_plot.main clears
 the run's directory under its pool's cache root, so no partial state is
 reused.
 """
 import argparse
+import pickle
 import re
 import time
 from pathlib import Path
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 from run_logging import tee_output
+from core.task_variance import cluster_caches_current
 import lesion_cache
 import multiple_task_analysis
 import sibling_delay_analysis
@@ -87,11 +92,36 @@ def pipeline_markers(aname, root=Path("."), control_pool=DEFAULT_CONTROL_POOL):
     }
 
 
-def is_completed(aname, root=Path("."), control_pool=DEFAULT_CONTROL_POOL):
-    """True when every pipeline step has written its last output for the run."""
-    return all(path.exists()
-               for paths in pipeline_markers(aname, root, control_pool).values()
-               for path in paths)
+def step_is_completed(step, markers, control_repeats=DEFAULT_CONTROL_REPEATS):
+    """Require current features, requested control repeats and fresh outputs."""
+    if not cluster_caches_current(markers["multiple_task_analysis"]):
+        return False
+    previous_time = 0
+    for name in STEPS[:STEPS.index(step) + 1]:
+        paths = markers[name]
+        if not all(path.exists() for path in paths):
+            return False
+        if name != "multiple_task_analysis":
+            try:
+                for path in paths:
+                    payload = lesion_cache.load_lesion_pickle(path)
+                    if (name == "lesion_controls"
+                            and payload.get("repeat_num") != control_repeats):
+                        return False
+            except (OSError, EOFError, pickle.UnpicklingError, ValueError):
+                return False
+        times = [path.stat().st_mtime_ns for path in paths]
+        if min(times) < previous_time:
+            return False
+        previous_time = max(times)
+    return True
+
+
+def is_completed(aname, root=Path("."), control_pool=DEFAULT_CONTROL_POOL,
+                 control_repeats=DEFAULT_CONTROL_REPEATS):
+    """Every step is complete and derived from current cluster features."""
+    return step_is_completed(STEPS[-1], pipeline_markers(aname, root, control_pool),
+                             control_repeats)
 
 
 def discover_runs(checkpoint_dir=CHECKPOINT_DIR):
@@ -105,7 +135,7 @@ def discover_runs(checkpoint_dir=CHECKPOINT_DIR):
 
 
 def select_runs(runs, feature=None, seeds=None, skip_completed=False, root=Path("."),
-                control_pool=DEFAULT_CONTROL_POOL):
+                control_pool=DEFAULT_CONTROL_POOL, control_repeats=DEFAULT_CONTROL_REPEATS):
     """Apply the command-line filters to the discovered (seed, feature) runs.
 
     Returns (selected, skipped, missing): the runs to process, in the order
@@ -123,7 +153,8 @@ def select_runs(runs, feature=None, seeds=None, skip_completed=False, root=Path(
         runs = [run for seed in requested for run in runs if run[0] == seed]
     skipped = []
     if skip_completed:
-        skipped = [run for run in runs if is_completed(run_name(*run), root, control_pool)]
+        skipped = [run for run in runs
+                   if is_completed(run_name(*run), root, control_pool, control_repeats)]
         runs = [run for run in runs if run not in skipped]
     return runs, skipped, missing
 
@@ -144,19 +175,20 @@ def run_pipeline(seed, feature, families=(), sibling_method=None, resume=False,
             seed, feature, families, sibling_method)
 
     def done(step):
-        """With --resume, whether the step's last output already exists."""
-        return resume and all(path.exists() for path in markers[step])
+        return resume and step_is_completed(step, markers, control_repeats)
 
     print("\n--- Step 1/4: multiple_task_analysis ---")
     if done("multiple_task_analysis"):
         print("    skipped: outputs exist (--resume)")
     else:
         t1 = time.time()
-        multiple_task_analysis.main(seed, feature, clean=False)
+        multiple_task_analysis.main(seed, feature, clean=True)
+        # New clusters require new lesions, controls and summaries.
+        resume = False
         print(f"    done ({time.time() - t1:.1f}s)")
 
-    if not all(path.exists() for path in markers["multiple_task_analysis"]):
-        print("    Skipping lesion steps: cluster files not found")
+    if not cluster_caches_current(markers["multiple_task_analysis"]):
+        print("    Skipping lesion steps: complete current cluster files not found")
         return
 
     print("\n--- Step 2/4: lesion ---")
@@ -201,10 +233,10 @@ def parse_args(argv=None):
     parser.add_argument("--skip-completed", action="store_true",
                         help="Leave out runs whose four steps have all written "
                              "their last output, so only checkpoints without "
-                             "pipeline outputs are processed. Requires --feature "
+                             "current pipeline outputs are processed. Requires --feature "
                              "unless --seed is given.")
     parser.add_argument("--resume", action="store_true",
-                        help="Skip the steps whose last output already exists "
+                        help="Skip steps with current outputs newer than their inputs "
                              "and run the rest (default: a selected run is "
                              "redone from step 1).")
     parser.add_argument("--control-pool", choices=lesion_controls.CONTROL_POOLS,
@@ -239,7 +271,7 @@ def main():
     args = parse_args()
     runs, skipped, missing = select_runs(
         discover_runs(), args.feature, args.seed, args.skip_completed,
-        control_pool=args.control_pool)
+        control_pool=args.control_pool, control_repeats=args.control_repeats)
     if missing:
         print(f"WARNING: no checkpoint for seed(s) {missing}"
               + (f" with feature {args.feature}" if args.feature else "")
@@ -254,8 +286,8 @@ def main():
                            pipeline_markers(run_name(*run), control_pool=args.control_pool)["lesion"])]
         if lesioned:
             print(f"WARNING: {len(lesioned)} selected run(s) already have lesion outputs and "
-                  f"will be redone from step 1: {lesioned}. Pass --resume to keep them and "
-                  "run only the missing steps.")
+                  f"will be redone from step 1: {lesioned}. Pass --resume to reuse current "
+                  "outputs; outdated or missing steps and their dependents still rerun.")
 
     print(f"Running {len(runs)} models: {runs}")
 

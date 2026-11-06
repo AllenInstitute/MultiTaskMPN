@@ -18,7 +18,8 @@ per task period in two versions of the feature: ``magnitude``,
 ``log1p(|W| * Var(M))``, the primary one, because the sign of W is a
 per-synapse attribute rather than tuning (the signed clustering separates
 positive- and negative-W synapses into sign-pure clusters, and the sign
-alone accounts for about a fifth of the signed variance), and ``signed``,
+alone accounted for about a fifth in the historical S1-conditioned results;
+that fraction needs rechecking with trial-time features), and ``signed``,
 ``signed_log1p(W * Var(M))``, exactly what the clustering saw. Every R^2 is
 the share of the total sum of squares about the grand mean captured by a
 model's least-squares fit:
@@ -69,6 +70,7 @@ import numpy as np
 from scipy import sparse
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
+from core.task_variance import VARIANCE_METHOD, require_current_variance
 from clustering import fixed_k_col_clusters
 from modulation_variants import signed_log1p
 
@@ -306,6 +308,8 @@ def load_run(aname, analysis_root=ANALYSIS_ROOT):
         cluster_info = pickle.load(stream)
     with (run_dir / f"cluster_info_mod_{aname}.pkl").open("rb") as stream:
         cluster_info_mod = pickle.load(stream)
+    require_current_variance(cluster_info, run_dir)
+    require_current_variance(cluster_info_mod, run_dir)
     entry = cluster_info_mod[MODULATION_TYPE]
     names = list(entry["result_all_name_lst"])
     if names[GROUPING_INDEX] != GROUPING_NAME:
@@ -321,6 +325,7 @@ def load_run(aname, analysis_root=ANALYSIS_ROOT):
     active = ~_unresponsive_mask(synapse_result)
     sets = label_sets(cluster_info, synapse_result, n_input, n_hidden)
     metadata = {
+        "variance_method": VARIANCE_METHOD,
         "modulation_type": MODULATION_TYPE, "grouping": GROUPING_NAME,
         "n_features": int(raw.shape[0]),
         "feature_names": [str(name) for name in entry["tb_break_name"]],
