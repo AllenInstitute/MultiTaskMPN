@@ -2,7 +2,10 @@
 
 Run from the repository root. Renders figures in memory for pixel comparison;
 does not rerun clustering/permutations or replace any analysis/figure files.
+Select the cohort used to generate the PNGs, e.g. --multitask-l2 1e4. Use the
+same plotting environment as the PNG generation for exact pixel comparisons.
 """
+import argparse
 import io
 from pathlib import Path
 from unittest.mock import patch
@@ -15,7 +18,12 @@ from scipy.stats import mannwhitneyu
 import paper_plot
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--multitask-l2", choices=paper_plot.MULTITASK_L2_CHOICES)
+    args = parser.parse_args(argv)
+    if args.multitask_l2 is not None:
+        paper_plot._set_multitask_l2(args.multitask_l2)
     feature = paper_plot.multitask_feature()
     cohorts = {}
     for tag, untrained in ((feature, False), ("untrained", True)):
@@ -24,7 +32,11 @@ def main():
             raise SystemExit("Current trained and untrained results are required; see rerun hint.")
         print("CACHE", tag, "version", data["version"], "networks", len(data["experiments"]))
         cohorts[tag] = data
-        for mode, by in (("same_task_all", "tasks"), ("same_period_all", "periods")):
+        for mode, by in (("same_task_all", "tasks"), ("same_period_all", "periods"),
+                         ("same_task_matched_tasks", "tasks"),
+                         ("same_period_matched_tasks", "periods")):
+            if mode not in data:
+                continue
             entry = data[mode]
             print("METHOD", tag, mode, entry["permutation"])
             for key, reps in [("ALL", entry["pooled"]), *entry[by].items()]:
@@ -50,15 +62,42 @@ def main():
                         target.append(key)
                 print("SIGNIFICANT", tag, mode, rep, "above", above, "below", below)
 
-    for rep in ("input", "hidden", "modulation"):
-        for pair_class in ("period", "task"):
-            entries = [cohorts[tag]["organization"]["representations"][rep]
-                       for tag in (feature, "untrained")]
-            values = [paper_plot._organization_values(entry, pair_class) for entry in entries]
-            p_value = mannwhitneyu(*values, alternative="two-sided").pvalue
-            print("ORGANIZATION", rep, pair_class,
-                  "trained/untrained medians", [float(np.median(v)) for v in values],
-                  "n", [len(v) for v in values], "raw Mann-Whitney p", float(p_value))
+        cut_entry = data.get("cut_robustness_matched_tasks")
+        if cut_entry is not None:
+            for k in cut_entry["k_values"]:
+                cut = cut_entry["cuts"][k]
+                assert cut["anames"] == data["experiments"]
+                for i, name in enumerate(cut["anames"]):
+                    counts = cut["counts"][name]
+                    assert [counts[c]["n_pairs"] for c in ("task", "period", "neither", "any")] == [50, 50, 200, 300]
+                    baseline = counts["any"]["n_shared"] / 300
+                    for pair_class in ("task", "period", "neither"):
+                        expected = (counts[pair_class]["n_shared"] / counts[pair_class]["n_pairs"]
+                                    / baseline) if baseline else np.nan
+                        np.testing.assert_allclose(cut["enrichment"][pair_class][i], expected)
+                delta = np.subtract(cut["enrichment"]["task"], cut["enrichment"]["period"])
+                np.testing.assert_allclose(cut["task_bias"], delta)
+                print("CUT", tag, k, "actual", sorted(set(cut["actual_k"])),
+                      "delta median", float(np.nanmedian(delta)), "positive", int(sum(delta > 0)),
+                      "finite", int(sum(np.isfinite(delta))), "period median",
+                      float(np.nanmedian(cut["enrichment"]["period"])))
+
+    for mode in ("organization", "organization_matched_tasks"):
+        if not all(mode in data for data in cohorts.values()):
+            continue
+        for rep in ("input", "hidden", "modulation"):
+            entries = [cohorts[tag][mode]["representations"][rep] for tag in (feature, "untrained")]
+            for pair_class in ("period", "task"):
+                values = [paper_plot._organization_values(
+                    entry, pair_class, include_zero=mode.endswith("_matched_tasks")) for entry in entries]
+                p_value = mannwhitneyu(*values, alternative="two-sided").pvalue if all(v.size for v in values) else np.nan
+                print("ORGANIZATION", mode, rep, pair_class,
+                      "trained/untrained medians", [float(np.median(v)) if v.size else np.nan for v in values],
+                      "n", [len(v) for v in values], "raw Mann-Whitney p", float(p_value))
+            for tag, entry in zip((feature, "untrained"), entries):
+                delta = np.subtract(entry["enrichment"]["task"], entry["enrichment"]["period"])
+                print("DELTA", mode, rep, tag, "median", float(np.nanmedian(delta)),
+                      "positive", int(sum(delta > 0)), "finite", int(sum(np.isfinite(delta))))
 
     def compare_figure(fig, out_path, extra=""):
         path = Path(out_path)
@@ -77,8 +116,18 @@ def main():
     print("PAPER_SELECTION", paper_plot.multitask_feature(), "legend", paper_plot.SHOW_LEGEND)
     with patch.object(paper_plot, "_save_fig", side_effect=compare_figure), \
             patch.object(paper_plot, "_ensure_out_dir"):
-        for name in ("organization", "same_task_seeds", "same_period_seeds"):
-            getattr(paper_plot, f"plot_row_cluster_{name}")()
+        figures = {"organization": "organization", "same_task_seeds": "same_task_all",
+                   "same_period_seeds": "same_period_all",
+                   "same_task_matched_tasks_seeds": "same_task_matched_tasks",
+                   "same_period_matched_tasks_seeds": "same_period_matched_tasks",
+                   "organization_matched_tasks": "organization_matched_tasks",
+                   "task_bias_matched_tasks": "organization_matched_tasks",
+                   "cut_robustness_matched_tasks": "cut_robustness_matched_tasks"}
+        for name, entry_key in figures.items():
+            if entry_key in cohorts[feature]:
+                getattr(paper_plot, f"plot_row_cluster_{name}")()
+            else:
+                print("PNG_SKIP", name, "missing trained summary", entry_key)
 
 
 if __name__ == "__main__":

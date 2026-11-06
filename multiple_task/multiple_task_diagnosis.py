@@ -209,7 +209,8 @@ def _load_experiment(aname, root=None):
     under `root` (default MULTI_DIR).
 
     Returns {rep: {"row_labels": np.ndarray, "tb_break_name": np.ndarray}} for
-    rep in {input, hidden, modulation}, or None if the neuron-cluster pickle is
+    rep in {input, hidden, modulation}, with optional saved modulation row-tree
+    metadata for cut sensitivity checks, or None if the neuron-cluster pickle is
     missing (input/hidden are required; modulation is included when available).
     """
     run_dir = (MULTI_DIR if root is None else Path(root)) / aname
@@ -245,6 +246,9 @@ def _load_experiment(aname, root=None):
                 "row_labels": np.asarray(result_all[MOD_G_INDEX]["row_tol_labels"]),
                 "tb_break_name": np.asarray(mentry["tb_break_name"]),
             }
+            for key in ("row_linkage", "row_unresponsive_mask"):
+                if key in result_all[MOD_G_INDEX]:
+                    reps["modulation"][key] = np.asarray(result_all[MOD_G_INDEX][key])
         else:
             print(f"  [warn] {aname}: modulation cluster info incomplete; "
                   f"modulation representation skipped")

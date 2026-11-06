@@ -5960,11 +5960,48 @@ def _untrained_provenance(experiments):
             f"init {', '.join(map(str, inits))}")
 
 
-def _organization_values(entry, pair_class):
+def _row_sharing_view_command(entry_key, payload, untrained=False):
+    """A cut-only update requires an existing matched organization summary."""
+    command = _row_sharing_commands(untrained)
+    if (entry_key == "cut_robustness_matched_tasks"
+            and payload.get("organization_matched_tasks", {}).get("schema_version") == 1):
+        command += " --cut-robustness-only"
+    return command
+
+
+def _load_row_sharing_view(entry_key):
+    """Load one all-task or matched-task view with compatible control metadata."""
+    _ensure_out_dir()
+    data = _load_row_cluster_sharing()
+    if data is None:
+        return None
+    matched = entry_key.endswith("_matched_tasks")
+    entry = data.get(entry_key)
+    if entry is None or (matched and entry.get("schema_version") != 1):
+        print(f"  Skipped: missing current {entry_key} results. "
+              f"Run {_row_sharing_view_command(entry_key, data)}.")
+        return None
+    untrained = _load_untrained_row_sharing()
+    control = {} if untrained is None else untrained.get(entry_key, {})
+    if untrained is not None and matched:
+        # The first period supplement used `tasks` for this metadata; the
+        # task view needs that key for its actual per-task statistics.
+        if (control.get("schema_version") != 1
+                or control.get("task_names", control.get("tasks"))
+                != entry.get("task_names", entry.get("tasks"))
+                or control.get("phases") != entry["phases"]):
+            print("  Skipped untrained supplement: matched tasks/phases missing or different. "
+                  f"Run {_row_sharing_view_command(entry_key, untrained, untrained=True)}.")
+            untrained, control = None, {}
+    return data, entry, untrained, control
+
+
+def _organization_values(entry, pair_class, include_zero=False):
     """One representation's per-run enrichments of `pair_class` that a log
-    axis can show (finite and positive)."""
+    axis can show (finite and positive), or all nonnegative values for the
+    matched-task linear plot and its tests."""
     values = np.asarray(entry["enrichment"][pair_class], dtype=float)
-    return values[np.isfinite(values) & (values > 0)]
+    return values[np.isfinite(values) & ((values >= 0) if include_zero else (values > 0))]
 
 
 def plot_row_cluster_organization():
@@ -5982,7 +6019,7 @@ def plot_row_cluster_organization():
     the fraction of any two rows that do, which is the chance the network's
     cluster sizes give; so 1 (dashed) is chance on both panels, and the
     representations compare although they have different numbers of row
-    clusters. The y axis is logarithmic. In each representation's column
+    clusters. Each panel has its own logarithmic y range. In each representation's column
     the trained runs (filled, red median dash) sit left of the untrained
     networks (hollow, gray median dash: untrained_clustering.py, fresh
     weights of one run's config of the same architecture, clustered by the
@@ -5999,33 +6036,149 @@ def plot_row_cluster_organization():
     (multiple_task/sibling_row_sharing.py); skipped without the trained
     result, drawn without the untrained networks when theirs is missing.
     """
+    _plot_row_cluster_organization("organization", "row_cluster_organization.png")
+
+
+def plot_row_cluster_organization_matched_tasks():
+    """The same five tasks, with all 300 selected row pairs as the baseline.
+    A linear axis retains zero-sharing networks in both the plot and tests.
+    """
+    _plot_row_cluster_organization(
+        "organization_matched_tasks", "row_cluster_organization_matched_tasks.png")
+
+
+def plot_row_cluster_task_bias_matched_tasks():
+    """Per-network task-minus-period enrichment on the same five-task grid.
+
+    Positive means task preference. Differences are paired within each network,
+    not differences between cohort medians. Zero/negative values are retained.
+    """
+    loaded = _load_row_sharing_view("organization_matched_tasks")
+    if loaded is None:
+        return
+    data, entry, _, control = loaded
+    fig, ax = plt.subplots(figsize=(3.3, 2.8))
+    ax.axhline(0, color="0.6", linestyle="--", linewidth=0.7)
+    notes = []
+    for position, (rep, _) in enumerate(_ROW_SHARING_REPRESENTATIONS):
+        color = _TASK_SPECIFICITY_COLORS[rep]
+        for source, offset, face, median_color, cohort in (
+                (entry, -0.2 if control else 0, color, _TREND_LINE_COLOR, "trained"),
+                (control, 0.2, "white", _ROW_ORGANIZATION_UNTRAINED_MEDIAN, "untrained")):
+            if not source:
+                continue
+            enrich = source["representations"][rep]["enrichment"]
+            values = np.subtract(enrich["task"], enrich["period"])
+            values = values[np.isfinite(values)]
+            if not values.size:
+                continue
+            x = position + offset
+            ax.scatter(x + _run_offsets(values.size, 0.035, 0.13), values, s=12,
+                       facecolors=face, edgecolors=color, linewidths=0.6, alpha=0.85, zorder=3)
+            ax.hlines(np.median(values), x - 0.15, x + 0.15, color=median_color,
+                      linewidth=1.8, zorder=4)
+            notes.append(f"{rep} {cohort}: median delta={np.median(values):.3f}, "
+                         f"{np.sum(values > 0)}/{values.size} positive")
+    ax.set_xticks(range(3), [label for _, label in _ROW_SHARING_REPRESENTATIONS])
+    ax.set_xlim(-0.6, 2.6)
+    ax.set_ylabel("Task − period enrichment (Δ)", fontsize=8)
+    ax.set_title("Same five tasks; original clustering\nΔ > 0: task preference", fontsize=8)
+    ax.spines[["top", "right"]].set_visible(False)
+    handles = [mpl.lines.Line2D([], [], marker="o", color=_TREND_LINE_COLOR,
+                                markersize=3, label="trained; median")]
+    if control:
+        handles.append(mpl.lines.Line2D([], [], marker="o", markerfacecolor="white",
+                                        color=_ROW_ORGANIZATION_UNTRAINED_MEDIAN,
+                                        markersize=3, label="untrained; median"))
+    _state_space_figure_legend(fig, handles, ncol=len(handles), top=0.88)
+    _save_fig(fig, _multitask_out("row_cluster_task_bias_matched_tasks.png"),
+              extra=f"  {data['feature']}; " + "; ".join(notes))
+
+
+def plot_row_cluster_cut_robustness_matched_tasks():
+    """Synapse task bias and period enrichment after full-tree recuts.
+
+    Each thin line is a network, thick lines are medians. K is the maxclust
+    target (ties retained); actual counts and undefined enrichments are reported.
+    The same networks recur across cuts, so no across-cut significance tests.
+    """
+    loaded = _load_row_sharing_view("cut_robustness_matched_tasks")
+    if loaded is None:
+        return
+    data, entry, untrained, control = loaded
+    if control and (control["k_values"] != entry["k_values"]
+                    or control["cut_method"] != entry["cut_method"]):
+        print("  Skipped untrained cut robustness: K grid or cut method differs. "
+              f"Run {_row_sharing_view_command('cut_robustness_matched_tasks', untrained, True)}.")
+        control = {}
+    k_values = entry["k_values"]
+    fig, axs = plt.subplots(1, 2, figsize=(5.2, 2.8))
+    panels = (("task_bias", "Task preference", "Task − period enrichment (Δ)", 0),
+              ("period", "Cross-task period organization", "Same-period enrichment", 1))
+    notes, handles = [], []
+    for source, payload, color, style, cohort in (
+            (entry, data, _TASK_SPECIFICITY_COLORS["modulation"], "-", "trained"),
+            (control, untrained, "0.4", "--", "untrained")):
+        if not source:
+            continue
+        cuts = [source["cuts"][k] for k in k_values]
+        if any(cut["anames"] != payload["experiments"] for cut in cuts):
+            plt.close(fig)
+            raise ValueError("Cut robustness must use the saved cohort in the same order at every K")
+        handles.append(mpl.lines.Line2D([], [], color=color, linestyle=style, linewidth=1.8,
+                                        label=f"{cohort} (n={len(payload['experiments'])})"))
+        for ax, (metric, _, _, _) in zip(axs, panels):
+            values = np.array([cut["task_bias"] if metric == "task_bias"
+                               else cut["enrichment"][metric] for cut in cuts], dtype=float)
+            ax.plot(k_values, values, color=color, linestyle=style, alpha=0.18, linewidth=0.5)
+            medians = [np.median(v[np.isfinite(v)]) if np.isfinite(v).any() else np.nan
+                       for v in values]
+            ax.plot(k_values, medians, color=color, linestyle=style, marker="o",
+                    markersize=3, linewidth=1.8, zorder=4)
+            notes.append(f"{cohort} {metric} medians={np.round(medians, 3).tolist()}, "
+                         f"valid n={np.isfinite(values).sum(axis=1).tolist()}")
+        notes.append(f"{cohort} actual full-tree K ranges=" + str([
+            (min(cut["actual_k"]), max(cut["actual_k"])) for cut in cuts]))
+    for ax, (_, title, ylabel, baseline) in zip(axs, panels):
+        ax.axhline(baseline, color="0.65", linestyle=":", linewidth=0.8, zorder=1)
+        ax.set_title(title, fontsize=8)
+        ax.set_ylabel(ylabel, fontsize=8)
+        ax.set_xlabel("Full-tree cluster target K", fontsize=8)
+        ax.set_xticks(k_values)
+        ax.spines[["top", "right"]].set_visible(False)
+    fig.suptitle("Same five tasks; synapses; thin lines = networks", y=0.87, fontsize=7)
+    _state_space_figure_legend(fig, handles, ncol=len(handles), top=0.9)
+    _save_fig(fig, _multitask_out("row_cluster_cut_robustness_matched_tasks.png"),
+              extra=f"  {data['feature']}; K={k_values}; " + "; ".join(notes))
+
+
+def _plot_row_cluster_organization(entry_key, out_filename):
     from scipy.stats import mannwhitneyu
 
-    _ensure_out_dir()
-    data = _load_row_cluster_sharing()
-    if data is None:
+    loaded = _load_row_sharing_view(entry_key)
+    if loaded is None:
         return
-    reps = data["organization"]["representations"]
+    data, entry, untrained, control_entry = loaded
+    matched = entry_key.endswith("_matched_tasks")
+    reps = entry["representations"]
     columns = [(rep, label) for rep, label in _ROW_SHARING_REPRESENTATIONS if rep in reps]
     if not columns:
         print("  Skipped: the result holds no organization check.")
         return
-    untrained = _load_untrained_row_sharing()
-    control = {} if untrained is None else untrained["organization"]["representations"]
+    control = control_entry.get("representations", {})
     split = _ROW_ORGANIZATION_SPLIT if control else 0.0
     half_width = 0.13 if control else 0.28
 
-    fig, axs = plt.subplots(1, len(_ROW_ORGANIZATION_PANELS), figsize=_ROW_ORGANIZATION_FIGSIZE,
-                            sharey=True)
-    low = high = 1.0
+    fig, axs = plt.subplots(1, len(_ROW_ORGANIZATION_PANELS), figsize=_ROW_ORGANIZATION_FIGSIZE)
     tests = []
     for ax, (pair_class, title) in zip(axs, _ROW_ORGANIZATION_PANELS):
+        low = high = 1.0
         ax.axhline(1.0, color="0.6", linewidth=0.7, linestyle="--", zorder=1)
         for position, (rep, _) in enumerate(columns):
             color = _TASK_SPECIFICITY_COLORS[rep]
-            trained = _organization_values(reps[rep], pair_class)
+            trained = _organization_values(reps[rep], pair_class, include_zero=matched)
             groups = [(position - split, trained, color, _TREND_LINE_COLOR)]
-            fresh = (_organization_values(control[rep], pair_class) if rep in control
+            fresh = (_organization_values(control[rep], pair_class, include_zero=matched) if rep in control
                      else np.array([]))
             if fresh.size:
                 groups.append((position + split, fresh, "white",
@@ -6055,13 +6208,19 @@ def plot_row_cluster_organization():
         ax.set_xlim(-0.6, len(columns) - 0.4)
         ax.spines[["top", "right"]].set_visible(False)
         ax.tick_params(axis="y", labelsize=7)
-    axs[0].set_yscale("log", base=2)
-    # Room above the points for the column p texts.
-    axs[0].set_ylim(low / 1.3, high * 2.2)
-    ticks = [tick for tick in _ROW_ORGANIZATION_YTICKS if low / 1.3 <= tick <= high * 2.2]
-    axs[0].set_yticks(ticks)
-    axs[0].set_yticklabels([f"{tick:g}\u00d7" for tick in ticks])
-    axs[0].yaxis.set_minor_locator(mticker.NullLocator())
+        if matched:
+            # Keep real zero-sharing observations visible on a linear axis.
+            ax.set_ylim(-0.12, high * 1.3)
+            ticks = list(range(int(np.floor(high * 1.3)) + 1))
+        else:
+            ax.set_yscale("log", base=2)
+            ax.set_ylim(low / 1.3, high * 2.2)
+            ticks = [tick for tick in _ROW_ORGANIZATION_YTICKS if low / 1.3 <= tick <= high * 2.2]
+        ax.set_yticks(ticks)
+        ax.set_yticklabels([f"{tick:g}\u00d7" for tick in ticks])
+        ax.yaxis.set_minor_locator(mticker.NullLocator())
+    if matched:
+        fig.suptitle("Same five tasks; original clustering retained", y=0.88, fontsize=7)
     axs[0].set_ylabel("Row pairs in one cluster\n(fold over chance)", fontsize=8)
     handles = [mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8,
                                 label="trained, median")]
@@ -6077,15 +6236,18 @@ def plot_row_cluster_organization():
                               for name, _ in _ROW_ORGANIZATION_PANELS)
         for rep, _ in columns)
     contrasts = "; ".join(f"{name.replace('_vs_', ' vs ')} p = {p_value:.2g}"
-                          for name, p_value in data["organization"]["contrast_p"].items())
+                          for name, p_value in entry["contrast_p"].items())
     n_untrained = (max(len(entry["anames"]) for entry in control.values()) if control else 0)
     provenance = _untrained_provenance(untrained["experiments"]) if control else ""
-    _save_fig(fig, _multitask_out("row_cluster_organization.png"),
+    note = ("; matched tasks: " + ", ".join(entry["task_names"])
+            + "; baseline: all 300 pairs of the selected 25 rows; zero enrichments included"
+            if matched else "")
+    _save_fig(fig, _multitask_out(out_filename),
               extra=(f"  {n_runs} {data['feature']} runs, {n_untrained} untrained networks"
                      + (f" ({provenance})" if provenance else "") + "; "
                      f"trained median enrichment: {medians}; task - period enrichment, "
                      f"paired Wilcoxon: {contrasts}"
-                     + (f"; {'; '.join(tests)}" if tests else "")))
+                     + (f"; {'; '.join(tests)}" if tests else "") + note))
 
 
 def _row_sharing_run_values(stats):
@@ -6201,28 +6363,43 @@ def plot_row_cluster_same_task_seeds():
     Hollow twins show untrained controls with their own null and test; stars
     do not compare trained with untrained. Single-phase tasks have no pairs.
     Reads version-5 sibling_row_sharing results; see sibling_row_sharing.py."""
-    _ensure_out_dir()
-    data = _load_row_cluster_sharing()
-    if data is None:
+    _plot_row_cluster_same_task("same_task_all", "row_cluster_same_task_seeds.png")
+
+
+def plot_row_cluster_same_task_matched_tasks_seeds():
+    """The five complete tasks, with chance recalculated within this task set."""
+    _plot_row_cluster_same_task(
+        "same_task_matched_tasks", "row_cluster_same_task_matched_tasks_seeds.png")
+
+
+def _plot_row_cluster_same_task(entry_key, out_filename):
+    loaded = _load_row_sharing_view(entry_key)
+    if loaded is None:
         return
-    entry = data["same_task_all"]
+    data, entry, untrained, control_entry = loaded
+    matched = entry_key.endswith("_matched_tasks")
     tasks = list(entry["tasks"])
     if not tasks:
         print("  Skipped: the result holds no same-task cells.")
         return
-    untrained = _load_untrained_row_sharing()
-    control = {} if untrained is None else untrained["same_task_all"]["tasks"]
-    fig, _ = _row_sharing_bar_figure(
+    control = control_entry.get("tasks", {})
+    fig, ax = _row_sharing_bar_figure(
         [(entry["tasks"][rule], control.get(rule, {})) for rule in tasks],
         [_TASK_DISPLAY.get(rule, rule) for rule in tasks],
         "Period pairs of one task\nin one row cluster", untrained is not None)
-    missing = [_TASK_DISPLAY.get(rule, rule) for rule in _TASK_DISPLAY if rule not in tasks]
-    _save_fig(fig, _multitask_out("row_cluster_same_task_seeds.png"),
+    missing = ([] if matched else
+               [_TASK_DISPLAY.get(rule, rule) for rule in _TASK_DISPLAY if rule not in tasks])
+    note = ""
+    if matched:
+        ax.set_title("Same five tasks; all five periods\nOriginal clustering retained", fontsize=7)
+        note = "; matched tasks: " + ", ".join(entry["task_names"])
+        note += f"; {entry['n_pairs_per_task']} phase pairs per task per network"
+    _save_fig(fig, _multitask_out(out_filename),
               extra=(f"  {len(data['experiments'])} {data['feature']} runs, {len(tasks)} tasks"
                      + _row_sharing_untrained_note(untrained)
                      + "; bars: mean over runs, whiskers: SD over runs"
                      + (f"; no period pairs: {', '.join(missing)}" if missing else "")
-                     + "; restricted permutation, BH-FDR within cohort and analysis type"))
+                     + "; restricted permutation, BH-FDR within cohort and analysis type" + note))
 
 
 def plot_row_cluster_same_period_seeds():
@@ -6232,17 +6409,32 @@ def plot_row_cluster_same_period_seeds():
     The null shuffles row labels among available phases within each task.
     Chance, BH q stars and untrained twins follow row_cluster_same_task_seeds.
     Phase labels use the heatmap colors."""
-    _ensure_out_dir()
-    data = _load_row_cluster_sharing()
-    if data is None:
+    _plot_row_cluster_same_period("same_period_all", "row_cluster_same_period_seeds.png")
+
+
+def plot_row_cluster_same_period_matched_tasks_seeds():
+    """Same five tasks in every phase, using the original full-task clustering.
+
+    Bars and stars retain the existing meaning: network mean/SD and tests
+    against the restricted null. Direct phase contrasts are saved separately
+    and printed; the stars do not test those contrasts.
+    """
+    _plot_row_cluster_same_period(
+        "same_period_matched_tasks", "row_cluster_same_period_matched_tasks_seeds.png")
+
+
+def _plot_row_cluster_same_period(entry_key, out_filename):
+    """Shared renderer for all available tasks and the fixed-task supplement."""
+    loaded = _load_row_sharing_view(entry_key)
+    if loaded is None:
         return
-    entry = data["same_period_all"]
+    data, entry, untrained, control_entry = loaded
+    matched = entry_key == "same_period_matched_tasks"
     periods = list(entry["periods"])
     if not periods:
         print("  Skipped: the result holds no same-period cells.")
         return
-    untrained = _load_untrained_row_sharing()
-    control = {} if untrained is None else untrained["same_period_all"]["periods"]
+    control = control_entry.get("periods", {})
     fig, ax = _row_sharing_bar_figure(
         [(entry["periods"][phase], control.get(phase, {})) for phase in periods],
         [_PHASE_DISPLAY.get(phase, phase) for phase in periods],
@@ -6251,11 +6443,26 @@ def plot_row_cluster_same_period_seeds():
         if phase in _PHASE_COLORS:
             label.set_bbox(dict(facecolor=_PHASE_COLORS[phase], edgecolor="none",
                                 boxstyle="round,pad=0.15", alpha=0.8))
-    _save_fig(fig, _multitask_out("row_cluster_same_period_seeds.png"),
+    note = ""
+    if matched:
+        ax.set_title("Same five tasks across all periods\nOriginal clustering retained",
+                     fontsize=7)
+        note = "; matched tasks: " + ", ".join(entry["tasks"])
+        note += f"; {entry['n_pairs_per_period']} task pairs per period per network"
+        for cohort, saved in (("trained", data), ("untrained", untrained)):
+            if saved is None:
+                continue
+            contrasts = saved[entry_key]["period_contrasts"]["contrasts"]
+            for name, by_rep in contrasts.items():
+                values = ", ".join(
+                    f"{rep} {stats['mean_difference_pp']:+.2f} pp (q={stats['q_fdr']:.4g})"
+                    for rep, stats in by_rep.items())
+                print(f"  Matched-task paired contrast, {cohort}, {name}: {values}")
+    _save_fig(fig, _multitask_out(out_filename),
               extra=(f"  {len(data['experiments'])} {data['feature']} runs, "
                      f"{len(periods)} periods" + _row_sharing_untrained_note(untrained)
                      + "; bars: mean over runs, whiskers: SD over runs"
-                     + "; restricted permutation, BH-FDR within cohort and analysis type"))
+                     + "; restricted permutation, BH-FDR within cohort and analysis type" + note))
 
 
 # ─── Figure: Cluster tuning vs lesion effect ─────────────────────────────────
@@ -14663,6 +14870,11 @@ FIGURES_BY_MODE = {
         "row_cluster_organization": plot_row_cluster_organization,
         "row_cluster_same_task_seeds": plot_row_cluster_same_task_seeds,
         "row_cluster_same_period_seeds": plot_row_cluster_same_period_seeds,
+        "row_cluster_same_period_matched_tasks_seeds": plot_row_cluster_same_period_matched_tasks_seeds,
+        "row_cluster_same_task_matched_tasks_seeds": plot_row_cluster_same_task_matched_tasks_seeds,
+        "row_cluster_organization_matched_tasks": plot_row_cluster_organization_matched_tasks,
+        "row_cluster_task_bias_matched_tasks": plot_row_cluster_task_bias_matched_tasks,
+        "row_cluster_cut_robustness_matched_tasks": plot_row_cluster_cut_robustness_matched_tasks,
     },
     "lesion": {
         "lesion_heatmap": plot_lesion_heatmap,

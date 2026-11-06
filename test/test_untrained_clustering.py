@@ -119,6 +119,7 @@ class UntrainedDiscoveryTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     sharing.main(feature=None, untrained=True)
             self.assertIn("Discovered 0 untrained experiment(s)", str(printed.call_args_list))
+            self.assertIn("[skip] matched-task supplements", str(printed.call_args_list))
             self.assertEqual((out / "sibling_row_sharing_L21e4.pkl").read_text(), "trained")
             self.assertEqual((out / "sibling_row_sharing_L21e4_untrained.pkl").read_text(),
                              "legacy")
@@ -134,6 +135,11 @@ class UntrainedDiscoveryTests(unittest.TestCase):
         self.assertEqual(len(payload["experiments"]), 3)
         self.assertEqual(set(payload["organization"]["representations"]),
                          {"input", "hidden", "modulation"})
+        self.assertIn("same_task_all", payload)
+        self.assertIn("same_period_all", payload)
+        for key in ("same_period_matched_tasks", "same_task_matched_tasks",
+                    "organization_matched_tasks", "cut_robustness_matched_tasks"):
+            self.assertNotIn(key, payload)
 
 
 class NamingTests(unittest.TestCase):

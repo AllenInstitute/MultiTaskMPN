@@ -42,6 +42,26 @@ The paper's seeds figures show these means and q values with SD across networks.
 These are conditional tests of row organization, not evidence of causality or
 a direct test of trained versus untrained networks.
 
+The matched-task supplement retains the original cluster labels but restricts
+every phase to the same five integration tasks (ten task pairs). It repeats
+the restricted-null tests in a separate BH family and saves two prespecified
+paired phase contrasts, Stimulus 2 minus 1 and Memory 2 minus 1. Contrasts use
+whole-network sign flips and a separate six-test BH family; they do not test
+trained versus untrained. Companion same-task and organization checks use
+the identical 25 rows. Same-task nulls shuffle only the five selected tasks
+within each phase; its five task tests plus pooled (three representations)
+form an 18-test BH family without legacy sibling summaries. Organization
+recomputes its baseline over the 300 selected row pairs (50 same-period,
+50 same-task, 200 neither). No trials or clusterings are regenerated.
+If any network lacks a required task/phase row, the driver skips the matched
+supplements and saves the all-task results without their optional keys.
+Malformed or inconsistent row data still raise an error.
+An optional cut-robustness supplement recuts the full modulation row trees
+at K=5,10,15,20,25 before selecting those same rows. It retains tied merge
+heights and records actual cluster counts. --cut-robustness-only adds this
+check to an existing result using exactly its saved cohort, without rerunning
+permutations or discovering additional networks.
+
 The organization check puts the two questions on one scale for every task's
 rows (`summarize_organization`): per run and representation, the fold
 enrichment of two rows of one period from different tasks, and of two rows
@@ -76,6 +96,8 @@ Usage:
     python multiple_task/sibling_row_sharing.py --feature L21e3
     # the untrained controls of every L2 cohort of the default architecture
     python multiple_task/sibling_row_sharing.py --feature L21e4 --untrained
+    # append cut sensitivity to the exact cohort of an existing matched summary
+    python multiple_task/sibling_row_sharing.py --feature L21e4 --cut-robustness-only
 """
 import json
 import pickle
@@ -85,7 +107,8 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")  # headless-safe: figures are saved, never shown
 import matplotlib.pyplot as plt
-from scipy.stats import wilcoxon
+from scipy.stats import permutation_test, wilcoxon
+from scipy.cluster.hierarchy import fcluster
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 from multitask_naming import architecture_tag, untrained_sharing_tag
@@ -113,6 +136,13 @@ PHASE_TYPES = {
 
 REPRESENTATIONS = tuple(diag._REP_COLORS)
 
+# Fixed before inspecting cluster labels; identical in every cohort/network.
+MATCHED_TASKS = ("contextdelaydm1", "contextdelaydm2", "delaydm1", "delaydm2",
+                 "multidelaydm")
+MATCHED_PHASES = ("stim1", "stim2", "delay1", "delay2", "go1")
+PERIOD_CONTRASTS = (("stim2", "stim1"), ("delay2", "delay1"))
+CUT_ROBUSTNESS_K = (5, 10, 15, 20, 25)
+
 # A summary cell at or above this mean chance is not tested: every task's row
 # of those phases shares one cluster, so sharing says nothing about the pair.
 UNSPECIFIC_CHANCE = 0.95
@@ -121,6 +151,8 @@ SIGNIFICANCE = 0.05
 # Saved-result layout: 2 adds same-task, 3 all-task and organization,
 # 4 same-period, 5 restricted permutations with common row pairs, equal
 # network means and BH-adjusted q values. paper_plot requires version 5.
+# The matched-task supplement is additive and has its own schema_version;
+# existing v5 all-task results remain valid without it.
 RESULT_VERSION = 5
 # Prefixes of the files one run writes, each followed by "{tag}.{suffix}".
 _OUTPUT_PREFIXES = ("sibling_row_sharing_", "sibling_row_sharing_pairs_",
@@ -293,7 +325,8 @@ def _adjust_fdr(statistics):
         finite[index]["q_fdr"] = float(q_value)
 
 
-def _sharing_permutations(experiments, mode, n_permutations, permutation_seed):
+def _sharing_permutations(experiments, mode, n_permutations, permutation_seed,
+                          include_groups=True):
     """Fixed row pairs with a label null conditional on the other factor.
     Average fractions equally across runs, including degenerate runs.
     Preserve dependence among pairs sharing a row in every permutation."""
@@ -319,7 +352,7 @@ def _sharing_permutations(experiments, mode, n_permutations, permutation_seed):
         keys = rules[i] if mode == "task" else phases[i]
         selectors = {("pooled", "all"): np.ones(i.size, dtype=bool)}
         selectors.update({("individual", key): keys == key for key in np.unique(keys)})
-        if mode == "task":
+        if mode == "task" and include_groups:
             selectors.update({("group", group): np.isin(keys, list(members))
                               for group, members in group_rules.items()})
         permutations = _restricted_permutations(
@@ -376,7 +409,7 @@ def _sharing_permutations(experiments, mode, n_permutations, permutation_seed):
              by: {key: results[("individual", key)] for key in keys},
              "permutation": metadata}
     groups = {}
-    if mode == "task":
+    if mode == "task" and include_groups:
         for group, pairs in PAIR_GROUPS.items():
             groups[group] = {
                 "pooled": results.get(("group", group), {}),
@@ -399,6 +432,182 @@ def summarize_same_task_all(experiments, n_permutations=10000, permutation_seed=
 def summarize_same_period_all(experiments, n_permutations=10000, permutation_seed=0):
     """Every available phase's task pairs, including single-phase tasks."""
     return _sharing_permutations(experiments, "period", n_permutations, permutation_seed)[0]
+
+
+def _matched_period_contrasts(periods, n_permutations, permutation_seed):
+    """Swap whole phase summaries within networks, never individual task pairs.
+
+    Exact sign enumeration when feasible, otherwise Monte Carlo sign flips.
+    The null assumes the two phase summaries are exchangeable within a network.
+    These six tests form their own BH family, separate from the chance tests.
+    """
+    contrasts = {}
+    for later, earlier in PERIOD_CONTRASTS:
+        by_rep = {}
+        for rep in REPRESENTATIONS:
+            first = periods[earlier][rep]["per_run"]
+            second = periods[later][rep]["per_run"]
+            if set(first) != set(second):
+                raise ValueError("paired period comparisons require identical networks")
+            differences = {
+                name: 100 * (second[name]["observed"] / second[name]["n_cells"]
+                             - first[name]["observed"] / first[name]["n_cells"])
+                for name in sorted(first)}
+            values = np.array(list(differences.values()))
+            p_value = 1.0
+            if values.size > 1 and np.any(values):
+                p_value = float(permutation_test(
+                    (values,), lambda x, axis: np.mean(x, axis=axis),
+                    permutation_type="samples", vectorized=True,
+                    n_resamples=n_permutations, alternative="two-sided",
+                    random_state=permutation_seed).pvalue)
+            by_rep[rep] = {
+                "mean_difference_pp": float(values.mean()),
+                "sd_difference_pp": float(values.std(ddof=1)) if values.size > 1 else 0.0,
+                "per_run_difference_pp": differences, "n_runs": len(differences),
+                "p_perm": p_value, "q_fdr": float("nan")}
+        contrasts[f"{later}_minus_{earlier}"] = by_rep
+    _adjust_fdr([stats for by_rep in contrasts.values() for stats in by_rep.values()])
+    return {
+        "contrasts": contrasts,
+        "test_definition": "two-sided paired sign-flip test of the mean network difference",
+        "null_definition": "phase summaries exchangeable within each network",
+        "permutation_unit": "network (all task pairs swapped together)",
+        "n_resamples": int(n_permutations), "permutation_seed": int(permutation_seed),
+        "p_definition": "inclusive equal tails; exact if 2**n_runs <= n_resamples, else add-one",
+        "n_fdr_tests": len(PERIOD_CONTRASTS) * len(REPRESENTATIONS),
+        "fdr_family": "BH within this cohort: two prespecified phase contrasts x three representations",
+    }
+
+
+class MissingMatchedTaskRows(ValueError):
+    """Valid row data do not cover the fixed five-task, five-phase grid."""
+
+
+def _matched_task_rows(experiments):
+    """One validated 5 x 5 row grid for all matched-task analyses."""
+    expected = {f"{rule}-{phase}" for rule in MATCHED_TASKS for phase in MATCHED_PHASES}
+    filtered = []
+    for aname, data in experiments:
+        rules, phases, labels = _aligned_rows(aname, data)
+        names = np.array([f"{rule}-{phase}" for rule, phase in zip(rules, phases)])
+        keep = np.isin(rules, MATCHED_TASKS) & np.isin(phases, MATCHED_PHASES)
+        missing = expected - set(names[keep])
+        if missing:
+            raise MissingMatchedTaskRows(
+                f"{aname}: matched-task analysis missing rows {sorted(missing)}")
+        filtered.append((aname, {
+            rep: {"tb_break_name": names[keep], "row_labels": values[keep]}
+            for rep, values in labels.items()}))
+    if not filtered:
+        raise ValueError("matched-task analysis requires at least one network")
+    return filtered
+
+
+def _matched_task_metadata():
+    return {
+        "schema_version": 1, "task_names": list(MATCHED_TASKS),
+        "phases": list(MATCHED_PHASES),
+        "clustering": "original full-task cluster labels retained; no reclustering",
+    }
+
+
+def summarize_same_period_matched_tasks(experiments, n_permutations=10000,
+                                        permutation_seed=0):
+    """Same five tasks and ten pairs per phase, retaining full-task clustering."""
+    filtered = _matched_task_rows(experiments)
+    entry = summarize_same_period_all(filtered, n_permutations, permutation_seed)
+    entry.update(_matched_task_metadata())
+    entry.update({
+        "tasks": list(MATCHED_TASKS),  # retained for existing supplement readers
+        "n_pairs_per_period": len(MATCHED_TASKS) * (len(MATCHED_TASKS) - 1) // 2,
+        "period_contrasts": _matched_period_contrasts(
+            entry["periods"], n_permutations, permutation_seed),
+    })
+    entry["permutation"]["pair_selection"] = "all pairs of the fixed five tasks in each phase"
+    return entry
+
+
+def summarize_same_task_matched_tasks(experiments, n_permutations=10000,
+                                      permutation_seed=0):
+    """Five tasks, ten phase pairs each; null shuffles only these five tasks."""
+    entry, _ = _sharing_permutations(
+        _matched_task_rows(experiments), "task", n_permutations, permutation_seed,
+        include_groups=False)
+    entry.update(_matched_task_metadata())
+    entry["n_pairs_per_task"] = len(MATCHED_PHASES) * (len(MATCHED_PHASES) - 1) // 2
+    entry["permutation"]["pair_selection"] = "all phase pairs of each of the fixed five tasks"
+    entry["permutation"]["fdr_family"] = (
+        "BH within this cohort: five matched tasks plus pooled, across three representations")
+    return entry
+
+
+def summarize_organization_matched_tasks(experiments):
+    """Task/phase enrichment against all 300 pairs of the selected 25 rows."""
+    entry = summarize_organization(_matched_task_rows(experiments))
+    entry.update(_matched_task_metadata())
+    entry["baseline"] = "sharing among all pairs of the selected 25 rows"
+    return entry
+
+
+class MissingRowLinkage(ValueError):
+    """An older cluster cache has labels but no saved modulation row tree."""
+
+
+def summarize_cut_robustness_matched_tasks(experiments, k_values=CUT_ROBUSTNESS_K):
+    """Recut full-task modulation trees, then select the fixed 25 rows.
+
+    maxclust preserves tied merge heights instead of arbitrarily splitting
+    identical profiles. K is an upper bound on active clusters; actual full
+    and selected cluster counts are saved. Missing sharing gives NaN, not 0.
+    Curves are descriptive sensitivity checks, not independent replications.
+    """
+    matched = _matched_task_rows(experiments)  # validate the entire fixed cohort
+    k_values = tuple(k_values)
+    if (not k_values or len(set(k_values)) != len(k_values)
+            or any(not isinstance(k, (int, np.integer)) or k < 2 for k in k_values)):
+        raise ValueError("k_values must contain distinct integers >= 2")
+    cuts = {k: {"anames": [], "actual_k": [], "matched_k": [], "counts": {},
+                "enrichment": {name: [] for name in ORGANIZATION_CLASSES},
+                "task_bias": []} for k in k_values}
+    for (aname, data), (_, selected) in zip(experiments, matched):
+        rows = data["modulation"]
+        if "row_linkage" not in rows:
+            raise MissingRowLinkage(f"{aname}: missing modulation row_linkage")
+        tree = np.asarray(rows["row_linkage"], dtype=float)
+        labels = np.asarray(rows["row_labels"])
+        mask = np.asarray(rows.get("row_unresponsive_mask", np.zeros(labels.size)), dtype=bool)
+        if (mask.shape != labels.shape or tree.ndim != 2 or tree.shape[1] != 4
+                or tree.shape[0] + 1 != int((~mask).sum())):
+            raise ValueError(f"{aname}: modulation tree leaves do not align with active rows")
+        if max(k_values) > tree.shape[0] + 1:
+            raise ValueError(f"{aname}: requested K exceeds the number of active rows")
+        # The saved tree is in original row order, not heatmap leaf order.
+        # Verify that it reproduces the existing partition before using it.
+        original = labels[~mask]
+        recovered = fcluster(tree, len(np.unique(original)), criterion="maxclust")
+        if not np.array_equal(original[:, None] == original, recovered[:, None] == recovered):
+            raise ValueError(f"{aname}: modulation tree does not reproduce saved row labels")
+        names = np.asarray(rows["tb_break_name"])
+        keep = np.isin(names, selected["modulation"]["tb_break_name"])
+        for k, cut in cuts.items():
+            recut = np.empty(labels.size, dtype=int)
+            recut[~mask] = fcluster(tree, k, criterion="maxclust")
+            recut[mask] = k + 1  # retain an existing held-out unresponsive class
+            counts = _organization_counts({"tb_break_name": names[keep],
+                                           "row_labels": recut[keep]})
+            cut["anames"].append(aname)
+            cut["actual_k"].append(int(np.unique(recut).size))
+            cut["matched_k"].append(int(np.unique(recut[keep]).size))
+            cut["counts"][aname] = counts
+            for name in ORGANIZATION_CLASSES:
+                cut["enrichment"][name].append(_enrichment(counts, name))
+            cut["task_bias"].append(_enrichment(counts, "task") - _enrichment(counts, "period"))
+    return {**_matched_task_metadata(),
+            "clustering": "full-task modulation row trees recut before selecting the 25 rows",
+            "representation": "modulation", "k_values": list(k_values), "cuts": cuts,
+            "cut_method": "maxclust; tied heights retained; actual_k includes any unresponsive class",
+            "baseline": "sharing among all pairs of the selected 25 rows"}
 
 
 # Row-pair classes of the organization check: two rows of one period from
@@ -733,11 +942,58 @@ def _print_organization(organization):
               f"paired Wilcoxon p = {p_value:.2g}")
 
 
+def _update_cut_robustness(tag, root, feature, seed, untrained):
+    """Append sensitivity results to a current summary without changing its cohort."""
+    path = OUT_DIR / f"sibling_row_sharing_{tag}.pkl"
+    with path.open("rb") as stream:
+        payload = pickle.load(stream)
+    matched_metadata = payload.get("organization_matched_tasks", {})
+    if (payload.get("version") != RESULT_VERSION or payload.get("seed") != seed
+            or bool(payload.get("untrained")) != untrained
+            or payload.get("feature") != (None if untrained else feature)
+            or payload.get("architecture") != architecture_tag(feature)
+            or payload.get("mod_g_index") != diag.MOD_G_INDEX
+            or matched_metadata.get("schema_version") != 1
+            or matched_metadata.get("task_names") != list(MATCHED_TASKS)
+            or matched_metadata.get("phases") != list(MATCHED_PHASES)):
+        raise ValueError("Need a current matched-task summary; run without --cut-robustness-only first")
+    experiments = []
+    for aname in payload["experiments"]:
+        data = diag._load_experiment(aname, root=root)
+        if data is None or "modulation" not in data:
+            raise ValueError(f"{aname}: saved cohort member is missing; summary left unchanged")
+        experiments.append((aname, data))
+    matched = _matched_task_rows(experiments)
+    cached = payload["organization_matched_tasks"]["representations"]
+    for rep in REPRESENTATIONS:
+        fresh = {aname: _organization_counts(data[rep]) for aname, data in matched}
+        if fresh != cached[rep]["counts"]:
+            raise ValueError("Cluster caches changed; recompute the full summary first")
+    payload["cut_robustness_matched_tasks"] = summarize_cut_robustness_matched_tasks(experiments)
+    _save_payload(payload, tag)
+    print(f"Added cut robustness for the existing {len(experiments)} networks; "
+          "all previous statistics retained.")
+    return payload
+
+
+def _save_payload(payload, tag):
+    pkl_path = OUT_DIR / f"sibling_row_sharing_{tag}.pkl"
+    json_path = OUT_DIR / f"sibling_row_sharing_{tag}.json"
+    with open(pkl_path, "wb") as stream:
+        pickle.dump(payload, stream)
+    with open(json_path, "w") as stream:
+        json.dump(diag._json_safe(payload), stream, indent=2)
+    print(f"\nSaved: {pkl_path}")
+    print(f"Saved: {json_path}")
+
+
 def main(feature="L21e4", seed=None, untrained=False,
-         n_permutations=10000, permutation_seed=0):
+         n_permutations=10000, permutation_seed=0, cut_robustness_only=False):
     """Analyze every clustered run of `feature` (or one `seed`), or with
     `untrained` every untrained control of `feature`'s architecture (module
-    docstring), save the results and draw the three figures."""
+    docstring), save the results and draw the three diagnostic figures.
+    With `cut_robustness_only`, append cuts to the saved cohort instead.
+    """
     tag = feature if feature else "all"
     if seed is not None:
         tag += f"_seed{seed}"
@@ -749,6 +1005,9 @@ def main(feature="L21e4", seed=None, untrained=False,
         tag = untrained_sharing_tag(feature)
         if seed is not None:
             tag = f"{tag}_seed{seed}"
+    if cut_robustness_only:
+        return _update_cut_robustness(tag, root, feature, seed, untrained)
+    if untrained:
         anames = diag._discover_anames(seed=seed, root=root,
                                        architecture=architecture_tag(feature))
     else:
@@ -759,6 +1018,9 @@ def main(feature="L21e4", seed=None, untrained=False,
     experiments = []
     for aname in anames:
         data = diag._load_experiment(aname, root=root)
+        if data is not None and "modulation" not in data:
+            print(f"  [skip] {aname}: clustering incomplete (modulation required)")
+            continue
         if data is not None:
             experiments.append((aname, data))
     print(f"Loaded cluster info for {len(experiments)}/{len(anames)} experiment(s).")
@@ -782,6 +1044,38 @@ def main(feature="L21e4", seed=None, untrained=False,
     _print_same_period(same_period_all)
     organization = summarize_organization(experiments)
     _print_organization(organization)
+
+    matched_results = {}
+    try:
+        # Build together so a missing grid cannot leave a partial supplement
+        # or silently change which networks enter the matched comparisons.
+        matched_results = {
+            "same_period_matched_tasks": summarize_same_period_matched_tasks(
+                experiments, n_permutations, permutation_seed),
+            "same_task_matched_tasks": summarize_same_task_matched_tasks(
+                experiments, n_permutations, permutation_seed),
+            "organization_matched_tasks": summarize_organization_matched_tasks(experiments),
+        }
+    except MissingMatchedTaskRows as exc:
+        print(f"  [skip] matched-task supplements: {exc}; "
+              "saving all-task results without matched-task supplements.")
+    if matched_results:
+        same_period_matched_tasks = matched_results["same_period_matched_tasks"]
+        print("\nMatched tasks: " + ", ".join(MATCHED_TASKS))
+        _print_same_period(same_period_matched_tasks)
+        print("\n=== Paired period contrasts (percentage points; separate six-test BH family) ===")
+        for contrast, by_rep in same_period_matched_tasks["period_contrasts"]["contrasts"].items():
+            for rep, stats in by_rep.items():
+                print(f"  {contrast} {rep}: {stats['mean_difference_pp']:+.2f} pp; "
+                      f"n={stats['n_runs']}; p={stats['p_perm']:.4g}, q={stats['q_fdr']:.4g}")
+        _print_same_task({"Matched five tasks": matched_results["same_task_matched_tasks"]})
+        print("\nMatched five tasks: organization against the selected 25-row baseline")
+        _print_organization(matched_results["organization_matched_tasks"])
+        try:
+            matched_results["cut_robustness_matched_tasks"] = (
+                summarize_cut_robustness_matched_tasks(experiments))
+        except MissingRowLinkage as exc:
+            print(f"  [skip] cut robustness: {exc}; retaining the other summaries.")
 
     # Validate and compute before replacing any previous result files.
     removed = _clear_previous_results(tag)
@@ -816,15 +1110,9 @@ def main(feature="L21e4", seed=None, untrained=False,
         "same_task_all": same_task_all,
         "same_period_all": same_period_all,
         "organization": organization,
+        **matched_results,
     }
-    pkl_path = OUT_DIR / f"sibling_row_sharing_{tag}.pkl"
-    json_path = OUT_DIR / f"sibling_row_sharing_{tag}.json"
-    with open(pkl_path, "wb") as stream:
-        pickle.dump(payload, stream)
-    with open(json_path, "w") as stream:
-        json.dump(diag._json_safe(payload), stream, indent=2)
-    print(f"\nSaved: {pkl_path}")
-    print(f"Saved: {json_path}")
+    _save_payload(payload, tag)
     return payload
 
 
@@ -845,6 +1133,10 @@ if __name__ == "__main__":
                         help="Restricted row-label shuffles for task/period tests (default: 10000).")
     parser.add_argument("--permutation-seed", type=int, default=0,
                         help="RNG seed for the restricted permutations (default: 0).")
+    parser.add_argument("--cut-robustness-only", action="store_true",
+                        help="Add cut sensitivity to the existing summary using its exact "
+                             "saved cohort; leave previous statistics unchanged.")
     args = parser.parse_args()
     main(feature=args.feature, seed=args.seed, untrained=args.untrained,
-         n_permutations=args.n_permutations, permutation_seed=args.permutation_seed)
+         n_permutations=args.n_permutations, permutation_seed=args.permutation_seed,
+         cut_robustness_only=args.cut_robustness_only)

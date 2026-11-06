@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import _bootstrap  # noqa: F401
 import numpy as np
+from scipy.cluster.hierarchy import linkage, fcluster
 
 import multiple_task_diagnosis as diagnosis
 import paper_plot
@@ -45,6 +46,17 @@ def _experiment():
 
 def _experiments(n_runs=6):
     return [(f"run{seed}", _experiment()) for seed in range(n_runs)]
+
+
+def _complete_experiment():
+    """Extend the existing fixture with all five prespecified complete tasks."""
+    names = list(_NAMES)
+    names += [f"{rule}-{phase}" for rule in sharing.MATCHED_TASKS
+              for phase in sharing.MATCHED_PHASES if f"{rule}-{phase}" not in names]
+    labels = np.concatenate([_experiment()["input"]["row_labels"],
+                             np.arange(len(_NAMES), len(names))])
+    return {rep: {"tb_break_name": np.array(names), "row_labels": labels.copy()}
+            for rep in sharing.REPRESENTATIONS}
 
 
 def _task_experiment():
@@ -171,6 +183,116 @@ class SamePeriodTests(unittest.TestCase):
         pooled = entry["pooled"]["input"]
         self.assertEqual((pooled["n_same"], pooled["n_total"]), (48, 228))
         self.assertNotIn("n_unspecific_cells", entry)
+
+
+class MatchedTaskTests(unittest.TestCase):
+    def test_same_task_keeps_bars_but_recomputes_null_within_five_tasks(self):
+        data = _complete_experiment()
+        for source in data.values():
+            source["row_labels"] = np.arange(len(source["row_labels"])) + 100
+            selected = [str(name).rsplit("-", 1)[0] in sharing.MATCHED_TASKS
+                        for name in source["tb_break_name"]]
+            source["row_labels"][selected] = 0
+        original = sharing.summarize_same_task_all([("run", data)], 1000)
+        entry = sharing.summarize_same_task_matched_tasks([("run", data)], 1000)
+        self.assertEqual(set(entry["tasks"]), set(sharing.MATCHED_TASKS))
+        self.assertEqual(entry["permutation"]["n_fdr_tests"], 18)
+        for rule, reps in entry["tasks"].items():
+            for rep, stats in reps.items():
+                self.assertEqual(stats["pct_same_cluster"],
+                                 original["tasks"][rule][rep]["pct_same_cluster"])
+                self.assertEqual(stats["per_run"]["run"]["n_cells"], 10)
+                self.assertEqual((stats["chance_mean"], stats["p_perm"]), (1, 1))
+                self.assertLess(original["tasks"][rule][rep]["chance_mean"], 1)
+
+    def test_organization_uses_all_300_selected_pairs_and_preserves_zero(self):
+        data = _complete_experiment()
+        for source in data.values():
+            source["row_labels"] = np.array([
+                sharing.MATCHED_TASKS.index(str(name).rsplit("-", 1)[0])
+                if str(name).rsplit("-", 1)[0] in sharing.MATCHED_TASKS else 99
+                for name in source["tb_break_name"]])
+        before = pickle.dumps(data)
+        entry = sharing.summarize_organization_matched_tasks([("run", data)])
+        for rep in sharing.REPRESENTATIONS:
+            stats = entry["representations"][rep]
+            counts = stats["counts"]["run"]
+            self.assertEqual(counts["period"], {"n_pairs": 50, "n_shared": 0})
+            self.assertEqual(counts["task"], {"n_pairs": 50, "n_shared": 50})
+            self.assertEqual(counts["neither"], {"n_pairs": 200, "n_shared": 0})
+            self.assertEqual(counts["any"], {"n_pairs": 300, "n_shared": 50})
+            self.assertEqual(stats["enrichment"]["period"], [0.0])
+            self.assertEqual(stats["enrichment"]["task"], [6.0])
+        self.assertEqual(pickle.dumps(data), before)
+
+    def test_fixed_pairs_preserve_labels_and_exclude_other_tasks(self):
+        data = _complete_experiment()
+        before = pickle.dumps(data)
+        entry = sharing.summarize_same_period_matched_tasks([("run", data)], 500)
+        self.assertEqual(entry["tasks"], list(sharing.MATCHED_TASKS))
+        self.assertEqual(entry["phases"], list(sharing.MATCHED_PHASES))
+        self.assertEqual(entry["n_pairs_per_period"], 10)
+        for phase, reps in entry["periods"].items():
+            for rep, stats in reps.items():
+                source = data[rep]
+                mask = np.isin(source["tb_break_name"],
+                               [f"{task}-{phase}" for task in sharing.MATCHED_TASKS])
+                labels = source["row_labels"][mask]
+                observed = sum(labels[i] == labels[j] for i in range(5) for j in range(i))
+                self.assertEqual(stats["per_run"]["run"]["n_cells"], 10)
+                self.assertEqual(stats["pct_same_cluster"], 10 * observed)
+        self.assertEqual(entry["pooled"]["input"]["n_total"], 50)
+        self.assertEqual(pickle.dumps(data), before)
+        # Nonselected rows and representation-specific ordering cannot affect
+        # a statistic conditional on the saved labels of the selected rows.
+        for source in data.values():
+            other = [str(n).split("-")[0] not in sharing.MATCHED_TASKS
+                     for n in source["tb_break_name"]]
+            source["row_labels"][other] = -99
+        data["hidden"] = {key: value[::-1] for key, value in data["hidden"].items()}
+        self.assertEqual(entry, sharing.summarize_same_period_matched_tasks([("run", data)], 500))
+
+    def test_missing_task_phase_fails_instead_of_changing_task_population(self):
+        data = _complete_experiment()
+        for rep, source in data.items():
+            keep = source["tb_break_name"] != "multidelaydm-delay2"
+            data[rep] = {key: value[keep] for key, value in source.items()}
+        for summarize in (sharing.summarize_same_period_matched_tasks,
+                          sharing.summarize_same_task_matched_tasks,
+                          sharing.summarize_organization_matched_tasks):
+            with self.subTest(summarize=summarize.__name__), self.assertRaisesRegex(
+                    ValueError, "multidelaydm-delay2"):
+                summarize([("run", data)])
+
+    def test_paired_test_uses_five_networks_not_fifty_task_pairs(self):
+        data = _complete_experiment()
+        for source in data.values():
+            names = source["tb_break_name"]
+            labels = np.arange(len(names))
+            labels[np.array([str(n).endswith(("-stim2", "-delay2")) for n in names])] = 999
+            source["row_labels"] = labels
+        entry = sharing.summarize_same_period_matched_tasks(
+            [(f"run{i}", data) for i in range(5)], 1000)
+        paired = entry["period_contrasts"]
+        self.assertEqual(paired["n_fdr_tests"], 6)
+        for reps in paired["contrasts"].values():
+            for stats in reps.values():
+                self.assertEqual(stats["mean_difference_pp"], 100)
+                self.assertEqual(stats["n_runs"], 5)
+                # All five differences have one sign: two of 2**5 sign maps.
+                self.assertEqual(stats["p_perm"], 2 / 32)
+                self.assertEqual(stats["q_fdr"], 2 / 32)
+        self.assertEqual(entry["permutation"]["n_fdr_tests"], 18)
+
+    def test_zero_differences_and_single_network_are_not_significant(self):
+        data = _complete_experiment()
+        for source in data.values():
+            source["row_labels"][:] = 0
+        entry = sharing.summarize_same_period_matched_tasks([("run", data)], 50)
+        for reps in entry["period_contrasts"]["contrasts"].values():
+            for stats in reps.values():
+                self.assertEqual(stats["mean_difference_pp"], 0)
+                self.assertEqual((stats["p_perm"], stats["q_fdr"]), (1, 1))
 
 
 class RestrictedPermutationTests(unittest.TestCase):
@@ -346,7 +468,159 @@ class OrganizationTests(unittest.TestCase):
         self.assertEqual(entry["tasks"]["delaydm1"]["input"]["n_total"], 60)
 
 
+def _tree_experiment():
+    data = _complete_experiment()
+    n = len(data["modulation"]["row_labels"])
+    tree = linkage(np.random.default_rng(7).normal(size=(n, 4)), method="average")
+    data["modulation"].update(row_linkage=tree, row_labels=fcluster(tree, 5, criterion="maxclust"))
+    return data
+
+
+class CutRobustnessTests(unittest.TestCase):
+    def test_recut_full_tree_before_filtering_and_preserve_network_order(self):
+        data = _tree_experiment()
+        original = data["modulation"]["row_labels"].copy()
+        runs = [("run1", data), ("run0", data)]
+        with patch.object(sharing, "fcluster", wraps=fcluster) as cut:
+            result = sharing.summarize_cut_robustness_matched_tasks(runs, (3, 5))
+        self.assertTrue(all(call.args[0].shape[0] == len(original) - 1
+                            for call in cut.call_args_list))
+        self.assertGreater(len(original), 25)
+        expected = sharing.summarize_organization_matched_tasks(runs)["representations"]["modulation"]
+        self.assertEqual(result["cuts"][5]["counts"], expected["counts"])
+        self.assertEqual(result["cuts"][5]["anames"], ["run1", "run0"])
+        np.testing.assert_array_equal(data["modulation"]["row_labels"], original)
+        for k in (3, 5):
+            for counts in result["cuts"][k]["counts"].values():
+                self.assertEqual(counts["any"]["n_pairs"], 300)
+                self.assertEqual(counts["task"]["n_pairs"], 50)
+                self.assertEqual(counts["period"]["n_pairs"], 50)
+
+    def test_tied_identical_profiles_are_not_forced_into_k_clusters(self):
+        data = _complete_experiment()
+        n = len(data["modulation"]["row_labels"])
+        data["modulation"].update(row_labels=np.ones(n), row_linkage=linkage(np.zeros((n, 1))))
+        result = sharing.summarize_cut_robustness_matched_tasks([("run", data)], (3, 5))
+        for cut in result["cuts"].values():
+            self.assertEqual(cut["actual_k"], [1])
+            self.assertEqual(cut["task_bias"], [0])
+            self.assertEqual(cut["enrichment"]["period"], [1])
+
+    def test_no_selected_pair_sharing_stays_undefined(self):
+        names = np.array([f"{r}-{p}" for r in sharing.MATCHED_TASKS for p in sharing.MATCHED_PHASES]
+                         + ["other-stim1", "other-delay1", "other-go1"])
+        tree = linkage(np.r_[np.arange(1, 26), [0, 0, 0]][:, None])
+        labels = fcluster(tree, 26, criterion="maxclust")
+        data = {rep: {"tb_break_name": names, "row_labels": labels}
+                for rep in sharing.REPRESENTATIONS}
+        data["modulation"]["row_linkage"] = tree
+        cut = sharing.summarize_cut_robustness_matched_tasks([("run", data)], (26,))["cuts"][26]
+        self.assertEqual(cut["counts"]["run"]["any"]["n_shared"], 0)
+        self.assertTrue(np.isnan(cut["task_bias"][0]))
+        self.assertTrue(np.isnan(cut["enrichment"]["period"][0]))
+
+    def test_rejects_wrong_tree_alignment_and_distinguishes_missing_trees(self):
+        with self.assertRaises(sharing.MissingRowLinkage):
+            sharing.summarize_cut_robustness_matched_tasks([("run", _complete_experiment())])
+        data = _tree_experiment()
+        data["modulation"]["row_labels"] = np.arange(len(data["modulation"]["row_labels"]))
+        with self.assertRaisesRegex(ValueError, "does not reproduce"):
+            sharing.summarize_cut_robustness_matched_tasks([("run", data)])
+        data["modulation"]["row_linkage"] = data["modulation"]["row_linkage"][:-1]
+        with self.assertRaisesRegex(ValueError, "leaves do not align"):
+            sharing.summarize_cut_robustness_matched_tasks([("run", data)])
+
+    def test_update_uses_saved_cohort_and_keeps_previous_statistics(self):
+        data = _tree_experiment()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sibling_row_sharing_L21e4.pkl"
+            payload = {"version": sharing.RESULT_VERSION, "feature": "L21e4", "seed": None,
+                       "architecture": "", "mod_g_index": diagnosis.MOD_G_INDEX,
+                       "experiments": ["run"], "old_statistics": {"keep": [0.1, 0.2]},
+                       "organization_matched_tasks": sharing.summarize_organization_matched_tasks(
+                           [("run", data)])}
+            with path.open("wb") as f:
+                pickle.dump(payload, f)
+            with patch.object(sharing, "OUT_DIR", Path(directory)), \
+                    patch.object(diagnosis, "_load_experiment", return_value=data) as load, \
+                    patch.object(diagnosis, "_discover_anames") as discover, patch("builtins.print"):
+                updated = sharing.main(cut_robustness_only=True)
+            discover.assert_not_called()
+            load.assert_called_once_with("run", root=None)
+            self.assertEqual(updated["experiments"], ["run"])
+            self.assertEqual({k: v for k, v in updated.items() if k != "cut_robustness_matched_tasks"},
+                             payload)
+            saved = path.read_bytes()
+            data["hidden"]["row_labels"] = np.ones(len(data["hidden"]["row_labels"]))
+            with patch.object(sharing, "OUT_DIR", Path(directory)), \
+                    patch.object(diagnosis, "_load_experiment", return_value=data), \
+                    self.assertRaisesRegex(ValueError, "Cluster caches changed"):
+                sharing.main(cut_robustness_only=True)
+            self.assertEqual(path.read_bytes(), saved)
+
+    def test_update_rejects_stale_task_or_phase_metadata_before_loading_runs(self):
+        entry = sharing.summarize_organization_matched_tasks([("run", _tree_experiment())])
+        for key in ("task_names", "phases"):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "sibling_row_sharing_L21e4.pkl"
+                payload = {"version": sharing.RESULT_VERSION, "feature": "L21e4", "seed": None,
+                           "architecture": "", "mod_g_index": diagnosis.MOD_G_INDEX,
+                           "experiments": ["run"],
+                           "organization_matched_tasks": dict(entry, **{key: ["stale"]})}
+                with path.open("wb") as f:
+                    pickle.dump(payload, f)
+                before = path.read_bytes()
+                with patch.object(sharing, "OUT_DIR", Path(directory)), \
+                        patch.object(diagnosis, "_load_experiment") as load, \
+                        self.assertRaisesRegex(ValueError, "current matched-task summary"):
+                    sharing.main(cut_robustness_only=True)
+                load.assert_not_called()
+                self.assertEqual(path.read_bytes(), before)
+
+
 class DriverTests(unittest.TestCase):
+    def test_one_missing_row_skips_all_supplements_without_dropping_networks(self):
+        names = [f"everything_seed{i}_L21e4+hidden300+batch128+angle" for i in (1, 2)]
+        complete, partial = _complete_experiment(), _complete_experiment()
+        for rep, rows in partial.items():
+            keep = rows["tb_break_name"] != "multidelaydm-delay2"
+            partial[rep] = {key: value[keep] for key, value in rows.items()}
+        runs = dict(zip(names, (complete, partial)))
+        supplement_keys = ("same_period_matched_tasks", "same_task_matched_tasks",
+                           "organization_matched_tasks", "cut_robustness_matched_tasks")
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            result_path = out / "sibling_row_sharing_L21e4.pkl"
+            # A previous successful supplement must not survive the new run.
+            with result_path.open("wb") as stream:
+                pickle.dump({key: "stale" for key in supplement_keys}, stream)
+            with patch.object(diagnosis, "_discover_anames", return_value=names), \
+                    patch.object(diagnosis, "_load_experiment", side_effect=lambda name, root: runs[name]), \
+                    patch.object(sharing, "OUT_DIR", out), \
+                    patch("builtins.print") as printed:
+                sharing.main(n_permutations=50)
+            self.assertIn("multidelaydm-delay2", str(printed.call_args_list))
+            with result_path.open("rb") as stream:
+                payload = pickle.load(stream)
+            saved_json = json.loads((out / "sibling_row_sharing_L21e4.json").read_text())
+            self.assertEqual(payload["experiments"], names)
+            for key in supplement_keys:
+                self.assertNotIn(key, payload)
+                self.assertNotIn(key, saved_json)
+            for key in ("same_task_all", "same_period_all"):
+                self.assertEqual(set(payload[key]["pooled"]["input"]["per_run"]), set(names))
+            self.assertEqual(payload["organization"]["representations"]["input"]["anames"], names)
+
+    def test_unexpected_supplement_errors_are_not_swallowed(self):
+        with patch.object(diagnosis, "_discover_anames", return_value=["run"]), \
+                patch.object(diagnosis, "_load_experiment", return_value=_complete_experiment()), \
+                patch.object(sharing, "summarize_same_task_matched_tasks",
+                             side_effect=ValueError("unexpected calculation error")), \
+                patch.object(sharing, "_clear_previous_results") as clear, \
+                patch("builtins.print"), self.assertRaisesRegex(ValueError, "unexpected calculation"):
+            sharing.main(n_permutations=10)
+        clear.assert_not_called()
+
     def test_invalid_rows_do_not_delete_previous_results(self):
         data = _experiment()
         del data["hidden"]
@@ -360,12 +634,13 @@ class DriverTests(unittest.TestCase):
     def _write_run(self, root, aname):
         run_dir = root / aname
         run_dir.mkdir(parents=True)
-        labels = _experiment()["input"]["row_labels"]
-        neuron = {"result": {"row_tol_labels": labels}, "tb_break_name": _NAMES}
+        data = _complete_experiment()["input"]
+        labels, names = data["row_labels"], data["tb_break_name"]
+        neuron = {"result": {"row_tol_labels": labels}, "tb_break_name": names}
         with open(run_dir / f"cluster_info_{aname}.pkl", "wb") as stream:
             pickle.dump({"input_normalized": neuron, "hidden_normalized": neuron}, stream)
         modulation = {"result_all_lst": [None, {"row_tol_labels": labels}],
-                      "tb_break_name": _NAMES}
+                      "tb_break_name": names}
         with open(run_dir / f"cluster_info_mod_{aname}.pkl", "wb") as stream:
             pickle.dump({"modulation_all_normalized": modulation}, stream)
 
@@ -375,6 +650,9 @@ class DriverTests(unittest.TestCase):
             analysis, out = root / "analysis", root / "out"
             for seed in (1, 2, 3):
                 self._write_run(analysis, f"everything_seed{seed}_L21e4+hidden300+batch128+angle")
+            partial = "everything_seed4_L21e4+hidden300+batch128+angle"
+            self._write_run(analysis, partial)
+            (analysis / partial / f"cluster_info_mod_{partial}.pkl").unlink()
             out.mkdir()
             kept = ["diagnosis_L21e4.pkl", "sibling_row_sharing_L21e3.pkl",
                     "sibling_row_sharing_summary_L21e4_seed1.png"]
@@ -401,6 +679,13 @@ class DriverTests(unittest.TestCase):
             self.assertEqual(set(payload["same_task"]), {"Pro / anti", "Modality"})
             self.assertIn("dmcgo", payload["same_task_all"]["tasks"])
             self.assertIn("delay1", payload["same_period_all"]["periods"])
+            self.assertEqual(payload["same_period_matched_tasks"]["tasks"],
+                             list(sharing.MATCHED_TASKS))
+            self.assertEqual(payload["same_period_matched_tasks"]["pooled"]["input"]["n_total"], 150)
+            self.assertEqual(payload["same_task_matched_tasks"]["permutation"]["n_fdr_tests"], 18)
+            self.assertEqual(payload["organization_matched_tasks"]["task_names"],
+                             list(sharing.MATCHED_TASKS))
+            self.assertNotIn("cut_robustness_matched_tasks", payload)  # older fixture has no trees
             self.assertEqual(payload["same_task_all"]["permutation"]["n_permutations"], 1000)
             self.assertEqual(payload["same_period_all"]["permutation"]["permutation_seed"], 0)
             stats = payload["same_task_all"]["tasks"]["fdgo"]["input"]
@@ -513,7 +798,74 @@ class PaperFigureTests(unittest.TestCase):
             self.addCleanup(paper_plot.plt.close, save.call_args.args[0])
         return save, printed
 
-    def test_organization_panels_put_period_and_task_on_one_log_scale(self):
+    def test_task_bias_subtracts_within_network_and_keeps_zero_and_negative(self):
+        payload = self._payload()
+        entry = sharing.summarize_organization_matched_tasks([("run", _complete_experiment())])
+        for rep in entry["representations"].values():
+            rep["enrichment"].update(task=[6, 2, 1, 0, 3, np.nan], period=[0, 1, 2, 4, 3, 1])
+        payload["organization_matched_tasks"] = entry
+        save, _ = self._render(paper_plot.plot_row_cluster_task_bias_matched_tasks, payload)
+        ax = save.call_args.args[0].axes[0]
+        dots = [c for c in ax.collections if not hasattr(c, "get_segments")]
+        self.assertEqual(len(dots), 3)
+        for dot in dots:
+            np.testing.assert_allclose(dot.get_offsets()[:, 1], [6, 1, -1, -4, 0])
+        self.assertEqual(ax.get_yscale(), "linear")
+        self.assertIn("median delta=0.000", save.call_args.kwargs["extra"])
+
+    def test_cut_plot_uses_saved_curves_with_independent_panel_axes(self):
+        payload = self._payload()
+        payload["cut_robustness_matched_tasks"] = sharing.summarize_cut_robustness_matched_tasks(
+            [(name, _tree_experiment()) for name in payload["experiments"]], (3, 5))
+        save, _ = self._render(paper_plot.plot_row_cluster_cut_robustness_matched_tasks, payload)
+        axes = save.call_args.args[0].axes
+        self.assertEqual(len(axes), 2)
+        self.assertFalse(axes[0].get_shared_y_axes().joined(*axes))
+        medians = [line for line in axes[0].lines if line.get_linewidth() == 1.8]
+        self.assertEqual(len(medians), 1)
+        expected = [np.median(payload["cut_robustness_matched_tasks"]["cuts"][k]["task_bias"])
+                    for k in (3, 5)]
+        np.testing.assert_allclose(medians[0].get_ydata(), expected)
+        self.assertIn("actual full-tree K ranges", save.call_args.kwargs["extra"])
+
+    def test_cut_plot_rejects_changed_membership(self):
+        payload = self._payload()
+        payload["cut_robustness_matched_tasks"] = sharing.summarize_cut_robustness_matched_tasks(
+            [("different-run", _tree_experiment())], (3, 5))
+        with self.assertRaisesRegex(ValueError, "saved cohort"):
+            self._render(paper_plot.plot_row_cluster_cut_robustness_matched_tasks, payload)
+
+    def test_missing_cut_result_requests_a_command_its_cache_can_run(self):
+        payload = self._payload()
+        for has_matched in (False, True):
+            with self.subTest(has_matched=has_matched):
+                if has_matched:
+                    payload["organization_matched_tasks"] = (
+                        sharing.summarize_organization_matched_tasks([("run", _tree_experiment())]))
+                save, printed = self._render(
+                    paper_plot.plot_row_cluster_cut_robustness_matched_tasks, payload)
+                save.assert_not_called()
+                message = str(printed.call_args_list)
+                self.assertIn("sibling_row_sharing.py --feature", message)
+                self.assertEqual("--cut-robustness-only" in message, has_matched)
+
+    def test_missing_untrained_cut_requests_full_summary_without_matched_metadata(self):
+        payload, control = self._payload(), self._untrained_payload()
+        payload["cut_robustness_matched_tasks"] = sharing.summarize_cut_robustness_matched_tasks(
+            [(name, _tree_experiment()) for name in payload["experiments"]], (3, 5))
+        for has_matched in (False, True):
+            with self.subTest(has_matched=has_matched):
+                if has_matched:
+                    control["organization_matched_tasks"] = (
+                        sharing.summarize_organization_matched_tasks([("run", _tree_experiment())]))
+                save, printed = self._render(
+                    paper_plot.plot_row_cluster_cut_robustness_matched_tasks, payload, control)
+                save.assert_called_once()
+                message = str(printed.call_args_list)
+                self.assertIn("--untrained", message)
+                self.assertEqual("--cut-robustness-only" in message, has_matched)
+
+    def test_organization_panels_show_period_and_task_on_log_axes(self):
         save, _ = self._render(paper_plot.plot_row_cluster_organization, self._payload())
         save.assert_called_once()
         self.assertEqual(Path(save.call_args.args[1]).name,
@@ -683,6 +1035,98 @@ class PaperFigureTests(unittest.TestCase):
         response = [bar for bar in ax.patches if abs(bar.get_height() - 10 / 3) < 1e-9]
         self.assertEqual(len(response), 3)
         self.assertLess(ax.get_ylim()[0], float(shared.mean() - shared.std(ddof=1)))
+
+    def test_matched_figure_reads_supplement_and_labels_fixed_task_population(self):
+        entry = sharing.summarize_same_period_matched_tasks(
+            [(f"run{i}", _complete_experiment()) for i in range(6)], 200)
+        payload = dict(self._payload(), same_period_matched_tasks=entry)
+        control = dict(self._untrained_payload(), same_period_matched_tasks=entry)
+        save, printed = self._render(
+            paper_plot.plot_row_cluster_same_period_matched_tasks_seeds, payload, control)
+        save.assert_called_once()
+        self.assertEqual(Path(save.call_args.args[1]).name,
+                         "multitask_row_cluster_same_period_matched_tasks_seeds.png")
+        ax = save.call_args.args[0].axes[0]
+        self.assertIn("Same five tasks", ax.get_title())
+        self.assertIn("Original clustering retained", ax.get_title())
+        self.assertEqual(len(ax.patches), 30)
+        expected = [stats["pct_same_cluster"] for reps in entry["periods"].values()
+                    for stats in reps.values()]
+        np.testing.assert_allclose([bar.get_height() for bar in ax.patches[::2]], expected)
+        self.assertIn("10 task pairs", save.call_args.kwargs["extra"])
+        self.assertIn("paired contrast", str(printed.call_args_list))
+
+    def test_matched_task_and_organization_figures_use_their_own_entries(self):
+        experiments = [(f"run{i}", _complete_experiment()) for i in range(6)]
+        payload = dict(self._payload(),
+                       same_task_matched_tasks=sharing.summarize_same_task_matched_tasks(
+                           experiments, 200),
+                       organization_matched_tasks=sharing.summarize_organization_matched_tasks(
+                           experiments))
+        control = dict(self._untrained_payload(), **{
+            key: payload[key] for key in ("same_task_matched_tasks", "organization_matched_tasks")})
+        save, _ = self._render(paper_plot.plot_row_cluster_same_task_matched_tasks_seeds,
+                               payload, control)
+        self.assertEqual(Path(save.call_args.args[1]).name,
+                         "multitask_row_cluster_same_task_matched_tasks_seeds.png")
+        ax = save.call_args.args[0].axes[0]
+        self.assertEqual(len(ax.patches), 30)
+        self.assertEqual(len(ax.get_xticklabels()), 5)
+        self.assertIn("Same five tasks", ax.get_title())
+        self.assertNotIn("no period pairs", save.call_args.kwargs["extra"])
+
+        # Every network stays in the linear plot and the cohort test, including
+        # the networks with zero enrichment that a logarithmic plot would hide.
+        reps = payload["organization_matched_tasks"]["representations"]
+        for entry in reps.values():
+            entry["enrichment"]["period"][0] = 0.0
+        from scipy.stats import mannwhitneyu
+        with patch("scipy.stats.mannwhitneyu", wraps=mannwhitneyu) as tested:
+            save, _ = self._render(paper_plot.plot_row_cluster_organization_matched_tasks,
+                                   payload, control)
+        self.assertEqual(Path(save.call_args.args[1]).name,
+                         "multitask_row_cluster_organization_matched_tasks.png")
+        axes = save.call_args.args[0].axes
+        self.assertEqual(axes[0].get_yscale(), "linear")
+        self.assertLessEqual(axes[0].get_ylim()[0], 0)
+        self.assertEqual(len(tested.call_args_list), 6)
+        for call in tested.call_args_list[:3]:
+            self.assertEqual(len(call.args[0]), 6)
+            self.assertEqual(len(call.args[1]), 6)
+            self.assertIn(0.0, call.args[0])
+            self.assertIn(0.0, call.args[1])
+
+    def test_new_matched_views_skip_missing_or_incompatible_controls(self):
+        for plot, key, summarize in (
+                (paper_plot.plot_row_cluster_same_task_matched_tasks_seeds,
+                 "same_task_matched_tasks", sharing.summarize_same_task_matched_tasks),
+                (paper_plot.plot_row_cluster_organization_matched_tasks,
+                 "organization_matched_tasks", sharing.summarize_organization_matched_tasks)):
+            with self.subTest(key=key):
+                save, _ = self._render(plot, self._payload())
+                save.assert_not_called()
+                entry = summarize([("run", _complete_experiment())])
+                control = dict(self._untrained_payload(), **{
+                    key: dict(entry, task_names=["different_task"])})
+                save, printed = self._render(plot, dict(self._payload(), **{key: entry}), control)
+                save.assert_called_once()
+                self.assertIn("--untrained", str(printed.call_args_list))
+
+    def test_missing_supplement_does_not_fall_back_to_all_tasks(self):
+        payload = self._payload()
+        save, printed = self._render(
+            paper_plot.plot_row_cluster_same_period_matched_tasks_seeds, payload)
+        save.assert_not_called()
+        self.assertIn("sibling_row_sharing.py --feature", str(printed.call_args_list))
+        save, _ = self._render(paper_plot.plot_row_cluster_same_period_seeds, payload)
+        save.assert_called_once()
+        entry = sharing.summarize_same_period_matched_tasks(
+            [("run", _complete_experiment())], 20)
+        save, printed = self._render(
+            paper_plot.plot_row_cluster_same_period_matched_tasks_seeds,
+            dict(payload, same_period_matched_tasks=entry), self._untrained_payload())
+        self.assertEqual(len(save.call_args.args[0].axes[0].patches), 15)
+        self.assertIn("--untrained", str(printed.call_args_list))
 
     def test_same_period_bars_per_period_with_stars_on_corrected_tests(self):
         save, _ = self._render(paper_plot.plot_row_cluster_same_period_seeds, self._payload())

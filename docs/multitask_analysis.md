@@ -818,6 +818,9 @@ pass, state-space batch or reclustering is needed.
 `paper_plot.py` reads these results and skips stale files with a rerun
 command. `multitask_row_cluster_organization.png` retains its two
 enrichment panels (period/task), network dots, median and chance=1.
+Each panel fits its own y range and displays its own ticks; the original
+organization figure uses logarithmic axes, and its matched-task supplement
+uses linear axes to retain zero-sharing networks.
 Its tests are unchanged: trained versus untrained uses raw, two-sided
 Mann–Whitney p values; without controls it displays the saved Wilcoxon
 comparison against 1. These p values are not BH-adjusted q values.
@@ -840,10 +843,162 @@ proves that training created the organization. Trained and untrained stars
 use separate within-cohort tests. Their difference in significance is not
 itself a significant difference between cohorts.
 
-The v5 results checked on **2026-11-05** cover 17 trained L21e3 networks
-and five untrained networks (seed 749 config, init seeds 0–4). The three retained
-`paper_plot/multitask_row_cluster_*_n.png` figures matched an in-memory
-render from these caches pixel for pixel. For this cohort:
+The matched-task supplement, `same_period_matched_tasks`, keeps the original
+full-task clustering and restricts every phase to the same five tasks:
+`delaydm1`, `delaydm2`, `contextdelaydm1`, `contextdelaydm2`, and `multidelaydm`.
+Each network therefore contributes ten task pairs per phase, identically
+across representations and trained/untrained cohorts. The matched-summary
+functions reject missing required rows. If any network lacks them, the driver
+prints the reason, skips the matched-task summaries and cut robustness for
+the whole cohort, and still saves the all-task results without those optional keys.
+It does not drop networks or shrink the matched task set. Malformed rows,
+duplicate rows and inconsistent row sets across representations still fail
+validation. Runs without completed modulation clustering are explicitly
+skipped by the driver.
+
+Its means, SDs, restricted-null chance levels and tests are recomputed from
+these rows. The 18 chance tests (five phases plus pooled, three
+representations) form a separate BH family within each cohort. Because the
+task set is identical across phases, the theoretical chance is the same
+in every phase of a representation; finite permutation estimates can differ
+slightly. The new figure is
+`multitask_row_cluster_same_period_matched_tasks_seeds_n.png` with legends
+enabled. Its stars still compare each phase with its own null.
+
+Direct phase comparisons are saved under `period_contrasts` and printed:
+Stimulus 2 minus Stimulus 1 and Memory 2 minus Memory 1, in percentage points.
+First compute the difference within each network, then test the mean by
+swapping whole phase summaries within networks (a paired sign-flip test).
+This assumes within-network exchangeability of the two phase summaries
+under the null; task pairs are not independent replicates. All sign maps
+are enumerated when `2**n_runs <= n_permutations`; otherwise the test uses
+Monte Carlo permutations with add-one correction. These six tests (two
+contrasts, three representations) have their own BH family in each cohort.
+Neither these tests nor the figure stars compare trained with untrained.
+
+Two companion supplements use the same five tasks and original cluster labels:
+
+- `same_task_matched_tasks`, drawn as
+  `multitask_row_cluster_same_task_matched_tasks_seeds_n.png`: ten phase pairs
+  per task. Means and SDs equal the corresponding five tasks in the original
+  figure, but the null now shuffles only these five tasks within each phase.
+  Chance and significance are recomputed; its five tasks plus pooled, across
+  three representations, form an 18-test BH family in each cohort. No unused
+  sibling-group tests enter this family.
+- `organization_matched_tasks`, drawn as
+  `multitask_row_cluster_organization_matched_tasks_n.png`: enrichment is
+  recomputed against all 300 pairs of the selected 25 rows. Same-period and
+  same-task comparisons each have 50 pairs; 200 pairs differ in both factors.
+  Its linear axis includes zero-sharing networks in both the plot and the
+  trained/untrained Mann–Whitney tests. These are raw two-sided p values,
+  as in the original organization figure, not BH-adjusted q values.
+
+The organization supplement checks whether the task/phase pattern persists
+with a complete task-by-phase grid. The same-task supplement is its per-task
+companion, not new evidence from the unchanged bar heights. These five
+integration tasks are a restricted task family, so the supplements do not
+replace the full-task overview or establish generality across all tasks.
+
+Each of these three summaries has `schema_version=1` inside the version-5 payload, and
+records `task_names`, `phases` and retention of the original clustering.
+The period view also retains its original `tasks` metadata for compatibility.
+Older v5 results still draw the original figures; a supplement asks for a
+rerun if its field is absent. Recompute statistics and draw the supplements:
+
+```bash
+conda activate mpn
+python multiple_task/sibling_row_sharing.py --feature L21e4
+python multiple_task/sibling_row_sharing.py --feature L21e4 --untrained
+python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_same_period_matched_tasks_seeds
+python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_same_task_matched_tasks_seeds
+python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_organization_matched_tasks
+```
+
+This reads existing cluster caches and requires no network forward pass or
+reclustering. It controls task composition, not the upstream feature
+definition: all phases still use first-stimulus-conditioned means and
+variance pooled over conditions and time. The input memory rows can share a
+cluster because their features are near zero; that is not memory coding.
+
+Two further figures assess the matched-task interpretation:
+
+- `multitask_row_cluster_task_bias_matched_tasks_n.png` shows each network's
+  `Delta = E_same_task - E_same_period` using the existing
+  `organization_matched_tasks` values. Positive values indicate task preference,
+  negative values period preference, and zero no preference. Points are networks;
+  dashes are medians of within-network differences, not differences of medians.
+  The linear axis retains zero and negative values. No new hypothesis tests are added.
+- `multitask_row_cluster_cut_robustness_matched_tasks_n.png` focuses on synapses.
+  The complete saved modulation row tree is cut at the prespecified targets
+  K=5,10,15,20,25, **before** selecting the same 25 rows. Its two panels show Delta
+  and cross-task same-period enrichment against the selected 300-pair baseline.
+  Thin lines track individual networks and thick lines show cohort medians, with
+  independent y ranges. These repeated cuts are sensitivity checks, not additional
+  independent samples or new significance tests.
+
+The cut supplement is stored as `cut_robustness_matched_tasks` (schema 1).
+`fcluster(..., criterion="maxclust")` retains tied merge heights, so K is an
+upper bound on the number of active clusters. Actual full-tree cluster counts
+(including any pre-existing held-out unresponsive class) and selected-row cluster
+counts are saved for every network and K; the plot log reports full-tree ranges.
+Identical profiles are not arbitrarily split to force a requested K. A zero
+same-period enrichment remains zero; if no selected pair shares a cluster,
+the baseline is zero and enrichment/Delta are undefined (NaN), not zero.
+The saved tree must reproduce the original row partition before any recutting.
+
+Normal summary runs add the cut supplement when trees are available. Missing
+trees skip only this supplement; missing matched rows still skip all matched
+outputs. To add it to existing v5 matched-task results without repeating the
+permutation tests or including newly finished networks, use:
+
+```bash
+python multiple_task/sibling_row_sharing.py --feature L21e4 --cut-robustness-only
+python multiple_task/sibling_row_sharing.py --feature L21e4 --untrained --cut-robustness-only
+python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_task_bias_matched_tasks
+python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_cut_robustness_matched_tasks
+```
+
+This mode uses exactly the summary's saved network list. It validates the
+task/phase metadata and checks that cluster caches reproduce the saved matched
+organization counts, leaving every previous statistic intact. If caches changed,
+recompute the full summary first.
+No network forward pass or new hierarchical clustering is needed.
+To include newly completed networks, run the normal summary command without
+`--cut-robustness-only`; for example,
+`python multiple_task/sibling_row_sharing.py --feature L21e4 --untrained`.
+It discovers all complete controls, recomputes their statistics and cut
+robustness, and skips incomplete modulation caches. Redraw the row-cluster
+figures afterwards. Cut-only updates and plotting alone never add networks.
+
+The **L21e4 snapshot checked on 2026-11-05 after adding init 5 and 6** contains
+25 trained and seven untrained networks (init 0–6). All eight row-cluster PNGs
+match in-memory renders from these caches pixel for pixel.
+At the original cut, all 25 trained and all seven untrained modulation networks
+have positive Delta; medians are 1.579 and 3.943, respectively. Input and hidden
+Delta values are negative in both cohorts. The full-tree recuts achieved exactly
+the requested K for every network, with no undefined enrichments:
+
+| K | Trained Delta median | Untrained Delta median | Trained same-period median | Untrained same-period median |
+|---|---:|---:|---:|---:|
+| 5 | 0.804 | 2.763 | 1.052 | 0.553 |
+| 10 | 1.286 | 2.769 | 1.350 | 0.556 |
+| 15 | 1.622 | 3.750 | 1.273 | 0.562 |
+| 20 | 2.769 | 5.294 | 1.059 | 0.353 |
+| 25 | 3.529 | 5.250 | 0.800 | 0.375 |
+
+Thus the median task preference and the trained/untrained ordering persist at
+all five cuts. This does not mean every network prefers task at every cut:
+20/25 trained networks have positive Delta at K=5, 24/25 at K=10 (one tie),
+and 25/25 at K=15,20,25. Nor is trained same-period enrichment always above
+the all-pairs baseline: its median is below 1 at K=25. The robustness claim is
+about the direction of the cohort medians across this tested K grid, not
+significance at every K, arbitrary cluster settings, or all task families.
+
+The **earlier L21e3 audit on 2026-11-05**, before the matched-task additions
+and control expansion, covered 17 trained networks and five untrained networks
+(seed 749 config, init 0–4). At that time the original organization,
+same-task-seeds and same-period-seeds figures matched the caches pixel for
+pixel. The following numerical conclusions refer to that historical snapshot:
 
 - The organization figure's median same-period enrichment is 1.87x for
   input, 1.74x for hidden and 0.93x for M; same-task enrichment is 0.92x,
@@ -861,11 +1016,14 @@ render from these caches pixel for pixel. For this cohort:
   that training creates or strengthens that overall organization, nor does
   a nonsignificant comparison establish equivalence.
 
-The L21e4 sharing cache was still v4 at that check; these numerical conclusions
-apply to L21e3. The manual, read-only check is
-`python test/row_cluster_results_check.py`: it checks the cohort currently
-selected by `paper_plot.py`, verifies saved counts and means, and compares
-all three PNGs with in-memory renders without changing caches or figures.
+These historical L21e3 numbers do not describe the current seven-control
+comparison or the L21e4 figures above. The manual, read-only check is
+`python test/row_cluster_results_check.py --multitask-l2 1e4`: select the cohort
+used to generate the PNGs and use the same plotting environment. It verifies
+saved counts and means, includes matched summaries and cut statistics when
+present, and compares all available row-cluster PNGs (currently eight for
+L21e4) with in-memory renders without changing caches or figures. Without
+the argument it uses `paper_plot.py`'s default cohort.
 
 The untrained control asks whether training makes this organization or the
 architecture alone does, for instance because M, with its 4 s memory, keeps
