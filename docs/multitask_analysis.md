@@ -998,9 +998,12 @@ itself a significant difference between cohorts.
 The follow-up `multitask_row_cluster_same_period_synapses_n.png` extracts only
 the synapse bars from the all-task same-period figure. Means, sample SDs and
 restricted-null chance dashes are unchanged. Its bracket annotations instead
-compare trained with untrained networks within each period: two-sided
-Mann-Whitney U, using tie- and continuity-corrected asymptotic p values, with
-BH correction across the five periods. Both raw p and adjusted q are shown.
+test the directional alternative **trained > untrained** within each period:
+one-sided Mann-Whitney U (`alternative="greater"`, trained samples first), using
+tie- and continuity-corrected asymptotic p values. BH correction includes all
+five periods, including those with lower trained sharing. Both raw p and
+adjusted q are shown; a small value supports greater sharing in trained networks.
+This directional follow-up replaces this figure's earlier two-sided comparison.
 Each network contributes one sharing fraction; task pairs are not independent
 samples and the cohorts are not paired. The tests concern the distributions
 of those fractions, not specifically the difference of their means. Zero
@@ -1162,8 +1165,8 @@ The following **historical S1-conditioned L21e4 snapshot**, checked on
 contained 25 trained and seven untrained networks (init 0–6); at that time
 all eight row-cluster PNGs matched in-memory renders of those caches.
 These values and conclusions must be rechecked after the new analysis;
-they are not results of the trial-time estimator. The old synapse-only
-same-period follow-up compared the cohorts as follows:
+they are not results of the trial-time estimator or the current one-sided test.
+The old synapse-only same-period follow-up used two-sided tests as follows:
 
 | Period | Trained mean | Untrained mean | Raw p | BH q |
 |---|---:|---:|---:|---:|

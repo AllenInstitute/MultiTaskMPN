@@ -1243,7 +1243,7 @@ class PaperFigureTests(unittest.TestCase):
         for call in compare.call_args_list:
             for actual, expected in zip(call.args, samples):
                 np.testing.assert_allclose(actual, expected)
-            self.assertEqual(call.kwargs, {"alternative": "two-sided",
+            self.assertEqual(call.kwargs, {"alternative": "greater",
                                            "method": "asymptotic", "use_continuity": True})
         self.assertEqual(Path(save.call_args.args[1]).name,
                          "multitask_row_cluster_same_period_synapses.png")
@@ -1254,9 +1254,16 @@ class PaperFigureTests(unittest.TestCase):
         self.assertEqual(len(ax.texts), 5)
         self.assertTrue(all("p=" in text.get_text() and "q=" in text.get_text()
                             and "*" not in text.get_text() for text in ax.texts))
-        expected_p = mannwhitneyu(*samples, alternative="two-sided",
+        self.assertIn("trained > untrained", ax.get_title())
+        self.assertIn("One-sided", ax.get_title())
+        expected_p = mannwhitneyu(*samples, alternative="greater",
                                   method="asymptotic").pvalue
+        # The trained values rank lower here: the greater alternative must
+        # give a large p, not half of the two-sided p regardless of direction.
+        self.assertGreater(expected_p, 0.5)
         self.assertIn(f"p={expected_p:.6g}, q={expected_p:.6g}",
+                      save.call_args.kwargs["extra"])
+        self.assertIn("one-sided Mann-Whitney U, trained > untrained",
                       save.call_args.kwargs["extra"])
 
     def test_synapse_comparison_corrects_only_the_five_cohort_tests(self):

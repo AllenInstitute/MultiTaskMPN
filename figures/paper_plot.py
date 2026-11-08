@@ -6734,9 +6734,10 @@ def plot_row_cluster_same_period_synapses():
     """Extract synapse bars and directly compare trained/untrained networks.
 
     Uses the same per-network sharing fractions, means, SDs and restricted-null
-    dashes as same_period_seeds. Two-sided Mann-Whitney U tests compare network
-    distributions (not task pairs or pooled counts), with tie/continuity-corrected
-    asymptotic p values and BH correction across the displayed periods. The p/q
+    dashes as same_period_seeds. One-sided Mann-Whitney U tests ask whether
+    trained sharing fractions tend to exceed untrained fractions. Networks
+    (not task pairs or pooled counts) are the samples, with tie/continuity-corrected
+    asymptotic p values and BH correction across all displayed periods. The p/q
     annotations replace the original within-cohort tests against chance.
     """
     from scipy.stats import false_discovery_control, mannwhitneyu
@@ -6759,7 +6760,9 @@ def plot_row_cluster_same_period_synapses():
         print("  Skipped synapse cohort comparison: need at least two finite "
               "network values per cohort and period.")
         return
-    p_values = [mannwhitneyu(*group, alternative="two-sided", method="asymptotic",
+    # Each group is ordered (trained, untrained); use the same direction in
+    # every period, including those whose trained sharing is lower.
+    p_values = [mannwhitneyu(*group, alternative="greater", method="asymptotic",
                              use_continuity=True).pvalue for group in values]
     q_values = false_discovery_control(p_values, method="bh")
 
@@ -6803,8 +6806,8 @@ def plot_row_cluster_same_period_synapses():
     ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=100, decimals=0))
     ax.spines[["top", "right"]].set_visible(False)
     ax.set_ylabel("Task pairs of one period\nin one synapse row cluster", fontsize=8)
-    ax.set_title("Synapses: trained vs untrained\n"
-                 f"Mann–Whitney U; BH across {len(periods)} periods", fontsize=8)
+    ax.set_title("Synapses: trained > untrained\n"
+                 f"One-sided Mann–Whitney U; BH across {len(periods)} periods", fontsize=8)
     handles = [
         mpl.patches.Patch(facecolor=color, edgecolor=color,
                           label=f"trained (n={len(data['experiments'])})"),
@@ -6819,7 +6822,8 @@ def plot_row_cluster_same_period_synapses():
     _save_fig(fig, _multitask_out("row_cluster_same_period_synapses.png"),
               extra=(f"  {data['feature']}" + _row_sharing_untrained_note(untrained)
                      + "; bars: mean over runs, whiskers: SD over runs; "
-                     "two-sided Mann-Whitney U (asymptotic, tie/continuity corrected); "
+                     "one-sided Mann-Whitney U, trained > untrained "
+                     "(asymptotic, tie/continuity corrected); "
                      f"BH across {len(periods)} periods; " + "; ".join(notes)))
 
 
