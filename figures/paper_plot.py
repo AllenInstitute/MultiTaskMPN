@@ -4326,7 +4326,7 @@ OVERMEMBERSHIP_EXAMPLE_FIXED_K = 20
 # How many synapse (modulation) clusters plot_overmembership_examples draws,
 # and which. With OVERMEMBERSHIP_EXAMPLE_CLUSTERS = None the examples are the
 # OVERMEMBERSHIP_EXAMPLE_N most concentrated clusters of the resolved run,
-# ranked by the highest observed/expected ratio over their well-supported
+# ranked by the highest OM = observed/expected - 1 over their well-supported
 # blocks (expected count at least OVERMEMBERSHIP_EXAMPLE_SELECT_MIN_EXPECTED;
 # ties to the larger expected count), so the choice follows MULTITASK_L2 and
 # ANAME. A tuple of 1-based fixed-k cluster IDs forces the examples in that
@@ -4362,7 +4362,7 @@ _OVERMEMBERSHIP_DOT_REFERENCE_COUNTS = (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000
 # The dot matrix labels at most this many input and hidden clusters per axis:
 # those holding the cluster's most significant enrichments, ranked by the
 # Poisson z of their best shown block, (observed - expected) / sqrt(expected),
-# which unlike the OM ratio is not inflated by a near-empty block. A label
+# which unlike OM is not inflated by a near-empty block. A label
 # that would overlap a more significant neighbour's is dropped, never
 # staggered onto a second row.
 _OVERMEMBERSHIP_DOT_MAX_LABELS = 3
@@ -4372,7 +4372,9 @@ _OVERMEMBERSHIP_DOT_LEGEND_FIGSIZE = (0.8, 1.0)
 def _ranked_om_clusters(ratios, expected, cluster_ids, skip_ids=()):
     """Candidate synapse clusters, most concentrated first.
 
-    `ratios` and `expected` are (clusters, inputs, hiddens); a block counts
+    `ratios` stores observed/expected, and `expected` stores counts, both
+    (clusters, inputs, hiddens). Ranking ratios is equivalent to ranking
+    OM = ratio - 1; a block counts
     when `expected` is finite there (callers pass masked arrays with
     unsupported blocks set to NaN). Each candidate is scored by the highest
     OM over its counted blocks, ties by that block's expected count. Clusters
@@ -4382,9 +4384,9 @@ def _ranked_om_clusters(ratios, expected, cluster_ids, skip_ids=()):
     for index, cluster_id in enumerate(cluster_ids):
         if cluster_id in skip_ids or not np.isfinite(expected[index]).any():
             continue
-        om = np.where(np.isfinite(expected[index]), ratios[index], -np.inf)
-        block = np.unravel_index(int(np.argmax(om)), om.shape)
-        scored.append(((float(om[block]), float(expected[index][block])), index))
+        ratio = np.where(np.isfinite(expected[index]), ratios[index], -np.inf)
+        block = np.unravel_index(int(np.argmax(ratio)), ratio.shape)
+        scored.append(((float(ratio[block]), float(expected[index][block])), index))
     return [index for _, index in sorted(scored, key=lambda item: item[0], reverse=True)]
 
 
@@ -4451,11 +4453,13 @@ def _plot_om_dot_matrix(ratio, shown, observed, input_names, hidden_names, vmax,
     """The dot-matrix view of one synapse cluster's block map.
 
     `ratio`, `shown` and `observed` are (inputs, hiddens) over the kept
-    clusters; x is the input (pre) cluster, y the hidden (post) cluster. Each
+    clusters; `ratio` retains observed/expected. x is the input (pre) cluster,
+    y the hidden (post) cluster. Each
     shown block is a disc centered on its cell whose area is
     proportional to `observed` (`max_observed`, shared by all examples, fills
-    _OVERMEMBERSHIP_DOT_MAX_FILL of the cell side) and whose color is OM on
-    the shared viridis scale [0, vmax]; shown blocks with no synapse are small
+    _OVERMEMBERSHIP_DOT_MAX_FILL of the cell side) and whose color is
+    OM = ratio - 1 on the shared viridis scale [-1, vmax], with chance at 0.
+    Shown blocks with no synapse (OM = -1) are small
     hollow grey rings; unshown blocks are blank. `labelled` is (input indices,
     hidden indices) in significance order; those whose names would overlap a
     more significant neighbour's are dropped (_non_colliding_labels). They
@@ -4469,13 +4473,13 @@ def _plot_om_dot_matrix(ratio, shown, observed, input_names, hidden_names, vmax,
     cell_pt = _om_dot_cell_pt(n_in, n_hid, _OM_DOT_LAYOUT)
     max_area = (_OVERMEMBERSHIP_DOT_MAX_FILL * cell_pt) ** 2
     cmap = plt.get_cmap(_MULTITASK_HEATMAP_CMAP)
-    norm = mpl.colors.Normalize(vmin=0.0, vmax=vmax)
+    norm = mpl.colors.Normalize(vmin=-1.0, vmax=vmax)
     rows, cols = np.nonzero(shown)
     filled = observed[rows, cols] > 0
     if filled.any():
         sizes = max_area * observed[rows, cols][filled] / max(max_observed, 1e-12)
         axis.scatter(rows[filled] + 0.5, cols[filled] + 0.5, s=sizes,
-                     color=cmap(norm(ratio[rows, cols][filled])), edgecolors="none", zorder=3)
+                     color=cmap(norm(ratio[rows, cols][filled] - 1.0)), edgecolors="none", zorder=3)
     if (~filled).any():
         axis.scatter(rows[~filled] + 0.5, cols[~filled] + 0.5, s=_OVERMEMBERSHIP_DOT_EMPTY_PT2,
                      facecolors="none", edgecolors="0.6", linewidths=0.5, zorder=3)
@@ -4512,11 +4516,13 @@ def _om_example_selection():
 
     Reads the fixed-k var-weighted assignment; expected counts are
     n_active_block * cluster_size_percent. Returns a dict with `ratios`
-    (clusters x input x hidden OM), `cluster_ids`, `expected`, `stable`
+    (clusters x input x hidden observed/expected), `cluster_ids`, `expected`, `stable`
     (blocks shown), `supported` (blocks that rank), `select_min`, `ranked`,
     `chosen` (cluster indices), `tops` (each chosen cluster's deciding block:
     peak OM over supported blocks, over shown blocks for a forced cluster
-    without one) and `vmax` (the examples' shared color limit). Returns None
+    without one) and `vmax` (the shared upper color limit for OM = ratio - 1).
+    Cached ratios remain unchanged for count reconstruction and matching
+    lesion-scatter points; the displayed chance baseline is zero. Returns None
     with a printed reason when the cache is missing or nothing qualifies.
     """
     mod_info = _load_cluster_info_mod()
@@ -4574,7 +4580,7 @@ def _om_example_selection():
                              int(np.argmax(np.where(stable[index], ratios[index], -np.inf))),
                              ratios[index].shape)
             for index in chosen]
-    vmax = max(1.0, float(np.ceil(max(ratios[index][stable[index]].max() for index in chosen))))
+    vmax = max(1.0, float(np.ceil(max(ratios[index][stable[index]].max() for index in chosen) - 1.0)))
     return {"ratios": ratios, "cluster_ids": cluster_ids, "expected": expected,
             "stable": stable, "supported": supported, "select_min": select_min,
             "ranked": ranked, "chosen": chosen, "tops": tops, "vmax": vmax}
@@ -4587,7 +4593,10 @@ def plot_overmembership_examples():
     Reads global_assignment_fixed_k20: input, hidden and modulation use their
     fixed-k unnormalized clusterings, with variance weighting for modulation.
     Extra endpoint group k+1, when present, is the unresponsive class (U).
-    OM is observed/expected, with baseline 1, not pooled G=100 pair statistics.
+    Block OM is observed/expected - 1, with baseline 0. It measures synapse
+    counts within endpoint-cluster blocks; the pooled G=100 pair statistic
+    counts synapse pairs. Cached om_stack retains observed/expected so
+    observed counts and the selected examples are unchanged.
     The null shuffles labels among surviving synapses, so expected counts are
     n_active_block * cluster_size_percent.
 
@@ -4618,7 +4627,7 @@ def plot_overmembership_examples():
     does the OM-vs-lesion scatter (_om_scatter_run), unlike the other lesion
     figures, so its points include the example clusters. All examples
     share one color scale and one dot-area scale, saved once as
-    `overmembership_examples_colorbar` (viridis, OM = 1 marked) and
+    `overmembership_examples_colorbar` (viridis, chance OM = 0 marked) and
     `overmembership_examples_dots_legend` (size key).
     The full cluster cache can be several GB; run on an allocated compute node.
     """
@@ -4631,7 +4640,7 @@ def plot_overmembership_examples():
     n_in, n_hid = ratios.shape[1:]
     # Peak OM over well-supported blocks of every ranked candidate, for the
     # saved messages (runners-up after the chosen examples).
-    peaks = [(float(np.max(np.where(supported[index], ratios[index], -np.inf))), cluster_ids[index])
+    peaks = [(float(np.max(np.where(supported[index], ratios[index], -np.inf))) - 1.0, cluster_ids[index])
              for index in ranked]
     runners = ", ".join([f"C{cid} {peak:.1f}" for peak, cid in peaks
                          if cid not in {cluster_ids[index] for index in chosen}][:3])
@@ -4669,7 +4678,8 @@ def plot_overmembership_examples():
                    f"unnormalized modulation; unnormalized input/hidden; blank: expected < "
                    f"{OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED:g} synapses) example {rank}: synapse "
                    f"cluster C{cluster_id}: {int(sub_shown.sum())}/{sub_shown.size} blocks shown; "
-                   f"dot area = observed synapses, color = OM; peak OM {ratio[top]:.2f} at input "
+                   f"dot area = observed synapses, color = OM (observed/expected - 1); "
+                   f"peak OM {ratio[top] - 1.0:.2f} at input "
                    f"{_labels([top[0]])[0]} / hidden {_labels([top[1]])[0]} ({observed_top:.0f} "
                    f"observed / {expected[cluster_index][top]:.2f} expected; blocks with "
                    f"expected >= {select_min:g} rank the examples)"
@@ -4680,11 +4690,11 @@ def plot_overmembership_examples():
         _save_dot_size_key(_multitask_out("overmembership_examples_dots_legend.png"), references,
                            max_area, max_observed,
                            extra=f"  (size key shared by the {len(chosen)} dot matrices: {references})")
-    ticks = sorted({0.0, 1.0, vmax / 2, vmax})
+    ticks = sorted({-1.0, 0.0, vmax / 2, vmax})
     _save_standalone_colorbar(
         _multitask_out("overmembership_examples_colorbar.png"),
-        cmap=_MULTITASK_HEATMAP_CMAP, vmin=0, vmax=vmax, ticks=ticks,
-        ticklabels=[f"{tick:g}" for tick in ticks], label="OM (observed / expected)",
+        cmap=_MULTITASK_HEATMAP_CMAP, vmin=-1, vmax=vmax, ticks=ticks,
+        ticklabels=[f"{tick:g}" for tick in ticks], label="OM (observed / expected − 1)",
         **_VERTICAL_COLORBAR_STYLE)
 
 
@@ -4957,10 +4967,12 @@ def _om_scatter_highlight(om_vals, aname):
     Only possible because the scatter and the examples share a run
     (_om_scatter_run); a scatter of another run returns None. The cache stores
     no block identity per point, so the point is found by its x value: the
-    scatter's OM values are copied from the same om_stack the examples read,
-    so the block's OM matches exactly one point (exact equality, checked).
-    Returns {"point", "om", "cluster_id", "input", "hidden", "vmax"}, the
-    input/hidden clusters 1-based and `vmax` the examples' color limit.
+    scatter's cached `om_vals` are observed/expected ratios copied from the
+    same om_stack the examples read, so the block's ratio matches exactly
+    one point (exact equality, checked). Returns
+    {"point", "om", "cluster_id", "input", "hidden", "vmax"}, with `om`
+    shifted to ratio - 1 for display, the input/hidden clusters 1-based, and
+    `vmax` the examples' upper color limit on that same zero-baseline scale.
     """
     if aname != ANAME:
         print(f"  Note: no example block highlighted ({aname} is not the OM examples' run {ANAME}).")
@@ -4974,16 +4986,18 @@ def _om_scatter_highlight(om_vals, aname):
     cluster_id = selection["cluster_ids"][index]
     if hits.size != 1:
         print(f"  Note: example block C{cluster_id} (input C{row + 1}, hidden C{column + 1}, "
-              f"OM {value:.3f}) matches {hits.size} scatter points; not highlighted.")
+              f"OM {value - 1.0:.3f}) matches {hits.size} scatter points; not highlighted.")
         return None
-    return {"point": int(hits[0]), "om": float(value), "cluster_id": cluster_id,
+    return {"point": int(hits[0]), "om": float(value) - 1.0, "cluster_id": cluster_id,
             "input": int(row) + 1, "hidden": int(column) + 1, "vmax": selection["vmax"]}
 
 
 def _load_om_lesion_scatter(run_dir=None, aname=None):
     """Load the saved OM_LESION_MODE scatter, Spearman test and bin medians,
     without fitting, of run `aname` from its post-processing directory
-    `run_dir` (default: LESION_ANAME in LESION_NORM_DIR)."""
+    `run_dir` (default: LESION_ANAME in LESION_NORM_DIR). Cached `om_vals`
+    and bin x coordinates retain observed/expected; plotting subtracts one
+    to express block OM with a zero chance baseline."""
     run_dir = LESION_NORM_DIR if run_dir is None else Path(run_dir)
     aname = LESION_ANAME if aname is None else aname
     tag = "var-weighted-unnormalized"
@@ -5048,7 +5062,11 @@ def plot_om_vs_lesion():
     No raw lesion/cluster data, profile matching, regression fitting, or new
     permutation test is used here. The scatter uses OM_LESION_MODE (zero_W),
     not the lesion heatmap's freeze_M.
-    Its y values are mean absolute profile differences over tasks (L1/T).
+    Its x values and bin x coordinates are the cached observed/expected
+    ratios minus one, giving block OM a zero chance baseline, as in the
+    example dot matrices. This translation preserves the saved Spearman
+    statistic and permutation p. Its y values are mean absolute profile
+    differences over tasks (L1/T).
     The median connector is descriptive, not a linear or monotone fit; the
     distance axis starts at zero. Legacy Pearson/regression caches are skipped.
 
@@ -5064,17 +5082,17 @@ def plot_om_vs_lesion():
     saved = _load_om_lesion_scatter(run_dir, aname)
     if saved is None:
         return
-    om_vals, lesion_diffs = saved["om_vals"], saved["lesion_diffs"]
+    om_vals, lesion_diffs = saved["om_vals"] - 1.0, saved["lesion_diffs"]
     medians = saved["binned_medians"]
     rho = saved["rho"]
     p_perm = saved["p_perm"]
-    highlight = _om_scatter_highlight(om_vals, aname)
+    highlight = _om_scatter_highlight(saved["om_vals"], aname)
     fig1, ax1 = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
-    median_line, = ax1.plot(medians["x"], medians["y"], "o-", markersize=3.5,
+    median_line, = ax1.plot(medians["x"] - 1.0, medians["y"], "o-", markersize=3.5,
                             label="Binned median", **_TREND_LINE_STYLE)
     handles = [median_line]
     if highlight is not None:
-        norm = mpl.colors.Normalize(vmin=0.0, vmax=highlight["vmax"])
+        norm = mpl.colors.Normalize(vmin=-1.0, vmax=highlight["vmax"])
         color = plt.get_cmap(_MULTITASK_HEATMAP_CMAP)(norm(highlight["om"]))
         point = highlight["point"]
         ax1.scatter([om_vals[point]], [lesion_diffs[point]], s=_OM_SCATTER_HIGHLIGHT_SIZE,
@@ -5088,7 +5106,7 @@ def plot_om_vs_lesion():
     # Hundreds of points: fade them so the median connector stays readable.
     _stat_scatter(ax1, om_vals, lesion_diffs, f"{_rho_str}\n{_pp_str}",
                   legend_handles=handles, point_alpha=_DENSE_SCATTER_ALPHA,
-                  xlabel="Over-membership", ylabel="Lesion-effect\ndistance (L1)",
+                  xlabel="Over-membership (observed / expected − 1)", ylabel="Lesion-effect\ndistance (L1)",
                   point_color=_LESION_POINT_COLOR)
     ax1.set_ylim(bottom=0)
     fig1.tight_layout()
@@ -5983,9 +6001,11 @@ def _untrained_provenance(experiments):
 
 
 def _row_sharing_view_command(entry_key, payload, untrained=False):
-    """A cut-only update requires an existing matched organization summary."""
+    """Suggest the lightweight supplement update when its base summary exists."""
     command = _row_sharing_commands(untrained)
-    if (entry_key == "cut_robustness_matched_tasks"
+    if entry_key.startswith("variance_partition_") and "organization" in payload:
+        return command + " --variance-partition-only"
+    if (entry_key.startswith("cut_robustness")
             and payload.get("organization_matched_tasks", {}).get("schema_version") == 1):
         command += " --cut-robustness-only"
     return command
@@ -5998,8 +6018,10 @@ def _load_row_sharing_view(entry_key):
     if data is None:
         return None
     matched = entry_key.endswith("_matched_tasks")
+    variance = entry_key.startswith("variance_partition_")
+    schema = 2 if variance else 1
     entry = data.get(entry_key)
-    if entry is None or (matched and entry.get("schema_version") != 1):
+    if entry is None or ((matched or variance) and entry.get("schema_version") != schema):
         print(f"  Skipped: missing current {entry_key} results. "
               f"Run {_row_sharing_view_command(entry_key, data)}.")
         return None
@@ -6008,7 +6030,7 @@ def _load_row_sharing_view(entry_key):
     if untrained is not None and matched:
         # The first period supplement used `tasks` for this metadata; the
         # task view needs that key for its actual per-task statistics.
-        if (control.get("schema_version") != 1
+        if (control.get("schema_version") != schema
                 or control.get("task_names", control.get("tasks"))
                 != entry.get("task_names", entry.get("tasks"))
                 or control.get("phases") != entry["phases"]):
@@ -6069,58 +6091,332 @@ def plot_row_cluster_organization_matched_tasks():
         "organization_matched_tasks", "row_cluster_organization_matched_tasks.png")
 
 
+_CLUSTER_COUNT_PANELS = (("row_k", "Row clusters\n(task × period rows)"),
+                         ("col_k", "Column clusters\n(neurons; synapses for modulation)"))
+
+
+def _variance_partition_samples(entry, experiments):
+    """Validate additive fractions and preserve undefined, constant-network rows."""
+    samples = {}
+    components = ("task", "period", "residual")
+    for rep, _ in _ROW_SHARING_REPRESENTATIONS:
+        stats = entry["representations"][rep]
+        if stats["anames"] != experiments or len(set(experiments)) != len(experiments):
+            raise ValueError("Variance partition must use the saved cohort in the same order")
+        values = np.array([stats["fractions"][key] for key in components], dtype=float).T
+        ss = np.array([stats["ss"][key] for key in components], dtype=float).T
+        total = np.asarray(stats["ss"]["total"], dtype=float)
+        if (values.shape != (len(experiments), 3) or ss.shape != values.shape
+                or total.shape != (len(experiments),) or not np.isfinite(ss).all()
+                or not np.isfinite(total).all() or (ss < 0).any() or (total < 0).any()
+                or not np.allclose(ss.sum(axis=1), total, rtol=1e-10, atol=0)):
+            raise ValueError("Invalid variance partition sums of squares")
+        valid = total > 0
+        if (not np.isnan(values[~valid]).all() or not np.isfinite(values[valid]).all()
+                or not np.allclose(values[valid], ss[valid] / total[valid, None])
+                or not np.allclose(values[valid].sum(axis=1), 1)
+                or stats["n_valid"] != int(valid.sum())):
+            raise ValueError("Invalid variance partition fractions")
+        samples[rep] = values[valid]
+    return samples
+
+
+def _variance_partition_comparisons(trained, control):
+    """Six network-level tests: task/period x three representations, one BH family.
+
+    Undefined fractions are removed together by _variance_partition_samples.
+    Untestable comparisons occupy a p=1 slot in the six-test correction but
+    are returned as NaN, so a smaller valid cohort never shrinks the family.
+    """
+    from scipy.stats import false_discovery_control, mannwhitneyu
+
+    tests, p_values = {}, []
+    for rep, _ in _ROW_SHARING_REPRESENTATIONS:
+        for i, key in enumerate(("task", "period")):
+            a, b = trained[rep], control.get(rep, np.empty((0, 3)))
+            p = (float(mannwhitneyu(a[:, i], b[:, i], alternative="two-sided",
+                                    method="asymptotic", use_continuity=True).pvalue)
+                 if len(a) >= 2 and len(b) >= 2 else float("nan"))
+            tests[(rep, key)] = {"p": p, "n_trained": len(a), "n_untrained": len(b)}
+            p_values.append(p if np.isfinite(p) else 1.0)
+    for stats, q in zip(tests.values(), false_discovery_control(p_values, method="bh")):
+        stats["q"] = float(q) if np.isfinite(stats["p"]) else float("nan")
+    return tests
+
+
+def plot_variance_partition_matched_tasks():
+    """Balanced five-task/five-period partition; equivalent to orthogonal main effects."""
+    _plot_variance_partition("variance_partition_matched_tasks", "variance_partition_matched_tasks.png")
+
+
+def plot_variance_partition_all():
+    """All observed rows, equally weighted; average incremental SS over factor orders.
+
+    Because tasks have different available phases, these allocations include
+    overlapping information and are not unique independent main effects.
+    """
+    _plot_variance_partition("variance_partition_all", "variance_partition_all.png")
+
+
+def _plot_variance_partition(entry_key, out_filename):
+    """Shared display and tests for all-task and matched variance partitions.
+
+    Both views retain full-task feature normalization. A single panel groups the
+    three representations by component, in the style of same_task_seeds:
+    filled trained bars, hollow untrained bars and sample-SD whiskers around
+    equal-network means. Residual includes interaction and estimation noise.
+    Bracketed stars compare trained against untrained (two-sided, tie/continuity-
+    corrected asymptotic Mann-Whitney; BH over six task/period tests). There is
+    no chance baseline; fractions are descriptive, not causal effects. Exact
+    p/q values and valid network counts are retained in the save message.
+    """
+    loaded = _load_row_sharing_view(entry_key)
+    if loaded is None:
+        return
+    data, entry, untrained, control = loaded
+    metadata = ("schema_version", "variance_method", "normalization", "allocation",
+                "row_weighting", "task_names", "phases", "row_names")
+    if entry.get("variance_method") != VARIANCE_METHOD or any(not entry.get(key) for key in metadata):
+        print("  Skipped variance partition: missing current feature method metadata. "
+              f"Run {_row_sharing_view_command(entry_key, data)}.")
+        return
+    if untrained is not None and any(control.get(key) != entry[key] for key in metadata):
+        print("  Skipped untrained variance partition: missing result or feature methods/rows differ. "
+              f"Run {_row_sharing_view_command(entry_key, untrained, True)}.")
+        untrained, control = None, {}
+    trained = _variance_partition_samples(entry, data["experiments"])
+    fresh = _variance_partition_samples(control, untrained["experiments"]) if control else {}
+    tests = _variance_partition_comparisons(trained, fresh)
+    components = ("task", "period", "residual")
+    fig, ax = plt.subplots(figsize=(4.6, 2.6))
+    width = _ROW_SAME_TASK_BAR * (0.45 if fresh else 0.9)
+    notes, low, high = [], 0., _ROW_SAME_TASK_Y_TOP
+    for position, key in enumerate(components):
+        for k, (rep, _) in enumerate(_ROW_SHARING_REPRESENTATIONS):
+            center = position + (k - 1) * _ROW_SAME_TASK_BAR
+            color = _TASK_SPECIFICITY_COLORS[rep]
+            groups = [("trained", trained[rep], center - width / 2 if fresh else center,
+                       dict(color=color, edgecolor="k", linewidth=0.3))]
+            if fresh:
+                groups.append(("untrained", fresh[rep], center + width / 2,
+                               dict(color="white", edgecolor=color, linewidth=0.6)))
+            pair_top = 0.
+            for cohort, values, x, style in groups:
+                if not len(values):
+                    notes.append(f"{rep} {key} {cohort}: valid n=0; undefined")
+                    continue
+                samples = 100 * values[:, position]
+                height = float(samples.mean())
+                spread = float(samples.std(ddof=1)) if len(samples) > 1 else 0.
+                ax.bar(x, height, width=width * 0.92, zorder=2, **style)
+                if spread > 0:
+                    ax.errorbar(x, height, yerr=spread, color=_ROW_SHARING_SPREAD_COLOR,
+                                linewidth=0.7, capsize=1.5, capthick=0.7, zorder=4)
+                low = min(low, height - spread)
+                pair_top = max(pair_top, height + spread)
+                notes.append(f"{rep} {key} {cohort}: {height:.6g}%, SD={spread:.6g} pp, "
+                             f"valid n={len(samples)}")
+            if key != "residual":
+                stats = tests[(rep, key)]
+                if stats["q"] < _ROW_SHARING_SIGNIFICANCE:
+                    # Connect the cohort twins: these stars test a group
+                    # difference, unlike the sharing figures' chance tests.
+                    y = pair_top + 1.5
+                    ax.plot([center - width / 2, center - width / 2,
+                             center + width / 2, center + width / 2],
+                            [y, y + 1.2, y + 1.2, y], color="0.3", linewidth=0.5)
+                    ax.text(center, y + 1.2, "*", ha="center", va="bottom", fontsize=6)
+                    pair_top = y + 7
+                notes.append(f"{rep} {key}: p={stats['p']:.6g}, q={stats['q']:.6g}")
+            high = max(high, pair_top)
+    ax.set_xticks(range(3))
+    ax.set_xticklabels(["Task", "Period", "Interaction / residual"],
+                       rotation=0, ha="center", fontsize=6)
+    ax.set_xlim(-0.6, 2.6)
+    ax.set_ylim(low - 2 if low < 0 else 0, high)
+    ax.set_yticks([0, 50, 100])
+    ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=100, decimals=0))
+    ax.spines["left"].set_bounds(0, 100)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.tick_params(axis="y", labelsize=7)
+    ax.set_ylabel("Fraction of variance-profile\nvariation", fontsize=8)
+    handles = [mpl.patches.Patch(facecolor=_TASK_SPECIFICITY_COLORS[rep], edgecolor="k",
+                                 linewidth=0.3, label=label.replace("\n", " "))
+               for rep, label in _ROW_SHARING_REPRESENTATIONS]
+    if fresh:
+        handles.append(mpl.patches.Patch(facecolor="white", edgecolor="0.3", linewidth=0.6,
+                                         label="untrained (hollow)"))
+    handles.append(mpl.lines.Line2D([], [], color=_ROW_SHARING_SPREAD_COLOR, linewidth=0.7,
+                                    marker="_", markersize=4, label="mean ± SD over runs"))
+    if fresh:
+        handles.append(mpl.lines.Line2D([], [], linestyle="none", marker="$*$", color="k",
+                                        markersize=5, label="trained vs untrained\nBH-FDR q < 0.05"))
+    _state_space_figure_legend(fig, handles, ncol=3, top=0.8)
+    _save_fig(fig, _multitask_out(out_filename),
+              extra=(f"  {data['feature']}; {entry_key}; {len(entry['task_names'])} tasks, "
+                     f"{len(entry['row_names'])} observed task-period rows; "
+                     f"{entry['row_weighting']}; {entry['allocation']}; "
+                     "BH across six task/period cohort comparisons within this view; " + "; ".join(notes)))
+
+
+def plot_row_cluster_counts_seeds():
+    """
+    Figure: multitask_row_cluster_counts_seeds.png — how many clusters the
+    clustering selected per network: left the task × period row clusters,
+    right the column clusters (neurons of the input and hidden heatmaps,
+    synapses of the modulation one at its plotted pre-grouping), of the
+    normalized clustering whose labels every row-cluster figure reads. Bars
+    are means over the networks of the MULTITASK_L2 cohort with SD whiskers;
+    hollow twins are the architecture's untrained networks, as in
+    row_cluster_same_period_seeds. The figure carries no test; the save
+    message adds medians, ranges and the raw two-sided Mann-Whitney p of
+    trained against untrained per representation and axis. Read from the
+    `cluster_counts` entry of the sharing results (sibling_row_sharing.py).
+    """
+    from scipy.stats import mannwhitneyu
+
+    loaded = _load_row_sharing_view("cluster_counts")
+    if loaded is None:
+        return
+    data, entry, untrained, control = loaded
+    if untrained is not None and not control:
+        print("  Skipped untrained cluster counts: missing from the control result. "
+              f"Run {_row_sharing_view_command('cluster_counts', untrained, True)}.")
+    reps, control_reps = entry["representations"], control.get("representations", {})
+    columns = [(rep, label) for rep, label in _ROW_SHARING_REPRESENTATIONS if rep in reps]
+    split = bool(control_reps)
+    width = 0.36 if split else 0.6
+    fig, axs = plt.subplots(1, 2, figsize=(4.6, 2.4))
+    notes = []
+    for ax, (axis_key, title) in zip(axs, _CLUSTER_COUNT_PANELS):
+        for position, (rep, _) in enumerate(columns):
+            color = _TASK_SPECIFICITY_COLORS[rep]
+            trained = np.asarray(reps[rep][axis_key], dtype=float)
+            fresh = (np.asarray(control_reps[rep][axis_key], dtype=float)
+                     if rep in control_reps else np.array([]))
+            groups = [(trained, position - width / 2 if split else position,
+                       dict(color=color, edgecolor="k", linewidth=0.3))]
+            if fresh.size:
+                groups.append((fresh, position + width / 2,
+                               dict(color="white", edgecolor=color, linewidth=0.6)))
+            for values, x, style in groups:
+                spread = values.std(ddof=1) if values.size > 1 else 0.0
+                ax.bar(x, values.mean(), width=width * 0.92, zorder=2, **style)
+                if spread > 0:
+                    ax.errorbar(x, values.mean(), yerr=spread, color=_ROW_SHARING_SPREAD_COLOR,
+                                linewidth=0.7, capsize=1.5, capthick=0.7, zorder=4)
+            note = (f"{axis_key} {rep}: trained median {np.median(trained):g}, range "
+                    f"{int(trained.min())}-{int(trained.max())}")
+            if fresh.size:
+                p_value = float(mannwhitneyu(trained, fresh, alternative="two-sided").pvalue)
+                note += (f"; untrained median {np.median(fresh):g}, range {int(fresh.min())}-"
+                         f"{int(fresh.max())}; Mann-Whitney p = {p_value:.2g}")
+            notes.append(note)
+        ax.set_title(title, fontsize=8)
+        ax.set_xticks(np.arange(len(columns)))
+        ax.set_xticklabels([label for _, label in columns], fontsize=6)
+        ax.set_xlim(-0.6, len(columns) - 0.4)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.tick_params(axis="y", labelsize=7)
+        ax.yaxis.set_major_locator(mticker.MaxNLocator(integer=True))
+    axs[0].set_ylabel("Selected number of clusters", fontsize=8)
+    handles = [mpl.patches.Patch(facecolor=_TASK_SPECIFICITY_COLORS[rep], edgecolor="k",
+                                 linewidth=0.3, label=label.replace("\n", " "))
+               for rep, label in columns]
+    if split:
+        handles.append(mpl.patches.Patch(facecolor="white", edgecolor="0.3", linewidth=0.6,
+                                         label="untrained (hollow)"))
+    handles.append(mpl.lines.Line2D([], [], color=_ROW_SHARING_SPREAD_COLOR, linewidth=0.7,
+                                    marker="_", markersize=4, label="mean ± SD over networks"))
+    _state_space_figure_legend(fig, handles, ncol=len(handles), top=0.9)
+    n_runs = max(len(reps[rep]["anames"]) for rep, _ in columns)
+    _save_fig(fig, _multitask_out("row_cluster_counts_seeds.png"),
+              extra=(f"  {n_runs} {data['feature']} runs{_row_sharing_untrained_note(untrained)}; "
+                     f"{entry['k_definition']}; " + "; ".join(notes)))
+
+
 def _count_range(values):
     """'12' or '12–15': the range of integer counts over networks."""
     low, high = int(min(values)), int(max(values))
     return str(low) if low == high else f"{low}–{high}"
 
 
-def _cut_robustness_tick_labels(cohort_cuts, k_values):
+def _cut_robustness_tick_labels(cohort_cuts, k_values, selected_rows=None):
     """Tick labels of the cut-robustness x axis, and the matching axis label.
 
-    Each label gives the target K and, below it, how many clusters that cut
-    actually forms among the 25 selected rows, as the range over networks,
+    Each label gives the target K, followed in parentheses by the full-tree
+    count when tied merge heights keep it below K. With `selected_rows`, the
+    name of the rows the counts are taken over ("the 25 rows"), it adds how
+    many clusters that cut forms among them, as the range over networks,
     one line per cohort of `cohort_cuts` ([(cohort, [cut per K])]) in that
-    order, which the axis label spells out. When tied merge heights keep the
-    full tree below K, the full-tree count follows K in parentheses.
+    order, which the axis label spells out.
     """
     labels = []
     for index, k in enumerate(k_values):
         full = [count for _, cuts in cohort_cuts for count in cuts[index]["actual_k"]]
-        head = str(k) if set(full) == {k} else f"{k} ({_count_range(full)})"
-        labels.append("\n".join(
-            [head] + [_count_range(cuts[index]["matched_k"]) for _, cuts in cohort_cuts]))
-    cohorts = ", ".join(f"{cohort} ({ordinal} line)" for (cohort, _), ordinal
-                        in zip(cohort_cuts, ("2nd", "3rd")))
-    return labels, f"Full-tree cluster target K\nclusters among the 25 rows:\n{cohorts}"
+        lines = [str(k) if set(full) == {k} else f"{k} ({_count_range(full)})"]
+        if selected_rows:
+            lines += [_count_range(cuts[index]["matched_k"]) for _, cuts in cohort_cuts]
+        labels.append("\n".join(lines))
+    xlabel = "Full-tree cluster target K"
+    if selected_rows:
+        cohorts = ", ".join(f"{cohort} ({ordinal} line)" for (cohort, _), ordinal
+                            in zip(cohort_cuts, ("2nd", "3rd")))
+        xlabel += f"\nclusters among {selected_rows}:\n{cohorts}"
+    return labels, xlabel
+
+
+def plot_row_cluster_cut_robustness():
+    """Synapse task bias and period enrichment after full-tree recuts, over
+    every row of every task: the all-task twin of
+    row_cluster_cut_robustness_matched_tasks, with the same panels, cohorts
+    and K grid. As in row_cluster_organization, the baseline is sharing
+    among all pairs of a network's rows, so the periods differ in task
+    composition; the ticks carry K alone. Figure
+    multitask_row_cluster_cut_robustness.png.
+    """
+    _plot_row_cluster_cut_robustness("cut_robustness_all", "row_cluster_cut_robustness.png",
+                                     "All tasks")
 
 
 def plot_row_cluster_cut_robustness_matched_tasks():
-    """Synapse task bias and period enrichment after full-tree recuts.
+    """Synapse task bias and period enrichment after full-tree recuts, among
+    the 25 rows of the same five tasks.
 
-    Each thin line is a network, thick lines are medians. K is the maxclust
+    Points are cohort means with SD whiskers over networks (the cohorts
+    offset slightly in K so the whiskers stay apart). K is the maxclust
     target (ties retained); each tick also shows how many clusters the cut
     forms among the 25 selected rows, per cohort, and undefined enrichments
     are reported. The same networks recur across cuts, so no across-cut
     significance tests.
     """
-    loaded = _load_row_sharing_view("cut_robustness_matched_tasks")
+    _plot_row_cluster_cut_robustness(
+        "cut_robustness_matched_tasks", "row_cluster_cut_robustness_matched_tasks.png",
+        "Same five tasks", selected_rows="the 25 rows")
+
+
+def _plot_row_cluster_cut_robustness(entry_key, out_filename, rows_title, selected_rows=None):
+    """Draw the saved cut entry `entry_key` of the trained runs, with the
+    untrained control when its K grid and cut method match, into
+    `out_filename`; `rows_title` names the rows in the suptitle and
+    `selected_rows` their selection, if any (`_cut_robustness_tick_labels`)."""
+    loaded = _load_row_sharing_view(entry_key)
     if loaded is None:
         return
     data, entry, untrained, control = loaded
     if control and (control["k_values"] != entry["k_values"]
                     or control["cut_method"] != entry["cut_method"]):
         print("  Skipped untrained cut robustness: K grid or cut method differs. "
-              f"Run {_row_sharing_view_command('cut_robustness_matched_tasks', untrained, True)}.")
+              f"Run {_row_sharing_view_command(entry_key, untrained, True)}.")
         control = {}
     k_values = entry["k_values"]
     fig, axs = plt.subplots(1, 2, figsize=(5.2, 2.8))
     panels = (("task_bias", "Task preference", "Task − period enrichment (Δ)", 0),
               ("period", "Cross-task period organization", "Same-period enrichment", 1))
     notes, handles, cohort_cuts = [], [], []
-    for source, payload, color, style, cohort in (
-            (entry, data, _TASK_SPECIFICITY_COLORS["modulation"], "-", "trained"),
-            (control, untrained, "0.4", "--", "untrained")):
+    for source, payload, color, style, cohort, offset in (
+            (entry, data, _TASK_SPECIFICITY_COLORS["modulation"], "-", "trained", -0.3),
+            (control, untrained, "0.4", "--", "untrained", 0.3)):
         if not source:
             continue
         cuts = [source["cuts"][k] for k in k_values]
@@ -6130,21 +6426,24 @@ def plot_row_cluster_cut_robustness_matched_tasks():
         cohort_cuts.append((cohort, cuts))
         handles.append(mpl.lines.Line2D([], [], color=color, linestyle=style, linewidth=1.8,
                                         label=f"{cohort} (n={len(payload['experiments'])})"))
+        # Offset the cohorts in K only when both are drawn, so their whiskers stay apart.
+        x = np.asarray(k_values, dtype=float) + (offset if control else 0.0)
         for ax, (metric, _, _, _) in zip(axs, panels):
             values = np.array([cut["task_bias"] if metric == "task_bias"
                                else cut["enrichment"][metric] for cut in cuts], dtype=float)
-            ax.plot(k_values, values, color=color, linestyle=style, alpha=0.18, linewidth=0.5)
-            medians = [np.median(v[np.isfinite(v)]) if np.isfinite(v).any() else np.nan
-                       for v in values]
-            ax.plot(k_values, medians, color=color, linestyle=style, marker="o",
-                    markersize=3, linewidth=1.8, zorder=4)
-            notes.append(f"{cohort} {metric} medians={np.round(medians, 3).tolist()}, "
-                         f"valid n={np.isfinite(values).sum(axis=1).tolist()}")
+            finite = [v[np.isfinite(v)] for v in values]
+            means = np.array([v.mean() if v.size else np.nan for v in finite])
+            sds = np.array([v.std(ddof=1) if v.size > 1 else 0.0 for v in finite])
+            ax.errorbar(x, means, yerr=sds, color=color, linestyle=style, marker="o",
+                        markersize=3, linewidth=1.8, elinewidth=0.8, capsize=2, zorder=4)
+            notes.append(f"{cohort} {metric} means={np.round(means, 3).tolist()}, "
+                         f"SDs={np.round(sds, 3).tolist()}, valid n={[v.size for v in finite]}")
         notes.append(f"{cohort} actual full-tree K ranges=" + str([
             (min(cut["actual_k"]), max(cut["actual_k"])) for cut in cuts]))
-        notes.append(f"{cohort} clusters among the 25 rows=" + str([
-            (min(cut["matched_k"]), max(cut["matched_k"])) for cut in cuts]))
-    tick_labels, xlabel = _cut_robustness_tick_labels(cohort_cuts, k_values)
+        if selected_rows:
+            notes.append(f"{cohort} clusters among {selected_rows}=" + str([
+                (min(cut["matched_k"]), max(cut["matched_k"])) for cut in cuts]))
+    tick_labels, xlabel = _cut_robustness_tick_labels(cohort_cuts, k_values, selected_rows)
     for ax, (_, title, ylabel, baseline) in zip(axs, panels):
         ax.axhline(baseline, color="0.65", linestyle=":", linewidth=0.8, zorder=1)
         ax.set_title(title, fontsize=8)
@@ -6153,9 +6452,9 @@ def plot_row_cluster_cut_robustness_matched_tasks():
         ax.set_xticks(k_values)
         ax.set_xticklabels(tick_labels, fontsize=6.5)
         ax.spines[["top", "right"]].set_visible(False)
-    fig.suptitle("Same five tasks; synapses; thin lines = networks", y=0.87, fontsize=7)
+    fig.suptitle(f"{rows_title}; synapses; mean ± SD over networks", y=0.87, fontsize=7)
     _state_space_figure_legend(fig, handles, ncol=len(handles), top=0.9)
-    _save_fig(fig, _multitask_out("row_cluster_cut_robustness_matched_tasks.png"),
+    _save_fig(fig, _multitask_out(out_filename),
               extra=f"  {data['feature']}; K={k_values}; " + "; ".join(notes))
 
 
@@ -14978,6 +15277,10 @@ FIGURES_BY_MODE = {
         "row_cluster_same_period_matched_tasks_seeds": plot_row_cluster_same_period_matched_tasks_seeds,
         "row_cluster_same_task_matched_tasks_seeds": plot_row_cluster_same_task_matched_tasks_seeds,
         "row_cluster_organization_matched_tasks": plot_row_cluster_organization_matched_tasks,
+        "row_cluster_counts_seeds": plot_row_cluster_counts_seeds,
+        "variance_partition_matched_tasks": plot_variance_partition_matched_tasks,
+        "variance_partition_all": plot_variance_partition_all,
+        "row_cluster_cut_robustness": plot_row_cluster_cut_robustness,
         "row_cluster_cut_robustness_matched_tasks": plot_row_cluster_cut_robustness_matched_tasks,
     },
     "lesion": {

@@ -32,6 +32,25 @@ def main(argv=None):
             raise SystemExit("Current trained and untrained results are required; see rerun hint.")
         print("CACHE", tag, "version", data["version"], "networks", len(data["experiments"]))
         cohorts[tag] = data
+        for view in ("variance_partition_all", "variance_partition_matched_tasks"):
+            partition = data.get(view)
+            if not partition:
+                continue
+            if partition.get("schema_version") != 2:
+                raise ValueError(
+                    f"{tag}/{view}: stale schema; run "
+                    + paper_plot._row_sharing_view_command(view, data, untrained))
+            samples = paper_plot._variance_partition_samples(partition, data["experiments"])
+            for rep, values in samples.items():
+                stats = partition["representations"][rep]
+                models = {key: np.asarray(values) for key, values in stats["model_ss"].items()}
+                for key, other in (("task", "period"), ("period", "task")):
+                    np.testing.assert_allclose(stats["ss"][key],
+                                               (models[key] + models["joint"] - models[other]) / 2)
+                np.testing.assert_allclose(stats["ss"]["residual"],
+                                           np.asarray(stats["ss"]["total"]) - models["joint"])
+                print("VARIANCE_PARTITION", tag, view, rep, "valid n", len(values),
+                      "task/period/residual mean", values.mean(axis=0).tolist() if len(values) else [])
         for mode, by in (("same_task_all", "tasks"), ("same_period_all", "periods"),
                          ("same_task_matched_tasks", "tasks"),
                          ("same_period_matched_tasks", "periods")):
@@ -62,22 +81,30 @@ def main(argv=None):
                         target.append(key)
                 print("SIGNIFICANT", tag, mode, rep, "above", above, "below", below)
 
-        cut_entry = data.get("cut_robustness_matched_tasks")
-        if cut_entry is not None:
+        for cut_key in ("cut_robustness_all", "cut_robustness_matched_tasks"):
+            cut_entry = data.get(cut_key)
+            if cut_entry is None:
+                continue
+            classes = ("task", "period", "neither", "any")
             for k in cut_entry["k_values"]:
                 cut = cut_entry["cuts"][k]
                 assert cut["anames"] == data["experiments"]
                 for i, name in enumerate(cut["anames"]):
                     counts = cut["counts"][name]
-                    assert [counts[c]["n_pairs"] for c in ("task", "period", "neither", "any")] == [50, 50, 200, 300]
-                    baseline = counts["any"]["n_shared"] / 300
-                    for pair_class in ("task", "period", "neither"):
+                    # The matched cut keeps the fixed 25 rows; the all-task cut
+                    # keeps every row the organization check counted.
+                    expected_pairs = ([50, 50, 200, 300] if cut_key.endswith("_matched_tasks") else [
+                        data["organization"]["representations"]["modulation"]["counts"][name][c]["n_pairs"]
+                        for c in classes])
+                    assert [counts[c]["n_pairs"] for c in classes] == expected_pairs
+                    baseline = counts["any"]["n_shared"] / counts["any"]["n_pairs"]
+                    for pair_class in classes[:3]:
                         expected = (counts[pair_class]["n_shared"] / counts[pair_class]["n_pairs"]
                                     / baseline) if baseline else np.nan
                         np.testing.assert_allclose(cut["enrichment"][pair_class][i], expected)
                 delta = np.subtract(cut["enrichment"]["task"], cut["enrichment"]["period"])
                 np.testing.assert_allclose(cut["task_bias"], delta)
-                print("CUT", tag, k, "actual", sorted(set(cut["actual_k"])),
+                print("CUT", tag, cut_key, k, "actual", sorted(set(cut["actual_k"])),
                       "delta median", float(np.nanmedian(delta)), "positive", int(sum(delta > 0)),
                       "finite", int(sum(np.isfinite(delta))), "period median",
                       float(np.nanmedian(cut["enrichment"]["period"])))
@@ -118,12 +145,17 @@ def main(argv=None):
                    "same_task_matched_tasks_seeds": "same_task_matched_tasks",
                    "same_period_matched_tasks_seeds": "same_period_matched_tasks",
                    "organization_matched_tasks": "organization_matched_tasks",
+                   "counts_seeds": "cluster_counts",
+                   "cut_robustness": "cut_robustness_all",
                    "cut_robustness_matched_tasks": "cut_robustness_matched_tasks"}
         for name, entry_key in figures.items():
             if entry_key in cohorts[feature]:
                 getattr(paper_plot, f"plot_row_cluster_{name}")()
             else:
                 print("PNG_SKIP", name, "missing trained summary", entry_key)
+        for view in ("variance_partition_all", "variance_partition_matched_tasks"):
+            if view in cohorts[feature]:
+                getattr(paper_plot, f"plot_{view}")()
 
 
 if __name__ == "__main__":

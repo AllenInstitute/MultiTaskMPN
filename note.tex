@@ -1,0 +1,591 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+
+\usepackage{enumitem}
+\usepackage{url}
+\usepackage{bm} % Bold Greek letters
+\usepackage{caption}
+% \usepackage{subcaption} % For subtables
+\usepackage[normalem]{ulem}
+\usepackage{algorithmic}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{xcolor} % Text colors
+\usepackage{authblk} % Multiple authors
+\usepackage{float} % Helps force figure placement in specific areas
+\usepackage{multirow} % Multirow tables
+
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{subfigure}
+\usepackage{booktabs}
+
+\usepackage{hyperref}
+
+% % Turn on line numbers
+% \usepackage[mathlines]{lineno}
+% \linenumbers
+% % This helps with line numbers around equations
+% \let\oldalign\align
+% \let\oldendalign\endalign
+% \renewenvironment{align}
+%   {\linenomathNonumbers\oldalign}
+%   {\oldendalign\endlinenomath}
+
+\usepackage[sorting=none, style=numeric-comp, maxbibnames=10]{biblatex} % Sorting=none cites in order of appearance
+\addbibresource{mpn_multi.bib} %Import the bibliography file
+
+\newcommand{\todo}[1]{\textcolor{purple}{TODO: #1}}
+\newcommand{\ZZ}[1]{\textcolor{purple}{ZZ: #1}}
+\newcommand{\KA}[1]{\textcolor{blue}{KA: #1}}
+\newcommand{\SM}[1]{\textcolor{red}{SM: #1}}
+
+\newcommand{\rspace}{\mathbb{R}}
+
+\title{MPN Multitask}
+\date{\today}
+
+\author[1]{Authors}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+
+\end{abstract}
+
+\section{Introduction}
+
+\paragraph{Related Works}
+\begin{itemize}
+    \item Ref.~\cite{aitken2023neural} original MPN paper.
+\end{itemize}
+
+\paragraph{Setup}
+
+\KA{Change this at some point, just copied from our old paper.}
+The \emph{multi-plasticity network (MPN)} is an artificial neural network consisting of input, hidden, and output layers of neurons.
+It is identical to a fully-connected, two-layer, feedforward network, with one major exception: the weights connecting the input and hidden layer are modified by the time-dependent \emph{synapse modulation (SM) matrix}, $\mathbf{M}$.
+The expression for the hidden layer activity at time step $t$ is:
+\begin{align}
+    \label{eq:mpn}
+    \mathbf{h}_{t}	&=
+    \sigma\big(\left(\mathbf{M}_{t-1}\odot\mathbf{W}\right)\mathbf{x}_{t}+\mathbf{W}\mathbf{x}_{t}\big), \mathbf{z}_t = \mathbf{Y}^{\text{resp}}\mathbf{h}_t,
+\end{align}
+where $\mathbf{W}$ is a weight matrix representing the network's synaptic strengths that is fixed after training, `$\odot$' denotes element-wise multiplication of the two matrices (the Hadamard product), and the $\tanh(\cdot)$ is applied element-wise.
+\begin{equation}
+    \mathbf{M}_t = \lambda \mathbf{M}_{t-1} + \eta \mathbf{h}_t \mathbf{x}_t^{\top}.
+\end{equation}
+Here, we add an additional trainable input layer before MPN layer:
+\begin{equation}
+    \mathbf{x}_t = \sigma(\mathbf{W}_{\text{proj}}\mathbf{r}_t).
+\end{equation}
+Here, $\mathbf{r}_t$ is the task input, and $\mathbf{x}_t$ is the input for MPN layer.
+In the setup of current experiments, $\mathbf{W}\in \mathbb{R}^{N \times N}$, $r_t \in \mathbb{R}^{d \times 1}$, $\mathbf{W}_{\text{proj}} \in \mathbb{R}^{N \times d}$, $\mathbf{x}_t \in \mathbb{R}^{N \times 1}$, $\mathbf{M}_t \in \mathbb{R}^{N \times N}$. Notice that the dimension of $\mathbf{W}$ can be flexibly defined through $\mathbf{W}^{N_{\text{in}} \times N_{\text{out}}}$. Usually $N \gg d$.
+
+The product $\mathbf{A}:=\mathbf{W}\mathbf{W}_{\text{proj}} \in \mathbb{R}^{N \times d}$ is simply the effective linear map from task input $\mathbf{r}_t$ to the pre-activation of the MPN hidden layer. If two rows $\mathbf{a}_i$ and $\mathbf{a}_j$ are anti-aligned, then opponent input drive (push-pull) in task-feature space.
+
+To find the projection onto output subspace, we have:
+\begin{equation}
+    \mathbf{Y}^{\text{resp}} \left(\mathbf{W} + \mathbf{W} \odot \mathbf{M} \right) \mathbf{x}
+\end{equation}
+
+Two $\mathbf{M}$'s can be quite different globally, yet yield similar or structured functional effects once you apply the backbone mask/geometry $\mathbf{W}$. In two-tasks, it seems that the network use $\mathbf{W}$ to build $f(\text{stimulus})$ (shared encoding), and use modulation to implement the task-dependent sign/route.
+
+$\mathbf{W}$ is the backbone; $\mathbf{M}$ implements the rule.
+
+\section{Two-tasks}
+\begin{equation}
+    M_t = \lambda M_{t-1} + \eta h_t x_t^{\top}, z_{t+1}=(W+(M_t \odot W))x_{t+1}, h_{t+1}=\sigma(z_{t+1}).
+\end{equation}
+If $h_t^A \approx h_t^B$ but $x_t^{A} \neq x_t^B$, then the Hebbian update makes the stored modulation diverge:
+\begin{equation}
+    \Delta M_t \equiv M_t^A - M_t^B \approx \eta h_t(x_t^A - x_t^B)^{\top} + \lambda \Delta M_{t-1}.
+\end{equation}
+The divergence is then read out at the next step through the modulated pathway:
+\begin{equation}
+    \Delta z_{t+1}^{\text{mod}} = ((\Delta M_t) \odot W)x_{t+1} \approx \eta \operatorname{diag}(h_t) W((x_t^A-x_t^B) \odot x_{t+1}).
+\end{equation}
+It means: although the two trials had similar hidden activity at time $t$, the fact that their inputs $x_t$ differed caused the plastic trace $M_t$ to differ in a way that, when combined with $x_{t+1}$, produced opposite-signed pre-activations $z_{t+1}$ (or enough opposite-signed components) - and after the nonlinearity this shows up as $h_{t+1}$ being anti-aligned. In other words, the fast plasticity has "stored" different context at time $t$, and that stored context reverse the effective input drive at time $t+1$.
+
+Define modulated drive:
+\begin{equation}
+    u(t) \equiv (M_{t-1} \odot W) x_t = \sum_{j=1}^N x_{t,j}((M_{t-1}\odot W)_{:,j}).
+\end{equation}
+Per-column contribution to the dot product:
+\begin{equation}
+    c_j \equiv (x_{t,j}^A(M_{t-1}^A \odot W)_{:,j})^{\top}u_t^B.
+\end{equation}
+
+\subsection{Explanation}
+Let $k \in \{1,2\}$ index the two tasks (Pro/Anti),and $s \in \{\pm 1\}$ be the stimulus sign.
+Use one stimulus step ($t=0$) and one delay step ($t=1$), with linearized delay dynamics:
+\begin{equation}
+    M_1^{(k,s)} = \eta h_0^{(k,s)} (x_0^{(k,s)})^{\top}, \ q_1 := (W \odot M_1^{(k,s)}) x_1^{(k)}.
+\end{equation}
+Elementwise:
+\begin{equation}
+    (q_1^{(k,s)})_i = \sum_j W_{ij}M_{1,ij}^{(k,s)}x_{1,j}^{(k)} = \eta h_{0,i}^{(k,s)} \sum_{j}W_{ij} x_{0,j}^{(k,s)} x_{1,j}^{(k)}.
+\end{equation}
+So:
+\begin{equation}
+    q_1^{(k,s)} = \eta h_0^{(k,s)} \odot W(x_0^{(k,s)} \odot x_1^{(k)}).
+\end{equation}
+Write input as:
+\begin{equation}
+    x_0^{(k,s)} = s e_s + t_k + f, \ x_1^{(k)} = t_k + f
+\end{equation}
+where $e_s$ is stimulus channel, $t_k$ is task input, and $f$ is fixation input. Assume: (i) stimulus is off during the delay; (ii) delay inputs are stimulus-agnostic and orthogonal across tasks:
+\begin{equation}
+    \langle x_1^{(1)},x_1^{(2)}\rangle=0
+    \quad\Longleftrightarrow\quad
+    \cos\!\big(x_1^{(1)},x_1^{(2)}\big)=0.
+\end{equation}
+Then
+\begin{equation}
+    x_0^{(k,s)}\odot x_1^{(k)}=(t_k+f)^{\odot2} + s[a \odot (f+t_k)],
+\end{equation}
+which is independent of $s$, and assume the residual term is smaller. Define
+\begin{equation}
+g   _k:=\eta W\!\big((t_k+f)^{\odot2}\big),
+\end{equation}
+so
+\begin{equation}
+    q_1^{(k,s)}=h_0^{(k,s)}\odot g_k.
+\end{equation}
+Therefore, the stimulus sign in delay drive $q_1^{(k,s)}$ can only come from $h_0^{(k,s)}$.
+If $h_0^{(k,s)}\approx s u+\varepsilon_k$ (stimulus-dominant), then
+\begin{equation}
+    q_1^{(k,s)}\approx s (u\odot g_k)+(\varepsilon_k\odot g_k),
+\end{equation}
+so same-stimulus trials remain aligned before response, while task orthogonality mainly changes the gain pattern $g_k$ and reduces cross-task contamination.
+
+To interpret modulation itself, expand:
+\begin{equation}
+    M_1^{(k,s)}=\eta h_0^{(k,s)}(x_0^{(k,s)})^\top
+    \approx \eta (s u) (s e_s+t_k+f)^\top
+    = \eta\!\left[u e_s^\top + s u(f+t_k)^\top\right].
+\end{equation}
+Now write task input as
+\begin{equation}
+    t_k=\bar t + c_k v,\qquad c_k\in\{+1,-1\},
+\end{equation}
+(so $c_k$ is task sign, and $v$ is the task-difference direction). Then:
+\begin{equation}
+    M_1^{(k,s)}
+\approx \eta\!\left[u e_s^\top + s u(f+\bar t)^\top + (s c_k) u v^\top\right].
+\end{equation}
+Hence modulation contains a response-coded component
+\begin{equation}
+    (s c_k) u v^\top \equiv y u v^\top,\qquad y=s c_k.
+\end{equation}
+Therefore, even if hidden activity is stimulus-aligned $(h\sim s)$, the modulation $M$, and thus $W\odot M$ can be more similar for same response (same $y$) than for same stimulus.
+Under repeated delay updates $M_{t+1}=\lambda M_t+\eta h_t x_t^\top$, this response-coded component is repeatedly reinforced by persistent task/fix input, so same-response similarity in $W\odot M_t$ is expected to increase across delay.
+
+
+\begin{center}
+\fbox{
+  \begin{minipage}{0.9\columnwidth}
+
+The MPN converges to a solution we term "Shared-Memory, Delayed-Routing." This strategy represents the lowest-complexity path to satisfying dual task demands: it preserves stimulus fidelity across the delay while strictly sequestering the opposing Pro/Anti motor plans until the response epoch.
+
+Instead of maintaining two divergent, high-energy activity trajectories for the same stimulus (one for Pro, one for Anti), the network adopts a factorized computational strategy:
+
+\begin{itemize}
+    \item Factorization of Content and Logic: The network disentangles the "what" (sensory content) from the "how" (task rule) by utilizing the two distinct distinct state variables available in the MPN architecture:
+    \begin{itemize}
+        \item Neural Activity ($\mathbf{h}_t$) as Content Buffer: The hidden layer activity remains strictly stimulus-locked during the delay. Because does for the Hebbian plasticity, it must faithfully represent the sensory input to imprint it into $\mathbf{M}_t$. Consequently, the the state retrieved during the delay is an echo of this sensory history rather than the future motor plan, avoiding the need for complex, task-specific recurrent dynamics.
+        \item Synaptic State ($\mathbf{M}_t$) as Logic Router: The task rule is encoded in the fast-weights. We find that $\mathbf{W} \odot \mathbf{M}_t$ aligns by response. This occurs because the synaptic update $\Delta \mathbf{M} \propto \mathbf{h}\mathbf{x}^{\top}$ effectively multiplies the stimulus sign by the task sign. Since the Anti task involves an inverted stimulus mapping to the same response ($-1 \times -1=+1$), the resulting weight matrix converges to a common configuration for identical responses. Thus, the weights store the solution while the neurons maintain the problem.
+    \end{itemize}
+    \item The Pre-Tensioned State: During the delay period, the network exists in a "pre-tensioned" state. The synaptic weights ($\mathbf{W} \odot \mathbf{M}_t$) are fully primed to convert the held sensory information into the correct motor response, but execution is suppressed. This suppression is not achieved by erasing the memory, but by active cancellation.
+    \item Output Gating via Input Cancellation: The mechanism of silence during the delay is a precise linear cancellation in the projection subspace. The network learns a configuration where the projection of the Fixation signal effectively subtracts the projection of the Task signal. Consequently, the sum of inputs to the hidden layer keeps the network in a null-space relative to the readout weights $\mathbf{Y}^{\text{resp}}$ masking the potent response mapping stored in $\mathbf{M}_t$.
+    \item Rapid Release: Upon the removal of the fixation signal ("Go" cue), the balance of the cancellation equation is broken. The "brakes" are removed, and the pre-calculated mapping in $\mathbf{W} \odot \mathbf{M}_t$ immediately routes the stimulus information in $\mathbf{h}_t$ to the correct output.
+\end{itemize}
+This strategy is favored over continuous, divergent state dynamics because it is computationally efficient. It requires only a single stable attractor for memory storage (the stimulus) and relies on the plastic weights—which are naturally robust to temporal decay—to handle the logic. This minimizes the energy required to sustain the delay state and maximizes the speed of the final response.
+\end{minipage}
+}
+\end{center}
+
+% \begin{itemize}
+%     \item Stimulus memory stable ($Z[s]$ constant post-stimulus),
+%     \item Response mapping prepared ($Z[sr]$ response-grouped and stable),
+%     \item Go-cue regime change at response ($Z[srt]$ sign inversion but same response partition).
+% \end{itemize}
+
+\begin{itemize}
+    \item The pure rule component ($r$) accounts for a nontrivial fraction of population variance, indicating that rule information is represented in hidden activity. By contrast, the rule-time interaction ($rt$) is small, suggesting limited purely time-varying rule structure when stimulus is marginalized out.
+    \item The stimulus component ($s$) is the largest contribution and remains relatively stable through the delay epoch, consistent with a shared, task-invariant memory code. Pro and Anti trajectories are closely aligned in $s$, indicating similar stimulus identity encoding across tasks.
+    \item The condition-independent temporal component ($t$) explains a substantial portion of variance and shows a prominent transition near the response epoch, consistent with a global timing/state transition that may gate the memory-to-response transformation.
+    \item Interaction terms show task-dependent remapping dynamics: $srt$ is substantially larger than $sr$, indicating that stimulus--rule interactions are strongly time-dependent rather than purely static.
+    \begin{itemize}
+        \item Also, in the $srt$ marginalization, response-epoch trajectories preserve response-class grouping while reversing projection sign. This indicates the representational partition is maintained, but its orientation along the dominant interaction axis switches at response onset, consistent with a gating transition from maintained to expressed sensorimotor mapping.
+        \item Stimulus-rule interaction variance ($sr$) is substantially larger in $\mathbf{W} \odot \mathbf{M}_t$ than in hidden activity, which suggests that conditional sensorimotor mapping is preferentially represented in fast synaptic modulation, while hidden-state dynamics retain a more task-shared stimulus representation.
+    \end{itemize}
+    \item Overall, these results are consistent with a two-stage computation: (i) stimulus maintenance in a shared memory subspace during delay, followed by (ii) rule- and time-dependent transformation near response that enables Pro versus Anti output mapping.
+\end{itemize}
+
+
+
+
+
+\section{Task--period variance features}
+\label{sec:task-period-variance}
+\paragraph{Current definition: variance across trials and time.}
+Let $p$ index a task--period pair. The hidden activity restricted to that
+task period is $\mathbf{h}\in\mathbb{R}^{B\times T\times N}$, where $B$
+is the number of trials, $T$ is the number of time steps within the period,
+and $N$ is the number of hidden units. We suppress the dependence of
+$\mathbf{h}$, $B$, and $T$ on $p$ for clarity. The current evaluation uses
+$B=50$ trials per task. Each period is restricted to its actual task
+boundaries; padding beyond that task's trial endpoint is excluded.
+
+For each unit $n$, we pool all trial--time samples within the period and
+compute
+\begin{align}
+    \bar{h}_{p,n}
+    &= \frac{1}{BT}\sum_{b=1}^{B}\sum_{t=1}^{T}h_{b,t,n}, \\
+    V_{p,n}
+    &= \operatorname{Var}_{b,t}(h_{b,t,n})
+     = \frac{1}{BT}\sum_{b=1}^{B}\sum_{t=1}^{T}
+       \left(h_{b,t,n}-\bar{h}_{p,n}\right)^2.
+    \label{eq:trial_time_variance}
+\end{align}
+There is no prior averaging over trials, stimulus conditions, or time.
+Every trial--time sample receives equal weight, and the denominator is
+$BT$ rather than $BT-1$.
+
+\paragraph{Interpretation.}
+This measure summarizes the overall spread of a unit's trial--time
+activity. It retains both trial-to-trial differences and temporal changes
+shared across trials, as expressed by
+\begin{equation}
+    V_{p,n}
+    = \mathbb{E}_{t}\!\left[\operatorname{Var}_{b}(h_{b,t,n})\right]
+    + \operatorname{Var}_{t}\!\left[\mathbb{E}_{b}(h_{b,t,n})\right].
+\end{equation}
+Thus, a large value may reflect stimulus-dependent responses, temporal
+dynamics, or other trial-to-trial variability, including noise when present.
+It is not a measure of purely stimulus-selective activity. In particular,
+stimulus and memory periods following the second stimulus retain differences
+between trials that share the same first stimulus. No grouping by either
+the first or the second stimulus is performed.
+
+\paragraph{Representations and normalization.}
+The same estimator is applied to each input unit $x_{b,t,n}$ and each
+synaptic modulation entry $M_{b,t,ij}$; synapse indices $(i,j)$ are flattened
+to form the columns of the modulation variance matrix. Rows correspond to
+task--period pairs. For the normalized variants, each column is divided by
+its maximum across all included task--period pairs:
+\begin{equation}
+    \widetilde{V}_{p,n}
+    = \begin{cases}
+        \displaystyle\frac{V_{p,n}}{\max_{p'}V_{p',n}},
+            & \max_{p'}V_{p',n}>0, \\
+        0, & \text{otherwise}.
+      \end{cases}
+\end{equation}
+This is a matrix of per-unit variance features, not a matrix of pairwise
+covariances between units.
+
+\paragraph{\textcolor{red}{Stale descriptions: retained only for reference.}}
+The previous implementation first averaged trials within first-stimulus
+conditions, using the same first-stimulus labels in every task period:
+\begin{equation}
+    \mu_{k,t,n}
+    = \frac{1}{|\mathcal{B}_k|}
+      \sum_{b\in\mathcal{B}_k}h_{b,t,n},
+    \qquad \mathcal{B}_k=\{b:s_b=k\},
+    \qquad s_b\in\{0,\ldots,K-1\}.
+\end{equation}
+With $K=8$ first-stimulus directions, only nonempty groups contributed.
+The previous variance feature was
+\begin{equation}
+    V^{\mathrm{old}}_{p,n}
+    = \operatorname{Var}_{k,t}(\mu_{k,t,n}).
+\end{equation}
+This gave equal weight to nonempty stimulus groups and discarded
+within-group trial differences, potentially averaging away responses to
+different second stimuli. It is no longer used.
+
+Earlier notes also described the distinct, time-averaged condition variance
+\begin{equation}\label{mean_of_var}
+    V^{\mathrm{selective}}_{p,n}
+    = \frac{1}{T}\sum_{t=1}^{T}
+      \operatorname{Var}_{k}(\mu_{k,t,n}).
+\end{equation}
+This excludes temporal changes common to all condition means. It is
+neither the current estimator nor an equivalent expression for
+$V^{\mathrm{old}}_{p,n}$: the latter additionally includes
+$\operatorname{Var}_{t}[\mathbb{E}_{k}(\mu_{k,t,n})]$.
+
+\section{Clustering and over-membership analysis}
+\label{sec:clustering-over-membership}
+
+\paragraph{Feature preparation and hierarchical clustering.}
+We analyzed each network independently using the variance features defined
+in Section~\ref{sec:task-period-variance}. Rows indexed task--period pairs
+$p$, and columns indexed neurons $n$ or synapses $(i,j)$. Consistent with
+$\mathbf{M}_t\mathbf{x}_t$, $i$ denotes a postsynaptic hidden neuron and
+$j$ a presynaptic input neuron. Normalized analyses used
+$\widetilde{V}_{p,n}$. For unnormalized variants, features were compressed
+with $f(v)=\operatorname{sign}(v)\log(1+|v|)$ before clustering; this reduces
+to $\log(1+v)$ for nonnegative features. Near-zero profiles were assigned
+to a separate unresponsive class in unnormalized analyses. This separation
+was not applied to normalized features.
+
+We clustered rows and columns independently using Euclidean distance and
+Ward agglomerative hierarchical clustering, which merges groups to minimize
+the increase in within-cluster sum of squares. Column clusters identified
+units with similar task-period profiles; row clusters identified task
+periods with similar population profiles. Candidate cluster numbers were
+evaluated by silhouette scores. Among cuts within a 5\% relative tolerance
+of the maximum score, we selected the cut with the largest gap between
+successive Ward merge heights. For neuronal features, silhouette scores
+were aggregated by their median across small multiplicative perturbations,
+while the final dendrogram was constructed from the unperturbed features.
+
+\paragraph{Synaptic modulation clustering.}
+To reduce the size of the synapse clustering problem, we first grouped
+synaptic feature profiles using MiniBatch $K$-means and then applied Ward
+clustering to the mean profile of each preliminary group. Each synapse
+inherited the final label of its group. We evaluated preliminary group
+counts $G\in\{100,300,1000\}$; $G$ specifies the computational grouping
+resolution, not the final number of modulation clusters. This reduction
+applied only to the column axis: task-period rows were clustered using
+their full synaptic profiles.
+
+The preliminary grouping was repeated with different initializations.
+We used the median silhouette score across repetitions for cluster-number
+selection and chose a representative grouping by its mean agreement with
+the other partitions, measured by the adjusted Rand index. Its dendrogram
+provided the final cut and synapse assignments. These activity-based
+groups were formed without presynaptic or postsynaptic identity labels;
+groupings defined by a shared presynaptic or postsynaptic neuron were
+analyzed separately as comparisons.
+
+\paragraph{Task and period contributions to variance-profile structure.}
+We quantified task and period contributions independently of clustering on
+a balanced subset of five tasks (ContextIntModality1, ContextIntModality2,
+IntegrationModality1, IntegrationModality2, and IntegrationMultimodal) and
+five periods (first stimulus, second stimulus, first memory, second memory,
+and response). Let $q=1,\ldots,Q$ index tasks and $\ell=1,\ldots,L$ index
+periods, with $Q=L=5$, and let $p=(q,\ell)$ denote the corresponding
+task--period row. For each representation, $\mathbf{v}_{q\ell}$ collects
+the normalized features $\widetilde{V}_{p,n}$ over neurons, or the
+corresponding normalized modulation variances over synapses $(i,j)$.
+We retained normalization by each feature's maximum over all task--period
+rows, without renormalizing the selected subset or averaging synapses
+within preliminary clusters.
+
+For each network independently, we formed the grand and marginal means
+and decomposed each feature vector as
+\begin{align}
+    \boldsymbol\mu &= \frac{1}{QL}\sum_{q,\ell}\mathbf{v}_{q\ell}, &
+    \mathbf{a}_{q} &= \frac{1}{L}\sum_{\ell}\mathbf{v}_{q\ell}-\boldsymbol\mu, \\
+    \mathbf{b}_{\ell} &= \frac{1}{Q}\sum_q\mathbf{v}_{q\ell}-\boldsymbol\mu, &
+    \mathbf{r}_{q\ell} &= \mathbf{v}_{q\ell}-\boldsymbol\mu
+                          -\mathbf{a}_q-\mathbf{b}_{\ell}.
+\end{align}
+The balanced design gives an orthogonal decomposition of centered sums of
+squares,
+\begin{align}
+    SS_{\mathrm{task}} &= L\sum_q\|\mathbf{a}_q\|_2^2, &
+    SS_{\mathrm{period}} &= Q\sum_{\ell}\|\mathbf{b}_{\ell}\|_2^2, \\
+    SS_{\mathrm{residual}} &= \sum_{q,\ell}\|\mathbf{r}_{q\ell}\|_2^2, &
+    SS_{\mathrm{total}} &= \sum_{q,\ell}\|\mathbf{v}_{q\ell}-\boldsymbol\mu\|_2^2
+       = SS_{\mathrm{task}}+SS_{\mathrm{period}}+SS_{\mathrm{residual}}.
+    \label{eq:task-period-variance-partition}
+\end{align}
+For $SS_{\mathrm{total}}>0$, each component's fraction was its sum of
+squares divided by $SS_{\mathrm{total}}$. Sums were taken over features
+before forming fractions. Networks with zero total were undefined for
+that representation and excluded from its summaries, with the valid
+network count reported. We summarized fractions using equal-network means
+and sample standard deviations. Trained and untrained networks were
+compared using two-sided Mann--Whitney tests with asymptotic tie and
+continuity correction; Benjamini--Hochberg correction covered six
+comparisons, task and period fractions for each of the three representations.
+Comparisons with fewer than two valid networks in either cohort were not
+tested and retained a value of one in the six-test correction family.
+
+These fractions describe variation among normalized variance profiles in
+the selected five-task set, rather than the fraction of raw trial activity
+explained or a causal contribution. Because each task--period cell contains
+one estimated profile, the residual combines task--period interaction and
+estimation noise. Fractions are not corrected for a chance baseline;
+untrained networks provide a reference for the organization before training.
+
+\paragraph{Extension to all observed task periods.}
+We repeated the analysis using all observed task--period rows, assigning
+equal weight to each row. Tasks with more observed periods therefore had
+greater total weight; nonexistent phases were not imputed. Because tasks
+differed in their available periods, task and period effects were not
+orthogonal. We fit task-only, period-only, and additive task-plus-period
+linear models to the feature vectors, each including an intercept. Let
+$R^2_{\mathrm{task}}$, $R^2_{\mathrm{period}}$, and
+$R^2_{\mathrm{joint}}$ denote their explained fractions of the centered
+total sum of squares, summed across features. We allocated explained
+variation by averaging each factor's incremental contribution over the
+two possible entry orders:
+\begin{align}
+    f_{\mathrm{task}} &= \tfrac12\bigl(R^2_{\mathrm{task}}
+                           +R^2_{\mathrm{joint}}-R^2_{\mathrm{period}}\bigr), \\
+    f_{\mathrm{period}} &= \tfrac12\bigl(R^2_{\mathrm{period}}
+                           +R^2_{\mathrm{joint}}-R^2_{\mathrm{task}}\bigr), \\
+    f_{\mathrm{residual}} &= 1-R^2_{\mathrm{joint}}.
+    \label{eq:all-task-variance-allocation}
+\end{align}
+These fractions sum to one. They allocate overlapping explanatory
+information rather than identify unique independent main effects, and
+are not adjusted for differing factor degrees of freedom or chance.
+The residual measures departures from the additive model, including
+interaction and feature estimation noise. The same model-based calculation
+recovers Equation~\ref{eq:task-period-variance-partition} on the balanced
+five-task grid. We used the same network-level summaries and cohort
+comparisons, with a separate six-test correction family for the all-task
+view. Comparisons used identical observed task--period rows in both cohorts.
+
+\paragraph{Pair-based over-membership.}
+We quantified whether synapses assigned to the same modulation cluster
+shared endpoint identities more often than expected under random label
+assignment. Let $\mathcal{S}$ denote the retained synapses, with each
+synapse represented by $e=(i,j)$, and let $\mathcal{C}_c\subseteq\mathcal{S}$
+denote modulation cluster $c$. The pair analysis excluded the unresponsive
+modulation class when present. Input and hidden neuron-cluster labels were
+taken from the corresponding normalized or unnormalized neuronal analysis.
+
+For every cluster $c$, we counted unordered pairs of distinct synapses.
+At the neuron level, relationships were sharing a presynaptic neuron,
+sharing a postsynaptic neuron, or neither. At the neuron-cluster level,
+relationships were sharing an input-cluster identity, a hidden-cluster
+identity, both, or neither. The input-cluster and hidden-cluster counts
+included pairs sharing both identities and therefore were not mutually
+exclusive. Distinct synapses cannot share both individual neuron endpoints.
+Observed counts $O_\alpha$ for relationship type $\alpha$ were summed across modulation
+clusters, so larger clusters contributed more pairs.
+
+For the null model, we permuted modulation-cluster labels among
+$\mathcal{S}$ while keeping synapse positions and endpoint neuron-cluster
+assignments fixed. This preserved modulation-cluster sizes and the
+endpoint structure of the retained population. With $O_\alpha^{(r)}$ denoting
+the count in permutation $r$, we used $R=10{,}000$ permutations to calculate
+\begin{equation}
+    E_\alpha=\frac{1}{R}\sum_{r=1}^{R}O_\alpha^{(r)},
+    \qquad
+    \mathrm{OM}_\alpha=\frac{O_\alpha-E_\alpha}{E_\alpha},
+    \quad E_\alpha>0.
+    \label{eq:pair-over-membership}
+\end{equation}
+The chance baseline is zero; positive and negative values indicate
+enrichment and depletion, respectively. For example, $\mathrm{OM}_\alpha=1$
+corresponds to twice the expected pair count. Over-membership measures
+endpoint enrichment, not assignment of one synapse to multiple clusters.
+Across-network summaries were computed from network-level
+$\mathrm{OM}_\alpha$ values rather than pooling synapse pairs across networks.
+
+\paragraph{Enrichment across endpoint-cluster combinations.}
+A complementary analysis localized each modulation cluster to combinations
+of input and hidden neuron clusters. For this analysis, the retained set
+$\mathcal{S}$ additionally excluded synapses with unresponsive input or
+hidden endpoints in unnormalized variants; each $\mathcal{C}_c$ was
+restricted to this same retained population. Let $\mathcal{I}_u$ and
+$\mathcal{H}_v$ denote input-neuron cluster $u$ and hidden-neuron cluster
+$v$, respectively, and define
+\begin{equation}
+    \mathcal{S}_{uv}
+    =\{(i,j)\in\mathcal{S}:j\in\mathcal{I}_u,\ i\in\mathcal{H}_v\}.
+\end{equation}
+The observed number of synapses from modulation cluster $c$ in this block
+is $O_{cuv}=|\mathcal{C}_c\cap\mathcal{S}_{uv}|$. Under the same random-label
+null, its expectation and block-level over-membership are
+\begin{equation}
+    E_{cuv}=|\mathcal{S}_{uv}|\frac{|\mathcal{C}_c|}{|\mathcal{S}|},
+    \qquad
+    \mathrm{OM}_{cuv}=\frac{O_{cuv}-E_{cuv}}{E_{cuv}}
+                    =\frac{O_{cuv}}{E_{cuv}}-1,
+    \quad E_{cuv}>0.
+    \label{eq:endpoint-block-enrichment}
+\end{equation}
+As for $\mathrm{OM}_\alpha$, the chance baseline is zero: positive values indicate
+enrichment and negative values indicate depletion. A value of one denotes
+twice the expected synapse count. The two measures describe complementary
+levels of organization: $\mathrm{OM}_\alpha$ summarizes relationships between
+synapse pairs, whereas $\mathrm{OM}_{cuv}$ localizes a modulation cluster
+to particular combinations of endpoint clusters. Both observed and expected
+counts use the same retained population; blocks with $E_{cuv}=0$ are
+undefined and excluded. In the example dot matrices, color encodes
+$\mathrm{OM}_{cuv}$ and dot area encodes $O_{cuv}$. Blocks with expected
+counts below one are omitted; measurable blocks with no observed synapses
+($\mathrm{OM}_{cuv}=-1$) are shown as hollow rings.
+
+
+
+\section{Main Text, Figure 1 Caption}
+\textbf{Fast synaptic dynamics as a substrate for computations shared across tasks}.
+(a–c) Experimental observations.
+(a) Cortical circuits are densely recurrent: directed connections among proofread basket cells in the MICrONS mouse visual cortex volume \cite{microns2025functional};
+(b) Population dynamics are shared across tasks: schematic of two tasks' neural trajectories (blue, red) occupying overlapping subspaces and sharing a common dynamical component (green), a dynamical motif;
+(c) Synapses have fast dynamics of their own: postsynaptic potentials of three mouse cortical connections during a 50 Hz spike train (Allen Institute Synaptic Physiology, \cite{campagnola2022local}). Grey dots, single-trial amplitudes; black, trial-mean waveforms. The same spike train yields depressing, facilitating or roughly constant responses within a few hundred milliseconds, the duration of a single trial.
+(d–f) Models.
+(d) Recurrent neural networks (RNNs) capture (a): a recurrent architecture whose synapses change only over learning and stay fixed within a trial;
+(e) Trained on many tasks, RNNs reuse dynamical motifs, such as integration, across tasks \cite{yang2019task, driscoll2024flexible}, reproducing (b);
+(f) Multi-plasticity networks (MPNs) capture (c) instead: a feedforward architecture whose synapses carry both slow, learned weights and fast, Hebbian-like plasticity $\mathbf{M}$ that evolves within a trial. Whether a network that computes with fast synaptic dynamics also organizes multi-task computation into shared motifs is the question of this paper.
+
+\section{Main Text, Figure 2 Caption}
+\textbf{A single-task MPN stores the stimulus in its synapses and reads it out when fixation ends}.
+(a) MemoryPro: a stimulus direction, given as $\cos$/$\sin$ in one of two modalities, must be reported after the fixation input turns off. Shown are the inputs of one trial (fixation, the two stimulus modalities, rule cues) and the network's outputs with their targets (fixation; response cos $\theta$ and sin $\theta$). The MPN projects the inputs to a hidden layer through synapses with slow learned weights $\textbf{W}$ and fast Hebbian modulation $\textbf{M}$; the hidden state carries no memory of its own;
+(b) Snapshot in the middle of the response period: the modulated synaptic weights $\textbf{W} \odot \textbf{M}$ (hidden $\times$ input) and the hidden activity;
+(c) Fraction of the variance of one period's states (``Test") captured by the top four principal components (PCs) fitted on another period (``Fit"), for hidden activity and modulated synapses;
+(d) Cumulative variance explained by each period's own PCs;
+(e--h) Fixed points of the network under each period's input, for 64 stimulus directions (colors as in the wheel), shown as hidden activity (top) and modulated synapses $\mathbf{W}\odot\mathbf{M}^\star$ (bottom): $x$--$y$, the top two PCs of the memory-period fixed points; $z$, the output the task requires for the point's stimulus ($\cos\theta$ in the response period, zero before: the output-null plane). Grey points were obtained without a stimulus (under the context input, or from stimulus-free initial states). The black path is the trajectory of one example stimulus within the period, from $\times$ to the arrowhead. Under the context input a ring of memory states coexists with a single stimulus-free state; the stimulus moves the network onto the ring, the memory period holds it there, and the response input carries it to the required output;
+(i) Readout cancellation. Contributions of the fixation input (grey) and of the rule input (orange) to the cos-output readout through the modulated synapses, and their sum (blue), for two example stimuli. During the stimulus and memory periods the two cancel and the output stays at zero while the stimulus is held in $\textbf{M}$; when fixation turns off, the rule pathway alone drives the output, whose sign the stored modulation sets.
+
+
+\section{Fixed points of the modulation dynamics}
+\label{sec:fixed-points}
+
+\paragraph{State and one-step map.}
+In the MPN the only quantity that carries information from one time step to the next is the fast modulation matrix $\mathbf{M}_t \in \mathbb{R}^{N\times N}$ of the plastic layer ($N = 200$ hidden units and an $N$-dimensional embedded input); the hidden activity is recomputed from scratch at every step and holds no memory of its own. Given a raw input $\mathbf{r}_t$, one step of the network proceeds as follows. The input is embedded, $\mathbf{x}_t = \sigma(\mathbf{W}_{\text{in}}\mathbf{r}_t)$ with $\sigma = \tanh$; the hidden activity is produced by the modulated feedforward weights,
+\begin{equation}
+  \mathbf{h}_t = \sigma\big(\mathbf{W}_{\text{eff}}(\mathbf{M}_t)\,\mathbf{x}_t + \mathbf{b}\big),
+  \qquad
+  \mathbf{W}_{\text{eff}}(\mathbf{M}) = \mathbf{W} + \mathbf{W}\odot\mathbf{M} ,
+\end{equation}
+where $\mathbf{W}$ is the trained, slow weight matrix from the embedded input to the hidden layer, $\mathbf{b}$ the hidden bias and $\odot$ the elementwise product (multiplicative modulation); the output is a linear readout of $\mathbf{h}_t$. The modulation is then updated by a Hebbian rule with decay,
+\begin{equation}
+  \mathbf{M}_{t+1} = F(\mathbf{M}_t;\mathbf{r}_t)
+  = \Pi\big(\lambda\,\mathbf{M}_t + \eta\,\mathbf{h}_t\mathbf{x}_t^{\top}\big),
+  \label{eq:update}
+\end{equation}
+with a scalar learning rate $\eta$ (learned during training), a decay $\lambda = 1 - \Delta t/\tau$ fixed by the modulation time constant ($\Delta t = 40$~ms, $\tau = 400$~ms, so $\lambda = 0.9$ for the single-task network) and $\Pi$ the elementwise projection onto the modulation bounds $[-1, 1]$. Under a constant input $\mathbf{r}$, Eq.~\eqref{eq:update} is a map on $\mathbf{M}$ alone, $\mathbf{M}_{t+1} = F(\mathbf{M}_t;\mathbf{r})$, and it is the fixed points of this map that we seek.
+
+\paragraph{Speed objective and convergence criterion.}
+A fixed point $\mathbf{M}^\star$ under input $\mathbf{r}$ satisfies $\mathbf{M}^\star = F(\mathbf{M}^\star;\mathbf{r})$. Rather than using a proxy such as the state at the last frame of an artificially prolonged period, we solve for fixed points directly, following Sussillo and Barak~\cite{sussillo2013opening}: the trained network is frozen and a batch of candidate modulation matrices $\{\mathbf{M}^{(k)}\}$ becomes the only set of trainable variables, driven toward zeros of the update by gradient descent on the speed
+\begin{equation}
+  q(\mathbf{M}) = \tfrac{1}{2}\,\big\lVert F(\mathbf{M};\mathbf{r}) - \mathbf{M}\big\rVert_F^{2}.
+  \label{eq:speed}
+\end{equation}
+One subtlety is specific to plastic states. Because $F(\mathbf{M}) - \mathbf{M} = -(1-\lambda)\mathbf{M} + \eta\,\mathbf{h}\mathbf{x}^{\top}$ (inside the bounds), the residual of a slowly decaying modulation is scaled by the leak $1-\lambda$: for $\lambda$ close to one the raw speed and its gradients are small everywhere, so a state that is still drifting can look converged. We therefore optimize the leak-normalized residual, the mean over entries of $\big[(F(\mathbf{M};\mathbf{r}) - \mathbf{M})/(1-\lambda)\big]^2$, which has exactly the same zeros as Eq.~\eqref{eq:speed} but a scale that does not depend on the time constant. The same normalization defines the convergence criterion reported throughout: the relative residual
+\begin{equation}
+  \rho(\mathbf{M}^\star) =
+  \frac{\lVert F(\mathbf{M}^\star;\mathbf{r}) - \mathbf{M}^\star\rVert_F}
+       {(1-\lambda)\,\lVert \mathbf{M}^\star\rVert_F} .
+\end{equation}
+A candidate counts as a fixed point when $\rho \le 10^{-2}$ (equivalently, one step moves it by less than $10^{-3}$ of its norm at $\lambda = 0.9$); candidates with $10^{-2} < \rho \le 5\times10^{-2}$ are reported as approximate and larger residuals as unconverged. In the network of Fig.~2, all context-, memory- and response-period candidates converged strictly; 20 of the 64 stimulus-period candidates were approximate ($\rho$ between $0.011$ and $0.043$).
+
+\paragraph{Optimization.}
+Each evaluation of $F(\mathbf{M}^{(k)};\mathbf{r})$ is one forward step of the frozen network with its plastic state set to $\mathbf{M}^{(k)}$ (the forward pass of the hidden layer followed by the modulation update, Eq.~\eqref{eq:update}), and gradients with respect to $\mathbf{M}^{(k)}$ are obtained by automatic differentiation through that step; the bound projection $\Pi$ is differentiated as a clipping operation. The batch is optimized in three stages: (i) Adam (learning rate $10^{-3}$) on the normalized residual until the loss falls below $10^{-8}$ or $5\times10^{5}$ iterations are reached; (ii) L-BFGS polishing with a strong-Wolfe line search for up to $2000$ iterations, which lowers the residual by orders of magnitude beyond what Adam reaches; (iii) a rescue pass in which every candidate still above the strict threshold receives its own independent L-BFGS line search (up to $200$ iterations), the result being kept only if it lowers that candidate's $\rho$. We report $\rho$ for every solved point.
+
+\paragraph{Per-period inputs and dense stimulus seeding.}
+Fixed points are solved separately for the four trial periods (context, stimulus, memory, response), holding the input of the period's midpoint constant. To probe the memory structure densely rather than only at the $N_{\text{trained}} = 8$ trained directions, the stimulus inputs are constructed directly: one template trial is generated with a fixed task seed, replicated once per angle, and the two channels of the active stimulus ring are overwritten with $(\sin\theta_k, \cos\theta_k)$ during the stimulus epoch for $N_\theta = 64$ angles $\theta_k = 2\pi k/N_\theta$ (the task generator itself would snap any requested angle to the nearest trained direction). The batch is run through the trained network once to record $\mathbf{M}_t$ for every angle. For each period, the optimizer is seeded with the recorded modulation at the last step of that period and relaxed under that period's constant input. Because the template (epoch timing, stimulus modality) is a random draw of the task, the whole battery is solved for five deterministic task seeds and the seed whose stimulus- and response-period solutions have the lowest median $\rho$ is kept; everything reported comes from that single seed.
+
+\paragraph{Which inputs define distinct maps.}
+The constant inputs are compared pairwise before solving. In MemoryPro the context and memory periods present identical inputs (fixation on, rule cue on, no stimulus), so the two periods pose the same fixed-point problem and differ only in where the optimizer starts: all context seeds are the same stimulus-free matrix, whereas the memory seeds already carry the stimulus. The separation between the input a fixed point is solved under and the state the solver starts from is what makes coexistence of fixed points testable, and the battery of Fig.~2 therefore adds three families of probes seeded off the trajectory: the context input solved from end-of-memory states (the ring of Fig.~2e), the input of each distinct period solved from recorded modulation matrices sampled across stimuli and time, half of them pulled a random fraction toward the mean modulation and all jittered by Gaussian noise of $0.25$ times the per-entry standard deviation (the only seeds that can reach the interior of a ring, which no trajectory visits), and random rank-one seeds $\mathbf{M}_0 = [\eta/(1-\lambda)]\,\mathbf{v}\mathbf{x}^{\top}$ with $\mathbf{v}$ uniform on $[-1,1]^N$, rescaled into the bounds, which carry no stimulus information (inside the bounds every fixed point has this rank-one form with the current input as its presynaptic factor). For each probe the spread of the solutions across angles, $\max_k \lVert \mathbf{M}^\star_k - \bar{\mathbf{M}}^\star\rVert / \lVert \bar{\mathbf{M}}^\star\rVert$, distinguishes a single fixed point (spread $\approx 0$) from a manifold of them.
+
+\paragraph{Derived views, stability and visualization.}
+From every $\mathbf{M}^\star$ we derive the modulated synapses $\mathbf{W}\odot\mathbf{M}^\star$ and the hidden activity $\mathbf{h}^\star = \sigma(\mathbf{W}_{\text{eff}}(\mathbf{M}^\star)\mathbf{x} + \mathbf{b})$ it produces under the same input; these are the two representations shown in Fig.~2e--h. Linear stability is read from the Jacobian $\mathbf{J} = \partial F/\partial \mathbf{M}$ at $\mathbf{M}^\star$. Since the state has $N^2 = 4\times10^4$ dimensions, $\mathbf{J}$ is never formed: its transpose is applied to a vector by one reverse-mode vector--Jacobian product through the network step, and the $16$ eigenvalues of largest magnitude are obtained with an iterative (Arnoldi) solver on that matrix-free operator. On this discrete map $|\mu| < 1$ marks a contracting direction and $|\mu| > 1$ an expanding one; the leak compresses the spectrum toward $\mu = 1$ by the factor $1-\lambda$, so a direction is called marginal when $|\mu - 1| < 5\times10^{-2}(1-\lambda)$. A single marginal direction with every other direction contracting is the signature of a continuous (ring) attractor. For display, a two-component PCA is fitted to the 64 memory-period fixed points of each representation and every period's fixed points are projected into that shared basis (the "Memory PC" axes of Fig.~2e--h); the third axis is the output the task requires for each point's stimulus, and the black path is the recorded trajectory of one stimulus within the period, anchored at the fixed points of the preceding and the current period.
+
+\printbibliography %Prints bibliography
+
+\end{document}

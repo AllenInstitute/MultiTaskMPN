@@ -7,6 +7,9 @@ than re-running the heavy analysis, it loads only the *cluster* information the
 analysis already wrote — the same row/column cluster assignments that
 ``paper_plot.py`` uses for its ``clustered_input/hidden/modulation`` figures —
 so the diagnostics are fast and memory-light.
+The shared loader can optionally expose the saved normalized feature matrices
+to the variance-partition supplement in sibling_row_sharing.py; this driver's
+cluster-label diagnostics do not retain them.
 
 Each diagnostic is a small function registered in ``DIAGNOSES`` via
 ``@_register``; new checks can be added without touching the driver. Every
@@ -20,10 +23,12 @@ phase per column.
 
 Cluster data read per experiment (all under ``multiple_tasks_analysis/{aname}/``):
   - input / hidden  : ``cluster_info_{aname}.pkl`` →
-        ``{input,hidden}_normalized → result → row_tol_labels`` (+ tb_break_name)
+        ``{input,hidden}_normalized → result → row_tol_labels`` (+ tb_break_name
+        and the selected ``row_tol_k`` / ``col_tol_k``)
   - modulation      : ``cluster_info_mod_{aname}.pkl`` →
         ``modulation_all_normalized → result_all_lst[MOD_G_INDEX] → row_tol_labels``
-        (MOD_G_INDEX=1, the G=300 pre-grouping variant plotted by paper_plot).
+        (+ the same; MOD_G_INDEX=1, the G=300 pre-grouping variant plotted by
+        paper_plot).
 
 Row labels are indexed by ``tb_break_name`` entries of the form
 ``"{rule}-{phase}"`` (e.g. ``"dmcgo-delay1"``), where the phase is one of
@@ -206,14 +211,27 @@ def _discover_anames(feature=None, seed=None, root=None, architecture=None):
     return anames
 
 
-def _load_experiment(aname, root=None):
+def _selected_k(result):
+    """{"row_k", "col_k"}: the K the silhouette-tolerance rule selected on
+    each axis (`row_tol_k`, `col_tol_k`), whose labels every reader uses; an
+    axis without the saved field (older or synthetic caches) is left out."""
+    return {f"{axis}_k": int(result[f"{axis}_tol_k"])
+            for axis in ("row", "col") if f"{axis}_tol_k" in result}
+
+
+def _load_experiment(aname, root=None, include_features=False):
     """Row-cluster labels + tb_break_name per representation for one experiment
     under `root` (default MULTI_DIR).
 
-    Returns {rep: {"row_labels": np.ndarray, "tb_break_name": np.ndarray}} for
-    rep in {input, hidden, modulation}, with optional saved modulation row-tree
-    metadata for cut sensitivity checks, or None if the neuron-cluster pickle is
-    missing (input/hidden are required; modulation is included when available).
+    Returns {rep: {"row_labels": np.ndarray, "tb_break_name": np.ndarray,
+    "row_k", "col_k" (`_selected_k`)}} for rep in {input, hidden, modulation},
+    with optional saved modulation row-tree metadata for cut sensitivity
+    checks, or None if the neuron-cluster pickle is missing (input/hidden are
+    required; modulation is included when available). With `include_features`,
+    also return saved normalized variance matrices as `variance_features` when
+    present. Their rows follow tb_break_name; columns may be reordered, which
+    does not affect sums of squared feature differences. Callers should consume
+    and release these matrices one network at a time.
     """
     run_dir = (MULTI_DIR if root is None else Path(root)) / aname
     ci_path = run_dir / f"cluster_info_{aname}.pkl"
@@ -240,7 +258,10 @@ def _load_experiment(aname, root=None):
         reps[rep] = {
             "row_labels": np.asarray(entry["result"]["row_tol_labels"]),
             "tb_break_name": np.asarray(entry["tb_break_name"]),
+            **_selected_k(entry["result"]),
         }
+        if include_features and "cell_vars_rules_sorted_norm" in entry:
+            reps[rep]["variance_features"] = np.asarray(entry["cell_vars_rules_sorted_norm"])
 
     # Modulation (optional): different pickle, list of pre-grouping variants.
     if mod_path.exists():
@@ -257,7 +278,11 @@ def _load_experiment(aname, root=None):
             reps["modulation"] = {
                 "row_labels": np.asarray(result_all[MOD_G_INDEX]["row_tol_labels"]),
                 "tb_break_name": np.asarray(mentry["tb_break_name"]),
+                **_selected_k(result_all[MOD_G_INDEX]),
             }
+            if include_features and "cell_vars_rules_sorted_norm" in mentry:
+                reps["modulation"]["variance_features"] = np.asarray(
+                    mentry["cell_vars_rules_sorted_norm"])
             for key in ("row_linkage", "row_unresponsive_mask"):
                 if key in result_all[MOD_G_INDEX]:
                     reps["modulation"][key] = np.asarray(result_all[MOD_G_INDEX][key])
@@ -561,15 +586,15 @@ def _print_result(name, result):
 
 
 def _json_safe(obj):
-    """Recursively convert numpy scalars/arrays and bools to JSON-native types."""
+    """Convert numpy values to JSON types; undefined numeric values become null."""
     if isinstance(obj, dict):
         return {k: _json_safe(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [_json_safe(v) for v in obj]
     if isinstance(obj, (np.integer,)):
         return int(obj)
-    if isinstance(obj, (np.floating,)):
-        return float(obj)
+    if isinstance(obj, (float, np.floating)):
+        return float(obj) if np.isfinite(obj) else None
     if isinstance(obj, (np.bool_,)):
         return bool(obj)
     if isinstance(obj, np.ndarray):

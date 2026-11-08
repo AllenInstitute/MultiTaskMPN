@@ -210,7 +210,10 @@ class PaperPlotModeTests(unittest.TestCase):
             "row_cluster_same_period_synapses",
             "row_cluster_same_period_matched_tasks_seeds",
             "row_cluster_same_task_matched_tasks_seeds", "row_cluster_organization_matched_tasks",
-            "row_cluster_cut_robustness_matched_tasks",
+            "row_cluster_counts_seeds",
+            "variance_partition_matched_tasks",
+            "variance_partition_all",
+            "row_cluster_cut_robustness", "row_cluster_cut_robustness_matched_tasks",
         })
         for name, function in expected.items():
             self.assertIs(paper_plot.ALL_FIGURES[name], function)

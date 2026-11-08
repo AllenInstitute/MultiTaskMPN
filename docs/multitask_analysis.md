@@ -221,9 +221,16 @@ shared run, the deciding block of `overmembership_examples_dots_1` (its most
 significant input × hidden block; both panels take it from
 `_om_example_selection`) is drawn on top of the scatter in the viridis color
 the examples give its OM, with a black ring ("Example block"). The cache keeps
-no block identity per point, so the point is found by its OM value, which the
-scatter copies from the same `om_stack`; the highlight is skipped with a note
+no block identity per point, so matching uses the cached observed/expected
+ratio copied from the same `om_stack`; the highlight is skipped with a note
 unless exactly one point matches.
+The dot colors and scatter x coordinates display block over-membership as
+`OM = observed / expected - 1`, with chance at zero. The cache retains raw
+ratios for reconstructing observed counts; both scatter points and saved bin
+x coordinates are shifted by one only when plotting. This translation leaves
+the selected examples, Spearman correlation and permutation p values unchanged.
+The shared dot colorbar marks zero; blocks with expected counts below one are
+omitted, and supported blocks with no observed synapses (OM = -1) are hollow rings.
 Up to five quantile bins provide median OM/L1 points and counts; tied OM values
 stay together. The median connector is descriptive and is not forced to decrease.
 `paper_plot.py` only reads these values, draws pale scatter points and the saved
@@ -864,6 +871,111 @@ uses linear axes to retain zero-sharing networks.
 Its tests are unchanged: trained versus untrained uses raw, two-sided
 Mann–Whitney p values; without controls it displays the saved Wilcoxon
 comparison against 1. These p values are not BH-adjusted q values.
+
+`multitask_row_cluster_counts_seeds_n.png` reports how many clusters the
+clustering selected per network, from the `cluster_counts` entry of the
+sharing result (schema 1: the `row_tol_k` and `col_tol_k` of the normalized
+clustering, the modulation at its plotted G=300 pre-grouping, the K whose
+labels every row-cluster figure reads): the task x period row clusters on
+the left and the column clusters (neurons; synapses for modulation) on the
+right, as means with SD whiskers over networks, trained filled and untrained
+hollow as in the sharing bar figures. The figure carries no test; the save
+message adds the medians, ranges and the raw two-sided Mann-Whitney p of
+trained against untrained per representation and axis. A sharing result
+written before this entry existed asks for a rerun of the summary.
+
+`multitask_variance_partition_matched_tasks_n.png` quantifies task and period
+contributions to **normalized variance-profile differences**, independently of
+clustering or the number of clusters. It uses the same complete five-task,
+five-period grid as the matched sharing supplements. Input, hidden and raw
+modulation features come from `cell_vars_rules_sorted_norm` in the current
+cluster caches; rows are matched by `tb_break_name`. The original per-feature
+maximum normalization across all task-period rows is retained; the subset is
+not renormalized, and the modulation features are not K-means group averages.
+
+For each network, write the feature vector for task q, phase l as
+`v[q,l] = mu + task[q] + period[l] + residual[q,l]`, using marginal means
+minus the overall mean for the two main effects. Centering is per feature.
+On this balanced grid, `SS_task = 5 * sum_q ||task[q]||^2`,
+`SS_period = 5 * sum_l ||period[l]||^2`, and
+`SS_residual = sum_q,l ||residual[q,l]||^2` add to the centered total sum of
+squares. Each fraction is its sum of squares divided by that total. Feature
+sums are formed before division (not an equal average of per-feature ratios).
+The residual contains task-by-period interaction and feature estimation noise;
+there is only one estimated profile per cell, so these cannot be separated.
+These fractions are descriptive, not chance-corrected, explained fractions of
+raw trial activity, or causal contributions. They apply to the five-task subset.
+
+The companion `multitask_variance_partition_all_n.png` uses every observed
+task-period row, with equal weight per row. Tasks with more observed periods
+therefore receive more total weight. Absent phases are not filled with zeros.
+Because the all-task design is incomplete, task and period explanations can
+overlap. Fit task-only, period-only and additive task + period models, each
+including an intercept. Let their explained fractions of centered total sum
+of squares be `R2_T`, `R2_P` and `R2_TP`. Allocate contributions by averaging
+each factor's gain over the two entry orders:
+
+```text
+task     = 0.5 * (R2_T + R2_TP - R2_P)
+period   = 0.5 * (R2_P + R2_TP - R2_T)
+residual = 1 - R2_TP
+```
+
+These add to one. The first two are allocations of explanatory information,
+not unique independent main effects; they depend on the observed row design
+and are not adjusted for factor degrees of freedom or chance. The balanced
+five-by-five design makes task and period orthogonal, so the same calculation
+recovers the matched decomposition above. Both views call the **same**
+`partition_task_period_variance` function, with SVD column-space projections
+to handle redundant indicator columns or confounded factors. Feature sums
+are pooled before division; no neuron or synapse is a statistical replicate.
+
+The additive `variance_partition_all` and `variance_partition_matched_tasks`
+entries (schema 2) save each network's allocated sums of squares and fractions,
+the three models' explained sums of squares, feature counts, exact observed row
+names, task/phase names, row weighting, allocation, normalization and variance
+method. Schema-1 matched fractions remain mathematically valid, but a lightweight
+`--variance-partition-only` refresh supplies the shared metadata and the all-task
+entry; no reclustering is needed. A zero total gives undefined
+fractions (NaN in pickle, null in JSON); those networks are omitted from that
+representation's plot/tests and the valid n is reported in the save message.
+A single panel groups bars by Task, Period and Interaction/residual, with
+input/hidden/synapse colors and filled trained/hollow untrained twins matching
+the sharing figures. Bars show network means with sample-SD whiskers. Fractions
+sum to one within a valid network and representation. Two-sided asymptotic Mann-Whitney tests with
+tie and continuity correction compare task and period fractions between cohorts;
+BH correction uses a separate family of six tests per view (three
+representations x task/period). Untestable comparisons retain a p=1 slot in that correction and have
+no significance annotation. Bracketed stars denote trained/untrained q < 0.05,
+not a comparison against chance; exact p/q values are printed in the save
+message. Residual fractions have no separate test. Group comparisons are
+computed from the saved network fractions when plotting, as in the other direct
+trained/untrained comparisons; no neuron or synapse is treated as a replicate.
+
+Normal sharing runs also compute both supplements, consuming one network's
+features at a time. Missing features skip both for the whole cohort; missing
+matched rows skip only the matched view. The all-task view requires identical
+observed row sets across representations and networks, and its figure compares
+cohorts only when their exact row sets and method metadata agree. Malformed data
+raise an error. To add the views to an existing current summary without repeating the
+sharing permutations, update the exact saved cohort and then plot:
+
+```bash
+python multiple_task/sibling_row_sharing.py --feature L21e4 --variance-partition-only
+python multiple_task/sibling_row_sharing.py --feature L21e4 --untrained --variance-partition-only
+python figures/paper_plot.py --multitask-l2 1e4 --only variance_partition_matched_tasks
+python figures/paper_plot.py --multitask-l2 1e4 --only variance_partition_all
+```
+
+The update checks provenance and row-organization counts against the saved
+summary before writing. Missing features or changed cohort members leave the
+summary untouched. If the saved cohort lacks the full matched grid, the update
+retains only the new all-task view and removes any obsolete matched partition.
+It does not discover new networks; to add networks, rerun the regular
+sharing command. No forward passes, variance estimation, clustering or lesion
+analysis need to be repeated. Both figures share their plotting, validation and
+cohort-comparison code, including horizontal x labels and the same styling.
+
 The permutation tests above apply to the two sharing bar figures:
 
 - `multitask_row_cluster_same_task_seeds.png`: per-task mean sharing with
@@ -906,8 +1018,9 @@ full-task clustering and restricts every phase to the same five tasks:
 Each network therefore contributes ten task pairs per phase, identically
 across representations and trained/untrained cohorts. The matched-summary
 functions reject missing required rows. If any network lacks them, the driver
-prints the reason, skips the matched-task summaries and cut robustness for
-the whole cohort, and still saves the all-task results without those optional keys.
+prints the reason, skips the matched-task summaries and their cut robustness
+for the whole cohort, and still saves the all-task results (the all-task cut
+included) without those optional keys.
 It does not drop networks or shrink the matched task set. Malformed rows,
 duplicate rows and inconsistent row sets across representations still fail
 validation. Runs without completed modulation clustering are explicitly
@@ -985,11 +1098,12 @@ clusterings themselves hold 10 to 19 clusters). Its two panels show
 `Delta = E_same_task - E_same_period` and cross-task
 same-period enrichment against the selected 300-pair baseline. Positive Delta
 indicates task preference, negative Delta period preference, and zero no
-preference. Thin lines track individual networks and thick lines show cohort
-medians, with independent linear y ranges retaining zero and negative values.
-Differences are calculated within each network before taking medians. These
-repeated cuts are sensitivity checks, not additional independent samples or
-new significance tests.
+preference. Points are cohort means with SD whiskers over networks (SD
+describes spread and is not a confidence interval; the cohorts are offset
+slightly in K so the whiskers stay apart), with independent linear y ranges
+retaining zero and negative values. Differences are calculated within each
+network before averaging. These repeated cuts are sensitivity checks, not
+additional independent samples or new significance tests.
 
 The cut supplement is stored as `cut_robustness_matched_tasks` (schema 1).
 `fcluster(..., criterion="maxclust")` retains tied merge heights, so K is an
@@ -1004,20 +1118,33 @@ same-period enrichment remains zero; if no selected pair shares a cluster,
 the baseline is zero and enrichment/Delta are undefined (NaN), not zero.
 The saved tree must reproduce the original row partition before any recutting.
 
-Normal summary runs add the cut supplement when trees are available. Missing
-trees skip only this supplement; missing matched rows still skip all matched
-outputs. To add it to existing v6 matched-task results without repeating the
-permutation tests or including newly finished networks, use:
+The all-task twin `multitask_row_cluster_cut_robustness_n.png` (stored as
+`cut_robustness_all`, schema 1) recuts the same trees at the same K but keeps
+every row of every task, so, as in the organization figure, the baseline is
+sharing among all pairs of a network's rows (49 rows and 1176 pairs for a
+complete run: 258 same-period, 70 same-task, 848 neither). The periods then
+differ in task composition (five tasks in Stimulus 2 and Memory 2, fifteen in
+Response), so this is the overview of the original organization check across
+cut depths, not the controlled comparison. Its ticks carry K alone, with the
+full-tree count in parentheses when ties keep it below K. It needs no
+five-task grid: the driver computes it whenever the modulation trees are saved.
+
+Normal summary runs add both cut supplements when trees are available. Missing
+trees skip only these supplements; missing matched rows still skip all matched
+outputs, but not the all-task cut. To add both to existing v6 matched-task
+results without repeating the permutation tests or including newly finished
+networks, use:
 
 ```bash
 python multiple_task/sibling_row_sharing.py --feature L21e4 --cut-robustness-only
 python multiple_task/sibling_row_sharing.py --feature L21e4 --untrained --cut-robustness-only
+python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_cut_robustness
 python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_cut_robustness_matched_tasks
 ```
 
 This mode uses exactly the summary's saved network list. It validates the
-task/phase metadata and checks that cluster caches reproduce the saved matched
-organization counts, leaving every previous statistic intact. If caches changed,
+task/phase metadata and checks that cluster caches reproduce both the saved
+all-task and matched organization counts, leaving every previous statistic intact. If caches changed,
 recompute the full summary first.
 No network forward pass or new hierarchical clustering is needed.
 To include newly completed networks, run the normal summary command without

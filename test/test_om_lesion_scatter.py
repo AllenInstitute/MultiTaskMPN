@@ -51,18 +51,19 @@ class OmLesionScatterTests(unittest.TestCase):
         self.addCleanup(paper_plot.plt.close, save.call_args.args[0])
         self.assertIn("not the lesion example lesion_run", save.call_args.kwargs["extra"])
 
-    def selection(self, om=2.5):
+    def selection(self, ratio=2.5):
         """A one-example OM selection whose deciding block (input C2, hidden
-        C1 of cluster C7) has OM `om` and whose color limit is 3."""
+        C1 of cluster C7) has cached observed/expected `ratio` and whose
+        upper OM color limit is 3."""
         ratios = np.zeros((1, 2, 2))
-        ratios[0, 1, 0] = om
+        ratios[0, 1, 0] = ratio
         return {"ratios": ratios, "cluster_ids": [7], "chosen": [0], "tops": [(1, 0)], "vmax": 3.0}
 
-    def test_highlight_finds_the_example_block_by_its_om(self):
+    def test_highlight_matches_cached_ratio_and_returns_zero_baseline_om(self):
         with patch.object(paper_plot, "ANAME", "run"), \
                 patch.object(paper_plot, "_om_example_selection", return_value=self.selection()):
             found = paper_plot._om_scatter_highlight(np.array([0.5, 2.5, 1.0]), "run")
-            self.assertEqual(found, {"point": 1, "om": 2.5, "cluster_id": 7,
+            self.assertEqual(found, {"point": 1, "om": 1.5, "cluster_id": 7,
                                      "input": 2, "hidden": 1, "vmax": 3.0})
             with patch("builtins.print"):
                 # Two points with the block's OM: ambiguous, nothing highlighted.
@@ -72,7 +73,8 @@ class OmLesionScatterTests(unittest.TestCase):
 
     def test_highlight_is_drawn_on_top_in_the_examples_color(self):
         cache = self.cache(False)
-        highlight = {"point": 0, "om": 1.5, "cluster_id": 7, "input": 2, "hidden": 1, "vmax": 3.0}
+        highlight = {"point": 0, "om": float(cache["om_vals"][0]) - 1.0,
+                     "cluster_id": 7, "input": 2, "hidden": 1, "vmax": 3.0}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.write(root, cache, False)
@@ -87,8 +89,8 @@ class OmLesionScatterTests(unittest.TestCase):
                   and len(c.get_edgecolors()) and np.allclose(c.get_edgecolors()[0][:3], 0.)]
         self.assertEqual(len(ringed), 1)
         np.testing.assert_allclose(ringed[0].get_offsets(),
-                                   [[cache["om_vals"][0], cache["lesion_diffs"][0]]])
-        expected = paper_plot.plt.get_cmap(paper_plot._MULTITASK_HEATMAP_CMAP)(0.5)
+                                   [[cache["om_vals"][0] - 1.0, cache["lesion_diffs"][0]]])
+        expected = paper_plot.plt.get_cmap(paper_plot._MULTITASK_HEATMAP_CMAP)(0.0)
         np.testing.assert_allclose(ringed[0].get_facecolors()[0], expected)
         self.assertGreater(ringed[0].get_zorder(), 3)
         self.assertIn("Example block", [text.get_text() for text in axis.get_legend().get_texts()])
@@ -156,10 +158,11 @@ class OmLesionScatterTests(unittest.TestCase):
                 axis = figure.axes[0]
                 self.assertEqual(axis.get_ylim()[0], 0)
                 self.assertEqual(len(axis.lines), 1)
-                np.testing.assert_array_equal(axis.lines[0].get_xdata(), entry["binned_medians"]["x"])
+                np.testing.assert_array_equal(axis.lines[0].get_xdata(), entry["binned_medians"]["x"] - 1.0)
                 np.testing.assert_array_equal(axis.lines[0].get_ydata(), entry["binned_medians"]["y"])
                 np.testing.assert_allclose(axis.collections[0].get_offsets(),
-                                           np.column_stack((entry["om_vals"], entry["lesion_diffs"])))
+                                           np.column_stack((entry["om_vals"] - 1.0, entry["lesion_diffs"])))
+                self.assertIn("observed / expected − 1", axis.get_xlabel())
                 scatter = axis.collections[0]
                 self.assertEqual(scatter.get_alpha(), paper_plot._DENSE_SCATTER_ALPHA)
                 self.assertEqual(scatter.get_zorder(), 3)
@@ -214,7 +217,7 @@ class OmLesionScatterTests(unittest.TestCase):
             self.assertIn(MODE_TAG, loaded["path"].name)
             self.assertEqual(loaded["mode"], MODE)
 
-    def test_undefined_rank_still_displays_nonnegative_data_without_legend(self):
+    def test_undefined_rank_still_displays_shifted_om_without_legend(self):
         cache = self.cache(False)
         cache["association"]["rho"] = np.nan
         cache["association"]["p_perm"] = np.nan

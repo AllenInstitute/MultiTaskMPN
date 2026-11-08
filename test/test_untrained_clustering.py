@@ -60,11 +60,14 @@ def _write_run(root, aname, labels, names):
     run_dir = root / aname
     run_dir.mkdir(parents=True)
     neuron = {"variance_method": VARIANCE_METHOD,
-              "result": {"row_tol_labels": labels}, "tb_break_name": names}
+              "result": {"row_tol_labels": labels, "row_tol_k": 3, "col_tol_k": 6},
+              "tb_break_name": names}
     with open(run_dir / f"cluster_info_{aname}.pkl", "wb") as stream:
         pickle.dump({"input_normalized": neuron, "hidden_normalized": neuron}, stream)
     modulation = {"variance_method": VARIANCE_METHOD,
-                  "result_all_lst": [None, {"row_tol_labels": labels}], "tb_break_name": names}
+                  "result_all_lst": [None, {"row_tol_labels": labels, "row_tol_k": 3,
+                                            "col_tol_k": 60}],
+                  "tb_break_name": names}
     with open(run_dir / f"cluster_info_mod_{aname}.pkl", "wb") as stream:
         pickle.dump({"modulation_all_normalized": modulation}, stream)
 
@@ -143,8 +146,11 @@ class UntrainedDiscoveryTests(unittest.TestCase):
         self.assertIn("same_task_all", payload)
         self.assertIn("same_period_all", payload)
         for key in ("same_period_matched_tasks", "same_task_matched_tasks",
-                    "organization_matched_tasks", "cut_robustness_matched_tasks"):
+                    "organization_matched_tasks", "cut_robustness_matched_tasks",
+                    "cut_robustness_all"):  # no five-task grid and no saved trees
             self.assertNotIn(key, payload)
+        self.assertEqual(payload["cluster_counts"]["representations"]["modulation"]["col_k"],
+                         [60, 60, 60])
 
 
 class NamingTests(unittest.TestCase):

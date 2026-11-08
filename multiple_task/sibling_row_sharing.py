@@ -58,9 +58,28 @@ supplements and saves the all-task results without their optional keys.
 Malformed or inconsistent row data still raise an error.
 An optional cut-robustness supplement recuts the full modulation row trees
 at K=5,10,15,20 before selecting those same rows. It retains tied merge
-heights and records actual cluster counts. --cut-robustness-only adds this
-check to an existing result using exactly its saved cohort, without rerunning
-permutations or discovering additional networks.
+heights and records actual cluster counts. Its all-task twin
+(`cut_robustness_all`) keeps every row of every task instead, against the
+all-pairs baseline of the organization check, and needs no five-task grid.
+--cut-robustness-only adds both checks to an existing result using exactly
+its saved cohort, without rerunning permutations or discovering additional
+networks.
+
+The variance-partition supplements use saved normalized feature matrices,
+independently of cluster labels or K. One retains all observed task-period rows;
+the other selects the same five-task/five-phase grid. Both use additive task +
+period least-squares models and average each factor's incremental explained sum
+of squares over the two entry orders. This equals the orthogonal decomposition
+on the balanced matched grid. On the incomplete all-task grid it is an explicit
+allocation of overlapping explanatory information, not unique main effects.
+Observed rows have equal weight; nonexistent phases are never filled with zero.
+Normalization is retained from all tasks; subsets are not renormalized.
+Fractions are computed per network before cohort averaging. The residual includes
+nonadditive interaction and estimation noise; constant profiles are undefined.
+--variance-partition-only updates both supplements for the saved cohort without
+repeating sharing permutations. Missing features skip them in a normal run;
+in update-only mode they leave the existing summary untouched. Missing matched
+rows skip only the matched supplement; all-task results are still available.
 
 The organization check puts the two questions on one scale for every task's
 rows (`summarize_organization`): per run and representation, the fold
@@ -69,7 +88,9 @@ of one task from different periods, sharing a row cluster over any two rows
 sharing one, the chance the cluster sizes give, so the representations,
 with their different numbers of row clusters, compare. It is tested against
 1 over the runs, and the runs' task-minus-period enrichment is compared
-between representations (paired Wilcoxon).
+between representations (paired Wilcoxon). The result also records each
+network's selected cluster counts (`cluster_counts`: the `row_tol_k` and
+`col_tol_k` of every representation) for the paper's cluster-count figure.
 
 Writes multiple_tasks_diagnosis/sibling_row_sharing_{tag}.{pkl,json}, the
 per-pair figure sibling_row_sharing_pairs_{tag}.png (the layout of
@@ -96,8 +117,11 @@ Usage:
     python multiple_task/sibling_row_sharing.py --feature L21e3
     # the untrained controls of every L2 cohort of the default architecture
     python multiple_task/sibling_row_sharing.py --feature L21e4 --untrained
-    # append cut sensitivity to the exact cohort of an existing matched summary
+    # recompute both cut checks for the exact cohort of an existing matched summary
     python multiple_task/sibling_row_sharing.py --feature L21e4 --cut-robustness-only
+    # add task/period feature fractions without repeating sharing permutations
+    python multiple_task/sibling_row_sharing.py --feature L21e4 --variance-partition-only
+    python multiple_task/sibling_row_sharing.py --feature L21e4 --untrained --variance-partition-only
 """
 import json
 import pickle
@@ -142,6 +166,11 @@ MATCHED_TASKS = ("contextdelaydm1", "contextdelaydm2", "delaydm1", "delaydm2",
 MATCHED_PHASES = ("stim1", "stim2", "delay1", "delay2", "go1")
 PERIOD_CONTRASTS = (("stim2", "stim1"), ("delay2", "delay1"))
 CUT_ROBUSTNESS_K = (5, 10, 15, 20)
+VARIANCE_COMPONENTS = ("task", "period", "residual")
+VARIANCE_NORMALIZATION = "per-feature maximum over all task-period rows; subset not renormalized"
+VARIANCE_ALLOCATION = "mean incremental explained sum of squares over both factor orders"
+VARIANCE_ROW_WEIGHTING = "equal observed task-period rows"
+VARIANCE_VIEWS = {"variance_partition_all": False, "variance_partition_matched_tasks": True}
 
 # A summary cell at or above this mean chance is not tested: every task's row
 # of those phases shares one cluster, so sharing says nothing about the pair.
@@ -152,8 +181,9 @@ SIGNIFICANCE = 0.05
 # 4 same-period, 5 restricted permutations with common row pairs, equal
 # network means and BH-adjusted q values; 6 requires trial_time variance
 # with actual trial endpoints. paper_plot requires version 6.
-# The matched-task supplement is additive and has its own schema_version;
-# existing v6 all-task results remain valid without it.
+# The matched-task, cut, cluster-count and variance supplements are additive and carry
+# their own schema_version; existing v6 all-task results remain valid without
+# them (a figure that needs one asks for a rerun).
 RESULT_VERSION = 6
 # Prefixes of the files one run writes, each followed by "{tag}.{suffix}".
 _OUTPUT_PREFIXES = ("sibling_row_sharing_", "sibling_row_sharing_pairs_",
@@ -485,6 +515,165 @@ class MissingMatchedTaskRows(ValueError):
     """Valid row data do not cover the fixed five-task, five-phase grid."""
 
 
+class MissingVarianceFeatures(ValueError):
+    """A cache lacks a representation's saved normalized feature matrix."""
+
+
+def partition_task_period_variance(features, tasks=None, periods=None):
+    """Allocate task/period explained SS by averaging the two factor entry orders.
+
+    Accept a complete task x period x feature grid, or observed row x feature
+    profiles with task/period labels. Fit task-only, period-only and additive
+    models with intercepts, giving residual SS S_T, S_P and S_TP. Task receives
+    [(S_0 - S_T) + (S_P - S_TP)] / 2, period the symmetric expression, and
+    residual S_TP, where S_0 is centered total SS. Divide after summing features.
+    On a balanced grid this is the orthogonal two-factor decomposition. On an
+    incomplete grid it allocates overlapping explanatory information equally
+    over orders; it does not identify unique independent contributions.
+
+    Rows are equally weighted; absent task-period cells are not imputed. SVD
+    projections handle rank-deficient designs, including confounded factors.
+    Residual includes nonadditive interaction and estimation noise. Constant
+    profiles have undefined fractions. No neuron/synapse is a statistical replicate.
+    """
+    values = np.asarray(features, dtype=np.float64)
+    if tasks is None and periods is None:
+        if values.ndim != 3 or min(values.shape[:2]) < 2:
+            raise ValueError("Variance partition requires a finite task x period x feature grid")
+        n_tasks, n_periods, n_features = values.shape
+        tasks = np.repeat(np.arange(n_tasks), n_periods)
+        periods = np.tile(np.arange(n_periods), n_tasks)
+        values = values.reshape(n_tasks * n_periods, n_features)
+    tasks, periods = np.asarray(tasks), np.asarray(periods)
+    if (values.ndim != 2 or values.shape[0] < 2 or values.shape[1] == 0
+            or not np.isfinite(values).all() or tasks.shape != (values.shape[0],)
+            or periods.shape != tasks.shape):
+        raise ValueError("Variance partition requires finite row x feature data and aligned factor labels")
+    # Subtract one cell first so even a non-binary constant (e.g. 0.3) has
+    # exactly zero variation, without a rounding artifact from its mean.
+    centered = values - values[:1]
+    centered -= centered.mean(axis=0, keepdims=True)
+    total = float(np.sum(centered ** 2))
+    # Full indicator matrices each span the intercept, including the joint
+    # rank-deficient design. Only their column spaces enter the calculation.
+    task_design = (tasks[:, None] == np.unique(tasks)[None, :]).astype(float)
+    period_design = (periods[:, None] == np.unique(periods)[None, :]).astype(float)
+    sse = {}
+    for key, design in (("task", task_design), ("period", period_design),
+                        ("joint", np.column_stack((task_design, period_design)))):
+        u, singular, _ = np.linalg.svd(design, full_matrices=False)
+        rank = int(np.sum(singular > singular[0] * max(design.shape) * np.finfo(float).eps))
+        basis = u[:, :rank]
+        residual = centered - basis @ (basis.T @ centered)
+        sse[key] = float(np.sum(residual ** 2))
+    tolerance = 1e-10 * total
+    if (not np.isfinite([total, *sse.values()]).all()
+            or any(sse[key] > total + tolerance or sse["joint"] > sse[key] + tolerance
+                   for key in ("task", "period"))):
+        raise ValueError("Variance partition has inconsistent nested-model sums of squares")
+    # Clip only floating-point subtraction error; genuine nesting violations
+    # above are errors. No threshold is applied to small nonzero effects.
+    sse = {key: min(value, total) for key, value in sse.items()}
+    sse["joint"] = min(sse.values())
+    ss = {"task": ((total - sse["task"]) + (sse["period"] - sse["joint"])) / 2,
+          "period": ((total - sse["period"]) + (sse["task"] - sse["joint"])) / 2,
+          "residual": sse["joint"], "total": total}
+    if not np.isclose(sum(ss[key] for key in VARIANCE_COMPONENTS), ss["total"],
+                      rtol=1e-10, atol=0):
+        raise ValueError("Variance partition sums of squares do not reconstruct the total")
+    fractions = {key: ss[key] / ss["total"] if ss["total"] > 0 else float("nan")
+                 for key in VARIANCE_COMPONENTS}
+    return {"ss": ss, "fractions": fractions, "n_features": values.shape[1],
+            "model_ss": {key: total - value for key, value in sse.items()}}
+
+
+def _partition_features(aname, data, matched=True):
+    """Align all observed or the fixed 25 rows, then use the same decomposition."""
+    expected = ([f"{task}-{phase}" for task in MATCHED_TASKS for phase in MATCHED_PHASES]
+                if matched else None)
+    partitions = {}
+    for rep in REPRESENTATIONS:
+        rows = data.get(rep, {})
+        names = np.asarray(rows.get("tb_break_name", []), dtype=str)
+        if names.ndim != 1 or np.unique(names).size != names.size:
+            raise ValueError(f"{aname}/{rep}: invalid or duplicate feature row names")
+        if expected is None:
+            expected = sorted(names.tolist())
+        if matched:
+            missing = sorted(set(expected) - set(names))
+            if missing:
+                raise MissingMatchedTaskRows(f"{aname}/{rep}: missing feature rows {missing}")
+        elif sorted(names.tolist()) != expected:
+            raise ValueError(f"{aname}/{rep}: inconsistent all-task feature rows")
+        if "variance_features" not in rows:
+            raise MissingVarianceFeatures(f"{aname}/{rep}: missing normalized variance features")
+        features = np.asarray(rows["variance_features"])
+        if (features.ndim != 2 or features.shape[0] != names.size
+                or features.shape[1] == 0 or not np.isfinite(features).all()):
+            raise ValueError(f"{aname}/{rep}: invalid normalized variance features")
+        lookup = {name: i for i, name in enumerate(names)}
+        tasks, periods = _split_row_names(expected)
+        if not np.all(tasks != "") or not np.all(periods != ""):
+            raise ValueError(f"{aname}/{rep}: malformed task-period feature row names")
+        partitions[rep] = partition_task_period_variance(
+            features[[lookup[name] for name in expected]], tasks, periods)
+        partitions[rep]["row_names"] = expected
+    return partitions
+
+
+def summarize_variance_partitions(runs, matched=True):
+    """Pack per-network partitions without retaining large feature matrices."""
+    if not runs or len({name for name, _ in runs}) != len(runs):
+        raise ValueError("Variance partition requires a nonempty, unique network cohort")
+    row_names = runs[0][1][REPRESENTATIONS[0]]["row_names"]
+    reps = {}
+    for rep in REPRESENTATIONS:
+        entries = [data[rep] for _, data in runs]
+        if any(entry["row_names"] != row_names for entry in entries):
+            raise ValueError("Variance partition requires identical task-period rows across networks/representations")
+        reps[rep] = {
+            "anames": [name for name, _ in runs],
+            "ss": {key: [entry["ss"][key] for entry in entries]
+                   for key in (*VARIANCE_COMPONENTS, "total")},
+            "fractions": {key: [entry["fractions"][key] for entry in entries]
+                          for key in VARIANCE_COMPONENTS},
+            "n_features": [entry["n_features"] for entry in entries],
+            "n_valid": sum(entry["ss"]["total"] > 0 for entry in entries),
+            "model_ss": {key: [entry["model_ss"][key] for entry in entries]
+                         for key in ("task", "period", "joint")},
+        }
+    tasks, periods = _split_row_names(row_names)
+    return {"schema_version": 2, "variance_method": diag.VARIANCE_METHOD,
+            "task_names": list(MATCHED_TASKS) if matched else sorted(set(tasks)),
+            "phases": list(MATCHED_PHASES) if matched else sorted(set(periods)),
+            "row_names": row_names, "row_weighting": VARIANCE_ROW_WEIGHTING,
+            "allocation": VARIANCE_ALLOCATION,
+            "normalization": VARIANCE_NORMALIZATION, "representations": reps}
+
+
+def _partition_variance_views(aname, data):
+    """Compute both views while one network's feature matrices are in memory."""
+    views = {}
+    for key, matched in VARIANCE_VIEWS.items():
+        try:
+            views[key] = _partition_features(aname, data, matched=matched)
+        except MissingMatchedTaskRows as exc:
+            print(f"  [skip] {key}: {exc}")
+    return views
+
+
+def _summarize_variance_views(runs):
+    """Never silently drop networks: missing views skip that whole supplement."""
+    entries = {}
+    for key, matched in VARIANCE_VIEWS.items():
+        if all(key in views for _, views in runs):
+            entries[key] = summarize_variance_partitions(
+                [(name, views[key]) for name, views in runs], matched=matched)
+        else:
+            print(f"  [skip] {key}: unavailable for part of the cohort; retaining other summaries.")
+    return entries
+
+
 def _matched_task_rows(experiments):
     """One validated 5 x 5 row grid for all matched-task analyses."""
     expected = {f"{rule}-{phase}" for rule in MATCHED_TASKS for phase in MATCHED_PHASES}
@@ -555,15 +744,18 @@ class MissingRowLinkage(ValueError):
     """An older cluster cache has labels but no saved modulation row tree."""
 
 
-def summarize_cut_robustness_matched_tasks(experiments, k_values=CUT_ROBUSTNESS_K):
-    """Recut full-task modulation trees, then select the fixed 25 rows.
+def _recut_modulation_trees(experiments, k_values, selected_rows):
+    """Recut every network's full modulation row tree at each K of `k_values`
+    and count the organization classes among the rows `selected_rows` names
+    ({aname: row names}), or among every row when it is None.
 
     maxclust preserves tied merge heights instead of arbitrarily splitting
-    identical profiles. K is an upper bound on active clusters; actual full
-    and selected cluster counts are saved. Missing sharing gives NaN, not 0.
-    Curves are descriptive sensitivity checks, not independent replications.
+    identical profiles. K is an upper bound on active clusters; the actual
+    full-tree count (`actual_k`) and the count among the selected rows
+    (`matched_k`, equal to it when every row is selected) are saved. Missing
+    sharing gives NaN, not 0. Curves are descriptive sensitivity checks, not
+    independent replications.
     """
-    matched = _matched_task_rows(experiments)  # validate the entire fixed cohort
     k_values = tuple(k_values)
     if (not k_values or len(set(k_values)) != len(k_values)
             or any(not isinstance(k, (int, np.integer)) or k < 2 for k in k_values)):
@@ -571,7 +763,7 @@ def summarize_cut_robustness_matched_tasks(experiments, k_values=CUT_ROBUSTNESS_
     cuts = {k: {"anames": [], "actual_k": [], "matched_k": [], "counts": {},
                 "enrichment": {name: [] for name in ORGANIZATION_CLASSES},
                 "task_bias": []} for k in k_values}
-    for (aname, data), (_, selected) in zip(experiments, matched):
+    for aname, data in experiments:
         rows = data["modulation"]
         if "row_linkage" not in rows:
             raise MissingRowLinkage(f"{aname}: missing modulation row_linkage")
@@ -590,7 +782,8 @@ def summarize_cut_robustness_matched_tasks(experiments, k_values=CUT_ROBUSTNESS_
         if not np.array_equal(original[:, None] == original, recovered[:, None] == recovered):
             raise ValueError(f"{aname}: modulation tree does not reproduce saved row labels")
         names = np.asarray(rows["tb_break_name"])
-        keep = np.isin(names, selected["modulation"]["tb_break_name"])
+        keep = (np.ones(names.size, dtype=bool) if selected_rows is None
+                else np.isin(names, selected_rows[aname]))
         for k, cut in cuts.items():
             recut = np.empty(labels.size, dtype=int)
             recut[~mask] = fcluster(tree, k, criterion="maxclust")
@@ -604,11 +797,63 @@ def summarize_cut_robustness_matched_tasks(experiments, k_values=CUT_ROBUSTNESS_
             for name in ORGANIZATION_CLASSES:
                 cut["enrichment"][name].append(_enrichment(counts, name))
             cut["task_bias"].append(_enrichment(counts, "task") - _enrichment(counts, "period"))
+    return {"representation": "modulation", "k_values": list(k_values), "cuts": cuts,
+            "cut_method": "maxclust; tied heights retained; actual_k includes any unresponsive class"}
+
+
+def summarize_cut_robustness_matched_tasks(experiments, k_values=CUT_ROBUSTNESS_K):
+    """Recut full-task modulation trees, then select the fixed 25 rows
+    (`_recut_modulation_trees`), against the baseline of all 300 pairs among them."""
+    matched = _matched_task_rows(experiments)  # validate the entire fixed cohort
+    selected = {aname: rows["modulation"]["tb_break_name"] for aname, rows in matched}
     return {**_matched_task_metadata(),
             "clustering": "full-task modulation row trees recut before selecting the 25 rows",
-            "representation": "modulation", "k_values": list(k_values), "cuts": cuts,
-            "cut_method": "maxclust; tied heights retained; actual_k includes any unresponsive class",
+            **_recut_modulation_trees(experiments, k_values, selected),
             "baseline": "sharing among all pairs of the selected 25 rows"}
+
+
+def summarize_cut_robustness_all(experiments, k_values=CUT_ROBUSTNESS_K):
+    """Recut full-task modulation trees and keep every row of every task.
+
+    The all-task twin of `summarize_cut_robustness_matched_tasks`: as in
+    `summarize_organization`, the baseline is sharing among all pairs of a
+    network's rows, so the periods differ in task composition. It needs no
+    five-task grid, only the rows every representation shares.
+    """
+    for aname, data in experiments:
+        _aligned_rows(aname, data)
+    return {"schema_version": 1,
+            "clustering": "full-task modulation row trees recut; every row of every task retained",
+            **_recut_modulation_trees(experiments, k_values, None),
+            "baseline": "sharing among all pairs of every row"}
+
+
+class MissingClusterCounts(ValueError):
+    """A cluster cache lacks the selected K of an axis (older or synthetic)."""
+
+
+def summarize_cluster_counts(experiments):
+    """The number of clusters the clustering selected, per network and
+    representation: `row_k` over the task x period rows and `col_k` over the
+    columns (neurons of input and hidden, synapses of modulation at the
+    plotted pre-grouping), the silhouette-tolerance K (`row_tol_k`,
+    `col_tol_k`) whose labels every row-cluster analysis reads."""
+    counts = {}
+    for rep in REPRESENTATIONS:
+        rows = [(aname, data[rep]) for aname, data in experiments if rep in data]
+        if not rows:
+            continue
+        missing = [aname for aname, rep_data in rows
+                   if "row_k" not in rep_data or "col_k" not in rep_data]
+        if missing:
+            raise MissingClusterCounts(f"{rep}: no selected K saved for {missing}")
+        counts[rep] = {"anames": [aname for aname, _ in rows],
+                       "row_k": [int(rep_data["row_k"]) for _, rep_data in rows],
+                       "col_k": [int(rep_data["col_k"]) for _, rep_data in rows]}
+    return {"schema_version": 1, "representations": counts,
+            "k_definition": ("silhouette-tolerance K (row_tol_k, col_tol_k) of the normalized "
+                             f"clustering; modulation at result_all_lst[{diag.MOD_G_INDEX}]"),
+            "column_units": {"input": "neurons", "hidden": "neurons", "modulation": "synapses"}}
 
 
 # Row-pair classes of the organization check: two rows of one period from
@@ -943,8 +1188,31 @@ def _print_organization(organization):
               f"paired Wilcoxon p = {p_value:.2g}")
 
 
+def _print_cut_robustness(title, entry):
+    """Per K, the clusters the cut formed (full tree, selected rows) and the
+    cohort medians of the synapse task bias and same-period enrichment."""
+    print(f"\n=== {title}: modulation row trees recut at K={entry['k_values']} ===")
+    for k in entry["k_values"]:
+        cut = entry["cuts"][k]
+        print(f"  K={k:<3d}: clusters, full tree {min(cut['actual_k'])}-{max(cut['actual_k'])}, "
+              f"selected rows {min(cut['matched_k'])}-{max(cut['matched_k'])}; median "
+              f"task - period enrichment {np.nanmedian(cut['task_bias']):.2f}; median "
+              f"same-period enrichment {np.nanmedian(cut['enrichment']['period']):.2f}")
+
+
+def _print_cluster_counts(entry):
+    """Per representation and axis, the median and range of the selected K."""
+    print("\n=== Selected number of clusters (silhouette tolerance) ===")
+    for rep, counts in entry["representations"].items():
+        cells = "; ".join(
+            f"{axis} K median {np.median(counts[f'{axis}_k']):g}, "
+            f"range {min(counts[f'{axis}_k'])}-{max(counts[f'{axis}_k'])}"
+            for axis in ("row", "col"))
+        print(f"  {rep:<11s}: {cells} over {len(counts['anames'])} runs")
+
+
 def _update_cut_robustness(tag, root, feature, seed, untrained):
-    """Append sensitivity results to a current summary without changing its cohort."""
+    """Replace the cut supplements of a current summary without changing its cohort."""
     path = OUT_DIR / f"sibling_row_sharing_{tag}.pkl"
     with path.open("rb") as stream:
         payload = pickle.load(stream)
@@ -955,6 +1223,7 @@ def _update_cut_robustness(tag, root, feature, seed, untrained):
             or payload.get("feature") != (None if untrained else feature)
             or payload.get("architecture") != architecture_tag(feature)
             or payload.get("mod_g_index") != diag.MOD_G_INDEX
+            or "representations" not in payload.get("organization", {})
             or matched_metadata.get("schema_version") != 1
             or matched_metadata.get("task_names") != list(MATCHED_TASKS)
             or matched_metadata.get("phases") != list(MATCHED_PHASES)):
@@ -966,15 +1235,17 @@ def _update_cut_robustness(tag, root, feature, seed, untrained):
             raise ValueError(f"{aname}: saved cohort member is missing; summary left unchanged")
         experiments.append((aname, data))
     matched = _matched_task_rows(experiments)
-    cached = payload["organization_matched_tasks"]["representations"]
-    for rep in REPRESENTATIONS:
-        fresh = {aname: _organization_counts(data[rep]) for aname, data in matched}
-        if fresh != cached[rep]["counts"]:
-            raise ValueError("Cluster caches changed; recompute the full summary first")
+    for rows, cached in ((experiments, payload["organization"]["representations"]),
+                         (matched, payload["organization_matched_tasks"]["representations"])):
+        for rep in REPRESENTATIONS:
+            fresh = {aname: _organization_counts(data[rep]) for aname, data in rows}
+            if fresh != cached[rep]["counts"]:
+                raise ValueError("Cluster caches changed; recompute the full summary first")
+    payload["cut_robustness_all"] = summarize_cut_robustness_all(experiments)
     payload["cut_robustness_matched_tasks"] = summarize_cut_robustness_matched_tasks(experiments)
     _save_payload(payload, tag)
-    print(f"Added cut robustness for the existing {len(experiments)} networks; "
-          "all previous statistics retained.")
+    print(f"Added cut robustness (all tasks and matched tasks) for the existing "
+          f"{len(experiments)} networks; all previous statistics retained.")
     return payload
 
 
@@ -989,13 +1260,51 @@ def _save_payload(payload, tag):
     print(f"Saved: {json_path}")
 
 
+def _update_variance_partition(tag, root, feature, seed, untrained):
+    """Update features for exactly the saved cohort; validate before writing anything."""
+    path = OUT_DIR / f"sibling_row_sharing_{tag}.pkl"
+    with path.open("rb") as stream:
+        payload = pickle.load(stream)
+    if (payload.get("version") != RESULT_VERSION or payload.get("seed") != seed
+            or payload.get("variance_method") != diag.VARIANCE_METHOD
+            or bool(payload.get("untrained")) != untrained
+            or payload.get("feature") != (None if untrained else feature)
+            or payload.get("architecture") != (architecture_tag(feature) if feature else None)
+            or payload.get("mod_g_index") != diag.MOD_G_INDEX
+            or "representations" not in payload.get("organization", {})):
+        raise ValueError("Need a current sharing summary; run without --variance-partition-only first")
+    runs = []
+    for aname in payload["experiments"]:
+        data = diag._load_experiment(aname, root=root, include_features=True)
+        if data is None or any(rep not in data for rep in REPRESENTATIONS):
+            raise ValueError(f"{aname}: saved cohort member is missing; summary left unchanged")
+        for rep in REPRESENTATIONS:
+            cached = payload["organization"]["representations"][rep]["counts"][aname]
+            if _organization_counts(data[rep]) != cached:
+                raise ValueError("Cluster caches changed; recompute the full sharing summary first")
+        runs.append((aname, _partition_variance_views(aname, data)))
+        del data
+    entries = _summarize_variance_views(runs)
+    for key in VARIANCE_VIEWS:
+        payload.pop(key, None)
+    payload.update(entries)
+    _save_payload(payload, tag)
+    print(f"Updated {len(entries)} variance-partition views for the existing {len(runs)} networks; "
+          "all other statistics retained.")
+    return payload
+
+
 def main(feature="L21e4", seed=None, untrained=False,
-         n_permutations=10000, permutation_seed=0, cut_robustness_only=False):
+         n_permutations=10000, permutation_seed=0, cut_robustness_only=False,
+         variance_partition_only=False):
     """Analyze every clustered run of `feature` (or one `seed`), or with
     `untrained` every untrained control of `feature`'s architecture (module
     docstring), save the results and draw the three diagnostic figures.
     With `cut_robustness_only`, append cuts to the saved cohort instead.
+    With `variance_partition_only`, update its all-task and matched feature decompositions.
     """
+    if cut_robustness_only and variance_partition_only:
+        raise ValueError("Choose only one supplement-only update")
     tag = feature if feature else "all"
     if seed is not None:
         tag += f"_seed{seed}"
@@ -1009,6 +1318,8 @@ def main(feature="L21e4", seed=None, untrained=False,
             tag = f"{tag}_seed{seed}"
     if cut_robustness_only:
         return _update_cut_robustness(tag, root, feature, seed, untrained)
+    if variance_partition_only:
+        return _update_variance_partition(tag, root, feature, seed, untrained)
     if untrained:
         anames = diag._discover_anames(seed=seed, root=root,
                                        architecture=architecture_tag(feature))
@@ -1018,12 +1329,21 @@ def main(feature="L21e4", seed=None, untrained=False,
     print(f"Discovered {len(anames)} {'untrained ' if untrained else ''}experiment(s) "
           f"(feature={feature}, seed={seed})")
     experiments = []
+    variance_runs = []
     for aname in anames:
-        data = diag._load_experiment(aname, root=root)
+        data = diag._load_experiment(aname, root=root, include_features=True)
         if data is not None and "modulation" not in data:
             print(f"  [skip] {aname}: clustering incomplete (modulation required)")
             continue
         if data is not None:
+            try:
+                variance_runs.append((aname, _partition_variance_views(aname, data)))
+            except MissingVarianceFeatures as exc:
+                variance_runs.append((aname, {}))
+                print(f"  [skip] variance partition: {exc}")
+            finally:
+                for rows in data.values():
+                    rows.pop("variance_features", None)
             experiments.append((aname, data))
     print(f"Loaded cluster info for {len(experiments)}/{len(anames)} experiment(s).")
     if not experiments:
@@ -1046,6 +1366,17 @@ def main(feature="L21e4", seed=None, untrained=False,
     _print_same_period(same_period_all)
     organization = summarize_organization(experiments)
     _print_organization(organization)
+    optional_results = _summarize_variance_views(variance_runs)
+    try:
+        optional_results["cluster_counts"] = summarize_cluster_counts(experiments)
+        _print_cluster_counts(optional_results["cluster_counts"])
+    except MissingClusterCounts as exc:
+        print(f"  [skip] cluster counts: {exc}.")
+    try:
+        optional_results["cut_robustness_all"] = summarize_cut_robustness_all(experiments)
+        _print_cut_robustness("All tasks", optional_results["cut_robustness_all"])
+    except MissingRowLinkage as exc:
+        print(f"  [skip] cut robustness: {exc}; retaining the other summaries.")
 
     matched_results = {}
     try:
@@ -1073,11 +1404,11 @@ def main(feature="L21e4", seed=None, untrained=False,
         _print_same_task({"Matched five tasks": matched_results["same_task_matched_tasks"]})
         print("\nMatched five tasks: organization against the selected 25-row baseline")
         _print_organization(matched_results["organization_matched_tasks"])
-        try:
+        if "cut_robustness_all" in optional_results:  # every network saved its row tree
             matched_results["cut_robustness_matched_tasks"] = (
                 summarize_cut_robustness_matched_tasks(experiments))
-        except MissingRowLinkage as exc:
-            print(f"  [skip] cut robustness: {exc}; retaining the other summaries.")
+            _print_cut_robustness("Matched five tasks",
+                                  matched_results["cut_robustness_matched_tasks"])
 
     # Validate and compute before replacing any previous result files.
     removed = _clear_previous_results(tag)
@@ -1113,6 +1444,7 @@ def main(feature="L21e4", seed=None, untrained=False,
         "same_task_all": same_task_all,
         "same_period_all": same_period_all,
         "organization": organization,
+        **optional_results,
         **matched_results,
     }
     _save_payload(payload, tag)
@@ -1122,7 +1454,8 @@ def main(feature="L21e4", seed=None, untrained=False,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Row-cluster sharing: restricted same-task/same-period "
-                    "permutation tests, organization and legacy sibling-pair diagnostics.")
+                    "permutation tests, organization, task/period variance partition "
+                    "and legacy sibling-pair diagnostics.")
     parser.add_argument("--feature", type=str, default="L21e4",
                         help="Only analyze models with this exact feature "
                              "(default: 'L21e4').")
@@ -1136,10 +1469,16 @@ if __name__ == "__main__":
                         help="Restricted row-label shuffles for task/period tests (default: 10000).")
     parser.add_argument("--permutation-seed", type=int, default=0,
                         help="RNG seed for the restricted permutations (default: 0).")
-    parser.add_argument("--cut-robustness-only", action="store_true",
-                        help="Add cut sensitivity to the existing summary using its exact "
-                             "saved cohort; leave previous statistics unchanged.")
+    update = parser.add_mutually_exclusive_group()
+    update.add_argument("--cut-robustness-only", action="store_true",
+                        help="Recompute both cut checks (all tasks, matched tasks) for the "
+                             "existing summary's exact saved cohort; leave previous "
+                             "statistics unchanged.")
+    update.add_argument("--variance-partition-only", action="store_true",
+                        help="Update all-task and matched task/period variance fractions "
+                             "for the saved cohort, without rerunning sharing permutations.")
     args = parser.parse_args()
     main(feature=args.feature, seed=args.seed, untrained=args.untrained,
          n_permutations=args.n_permutations, permutation_seed=args.permutation_seed,
-         cut_robustness_only=args.cut_robustness_only)
+         cut_robustness_only=args.cut_robustness_only,
+         variance_partition_only=args.variance_partition_only)
