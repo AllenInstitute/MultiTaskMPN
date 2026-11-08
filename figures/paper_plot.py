@@ -6318,7 +6318,7 @@ def plot_row_cluster_counts_seeds():
         ax.set_xlim(-0.6, len(columns) - 0.4)
         ax.spines[["top", "right"]].set_visible(False)
         ax.tick_params(axis="y", labelsize=7)
-        ax.yaxis.set_major_locator(mticker.MaxNLocator(integer=True))
+        ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=4, integer=True))
     axs[0].set_ylabel("Selected number of clusters", fontsize=8)
     handles = [mpl.patches.Patch(facecolor=_TASK_SPECIFICITY_COLORS[rep], edgecolor="k",
                                  linewidth=0.3, label=label.replace("\n", " "))
@@ -6341,37 +6341,41 @@ def _count_range(values):
     return str(low) if low == high else f"{low}–{high}"
 
 
-def _cut_robustness_tick_labels(cohort_cuts, k_values, selected_rows=None):
+def _cut_robustness_tick_labels(cohort_cuts, k_values):
     """Tick labels of the cut-robustness x axis, and the matching axis label.
 
-    Each label gives the target K, followed in parentheses by the full-tree
-    count when tied merge heights keep it below K. With `selected_rows`, the
-    name of the rows the counts are taken over ("the 25 rows"), it adds how
-    many clusters that cut forms among them, as the range over networks,
-    one line per cohort of `cohort_cuts` ([(cohort, [cut per K])]) in that
-    order, which the axis label spells out.
+    Each label gives the target K, followed in parentheses by the range over
+    the networks of every cohort of `cohort_cuts` ([(cohort, [cut per K])])
+    of the full-tree count when tied merge heights keep it below K.
     """
     labels = []
     for index, k in enumerate(k_values):
         full = [count for _, cuts in cohort_cuts for count in cuts[index]["actual_k"]]
-        lines = [str(k) if set(full) == {k} else f"{k} ({_count_range(full)})"]
-        if selected_rows:
-            lines += [_count_range(cuts[index]["matched_k"]) for _, cuts in cohort_cuts]
-        labels.append("\n".join(lines))
-    xlabel = "Full-tree cluster target K"
-    if selected_rows:
-        cohorts = ", ".join(f"{cohort} ({ordinal} line)" for (cohort, _), ordinal
-                            in zip(cohort_cuts, ("2nd", "3rd")))
-        xlabel += f"\nclusters among {selected_rows}:\n{cohorts}"
-    return labels, xlabel
+        labels.append(str(k) if set(full) == {k} else f"{k} ({_count_range(full)})")
+    return labels, "Full-tree cluster target K"
+
+
+_CUT_PAIR_CLASSES = (("task", "Same task,\ndifferent period"),
+                     ("period", "Same period,\ndifferent task"),
+                     ("neither", "Different task\nand period"))
+
+
+def _cut_sharing_fractions(cut, pair_class):
+    """Per network of one saved cut, in cohort order: the fraction of its
+    `pair_class` row pairs (`_organization_counts` classes, "any" for every
+    pair) that fall in one cluster; NaN for a network without such pairs."""
+    return np.array([counts[pair_class]["n_shared"] / counts[pair_class]["n_pairs"]
+                     if counts[pair_class]["n_pairs"] else np.nan
+                     for counts in (cut["counts"][aname] for aname in cut["anames"])],
+                    dtype=float)
 
 
 def plot_row_cluster_cut_robustness():
-    """Synapse task bias and period enrichment after full-tree recuts, over
-    every row of every task: the all-task twin of
-    row_cluster_cut_robustness_matched_tasks, with the same panels, cohorts
-    and K grid. As in row_cluster_organization, the baseline is sharing
-    among all pairs of a network's rows, so the periods differ in task
+    """Synapse row co-clustering after full-tree recuts, over every row of
+    every task: the all-task twin of row_cluster_cut_robustness_matched_tasks,
+    with the same panels, cohorts and K grid. Every pair of a network's rows
+    enters (for a complete run 258 same-period, 70 same-task and 848
+    unrelated pairs of the 49 rows), so the periods differ in task
     composition; the ticks carry K alone. Figure
     multitask_row_cluster_cut_robustness.png.
     """
@@ -6380,15 +6384,18 @@ def plot_row_cluster_cut_robustness():
 
 
 def plot_row_cluster_cut_robustness_matched_tasks():
-    """Synapse task bias and period enrichment after full-tree recuts, among
-    the 25 rows of the same five tasks.
+    """Synapse row co-clustering after full-tree recuts, among the 25 rows of
+    the same five tasks (50 same-task, 50 same-period and 200 unrelated pairs).
 
-    Points are cohort means with SD whiskers over networks (the cohorts
-    offset slightly in K so the whiskers stay apart). K is the maxclust
-    target (ties retained); each tick also shows how many clusters the cut
-    forms among the 25 selected rows, per cohort, and undefined enrichments
-    are reported. The same networks recur across cuts, so no across-cut
-    significance tests.
+    One panel per pair class (`_CUT_PAIR_CLASSES`): the fraction of those
+    pairs that fall in one cluster at each K, as cohort means with SD
+    whiskers over networks, trained solid and untrained dashed at the same
+    K, on one shared 0-1 axis; the thin grey line of each cohort is the
+    fraction over all pairs, the baseline of the organization figure's
+    enrichments. K is the maxclust target (ties retained); the ticks carry
+    K alone, as in the all-task twin, and the save message reports how many
+    clusters each cut forms among the 25 selected rows, per cohort. The same
+    networks recur across cuts, so no across-cut significance tests.
     """
     _plot_row_cluster_cut_robustness(
         "cut_robustness_matched_tasks", "row_cluster_cut_robustness_matched_tasks.png",
@@ -6398,8 +6405,11 @@ def plot_row_cluster_cut_robustness_matched_tasks():
 def _plot_row_cluster_cut_robustness(entry_key, out_filename, rows_title, selected_rows=None):
     """Draw the saved cut entry `entry_key` of the trained runs, with the
     untrained control when its K grid and cut method match, into
-    `out_filename`; `rows_title` names the rows in the suptitle and
-    `selected_rows` their selection, if any (`_cut_robustness_tick_labels`)."""
+    `out_filename`: one panel per pair class of `_CUT_PAIR_CLASSES` with the
+    fraction of those row pairs in one cluster per K (see
+    plot_row_cluster_cut_robustness_matched_tasks). `rows_title` names the
+    rows in the suptitle and `selected_rows` their selection, if any, whose
+    cluster counts the save message then reports."""
     loaded = _load_row_sharing_view(entry_key)
     if loaded is None:
         return
@@ -6410,13 +6420,12 @@ def _plot_row_cluster_cut_robustness(entry_key, out_filename, rows_title, select
               f"Run {_row_sharing_view_command(entry_key, untrained, True)}.")
         control = {}
     k_values = entry["k_values"]
-    fig, axs = plt.subplots(1, 2, figsize=(5.2, 2.8))
-    panels = (("task_bias", "Task preference", "Task − period enrichment (Δ)", 0),
-              ("period", "Cross-task period organization", "Same-period enrichment", 1))
+    x = np.asarray(k_values, dtype=float)
+    fig, axs = plt.subplots(1, 3, figsize=(6.6, 2.8), sharey=True)
     notes, handles, cohort_cuts = [], [], []
-    for source, payload, color, style, cohort, offset in (
-            (entry, data, _TASK_SPECIFICITY_COLORS["modulation"], "-", "trained", -0.3),
-            (control, untrained, "0.4", "--", "untrained", 0.3)):
+    for source, payload, color, style, cohort in (
+            (entry, data, _TASK_SPECIFICITY_COLORS["modulation"], "-", "trained"),
+            (control, untrained, "0.4", "--", "untrained")):
         if not source:
             continue
         cuts = [source["cuts"][k] for k in k_values]
@@ -6426,32 +6435,35 @@ def _plot_row_cluster_cut_robustness(entry_key, out_filename, rows_title, select
         cohort_cuts.append((cohort, cuts))
         handles.append(mpl.lines.Line2D([], [], color=color, linestyle=style, linewidth=1.8,
                                         label=f"{cohort} (n={len(payload['experiments'])})"))
-        # Offset the cohorts in K only when both are drawn, so their whiskers stay apart.
-        x = np.asarray(k_values, dtype=float) + (offset if control else 0.0)
-        for ax, (metric, _, _, _) in zip(axs, panels):
-            values = np.array([cut["task_bias"] if metric == "task_bias"
-                               else cut["enrichment"][metric] for cut in cuts], dtype=float)
-            finite = [v[np.isfinite(v)] for v in values]
+        baseline = np.array([np.nanmean(_cut_sharing_fractions(cut, "any")) for cut in cuts])
+        notes.append(f"{cohort} all-pair shared fraction means={np.round(baseline, 3).tolist()}")
+        for ax, (pair_class, _) in zip(axs, _CUT_PAIR_CLASSES):
+            finite = [v[np.isfinite(v)] for v in
+                      (_cut_sharing_fractions(cut, pair_class) for cut in cuts)]
             means = np.array([v.mean() if v.size else np.nan for v in finite])
             sds = np.array([v.std(ddof=1) if v.size > 1 else 0.0 for v in finite])
+            ax.plot(x, baseline, color="0.75", linestyle=style, linewidth=0.8, zorder=2)
             ax.errorbar(x, means, yerr=sds, color=color, linestyle=style, marker="o",
                         markersize=3, linewidth=1.8, elinewidth=0.8, capsize=2, zorder=4)
-            notes.append(f"{cohort} {metric} means={np.round(means, 3).tolist()}, "
+            notes.append(f"{cohort} {pair_class} shared fraction means={np.round(means, 3).tolist()}, "
                          f"SDs={np.round(sds, 3).tolist()}, valid n={[v.size for v in finite]}")
         notes.append(f"{cohort} actual full-tree K ranges=" + str([
             (min(cut["actual_k"]), max(cut["actual_k"])) for cut in cuts]))
         if selected_rows:
             notes.append(f"{cohort} clusters among {selected_rows}=" + str([
                 (min(cut["matched_k"]), max(cut["matched_k"])) for cut in cuts]))
-    tick_labels, xlabel = _cut_robustness_tick_labels(cohort_cuts, k_values, selected_rows)
-    for ax, (_, title, ylabel, baseline) in zip(axs, panels):
-        ax.axhline(baseline, color="0.65", linestyle=":", linewidth=0.8, zorder=1)
+    handles.append(mpl.lines.Line2D([], [], color="0.75", linewidth=0.8,
+                                    label="all pairs (thin grey)"))
+    tick_labels, xlabel = _cut_robustness_tick_labels(cohort_cuts, k_values)
+    for ax, (_, title) in zip(axs, _CUT_PAIR_CLASSES):
         ax.set_title(title, fontsize=8)
-        ax.set_ylabel(ylabel, fontsize=8)
         ax.set_xlabel(xlabel, fontsize=7)
         ax.set_xticks(k_values)
         ax.set_xticklabels(tick_labels, fontsize=6.5)
         ax.spines[["top", "right"]].set_visible(False)
+    axs[0].set_ylim(0, 1)
+    axs[0].set_yticks([0, 0.5, 1])
+    axs[0].set_ylabel("Row pairs in one cluster\n(fraction)", fontsize=8)
     fig.suptitle(f"{rows_title}; synapses; mean ± SD over networks", y=0.87, fontsize=7)
     _state_space_figure_legend(fig, handles, ncol=len(handles), top=0.9)
     _save_fig(fig, _multitask_out(out_filename),

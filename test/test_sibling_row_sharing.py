@@ -689,7 +689,7 @@ class DriverTests(unittest.TestCase):
             for key in supplement_keys:
                 self.assertNotIn(key, payload)
                 self.assertNotIn(key, saved_json)
-            self.assertEqual(payload["cut_robustness_all"]["cuts"][5]["anames"], names)
+            self.assertEqual(payload["cut_robustness_all"]["cuts"][sharing.CUT_ROBUSTNESS_K[0]]["anames"], names)
             self.assertEqual(saved_json["cut_robustness_all"]["k_values"],
                              list(sharing.CUT_ROBUSTNESS_K))
             for key in ("same_task_all", "same_period_all"):
@@ -896,29 +896,36 @@ class PaperFigureTests(unittest.TestCase):
             self.addCleanup(paper_plot.plt.close, save.call_args.args[0])
         return save, printed
 
-    def test_cut_plot_uses_saved_curves_with_independent_panel_axes(self):
+    def test_cut_plot_shows_shared_pair_fractions_per_class_on_one_axis(self):
+        """One panel per pair class with the fraction of those pairs in one
+        cluster, cohort means over networks, on a shared 0-1 axis."""
         payload = self._payload()
         payload["cut_robustness_matched_tasks"] = sharing.summarize_cut_robustness_matched_tasks(
             [(name, _tree_experiment()) for name in payload["experiments"]], (3, 5))
         save, _ = self._render(paper_plot.plot_row_cluster_cut_robustness_matched_tasks, payload)
         axes = save.call_args.args[0].axes
-        self.assertEqual(len(axes), 2)
-        self.assertFalse(axes[0].get_shared_y_axes().joined(*axes))
-        bars = [c for c in axes[0].containers if isinstance(c, ErrorbarContainer)]
-        self.assertEqual(len(bars), 1)
+        self.assertEqual([ax.get_title().split(",")[0] for ax in axes],
+                         ["Same task", "Same period", "Different task\nand period"])
+        self.assertTrue(axes[0].get_shared_y_axes().joined(*axes[:2]))
+        self.assertEqual(axes[0].get_ylim(), (0, 1))
         cuts = payload["cut_robustness_matched_tasks"]["cuts"]
-        np.testing.assert_allclose(bars[0].lines[0].get_ydata(),
-                                   [np.mean(cuts[k]["task_bias"]) for k in (3, 5)])
-        np.testing.assert_allclose(bars[0].lines[0].get_xdata(), [3, 5])  # no offset alone
+        for ax, pair_class in zip(axes, ("task", "period", "neither")):
+            bars = [c for c in ax.containers if isinstance(c, ErrorbarContainer)]
+            self.assertEqual(len(bars), 1)  # trained only; the grey baseline is a plain line
+            expected = [np.mean([counts[pair_class]["n_shared"] / counts[pair_class]["n_pairs"]
+                                 for counts in cuts[k]["counts"].values()]) for k in (3, 5)]
+            np.testing.assert_allclose(bars[0].lines[0].get_ydata(), expected)
+            np.testing.assert_allclose(bars[0].lines[0].get_xdata(), [3, 5])
+        bars = [c for c in axes[0].containers if isinstance(c, ErrorbarContainer)]
         # Identical networks: SD 0, so every whisker collapses onto its mean.
         heights = [seg[1, 1] - seg[0, 1] for seg in bars[0].lines[2][0].get_segments()]
         np.testing.assert_allclose(heights, 0, atol=1e-9)
         self.assertIn("SDs=", save.call_args.kwargs["extra"])
         self.assertIn("actual full-tree K ranges", save.call_args.kwargs["extra"])
 
-    def test_cut_plot_ticks_show_the_clusters_formed_among_the_25_rows(self):
-        """Each tick: the target K over the range of clusters the cut forms
-        among the selected rows, one line per cohort (trained, untrained)."""
+    def test_matched_cut_plot_ticks_carry_k_alone_and_log_the_25_row_counts(self):
+        """The ticks show the target K as in the all-task twin; the clusters
+        each cut forms among the selected rows go to the save message."""
         payload, control = self._payload(), self._untrained_payload()
         for saved in (payload, control):
             saved["cut_robustness_matched_tasks"] = sharing.summarize_cut_robustness_matched_tasks(
@@ -927,19 +934,15 @@ class PaperFigureTests(unittest.TestCase):
         for k in (3, 5):  # one tree for every network: a single count, not a range
             self.assertEqual(len(set(cuts[k]["matched_k"])), 1)
             self.assertEqual(cuts[k]["actual_k"], [k] * len(payload["experiments"]))
-        expected = [f"{k}\n{cuts[k]['matched_k'][0]}\n{cuts[k]['matched_k'][0]}" for k in (3, 5)]
-        save, _ = self._render(paper_plot.plot_row_cluster_cut_robustness_matched_tasks,
-                               payload, control)
-        for ax in save.call_args.args[0].axes:
-            self.assertEqual([tick.get_text() for tick in ax.get_xticklabels()], expected)
-            self.assertIn("clusters among the 25 rows:\ntrained (2nd line), untrained (3rd line)",
-                          ax.get_xlabel())
-        save, _ = self._render(paper_plot.plot_row_cluster_cut_robustness_matched_tasks, payload)
-        ax = save.call_args.args[0].axes[0]
-        self.assertEqual([tick.get_text() for tick in ax.get_xticklabels()],
-                         [label.rsplit("\n", 1)[0] for label in expected])
-        self.assertTrue(ax.get_xlabel().endswith("trained (2nd line)"))
-        self.assertIn("clusters among the 25 rows=", save.call_args.kwargs["extra"])
+        for args in ((payload, control), (payload,)):
+            save, _ = self._render(paper_plot.plot_row_cluster_cut_robustness_matched_tasks, *args)
+            for ax in save.call_args.args[0].axes:
+                self.assertEqual([tick.get_text() for tick in ax.get_xticklabels()], ["3", "5"])
+                self.assertEqual(ax.get_xlabel(), "Full-tree cluster target K")
+            extra = save.call_args.kwargs["extra"]
+            self.assertIn("trained clusters among the 25 rows=" + str(
+                [(cuts[k]["matched_k"][0], cuts[k]["matched_k"][0]) for k in (3, 5)]), extra)
+            self.assertEqual("untrained clusters among the 25 rows=" in extra, len(args) == 2)
 
     def test_all_task_cut_plot_ticks_carry_k_alone(self):
         """Every row enters, so the ticks show the target K (with the full-tree
@@ -956,9 +959,9 @@ class PaperFigureTests(unittest.TestCase):
             self.assertEqual([tick.get_text() for tick in ax.get_xticklabels()], ["3", "5"])
             self.assertEqual(ax.get_xlabel(), "Full-tree cluster target K")
         bars = [c for c in axes[0].containers if isinstance(c, ErrorbarContainer)]
-        self.assertEqual(len(bars), 2)  # trained, untrained; offset in K to keep whiskers apart
-        np.testing.assert_allclose(bars[0].lines[0].get_xdata(), [2.7, 4.7])
-        np.testing.assert_allclose(bars[1].lines[0].get_xdata(), [3.3, 5.3])
+        self.assertEqual(len(bars), 2)  # trained, untrained, both at the same K
+        np.testing.assert_allclose(bars[0].lines[0].get_xdata(), [3, 5])
+        np.testing.assert_allclose(bars[1].lines[0].get_xdata(), [3, 5])
         self.assertTrue(save.call_args.args[0]._suptitle.get_text().startswith("All tasks"))
         extra = save.call_args.kwargs["extra"]
         self.assertIn("actual full-tree K ranges", extra)

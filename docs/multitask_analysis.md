@@ -1092,27 +1092,30 @@ cluster because their features are near zero; that is not memory coding.
 
 The further figure `multitask_row_cluster_cut_robustness_matched_tasks_n.png`
 assesses cut sensitivity for synapses. The complete saved modulation row tree
-is cut at the prespecified targets K=5,10,15,20, **before** selecting the same
-25 rows (K=5 is as coarse as the five periods; the saved modulation row
-clusterings themselves hold 10 to 19 clusters). Its two panels show
-`Delta = E_same_task - E_same_period` and cross-task
-same-period enrichment against the selected 300-pair baseline. Positive Delta
-indicates task preference, negative Delta period preference, and zero no
-preference. Points are cohort means with SD whiskers over networks (SD
-describes spread and is not a confidence interval; the cohorts are offset
-slightly in K so the whiskers stay apart), with independent linear y ranges
-retaining zero and negative values. Differences are calculated within each
-network before averaging. These repeated cuts are sensitivity checks, not
-additional independent samples or new significance tests.
+is cut at the prespecified targets K=4,6,...,20, **before** selecting the same
+25 rows (K=4 is coarser than the five periods; the saved modulation row
+clusterings themselves hold 10 to 19 clusters). Its three panels show, for
+the same-task (different period), same-period (different task) and unrelated
+pairs among the selected 25 rows (50, 50 and 200 pairs), the fraction of
+those pairs that fall in one cluster at each K, on one shared 0 to 1 axis.
+Points are cohort means with SD whiskers over networks (SD describes spread
+and is not a confidence interval; both cohorts are drawn at the same K); the
+thin grey line of each cohort is the fraction over all 300 pairs, the baseline
+of the organization figure's enrichments, so an enrichment is a colored
+curve over the grey one. Fractions are calculated within each network before
+averaging. The saved entries still hold the enrichments and
+`Delta = E_same_task - E_same_period` per network and K. These repeated cuts
+are sensitivity checks, not additional independent samples or new
+significance tests.
 
 The cut supplement is stored as `cut_robustness_matched_tasks` (schema 1).
 `fcluster(..., criterion="maxclust")` retains tied merge heights, so K is an
 upper bound on the number of active clusters. Actual full-tree cluster counts
 (including any pre-existing held-out unresponsive class) and selected-row cluster
-counts are saved for every network and K. Each x tick of the figure lists,
-under the target K, the range over networks of clusters formed among the 25
-rows, one line per cohort (trained, then untrained), and appends the full-tree
-count in parentheses when ties keep it below K; the plot log reports both ranges.
+counts are saved for every network and K. The x ticks carry the target K,
+with the full-tree count in parentheses when ties keep it below K; the plot
+log reports, per cohort, the range over networks of the full-tree counts and
+of the clusters formed among the 25 rows.
 Identical profiles are not arbitrarily split to force a requested K. A zero
 same-period enrichment remains zero; if no selected pair shares a cluster,
 the baseline is zero and enrichment/Delta are undefined (NaN), not zero.
@@ -1120,13 +1123,13 @@ The saved tree must reproduce the original row partition before any recutting.
 
 The all-task twin `multitask_row_cluster_cut_robustness_n.png` (stored as
 `cut_robustness_all`, schema 1) recuts the same trees at the same K but keeps
-every row of every task, so, as in the organization figure, the baseline is
-sharing among all pairs of a network's rows (49 rows and 1176 pairs for a
-complete run: 258 same-period, 70 same-task, 848 neither). The periods then
+every row of every task, so its pair classes and grey baseline are those of
+all pairs of a network's rows (49 rows and 1176 pairs for a complete run:
+258 same-period, 70 same-task, 848 neither), as in the organization figure.
+The periods then
 differ in task composition (five tasks in Stimulus 2 and Memory 2, fifteen in
 Response), so this is the overview of the original organization check across
-cut depths, not the controlled comparison. Its ticks carry K alone, with the
-full-tree count in parentheses when ties keep it below K. It needs no
+cut depths, not the controlled comparison. Its ticks follow the same rule. It needs no
 five-task grid: the driver computes it whenever the modulation trees are saved.
 
 Normal summary runs add both cut supplements when trees are available. Missing
@@ -1179,7 +1182,8 @@ At the original cut, all 25 trained and all seven untrained modulation networks
 have positive Delta; medians are 1.579 and 3.943, respectively. Input and hidden
 Delta values are negative in both cohorts. The full-tree recuts, on the K grid
 of that time (5 to 25; K=25 was dropped on 2026-11-07 because the saved
-clusterings hold at most 19 clusters), achieved exactly the requested K for
+clusterings hold at most 19 clusters, and the grid became 4, 6, ..., 20 on
+2026-11-08), achieved exactly the requested K for
 every network, with no undefined enrichments:
 
 | K | Trained Delta median | Untrained Delta median | Trained same-period median | Untrained same-period median |
