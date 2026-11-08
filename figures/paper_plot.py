@@ -6069,12 +6069,40 @@ def plot_row_cluster_organization_matched_tasks():
         "organization_matched_tasks", "row_cluster_organization_matched_tasks.png")
 
 
+def _count_range(values):
+    """'12' or '12–15': the range of integer counts over networks."""
+    low, high = int(min(values)), int(max(values))
+    return str(low) if low == high else f"{low}–{high}"
+
+
+def _cut_robustness_tick_labels(cohort_cuts, k_values):
+    """Tick labels of the cut-robustness x axis, and the matching axis label.
+
+    Each label gives the target K and, below it, how many clusters that cut
+    actually forms among the 25 selected rows, as the range over networks,
+    one line per cohort of `cohort_cuts` ([(cohort, [cut per K])]) in that
+    order, which the axis label spells out. When tied merge heights keep the
+    full tree below K, the full-tree count follows K in parentheses.
+    """
+    labels = []
+    for index, k in enumerate(k_values):
+        full = [count for _, cuts in cohort_cuts for count in cuts[index]["actual_k"]]
+        head = str(k) if set(full) == {k} else f"{k} ({_count_range(full)})"
+        labels.append("\n".join(
+            [head] + [_count_range(cuts[index]["matched_k"]) for _, cuts in cohort_cuts]))
+    cohorts = ", ".join(f"{cohort} ({ordinal} line)" for (cohort, _), ordinal
+                        in zip(cohort_cuts, ("2nd", "3rd")))
+    return labels, f"Full-tree cluster target K\nclusters among the 25 rows:\n{cohorts}"
+
+
 def plot_row_cluster_cut_robustness_matched_tasks():
     """Synapse task bias and period enrichment after full-tree recuts.
 
     Each thin line is a network, thick lines are medians. K is the maxclust
-    target (ties retained); actual counts and undefined enrichments are reported.
-    The same networks recur across cuts, so no across-cut significance tests.
+    target (ties retained); each tick also shows how many clusters the cut
+    forms among the 25 selected rows, per cohort, and undefined enrichments
+    are reported. The same networks recur across cuts, so no across-cut
+    significance tests.
     """
     loaded = _load_row_sharing_view("cut_robustness_matched_tasks")
     if loaded is None:
@@ -6089,7 +6117,7 @@ def plot_row_cluster_cut_robustness_matched_tasks():
     fig, axs = plt.subplots(1, 2, figsize=(5.2, 2.8))
     panels = (("task_bias", "Task preference", "Task − period enrichment (Δ)", 0),
               ("period", "Cross-task period organization", "Same-period enrichment", 1))
-    notes, handles = [], []
+    notes, handles, cohort_cuts = [], [], []
     for source, payload, color, style, cohort in (
             (entry, data, _TASK_SPECIFICITY_COLORS["modulation"], "-", "trained"),
             (control, untrained, "0.4", "--", "untrained")):
@@ -6099,6 +6127,7 @@ def plot_row_cluster_cut_robustness_matched_tasks():
         if any(cut["anames"] != payload["experiments"] for cut in cuts):
             plt.close(fig)
             raise ValueError("Cut robustness must use the saved cohort in the same order at every K")
+        cohort_cuts.append((cohort, cuts))
         handles.append(mpl.lines.Line2D([], [], color=color, linestyle=style, linewidth=1.8,
                                         label=f"{cohort} (n={len(payload['experiments'])})"))
         for ax, (metric, _, _, _) in zip(axs, panels):
@@ -6113,12 +6142,16 @@ def plot_row_cluster_cut_robustness_matched_tasks():
                          f"valid n={np.isfinite(values).sum(axis=1).tolist()}")
         notes.append(f"{cohort} actual full-tree K ranges=" + str([
             (min(cut["actual_k"]), max(cut["actual_k"])) for cut in cuts]))
+        notes.append(f"{cohort} clusters among the 25 rows=" + str([
+            (min(cut["matched_k"]), max(cut["matched_k"])) for cut in cuts]))
+    tick_labels, xlabel = _cut_robustness_tick_labels(cohort_cuts, k_values)
     for ax, (_, title, ylabel, baseline) in zip(axs, panels):
         ax.axhline(baseline, color="0.65", linestyle=":", linewidth=0.8, zorder=1)
         ax.set_title(title, fontsize=8)
         ax.set_ylabel(ylabel, fontsize=8)
-        ax.set_xlabel("Full-tree cluster target K", fontsize=8)
+        ax.set_xlabel(xlabel, fontsize=7)
         ax.set_xticks(k_values)
+        ax.set_xticklabels(tick_labels, fontsize=6.5)
         ax.spines[["top", "right"]].set_visible(False)
     fig.suptitle("Same five tasks; synapses; thin lines = networks", y=0.87, fontsize=7)
     _state_space_figure_legend(fig, handles, ncol=len(handles), top=0.9)

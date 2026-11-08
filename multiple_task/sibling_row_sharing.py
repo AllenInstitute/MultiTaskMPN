@@ -57,7 +57,7 @@ If any network lacks a required task/phase row, the driver skips the matched
 supplements and saves the all-task results without their optional keys.
 Malformed or inconsistent row data still raise an error.
 An optional cut-robustness supplement recuts the full modulation row trees
-at K=5,10,15,20,25 before selecting those same rows. It retains tied merge
+at K=5,10,15,20 before selecting those same rows. It retains tied merge
 heights and records actual cluster counts. --cut-robustness-only adds this
 check to an existing result using exactly its saved cohort, without rerunning
 permutations or discovering additional networks.
@@ -141,7 +141,7 @@ MATCHED_TASKS = ("contextdelaydm1", "contextdelaydm2", "delaydm1", "delaydm2",
                  "multidelaydm")
 MATCHED_PHASES = ("stim1", "stim2", "delay1", "delay2", "go1")
 PERIOD_CONTRASTS = (("stim2", "stim1"), ("delay2", "delay1"))
-CUT_ROBUSTNESS_K = (5, 10, 15, 20, 25)
+CUT_ROBUSTNESS_K = (5, 10, 15, 20)
 
 # A summary cell at or above this mean chance is not tested: every task's row
 # of those phases shares one cluster, so sharing says nothing about the pair.

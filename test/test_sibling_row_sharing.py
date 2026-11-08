@@ -820,6 +820,31 @@ class PaperFigureTests(unittest.TestCase):
         np.testing.assert_allclose(medians[0].get_ydata(), expected)
         self.assertIn("actual full-tree K ranges", save.call_args.kwargs["extra"])
 
+    def test_cut_plot_ticks_show_the_clusters_formed_among_the_25_rows(self):
+        """Each tick: the target K over the range of clusters the cut forms
+        among the selected rows, one line per cohort (trained, untrained)."""
+        payload, control = self._payload(), self._untrained_payload()
+        for saved in (payload, control):
+            saved["cut_robustness_matched_tasks"] = sharing.summarize_cut_robustness_matched_tasks(
+                [(name, _tree_experiment()) for name in saved["experiments"]], (3, 5))
+        cuts = payload["cut_robustness_matched_tasks"]["cuts"]
+        for k in (3, 5):  # one tree for every network: a single count, not a range
+            self.assertEqual(len(set(cuts[k]["matched_k"])), 1)
+            self.assertEqual(cuts[k]["actual_k"], [k] * len(payload["experiments"]))
+        expected = [f"{k}\n{cuts[k]['matched_k'][0]}\n{cuts[k]['matched_k'][0]}" for k in (3, 5)]
+        save, _ = self._render(paper_plot.plot_row_cluster_cut_robustness_matched_tasks,
+                               payload, control)
+        for ax in save.call_args.args[0].axes:
+            self.assertEqual([tick.get_text() for tick in ax.get_xticklabels()], expected)
+            self.assertIn("clusters among the 25 rows:\ntrained (2nd line), untrained (3rd line)",
+                          ax.get_xlabel())
+        save, _ = self._render(paper_plot.plot_row_cluster_cut_robustness_matched_tasks, payload)
+        ax = save.call_args.args[0].axes[0]
+        self.assertEqual([tick.get_text() for tick in ax.get_xticklabels()],
+                         [label.rsplit("\n", 1)[0] for label in expected])
+        self.assertTrue(ax.get_xlabel().endswith("trained (2nd line)"))
+        self.assertIn("clusters among the 25 rows=", save.call_args.kwargs["extra"])
+
     def test_cut_plot_rejects_changed_membership(self):
         payload = self._payload()
         payload["cut_robustness_matched_tasks"] = sharing.summarize_cut_robustness_matched_tasks(

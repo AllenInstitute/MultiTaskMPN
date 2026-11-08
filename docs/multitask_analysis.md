@@ -979,8 +979,10 @@ cluster because their features are near zero; that is not memory coding.
 
 The further figure `multitask_row_cluster_cut_robustness_matched_tasks_n.png`
 assesses cut sensitivity for synapses. The complete saved modulation row tree
-is cut at the prespecified targets K=5,10,15,20,25, **before** selecting the same
-25 rows. Its two panels show `Delta = E_same_task - E_same_period` and cross-task
+is cut at the prespecified targets K=5,10,15,20, **before** selecting the same
+25 rows (K=5 is as coarse as the five periods; the saved modulation row
+clusterings themselves hold 10 to 19 clusters). Its two panels show
+`Delta = E_same_task - E_same_period` and cross-task
 same-period enrichment against the selected 300-pair baseline. Positive Delta
 indicates task preference, negative Delta period preference, and zero no
 preference. Thin lines track individual networks and thick lines show cohort
@@ -993,7 +995,10 @@ The cut supplement is stored as `cut_robustness_matched_tasks` (schema 1).
 `fcluster(..., criterion="maxclust")` retains tied merge heights, so K is an
 upper bound on the number of active clusters. Actual full-tree cluster counts
 (including any pre-existing held-out unresponsive class) and selected-row cluster
-counts are saved for every network and K; the plot log reports full-tree ranges.
+counts are saved for every network and K. Each x tick of the figure lists,
+under the target K, the range over networks of clusters formed among the 25
+rows, one line per cohort (trained, then untrained), and appends the full-tree
+count in parentheses when ties keep it below K; the plot log reports both ranges.
 Identical profiles are not arbitrarily split to force a requested K. A zero
 same-period enrichment remains zero; if no selected pair shares a cluster,
 the baseline is zero and enrichment/Delta are undefined (NaN), not zero.
@@ -1045,8 +1050,10 @@ cohort comparisons are not tests of differences between periods.
 
 At the original cut, all 25 trained and all seven untrained modulation networks
 have positive Delta; medians are 1.579 and 3.943, respectively. Input and hidden
-Delta values are negative in both cohorts. The full-tree recuts achieved exactly
-the requested K for every network, with no undefined enrichments:
+Delta values are negative in both cohorts. The full-tree recuts, on the K grid
+of that time (5 to 25; K=25 was dropped on 2026-11-07 because the saved
+clusterings hold at most 19 clusters), achieved exactly the requested K for
+every network, with no undefined enrichments:
 
 | K | Trained Delta median | Untrained Delta median | Trained same-period median | Untrained same-period median |
 |---|---:|---:|---:|---:|
