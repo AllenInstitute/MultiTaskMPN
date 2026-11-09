@@ -4346,33 +4346,32 @@ OVERMEMBERSHIP_EXAMPLE_SELECT_MIN_EXPECTED = 5.0
 # the cache's min_expected), so blocks expecting 1 to 3 synapses appear here
 # but not in the scatter.
 OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED = 1.0
-# The dot matrix keeps the lesion scatters' footprint, a 1.5-inch square; the
+# The block map keeps the lesion scatters' footprint, a 1.5-inch square; the
 # figure is larger to fit the marginal enrichment bars above and to its right.
 _OVERMEMBERSHIP_EXAMPLE_FIGSIZE = (2.5, 2.5)
-# Whether the dot matrices name clusters on their axes (C2, C8, U ...). Off:
+# Whether the block maps name clusters on their axes (C2, C8, U ...). Off:
 # the axes keep their "Input cluster" / "Hidden cluster" titles and no ticks;
 # which clusters would be named still goes to the saved message.
 OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES = False
-# Dot-matrix companion: the largest observed or expected count of any example
-# fills this fraction of a cell's side, one area scale for all examples,
-# filled discs (observed) and rings (expected) alike.
-_OVERMEMBERSHIP_DOT_MAX_FILL = 0.85
+# Block maps: each shown block is a cell colored by its OM on _OM_BLOCK_CMAP,
+# a diverging map centered on chance (OM = 0; _om_block_cmap_norm). A block
+# expecting fewer synapses than the ranking threshold is drawn as a square of
+# this fraction of the cell side, so a ratio over a handful of synapses does
+# not carry the weight of a well-supported one.
+_OM_BLOCK_CMAP = "RdBu_r"
+_OM_THIN_BLOCK_SIDE = 0.6
 # The marginal bars show log2 of each input or hidden cluster's
 # observed/expected over its shown blocks, on an axis symmetric about chance
 # (0) that spans at least this many doublings and grows to cover every
 # example; a cluster with no synapse of the example sits at the floor.
 _OVERMEMBERSHIP_MARGIN_MIN_DOUBLINGS = 1.0
-# Round counts the size key draws: the three largest at or below the area
-# scale's maximum (the largest observed or expected count of any example).
-_OVERMEMBERSHIP_DOT_REFERENCE_COUNTS = (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000)
-# The dot matrix labels at most this many input and hidden clusters per axis:
+# The block map labels at most this many input and hidden clusters per axis:
 # those holding the cluster's most significant enrichments, ranked by the
 # Poisson z of their best shown block, (observed - expected) / sqrt(expected),
 # which unlike OM is not inflated by a near-empty block. A label
 # that would overlap a more significant neighbour's is dropped, never
 # staggered onto a second row.
 _OVERMEMBERSHIP_DOT_MAX_LABELS = 3
-_OVERMEMBERSHIP_DOT_LEGEND_FIGSIZE = (0.9, 1.2)
 
 
 def _ranked_om_clusters(ratios, expected, cluster_ids, skip_ids=()):
@@ -4431,37 +4430,26 @@ def _non_colliding_labels(indices, names, cell_pt, which, fontsize=7):
 
 
 def _om_dot_cell_pt(n_in, n_hid, layout):
-    """Side of one dot-matrix cell in points, from the figure size and the
+    """Side of one block-map cell in points, from the figure size and the
     axes rectangle (`layout` has left/right/bottom/top fractions)."""
     width_in = _OVERMEMBERSHIP_EXAMPLE_FIGSIZE[0] * (layout["right"] - layout["left"])
     height_in = _OVERMEMBERSHIP_EXAMPLE_FIGSIZE[1] * (layout["top"] - layout["bottom"])
     return 72.0 * min(width_in / n_in, height_in / n_hid)
 
 
-def _save_dot_size_key(out_path, references, max_area, max_count, extra=""):
-    """The dot matrices' size key as its own small figure: one grey disc per
-    round reference count at the exact area the matrices use for it, and one
-    ring at the largest reference, the expected count on the same scale."""
-    handles = [mpl.lines.Line2D([], [], marker="o", linestyle="none", color="0.5",
-                                markersize=np.sqrt(max_area * count / max_count),
-                                label=f"{count:d}")
-               for count in references]
-    handles.append(mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="none",
-                                    markeredgecolor=_OM_DOT_RING_COLOR, markeredgewidth=0.5,
-                                    markersize=np.sqrt(max_area * references[-1] / max_count),
-                                    label="expected"))
-    fig = plt.figure(figsize=_OVERMEMBERSHIP_DOT_LEGEND_FIGSIZE)
-    fig.legend(handles=handles, loc="center", title="synapses", title_fontsize=6, fontsize=6,
-               frameon=False, handletextpad=0.4, labelspacing=0.6)
-    _save_fig(fig, out_path, extra=extra)
+def _om_block_cmap_norm(vmax):
+    """The block maps' color scale, shared with the OM-vs-lesion scatter's
+    highlighted point: _OM_BLOCK_CMAP over OM = observed/expected - 1 from -1
+    (no synapse) through chance (0, the map's white center) to `vmax`, the
+    examples' peak OM over well-supported blocks; higher OM saturates."""
+    return plt.get_cmap(_OM_BLOCK_CMAP), mpl.colors.TwoSlopeNorm(vmin=-1.0, vcenter=0.0, vmax=vmax)
 
 
-# Figure fractions of the dot matrix's axes rectangle (left, right, bottom,
+# Figure fractions of the block map's axes rectangle (left, right, bottom,
 # top; square cells fill it from its bottom left), the gap to the marginal
-# bar axes and their thickness. The ring and bar greys are neutral, like the
-# lesion figures' point grey.
+# bar axes and their thickness. The bar grey is neutral, like the lesion
+# figures' point grey.
 _OM_DOT_LAYOUT = dict(left=0.16, right=0.76, bottom=0.14, top=0.74, gap=0.015, margin=0.11)
-_OM_DOT_RING_COLOR = "0.55"
 _OM_DOT_BAR_COLOR = "0.45"
 
 
@@ -4478,7 +4466,7 @@ def _marginal_enrichment(observed, expected, shown, axis):
 def _om_axis_order(observed, expected, shown, kept, axis):
     """`kept` cluster indices sorted by the example's enrichment
     (_marginal_enrichment along `axis`), most enriched first, ties in cluster
-    order: the order of the dot matrix's input (axis 1) or hidden (axis 0)
+    order: the order of the block map's input (axis 1) or hidden (axis 0)
     clusters."""
     enrichment = _marginal_enrichment(observed, expected, shown, axis)[kept]
     return [int(kept[position]) for position in np.argsort(-enrichment, kind="stable")]
@@ -4490,37 +4478,36 @@ def _doublings_tick_label(doublings):
     return f"1/{factor:g}" if doublings < 0 else f"{factor:g}"
 
 
-def _plot_om_dot_matrix(ratio, shown, observed, expected, input_names, hidden_names, vmax,
-                        max_count, margin_limit, labelled, title, out_path, extra=""):
-    """The dot-matrix view of one synapse cluster's block map, with its
-    marginal enrichment bars.
+def _plot_om_block_map(ratio, shown, supported, observed, expected, input_names, hidden_names,
+                       vmax, margin_limit, deciding, labelled, title, out_path, extra=""):
+    """The block map of one synapse cluster, with its marginal enrichment
+    bars.
 
-    `ratio`, `shown`, `observed` and `expected` are (inputs, hiddens) over the
-    kept clusters in their sorted order; `ratio` retains observed/expected. x
-    is the input (pre) cluster, y the hidden (post) cluster. Each shown block
-    is a filled disc whose area is proportional to `observed`, colored by
-    OM = ratio - 1 on the shared viridis scale [-1, vmax] with chance at 0,
-    under a thin grey ring whose area is proportional to `expected` on the
-    same scale (`max_count`, the largest observed or expected count of any
-    example, fills _OVERMEMBERSHIP_DOT_MAX_FILL of the cell side): a disc
-    beyond its ring is enrichment, a ring beyond its disc depletion, a ring
-    alone a block with no synapse of the cluster. Unshown blocks are blank.
-    The bars above (inputs) and to the right (hiddens) of the matrix show
-    each cluster's log2 observed/expected over its shown blocks on an axis of
-    +-`margin_limit` doublings with chance at 0, so the sorted axes read as a
-    monotone profile. `labelled` is (input indices, hidden indices) in
-    significance order; those whose names would overlap a more significant
-    neighbour's are dropped (_non_colliding_labels). They are drawn only with
+    `ratio`, `shown`, `supported`, `observed` and `expected` are (inputs,
+    hiddens) over the kept clusters in their sorted order; `ratio` retains
+    observed/expected. x is the input (pre) cluster, y the hidden (post)
+    cluster. Each shown block is a cell colored by OM = ratio - 1 on the
+    shared diverging scale of _om_block_cmap_norm (below chance toward blue,
+    chance white, above toward red, `vmax` the examples' peak OM over
+    well-supported blocks, higher OM saturated); a shown block below the
+    ranking threshold (`supported` False) is a smaller square,
+    _OM_THIN_BLOCK_SIDE of the cell; unshown blocks are blank. `deciding`
+    (input, hidden) is the example's deciding block, ringed in black like
+    the OM-vs-lesion scatter's highlighted point. The bars above (inputs)
+    and to the right (hiddens) of the map show each cluster's log2
+    observed/expected over its shown blocks on an axis of +-`margin_limit`
+    doublings with chance at 0, so the sorted axes read as a monotone
+    profile. `labelled` is (input indices, hidden indices) in significance
+    order; those whose names would overlap a more significant neighbour's
+    are dropped (_non_colliding_labels). They are drawn only with
     OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES; either way they are named in the
-    saved message. The title sits over the top bar axis. The size key is
-    saved separately (_save_dot_size_key). Returns the disc area of
-    `max_count`, for that key."""
+    saved message. The title sits over the top bar axis. The color scale is
+    saved separately (plot_overmembership_examples)."""
     n_in, n_hid = ratio.shape
     layout = _OM_DOT_LAYOUT
     cell_pt = _om_dot_cell_pt(n_in, n_hid, layout)
-    max_area = (_OVERMEMBERSHIP_DOT_MAX_FILL * cell_pt) ** 2
     fig = plt.figure(figsize=_OVERMEMBERSHIP_EXAMPLE_FIGSIZE)
-    # Square cells: the matrix takes the part of its rectangle that n_in x
+    # Square cells: the map takes the part of its rectangle that n_in x
     # n_hid cells of side cell_pt fill, and the bar axes align with it.
     width = cell_pt / 72.0 * n_in / _OVERMEMBERSHIP_EXAMPLE_FIGSIZE[0]
     height = cell_pt / 72.0 * n_hid / _OVERMEMBERSHIP_EXAMPLE_FIGSIZE[1]
@@ -4529,17 +4516,20 @@ def _plot_om_dot_matrix(ratio, shown, observed, expected, input_names, hidden_na
                         layout["margin"]], sharex=axis)
     right = fig.add_axes([layout["left"] + width + layout["gap"], layout["bottom"],
                           layout["margin"], height], sharey=axis)
-    cmap = plt.get_cmap(_MULTITASK_HEATMAP_CMAP)
-    norm = mpl.colors.Normalize(vmin=-1.0, vmax=vmax)
-    scale = max_area / max(max_count, 1e-12)
-    rows, cols = np.nonzero(shown)
-    filled = observed[rows, cols] > 0
-    if filled.any():
-        axis.scatter(rows[filled] + 0.5, cols[filled] + 0.5, s=scale * observed[rows, cols][filled],
-                     color=cmap(norm(ratio[rows, cols][filled] - 1.0)), edgecolors="none", zorder=3)
-    # Rings over the discs, so a ring inside an enriched disc stays visible.
-    axis.scatter(rows + 0.5, cols + 0.5, s=scale * expected[rows, cols], facecolors="none",
-                 edgecolors=_OM_DOT_RING_COLOR, linewidths=0.5, zorder=4)
+    cmap, norm = _om_block_cmap_norm(vmax)
+    for mask, side in ((shown & supported, 1.0), (shown & ~supported, _OM_THIN_BLOCK_SIDE)):
+        rows, cols = np.nonzero(mask)
+        if not rows.size:
+            continue
+        half = side / 2.0
+        squares = [[(i + 0.5 - half, j + 0.5 - half), (i + 0.5 + half, j + 0.5 - half),
+                    (i + 0.5 + half, j + 0.5 + half), (i + 0.5 - half, j + 0.5 + half)]
+                   for i, j in zip(rows, cols)]
+        axis.add_collection(mpl.collections.PolyCollection(
+            squares, facecolors=cmap(norm(ratio[rows, cols] - 1.0)), edgecolors="none", zorder=2))
+    # The deciding block, as the scatter rings its point.
+    axis.scatter([deciding[0] + 0.5], [deciding[1] + 0.5], s=(1.1 * cell_pt) ** 2,
+                 facecolors="none", edgecolors="k", linewidths=0.8, zorder=5)
     axis.set_xlim(0, n_in)
     axis.set_ylim(n_hid, 0)
     kept = {}
@@ -4586,7 +4576,6 @@ def _plot_om_dot_matrix(ratio, shown, observed, expected, input_names, hidden_na
                      f"input {', '.join(input_names[i] for i in kept['x']) or 'none'}, "
                      f"hidden {', '.join(hidden_names[j] for j in kept['y']) or 'none'}")
     _save_fig(fig, out_path, extra=extra + labelled_text)
-    return max_area
 
 
 def _om_example_selection():
@@ -4600,7 +4589,9 @@ def _om_example_selection():
     (blocks shown), `supported` (blocks that rank), `select_min`, `ranked`,
     `chosen` (cluster indices), `tops` (each chosen cluster's deciding block:
     peak OM over supported blocks, over shown blocks for a forced cluster
-    without one) and `vmax` (the shared upper color limit for OM = ratio - 1).
+    without one) and `vmax` (the shared upper color limit for OM = ratio - 1:
+    the peak OM over the chosen clusters' well-supported blocks, over shown
+    blocks for a forced cluster without one, at least 1).
     Cached ratios remain unchanged for count reconstruction and matching
     lesion-scatter points; the displayed chance baseline is zero. Returns None
     with a printed reason when the cache is missing or nothing qualifies.
@@ -4660,7 +4651,9 @@ def _om_example_selection():
                              int(np.argmax(np.where(stable[index], ratios[index], -np.inf))),
                              ratios[index].shape)
             for index in chosen]
-    vmax = max(1.0, float(np.ceil(max(ratios[index][stable[index]].max() for index in chosen) - 1.0)))
+    vmax = max(1.0, float(np.ceil(max(
+        ratios[index][supported[index] if supported[index].any() else stable[index]].max()
+        for index in chosen) - 1.0)))
     return {"ratios": ratios, "cluster_ids": cluster_ids, "expected": expected,
             "stable": stable, "supported": supported, "select_min": select_min,
             "ranked": ranked, "chosen": chosen, "tops": tops, "vmax": vmax}
@@ -4668,7 +4661,7 @@ def _om_example_selection():
 
 def plot_overmembership_examples():
     """Show the synapse clusters with the strongest block enrichment as
-    input-by-hidden block maps, one dot matrix with marginal bars per example.
+    input-by-hidden block maps, one colored map with marginal bars per example.
 
     Reads global_assignment_fixed_k20: input, hidden and modulation use their
     fixed-k unnormalized clusterings, with variance weighting for modulation.
@@ -4696,27 +4689,27 @@ def plot_overmembership_examples():
     blocks) and the dropped clusters go to the saved message rather than
     onto the figure.
 
-    Outputs, rank r = 1..N: `overmembership_examples_dots_<r>` (dot matrix:
+    Outputs, rank r = 1..N: `overmembership_examples_dots_<r>` (block map:
     the input and hidden clusters sorted by the example's observed/expected
     over their shown blocks, most enriched first, _om_axis_order; each shown
-    block a filled disc with area proportional to the observed number of the
-    cluster's synapses, colored by OM, under a ring with area proportional to
-    the expected number on the same scale, so enrichment is a disc beyond its
-    ring and a block with no synapse a ring alone; unmeasurable blocks blank;
-    bars above and to the right of the matrix with each cluster's log2
-    observed/expected, _marginal_enrichment, on one symmetric axis; up to
-    _OVERMEMBERSHIP_DOT_MAX_LABELS input and hidden clusters labelled, those
-    with the most significant enrichment, _om_significant_clusters, dropping
-    a label that would overlap a more significant one). The cluster names
-    are drawn only with OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES (off by
-    default: no ticks, the names go to the saved message). The examples
-    come from ANAME, and so does the OM-vs-lesion scatter (_om_scatter_run),
-    unlike the other lesion figures, so its points include the example
-    clusters. All examples share one color scale, one area scale for discs
-    and rings and one marginal bar axis; the first two are saved once as
-    `overmembership_examples_colorbar` (viridis, chance OM = 0 marked) and
-    `overmembership_examples_dots_legend` (size key: discs for round observed
-    counts and one ring for the expected count).
+    block a cell colored by OM on a diverging scale centered on chance,
+    _om_block_cmap_norm, blocks below the ranking threshold as smaller
+    squares, unmeasurable blocks blank, the deciding block ringed in black
+    as in the OM-vs-lesion scatter; bars above and to the right of the map
+    with each cluster's log2 observed/expected, _marginal_enrichment, on one
+    symmetric axis; up to _OVERMEMBERSHIP_DOT_MAX_LABELS input and hidden
+    clusters labelled, those with the most significant enrichment,
+    _om_significant_clusters, dropping a label that would overlap a more
+    significant one). The cluster names are drawn only with
+    OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES (off by default: no ticks, the
+    names go to the saved message). The examples come from ANAME, and so
+    does the OM-vs-lesion scatter (_om_scatter_run), unlike the other lesion
+    figures, so its points include the example clusters. All examples share
+    one color scale, whose upper limit is their peak OM over well-supported
+    blocks (thinner blocks saturate), and one marginal bar axis; the scale
+    is saved once as `overmembership_examples_colorbar` (chance OM = 0
+    marked). Earlier versions drew dots sized by the observed count in
+    cluster-ID order, which mostly showed the neuron clusters' sizes.
     The full cluster cache can be several GB; run on an allocated compute node.
     """
     selection = _om_example_selection()
@@ -4738,16 +4731,13 @@ def plot_overmembership_examples():
                 for index in indices]
 
     _ensure_out_dir()
-    # One color scale (selection["vmax"]), one disc-and-ring area scale and
-    # one marginal bar axis across the examples.
+    # One color scale (selection["vmax"]) and one marginal bar axis across
+    # the examples.
     observed = ratios * expected
-    max_count = max(float(np.maximum(observed[index], expected[index])[stable[index]].max())
-                    for index in chosen)
     doublings = [abs(value) for index in chosen for axis in (1, 0)
                  for value in _marginal_enrichment(observed[index], expected[index], stable[index], axis)
                  if np.isfinite(value)]
     margin_limit = max(_OVERMEMBERSHIP_MARGIN_MIN_DOUBLINGS, float(np.ceil(max(doublings, default=0.0))))
-    max_area = None
     for rank, (cluster_index, top) in enumerate(zip(chosen, selection["tops"]), start=1):
         cluster_id = cluster_ids[cluster_index]
         ratio, shown = ratios[cluster_index], stable[cluster_index]
@@ -4764,23 +4754,26 @@ def plot_overmembership_examples():
                                       keep_hidden, axis=0)
         sub_ratio = ratio[np.ix_(order_input, order_hidden)]
         sub_shown = shown[np.ix_(order_input, order_hidden)]
+        sub_supported = supported[cluster_index][np.ix_(order_input, order_hidden)]
         sub_expected = expected[cluster_index][np.ix_(order_input, order_hidden)]
         sub_observed = observed[cluster_index][np.ix_(order_input, order_hidden)]
         input_names, hidden_names = _labels(order_input), _labels(order_hidden)
         # `top` is the deciding block (_om_example_selection), the one the
-        # OM-vs-lesion scatter highlights; it is named in the saved message.
+        # OM-vs-lesion scatter highlights; it is ringed and named.
         observed_top = observed[cluster_index][top]
+        deciding = (order_input.index(top[0]), order_hidden.index(top[1]))
         dropped_text = "; ".join(f"{side} {', '.join(names)}" for side, names in dropped.items() if names)
-        max_area = _plot_om_dot_matrix(
-            sub_ratio, sub_shown, sub_observed, sub_expected, input_names, hidden_names, vmax,
-            max_count, margin_limit, _om_significant_clusters(sub_observed, sub_expected, sub_shown),
+        _plot_om_block_map(
+            sub_ratio, sub_shown, sub_supported, sub_observed, sub_expected, input_names, hidden_names,
+            vmax, margin_limit, deciding, _om_significant_clusters(sub_observed, sub_expected, sub_shown),
             f"Synapse cluster C{cluster_id}", _multitask_out(f"overmembership_examples_dots_{rank}.png"),
             extra=(f"  ({ANAME}; fixed k={OVERMEMBERSHIP_EXAMPLE_FIXED_K}; var-weighted "
                    f"unnormalized modulation; unnormalized input/hidden; blank: expected < "
                    f"{OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED:g} synapses) example {rank}: synapse "
                    f"cluster C{cluster_id}: {int(sub_shown.sum())}/{sub_shown.size} blocks shown; "
-                   f"disc area = observed synapses, ring area = expected synapses, color = OM "
-                   f"(observed/expected - 1); axes sorted by observed/expected over shown blocks, "
+                   f"cell color = OM (observed/expected - 1), diverging about chance, saturating "
+                   f"above {vmax:g}; blocks expecting < {select_min:g} synapses are smaller squares; "
+                   f"black ring: deciding block; axes sorted by observed/expected over shown blocks, "
                    f"input {', '.join(input_names)}; hidden {', '.join(hidden_names)}; marginal bars "
                    f"log2(observed/expected) on +-{margin_limit:g} doublings; "
                    f"peak OM {ratio[top] - 1.0:.2f} at input "
@@ -4789,16 +4782,11 @@ def plot_overmembership_examples():
                    f"expected >= {select_min:g} rank the examples)"
                    + (f"; runners-up: {runners}" if runners else "")
                    + (f"; dropped (no shown block): {dropped_text}" if dropped_text else "")))
-    references = [count for count in _OVERMEMBERSHIP_DOT_REFERENCE_COUNTS if count <= max_count][-3:]
-    if references:
-        _save_dot_size_key(_multitask_out("overmembership_examples_dots_legend.png"), references,
-                           max_area, max_count,
-                           extra=f"  (size key shared by the {len(chosen)} dot matrices: {references}; "
-                                 "ring: expected count)")
     ticks = sorted({-1.0, 0.0, vmax / 2, vmax})
+    cmap, norm = _om_block_cmap_norm(vmax)
     _save_standalone_colorbar(
         _multitask_out("overmembership_examples_colorbar.png"),
-        cmap=_MULTITASK_HEATMAP_CMAP, vmin=-1, vmax=vmax, ticks=ticks,
+        cmap=cmap, norm=norm, ticks=ticks,
         ticklabels=[f"{tick:g}" for tick in ticks], label="OM (observed / expected − 1)",
         **_VERTICAL_COLORBAR_STYLE)
 
@@ -4814,9 +4802,10 @@ def plot_overmembership_examples():
 # SYNAPSE_LESION_MODE) are computed with the same mode; their tests check the
 # constants agree. freeze_M keeps W and holds the selected synapses'
 # modulation at its initial value, so the panel measures what their
-# plasticity contributes. zero_W (W <- 0) stays in the same caches; the OM
-# scatter still reads it (OM_LESION_MODE). Both modes lesion the same synapse
-# clusters.
+# plasticity contributes. The OM-vs-lesion scatter and its cohort view read
+# the same mode (OM_LESION_MODE is this constant). zero_W (W <- 0) stays in
+# the same caches for plasticity share, which compares the two modes. Both
+# modes lesion the same synapse clusters.
 LESION_HEATMAP_MODE = "freeze_M"
 _LESION_HEATMAP_MOD_KEY = f"modulation_all_var_weighted_unnormalized__{LESION_HEATMAP_MODE}"
 
@@ -5038,10 +5027,12 @@ def _saved_om_rank_association(entry):
     return {"rho": rho, "p_perm": probability, "n_perm": n_perm, "n_clusters": n_clusters}
 
 
-# Intervention shown in the OM-vs-lesion scatter: zero_W (selected synaptic
-# weights set to zero). The other synapse-lesion figures follow
-# LESION_HEATMAP_MODE (freeze_M) instead; both modes stay in the same caches.
-OM_LESION_MODE = "zero_W"
+# Intervention shown in the OM-vs-lesion scatter and its cohort view: the
+# lesion heatmap's freeze_M, so every synapse-lesion figure reads one
+# intervention, except plasticity share, which compares the two modes by
+# definition. The scatter read zero_W (selected synaptic weights set to
+# zero) until 2026-11-08; both modes stay in the same caches.
+OM_LESION_MODE = LESION_HEATMAP_MODE
 
 
 def _om_scatter_run():
@@ -5165,11 +5156,11 @@ def plot_om_vs_lesion():
 
     The sample set and min_expected threshold come from lesion_plot's cache.
     No raw lesion/cluster data, profile matching, regression fitting, or new
-    permutation test is used here. The scatter uses OM_LESION_MODE (zero_W),
-    not the lesion heatmap's freeze_M.
+    permutation test is used here. The scatter uses OM_LESION_MODE, the
+    lesion heatmap's freeze_M.
     Its x values and bin x coordinates are the cached observed/expected
     ratios minus one, giving block OM a zero chance baseline, as in the
-    example dot matrices. This translation preserves the saved Spearman
+    example block maps. This translation preserves the saved Spearman
     statistic and permutation p. Its y values are mean absolute profile
     differences over tasks (L1/T).
     The median connector is descriptive, not a linear or monotone fit; the
@@ -5179,8 +5170,8 @@ def plot_om_vs_lesion():
     OM example panels' run), NOT LESION_ANAME like the other lesion figures.
     Because the two share that run, the deciding block of
     overmembership_examples_dots_1 (its most significant input x hidden block) is
-    one of the scatter's points; it is drawn on top in the viridis color the
-    examples give its OM, with a black ring (_om_scatter_highlight).
+    one of the scatter's points; it is drawn on top in the color the
+    examples' block maps give its OM, with a black ring (_om_scatter_highlight).
     """
     _ensure_out_dir()
     run_dir, aname = _om_scatter_run()
@@ -5197,8 +5188,8 @@ def plot_om_vs_lesion():
                             label="Binned median", **_TREND_LINE_STYLE)
     handles = [median_line]
     if highlight is not None:
-        norm = mpl.colors.Normalize(vmin=-1.0, vmax=highlight["vmax"])
-        color = plt.get_cmap(_MULTITASK_HEATMAP_CMAP)(norm(highlight["om"]))
+        cmap, norm = _om_block_cmap_norm(highlight["vmax"])
+        color = cmap(norm(highlight["om"]))
         point = highlight["point"]
         ax1.scatter([om_vals[point]], [lesion_diffs[point]], s=_OM_SCATTER_HIGHLIGHT_SIZE,
                     color=color, edgecolors="k", linewidths=0.8, zorder=5)
@@ -5254,7 +5245,7 @@ def plot_om_vs_lesion_seeds():
     Each run contributes one point, the saved rho between a synapse cluster's
     over-membership in an (input, hidden) neuron-cluster block and the L1/T
     distance between its lesion profile and that block's combined lesion
-    profile (OM_LESION_MODE, zero_W, as in the single-run scatter); filled
+    profile (OM_LESION_MODE, freeze_M, as in the single-run scatter); filled
     markers have a saved one-sided (negative) modulation-cluster-footprint
     permutation p below 0.05, hollow ones do not. The dash is the median over
     runs. Because the per-run test is one-sided, the cohort-level test in the
@@ -5491,40 +5482,6 @@ def _plasticity_share_cohort_runs():
     return runs
 
 
-def plot_plasticity_share_cohort():
-    """
-    Figure: multitask_plasticity_share_cohort.png — the plasticity-share
-    figure with every sibling run of LESION_ANAME overlaid.
-
-    Same layout as plot_plasticity_share: one column per task, no-working-
-    memory tasks first, share 1 meaning that freezing a cluster's plasticity
-    costs the task as much as removing its weights. The pale points are the
-    saved significant (task, synapse cluster) cells of all runs pooled per
-    task, each short near-black dash is one run's saved task median, and the red
-    dash is the median of the pooled cells. Values beyond the y-limits are
-    hollow triangles at the edge; run medians beyond them are drawn at the
-    edge. The legend title gives the run count. Only saved values are drawn;
-    the figure is skipped below two runs. plot_plasticity_share_cohort_violin
-    draws the same pooled cells as per-task densities.
-    """
-    _ensure_out_dir()
-    runs = _plasticity_share_cohort_runs()
-    if len(runs) < 2:
-        print(f"  Skipped: {len(runs)} run(s) with saved plasticity-share caches; need >= 2.")
-        return
-    cells, run_medians, medians = _plasticity_share_cohort_cells(runs)
-    fig, ax = plt.subplots(1, 1, figsize=_PLASTICITY_SHARE_FIGSIZE)
-    n_clipped = _draw_plasticity_share_axes(ax, runs[0]["tasks"], runs[0]["family"], cells,
-                                            medians, run_medians, point_alpha=0.3)
-    _plasticity_share_cohort_legend(
-        ax, [_plasticity_share_median_handle("Pooled median"),
-             _plasticity_share_run_median_handle()], len(runs))
-    fig.tight_layout()
-    n_cells = int(sum(values.size for values in cells))
-    _save_fig(fig, _multitask_out("plasticity_share_cohort.png"),
-              extra=f"  {len(runs)} runs, {n_cells} cells, {n_clipped} beyond y-limits")
-
-
 def _plasticity_share_cohort_cells(runs):
     """Per task of the cohort `runs` (one task list): the finite saved cells
     of every run pooled, the saved task medians of the runs that have cells
@@ -5545,7 +5502,7 @@ def _plasticity_share_run_median_handle():
 
 
 def _plasticity_share_cohort_legend(ax, handles, n_runs):
-    """Legend of the cohort figures, titled with the run count and placed
+    """Legend of the cohort figure, titled with the run count and placed
     outside, to the right of the axes: with every run pooled no band of the
     axes stays empty."""
     _legend(ax, handles=handles, loc="upper left", bbox_to_anchor=(1.0, 1.0),
@@ -5555,21 +5512,26 @@ def _plasticity_share_cohort_legend(ax, handles, n_runs):
 
 def plot_plasticity_share_cohort_violin():
     """
-    Figure: multitask_plasticity_share_cohort_violin.png — the cohort
-    plasticity-share figure with each task's pooled cells drawn as a
-    distribution instead of points.
+    Figure: multitask_plasticity_share_cohort_violin.png — the plasticity-
+    share figure with every sibling run of LESION_ANAME pooled, each task's
+    cells drawn as a distribution.
 
-    Same layout and data as plot_plasticity_share_cohort: one column per
-    task, no-working-memory tasks first, the saved significant (task, synapse
-    cluster) cells of every sibling run of LESION_ANAME pooled per task.
-    Each column is the Gaussian kernel density of the pooled cells within the
-    y-limits (scipy's Scott bandwidth) over their range, every column scaled
-    to the same peak width, so the shapes compare and the counts do not;
-    cells beyond the y-limits stay hollow triangles at the edge and are left
-    out of the density. The short near-black dashes are the runs' saved task
-    medians and the red dash the median of the pooled cells, as in the point
-    version. A task with fewer than three cells within the limits, or with
-    all of them equal, shows its points instead. Skipped below two runs.
+    Same layout as plot_plasticity_share: one column per task, no-working-
+    memory tasks first, share 1 meaning that freezing a cluster's plasticity
+    costs the task as much as removing its weights. The saved significant
+    (task, synapse cluster) cells of every sibling run (same feature, any
+    seed; _plasticity_share_cohort_runs) are pooled per task. Each column is
+    the Gaussian kernel density of the pooled cells within the y-limits
+    (scipy's Scott bandwidth) over their range, every column scaled to the
+    same peak width, so the shapes compare and the counts do not; cells
+    beyond the y-limits are hollow triangles at the edge and are left out of
+    the density. The short near-black dashes are the runs' saved task
+    medians and the red dash the median of the pooled cells; the legend
+    title gives the run count. A task with fewer than three cells within the
+    limits, or with all of them equal, shows its points instead. Only saved
+    values are drawn; the figure is skipped below two runs. A point overlay
+    of the same pooled cells (plasticity_share_cohort) was removed in favor
+    of this figure.
     """
     _ensure_out_dir()
     runs = _plasticity_share_cohort_runs()
@@ -15437,8 +15399,7 @@ FIGURES_BY_MODE = {
         "om_vs_lesion": plot_om_vs_lesion,
         "om_vs_lesion_seeds": plot_om_vs_lesion_seeds,
         "plasticity_share": plot_plasticity_share,
-        "plasticity_share_cohort": plot_plasticity_share_cohort,
-        # The cohort's pooled cells as per-task densities.
+        # Every sibling run's cells pooled per task, as densities.
         "plasticity_share_cohort_violin": plot_plasticity_share_cohort_violin,
         "causal_vs_activity_tasks": plot_causal_vs_activity,
         "causal_vs_activity_seeds": plot_causal_vs_activity_seeds,

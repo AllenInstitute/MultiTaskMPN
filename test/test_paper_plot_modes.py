@@ -184,7 +184,6 @@ class PaperPlotModeTests(unittest.TestCase):
             "om_vs_lesion": paper_plot.plot_om_vs_lesion,
             "om_vs_lesion_seeds": paper_plot.plot_om_vs_lesion_seeds,
             "plasticity_share": paper_plot.plot_plasticity_share,
-            "plasticity_share_cohort": paper_plot.plot_plasticity_share_cohort,
             "plasticity_share_cohort_violin": paper_plot.plot_plasticity_share_cohort_violin,
             "causal_vs_activity_tasks": paper_plot.plot_causal_vs_activity,
             "causal_vs_activity_seeds": paper_plot.plot_causal_vs_activity_seeds,

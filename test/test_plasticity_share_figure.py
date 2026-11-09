@@ -104,14 +104,15 @@ class PlasticityShareFigureTests(unittest.TestCase):
                 self.render(root).assert_not_called()
 
 
-class RemovedSeedsFigureTests(unittest.TestCase):
-    def test_plasticity_share_seeds_figure_is_gone(self):
-        self.assertNotIn("plasticity_share_seeds", paper_plot.FIGURES_BY_MODE["lesion"])
-        self.assertFalse(hasattr(paper_plot, "plot_plasticity_share_seeds"))
+class RemovedFiguresTests(unittest.TestCase):
+    def test_per_run_seeds_and_cohort_point_overlay_figures_are_gone(self):
+        for name in ("plasticity_share_seeds", "plasticity_share_cohort"):
+            self.assertNotIn(name, paper_plot.FIGURES_BY_MODE["lesion"])
+            self.assertFalse(hasattr(paper_plot, f"plot_{name}"))
 
 
 class PlasticityShareCohortTests(PlasticityShareFigureTests):
-    """The overlay of every sibling run's saved cells and task medians."""
+    """The pooling of every sibling run's saved cells and task medians."""
 
     def write_runs(self, base, specs):
         """One sibling run directory per (seed, share matrix) in `specs`."""
@@ -128,55 +129,13 @@ class PlasticityShareCohortTests(PlasticityShareFigureTests):
             with (run_dir / f"plasticity_share_var-weighted-unnormalized_{aname}.pkl").open("wb") as f:
                 pickle.dump(cache, f)
 
-    def render_cohort(self, root, function=None):
+    def render_cohort(self, root):
         with patch.object(paper_plot, "LESION_NORM_DIR", root), \
                 patch.object(paper_plot, "_ensure_out_dir"), \
                 patch.object(paper_plot, "_save_fig") as save, \
                 patch("scipy.stats.mannwhitneyu", side_effect=AssertionError("No retesting")):
-            (function or paper_plot.plot_plasticity_share_cohort)()
+            paper_plot.plot_plasticity_share_cohort_violin()
         return save
-
-    def test_cohort_overlays_cells_run_medians_and_pooled_medians(self):
-        nan = np.nan
-        specs = {
-            11: [[0.1, 0.3, nan], [0.2, nan, nan], [0.9, 1.1, nan], [0.8, 1.0, nan]],
-            22: [[0.5, nan, nan], [0.4, 0.6, nan], [1.3, nan, nan], [nan, nan, nan]],
-            33: [[0.0, 0.2, 0.4], [nan, nan, nan], [2.5, 0.7, nan], [0.6, nan, nan]],
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            root = base / paper_plot.LESION_ANAME
-            root.mkdir()
-            self.write_runs(base, specs)
-            save = self.render_cohort(root)
-        save.assert_called_once()
-        figure, path = save.call_args.args[:2]
-        self.addCleanup(paper_plot.plt.close, figure)
-        self.assertEqual(path.name, "multitask_plasticity_share_cohort.png")
-        self.assertIn("3 runs, 17 cells, 1 beyond y-limits", save.call_args.kwargs["extra"])
-        axis = figure.axes[0]
-        collections = paper_plot.mpl.collections
-        points = [c for c in axis.collections if isinstance(c, collections.PathCollection)]
-        offsets = np.concatenate([c.get_offsets() for c in points])
-        # 17 pooled cells (the 2.5 clipped to the upper limit) plus 4 pooled medians.
-        self.assertEqual(len(offsets), 17 + 4)
-        high = paper_plot._PLASTICITY_SHARE_YLIM[1]
-        self.assertEqual(int(np.sum(offsets[:, 1] == high)), 1)
-        # Task order: reaction tasks first (fdgo, reactgo), then delaygo, dmcgo.
-        pooled = {0: np.median([0.1, 0.3, 0.5, 0.0, 0.2, 0.4]), 1: np.median([0.2, 0.4, 0.6]),
-                  2: np.median([0.9, 1.1, 1.3, 2.5, 0.7]), 3: np.median([0.8, 1.0, 0.6])}
-        for position, value in pooled.items():
-            self.assertTrue(np.any(np.isclose(offsets, [position, value]).all(axis=1)))
-        # One gray dash per run that has cells for the task: 3, 2, 3, 2.
-        dashes = [c for c in axis.collections if isinstance(c, collections.LineCollection)]
-        counts = [len(c.get_segments()) for c in dashes]
-        self.assertEqual(counts, [3, 2, 3, 2])
-        legend = axis.get_legend()
-        self.assertEqual(legend.get_title().get_text(), "3 runs")
-        self.assertEqual([text.get_text() for text in legend.get_texts()],
-                         ["Pooled median", "Run median"])
-        self.assertIs(paper_plot.FIGURES_BY_MODE["lesion"]["plasticity_share_cohort"],
-                      paper_plot.plot_plasticity_share_cohort)
 
     def test_cohort_needs_two_runs_and_drops_runs_with_other_tasks(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -204,7 +163,7 @@ class PlasticityShareCohortTests(PlasticityShareFigureTests):
 
 
 class PlasticityShareCohortViolinTests(PlasticityShareCohortTests):
-    """The cohort figure with each task's pooled cells as a kernel density."""
+    """The drawing of the cohort figure: each task's pooled cells as a kernel density."""
 
     def test_violin_draws_densities_run_medians_and_pooled_medians(self):
         nan = np.nan
@@ -220,7 +179,7 @@ class PlasticityShareCohortViolinTests(PlasticityShareCohortTests):
             root = base / paper_plot.LESION_ANAME
             root.mkdir()
             self.write_runs(base, specs)
-            save = self.render_cohort(root, paper_plot.plot_plasticity_share_cohort_violin)
+            save = self.render_cohort(root)
         save.assert_called_once()
         figure, path = save.call_args.args[:2]
         self.addCleanup(paper_plot.plt.close, figure)
@@ -262,14 +221,6 @@ class PlasticityShareCohortViolinTests(PlasticityShareCohortTests):
                          ["Pooled cells (KDE)", "Pooled median", "Run median"])
         self.assertIs(paper_plot.FIGURES_BY_MODE["lesion"]["plasticity_share_cohort_violin"],
                       paper_plot.plot_plasticity_share_cohort_violin)
-
-    def test_violin_needs_two_runs(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / paper_plot.LESION_ANAME
-            root.mkdir()
-            self.write(root, self.cache())
-            save = self.render_cohort(root, paper_plot.plot_plasticity_share_cohort_violin)
-        save.assert_not_called()
 
 
 if __name__ == "__main__":

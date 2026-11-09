@@ -24,9 +24,11 @@ def scatter_run(root, highlight=None):
 
 
 class OmLesionScatterTests(unittest.TestCase):
-    def test_scatter_keeps_zero_w_unlike_the_heatmap(self):
-        self.assertEqual(MODE, "zero_W")
-        self.assertNotEqual(MODE, paper_plot.LESION_HEATMAP_MODE)
+    def test_scatter_reads_the_lesion_heatmap_mode(self):
+        """freeze_M, like every synapse-lesion figure except plasticity share
+        (the scatter read zero_W until 2026-11-08)."""
+        self.assertEqual(MODE, "freeze_M")
+        self.assertEqual(MODE, paper_plot.LESION_HEATMAP_MODE)
 
     def test_scatter_reads_the_clustering_example_run_not_the_lesion_example(self):
         """The deliberate exception: ANAME (the OM example panels' run), not the
@@ -90,8 +92,10 @@ class OmLesionScatterTests(unittest.TestCase):
         self.assertEqual(len(ringed), 1)
         np.testing.assert_allclose(ringed[0].get_offsets(),
                                    [[cache["om_vals"][0] - 1.0, cache["lesion_diffs"][0]]])
-        expected = paper_plot.plt.get_cmap(paper_plot._MULTITASK_HEATMAP_CMAP)(0.0)
-        np.testing.assert_allclose(ringed[0].get_facecolors()[0], expected)
+        # The block maps' diverging scale (vmax 3): this block's OM -1 is its blue end.
+        cmap, norm = paper_plot._om_block_cmap_norm(highlight["vmax"])
+        np.testing.assert_allclose(ringed[0].get_facecolors()[0], cmap(norm(highlight["om"])))
+        self.assertEqual(norm(highlight["om"]), 0.0)
         self.assertGreater(ringed[0].get_zorder(), 3)
         self.assertIn("Example block", [text.get_text() for text in axis.get_legend().get_texts()])
         self.assertIn("highlighted: example 1 block, synapse cluster C7 at input C2 / hidden C1",
@@ -99,7 +103,7 @@ class OmLesionScatterTests(unittest.TestCase):
 
     def test_single_cache_of_the_other_mode_is_rejected(self):
         cache = self.cache(False)
-        cache["mod_lesion_mode"] = "freeze_M"
+        cache["mod_lesion_mode"] = "zero_W" if MODE == "freeze_M" else "freeze_M"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / f"om_vs_lesion_diff_var-weighted-unnormalized_{MODE_TAG}_unnorm_{paper_plot.LESION_ANAME}.pkl"

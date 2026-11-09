@@ -8,6 +8,30 @@ import numpy as np
 import paper_plot
 
 
+def block_cells(axis):
+    """{(input position, hidden position): (facecolor, square side)} of the
+    blocks a block map draws, from its PolyCollections."""
+    cells = {}
+    for collection in axis.collections:
+        if not isinstance(collection, paper_plot.mpl.collections.PolyCollection):
+            continue
+        for path, color in zip(collection.get_paths(), collection.get_facecolors()):
+            corners = path.vertices[:4]
+            center = (round(float(corners[:, 0].mean()), 6), round(float(corners[:, 1].mean()), 6))
+            cells[center] = (color, round(float(np.ptp(corners[:, 0])), 6))
+    return cells
+
+
+def deciding_ring(axis):
+    """The one hollow black-edged marker of a block map, its deciding block."""
+    rings = [c for c in axis.collections if isinstance(c, paper_plot.mpl.collections.PathCollection)]
+    assert len(rings) == 1, rings
+    ring = rings[0]
+    assert ring.get_facecolors().size == 0
+    np.testing.assert_allclose(ring.get_edgecolors()[0][:3], 0.)
+    return ring
+
+
 class OvermembershipExampleTests(unittest.TestCase):
     def cache(self):
         # Input cluster C1 (row 0) has too few surviving synapses in every block
@@ -60,17 +84,16 @@ class OvermembershipExampleTests(unittest.TestCase):
         self.assertEqual(paper_plot.OVERMEMBERSHIP_EXAMPLE_N, 2)
         cache = self.cache()
         saved = self.render(cache)
-        # Two dot matrices, the size key and the colorbar; no heatmap.
+        # Two block maps and the colorbar; no heatmap, no size key.
         self.assertEqual(set(saved), {
             "multitask_overmembership_examples_dots_1.png", "multitask_overmembership_examples_dots_2.png",
-            "multitask_overmembership_examples_dots_legend.png",
             "multitask_overmembership_examples_colorbar.png"})
         # Rank 1 is C3 (peak OM 7 at input C4 x hidden C2), rank 2 is C4 (peak 5
         # at input C2 x hidden C3); both share the colorbar's (-1, 7).
         for rank, cluster_id, peak in ((1, 3, "peak OM 7.00 at input C4 / hidden C2"),
                                        (2, 4, "peak OM 5.00 at input C2 / hidden C3")):
             figure = saved[f"multitask_overmembership_examples_dots_{rank}.png"].args[0]
-            # The matrix, the input bars above it (which carry the title) and
+            # The map, the input bars above it (which carry the title) and
             # the hidden bars to its right.
             self.assertEqual(len(figure.axes), 3)
             axis, top, right = figure.axes
@@ -79,7 +102,7 @@ class OvermembershipExampleTests(unittest.TestCase):
             self.assertEqual(axis.get_xlabel(), "Input cluster")
             self.assertEqual(axis.get_ylabel(), "Hidden cluster")
             # Input C1 has no shown block and is dropped: 3 inputs x 3 hiddens;
-            # the bar axes share the matrix's limits.
+            # the bar axes share the map's limits.
             self.assertEqual(axis.get_xlim(), (0, 3))
             self.assertEqual(axis.get_ylim(), (3, 0))
             self.assertEqual(top.get_xlim(), (0, 3))
@@ -99,37 +122,38 @@ class OvermembershipExampleTests(unittest.TestCase):
         self.assertEqual(colorbar.axes[0].get_ylim(), (-1, 7))
         self.assertIn(0., colorbar.axes[0].get_yticks())
         self.assertEqual(colorbar.axes[0].get_ylabel(), "OM (observed / expected − 1)")
+        norm = colorbar.axes[0]._colorbar.norm
+        self.assertIsInstance(norm, paper_plot.mpl.colors.TwoSlopeNorm)
+        self.assertEqual((norm.vmin, norm.vcenter, norm.vmax), (-1, 0, 7))
         self.assertIs(paper_plot.FIGURES_BY_MODE["multiple_tasks"]["overmembership_examples"],
                       paper_plot.plot_overmembership_examples)
 
-    def test_dot_matrices_share_one_area_scale_and_one_size_key(self):
-        cache = self.cache()
-        saved = self.render(cache)
-        # C3's 80 observed synapses set the scale (every shown block expects
-        # 10); C4's 60 take 3/4 of that area. Sorting puts each example's one
-        # enriched block at the top left, and every shown block gets a ring
-        # with the expected count's area, drawn over the discs.
-        areas = {}
-        for rank, cluster_id in ((1, 3), (2, 4)):
+    def test_blocks_are_cells_colored_by_om_about_chance_with_the_deciding_block_ringed(self):
+        saved = self.render(self.cache())
+        cmap, norm = paper_plot._om_block_cmap_norm(7.0)
+        # Chance is the diverging map's center, no synapse its blue end.
+        self.assertEqual(norm(0.0), 0.5)
+        self.assertEqual(norm(-1.0), 0.0)
+        self.assertEqual(norm(7.0), 1.0)
+        # Sorting puts each example's one enriched block at the top left; the
+        # other eight shown blocks hold no synapse (OM -1). Every block expects
+        # 10 synapses, so all are full cells.
+        for rank, cluster_id, om in ((1, 3, 7.0), (2, 4, 5.0)):
             figure = saved[f"multitask_overmembership_examples_dots_{rank}.png"].args[0]
             axis = figure.axes[0]
             self.assertEqual(figure.axes[1].get_title(), f"Synapse cluster C{cluster_id}")
             self.assertIsNone(axis.get_legend())
-            dots = [c for c in axis.collections if isinstance(c, paper_plot.mpl.collections.PathCollection)]
-            self.assertEqual(len(dots), 2)
-            filled, rings = (dots[0], dots[1]) if len(dots[0].get_offsets()) == 1 else (dots[1], dots[0])
-            np.testing.assert_allclose(filled.get_offsets(), [[0.5, 0.5]])
-            self.assertEqual(len(rings.get_offsets()), 9)
-            self.assertEqual(rings.get_facecolors().size, 0)        # hollow
-            self.assertGreater(rings.get_zorder(), filled.get_zorder())
-            areas[rank] = float(filled.get_sizes()[0])
-            np.testing.assert_allclose(rings.get_sizes(), np.full(9, areas[1] * 10. / 80.))
-            np.testing.assert_allclose(figure.get_size_inches(), paper_plot._OVERMEMBERSHIP_EXAMPLE_FIGSIZE)
-        self.assertAlmostEqual(areas[2] / areas[1], 60. / 80.)
-        cmap = paper_plot.plt.get_cmap(paper_plot._MULTITASK_HEATMAP_CMAP)
+            cells = block_cells(axis)
+            self.assertEqual(len(cells), 9)
+            self.assertEqual({side for _, side in cells.values()}, {1.0})
+            np.testing.assert_allclose(cells[(0.5, 0.5)][0], cmap(norm(om)))
+            for center, (color, _) in cells.items():
+                if center != (0.5, 0.5):
+                    np.testing.assert_allclose(color, cmap(0.0))
+            ring = deciding_ring(axis)
+            np.testing.assert_allclose(ring.get_offsets(), [[0.5, 0.5]])
+            self.assertGreater(ring.get_zorder(), 2)
         rank1 = saved["multitask_overmembership_examples_dots_1.png"].args[0].axes[0]
-        filled = next(c for c in rank1.collections if len(c.get_offsets()) == 1)
-        np.testing.assert_allclose(filled.get_facecolors()[0], cmap(1.0))   # OM 7 of vmax 7
         # Labels: only the enriched block's clusters are significant, and the
         # sort puts them first on both axes.
         self.assertEqual([label.get_text() for label in rank1.get_xticklabels()], ["C4"])
@@ -138,24 +162,14 @@ class OvermembershipExampleTests(unittest.TestCase):
         np.testing.assert_allclose(rank1.get_yticks(), [0.5])
         extra = saved["multitask_overmembership_examples_dots_1.png"].kwargs["extra"]
         self.assertIn("labelled: input C4, hidden C2", extra)
-        self.assertIn("disc area = observed synapses, ring area = expected synapses", extra)
+        self.assertIn("cell color = OM (observed/expected - 1), diverging about chance, saturating above 7",
+                      extra)
+        self.assertIn("black ring: deciding block", extra)
         self.assertIn("axes sorted by observed/expected over shown blocks, input C4, C2, C3; "
                       "hidden C2, C1, C3", extra)
-        # The size key: discs for round observed counts and one ring, the
-        # expected count, at the largest reference.
-        key = saved["multitask_overmembership_examples_dots_legend.png"].args[0]
-        legend = key.legends[0]
-        self.assertEqual(legend.get_title().get_text(), "synapses")
-        self.assertEqual([text.get_text() for text in legend.get_texts()], ["10", "20", "50", "expected"])
-        sizes = [handle.get_markersize() ** 2 for handle in legend.legend_handles]
-        self.assertAlmostEqual(sizes[2], areas[1] * 50. / 80.)
-        self.assertAlmostEqual(sizes[3], sizes[2])
-        self.assertEqual(legend.legend_handles[3].get_markerfacecolor(), "none")
-        self.assertIn("ring: expected count",
-                      saved["multitask_overmembership_examples_dots_legend.png"].kwargs["extra"])
 
     def test_cluster_names_are_off_by_default_and_go_to_the_saved_message(self):
-        """With the figure's default, the dot matrix carries no ticks but
+        """With the figure's default, the block map carries no ticks but
         keeps its axis titles."""
         self.assertFalse(paper_plot.OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES)
         saved = self.render(self.cache(), cluster_names=False)
@@ -166,35 +180,40 @@ class OvermembershipExampleTests(unittest.TestCase):
         self.assertIn("most significant (not drawn): input C4, hidden C2",
                       saved["multitask_overmembership_examples_dots_1.png"].kwargs["extra"])
 
-    def test_dot_area_is_proportional_to_observed_count_and_labels_follow_significance(self):
+    def enriched_cache(self):
+        """The base cache with four more C3 blocks: C3 x C2 at OM 1 (20
+        observed of 10), C4 x C3 at 0.5 (15), C3 x C1 depleted at -0.5 (5)
+        and C2 x C1 at chance (10)."""
         cache = self.cache()
         assignment = cache["modulation_all_var_weighted_unnormalized"]["global_assignment_fixed_k20"]
-        assignment["om_stack"][1, 2, 1] = 2.   # a second block for C3: 20 observed vs 80
-        assignment["om_stack"][1, 3, 2] = 1.5  # input C4 x hidden C3: 15 observed (z 1.6)
-        assignment["om_stack"][1, 2, 0] = 0.5  # input C3 x hidden C1: depleted, never labelled
-        assignment["om_stack"][1, 1, 0] = 1.0  # chance: OM 0, still 10 observed synapses
+        assignment["om_stack"][1, 2, 1] = 2.
+        assignment["om_stack"][1, 3, 2] = 1.5
+        assignment["om_stack"][1, 2, 0] = 0.5
+        assignment["om_stack"][1, 1, 0] = 1.0
+        return cache
+
+    def test_cell_colors_follow_om_and_labels_follow_significance(self):
+        cache = self.enriched_cache()
+        assignment = cache["modulation_all_var_weighted_unnormalized"]["global_assignment_fixed_k20"]
         cached_ratios = assignment["om_stack"].copy()
         saved = self.render(cache)
         np.testing.assert_array_equal(assignment["om_stack"], cached_ratios)
         axis = saved["multitask_overmembership_examples_dots_1.png"].args[0].axes[0]
-        dots = [c for c in axis.collections if isinstance(c, paper_plot.mpl.collections.PathCollection)]
-        filled = next(c for c in dots if len(c.get_offsets()) == 5)
+        cmap, norm = paper_plot._om_block_cmap_norm(7.0)
         # Inputs C4, C3 and C2 hold 95, 25 and 10 of C3's synapses against 30
         # expected each, hiddens C2, C1 and C3 hold 100, 15 and 15, so the
         # sorted axes run C4, C3, C2 and C2, C1, C3: the peak block C4 x C2
         # is at (0.5, 0.5), C3 x C2 at (1.5, 0.5), C2 x C1 at (2.5, 1.5),
         # C3 x C1 at (1.5, 1.5) and C4 x C3 at (0.5, 2.5).
-        by_position = {tuple(offset): size for offset, size in zip(filled.get_offsets(), filled.get_sizes())}
-        self.assertAlmostEqual(by_position[(1.5, 0.5)] / by_position[(0.5, 0.5)], 20. / 80.)
-        self.assertAlmostEqual(by_position[(2.5, 1.5)] / by_position[(0.5, 0.5)], 10. / 80.)
-        self.assertAlmostEqual(by_position[(1.5, 1.5)] / by_position[(0.5, 0.5)], 5. / 80.)
-        self.assertAlmostEqual(by_position[(0.5, 2.5)] / by_position[(0.5, 0.5)], 15. / 80.)
-        # Chance and depletion use OM 0 and -0.5 on the same colorbar as the
-        # peak (OM 7), while their nonzero areas retain the observed counts.
-        colors = {tuple(offset): color for offset, color in zip(filled.get_offsets(), filled.get_facecolors())}
-        colorbar = saved["multitask_overmembership_examples_colorbar.png"].args[0].axes[0]._colorbar
-        np.testing.assert_allclose(colors[(2.5, 1.5)], colorbar.cmap(colorbar.norm(0.0)))
-        np.testing.assert_allclose(colors[(1.5, 1.5)], colorbar.cmap(colorbar.norm(-0.5)))
+        cells = block_cells(axis)
+        for center, om in (((0.5, 0.5), 7.), ((1.5, 0.5), 1.), ((2.5, 1.5), 0.),
+                           ((1.5, 1.5), -0.5), ((0.5, 2.5), 0.5)):
+            np.testing.assert_allclose(cells[center][0], cmap(norm(om)))
+        # Chance is white, depletion on the blue side, enrichment on the red.
+        np.testing.assert_allclose(cells[(2.5, 1.5)][0][:3], cmap(0.5)[:3])
+        self.assertGreater(cells[(1.5, 1.5)][0][2], cells[(1.5, 1.5)][0][0])   # blue > red
+        self.assertGreater(cells[(0.5, 0.5)][0][0], cells[(0.5, 0.5)][0][2])   # red > blue
+        np.testing.assert_allclose(deciding_ring(axis).get_offsets(), [[0.5, 0.5]])
         # Enriched inputs C4 and C3, enriched hiddens C2 and C3, in axis order
         # (three clusters per side give wide cells, so neither pair collides).
         self.assertEqual([label.get_text() for label in axis.get_xticklabels()], ["C4", "C3"])
@@ -203,18 +222,11 @@ class OvermembershipExampleTests(unittest.TestCase):
         np.testing.assert_allclose(axis.get_yticks(), [0.5, 2.5])
 
     def test_marginal_bars_show_log2_enrichment_on_one_symmetric_axis(self):
-        cache = self.cache()
-        assignment = cache["modulation_all_var_weighted_unnormalized"]["global_assignment_fixed_k20"]
-        assignment["om_stack"][1, 2, 1] = 2.
-        assignment["om_stack"][1, 3, 2] = 1.5
-        assignment["om_stack"][1, 2, 0] = 0.5
-        assignment["om_stack"][1, 1, 0] = 1.0
-        saved = self.render(cache)
+        saved = self.render(self.enriched_cache())
         figure = saved["multitask_overmembership_examples_dots_1.png"].args[0]
         axis, top, right = figure.axes
         # One bar per kept cluster, centered on its cell, log2 of the sorted
-        # marginal ratios of the previous test (95, 25, 10 and 100, 15, 15
-        # over 30 expected).
+        # marginal ratios (95, 25, 10 and 100, 15, 15 over 30 expected).
         np.testing.assert_allclose([patch.get_x() + patch.get_width() / 2 for patch in top.patches],
                                    [0.5, 1.5, 2.5])
         np.testing.assert_allclose([patch.get_height() for patch in top.patches],
@@ -247,6 +259,44 @@ class OvermembershipExampleTests(unittest.TestCase):
         self.assertEqual([label.get_text() for label in
                           saved["multitask_overmembership_examples_dots_1.png"].args[0].axes[1].get_yticklabels()],
                          ["1/2", "1", "2"])
+
+    def test_thin_blocks_are_smaller_squares_and_do_not_set_the_color_limit(self):
+        """A block expecting 1 to 5 synapses is shown (display threshold 1)
+        but neither ranks the example nor stretches the color scale: input
+        C1's block with hidden C2 expects 2 synapses of C3 at a cached ratio
+        of 100, so it is a smaller, saturated square, while the peak over
+        well-supported blocks (OM 7) sets vmax and the deciding block."""
+        cache = self.cache()
+        assignment = cache["modulation_all_var_weighted_unnormalized"]["global_assignment_fixed_k20"]
+        assignment["n_active_block"][0] = [0., 20., 100.]
+        # With 20 active synapses that block expects 16 of C1 (share 0.8), a
+        # supported block; C1's cached ratio there drops to 0 so it does not
+        # become the first example.
+        assignment["om_stack"][2, 0, 1] = 0.
+        saved = self.render(cache, min_expected=1.0)
+        first = saved["multitask_overmembership_examples_dots_1.png"]
+        axis = first.args[0].axes[0]
+        self.assertEqual(first.args[0].axes[1].get_title(), "Synapse cluster C3")
+        self.assertEqual(axis.get_xlim(), (0, 4))                 # input C1 is kept
+        self.assertIn("11/12 blocks shown", first.kwargs["extra"])
+        cmap, norm = paper_plot._om_block_cmap_norm(7.0)
+        cells = block_cells(axis)
+        self.assertEqual(len(cells), 11)
+        # C1 holds 200 of C3's 12 expected synapses and sorts first, hidden C2
+        # likewise: the thin block sits at (0.5, 0.5), 0.6 of a cell wide and
+        # saturated; its supported neighbour C1 x C3 is a full, empty cell.
+        self.assertEqual(cells[(0.5, 0.5)][1], paper_plot._OM_THIN_BLOCK_SIDE)
+        np.testing.assert_allclose(cells[(0.5, 0.5)][0], cmap(1.0))
+        self.assertEqual(cells[(0.5, 2.5)][1], 1.0)
+        np.testing.assert_allclose(cells[(0.5, 2.5)][0], cmap(0.0))
+        self.assertEqual(sum(side < 1 for _, side in cells.values()), 1)
+        colorbar = saved["multitask_overmembership_examples_colorbar.png"].args[0]
+        self.assertEqual(colorbar.axes[0].get_ylim(), (-1, 7))
+        # The deciding block stays C4 x C2 (input position 1 after C1).
+        np.testing.assert_allclose(deciding_ring(axis).get_offsets(), [[1.5, 0.5]])
+        self.assertIn("peak OM 7.00 at input C4 / hidden C2", first.kwargs["extra"])
+        self.assertIn("blocks expecting < 5 synapses are smaller squares", first.kwargs["extra"])
+        self.assertIn("input C1, C4, C2, C3; hidden C2, C1, C3", first.kwargs["extra"])
 
     def test_significant_clusters_are_capped_and_ranked_by_poisson_z(self):
         expected = np.full((5, 4), 10.)
@@ -281,19 +331,24 @@ class OvermembershipExampleTests(unittest.TestCase):
         """With the display threshold at 1 synapse, cluster C1 (share 0.8) shows
         its input-C1 x hidden-C2 block (expected 4) with OM 99, yet the
         examples stay C3 then C4 because only blocks expecting at least 5
-        synapses rank them."""
+        synapses rank them, and that block does not stretch the color scale."""
         saved = self.render(self.cache(), min_expected=1.0)
         titles = [saved[f"multitask_overmembership_examples_dots_{rank}.png"].args[0].axes[1].get_title()
                   for rank in (1, 2)]
         self.assertEqual(titles, ["Synapse cluster C3", "Synapse cluster C4"])
         self.assertIn("blocks with expected >= 5 rank the examples",
                       saved["multitask_overmembership_examples_dots_1.png"].kwargs["extra"])
+        self.assertEqual(saved["multitask_overmembership_examples_colorbar.png"].args[0].axes[0].get_ylim(),
+                         (-1, 7))
         # Lowering the ranking threshold to the display threshold lets that
-        # thin block decide, and C1 becomes the first example.
+        # thin block decide, and C1 becomes the first example with its OM 99
+        # at the top of the scale.
         saved = self.render(self.cache(), min_expected=1.0, select_min_expected=1.0)
         first = saved["multitask_overmembership_examples_dots_1.png"]
         self.assertEqual(first.args[0].axes[1].get_title(), "Synapse cluster C1")
         self.assertIn("peak OM 99.00 at input C1 / hidden C2", first.kwargs["extra"])
+        self.assertEqual(saved["multitask_overmembership_examples_colorbar.png"].args[0].axes[0].get_ylim(),
+                         (-1, 99))
 
     def test_forced_cluster_ids_override_the_automatic_choice(self):
         saved = self.render(self.cache(), clusters=(4,))
@@ -323,6 +378,7 @@ class OvermembershipExampleTests(unittest.TestCase):
         self.assertIn("input C4, C1, C2, C3;", first.kwargs["extra"])
         # Its two unmeasurable blocks stay blank: 10 of 12 blocks are drawn.
         self.assertIn("10/12 blocks shown", first.kwargs["extra"])
+        self.assertEqual(len(block_cells(axis)), 10)
         self.assertNotIn("dropped", first.kwargs["extra"])
 
     def test_missing_data_unsupported_cache_or_absent_forced_cluster_skips_without_saving(self):

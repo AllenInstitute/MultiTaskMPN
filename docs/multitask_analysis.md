@@ -76,7 +76,7 @@ keep their axis position and produce a message with the evaluation command.
 The `lesion` figure mode contains `lesion_heatmap`, `lesion_cluster_sizes`,
 `cluster_corr_vs_lesion`, `cluster_corr_vs_lesion_weighted`,
 `cluster_corr_vs_lesion_seeds`, `om_vs_lesion`, `om_vs_lesion_seeds`,
-`plasticity_share`, `plasticity_share_cohort`, `plasticity_share_cohort_violin`,
+`plasticity_share`, `plasticity_share_cohort_violin`,
 `causal_vs_activity_tasks`,
 `causal_vs_activity_seeds`, `task_specificity`, `task_specificity_seeds`,
 `task_specificity_threshold_seeds`, `task_specificity_size`,
@@ -105,7 +105,7 @@ The `multiple_tasks` and `lesion` figures read one L2 cohort of the
 `MULTITASK_L2` in `paper_plot.py` (currently `1e3`) or per invocation with
 `python figures/paper_plot.py --multitask-l2 1e4 multiple_tasks lesion`. The aggregate
 figures (overmembership, `cluster_corr_vs_lesion_seeds`, `om_vs_lesion_seeds`,
-`plasticity_share_cohort`, `plasticity_share_cohort_violin`,
+`plasticity_share_cohort_violin`,
 `causal_vs_activity_seeds`, `task_specificity_seeds`,
 `task_specificity_threshold_seeds`, `task_specificity_size`,
 `task_specificity_pool_seeds`, `task_sharing_cohort`,
@@ -180,7 +180,7 @@ selected by `--multitask-l2`; render it once per cohort to compare them.
 The upstream `modulation_all_weighted_unnormalized`
 features take variance **after** multiplying modulation by static W, giving
 `W**2 * Var(M)`, unlike `var_weighted`, which gives `W * Var(M)`.
-The plot reads only the `weighted-unnormalized_zero-W` scatter cache, drops
+The plot reads only the `weighted-unnormalized_freeze-M` scatter cache, drops
 the last unresponsive cluster, and reuses the saved profile correlations,
 z-scored lesion dissimilarities and permutation statistics without refitting.
 No clustering or lesion experiment is rerun. Use an allocated compute node for
@@ -199,35 +199,42 @@ metadata; missing freeze_M results are never replaced by zero_W in these two
 figures. Every modulation tuning-vs-lesion scatter, the modulation side of
 causal-vs-activity, the synapse clusters of task specificity and task sharing
 and the synapse column of `state_space_vs_lesion` (below) follow the same
-mode. The OM scatter (`paper_plot.OM_LESION_MODE`) still reads **zero_W**
-(selected synaptic weights set to zero); plasticity share compares the two
-modes by definition.
+mode, and so do the OM scatter and its cohort view (`paper_plot.OM_LESION_MODE`,
+equal to `LESION_HEATMAP_MODE`; they read **zero_W**, selected synaptic weights
+set to zero, until 2026-11-08). Plasticity share compares the two modes by
+definition.
 `lesion_plot.py` records freeze_M as `primary_modulation_mode` in the
 normalized-effect cache.
 
 The `overmembership_examples_dots_<r>` panels (`--only overmembership_examples`,
 run `ANAME`) draw the synapse clusters with the strongest block enrichment, by
 default the two with the highest OM over blocks expecting at least five
-synapses, as input × hidden block maps. Each shown block is a filled disc
-whose area is the observed number of the cluster's synapses, colored by OM on
-the shared colorbar, under a thin grey ring whose area is the expected number
-on the same scale: a disc beyond its ring is enrichment, a ring beyond its
-disc depletion, and a ring alone a block with no synapse of the cluster;
-blocks expecting fewer than one synapse are blank, and a neuron cluster with
-no shown block is dropped from the axes. The input and hidden clusters are
-sorted by the cluster's observed/expected over their shown blocks, most
-enriched first, and the bars above and to the right of the matrix show that
-marginal ratio as log2 (chance at 0, one symmetric axis covering every
-example, at least one doubling). The size key
-`overmembership_examples_dots_legend` shows discs for round observed counts
-and one ring for the expected count; the saved message names the axis order,
-the deciding block and the runners-up. In the L21e4 run the examples are
+synapses, as input × hidden block maps. Each shown block is a cell colored by
+its OM = observed/expected − 1 on a diverging scale centered on chance
+(`paper_plot._om_block_cmap_norm`: blue below chance down to −1, white at 0,
+red above, up to the examples' peak OM over well-supported blocks; higher OM
+saturates); a block expecting fewer than five synapses, the ranking threshold,
+is a smaller square (`_OM_THIN_BLOCK_SIDE`) so a ratio over a handful of
+synapses does not read like a well-supported one; blocks expecting fewer than
+one synapse are blank, and a neuron cluster with no shown block is dropped
+from the axes. The deciding block (the peak OM over well-supported blocks) is
+ringed in black, the marker the OM-vs-lesion scatter gives the same block.
+The input and hidden clusters are sorted by the cluster's observed/expected
+over their shown blocks, most enriched first, and the bars above and to the
+right of the map show that marginal ratio as log2 (chance at 0, one symmetric
+axis covering every example, at least one doubling). The shared colorbar
+`overmembership_examples_colorbar` marks chance; the saved message names the
+axis order, the deciding block and the runners-up. An intermediate version of
+2026-11-08 drew discs sized by the observed count under rings sized by the
+expected count; on a linear area scale spanning expected counts from 1 to
+over 200 the enriched small blocks were specks and their colors invisible,
+which the full cells fix. In the L21e4 run the examples are
 diffuse, not concentrated: C3's three most enriched well-supported blocks hold
 4% of its 3244 synapses (1% expected) and its ten fullest blocks 16%, against
 33% for the ten largest blocks, because it avoids the largest input and hidden
 clusters (0.4 to 0.6 of expected) and spreads at 1.5 to 2.4 times expected over
 the small ones. The sorted axes and marginal bars show this profile, which the
-earlier unsorted dots, with area proportional to the observed count alone,
+original unsorted dots, with area proportional to the observed count alone,
 hid behind the neuron clusters' sizes.
 
 The OM-versus-lesion-profile scatter uses Spearman rank correlation and a
@@ -235,7 +242,9 @@ one-sided (negative association) modulation-cluster-footprint permutation test,
 not linear regression. `lesion_plot.py` saves the scatter, `association`
 (rho, matching permutation p, null statistics and test metadata), and
 `binned_medians` in both single-mode and combined `schema_version=2` caches;
-`paper_plot.py` takes the zero_W entry. **Run selection differs from the other
+`paper_plot.py` takes the freeze_M entry (`OM_LESION_MODE`; the zero_W entry
+until 2026-11-08, when seed 749's rho moved from −0.59 under zero_W to −0.41
+under freeze_M, both with permutation p ≤ 0.002). **Run selection differs from the other
 lesion figures:** the single-run scatter is drawn from `ANAME`, the clustering
 example (seed 749 under `--multitask-l2 1e4`), the run of the
 `overmembership_examples_dots_*` panels, so the example clusters are among its
@@ -244,24 +253,25 @@ points; every other single-run lesion figure uses `LESION_ANAME` (seed 921).
 run. `om_vs_lesion_seeds` pools every sibling run either way. Because of the
 shared run, the deciding block of `overmembership_examples_dots_1` (its most
 significant input × hidden block; both panels take it from
-`_om_example_selection`) is drawn on top of the scatter in the viridis color
-the examples give its OM, with a black ring ("Example block"). The cache keeps
+`_om_example_selection`) is drawn on top of the scatter in the color the
+examples' block maps give its OM, with a black ring ("Example block"), the
+ring the block maps also draw on it. The cache keeps
 no block identity per point, so matching uses the cached observed/expected
 ratio copied from the same `om_stack`; the highlight is skipped with a note
 unless exactly one point matches.
-The dot colors and scatter x coordinates display block over-membership as
+The block colors and scatter x coordinates display block over-membership as
 `OM = observed / expected - 1`, with chance at zero. The cache retains raw
 ratios for reconstructing observed counts; both scatter points and saved bin
 x coordinates are shifted by one only when plotting. This translation leaves
 the selected examples, Spearman correlation and permutation p values unchanged.
-The shared dot colorbar marks zero.
+The shared block colorbar marks zero, the diverging scale's white center.
 Up to five quantile bins provide median OM/L1 points and counts; tied OM values
 stay together. The median connector is descriptive and is not forced to decrease.
 `paper_plot.py` only reads these values, draws pale scatter points and the saved
 median connector, and starts the L1 axis at zero. Pearson-only caches are skipped,
 not silently reused. `python figures/paper_plot.py --only om_vs_lesion_seeds` draws the
 cohort view, `multitask_om_vs_lesion_seeds_n.png`: one point per sibling run of
-`LESION_ANAME` (same feature, any seed), the saved zero_W Spearman rho of that
+`LESION_ANAME` (same feature, any seed), the saved freeze_M Spearman rho of that
 run's OM scatter, filled when its saved one-sided permutation p is below 0.05,
 with the median over runs as a dash. Because the per-run test is one-sided
 (negative association), the legend title carries the one-sided Wilcoxon
@@ -286,20 +296,20 @@ overlap. The figure shows
 the values only: the one-sided task-level Mann-Whitney U test that
 `lesion_plot.py` also saves (memory tasks exceeding no-memory tasks) is not
 reported, and the former per-run `plasticity_share_seeds` figure was removed.
-`--only plasticity_share_cohort` draws `multitask_plasticity_share_cohort_n.png`,
-the same layout with every sibling run of `LESION_ANAME` (same feature, any
-seed) overlaid: the saved significant cells of all runs pooled per task as
-pale grey points, each run's saved task median as a short near-black dash (so
-it stays apart from the grey cells), and the median of the pooled cells as
-the red dash; the legend title gives the run count. A
-run whose task list differs from the others is left out with a note, and the
-figure is skipped below two runs. `--only plasticity_share_cohort_violin`
-draws `multitask_plasticity_share_cohort_violin_n.png`, the same pooled cells
-per task as a Gaussian kernel density (scipy's Scott bandwidth, cells within
-the y-limits only, every column scaled to the same peak width so shapes
-compare rather than counts) under the same run and pooled medians; cells
-beyond the limits stay triangles at the edge, and a task with fewer than
-three cells within them shows its points. The share compares two
+`--only plasticity_share_cohort_violin` draws
+`multitask_plasticity_share_cohort_violin_n.png`, the same layout with every
+sibling run of `LESION_ANAME` (same feature, any seed) pooled: the saved
+significant cells of all runs pooled per task as a Gaussian kernel density
+(scipy's Scott bandwidth, cells within the y-limits only, every column scaled
+to the same peak width so shapes compare rather than counts), each run's
+saved task median as a short near-black dash (so it stays apart from the grey
+density), and the median of the pooled cells as the red dash; the legend
+title gives the run count. Cells beyond the limits are triangles at the edge,
+and a task with fewer than three cells within them shows its points. A run
+whose task list differs from the others is left out with a note, and the
+figure is skipped below two runs. A point overlay of the same pooled cells
+(`plasticity_share_cohort`) was removed on 2026-11-08 in favor of the density
+version. The share compares two
 interventions and is not an exact additive partition of static and plastic
 contributions.
 
