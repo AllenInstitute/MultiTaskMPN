@@ -27,12 +27,14 @@ synapse clusters are selectively important for specific tasks. Produces:
    for the diagnostic figure. The former tuning-cosine vs effect-L1 scatter is
    kept as a supplement together with L1 vs summed effect magnitude, the size
    confound that produced its positive correlation.
-5. Overmembership vs lesion difference — relates modulation cluster enrichment
-   in (input, hidden) neuron pairs to the functional similarity (task-profile
-   L1 distance) between modulation lesion and combined neuron lesion effects,
-    using pooled Spearman rho and a negative-sided cluster-permutation p
-    (footprint ownership shuffled). Scatter plots include quantile-bin medians,
-    not a fitted regression line; neither a linear nor decreasing shape is imposed.
+5. Overmembership vs lesion profiles — relates modulation cluster enrichment
+   in (input, hidden) neuron pairs to L1 distance and Pearson correlation
+   between modulation and combined-neuron lesion effects across tasks.
+   L1 retains overall effect magnitude; Pearson removes task means and scale.
+   Both summaries use pooled Spearman rho and whole-footprint permutations,
+   negative-sided for L1 and positive-sided for Pearson. Constant task vectors
+   are excluded from Pearson before permutations. Diagnostic plots show L1;
+   both metrics and quantile-bin medians are saved for paper_plot's two panels.
 6. Causal dependency map — tests every (task, cluster) lesion effect
    against its stored random-control repeats (one-sided prediction t,
    _control_test, BH-FDR across cells), biclusters the masked dependency
@@ -193,6 +195,17 @@ def _om_point_mask(ga, om_idx, *, skip_input=(), skip_hidden=(), min_expected=OM
 
 OM_N_PERM = 1000
 
+
+def _om_block_ids(cluster_id, point_mask):
+    """Row-major (mod cluster, input cluster, hidden cluster) point identities.
+
+    All three labels are 1-based, matching the OM examples. The mask order
+    matches boolean indexing of om_stack and combined-lesion effect arrays.
+    """
+    return [(int(cluster_id), int(pre) + 1, int(post) + 1)
+            for pre, post in np.argwhere(point_mask)]
+
+
 # Baseline (no-lesion) condition names of the neuron lesions, old and new spelling.
 NEURON_BASELINE_KEYS = frozenset({"pre_cNone", "post_cNone", "pre_nolesion", "post_nolesion"})
 
@@ -272,8 +285,30 @@ def _indices_without(n, index):
     return keep if index is None else keep[keep != int(index)]
 
 
-def _om_scatter_perm_test(mod_profiles, row_om, row_cm, n_perm=OM_N_PERM, seed=0):
-    """Spearman cluster-permutation p-value for the OM vs profile-L1 scatter.
+def _om_profile_comparison(modulation, combined, metric):
+    """Compare one modulation task vector with each combined-lesion vector.
+
+    Pearson removes each vector's task mean and scale. Constant (or numerically
+    constant) profiles have undefined correlation, represented by NaN, not zero.
+    """
+    modulation, combined = np.asarray(modulation, float), np.asarray(combined, float)
+    if metric == "l1":
+        return np.mean(np.abs(combined - modulation[None, :]), axis=1)
+    if metric != "pearson":
+        raise ValueError(f"Unknown OM profile metric: {metric}")
+    mod_centered = modulation - modulation.mean()
+    cm_centered = combined - combined.mean(axis=1, keepdims=True)
+    mod_norm = np.linalg.norm(mod_centered)
+    cm_norm = np.linalg.norm(cm_centered, axis=1)
+    valid = (mod_norm > 1e-12) & (cm_norm > 1e-12)
+    values = np.full(len(combined), np.nan)
+    np.divide(cm_centered @ mod_centered, cm_norm * mod_norm, out=values, where=valid)
+    return np.clip(values, -1.0, 1.0)
+
+
+def _om_scatter_perm_test(mod_profiles, row_om, row_cm, n_perm=OM_N_PERM, seed=0,
+                         *, metric="l1"):
+    """Spearman cluster-permutation p-value for OM vs task-profile comparison.
 
     The scatter's (mod cluster, block) points are massively non-independent:
     each cluster's lesion profile is reused across all its blocks and each
@@ -283,36 +318,50 @@ def _om_scatter_perm_test(mod_profiles, row_om, row_cm, n_perm=OM_N_PERM, seed=0
     owns WHICH OM footprint — row_om[k] (masked OM values) and row_cm[k] (the
     matching blocks' combined-lesion task profiles) travel together with their
     stability mask — recomputing pooled Spearman rho each time. One-sided
-    toward negative rho (hypothesis: higher OM -> more similar lesion profiles).
+    toward negative rho for L1 distance, positive rho for Pearson similarity.
+    For Pearson, constant modulation profiles and constant combined profiles
+    are excluded BEFORE permutation; surviving clusters exchange whole
+    footprints with their retained blocks. Undefined correlations are never
+    treated as zero or allowed to change the sample set between permutations.
 
     mod_profiles: (C, T) per-cluster modulation-lesion task profiles.
     row_om: length-C list of (B_k,) masked OM values per footprint.
     row_cm: length-C list of (B_k, T) matching blocks' task profiles.
-    y for a (cluster c, footprint k) pairing is the per-block task-profile
-    L1/T distance: mean_t |mod_profiles[c, t] - row_cm[k][b, t]|.
+    y is the per-block L1/T distance or Pearson correlation across tasks.
     Returns (rho_obs, p_perm, null_rho); no regression model is fitted.
 
     Implementation: shuffling footprint ownership only reorders the pooled OM
     values, so their spread and ranks are computed once and re-assembled per
-    permutation; the (cluster, footprint) profile distances are precomputed
+    permutation; the (cluster, footprint) profile comparisons are precomputed
     for every pairing, and each permutation's Spearman rho is the Pearson
     correlation of the two rank vectors (what scipy.stats.spearmanr computes,
     without its per-call p-value machinery). Same RNG stream as before.
     """
-    nC = len(mod_profiles)
     if n_perm < 1:
         raise ValueError("Need at least one cluster permutation.")
+    if metric not in ("l1", "pearson"):
+        raise ValueError(f"Unknown OM profile metric: {metric}")
     mod_profiles = np.asarray(mod_profiles, dtype=float)
     row_om = [np.asarray(values, dtype=float) for values in row_om]
     row_cm = [np.asarray(values, dtype=float) for values in row_cm]
+    if metric == "pearson":
+        masks = [np.isfinite(_om_profile_comparison(mod, cm, metric))
+                 for mod, cm in zip(mod_profiles, row_cm)]
+        kept = [i for i, mask in enumerate(masks) if mask.any()]
+        mod_profiles = mod_profiles[kept]
+        row_om = [row_om[i][masks[i]] for i in kept]
+        row_cm = [row_cm[i][masks[i]] for i in kept]
+    nC = len(mod_profiles)
+    if nC == 0:
+        return np.nan, np.nan, np.full(n_perm, np.nan)
     pooled_om = np.concatenate(row_om)
     om_std = np.std(pooled_om)
     rank_om = np.split(rankdata(pooled_om), np.cumsum([values.size for values in row_om])[:-1])
-    distance = [[np.mean(np.abs(row_cm[k] - mod_profiles[c][None, :]), axis=1)
-                 for k in range(nC)] for c in range(nC)]
+    comparisons = [[_om_profile_comparison(mod_profiles[c], row_cm[k], metric)
+                    for k in range(nC)] for c in range(nC)]
 
     def _pooled_rho(assign):
-        y = np.concatenate([distance[c][k] for c, k in enumerate(assign)])
+        y = np.concatenate([comparisons[c][k] for c, k in enumerate(assign)])
         if om_std < 1e-12 or np.std(y) < 1e-12:
             return np.nan
         rank_x = np.concatenate([rank_om[k] for k in assign])
@@ -330,7 +379,8 @@ def _om_scatter_perm_test(mod_profiles, row_om, row_cm, n_perm=OM_N_PERM, seed=0
     finite = np.isfinite(null_rho)
     if not np.isfinite(rho_obs) or not finite.any():
         return rho_obs, np.nan, null_rho
-    p_perm = (1.0 + np.sum(null_rho[finite] <= rho_obs)) / (finite.sum() + 1.0)
+    extreme = null_rho[finite] <= rho_obs if metric == "l1" else null_rho[finite] >= rho_obs
+    p_perm = (1.0 + np.sum(extreme)) / (finite.sum() + 1.0)
     return rho_obs, float(p_perm), null_rho
 
 
@@ -375,7 +425,12 @@ def _om_binned_medians(om_vals, lesion_diffs, n_bins=5):
 
 def _om_scatter_summary(mod_profiles, row_om, row_cm, n_perm=OM_N_PERM,
                         seed=0, n_bins=5):
-    """Shared single/combined export: scatter, rank permutation test and medians."""
+    """Export L1 and Pearson panels with matching rank tests and bin medians.
+
+    The original L1 fields retain their schema-v2 layout and definitions.
+    The additive profile_correlation entry keeps one value per original point
+    (NaN for constant profiles); its test and medians use only defined values.
+    """
     mod_profiles = np.asarray(mod_profiles, dtype=float)
     if (mod_profiles.ndim != 2 or mod_profiles.size == 0
             or len(row_om) != len(mod_profiles) or len(row_cm) != len(mod_profiles)
@@ -389,24 +444,37 @@ def _om_scatter_summary(mod_profiles, row_om, row_cm, n_perm=OM_N_PERM,
                 or not np.isfinite(profiles).all()):
             raise ValueError("Each OM footprint must match its combined-lesion profiles.")
     om_vals = np.concatenate(row_om)
-    lesion_diffs = np.concatenate([
-        np.mean(np.abs(combined - modulation[None, :]), axis=1)
-        for modulation, combined in zip(mod_profiles, row_cm)])
-    medians = _om_binned_medians(om_vals, lesion_diffs, n_bins=n_bins)
-    rho, p_perm, null_rho = _om_scatter_perm_test(
-        mod_profiles, row_om, row_cm, n_perm=n_perm, seed=seed)
-    return {
-        "om_vals": om_vals,
-        "lesion_diffs": lesion_diffs,
-        "association": {
-            "statistic": "spearman", "rho": rho, "p_perm": p_perm,
-            "null_rho": null_rho, "n_perm": int(n_perm),
-            "n_valid_perm": int(np.isfinite(null_rho).sum()),
-            "n_clusters": len(mod_profiles), "seed": int(seed), "side": "less",
-            "permutation_unit": "modulation_cluster_footprint",
-        },
-        "binned_medians": medians,
-    }
+    result = {"om_vals": om_vals}
+    for metric in ("l1", "pearson"):
+        rows = [_om_profile_comparison(mod, cm, metric) for mod, cm in zip(mod_profiles, row_cm)]
+        values = np.concatenate(rows)
+        valid = np.isfinite(values)
+        rho, p_perm, null_rho = _om_scatter_perm_test(
+            mod_profiles, row_om, row_cm, n_perm=n_perm, seed=seed, metric=metric)
+        if metric == "l1":
+            medians = _om_binned_medians(om_vals, values, n_bins)
+        else:
+            medians = (_quantile_bin_summary(om_vals[valid], values[valid], n_bins)
+                       if valid.any() else None)
+        record = {
+            "association": {
+                "statistic": "spearman", "rho": rho, "p_perm": p_perm,
+                "null_rho": null_rho, "n_perm": int(n_perm),
+                "n_valid_perm": int(np.isfinite(null_rho).sum()),
+                "n_clusters": int(sum(np.isfinite(row).any() for row in rows)),
+                "seed": int(seed), "side": "less" if metric == "l1" else "greater",
+                "permutation_unit": "modulation_cluster_footprint",
+            },
+            "binned_medians": medians,
+        }
+        if metric == "l1":
+            result.update(lesion_diffs=values, **record)
+        else:
+            result["profile_correlation"] = {
+                "definition": "Pearson correlation across tasks",
+                "values": values, "n_excluded": int((~valid).sum()), **record,
+            }
+    return result
 
 
 def _om_pred_perm_test(pred, actual, n_perm=OM_N_PERM, seed=0):
@@ -2624,15 +2692,17 @@ def main(seed, feature, control_pool=None):
               f"vs reaction={np.nanmedian(_rea_vals) if _rea_vals.size else np.nan:.2f}; "
               f"MWU one-sided {_p_str}")
 
-    # ── Overmembership vs lesion difference ──
+    # ── Overmembership vs lesion profiles ──
     def plot_overmembership_vs_lesion_diff(
         results, cluster_info_mod, cluster_info, variant, mod_type_key,
         mod_lesion_mode, aname, save_dir,
     ):
-        """For each (mod_cluster, input_cluster, hidden_cluster) triple, scatter
-        overmembership vs the task-profile L1/T distance (mean over tasks of
-        |normalized effect difference|) between modulation lesion and combined
-        (input+hidden) lesion.
+        """Export OM comparisons for each (mod, input, hidden) cluster triple.
+
+        The diagnostic scatter shows task-profile L1/T distance between
+        modulation and combined (input+hidden) lesion effects. The cache
+        also saves task-vector Pearson similarity, both rank tests and bin
+        medians, and aligned point identities for paper_plot's two panels.
 
         variant: "norm" or "unnorm"
         mod_type_key: e.g. "modulation_all_normalized"
@@ -2716,7 +2786,7 @@ def main(seed, feature, control_pool=None):
         mod_profiles = []   # per cluster: (T,) mod lesion effect task profile
         row_om_list = []    # per cluster: masked OM values of its footprint
         row_cm_list = []    # per cluster: (B, T) matching blocks' task profiles
-        labels = []
+        point_ids = []
 
         for cid in sorted(mod_effects.keys()):
             if cid not in om_id_to_idx:
@@ -2728,12 +2798,10 @@ def main(seed, feature, control_pool=None):
             if not np.any(point_mask):
                 continue
             mod_profiles.append(np.asarray(mod_effects[cid], float))
-            # Boolean indexing is row-major, matching the (pi, qi) loop order
-            # this replaces, so labels stay aligned with the flat arrays.
+            # Boolean indexing and point identities share row-major order.
             row_om_list.append(np.asarray(om_stack[om_idx][point_mask], float))
             row_cm_list.append(combined_effect[:, point_mask].T)  # (B, T)
-            for pi, qi in np.argwhere(point_mask):
-                labels.append(f"m{cid}_i{pi+1}_h{qi+1}")
+            point_ids.extend(_om_block_ids(cid, point_mask))
 
         if not row_om_list:
             print(f"[om_vs_lesion] no data points to plot")
@@ -2743,6 +2811,7 @@ def main(seed, feature, control_pool=None):
             return
 
         summary = _om_scatter_summary(mod_profiles, row_om_list, row_cm_list)
+        summary["point_ids"] = np.asarray(point_ids, dtype=int)
         om_vals, lesion_diffs = summary["om_vals"], summary["lesion_diffs"]
         association, medians = summary["association"], summary["binned_medians"]
         rho, p_perm = association["rho"], association["p_perm"]
@@ -2786,7 +2855,6 @@ def main(seed, feature, control_pool=None):
                 **_control_meta(results),
                 # the combined-lesion side has lesion.py's controls only
                 "combined_control_pool": results.get("combined_control_pool", "all"),
-                "labels": labels,
                 "y_definition": "task-profile L1/T: mean_t |mod_effect(t) - combined_effect(t)|",
                 "mod_type_key": mod_type_key,
                 "mod_lesion_mode": mod_lesion_mode,
@@ -2799,11 +2867,14 @@ def main(seed, feature, control_pool=None):
 
     def _plot_om_vs_lesion_combined(results, cluster_info_mod, cluster_info, variant,
                                     base_key, modes, aname, save_dir):
-        """Plot zero_W and freeze_M overmembership vs lesion diff side-by-side.
+        """Plot L1 diagnostics for zero_W/freeze_M and export both profile metrics.
 
-        The per-mode scatter data is rebuilt inline with the same derivation
-        as plot_overmembership_vs_lesion_diff (duplicated, not shared — keep
-        the two in sync when changing either)."""
+        Per-mode footprint assembly follows plot_overmembership_vs_lesion_diff;
+        keep their assembly in sync. Both exporters share _om_scatter_summary
+        for L1 and Pearson values, permutation tests and medians, and
+        _om_block_ids for aligned (mod, input, hidden) cluster identities.
+        The optional third diagnostic panel predicts cluster-mean damage.
+        """
         type_tag = base_key.replace("modulation_all_", "").replace("_", "-")
 
         # Collect scatter data for each mode
@@ -2865,6 +2936,7 @@ def main(seed, feature, control_pool=None):
             mod_profiles = []
             row_om_list = []
             row_cm_list = []
+            point_ids = []
             for cid in sorted(mod_effects.keys()):
                 if cid not in om_id_to_idx:
                     continue
@@ -2877,11 +2949,13 @@ def main(seed, feature, control_pool=None):
                 mod_profiles.append(np.asarray(mod_effects[cid], float))
                 row_om_list.append(np.asarray(om_stack[om_idx][point_mask], float))
                 row_cm_list.append(combined_effect[:, point_mask].T)  # (B, T)
+                point_ids.extend(_om_block_ids(cid, point_mask))
 
             if row_om_list:
                 if sum(len(values) for values in row_om_list) >= 2:
                     mode_data_all[mode] = _om_scatter_summary(
                         mod_profiles, row_om_list, row_cm_list)
+                    mode_data_all[mode]["point_ids"] = np.asarray(point_ids, dtype=int)
 
         if len(mode_data_all) < 2:
             return
@@ -3035,6 +3109,7 @@ def main(seed, feature, control_pool=None):
                 "min_expected": OM_MIN_EXPECTED,
                 "n_perm": OM_N_PERM,
                 "perm_side": {"scatter": "one-sided (rho <= rho_obs)",
+                              "profile_correlation": "one-sided (rho >= rho_obs)",
                               "prediction": "one-sided (r >= r_obs)"},
                 "y_definition": "task-profile L1/T: mean_t |mod_effect(t) - combined_effect(t)|",
             }, _f)
@@ -3051,8 +3126,9 @@ def main(seed, feature, control_pool=None):
         α = 0 is the uniform, anatomy-free baseline (every cluster gets the
         same predicted profile, so the task-mean regression is undefined
         there and reported as NaN); α = 1 is the plain OM weighting used by
-        the om_vs_lesion panel-3 prediction; α → ∞ keeps only the argmax
-        block. zero_W lesion mode only, mirroring that panel; unresponsive
+        third panel of the combined diagnostic PNG (not the paper scatter);
+        α → ∞ keeps only the argmax block. zero_W lesion mode only, mirroring
+        that diagnostic panel; unresponsive
         input/hidden classes excluded for the unnorm variant, as elsewhere.
         """
         mod_result_key = f"{base_key}__zero_W"

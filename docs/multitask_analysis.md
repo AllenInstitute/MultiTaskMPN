@@ -209,7 +209,10 @@ normalized-effect cache.
 The `overmembership_examples_dots_<r>` panels (`--only overmembership_examples`,
 run `ANAME`) draw the synapse clusters with the strongest block enrichment, by
 default the two with the highest OM over blocks expecting at least five
-synapses, as input × hidden block maps. Each shown block is a cell colored by
+synapses, as input × hidden block maps. These are most-enriched examples,
+not representative clusters, and the selection does not perform a block-level
+significance test. Optional endpoint labels are prioritized by the largest
+descriptive Poisson z score, not by a tested p value. Each shown block is a cell colored by
 its OM = observed/expected − 1 on a diverging scale centered on chance
 (`paper_plot._om_block_cmap_norm`: blue below chance down to −1, white at 0,
 red above, up to the examples' peak OM over well-supported blocks; higher OM
@@ -221,8 +224,9 @@ from the axes. The deciding block (the peak OM over well-supported blocks) is
 ringed in black, the marker the OM-vs-lesion scatter gives the same block.
 The input and hidden clusters are sorted by the cluster's observed/expected
 over their shown blocks, most enriched first, and the bars above and to the
-right of the map show that marginal ratio as log2 (chance at 0, one symmetric
-axis covering every example, at least one doubling). The shared colorbar
+right of the map show that marginal ratio in log2 coordinates, with ticks
+labelled as observed/expected ratios (chance 1). One symmetric axis covers
+every example and spans at least one doubling. The shared colorbar
 `overmembership_examples_colorbar` marks chance; the saved message names the
 axis order, the deciding block and the runners-up. An intermediate version of
 2026-11-08 drew discs sized by the observed count under rings sized by the
@@ -237,47 +241,86 @@ the small ones. The sorted axes and marginal bars show this profile, which the
 original unsorted dots, with area proportional to the observed count alone,
 hid behind the neuron clusters' sizes.
 
-The OM-versus-lesion-profile scatter uses Spearman rank correlation and a
-one-sided (negative association) modulation-cluster-footprint permutation test,
-not linear regression. `lesion_plot.py` saves the scatter, `association`
+The OM-versus-lesion-profile figure has two panels with the same OM x axis.
+The left panel retains task-profile L1/T distance, which includes differences
+in overall damage. The right panel uses Pearson correlation between the two
+random-minus-lesion task vectors, subtracting each vector's task mean and
+normalizing its scale. Its y axis measures similarity of task selectivity,
+not absolute damage. Both panels test OM association using Spearman rho and
+whole modulation-cluster-footprint permutations: one-sided negative for L1,
+one-sided positive for Pearson similarity. The Pearson on the right y axis
+is distinct from the Spearman association reported above that panel.
+`lesion_plot.py` saves the scatter, `association`
 (rho, matching permutation p, null statistics and test metadata), and
-`binned_medians` in both single-mode and combined `schema_version=2` caches;
+`binned_medians` in both single-mode and combined `schema_version=2` caches.
+The additive `profile_correlation` entry stores aligned Pearson values, its
+own association and bin medians, and the excluded-point count. A centered
+task vector with norm <= 1e-12 is treated as constant: its Pearson value is
+NaN, not zero. Constant modulation profiles and constant combined profiles
+are removed before permutation, so the valid sample set is fixed across
+permutations. Both the single-run and cohort figures require this entry;
+older v2 caches contain only the L1 result and must be refreshed. Refresh via
+`python multiple_task/lesion_plot.py --seed 749 --feature L21e4 --control-pool all`, then
+`python figures/paper_plot.py --only om_vs_lesion --multitask-l2 1e4 --control-pool all`
+for the `_n` figure. This is post-processing of saved results, with no network
+forwards. Pearson similarity alone does not establish a shared causal mechanism.
 `paper_plot.py` takes the freeze_M entry (`OM_LESION_MODE`; the zero_W entry
-until 2026-11-08, when seed 749's rho moved from −0.59 under zero_W to −0.41
+until 2026-11-08, when seed 749's L1 association rho moved from −0.59 under zero_W to −0.41
 under freeze_M, both with permutation p ≤ 0.002). **Run selection differs from the other
 lesion figures:** the single-run scatter is drawn from `ANAME`, the clustering
 example (seed 749 under `--multitask-l2 1e4`), the run of the
 `overmembership_examples_dots_*` panels, so the example clusters are among its
-points; every other single-run lesion figure uses `LESION_ANAME` (seed 921).
+points; other single-run lesion figures use `LESION_ANAME` (designated seed
+921 at L2 = 1e-4). Both selections can fall back to another cached run when
+the designated run is unavailable, as described above.
 `paper_plot._om_scatter_run` holds the choice and the saved message names the
-run. `om_vs_lesion_seeds` pools every sibling run either way. Because of the
+run. `om_vs_lesion_seeds` pools eligible sibling runs in the cohort. Because of the
 shared run, the deciding block of `overmembership_examples_dots_1` (its most
-significant input × hidden block; both panels take it from
-`_om_example_selection`) is drawn on top of the scatter in the color the
+enriched supported input × hidden block, from `_om_example_selection`) is
+drawn on both scatters where defined, in the color the
 examples' block maps give its OM, with a black ring ("Example block"), the
-ring the block maps also draw on it. The cache keeps
-no block identity per point, so matching uses the cached observed/expected
-ratio copied from the same `om_stack`; the highlight is skipped with a note
-unless exactly one point matches.
+ring the block maps also draw on it. Each single-mode entry and each mode of
+the combined cache saves `point_ids`, an N × 3 integer array in the same
+order as the scatter: `(mod cluster, input cluster, hidden cluster)`, all
+1-based. Matching uses this identity, so repeated OM values do not cause
+ambiguity. The loader validates shape, positive integer labels and uniqueness;
+the matched ratio must also agree with the current example before it is
+highlighted. Old caches without IDs can still supply statistics, but their
+highlight is skipped with a rerun message. Regenerate IDs with `lesion_plot.py`;
+they are never inferred by matching OM values.
 The block colors and scatter x coordinates display block over-membership as
 `OM = observed / expected - 1`, with chance at zero. The cache retains raw
 ratios for reconstructing observed counts; both scatter points and saved bin
 x coordinates are shifted by one only when plotting. This translation leaves
 the selected examples, Spearman correlation and permutation p values unchanged.
 The shared block colorbar marks zero, the diverging scale's white center.
-Up to five quantile bins provide median OM/L1 points and counts; tied OM values
-stay together. The median connector is descriptive and is not forced to decrease.
+Up to five quantile bins provide median OM/comparison points and counts for
+each panel; tied OM values stay together. The median connector is descriptive
+and is not forced to increase or decrease.
 `paper_plot.py` only reads these values, draws pale scatter points and the saved
-median connector, and starts the L1 axis at zero. Pearson-only caches are skipped,
-not silently reused. `python figures/paper_plot.py --only om_vs_lesion_seeds` draws the
-cohort view, `multitask_om_vs_lesion_seeds_n.png`: one point per sibling run of
-`LESION_ANAME` (same feature, any seed), the saved freeze_M Spearman rho of that
-run's OM scatter, filled when its saved one-sided permutation p is below 0.05,
-with the median over runs as a dash. Because the per-run test is one-sided
-(negative association), the legend title carries the one-sided Wilcoxon
-signed-rank p of the runs' rhos being below zero; the other `_seeds` figures
-keep their two-sided test. Runs whose OM cache is missing, legacy or has an
-undefined rho are left out with a note.
+median connector, starts the L1 axis at zero, and shows Pearson values from
+−1 to 1 with a zero reference line. Old Pearson-regression caches are skipped;
+they do not contain the new task-vector Pearson statistic.
+`python figures/paper_plot.py --only om_vs_lesion_seeds` draws the
+cohort view, `multitask_om_vs_lesion_seeds_n.png`, with two panels: OM versus
+L1/T distance on the left and OM versus task-vector Pearson similarity on the
+right. Each point is one sibling network's saved freeze_M **Spearman rho**
+between OM and the chosen metric, not a task-vector Pearson r. Filled points
+have a saved one-sided whole-footprint permutation p below 0.05; dashes mark
+medians. The cohort Wilcoxon signed-rank tests assess rho < 0 on the left and
+rho > 0 on the right. Both panels use the same networks, offsets and y scale.
+Runs lacking either finite rho/permutation p are excluded from both panels
+with a note; fewer than two complete runs skips the figure. Refresh every
+completed run in the selected cohort, then plot:
+
+```bash
+python -u multiple_task/lesion_plot.py --seed all --feature L21e4 --control-pool all
+python figures/paper_plot.py --only om_vs_lesion_seeds --multitask-l2 1e4 --control-pool all
+```
+
+This regenerates lesion post-processing caches and figures from saved raw
+lesions and clustering. It does not rerun training, clustering, or lesion
+forward passes. The unrelated `_seeds` figures retain their own tests.
 
 `python figures/paper_plot.py --only plasticity_share` draws
 `multitask_plasticity_share_n.png` from `plasticity_share_var-weighted-unnormalized_<aname>.pkl`.

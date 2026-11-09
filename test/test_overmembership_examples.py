@@ -154,7 +154,7 @@ class OvermembershipExampleTests(unittest.TestCase):
             np.testing.assert_allclose(ring.get_offsets(), [[0.5, 0.5]])
             self.assertGreater(ring.get_zorder(), 2)
         rank1 = saved["multitask_overmembership_examples_dots_1.png"].args[0].axes[0]
-        # Labels: only the enriched block's clusters are significant, and the
+        # Labels: only the enriched block's clusters have positive scores, and the
         # sort puts them first on both axes.
         self.assertEqual([label.get_text() for label in rank1.get_xticklabels()], ["C4"])
         self.assertEqual([label.get_text() for label in rank1.get_yticklabels()], ["C2"])
@@ -177,7 +177,7 @@ class OvermembershipExampleTests(unittest.TestCase):
         self.assertEqual(len(axis.get_xticks()), 0)
         self.assertEqual(len(axis.get_yticks()), 0)
         self.assertEqual((axis.get_xlabel(), axis.get_ylabel()), ("Input cluster", "Hidden cluster"))
-        self.assertIn("most significant (not drawn): input C4, hidden C2",
+        self.assertIn("most enriched (not drawn): input C4, hidden C2",
                       saved["multitask_overmembership_examples_dots_1.png"].kwargs["extra"])
 
     def enriched_cache(self):
@@ -192,7 +192,7 @@ class OvermembershipExampleTests(unittest.TestCase):
         assignment["om_stack"][1, 1, 0] = 1.0
         return cache
 
-    def test_cell_colors_follow_om_and_labels_follow_significance(self):
+    def test_cell_colors_follow_om_and_labels_follow_enrichment_scores(self):
         cache = self.enriched_cache()
         assignment = cache["modulation_all_var_weighted_unnormalized"]["global_assignment_fixed_k20"]
         cached_ratios = assignment["om_stack"].copy()
@@ -298,33 +298,33 @@ class OvermembershipExampleTests(unittest.TestCase):
         self.assertIn("blocks expecting < 5 synapses are smaller squares", first.kwargs["extra"])
         self.assertIn("input C1, C4, C2, C3; hidden C2, C1, C3", first.kwargs["extra"])
 
-    def test_significant_clusters_are_capped_and_ranked_by_poisson_z(self):
+    def test_enriched_clusters_are_capped_and_ranked_by_poisson_z(self):
         expected = np.full((5, 4), 10.)
         observed = np.full((5, 4), 10.)
         observed[0, 0], observed[1, 1], observed[2, 2], observed[3, 3], observed[4, 0] = 40., 30., 25., 20., 12.
         shown = np.ones((5, 4), bool)
         shown[4, 0] = False                  # the weakest enrichment sits in an unshown block
-        inputs, hiddens = paper_plot._om_significant_clusters(observed, expected, shown, max_labels=3)
+        inputs, hiddens = paper_plot._om_enriched_clusters(observed, expected, shown, max_labels=3)
         self.assertEqual(inputs, [0, 1, 2])  # z 9.5, 6.3, 4.7 beat input 3's 3.2
         self.assertEqual(hiddens, [0, 1, 2])
-        inputs, hiddens = paper_plot._om_significant_clusters(observed, expected, shown, max_labels=5)
+        inputs, hiddens = paper_plot._om_enriched_clusters(observed, expected, shown, max_labels=5)
         self.assertEqual(inputs, [0, 1, 2, 3])   # input 4 has no shown enrichment
         self.assertEqual(hiddens, [0, 1, 2, 3])
-        # Most significant first: swapping the strengths swaps the order.
+        # Highest enrichment score first: swapping the strengths swaps the order.
         observed[0, 0], observed[1, 1] = 30., 40.
-        inputs, _ = paper_plot._om_significant_clusters(observed, expected, shown, max_labels=2)
+        inputs, _ = paper_plot._om_enriched_clusters(observed, expected, shown, max_labels=2)
         self.assertEqual(inputs, [1, 0])
 
-    def test_colliding_labels_keep_the_more_significant_neighbour(self):
+    def test_colliding_labels_keep_the_higher_scoring_neighbour(self):
         names = [f"C{index}" for index in range(1, 11)]
-        # Significance order 4, 5, 9: C5 (one cell from C4) collides with C4
+        # Priority order 4, 5, 9: C5 (one cell from C4) collides with C4
         # on narrow cells and is dropped; C9 is far enough and stays.
         kept = paper_plot._non_colliding_labels([3, 4, 8], names, cell_pt=5.0, which="x")
         self.assertEqual(kept, [3, 8])
         kept = paper_plot._non_colliding_labels([3, 4, 8], names, cell_pt=30.0, which="x")
         self.assertEqual(kept, [3, 4, 8])            # wide cells: nothing collides
         kept = paper_plot._non_colliding_labels([4, 3], names, cell_pt=5.0, which="y")
-        self.assertEqual(kept, [4])                   # y: the more significant C5 wins
+        self.assertEqual(kept, [4])                   # y: the higher-scoring C5 wins
         self.assertEqual(paper_plot._non_colliding_labels([], names, 5.0, "x"), [])
 
     def test_ranking_ignores_high_ratios_on_thinly_supported_blocks(self):

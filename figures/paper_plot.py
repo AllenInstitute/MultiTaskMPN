@@ -4366,10 +4366,10 @@ _OM_THIN_BLOCK_SIDE = 0.6
 # example; a cluster with no synapse of the example sits at the floor.
 _OVERMEMBERSHIP_MARGIN_MIN_DOUBLINGS = 1.0
 # The block map labels at most this many input and hidden clusters per axis:
-# those holding the cluster's most significant enrichments, ranked by the
+# those holding the cluster's strongest standardized enrichments, ranked by the
 # Poisson z of their best shown block, (observed - expected) / sqrt(expected),
-# which unlike OM is not inflated by a near-empty block. A label
-# that would overlap a more significant neighbour's is dropped, never
+# used only as a descriptive label priority, not a significance test. A label
+# that would overlap a higher-scoring neighbour's is dropped, never
 # staggered onto a second row.
 _OVERMEMBERSHIP_DOT_MAX_LABELS = 3
 
@@ -4384,7 +4384,8 @@ def _ranked_om_clusters(ratios, expected, cluster_ids, skip_ids=()):
     unsupported blocks set to NaN). Each candidate is scored by the highest
     OM over its counted blocks, ties by that block's expected count. Clusters
     in `skip_ids` (the unresponsive class) or without a counted block are
-    left out. Returns the indices in rank order."""
+    left out. These are most-enriched examples, not representative clusters
+    or blocks selected by a significance test. Returns indices in rank order."""
     scored = []
     for index, cluster_id in enumerate(cluster_ids):
         if cluster_id in skip_ids or not np.isfinite(expected[index]).any():
@@ -4395,12 +4396,13 @@ def _ranked_om_clusters(ratios, expected, cluster_ids, skip_ids=()):
     return [index for _, index in sorted(scored, key=lambda item: item[0], reverse=True)]
 
 
-def _om_significant_clusters(observed, expected, shown, max_labels=_OVERMEMBERSHIP_DOT_MAX_LABELS):
+def _om_enriched_clusters(observed, expected, shown, max_labels=_OVERMEMBERSHIP_DOT_MAX_LABELS):
     """Indices of the input (axis 0) and hidden (axis 1) clusters holding the
-    most significant enrichments of one synapse cluster: each cluster is
+    strongest standardized enrichments of one synapse cluster: each cluster is
     scored by the Poisson z of its best shown block, only positive z counts
     (enrichment, not depletion), and at most `max_labels` are kept per side,
-    most significant first. Returns (input indices, hidden indices)."""
+    highest score first. This is descriptive ranking, not a block significance
+    test. Returns (input indices, hidden indices)."""
     z = np.where(shown, (observed - expected) / np.sqrt(np.maximum(expected, 1e-12)), -np.inf)
     picks = []
     for axis in (1, 0):                      # best block per input row, per hidden column
@@ -4411,7 +4413,7 @@ def _om_significant_clusters(observed, expected, shown, max_labels=_OVERMEMBERSH
 
 
 def _non_colliding_labels(indices, names, cell_pt, which, fontsize=7):
-    """Keep, in significance order, each label whose text would not overlap
+    """Keep, in priority order, each label whose text would not overlap
     an already kept one: x labels collide within one label width, y labels
     within one label height (0.65 em per character, 1.2 em line height, plus
     2 pt clearance), with one cell spanning `cell_pt` points. Returns the kept
@@ -4496,9 +4498,10 @@ def _plot_om_block_map(ratio, shown, supported, observed, expected, input_names,
     the OM-vs-lesion scatter's highlighted point. The bars above (inputs)
     and to the right (hiddens) of the map show each cluster's log2
     observed/expected over its shown blocks on an axis of +-`margin_limit`
-    doublings with chance at 0, so the sorted axes read as a monotone
-    profile. `labelled` is (input indices, hidden indices) in significance
-    order; those whose names would overlap a more significant neighbour's
+    doublings, with ticks labelled as ratios (chance 1 at log2 coordinate 0),
+    so the sorted axes read as a monotone profile. `labelled` is
+    (input indices, hidden indices) in enrichment-score
+    order; those whose names would overlap a higher-scoring neighbour's
     are dropped (_non_colliding_labels). They are drawn only with
     OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES; either way they are named in the
     saved message. The title sits over the top bar axis. The color scale is
@@ -4571,7 +4574,7 @@ def _plot_om_block_map(ratio, shown, supported, observed, expected, input_names,
     right.tick_params(axis="x", length=2, labelsize=5.5)
     right.spines[["top", "right", "left"]].set_visible(False)
     top.set_title(title, fontsize=8)
-    named = "labelled" if OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES else "most significant (not drawn)"
+    named = "labelled" if OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES else "most enriched (not drawn)"
     labelled_text = (f"; {named}: "
                      f"input {', '.join(input_names[i] for i in kept['x']) or 'none'}, "
                      f"hidden {', '.join(hidden_names[j] for j in kept['y']) or 'none'}")
@@ -4592,8 +4595,9 @@ def _om_example_selection():
     without one) and `vmax` (the shared upper color limit for OM = ratio - 1:
     the peak OM over the chosen clusters' well-supported blocks, over shown
     blocks for a forced cluster without one, at least 1).
-    Cached ratios remain unchanged for count reconstruction and matching
-    lesion-scatter points; the displayed chance baseline is zero. Returns None
+    Cached ratios remain unchanged for count reconstruction and checking the
+    OM ratio of the scatter point matched by identity; the displayed chance
+    baseline is zero. Returns None
     with a printed reason when the cache is missing or nothing qualifies.
     """
     mod_info = _load_cluster_info_mod()
@@ -4677,6 +4681,8 @@ def plot_overmembership_examples():
     OVERMEMBERSHIP_EXAMPLE_N clusters with the highest well-supported block
     OM (_ranked_om_clusters), rather than hand-picked IDs that go stale when
     the run changes; the saved messages name the choices and the runners-up.
+    They illustrate strong enrichment, not typical clusters; there is no
+    block-level significance test in the example selection.
     Even these are diffuse in the L21e4 run: their most enriched blocks hold
     a few per cent of their synapses, and their structure is marginal (which
     neuron clusters they avoid or favor), which the sorted axes and bars show.
@@ -4697,10 +4703,11 @@ def plot_overmembership_examples():
     squares, unmeasurable blocks blank, the deciding block ringed in black
     as in the OM-vs-lesion scatter; bars above and to the right of the map
     with each cluster's log2 observed/expected, _marginal_enrichment, on one
-    symmetric axis; up to _OVERMEMBERSHIP_DOT_MAX_LABELS input and hidden
-    clusters labelled, those with the most significant enrichment,
-    _om_significant_clusters, dropping a label that would overlap a more
-    significant one). The cluster names are drawn only with
+    symmetric axis, with ticks labelled as ratios (chance 1); up to
+    _OVERMEMBERSHIP_DOT_MAX_LABELS input and hidden
+    clusters labelled, ranked by their strongest standardized enrichment
+    (_om_enriched_clusters), dropping a label that would overlap a
+    higher-scoring one). The cluster names are drawn only with
     OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES (off by default: no ticks, the
     names go to the saved message). The examples come from ANAME, and so
     does the OM-vs-lesion scatter (_om_scatter_run), unlike the other lesion
@@ -4765,7 +4772,7 @@ def plot_overmembership_examples():
         dropped_text = "; ".join(f"{side} {', '.join(names)}" for side, names in dropped.items() if names)
         _plot_om_block_map(
             sub_ratio, sub_shown, sub_supported, sub_observed, sub_expected, input_names, hidden_names,
-            vmax, margin_limit, deciding, _om_significant_clusters(sub_observed, sub_expected, sub_shown),
+            vmax, margin_limit, deciding, _om_enriched_clusters(sub_observed, sub_expected, sub_shown),
             f"Synapse cluster C{cluster_id}", _multitask_out(f"overmembership_examples_dots_{rank}.png"),
             extra=(f"  ({ANAME}; fixed k={OVERMEMBERSHIP_EXAMPLE_FIXED_K}; var-weighted "
                    f"unnormalized modulation; unnormalized input/hidden; blank: expected < "
@@ -5011,20 +5018,38 @@ def plot_lesion_cluster_sizes():
 
 # ─── Figure: OM vs lesion ────────────────────────────────────────────────────
 
-def _saved_om_rank_association(entry):
+def _saved_om_rank_association(entry, side="less"):
     """Validate cached rank/permutation identity without recomputing statistics."""
     association = entry["association"]
-    if (association["statistic"] != "spearman" or association["side"] != "less"
+    if (association["statistic"] != "spearman" or association["side"] != side
             or association["permutation_unit"] != "modulation_cluster_footprint"):
-        raise ValueError("OM scatter requires a negative-sided Spearman cluster permutation")
+        raise ValueError(f"OM scatter requires a {side}-sided Spearman cluster permutation")
     rho, probability = float(association["rho"]), float(association["p_perm"])
     n_perm, n_clusters = int(association["n_perm"]), int(association["n_clusters"])
-    if (n_perm < 1 or n_clusters < 1
+    if (n_perm < 1 or n_clusters < (1 if side == "less" else 0)
             or not (np.isnan(rho) or np.isfinite(rho) and -1 <= rho <= 1)
             or not (np.isnan(probability) or np.isfinite(probability) and 0 <= probability <= 1)
             or np.isfinite(probability) and (not np.isfinite(rho) or n_clusters < 2)):
         raise ValueError("Invalid cached Spearman correlation or permutation metadata")
     return {"rho": rho, "p_perm": probability, "n_perm": n_perm, "n_clusters": n_clusters}
+
+
+def _saved_om_medians(entry, x, lower=0.0, upper=np.inf):
+    """Validate saved bin summaries against one panel's retained points."""
+    medians = entry["binned_medians"]
+    if x.size == 0 and medians is None:
+        return None
+    bin_x, bin_y = np.asarray(medians["x"], float), np.asarray(medians["y"], float)
+    counts = np.asarray(medians["counts"])
+    if (medians["method"] != "quantile" or bin_x.ndim != 1 or bin_x.size == 0
+            or bin_y.shape != bin_x.shape or counts.shape != bin_x.shape
+            or not np.issubdtype(counts.dtype, np.integer) or np.any(counts <= 0)
+            or counts.sum() != x.size
+            or not np.isfinite(bin_x).all() or not np.isfinite(bin_y).all()
+            or np.any(bin_y < lower) or np.any(bin_y > upper) or np.any(np.diff(bin_x) <= 0)
+            or np.any(bin_x < x.min()) or np.any(bin_x > x.max())):
+        raise ValueError("Invalid saved quantile-bin medians")
+    return {"x": bin_x, "y": bin_y, "counts": counts}
 
 
 # Intervention shown in the OM-vs-lesion scatter and its cohort view: the
@@ -5038,15 +5063,12 @@ OM_LESION_MODE = LESION_HEATMAP_MODE
 def _om_scatter_run():
     """(post-processing directory, run name) of the OM-vs-lesion scatter.
 
-    DELIBERATELY INCONSISTENT RUN SELECTION. Every other single-run lesion
-    figure reads LESION_ANAME (the lesion example, seed 921 under
-    --multitask-l2 1e4); this scatter reads ANAME, the clustering example
-    (seed 749), the run of the OM example panels (overmembership_examples_dots_*)
-    it is shown with. Synapse cluster numbers are run-specific, so only then
-    are the example clusters among the scatter's points. The two names agree
-    in the 1e-3 cohort; om_vs_lesion_seeds pools every sibling run either
-    way. To return to the lesion example, return LESION_NORM_DIR and
-    LESION_ANAME here.
+    The scatter reads ANAME, the run of the OM example panels
+    (overmembership_examples_dots_*), so their run-specific cluster IDs
+    refer to the same clusters. Other single-run lesion figures read
+    LESION_ANAME. At L2=1e-4 the designated seeds are 749 and 921,
+    respectively; either selection can fall back to another cached run.
+    om_vs_lesion_seeds instead pools eligible sibling runs in the cohort.
     """
     return LESION_NORM_ROOT / ANAME, ANAME
 
@@ -5056,16 +5078,18 @@ def _om_scatter_run():
 _OM_SCATTER_HIGHLIGHT_SIZE = 46
 
 
-def _om_scatter_highlight(om_vals, aname):
+def _om_scatter_highlight(om_vals, aname, point_ids=None):
     """The scatter point that is the deciding block of overmembership_examples_dots_1
-    (its most significant input x hidden block), or None with a note.
+    (its most enriched supported input x hidden block), or None with a note.
 
     Only possible because the scatter and the examples share a run
-    (_om_scatter_run); a scatter of another run returns None. The cache stores
-    no block identity per point, so the point is found by its x value: the
-    scatter's cached `om_vals` are observed/expected ratios copied from the
-    same om_stack the examples read, so the block's ratio matches exactly
-    one point (exact equality, checked). Returns
+    (_om_scatter_run); a scatter of another run returns None. Match by the
+    saved (mod cluster, input cluster, hidden cluster) identity, with all
+    labels 1-based. Repeated OM values are harmless. The matched point's
+    cached ratio must also agree with the current example, as a consistency
+    check; the ratio is never used to find the point. Missing identities in
+    older caches, ambiguous identities or a changed ratio skip the highlight
+    with a note. Returns
     {"point", "om", "cluster_id", "input", "hidden", "vmax"}, with `om`
     shifted to ratio - 1 for display, the input/hidden clusters 1-based, and
     `vmax` the examples' upper color limit on that same zero-baseline scale.
@@ -5073,27 +5097,43 @@ def _om_scatter_highlight(om_vals, aname):
     if aname != ANAME:
         print(f"  Note: no example block highlighted ({aname} is not the OM examples' run {ANAME}).")
         return None
+    if point_ids is None:
+        print("  Note: no example block highlighted: cache lacks point_ids. "
+              "Rerun multiple_task/lesion_plot.py to save block identities.")
+        return None
     selection = _om_example_selection()
     if selection is None:
         return None
     index, (row, column) = selection["chosen"][0], selection["tops"][0]
     value = selection["ratios"][index][row, column]
-    hits = np.nonzero(np.asarray(om_vals, dtype=float) == value)[0]
     cluster_id = selection["cluster_ids"][index]
+    identity = (int(cluster_id), int(row) + 1, int(column) + 1)
+    hits = np.flatnonzero(np.all(np.asarray(point_ids) == identity, axis=1))
     if hits.size != 1:
         print(f"  Note: example block C{cluster_id} (input C{row + 1}, hidden C{column + 1}, "
-              f"OM {value - 1.0:.3f}) matches {hits.size} scatter points; not highlighted.")
+              f"identity {identity}) matches {hits.size} scatter points; not highlighted.")
         return None
-    return {"point": int(hits[0]), "om": float(value) - 1.0, "cluster_id": cluster_id,
+    point = int(hits[0])
+    if not np.isclose(om_vals[point], value, rtol=1e-12, atol=1e-12):
+        print(f"  Note: example block {identity} has a different cached OM ratio "
+              "from the current example; not highlighted. Rerun multiple_task/lesion_plot.py.")
+        return None
+    return {"point": point, "om": float(value) - 1.0, "cluster_id": cluster_id,
             "input": int(row) + 1, "hidden": int(column) + 1, "vmax": selection["vmax"]}
 
 
-def _load_om_lesion_scatter(run_dir=None, aname=None):
+def _load_om_lesion_scatter(run_dir=None, aname=None, *, require_profile_correlation=False):
     """Load the saved OM_LESION_MODE scatter, Spearman test and bin medians,
     without fitting, of run `aname` from its post-processing directory
     `run_dir` (default: LESION_ANAME in LESION_NORM_DIR). Cached `om_vals`
     and bin x coordinates retain observed/expected; plotting subtracts one
-    to express block OM with a zero chance baseline."""
+    to express block OM with a zero chance baseline. The two-panel scatter
+    and cohort figures require the additive Pearson task-profile entry;
+    callers requesting only L1 can still read older schema-v2 caches. Optional
+    point_ids are unique positive integer triples (mod, input, hidden) aligned
+    with the original point arrays, including undefined Pearson values.
+    Missing IDs disable highlighting, without invalidating saved statistics.
+    """
     run_dir = LESION_NORM_DIR if run_dir is None else Path(run_dir)
     aname = LESION_ANAME if aname is None else aname
     tag = "var-weighted-unnormalized"
@@ -5127,22 +5167,38 @@ def _load_om_lesion_scatter(run_dir=None, aname=None):
                     or not np.isfinite(om_vals).all() or not np.isfinite(lesion_diffs).all()
                     or np.any(om_vals < 0) or np.any(lesion_diffs < 0)):
                 raise ValueError("invalid saved OM scatter coordinates")
-            medians = entry["binned_medians"]
-            bin_x, bin_y = np.asarray(medians["x"], float), np.asarray(medians["y"], float)
-            counts = np.asarray(medians["counts"])
-            if (medians["method"] != "quantile" or bin_x.ndim != 1 or bin_x.size == 0
-                    or bin_y.shape != bin_x.shape or counts.shape != bin_x.shape
-                    or not np.issubdtype(counts.dtype, np.integer) or np.any(counts <= 0)
-                    or counts.sum() != om_vals.size
-                    or not np.isfinite(bin_x).all() or not np.isfinite(bin_y).all()
-                    or np.any(bin_y < 0) or np.any(np.diff(bin_x) <= 0)
-                    or np.any(bin_x < om_vals.min()) or np.any(bin_x > om_vals.max())):
-                raise ValueError("Invalid saved quantile-bin medians")
+            point_ids = entry.get("point_ids")
+            if point_ids is not None:
+                point_ids = np.asarray(point_ids)
+                if (point_ids.shape != (om_vals.size, 3)
+                        or not np.issubdtype(point_ids.dtype, np.integer)
+                        or np.any(point_ids < 1)
+                        or len(np.unique(point_ids, axis=0)) != om_vals.size):
+                    raise ValueError("Invalid OM point_ids: expected unique 1-based integer triples")
+            medians = _saved_om_medians(entry, om_vals)
+            correlation = None
+            if "profile_correlation" in entry:
+                corr = entry["profile_correlation"]
+                values = np.asarray(corr["values"], float)
+                valid = np.isfinite(values)
+                if (corr["definition"] != "Pearson correlation across tasks"
+                        or values.shape != om_vals.shape or np.isinf(values).any()
+                        or np.any(np.abs(values[valid]) > 1)
+                        or corr["n_excluded"] != int((~valid).sum())):
+                    raise ValueError("Invalid saved Pearson task-profile correlations")
+                correlation = {
+                    "values": values, "n_excluded": corr["n_excluded"],
+                    **_saved_om_rank_association(corr, side="greater"),
+                    "binned_medians": _saved_om_medians(corr, om_vals[valid], -1.0, 1.0),
+                }
+            elif require_profile_correlation:
+                raise ValueError("Missing Pearson task-profile panel; rerun lesion_plot.py")
             min_expected = float(saved["min_expected"])
             if not np.isfinite(min_expected) or min_expected < 0:
                 raise ValueError("invalid saved OM threshold")
             return {"om_vals": om_vals, "lesion_diffs": lesion_diffs, **association,
-                    "binned_medians": {"x": bin_x, "y": bin_y, "counts": counts},
+                    "point_ids": point_ids,
+                    "binned_medians": medians, "profile_correlation": correlation,
                     "min_expected": min_expected, "path": path, "mode": OM_LESION_MODE}
         except (OSError, KeyError, TypeError, ValueError) as error:
             print(f"  Note: incompatible {path.name}: {error}.")
@@ -5152,59 +5208,78 @@ def _load_om_lesion_scatter(run_dir=None, aname=None):
 
 
 def plot_om_vs_lesion():
-    """Replot the saved OM/L1 scatter, bin medians and Spearman permutation p.
+    """Replot OM versus lesion-profile L1 distance and Pearson similarity.
 
     The sample set and min_expected threshold come from lesion_plot's cache.
-    No raw lesion/cluster data, profile matching, regression fitting, or new
-    permutation test is used here. The scatter uses OM_LESION_MODE, the
-    lesion heatmap's freeze_M.
+    The coordinates, tests and medians are read from that cache without
+    recomputation. The example highlight separately reads the current cluster
+    cache to match its block identity and check the saved OM ratio. The
+    scatter uses OM_LESION_MODE, the lesion heatmap's freeze_M.
     Its x values and bin x coordinates are the cached observed/expected
     ratios minus one, giving block OM a zero chance baseline, as in the
     example block maps. This translation preserves the saved Spearman
-    statistic and permutation p. Its y values are mean absolute profile
-    differences over tasks (L1/T).
-    The median connector is descriptive, not a linear or monotone fit; the
-    distance axis starts at zero. Legacy Pearson/regression caches are skipped.
+    statistic and permutation p. Left: mean absolute differences over tasks
+    (L1/T), retaining overall effect magnitude. Right: Pearson correlation
+    across tasks, removing each vector's mean and scale; constant profiles
+    are omitted, never assigned zero correlation. The OM association is
+    Spearman in BOTH panels, with whole-footprint permutation toward negative
+    rho for distance and positive rho for similarity. Median connectors are
+    descriptive. The two-panel figure requires cached statistics for both.
 
     NOTE the run: _om_scatter_run, i.e. ANAME (the clustering example, the
     OM example panels' run), NOT LESION_ANAME like the other lesion figures.
     Because the two share that run, the deciding block of
-    overmembership_examples_dots_1 (its most significant input x hidden block) is
+    overmembership_examples_dots_1 (its most enriched supported block) is
     one of the scatter's points; it is drawn on top in the color the
     examples' block maps give its OM, with a black ring (_om_scatter_highlight).
     """
     _ensure_out_dir()
     run_dir, aname = _om_scatter_run()
-    saved = _load_om_lesion_scatter(run_dir, aname)
+    saved = _load_om_lesion_scatter(run_dir, aname, require_profile_correlation=True)
     if saved is None:
         return
     om_vals, lesion_diffs = saved["om_vals"] - 1.0, saved["lesion_diffs"]
-    medians = saved["binned_medians"]
-    rho = saved["rho"]
-    p_perm = saved["p_perm"]
-    highlight = _om_scatter_highlight(saved["om_vals"], aname)
-    fig1, ax1 = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
-    median_line, = ax1.plot(medians["x"] - 1.0, medians["y"], "o-", markersize=3.5,
-                            label="Binned median", **_TREND_LINE_STYLE)
-    handles = [median_line]
-    if highlight is not None:
-        cmap, norm = _om_block_cmap_norm(highlight["vmax"])
-        color = cmap(norm(highlight["om"]))
-        point = highlight["point"]
-        ax1.scatter([om_vals[point]], [lesion_diffs[point]], s=_OM_SCATTER_HIGHLIGHT_SIZE,
-                    color=color, edgecolors="k", linewidths=0.8, zorder=5)
-        handles.append(mpl.lines.Line2D([], [], marker="o", linestyle="none", markersize=5.5,
-                                        markerfacecolor=color, markeredgecolor="k",
-                                        markeredgewidth=0.8, label="Example block"))
-    _pp_str = (f"p_perm = {p_perm:.3f}" if np.isfinite(p_perm) else "p_perm = n/a")
-    _rho_str = (rf"Spearman $\rho$ = {rho:.2f}" if np.isfinite(rho)
-                else r"Spearman $\rho$ = n/a")
-    # Hundreds of points: fade them so the median connector stays readable.
-    _stat_scatter(ax1, om_vals, lesion_diffs, f"{_rho_str}\n{_pp_str}",
-                  legend_handles=handles, point_alpha=_DENSE_SCATTER_ALPHA,
-                  xlabel="Over-membership (observed / expected − 1)", ylabel="Lesion-effect\ndistance (L1)",
-                  point_color=_LESION_POINT_COLOR)
-    ax1.set_ylim(bottom=0)
+    correlation = saved["profile_correlation"]
+    highlight = _om_scatter_highlight(saved["om_vals"], aname, saved["point_ids"])
+    width, height = _LESION_SCATTER_FIGSIZE
+    fig1, axes = plt.subplots(1, 2, figsize=(2 * width + 0.4, height), sharex=True)
+    panels = ((saved, lesion_diffs, "Lesion-effect\ndistance (L1)", "less"),
+              (correlation, correlation["values"], "Task-profile similarity\n(Pearson r)", "greater"))
+    for ax, (panel, values, ylabel, side) in zip(axes, panels):
+        medians, handles = panel["binned_medians"], []
+        if medians is not None:
+            median_line, = ax.plot(medians["x"] - 1.0, medians["y"], "o-", markersize=3.5,
+                                  label="Binned median", **_TREND_LINE_STYLE)
+            handles.append(median_line)
+        if highlight is not None and np.isfinite(values[highlight["point"]]):
+            cmap, norm = _om_block_cmap_norm(highlight["vmax"])
+            color = cmap(norm(highlight["om"]))
+            point = highlight["point"]
+            ax.scatter([om_vals[point]], [values[point]], s=_OM_SCATTER_HIGHLIGHT_SIZE,
+                       color=color, edgecolors="k", linewidths=0.8, zorder=5)
+            handles.append(mpl.lines.Line2D([], [], marker="o", linestyle="none", markersize=5.5,
+                                           markerfacecolor=color, markeredgecolor="k",
+                                           markeredgewidth=0.8, label="Example block"))
+        rho, p_perm = panel["rho"], panel["p_perm"]
+        p_text = f"p_perm = {p_perm:.3f}" if np.isfinite(p_perm) else "p_perm = n/a"
+        rho_text = rf"Spearman $\rho$ = {rho:.2f}" if np.isfinite(rho) else r"Spearman $\rho$ = n/a"
+        tail = "<" if side == "less" else ">"
+        valid = np.isfinite(values)
+        _stat_scatter(ax, om_vals[valid], values[valid], f"{rho_text}\n{p_text} (one-sided {tail})",
+                      legend_handles=handles, point_alpha=_DENSE_SCATTER_ALPHA,
+                      xlabel="Over-membership\n(observed / expected − 1)", ylabel=ylabel,
+                      point_color=_LESION_POINT_COLOR)
+        if side == "less":
+            ax.set_ylim(bottom=0)
+        else:
+            ax.axhline(0, color="0.7", linewidth=0.5, linestyle="--", zorder=1)
+            ax.set_ylim(-1.05, 1.05)
+            if not valid.any():
+                ax.text(0.5, 0.5, "No nonconstant profiles", transform=ax.transAxes,
+                        ha="center", va="center", fontsize=7)
+        print(f"  om_vs_lesion_scatter [{saved['mode']}, {side}]: Spearman rho={rho:.3f}, "
+              f"p_perm={p_perm:.3f} ({panel['n_perm']} saved permutations, "
+              f"{panel['n_clusters']} clusters, {valid.sum()} points)")
     fig1.tight_layout()
     out_path1 = _multitask_out("om_vs_lesion_scatter.png")
     run_note = ("" if aname == LESION_ANAME else
@@ -5213,24 +5288,27 @@ def plot_om_vs_lesion():
                       f"; highlighted: example 1 block, synapse cluster C{highlight['cluster_id']} "
                       f"at input C{highlight['input']} / hidden C{highlight['hidden']}, "
                       f"OM {highlight['om']:.2f}, L1 {lesion_diffs[highlight['point']]:.3f}")
-    _save_fig(fig1, out_path1, extra=f"  [{aname}{run_note}{highlight_note}]")
-    print(f"  om_vs_lesion_scatter [{saved['mode']}]: Spearman rho={rho:.2f}, p_perm={p_perm:.3f} "
-            f"({saved['n_perm']} saved permutations, {saved['n_clusters']} clusters, "
-            f"min_expected={saved['min_expected']:g}; {saved['path'].name})")
+    _save_fig(fig1, out_path1, extra=(f"  [{aname}{run_note}{highlight_note}; "
+              f"Pearson excluded {correlation['n_excluded']} constant-profile points; "
+              f"min_expected={saved['min_expected']:g}; {saved['path'].name}]"))
 
 
 def _om_lesion_seed_runs():
-    """{aname: saved OM_LESION_MODE association} of every sibling run of
-    LESION_ANAME (same feature, any seed) whose OM cache validates and holds
-    a defined rho and permutation p; incomplete, legacy or undefined caches
-    are left out with the loader's note."""
+    """Sibling runs with defined L1 AND Pearson-panel OM associations.
+
+    Both panels use this same cohort (same feature, any seed), so differences
+    between them cannot come from missing-cache selection. Each association
+    must have a finite Spearman rho and whole-footprint permutation p.
+    Incomplete, legacy or undefined caches are left out with a note.
+    """
     runs = {}
     for directory in _sibling_run_dirs():
-        saved = _load_om_lesion_scatter(directory, directory.name)
+        saved = _load_om_lesion_scatter(directory, directory.name, require_profile_correlation=True)
         if saved is None:
             continue
-        if not (np.isfinite(saved["rho"]) and np.isfinite(saved["p_perm"])):
-            print(f"  Skipped {directory.name}: undefined saved OM rank statistics.")
+        if not all(np.isfinite(panel[key]) for panel in (saved, saved["profile_correlation"])
+                   for key in ("rho", "p_perm")):
+            print(f"  Skipped {directory.name}: undefined saved L1/Pearson OM rank statistics.")
             continue
         runs[directory.name] = saved
     return runs
@@ -5238,51 +5316,57 @@ def _om_lesion_seed_runs():
 
 def plot_om_vs_lesion_seeds():
     """
-    Figure: multitask_om_vs_lesion_seeds.png — the OM-vs-lesion Spearman rho
-    of every sibling run of LESION_ANAME, the cohort view of
-    plot_om_vs_lesion.
+    Figure: multitask_om_vs_lesion_seeds.png — two panels of per-run OM
+    Spearman rho, the cohort view of plot_om_vs_lesion (freeze_M).
 
-    Each run contributes one point, the saved rho between a synapse cluster's
-    over-membership in an (input, hidden) neuron-cluster block and the L1/T
-    distance between its lesion profile and that block's combined lesion
-    profile (OM_LESION_MODE, freeze_M, as in the single-run scatter); filled
-    markers have a saved one-sided (negative) modulation-cluster-footprint
-    permutation p below 0.05, hollow ones do not. The dash is the median over
-    runs. Because the per-run test is one-sided, the cohort-level test in the
-    legend title is the one-sided Wilcoxon signed-rank p of the runs' rhos
-    being below zero. Only saved per-run statistics are drawn; the save
-    message counts the runs with negative and with significant rho.
+    Left: OM vs lesion-profile L1/T distance; right: OM vs Pearson correlation
+    of the task vectors. Each point is one network's saved Spearman rho,
+    NOT a task-vector Pearson r. Both panels use the same complete runs and
+    offsets. Filled points have whole-footprint permutation p < 0.05, tested
+    toward negative rho for distance and positive rho for similarity. Dashes
+    mark medians. The cohort Wilcoxon tests use the corresponding less/greater
+    alternatives against zero. Per-network statistics are only read from
+    caches; missing Pearson summaries require rerunning lesion_plot.py.
     """
     _ensure_out_dir()
     runs = _om_lesion_seed_runs()
     if len(runs) < 2:
-        print(f"  Skipped: {len(runs)} run(s) with a saved OM-vs-lesion association; need >= 2.")
+        print(f"  Skipped: {len(runs)} run(s) with both L1 and Pearson OM associations; "
+              "need >= 2. Rerun multiple_task/lesion_plot.py for the selected cohort.")
         return
-    rhos = np.array([saved["rho"] for saved in runs.values()], dtype=float)
-    fig, ax = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
-    ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
+    width, height = _LESION_SCATTER_FIGSIZE
+    fig, axes = plt.subplots(1, 2, figsize=(2 * width + 0.4, height), sharey=True)
     offsets = _run_offsets(len(runs), 0.03, 0.22)
-    significant = 0
-    for offset, saved in zip(offsets, runs.values()):
-        is_significant = saved["p_perm"] < 0.05
-        significant += int(is_significant)
-        _significance_marker(ax, offset, saved["rho"], is_significant,
-                             color=_LESION_POINT_COLOR, hollow_edge=_LESION_POINT_COLOR)
-    ax.hlines(np.median(rhos), -0.22, 0.22, color=_TREND_LINE_COLOR, linewidth=1.8, zorder=4)
-    p_value, p_text = _wilcoxon_vs_zero(rhos, alternative="less")
-    ax.set_xticks([0])
-    ax.set_xticklabels(["Synapse clusters"], fontsize=_STAT_SCATTER_TICK_FONTSIZE)
-    ax.set_xlim(-0.6, 0.6)
-    ax.set_ylabel(r"Spearman $\rho$" + "\n(OM vs lesion distance)", fontsize=7)
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.tick_params(axis="y", labelsize=_STAT_SCATTER_TICK_FONTSIZE)
-    _seeds_legend(ax, _significance_legend_handles(_LESION_POINT_COLOR, _LESION_POINT_COLOR),
-                  len(runs),
-                  note="Wilcoxon signed-rank,\n" + rf"$\rho$ < 0 (one-sided): {p_text}")
+    panels = ((list(runs.values()), "lesion distance", "less", "<"),
+              ([saved["profile_correlation"] for saved in runs.values()],
+               "profile Pearson r", "greater", ">"))
+    notes = []
+    for ax, (entries, label, alternative, sign) in zip(axes, panels):
+        rhos = np.array([entry["rho"] for entry in entries], dtype=float)
+        ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
+        significant = 0
+        for offset, entry in zip(offsets, entries):
+            is_significant = entry["p_perm"] < 0.05
+            significant += int(is_significant)
+            _significance_marker(ax, offset, entry["rho"], is_significant,
+                                 color=_LESION_POINT_COLOR, hollow_edge=_LESION_POINT_COLOR)
+        ax.hlines(np.median(rhos), -0.22, 0.22, color=_TREND_LINE_COLOR, linewidth=1.8, zorder=4)
+        p_value, p_text = _wilcoxon_vs_zero(rhos, alternative=alternative)
+        ax.set_xticks([0])
+        ax.set_xticklabels(["Synapse clusters"], fontsize=_STAT_SCATTER_TICK_FONTSIZE)
+        ax.set_xlim(-0.6, 0.6)
+        ax.set_ylabel(r"Spearman $\rho$" + f"\n(OM vs {label})", fontsize=7)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.tick_params(axis="y", labelsize=_STAT_SCATTER_TICK_FONTSIZE)
+        _seeds_legend(ax, _significance_legend_handles(_LESION_POINT_COLOR, _LESION_POINT_COLOR),
+                      len(runs),
+                      note="Wilcoxon signed-rank,\n" + rf"$\rho$ {sign} 0 (one-sided): {p_text}")
+        directional = np.sum(rhos < 0) if alternative == "less" else np.sum(rhos > 0)
+        notes.append(f"{label}: {directional}/{len(runs)} rho {sign} 0, {significant} significant, "
+                     f"one-sided Wilcoxon p = {p_value:.3f}")
     fig.tight_layout()
     _save_fig(fig, _multitask_out("om_vs_lesion_seeds.png"),
-              extra=(f"  {int(np.sum(rhos < 0))}/{len(runs)} rho < 0, {significant} significant, "
-                     f"one-sided Wilcoxon p = {p_value:.3f}"))
+              extra="  " + "; ".join(notes))
 
 
 # ─── Figure: Plasticity share ────────────────────────────────────────────────

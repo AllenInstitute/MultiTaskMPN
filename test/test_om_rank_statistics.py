@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 import _bootstrap  # noqa: F401
 import numpy as np
-from scipy.stats import spearmanr
+from scipy.stats import pearsonr, spearmanr
 import lesion_plot
 
 
@@ -64,10 +64,18 @@ class OmRankStatisticsTests(unittest.TestCase):
         self.assertEqual(single["schema_version"], 2)
         self.assertEqual(combined["schema_version"], 2)
         paired = combined["mode_data"]["freeze_M"]
+        expected_ids = np.array([(c, i, j) for c in (3, 7) for i in (1, 2) for j in (1, 2)])
+        np.testing.assert_array_equal(single["point_ids"], expected_ids)
+        np.testing.assert_array_equal(paired["point_ids"], expected_ids)
+        np.testing.assert_array_equal(combined["mode_data"]["zero_W"]["point_ids"], expected_ids)
         for key in ("om_vals", "lesion_diffs"):
             np.testing.assert_allclose(single[key], paired[key])
         for key in ("rho", "p_perm", "null_rho"):
             np.testing.assert_allclose(single["association"][key], paired["association"][key])
+            np.testing.assert_allclose(single["profile_correlation"]["association"][key],
+                                       paired["profile_correlation"]["association"][key])
+        np.testing.assert_allclose(single["profile_correlation"]["values"],
+                                   paired["profile_correlation"]["values"])
         self.assertEqual(len(captured), 2)
         for figure in captured:
             for axis in figure.axes:
@@ -75,6 +83,10 @@ class OmRankStatisticsTests(unittest.TestCase):
                 self.assertEqual(len(axis.lines), 1)
                 self.assertEqual(axis.lines[0].get_label(), "Binned median")
         namespace["linregress"].assert_not_called()
+
+    def test_point_ids_preserve_original_grid_labels_after_masking(self):
+        mask = np.array([[False, True], [False, False], [True, False]])
+        self.assertEqual(lesion_plot._om_block_ids(9, mask), [(9, 1, 2), (9, 3, 1)])
 
     def inputs(self):
         profiles = np.array([[0., 0.], [0.4, 0.8], [0.9, 0.2]])
@@ -140,6 +152,63 @@ class OmRankStatisticsTests(unittest.TestCase):
         _, probability, _ = lesion_plot._om_scatter_perm_test(
             profiles[:1], footprints[:1], combined[:1], n_perm=5)
         self.assertTrue(np.isnan(probability))
+
+    def test_task_pearson_matches_scipy_and_ignores_offsets_and_positive_scale(self):
+        mod = np.array([0., 1., 4., 2.])
+        cm = np.array([[1., 2., 0., 4.], [5., 2., 7., 1.], [2., 2., 2., 2.]])
+        values = lesion_plot._om_profile_comparison(mod, cm, "pearson")
+        np.testing.assert_allclose(values[:2], [pearsonr(mod, row).statistic for row in cm[:2]])
+        np.testing.assert_allclose(values, lesion_plot._om_profile_comparison(
+            3 * mod + 7, 5 * cm - 2, "pearson"), equal_nan=True)
+        self.assertTrue(np.isnan(values[2]))
+        self.assertTrue(np.isnan(lesion_plot._om_profile_comparison(np.ones(4), cm, "pearson")).all())
+
+    def test_pearson_permutation_uses_positive_tail_and_fixed_nonconstant_population(self):
+        profiles = np.array([[0., 1., 3., 2.], [3., -1., 2., 0.],
+                             [4., 1., 0., 3.], [1., 1., 1., 1.]])
+        footprints = [np.array([0., 4., 2.]), np.array([1., 3.]),
+                      np.array([2., 5.]), np.array([7.])]
+        combined = [np.array([[1., 2., 0., 4.], [2., 2., 2., 2.], [2., 3., 1., 0.]]),
+                    np.array([[3., 1., 0., 4.], [0., 3., 2., 1.]]),
+                    np.array([[1., -1., 2., 0.], [0., 4., 1., 2.]]),
+                    np.array([[3., 2., 1., 0.]])]
+        # Constant modulation cluster 4 and constant combined block 2 are
+        # removed before ownership permutations, with every other block fixed.
+        om = [footprints[0][[0, 2]], *footprints[1:3]]
+        cm = [combined[0][[0, 2]], *combined[1:3]]
+
+        def statistic(assignment):
+            x = np.concatenate([om[k] for k in assignment])
+            y = [pearsonr(profiles[c], row).statistic
+                 for c, k in enumerate(assignment) for row in cm[k]]
+            return spearmanr(x, y).statistic
+
+        rng = np.random.default_rng(7)
+        expected = np.array([statistic(rng.permutation(3)) for _ in range(23)])
+        rho, probability, null = lesion_plot._om_scatter_perm_test(
+            profiles, footprints, combined, n_perm=23, seed=7, metric="pearson")
+        self.assertAlmostEqual(rho, statistic(np.arange(3)))
+        np.testing.assert_allclose(null, expected)
+        self.assertAlmostEqual(probability, (1 + np.count_nonzero(expected >= rho)) / 24)
+        summary = lesion_plot._om_scatter_summary(profiles, footprints, combined, n_perm=23, seed=7)
+        corr = summary["profile_correlation"]
+        self.assertEqual(corr["association"]["side"], "greater")
+        self.assertEqual(corr["association"]["n_clusters"], 3)
+        self.assertEqual(corr["n_excluded"], 2)
+        self.assertEqual(corr["values"].shape, summary["om_vals"].shape)
+        self.assertEqual(corr["binned_medians"]["counts"].sum(), 6)
+
+    def test_all_constant_profiles_keep_l1_but_pearson_is_undefined(self):
+        summary = lesion_plot._om_scatter_summary(
+            [[0., 0.], [1., 1.]], [[0., 2.], [1.]],
+            [[[0., 1.], [2., 3.]], [[0., 1.]]], n_perm=5)
+        self.assertTrue(np.isfinite(summary["lesion_diffs"]).all())
+        corr = summary["profile_correlation"]
+        self.assertTrue(np.isnan(corr["values"]).all())
+        self.assertTrue(np.isnan(corr["association"]["p_perm"]))
+        self.assertEqual(corr["association"]["n_clusters"], 0)
+        self.assertEqual(corr["n_excluded"], 3)
+        self.assertIsNone(corr["binned_medians"])
 
 
 if __name__ == "__main__":
