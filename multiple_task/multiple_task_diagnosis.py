@@ -74,7 +74,7 @@ import numpy as np
 import matplotlib
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
-from multitask_naming import architecture_tag
+from core.multitask_naming import architecture_tag
 from core.task_variance import VARIANCE_METHOD, require_current_variance
 matplotlib.use("Agg")  # headless-safe: figures are saved, never shown
 import matplotlib.pyplot as plt

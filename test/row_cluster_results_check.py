@@ -124,6 +124,24 @@ def main(argv=None):
 
     def compare_figure(fig, out_path, extra=""):
         path = Path(out_path)
+        if path.stem == "multitask_row_cluster_coassignment":
+            # Averaging a category's cells must recover the existing bar:
+            # all networks have the same row set and contribute equal weight.
+            parts = [label.get_gid().rsplit("-", 1) for label in fig.axes[0].get_xticklabels()]
+            for ax, rep in zip(fig.axes[:3], ("input", "hidden", "modulation")):
+                displayed = ax.images[0].get_array()
+                np.testing.assert_array_equal(np.ma.getmaskarray(displayed),
+                                               np.triu(np.ones((len(parts), len(parts)), dtype=bool)))
+                matrix = np.ma.getdata(displayed)
+                np.testing.assert_array_equal(matrix, matrix.T)
+                np.testing.assert_array_equal(np.diag(matrix), np.ones(len(parts)))
+                for view, by, index in (("same_task_all", "tasks", 0),
+                                        ("same_period_all", "periods", 1)):
+                    for name, stats in cohorts[feature][view][by].items():
+                        rows = [i for i, pair in enumerate(parts) if pair[index] == name]
+                        pairs = matrix[np.ix_(rows, rows)][np.triu_indices(len(rows), k=1)]
+                        np.testing.assert_allclose(pairs.mean(), stats[rep]["pct_same_cluster"] / 100)
+            print("COASSIGNMENT_BAR_MATCH", "all tasks/periods and representations")
         if paper_plot.SHOW_LEGEND:
             path = path.with_name(f"{path.stem}_n{path.suffix}")
         buffer = io.BytesIO()
@@ -140,6 +158,7 @@ def main(argv=None):
     with patch.object(paper_plot, "_save_fig", side_effect=compare_figure), \
             patch.object(paper_plot, "_ensure_out_dir"):
         figures = {"organization": "organization", "same_task_seeds": "same_task_all",
+                   "coassignment": "organization",
                    "same_period_seeds": "same_period_all",
                    "same_period_synapses": "same_period_all",
                    "same_period_synapses_matched_tasks": "same_period_matched_tasks",

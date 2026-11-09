@@ -135,8 +135,11 @@ from scipy.stats import permutation_test, wilcoxon
 from scipy.cluster.hierarchy import fcluster
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
-from multitask_naming import architecture_tag, untrained_sharing_tag
-import multiple_task_diagnosis as diag
+from core.multitask_naming import architecture_tag, untrained_sharing_tag
+if __package__:
+    from . import multiple_task_diagnosis as diag
+else:
+    import multiple_task_diagnosis as diag
 
 OUT_DIR = diag.OUT_DIR
 # Where untrained_clustering.py writes the untrained controls' cluster info
@@ -321,6 +324,44 @@ def _aligned_rows(aname, data):
     if np.any(rules == "") or np.any(phases == ""):
         raise ValueError(f"{aname}: expected task-phase row names")
     return rules, phases, aligned
+
+
+def summarize_row_coassignment(experiments):
+    """Fraction of networks placing each pair of task-period rows in one cluster.
+
+    Align row identities across all networks and representations before counting.
+    Compare labels only within a network: relabeling its clusters cannot change
+    the result. Every cell uses the same network denominator; missing rows or
+    representations reject the cohort rather than becoming zero or reducing N.
+    The symmetric matrices include the unit diagonal and are descriptive raw
+    frequencies, without a chance correction or reclustering. Accepts an iterator
+    so full source caches can be read one network at a time.
+    """
+    names, counts, anames = None, {}, []
+    for aname, data in experiments:
+        if aname in anames:
+            raise ValueError(f"{aname}: duplicate network in co-clustering cohort")
+        if data is None:
+            raise ValueError(f"{aname}: missing current clustering")
+        rules, phases, labels = _aligned_rows(aname, data)
+        current = np.array([f"{rule}-{phase}" for rule, phase in zip(rules, phases)])
+        if current.size == 0:
+            raise ValueError(f"{aname}: no task-period rows")
+        if names is None:
+            names = current
+            counts = {rep: np.zeros((len(names), len(names)), dtype=int)
+                      for rep in REPRESENTATIONS}
+        elif not np.array_equal(names, current):
+            raise ValueError(f"{aname}: networks have different task/phase rows")
+        for rep, values in labels.items():
+            if not np.isfinite(values).all():
+                raise ValueError(f"{aname}/{rep}: nonfinite cluster labels")
+            counts[rep] += values[:, None] == values[None, :]
+        anames.append(aname)
+    if not anames:
+        raise ValueError("No networks for co-clustering")
+    return {"row_names": names.tolist(), "experiments": anames, "n_runs": len(anames),
+            "representations": {rep: count / len(anames) for rep, count in counts.items()}}
 
 
 def _restricted_permutations(blocks, n_permutations, rng):

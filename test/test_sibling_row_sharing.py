@@ -1,6 +1,7 @@
 """Tests for restricted row-sharing statistics, paper plots and legacy diagnostics."""
 
 import json
+import copy
 import pickle
 import tempfile
 import unittest
@@ -90,6 +91,51 @@ def _task_experiment():
         labels[rows] = labels[rows[0]]
     return {rep: {"row_labels": labels, "tb_break_name": _NAMES}
             for rep in ("input", "hidden", "modulation")}
+
+
+class CoassignmentTests(unittest.TestCase):
+    def test_aligns_rows_and_ignores_cluster_numbering_across_networks(self):
+        names = np.array(["a-delay1", "a-stim1", "b-stim1"])
+        label_sets = ({"input": [4, 4, 9], "hidden": [3, 3, 3], "modulation": [1, 2, 3]},
+                      {"input": [10, 20, 20], "hidden": [7, 8, 9], "modulation": [6, 5, 6]})
+        experiments = []
+        for seed, label_set in enumerate(label_sets):
+            rows = {}
+            for index, (rep, labels) in enumerate(label_set.items()):
+                order = np.roll(np.arange(3), seed + index)
+                rows[rep] = {"tb_break_name": names[order],
+                             "row_labels": np.asarray(labels)[order]}
+            experiments.append((f"run{seed}", rows))
+        result = sharing.summarize_row_coassignment(iter(experiments))
+        self.assertEqual(result["row_names"], names.tolist())
+        self.assertEqual(result["experiments"], ["run0", "run1"])
+        self.assertEqual(result["n_runs"], 2)
+        expected = {
+            "input": [[1, 0.5, 0], [0.5, 1, 0.5], [0, 0.5, 1]],
+            "hidden": [[1, 0.5, 0.5], [0.5, 1, 0.5], [0.5, 0.5, 1]],
+            "modulation": [[1, 0, 0.5], [0, 1, 0], [0.5, 0, 1]],
+        }
+        for rep, matrix in expected.items():
+            np.testing.assert_array_equal(result["representations"][rep], matrix)
+
+    def test_rejects_missing_or_invalid_rows_instead_of_changing_the_denominator(self):
+        incomplete = copy.deepcopy(_experiment())
+        incomplete.pop("modulation")
+        different_rows = copy.deepcopy(_experiment())
+        for rows in different_rows.values():
+            rows["tb_break_name"] = rows["tb_break_name"][:-1]
+            rows["row_labels"] = rows["row_labels"][:-1]
+        nonfinite = copy.deepcopy(_experiment())
+        nonfinite["hidden"]["row_labels"] = np.full(len(_NAMES), np.nan)
+        duplicate = copy.deepcopy(_experiment())
+        duplicate["input"]["tb_break_name"][0] = duplicate["input"]["tb_break_name"][1]
+        for case, runs in enumerate(([], [("run0", None)],
+                                    [("run0", _experiment()), ("run0", _experiment())],
+                                    [("run0", incomplete)], [("run0", nonfinite)],
+                                    [("run0", duplicate)],
+                                    [("run0", _experiment()), ("run1", different_rows)])):
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                sharing.summarize_row_coassignment(runs)
 
 
 class ClusterCountTests(unittest.TestCase):
@@ -853,6 +899,7 @@ class PaperFigureTests(unittest.TestCase):
             "variance_method": diagnosis.VARIANCE_METHOD,
             "feature": paper_plot.multitask_feature(),
             "seed": None,
+            "mod_g_index": diagnosis.MOD_G_INDEX,
             "experiments": [f"run{seed}" for seed in range(6)],
             "organization": sharing.summarize_organization(
                 [(f"run{seed}", _organized_experiment()) for seed in range(6)]),
@@ -922,6 +969,60 @@ class PaperFigureTests(unittest.TestCase):
         np.testing.assert_allclose(heights, 0, atol=1e-9)
         self.assertIn("SDs=", save.call_args.kwargs["extra"])
         self.assertIn("actual full-tree K ranges", save.call_args.kwargs["extra"])
+
+    def test_coassignment_plot_uses_only_saved_trained_cohort_with_shared_axes_and_scale(self):
+        payload = self._payload()
+        experiments = [(name, _experiment()) for name in payload["experiments"]]
+        payload["organization"] = sharing.summarize_organization(experiments)
+        with patch.object(sharing.diag, "_load_experiment",
+                          side_effect=lambda name, root: dict(experiments)[name]) as load:
+            save, _ = self._render(paper_plot.plot_row_cluster_coassignment, payload)
+        self.assertEqual([call.args[0] for call in load.call_args_list], payload["experiments"])
+        self.assertTrue(all(call.kwargs == {"root": paper_plot.MULTITASK_ANALYSIS_ROOT}
+                            for call in load.call_args_list))
+        self.assertEqual(Path(save.call_args.args[1]).name,
+                         "multitask_row_cluster_coassignment.png")
+        axes = save.call_args.args[0].axes[:3]
+        ticklabels = [tick.get_text() for tick in axes[0].get_xticklabels()]
+        row_names = [tick.get_gid() for tick in axes[0].get_xticklabels()]
+        self.assertEqual(len(ticklabels), len(_NAMES))
+        self.assertEqual(ticklabels[:2], ["DelayPro", "DelayPro"])
+        self.assertEqual(row_names[:2], ["fdgo-stim1", "fdgo-go1"])
+        # The integration-task rows must follow chronological order, not the
+        # row order of a source cache or a representation-specific dendrogram.
+        self.assertEqual([name for name in row_names if name.startswith("delaydm1-")],
+                         ["delaydm1-" + phase for phase in
+                          ("stim1", "delay1", "stim2", "delay2", "go1")])
+        row_lookup = {name: i for i, name in enumerate(_NAMES)}
+        order = [row_lookup[name] for name in row_names]
+        labels = _experiment()["input"]["row_labels"][order]
+        for ax in axes:
+            self.assertEqual(ax.images[0].get_clim(), (0, 1))
+            displayed = ax.images[0].get_array()
+            np.testing.assert_array_equal(np.ma.getdata(displayed), labels[:, None] == labels)
+            np.testing.assert_array_equal(np.ma.getmaskarray(displayed),
+                                           np.triu(np.ones((len(labels), len(labels)), dtype=bool)))
+            self.assertEqual([tick.get_text() for tick in ax.get_xticklabels()], ticklabels)
+            self.assertEqual(ax.images[0].get_cmap().name, paper_plot._MULTITASK_HEATMAP_CMAP)
+            for tick, name in zip(ax.get_xticklabels(), row_names):
+                np.testing.assert_allclose(tick.get_bbox_patch().get_facecolor(),
+                                           paper_plot.mpl.colors.to_rgba(
+                                               paper_plot._PHASE_COLORS[paper_plot._phase_of(name)],
+                                               alpha=0.8))
+        self.assertIn("Trained networks (n=6)", save.call_args.args[0]._suptitle.get_text())
+
+    def test_coassignment_plot_skips_missing_or_changed_saved_cohort_member(self):
+        payload = self._payload()
+        payload["organization"] = sharing.summarize_organization(
+            [(name, _experiment()) for name in payload["experiments"]])
+        changed = copy.deepcopy(_experiment())
+        changed["input"]["row_labels"][:] = 0
+        for case, rows in enumerate((None, changed)):
+            with self.subTest(case=case), \
+                    patch.object(sharing.diag, "_load_experiment", return_value=rows):
+                save, printed = self._render(paper_plot.plot_row_cluster_coassignment, payload)
+                save.assert_not_called()
+                self.assertIn("Skipped co-clustering heatmap", str(printed.call_args_list))
 
     def test_matched_cut_plot_ticks_carry_k_alone_and_log_the_25_row_counts(self):
         """The ticks show the target K as in the all-task twin; the clusters

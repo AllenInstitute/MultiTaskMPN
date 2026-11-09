@@ -6052,6 +6052,101 @@ def _load_untrained_row_sharing():
     return None
 
 
+def plot_row_cluster_coassignment():
+    """Trained-only pairwise co-clustering frequencies for input, hidden and M.
+
+    Uses exactly the trained sharing summary's cohort and the same selected row
+    clusters, loading current source caches without rerunning clustering. Each
+    cell is the fraction of those networks assigning its two task-period rows
+    to one cluster. All panels share a fixed task/chronological-period order and
+    a 0-1 scale. Only the strict lower triangle is displayed; the diagonal and
+    upper triangle are masked. The colormap, task-only tick labels and phase
+    backgrounds follow the clustered task-variance heatmaps. These are raw
+    descriptive frequencies, not correlations, chance-corrected enrichment,
+    or a test of a training effect.
+    """
+    # Analysis scripts also run as flat modules; in that environment the
+    # training script multiple_task.py shadows the directory's package name.
+    try:
+        import sibling_row_sharing as sharing
+    except ModuleNotFoundError as exc:
+        if exc.name != "sibling_row_sharing":
+            raise
+        from multiple_task import sibling_row_sharing as sharing
+
+    _ensure_out_dir()
+    data = _load_row_cluster_sharing()
+    if data is None:
+        return
+
+    def experiments():
+        if data.get("mod_g_index") != sharing.diag.MOD_G_INDEX:
+            raise ValueError("sharing summary uses a missing or different modulation variant")
+        for aname in data["experiments"]:
+            rows = sharing.diag._load_experiment(aname, root=MULTITASK_ANALYSIS_ROOT)
+            if rows is None or any(rep not in rows for rep in sharing.REPRESENTATIONS):
+                raise ValueError(f"{aname}: current clustering is incomplete")
+            # As in the cut-only updater, reject source/summary discrepancies
+            # instead of silently mixing a refreshed source with old summaries.
+            for rep in sharing.REPRESENTATIONS:
+                saved = data.get("organization", {}).get("representations", {}).get(rep, {})
+                if sharing._organization_counts(rows[rep]) != saved.get("counts", {}).get(aname):
+                    raise ValueError(f"{aname}/{rep}: cluster counts differ from the sharing summary")
+            yield aname, rows
+
+    try:
+        summary = sharing.summarize_row_coassignment(experiments())
+    except ValueError as exc:
+        print(f"  Skipped co-clustering heatmap: {exc}. Check source caches and "
+              f"run {_row_sharing_commands()}.")
+        return
+    names = summary["row_names"]
+    task_order = {task: i for i, task in enumerate(_TASK_DISPLAY)}
+    phase_order = {phase: i for i, phase in enumerate(
+        ("stim1", "delay1", "stim2", "delay2", "go1"))}
+    parts = [name.rsplit("-", 1) for name in names]
+    order = sorted(range(len(names)), key=lambda i: (
+        task_order.get(parts[i][0], len(task_order)), parts[i][0],
+        phase_order.get(parts[i][1], len(phase_order)), parts[i][1]))
+    names = [names[i] for i in order]
+    tasks = [name.rsplit("-", 1)[0] for name in names]
+    boundaries = [i - 0.5 for i in range(1, len(tasks)) if tasks[i] != tasks[i - 1]]
+    labels = [_task_display_name(name) for name in names]
+    fig, axes = plt.subplots(1, 3, figsize=(19.5, 7.1), sharex=True, sharey=True,
+                             layout="constrained")
+    upper_and_diagonal = np.triu(np.ones((len(names), len(names)), dtype=bool))
+    cmap = mpl.colormaps[_MULTITASK_HEATMAP_CMAP].with_extremes(bad="white")
+    for ax, (rep, title) in zip(axes, (("input", "Input"), ("hidden", "Hidden"),
+                                     ("modulation", "Modulation"))):
+        matrix = summary["representations"][rep][np.ix_(order, order)]
+        im = ax.imshow(np.ma.array(matrix, mask=upper_and_diagonal), vmin=0, vmax=1,
+                       cmap=cmap, interpolation="nearest")
+        ax.set_title(title)
+        ax.set_xticks(range(len(names)), labels, rotation=90, fontsize=6)
+        ax.set_yticks(range(len(names)), labels, ha="right", va="center", fontsize=6)
+        ax.tick_params(length=0, pad=2)
+        for axis in ("x", "y"):
+            _color_phase_ticklabels(ax, names, axis=axis)
+            ticks = ax.get_xticklabels() if axis == "x" else ax.get_yticklabels()
+            for tick, name in zip(ticks, names):
+                tick.set_gid(name)  # retain row identity when text shows only the task
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        for boundary in boundaries:
+            ax.hlines(boundary, -0.5, boundary, color="0.6", linewidth=0.5, alpha=0.6, zorder=3)
+            ax.vlines(boundary, boundary, len(names) - 0.5,
+                      color="0.6", linewidth=0.5, alpha=0.6, zorder=3)
+    colorbar = fig.colorbar(im, ax=axes, shrink=0.7, fraction=0.018, pad=0.015,
+                           ticks=[0, 0.25, 0.5, 0.75, 1])
+    colorbar.set_label("Fraction of trained networks in the same cluster", fontsize=8)
+    fig.suptitle(f"Trained networks (n={summary['n_runs']}) · Task–period co-clustering", fontsize=11)
+    _save_fig(fig, _multitask_out("row_cluster_coassignment.png"),
+              extra=(f"  {data['feature']}; {len(names)} × {len(names)} rows; "
+                     f"{summary['n_runs']} trained networks, equal weight; original selected "
+                     "row clusters; fixed task/chronological-period order; raw fractions, "
+                     "lower triangle only, diagonal omitted, no chance correction"))
+
+
 def _untrained_provenance(experiments):
     """'seed 749 config, init 0, 1, 2' from the untrained networks' names
     ({aname}_init{k}), or '' when the names do not carry them."""
@@ -15377,6 +15472,7 @@ FIGURES_BY_MODE = {
         "overmembership_examples": plot_overmembership_examples,
         "input_weight_correlation": plot_input_weight_correlation,
         "row_cluster_organization": plot_row_cluster_organization,
+        "row_cluster_coassignment": plot_row_cluster_coassignment,
         "row_cluster_same_task_seeds": plot_row_cluster_same_task_seeds,
         "row_cluster_same_period_seeds": plot_row_cluster_same_period_seeds,
         "row_cluster_same_period_synapses": plot_row_cluster_same_period_synapses,
