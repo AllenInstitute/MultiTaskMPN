@@ -205,6 +205,31 @@ modes by definition.
 `lesion_plot.py` records freeze_M as `primary_modulation_mode` in the
 normalized-effect cache.
 
+The `overmembership_examples_dots_<r>` panels (`--only overmembership_examples`,
+run `ANAME`) draw the synapse clusters with the strongest block enrichment, by
+default the two with the highest OM over blocks expecting at least five
+synapses, as input × hidden block maps. Each shown block is a filled disc
+whose area is the observed number of the cluster's synapses, colored by OM on
+the shared colorbar, under a thin grey ring whose area is the expected number
+on the same scale: a disc beyond its ring is enrichment, a ring beyond its
+disc depletion, and a ring alone a block with no synapse of the cluster;
+blocks expecting fewer than one synapse are blank, and a neuron cluster with
+no shown block is dropped from the axes. The input and hidden clusters are
+sorted by the cluster's observed/expected over their shown blocks, most
+enriched first, and the bars above and to the right of the matrix show that
+marginal ratio as log2 (chance at 0, one symmetric axis covering every
+example, at least one doubling). The size key
+`overmembership_examples_dots_legend` shows discs for round observed counts
+and one ring for the expected count; the saved message names the axis order,
+the deciding block and the runners-up. In the L21e4 run the examples are
+diffuse, not concentrated: C3's three most enriched well-supported blocks hold
+4% of its 3244 synapses (1% expected) and its ten fullest blocks 16%, against
+33% for the ten largest blocks, because it avoids the largest input and hidden
+clusters (0.4 to 0.6 of expected) and spreads at 1.5 to 2.4 times expected over
+the small ones. The sorted axes and marginal bars show this profile, which the
+earlier unsorted dots, with area proportional to the observed count alone,
+hid behind the neuron clusters' sizes.
+
 The OM-versus-lesion-profile scatter uses Spearman rank correlation and a
 one-sided (negative association) modulation-cluster-footprint permutation test,
 not linear regression. `lesion_plot.py` saves the scatter, `association`
@@ -229,8 +254,7 @@ The dot colors and scatter x coordinates display block over-membership as
 ratios for reconstructing observed counts; both scatter points and saved bin
 x coordinates are shifted by one only when plotting. This translation leaves
 the selected examples, Spearman correlation and permutation p values unchanged.
-The shared dot colorbar marks zero; blocks with expected counts below one are
-omitted, and supported blocks with no observed synapses (OM = -1) are hollow rings.
+The shared dot colorbar marks zero.
 Up to five quantile bins provide median OM/L1 points and counts; tied OM values
 stay together. The median connector is descriptive and is not forced to decrease.
 `paper_plot.py` only reads these values, draws pale scatter points and the saved

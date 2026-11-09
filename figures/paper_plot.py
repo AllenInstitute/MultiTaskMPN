@@ -4325,9 +4325,9 @@ def plot_overmembership_abs_weighted():
 OVERMEMBERSHIP_EXAMPLE_FIXED_K = 20
 # How many synapse (modulation) clusters plot_overmembership_examples draws,
 # and which. With OVERMEMBERSHIP_EXAMPLE_CLUSTERS = None the examples are the
-# OVERMEMBERSHIP_EXAMPLE_N most concentrated clusters of the resolved run,
-# ranked by the highest OM = observed/expected - 1 over their well-supported
-# blocks (expected count at least OVERMEMBERSHIP_EXAMPLE_SELECT_MIN_EXPECTED;
+# OVERMEMBERSHIP_EXAMPLE_N clusters of the resolved run with the strongest
+# block enrichment, ranked by the highest OM = observed/expected - 1 over
+# their well-supported blocks (expected count at least OVERMEMBERSHIP_EXAMPLE_SELECT_MIN_EXPECTED;
 # ties to the larger expected count), so the choice follows MULTITASK_L2 and
 # ANAME. A tuple of 1-based fixed-k cluster IDs forces the examples in that
 # order; cluster numbers are not comparable across runs, so a forced tuple is
@@ -4346,18 +4346,24 @@ OVERMEMBERSHIP_EXAMPLE_SELECT_MIN_EXPECTED = 5.0
 # the cache's min_expected), so blocks expecting 1 to 3 synapses appear here
 # but not in the scatter.
 OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED = 1.0
-# Same footprint as the lesion scatters, so the panels tile with them.
-_OVERMEMBERSHIP_EXAMPLE_FIGSIZE = (2.0, 2.0)
+# The dot matrix keeps the lesion scatters' footprint, a 1.5-inch square; the
+# figure is larger to fit the marginal enrichment bars above and to its right.
+_OVERMEMBERSHIP_EXAMPLE_FIGSIZE = (2.5, 2.5)
 # Whether the dot matrices name clusters on their axes (C2, C8, U ...). Off:
 # the axes keep their "Input cluster" / "Hidden cluster" titles and no ticks;
 # which clusters would be named still goes to the saved message.
 OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES = False
-# Dot-matrix companion: the largest observed count of any example fills this
-# fraction of a cell's side (one scale for all examples); a measurable block
-# with no synapse of the cluster is a small hollow grey ring, so it is told
-# apart from an unmeasurable (blank) block.
+# Dot-matrix companion: the largest observed or expected count of any example
+# fills this fraction of a cell's side, one area scale for all examples,
+# filled discs (observed) and rings (expected) alike.
 _OVERMEMBERSHIP_DOT_MAX_FILL = 0.85
-_OVERMEMBERSHIP_DOT_EMPTY_PT2 = 4.0
+# The marginal bars show log2 of each input or hidden cluster's
+# observed/expected over its shown blocks, on an axis symmetric about chance
+# (0) that spans at least this many doublings and grows to cover every
+# example; a cluster with no synapse of the example sits at the floor.
+_OVERMEMBERSHIP_MARGIN_MIN_DOUBLINGS = 1.0
+# Round counts the size key draws: the three largest at or below the area
+# scale's maximum (the largest observed or expected count of any example).
 _OVERMEMBERSHIP_DOT_REFERENCE_COUNTS = (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000)
 # The dot matrix labels at most this many input and hidden clusters per axis:
 # those holding the cluster's most significant enrichments, ranked by the
@@ -4366,11 +4372,11 @@ _OVERMEMBERSHIP_DOT_REFERENCE_COUNTS = (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000
 # that would overlap a more significant neighbour's is dropped, never
 # staggered onto a second row.
 _OVERMEMBERSHIP_DOT_MAX_LABELS = 3
-_OVERMEMBERSHIP_DOT_LEGEND_FIGSIZE = (0.8, 1.0)
+_OVERMEMBERSHIP_DOT_LEGEND_FIGSIZE = (0.9, 1.2)
 
 
 def _ranked_om_clusters(ratios, expected, cluster_ids, skip_ids=()):
-    """Candidate synapse clusters, most concentrated first.
+    """Candidate synapse clusters, strongest block enrichment first.
 
     `ratios` stores observed/expected, and `expected` stores counts, both
     (clusters, inputs, hiddens). Ranking ratios is equivalent to ranking
@@ -4432,60 +4438,110 @@ def _om_dot_cell_pt(n_in, n_hid, layout):
     return 72.0 * min(width_in / n_in, height_in / n_hid)
 
 
-def _save_dot_size_key(out_path, references, max_area, max_observed, extra=""):
+def _save_dot_size_key(out_path, references, max_area, max_count, extra=""):
     """The dot matrices' size key as its own small figure: one grey disc per
-    round reference count at the exact area the matrices use for it."""
+    round reference count at the exact area the matrices use for it, and one
+    ring at the largest reference, the expected count on the same scale."""
     handles = [mpl.lines.Line2D([], [], marker="o", linestyle="none", color="0.5",
-                                markersize=np.sqrt(max_area * count / max_observed),
+                                markersize=np.sqrt(max_area * count / max_count),
                                 label=f"{count:d}")
                for count in references]
+    handles.append(mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="none",
+                                    markeredgecolor=_OM_DOT_RING_COLOR, markeredgewidth=0.5,
+                                    markersize=np.sqrt(max_area * references[-1] / max_count),
+                                    label="expected"))
     fig = plt.figure(figsize=_OVERMEMBERSHIP_DOT_LEGEND_FIGSIZE)
     fig.legend(handles=handles, loc="center", title="synapses", title_fontsize=6, fontsize=6,
                frameon=False, handletextpad=0.4, labelspacing=0.6)
     _save_fig(fig, out_path, extra=extra)
 
 
-_OM_DOT_LAYOUT = dict(left=0.2, right=0.97, bottom=0.17, top=0.9)
+# Figure fractions of the dot matrix's axes rectangle (left, right, bottom,
+# top; square cells fill it from its bottom left), the gap to the marginal
+# bar axes and their thickness. The ring and bar greys are neutral, like the
+# lesion figures' point grey.
+_OM_DOT_LAYOUT = dict(left=0.16, right=0.76, bottom=0.14, top=0.74, gap=0.015, margin=0.11)
+_OM_DOT_RING_COLOR = "0.55"
+_OM_DOT_BAR_COLOR = "0.45"
 
 
-def _plot_om_dot_matrix(ratio, shown, observed, input_names, hidden_names, vmax, max_observed,
-                        labelled, title, out_path, extra=""):
-    """The dot-matrix view of one synapse cluster's block map.
+def _marginal_enrichment(observed, expected, shown, axis):
+    """log2 of one synapse cluster's observed/expected summed over its shown
+    blocks along `axis` (1: per input cluster, 0: per hidden cluster). A
+    cluster with no synapse of the example gives -inf, one with no shown
+    block NaN."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.log2(np.where(shown, observed, 0.0).sum(axis=axis)
+                       / np.where(shown, expected, 0.0).sum(axis=axis))
 
-    `ratio`, `shown` and `observed` are (inputs, hiddens) over the kept
-    clusters; `ratio` retains observed/expected. x is the input (pre) cluster,
-    y the hidden (post) cluster. Each
-    shown block is a disc centered on its cell whose area is
-    proportional to `observed` (`max_observed`, shared by all examples, fills
-    _OVERMEMBERSHIP_DOT_MAX_FILL of the cell side) and whose color is
-    OM = ratio - 1 on the shared viridis scale [-1, vmax], with chance at 0.
-    Shown blocks with no synapse (OM = -1) are small
-    hollow grey rings; unshown blocks are blank. `labelled` is (input indices,
-    hidden indices) in significance order; those whose names would overlap a
-    more significant neighbour's are dropped (_non_colliding_labels). They
-    are drawn only with OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES; either way they
-    are named in the saved message. The size key is saved separately
-    (_save_dot_size_key). Returns the disc area of `max_observed`, for that
-    key."""
+
+def _om_axis_order(observed, expected, shown, kept, axis):
+    """`kept` cluster indices sorted by the example's enrichment
+    (_marginal_enrichment along `axis`), most enriched first, ties in cluster
+    order: the order of the dot matrix's input (axis 1) or hidden (axis 0)
+    clusters."""
+    enrichment = _marginal_enrichment(observed, expected, shown, axis)[kept]
+    return [int(kept[position]) for position in np.argsort(-enrichment, kind="stable")]
+
+
+def _doublings_tick_label(doublings):
+    """'1/4', '1' or '4' for a log2 ratio of -2, 0 or 2."""
+    factor = 2.0 ** abs(doublings)
+    return f"1/{factor:g}" if doublings < 0 else f"{factor:g}"
+
+
+def _plot_om_dot_matrix(ratio, shown, observed, expected, input_names, hidden_names, vmax,
+                        max_count, margin_limit, labelled, title, out_path, extra=""):
+    """The dot-matrix view of one synapse cluster's block map, with its
+    marginal enrichment bars.
+
+    `ratio`, `shown`, `observed` and `expected` are (inputs, hiddens) over the
+    kept clusters in their sorted order; `ratio` retains observed/expected. x
+    is the input (pre) cluster, y the hidden (post) cluster. Each shown block
+    is a filled disc whose area is proportional to `observed`, colored by
+    OM = ratio - 1 on the shared viridis scale [-1, vmax] with chance at 0,
+    under a thin grey ring whose area is proportional to `expected` on the
+    same scale (`max_count`, the largest observed or expected count of any
+    example, fills _OVERMEMBERSHIP_DOT_MAX_FILL of the cell side): a disc
+    beyond its ring is enrichment, a ring beyond its disc depletion, a ring
+    alone a block with no synapse of the cluster. Unshown blocks are blank.
+    The bars above (inputs) and to the right (hiddens) of the matrix show
+    each cluster's log2 observed/expected over its shown blocks on an axis of
+    +-`margin_limit` doublings with chance at 0, so the sorted axes read as a
+    monotone profile. `labelled` is (input indices, hidden indices) in
+    significance order; those whose names would overlap a more significant
+    neighbour's are dropped (_non_colliding_labels). They are drawn only with
+    OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES; either way they are named in the
+    saved message. The title sits over the top bar axis. The size key is
+    saved separately (_save_dot_size_key). Returns the disc area of
+    `max_count`, for that key."""
     n_in, n_hid = ratio.shape
-    fig, axis = plt.subplots(figsize=_OVERMEMBERSHIP_EXAMPLE_FIGSIZE)
-    fig.subplots_adjust(**_OM_DOT_LAYOUT)
-    cell_pt = _om_dot_cell_pt(n_in, n_hid, _OM_DOT_LAYOUT)
+    layout = _OM_DOT_LAYOUT
+    cell_pt = _om_dot_cell_pt(n_in, n_hid, layout)
     max_area = (_OVERMEMBERSHIP_DOT_MAX_FILL * cell_pt) ** 2
+    fig = plt.figure(figsize=_OVERMEMBERSHIP_EXAMPLE_FIGSIZE)
+    # Square cells: the matrix takes the part of its rectangle that n_in x
+    # n_hid cells of side cell_pt fill, and the bar axes align with it.
+    width = cell_pt / 72.0 * n_in / _OVERMEMBERSHIP_EXAMPLE_FIGSIZE[0]
+    height = cell_pt / 72.0 * n_hid / _OVERMEMBERSHIP_EXAMPLE_FIGSIZE[1]
+    axis = fig.add_axes([layout["left"], layout["bottom"], width, height])
+    top = fig.add_axes([layout["left"], layout["bottom"] + height + layout["gap"], width,
+                        layout["margin"]], sharex=axis)
+    right = fig.add_axes([layout["left"] + width + layout["gap"], layout["bottom"],
+                          layout["margin"], height], sharey=axis)
     cmap = plt.get_cmap(_MULTITASK_HEATMAP_CMAP)
     norm = mpl.colors.Normalize(vmin=-1.0, vmax=vmax)
+    scale = max_area / max(max_count, 1e-12)
     rows, cols = np.nonzero(shown)
     filled = observed[rows, cols] > 0
     if filled.any():
-        sizes = max_area * observed[rows, cols][filled] / max(max_observed, 1e-12)
-        axis.scatter(rows[filled] + 0.5, cols[filled] + 0.5, s=sizes,
+        axis.scatter(rows[filled] + 0.5, cols[filled] + 0.5, s=scale * observed[rows, cols][filled],
                      color=cmap(norm(ratio[rows, cols][filled] - 1.0)), edgecolors="none", zorder=3)
-    if (~filled).any():
-        axis.scatter(rows[~filled] + 0.5, cols[~filled] + 0.5, s=_OVERMEMBERSHIP_DOT_EMPTY_PT2,
-                     facecolors="none", edgecolors="0.6", linewidths=0.5, zorder=3)
+    # Rings over the discs, so a ring inside an enriched disc stays visible.
+    axis.scatter(rows + 0.5, cols + 0.5, s=scale * expected[rows, cols], facecolors="none",
+                 edgecolors=_OM_DOT_RING_COLOR, linewidths=0.5, zorder=4)
     axis.set_xlim(0, n_in)
     axis.set_ylim(n_hid, 0)
-    axis.set_aspect("equal")
     kept = {}
     for which, setter_ticks, setter_labels, names, wanted in (
             ("x", axis.set_xticks, axis.set_xticklabels, input_names, labelled[0]),
@@ -4497,10 +4553,34 @@ def _plot_om_dot_matrix(ratio, shown, observed, input_names, hidden_names, vmax,
         else:
             setter_ticks([])
     axis.tick_params(axis="both", length=2, labelsize=7, labelrotation=0)
-    axis.set_title(title, fontsize=8)
     axis.set_xlabel("Input cluster", fontsize=8)
     axis.set_ylabel("Hidden cluster", fontsize=8)
     axis.spines[["top", "right"]].set_visible(False)
+    # Marginal enrichment bars; the floor holds clusters without a synapse.
+    bars = {"x": np.clip(_marginal_enrichment(observed, expected, shown, axis=1),
+                         -margin_limit, margin_limit),
+            "y": np.clip(_marginal_enrichment(observed, expected, shown, axis=0),
+                         -margin_limit, margin_limit)}
+    top.bar(np.arange(n_in) + 0.5, bars["x"], width=0.8, color=_OM_DOT_BAR_COLOR, linewidth=0)
+    top.axhline(0, color="0.2", linewidth=0.5)
+    right.barh(np.arange(n_hid) + 0.5, bars["y"], height=0.8, color=_OM_DOT_BAR_COLOR, linewidth=0)
+    right.axvline(0, color="0.2", linewidth=0.5)
+    ticks = [-margin_limit, 0.0, margin_limit]
+    tick_labels = [_doublings_tick_label(tick) for tick in ticks]
+    top.set_ylim(-margin_limit, margin_limit)
+    top.set_yticks(ticks)
+    top.set_yticklabels(tick_labels)
+    top.set_ylabel("obs / exp", fontsize=6)
+    top.tick_params(axis="x", bottom=False, labelbottom=False)
+    top.tick_params(axis="y", length=2, labelsize=5.5)
+    top.spines[["top", "right", "bottom"]].set_visible(False)
+    right.set_xlim(-margin_limit, margin_limit)
+    right.set_xticks(ticks)
+    right.set_xticklabels(tick_labels)
+    right.tick_params(axis="y", left=False, labelleft=False)
+    right.tick_params(axis="x", length=2, labelsize=5.5)
+    right.spines[["top", "right", "left"]].set_visible(False)
+    top.set_title(title, fontsize=8)
     named = "labelled" if OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES else "most significant (not drawn)"
     labelled_text = (f"; {named}: "
                      f"input {', '.join(input_names[i] for i in kept['x']) or 'none'}, "
@@ -4587,8 +4667,8 @@ def _om_example_selection():
 
 
 def plot_overmembership_examples():
-    """Show the most concentrated synapse clusters' input-by-hidden block
-    enrichment, one dot matrix per example.
+    """Show the synapse clusters with the strongest block enrichment as
+    input-by-hidden block maps, one dot matrix with marginal bars per example.
 
     Reads global_assignment_fixed_k20: input, hidden and modulation use their
     fixed-k unnormalized clusterings, with variance weighting for modulation.
@@ -4601,10 +4681,12 @@ def plot_overmembership_examples():
     n_active_block * cluster_size_percent.
 
     The examples are OVERMEMBERSHIP_EXAMPLE_CLUSTERS, or with None the
-    OVERMEMBERSHIP_EXAMPLE_N most concentrated clusters (_ranked_om_clusters),
-    so they are the clearest cases of a synapse cluster living in one
-    neuron-cluster block rather than hand-picked IDs that go stale when the
-    run changes; the saved messages name the choices and the runners-up.
+    OVERMEMBERSHIP_EXAMPLE_N clusters with the highest well-supported block
+    OM (_ranked_om_clusters), rather than hand-picked IDs that go stale when
+    the run changes; the saved messages name the choices and the runners-up.
+    Even these are diffuse in the L21e4 run: their most enriched blocks hold
+    a few per cent of their synapses, and their structure is marginal (which
+    neuron clusters they avoid or favor), which the sorted axes and bars show.
     Blocks whose expected count is below OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED
     are left blank, because a ratio over a handful of expected synapses is
     unstable; zero-expectation blocks are a special case of this. Input or
@@ -4615,20 +4697,26 @@ def plot_overmembership_examples():
     onto the figure.
 
     Outputs, rank r = 1..N: `overmembership_examples_dots_<r>` (dot matrix:
-    dot area proportional to the observed number of the cluster's synapses,
-    color OM, so a ratio over two synapses is a speck and one over thirty a
-    disc; measurable blocks with no synapse are small hollow rings,
-    unmeasurable blocks blank; up to _OVERMEMBERSHIP_DOT_MAX_LABELS input and
-    hidden clusters labelled, those with the most significant enrichment,
-    _om_significant_clusters, dropping a label that would overlap a more
-    significant one). The cluster names are drawn only with
-    OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES (off by default: no ticks, the
-    names go to the saved message). The examples come from ANAME, and so
-    does the OM-vs-lesion scatter (_om_scatter_run), unlike the other lesion
-    figures, so its points include the example clusters. All examples
-    share one color scale and one dot-area scale, saved once as
+    the input and hidden clusters sorted by the example's observed/expected
+    over their shown blocks, most enriched first, _om_axis_order; each shown
+    block a filled disc with area proportional to the observed number of the
+    cluster's synapses, colored by OM, under a ring with area proportional to
+    the expected number on the same scale, so enrichment is a disc beyond its
+    ring and a block with no synapse a ring alone; unmeasurable blocks blank;
+    bars above and to the right of the matrix with each cluster's log2
+    observed/expected, _marginal_enrichment, on one symmetric axis; up to
+    _OVERMEMBERSHIP_DOT_MAX_LABELS input and hidden clusters labelled, those
+    with the most significant enrichment, _om_significant_clusters, dropping
+    a label that would overlap a more significant one). The cluster names
+    are drawn only with OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES (off by
+    default: no ticks, the names go to the saved message). The examples
+    come from ANAME, and so does the OM-vs-lesion scatter (_om_scatter_run),
+    unlike the other lesion figures, so its points include the example
+    clusters. All examples share one color scale, one area scale for discs
+    and rings and one marginal bar axis; the first two are saved once as
     `overmembership_examples_colorbar` (viridis, chance OM = 0 marked) and
-    `overmembership_examples_dots_legend` (size key).
+    `overmembership_examples_dots_legend` (size key: discs for round observed
+    counts and one ring for the expected count).
     The full cluster cache can be several GB; run on an allocated compute node.
     """
     selection = _om_example_selection()
@@ -4650,8 +4738,15 @@ def plot_overmembership_examples():
                 for index in indices]
 
     _ensure_out_dir()
-    # One color scale (selection["vmax"]) and one dot-area scale across the examples.
-    max_observed = max(float((ratios[index] * expected[index])[stable[index]].max()) for index in chosen)
+    # One color scale (selection["vmax"]), one disc-and-ring area scale and
+    # one marginal bar axis across the examples.
+    observed = ratios * expected
+    max_count = max(float(np.maximum(observed[index], expected[index])[stable[index]].max())
+                    for index in chosen)
+    doublings = [abs(value) for index in chosen for axis in (1, 0)
+                 for value in _marginal_enrichment(observed[index], expected[index], stable[index], axis)
+                 if np.isfinite(value)]
+    margin_limit = max(_OVERMEMBERSHIP_MARGIN_MIN_DOUBLINGS, float(np.ceil(max(doublings, default=0.0))))
     max_area = None
     for rank, (cluster_index, top) in enumerate(zip(chosen, selection["tops"]), start=1):
         cluster_id = cluster_ids[cluster_index]
@@ -4662,34 +4757,44 @@ def plot_overmembership_examples():
             "input": _labels([i for i in range(n_in) if i not in keep_input]),
             "hidden": _labels([j for j in range(n_hid) if j not in keep_hidden]),
         }
-        sub_ratio = ratio[np.ix_(keep_input, keep_hidden)]
-        sub_shown = shown[np.ix_(keep_input, keep_hidden)]
-        sub_expected = expected[cluster_index][np.ix_(keep_input, keep_hidden)]
-        sub_observed = sub_ratio * sub_expected
+        # Kept clusters in enrichment order, most enriched at the top left.
+        order_input = _om_axis_order(observed[cluster_index], expected[cluster_index], shown,
+                                     keep_input, axis=1)
+        order_hidden = _om_axis_order(observed[cluster_index], expected[cluster_index], shown,
+                                      keep_hidden, axis=0)
+        sub_ratio = ratio[np.ix_(order_input, order_hidden)]
+        sub_shown = shown[np.ix_(order_input, order_hidden)]
+        sub_expected = expected[cluster_index][np.ix_(order_input, order_hidden)]
+        sub_observed = observed[cluster_index][np.ix_(order_input, order_hidden)]
+        input_names, hidden_names = _labels(order_input), _labels(order_hidden)
         # `top` is the deciding block (_om_example_selection), the one the
         # OM-vs-lesion scatter highlights; it is named in the saved message.
-        observed_top = ratio[top] * expected[cluster_index][top]
+        observed_top = observed[cluster_index][top]
         dropped_text = "; ".join(f"{side} {', '.join(names)}" for side, names in dropped.items() if names)
         max_area = _plot_om_dot_matrix(
-            sub_ratio, sub_shown, sub_observed, _labels(keep_input), _labels(keep_hidden), vmax,
-            max_observed, _om_significant_clusters(sub_observed, sub_expected, sub_shown),
+            sub_ratio, sub_shown, sub_observed, sub_expected, input_names, hidden_names, vmax,
+            max_count, margin_limit, _om_significant_clusters(sub_observed, sub_expected, sub_shown),
             f"Synapse cluster C{cluster_id}", _multitask_out(f"overmembership_examples_dots_{rank}.png"),
             extra=(f"  ({ANAME}; fixed k={OVERMEMBERSHIP_EXAMPLE_FIXED_K}; var-weighted "
                    f"unnormalized modulation; unnormalized input/hidden; blank: expected < "
                    f"{OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED:g} synapses) example {rank}: synapse "
                    f"cluster C{cluster_id}: {int(sub_shown.sum())}/{sub_shown.size} blocks shown; "
-                   f"dot area = observed synapses, color = OM (observed/expected - 1); "
+                   f"disc area = observed synapses, ring area = expected synapses, color = OM "
+                   f"(observed/expected - 1); axes sorted by observed/expected over shown blocks, "
+                   f"input {', '.join(input_names)}; hidden {', '.join(hidden_names)}; marginal bars "
+                   f"log2(observed/expected) on +-{margin_limit:g} doublings; "
                    f"peak OM {ratio[top] - 1.0:.2f} at input "
                    f"{_labels([top[0]])[0]} / hidden {_labels([top[1]])[0]} ({observed_top:.0f} "
                    f"observed / {expected[cluster_index][top]:.2f} expected; blocks with "
                    f"expected >= {select_min:g} rank the examples)"
                    + (f"; runners-up: {runners}" if runners else "")
                    + (f"; dropped (no shown block): {dropped_text}" if dropped_text else "")))
-    references = [count for count in _OVERMEMBERSHIP_DOT_REFERENCE_COUNTS if count <= max_observed][-3:]
+    references = [count for count in _OVERMEMBERSHIP_DOT_REFERENCE_COUNTS if count <= max_count][-3:]
     if references:
         _save_dot_size_key(_multitask_out("overmembership_examples_dots_legend.png"), references,
-                           max_area, max_observed,
-                           extra=f"  (size key shared by the {len(chosen)} dot matrices: {references})")
+                           max_area, max_count,
+                           extra=f"  (size key shared by the {len(chosen)} dot matrices: {references}; "
+                                 "ring: expected count)")
     ticks = sorted({-1.0, 0.0, vmax / 2, vmax})
     _save_standalone_colorbar(
         _multitask_out("overmembership_examples_colorbar.png"),
