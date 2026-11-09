@@ -142,6 +142,7 @@ def main(argv=None):
         figures = {"organization": "organization", "same_task_seeds": "same_task_all",
                    "same_period_seeds": "same_period_all",
                    "same_period_synapses": "same_period_all",
+                   "same_period_synapses_matched_tasks": "same_period_matched_tasks",
                    "same_task_matched_tasks_seeds": "same_task_matched_tasks",
                    "same_period_matched_tasks_seeds": "same_period_matched_tasks",
                    "organization_matched_tasks": "organization_matched_tasks",

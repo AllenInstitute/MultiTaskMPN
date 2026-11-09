@@ -1049,6 +1049,26 @@ Monte Carlo permutations with add-one correction. These six tests (two
 contrasts, three representations) have their own BH family in each cohort.
 Neither these tests nor the figure stars compare trained with untrained.
 
+The direct synapse comparison for this same task population is
+`multitask_row_cluster_same_period_synapses_matched_tasks_n.png`. It reads
+`same_period_matched_tasks` and shares the all-task synapse figure's renderer
+and statistics: one fraction per network (including zeros), mean ± sample SD,
+restricted-null chance dashes, and one-sided Mann-Whitney U tests of
+**trained > untrained**. Its five period tests form their own BH family,
+separate from the all-task figure and the within-cohort chance tests.
+Raw p and adjusted q compare cohorts; they do not test the chance dashes.
+Both cohorts must have compatible matched-task summaries. The original
+full-task clustering is retained, so no reclustering or summary rerun is
+needed when these entries are already present:
+
+```bash
+python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_same_period_synapses_matched_tasks
+```
+
+This comparison controls task composition across periods and cohorts. It
+does not control evaluation-trial batches, so it is supplementary evidence
+of a cohort difference rather than an isolated causal effect of training.
+
 Two companion supplements use the same five tasks and original cluster labels:
 
 - `same_task_matched_tasks`, drawn as

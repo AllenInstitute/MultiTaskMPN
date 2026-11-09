@@ -208,6 +208,7 @@ class PaperPlotModeTests(unittest.TestCase):
             "input_weight_correlation", "row_cluster_organization", "row_cluster_same_task_seeds",
             "row_cluster_same_period_seeds",
             "row_cluster_same_period_synapses",
+            "row_cluster_same_period_synapses_matched_tasks",
             "row_cluster_same_period_matched_tasks_seeds",
             "row_cluster_same_task_matched_tasks_seeds", "row_cluster_organization_matched_tasks",
             "row_cluster_counts_seeds",

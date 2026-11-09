@@ -12,7 +12,7 @@ import _bootstrap  # noqa: F401
 import numpy as np
 from matplotlib.container import ErrorbarContainer
 from scipy.cluster.hierarchy import linkage, fcluster
-from scipy.stats import mannwhitneyu
+from scipy.stats import false_discovery_control, mannwhitneyu
 
 import multiple_task_diagnosis as diagnosis
 import paper_plot
@@ -1285,6 +1285,75 @@ class PaperFigureTests(unittest.TestCase):
                                              payload, untrained)
                 save.assert_not_called()
                 self.assertIn("Skipped synapse cohort comparison", str(printed.call_args_list))
+
+    def test_matched_synapse_comparison_uses_matched_counts_and_its_own_five_tests(self):
+        payload, control = self._payload(), self._untrained_payload()
+        samples = []
+        for source, observed in ((payload, [0, 1, 2, 3, 4, 5]),
+                                 (control, [0, 0, 0, 0, 0, 1])):
+            entry = sharing.summarize_same_period_matched_tasks(
+                [(name, _complete_experiment()) for name in source["experiments"]], 200)
+            source["same_period_matched_tasks"] = entry
+            cohort_samples = []
+            for period_index, reps in enumerate(entry["periods"].values()):
+                counts = np.asarray(observed) + period_index
+                cohort_samples.append(10.0 * counts)
+                reps["modulation"] = {
+                    "pct_same_cluster": 10.0 * counts.mean(), "chance_mean": 0.15,
+                    "q_fdr": 0.0,  # within-cohort stars must not enter this comparison
+                    "per_run": {name: {"observed": count, "n_cells": 10, "expected": 1.5}
+                                for name, count in zip(source["experiments"], counts)}}
+            samples.append(cohort_samples)
+        with patch("scipy.stats.mannwhitneyu", wraps=mannwhitneyu) as compare, \
+                patch("scipy.stats.false_discovery_control",
+                      wraps=false_discovery_control) as adjust:
+            save, _ = self._render(
+                paper_plot.plot_row_cluster_same_period_synapses_matched_tasks, payload, control)
+        self.assertEqual(compare.call_count, 5)
+        expected_p = []
+        for call, group in zip(compare.call_args_list, zip(*samples)):
+            for actual, expected in zip(call.args, group):
+                np.testing.assert_allclose(actual, expected)
+            self.assertEqual(call.kwargs, {"alternative": "greater",
+                                           "method": "asymptotic", "use_continuity": True})
+            expected_p.append(mannwhitneyu(*group, **call.kwargs).pvalue)
+        adjust.assert_called_once()
+        np.testing.assert_allclose(adjust.call_args.args[0], expected_p)
+        self.assertEqual(adjust.call_args.kwargs, {"method": "bh"})
+        self.assertEqual(Path(save.call_args.args[1]).name,
+                         "multitask_row_cluster_same_period_synapses_matched_tasks.png")
+        ax = save.call_args.args[0].axes[0]
+        np.testing.assert_allclose([bar.get_height() for bar in ax.patches],
+                                   [values.mean() for group in zip(*samples) for values in group])
+        np.testing.assert_allclose(
+            [segment[:, 1] for collection in ax.collections[1::2]
+             for segment in collection.get_segments()], [[15.0, 15.0]] * 10)
+        self.assertEqual([text.get_text() for text in ax.texts],
+                         [f"p={p:.3g}\nq={q:.3g}" for p, q in zip(
+                             expected_p, false_discovery_control(expected_p, method="bh"))])
+        self.assertIn("Same five tasks", ax.get_title())
+        self.assertIn("10 task pairs per period per network", save.call_args.kwargs["extra"])
+
+    def test_matched_synapse_comparison_never_falls_back_to_all_task_counts(self):
+        payload, control = self._payload(), self._untrained_payload()
+        entry = sharing.summarize_same_period_matched_tasks(
+            [(name, _complete_experiment()) for name in payload["experiments"]], 200)
+        for case, (trained_entry, control_entry) in enumerate((
+                (None, entry), (entry, None),
+                (entry, dict(entry, task_names=list(reversed(entry["task_names"])))),
+                (entry, dict(entry, phases=entry["phases"][:-1])))):
+            with self.subTest(case=case):
+                trained = dict(payload)
+                untrained = dict(control)
+                if trained_entry is not None:
+                    trained["same_period_matched_tasks"] = trained_entry
+                if control_entry is not None:
+                    untrained["same_period_matched_tasks"] = control_entry
+                save, printed = self._render(
+                    paper_plot.plot_row_cluster_same_period_synapses_matched_tasks,
+                    trained, untrained)
+                save.assert_not_called()
+                self.assertIn("Skipped", str(printed.call_args_list))
 
     def test_matched_task_and_organization_figures_use_their_own_entries(self):
         experiments = [(f"run{i}", _complete_experiment()) for i in range(6)]

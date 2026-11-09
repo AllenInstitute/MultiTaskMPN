@@ -6731,21 +6731,40 @@ def plot_row_cluster_same_period_seeds():
 
 
 def plot_row_cluster_same_period_synapses():
-    """Extract synapse bars and directly compare trained/untrained networks.
+    """Compare trained/untrained synapse sharing using all available task pairs."""
+    _plot_row_cluster_same_period_synapses(
+        "same_period_all", "row_cluster_same_period_synapses.png")
+
+
+def plot_row_cluster_same_period_synapses_matched_tasks():
+    """Compare synapse sharing for the same five tasks in every period.
+
+    Retains the original full-task clustering. Matching the task population
+    does not control differences in evaluation trials between networks.
+    """
+    _plot_row_cluster_same_period_synapses(
+        "same_period_matched_tasks", "row_cluster_same_period_synapses_matched_tasks.png")
+
+
+def _plot_row_cluster_same_period_synapses(entry_key, out_filename):
+    """Shared direct cohort comparison for all-task and matched-task synapses.
 
     Uses the same per-network sharing fractions, means, SDs and restricted-null
-    dashes as same_period_seeds. One-sided Mann-Whitney U tests ask whether
-    trained sharing fractions tend to exceed untrained fractions. Networks
+    dashes as the corresponding same-period seeds figure. One-sided
+    Mann-Whitney U tests ask whether trained sharing fractions tend to exceed
+    untrained fractions. Networks
     (not task pairs or pooled counts) are the samples, with tie/continuity-corrected
-    asymptotic p values and BH correction across all displayed periods. The p/q
-    annotations replace the original within-cohort tests against chance.
+    asymptotic p values and BH correction across all displayed periods within
+    this figure, separately from the other task population and within-cohort
+    chance tests. The p/q annotations compare cohorts, not sharing with chance.
     """
     from scipy.stats import false_discovery_control, mannwhitneyu
 
-    loaded = _load_row_sharing_view("same_period_all")
+    loaded = _load_row_sharing_view(entry_key)
     if loaded is None:
         return
     data, entry, untrained, control = loaded
+    matched = entry_key.endswith("_matched_tasks")
     periods = list(entry["periods"])
     if (not periods or untrained is None
             or any("modulation" not in source.get("periods", {}).get(phase, {})
@@ -6806,7 +6825,8 @@ def plot_row_cluster_same_period_synapses():
     ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=100, decimals=0))
     ax.spines[["top", "right"]].set_visible(False)
     ax.set_ylabel("Task pairs of one period\nin one synapse row cluster", fontsize=8)
-    ax.set_title("Synapses: trained > untrained\n"
+    title_prefix = "Same five tasks · " if matched else ""
+    ax.set_title(title_prefix + "Synapses: trained > untrained\n"
                  f"One-sided Mann–Whitney U; BH across {len(periods)} periods", fontsize=8)
     handles = [
         mpl.patches.Patch(facecolor=color, edgecolor=color,
@@ -6819,12 +6839,15 @@ def plot_row_cluster_same_period_synapses():
                          marker="_", markersize=4, label="mean ± SD over runs"),
     ]
     _state_space_figure_legend(fig, handles, ncol=2, top=0.92)
-    _save_fig(fig, _multitask_out("row_cluster_same_period_synapses.png"),
+    task_note = ("; matched tasks: " + ", ".join(entry["tasks"])
+                 + f"; {entry['n_pairs_per_period']} task pairs per period per network"
+                 + "; original clustering retained" if matched else "")
+    _save_fig(fig, _multitask_out(out_filename),
               extra=(f"  {data['feature']}" + _row_sharing_untrained_note(untrained)
                      + "; bars: mean over runs, whiskers: SD over runs; "
                      "one-sided Mann-Whitney U, trained > untrained "
                      "(asymptotic, tie/continuity corrected); "
-                     f"BH across {len(periods)} periods; " + "; ".join(notes)))
+                     f"BH across {len(periods)} periods; " + "; ".join(notes) + task_note))
 
 
 def plot_row_cluster_same_period_matched_tasks_seeds():
@@ -15290,6 +15313,7 @@ FIGURES_BY_MODE = {
         "row_cluster_same_task_seeds": plot_row_cluster_same_task_seeds,
         "row_cluster_same_period_seeds": plot_row_cluster_same_period_seeds,
         "row_cluster_same_period_synapses": plot_row_cluster_same_period_synapses,
+        "row_cluster_same_period_synapses_matched_tasks": plot_row_cluster_same_period_synapses_matched_tasks,
         "row_cluster_same_period_matched_tasks_seeds": plot_row_cluster_same_period_matched_tasks_seeds,
         "row_cluster_same_task_matched_tasks_seeds": plot_row_cluster_same_task_matched_tasks_seeds,
         "row_cluster_organization_matched_tasks": plot_row_cluster_organization_matched_tasks,
