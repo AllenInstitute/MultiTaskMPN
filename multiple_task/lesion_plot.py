@@ -2353,10 +2353,10 @@ def main(seed, feature, control_pool=None):
         _x_stats = np.arange(len(_mod_type_tags))
         _bar_w = 0.35
         ax_stats_twin = ax_stats.twinx()
-        bars1 = ax_stats.bar(_x_stats - _bar_w / 2, _mod_stds, _bar_w,
-                             color="steelblue", alpha=0.7, label="Std (%)")
-        bars2 = ax_stats_twin.bar(_x_stats + _bar_w / 2, _mod_pct_pos, _bar_w,
-                                   color="tomato", alpha=0.7, label="% > 0")
+        ax_stats.bar(_x_stats - _bar_w / 2, _mod_stds, _bar_w,
+                     color="steelblue", alpha=0.7, label="Std (%)")
+        ax_stats_twin.bar(_x_stats + _bar_w / 2, _mod_pct_pos, _bar_w,
+                          color="tomato", alpha=0.7, label="% > 0")
         ax_stats.set_xticks(_x_stats)
         ax_stats.set_xticklabels(_mod_type_tags, rotation=25, ha="right", fontsize=7)
         ax_stats.set_ylabel("Std (%)", fontsize=8, color="steelblue")
@@ -2975,7 +2975,6 @@ def main(seed, feature, control_pool=None):
             if ga_p is not None:
                 om_stack_p = ga_p["om_stack"]
                 all_choice_order_p = ga_p["all_choice_order"]
-                n_in_p, n_hid_p = ga_p["n_in"], ga_p["n_hid"]
                 om_id_to_idx_p = {cid: idx for idx, cid in enumerate(all_choice_order_p)}
 
                 ckey_p = f"combined_lesion_{variant}"
