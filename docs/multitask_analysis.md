@@ -287,7 +287,16 @@ diffuse, not concentrated: C3's three most enriched well-supported blocks hold
 clusters (0.4 to 0.6 of expected) and spreads at 1.5 to 2.4 times expected over
 the small ones. The sorted axes and marginal bars show this profile, which the
 original unsorted dots, with area proportional to the observed count alone,
-hid behind the neuron clusters' sizes.
+hid behind the neuron clusters' sizes. Since 2026-11-10 each example is also
+saved as `multitask_overmembership_examples_supported_<r>_n.png`, the same
+map with only the well-supported blocks (expected ≥ 5 synapses): the thin
+blocks' saturated small squares, which rest on a handful of synapses yet draw
+the eye first, are left out, together with the input and hidden clusters
+left without a block; its map has a light grey background, so grey is a
+block that is not assessed and white a block at chance. For C3 that keeps 120 of 288 blocks holding 87% of its
+expected synapses (C11: 86 of 236, 82%). The axes keep the full map's order
+and the marginal bars still sum over every shown block of the kept clusters,
+so the thin blocks' trend stays in the bars. Both versions are kept for now.
 
 The OM-versus-lesion-profile figure has two panels with the same OM x axis.
 The left panel retains task-profile L1/T distance, which includes differences

@@ -4338,10 +4338,6 @@ OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED = 1.0
 # The block map keeps the lesion scatters' footprint, a 1.5-inch square; the
 # figure is larger to fit the marginal enrichment bars above and to its right.
 _OVERMEMBERSHIP_EXAMPLE_FIGSIZE = (2.5, 2.5)
-# Whether the block maps name clusters on their axes (C2, C8, U ...). Off:
-# the axes keep their "Input cluster" / "Hidden cluster" titles and no ticks;
-# which clusters would be named still goes to the saved message.
-OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES = False
 # Block maps: each shown block is a cell colored by its OM on _OM_BLOCK_CMAP,
 # a diverging map centered on chance (OM = 0; _om_block_cmap_norm). A block
 # expecting fewer synapses than the ranking threshold is drawn as a square of
@@ -4349,18 +4345,14 @@ OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES = False
 # not carry the weight of a well-supported one.
 _OM_BLOCK_CMAP = "RdBu_r"
 _OM_THIN_BLOCK_SIDE = 0.6
+# Background of the well-supported-only maps: a block that is not assessed
+# (too few expected synapses) is this light grey, so white means OM = 0.
+_OM_BLANK_COLOR = "0.9"
 # The marginal bars show log2 of each input or hidden cluster's
 # observed/expected over its shown blocks, on an axis symmetric about chance
 # (0) that spans at least this many doublings and grows to cover every
 # example; a cluster with no synapse of the example sits at the floor.
 _OVERMEMBERSHIP_MARGIN_MIN_DOUBLINGS = 1.0
-# The block map labels at most this many input and hidden clusters per axis:
-# those holding the cluster's strongest standardized enrichments, ranked by the
-# Poisson z of their best shown block, (observed - expected) / sqrt(expected),
-# used only as a descriptive label priority, not a significance test. A label
-# that would overlap a higher-scoring neighbour's is dropped, never
-# staggered onto a second row.
-_OVERMEMBERSHIP_DOT_MAX_LABELS = 3
 
 
 def _ranked_om_clusters(ratios, expected, cluster_ids, skip_ids=()):
@@ -4383,41 +4375,6 @@ def _ranked_om_clusters(ratios, expected, cluster_ids, skip_ids=()):
         block = np.unravel_index(int(np.argmax(ratio)), ratio.shape)
         scored.append(((float(ratio[block]), float(expected[index][block])), index))
     return [index for _, index in sorted(scored, key=lambda item: item[0], reverse=True)]
-
-
-def _om_enriched_clusters(observed, expected, shown, max_labels=_OVERMEMBERSHIP_DOT_MAX_LABELS):
-    """Indices of the input (axis 0) and hidden (axis 1) clusters holding the
-    strongest standardized enrichments of one synapse cluster: each cluster is
-    scored by the Poisson z of its best shown block, only positive z counts
-    (enrichment, not depletion), and at most `max_labels` are kept per side,
-    highest score first. This is descriptive ranking, not a block significance
-    test. Returns (input indices, hidden indices)."""
-    z = np.where(shown, (observed - expected) / np.sqrt(np.maximum(expected, 1e-12)), -np.inf)
-    picks = []
-    for axis in (1, 0):                      # best block per input row, per hidden column
-        best = z.max(axis=axis)
-        candidates = [int(index) for index in np.argsort(-best, kind="stable") if best[index] > 0]
-        picks.append(candidates[:max_labels])
-    return tuple(picks)
-
-
-def _non_colliding_labels(indices, names, cell_pt, which, fontsize=7):
-    """Keep, in priority order, each label whose text would not overlap
-    an already kept one: x labels collide within one label width, y labels
-    within one label height (0.65 em per character, 1.2 em line height, plus
-    2 pt clearance), with one cell spanning `cell_pt` points. Returns the kept
-    indices in axis order."""
-    if not indices:
-        return []
-    if which == "x":
-        extent_pt = 0.65 * fontsize * max(len(names[index]) for index in indices) + 2.0
-    else:
-        extent_pt = 1.2 * fontsize + 2.0
-    kept = []
-    for index in indices:
-        if all(abs(index - other) * cell_pt >= extent_pt for other in kept):
-            kept.append(index)
-    return sorted(kept)
 
 
 def _om_dot_cell_pt(n_in, n_hid, layout):
@@ -4470,7 +4427,8 @@ def _doublings_tick_label(doublings):
 
 
 def _plot_om_block_map(ratio, shown, supported, observed, expected, input_names, hidden_names,
-                       vmax, margin_limit, deciding, labelled, title, out_path, extra=""):
+                       vmax, margin_limit, deciding, title, out_path, extra="",
+                       bar_shown=None, blank_color=None):
     """The block map of one synapse cluster, with its marginal enrichment
     bars.
 
@@ -4488,13 +4446,14 @@ def _plot_om_block_map(ratio, shown, supported, observed, expected, input_names,
     and to the right (hiddens) of the map show each cluster's log2
     observed/expected over its shown blocks on an axis of +-`margin_limit`
     doublings, with ticks labelled as ratios (chance 1 at log2 coordinate 0),
-    so the sorted axes read as a monotone profile. `labelled` is
-    (input indices, hidden indices) in enrichment-score
-    order; those whose names would overlap a higher-scoring neighbour's
-    are dropped (_non_colliding_labels). They are drawn only with
-    OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES; either way they are named in the
-    saved message. The title sits over the top bar axis. The color scale is
-    saved separately (plot_overmembership_examples)."""
+    so the sorted axes read as a monotone profile. The axes carry no
+    cluster names; `input_names` and `hidden_names` go to the caller's saved
+    message. `bar_shown`, when given, is the block mask the marginal bars
+    sum over in place of `shown` (the well-supported-only map draws fewer
+    blocks than its bars count). `blank_color`, when given, fills the map
+    behind the cells, so an unshown block reads as "not assessed" and white
+    is left to shown blocks at chance. The title sits over the top bar axis.
+    The color scale is saved separately (plot_overmembership_examples)."""
     n_in, n_hid = ratio.shape
     layout = _OM_DOT_LAYOUT
     cell_pt = _om_dot_cell_pt(n_in, n_hid, layout)
@@ -4524,24 +4483,18 @@ def _plot_om_block_map(ratio, shown, supported, observed, expected, input_names,
                  facecolors="none", edgecolors="k", linewidths=0.8, zorder=5)
     axis.set_xlim(0, n_in)
     axis.set_ylim(n_hid, 0)
-    kept = {}
-    for which, setter_ticks, setter_labels, names, wanted in (
-            ("x", axis.set_xticks, axis.set_xticklabels, input_names, labelled[0]),
-            ("y", axis.set_yticks, axis.set_yticklabels, hidden_names, labelled[1])):
-        kept[which] = _non_colliding_labels(wanted, names, cell_pt, which)
-        if OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES:
-            setter_ticks([index + 0.5 for index in kept[which]])
-            setter_labels([names[index] for index in kept[which]])
-        else:
-            setter_ticks([])
-    axis.tick_params(axis="both", length=2, labelsize=7, labelrotation=0)
+    if blank_color is not None:
+        axis.set_facecolor(blank_color)
+    axis.set_xticks([])
+    axis.set_yticks([])
     axis.set_xlabel("Input cluster", fontsize=8)
     axis.set_ylabel("Hidden cluster", fontsize=8)
     axis.spines[["top", "right"]].set_visible(False)
     # Marginal enrichment bars; the floor holds clusters without a synapse.
-    bars = {"x": np.clip(_marginal_enrichment(observed, expected, shown, axis=1),
+    bar_shown = shown if bar_shown is None else bar_shown
+    bars = {"x": np.clip(_marginal_enrichment(observed, expected, bar_shown, axis=1),
                          -margin_limit, margin_limit),
-            "y": np.clip(_marginal_enrichment(observed, expected, shown, axis=0),
+            "y": np.clip(_marginal_enrichment(observed, expected, bar_shown, axis=0),
                          -margin_limit, margin_limit)}
     top.bar(np.arange(n_in) + 0.5, bars["x"], width=0.8, color=_OM_DOT_BAR_COLOR, linewidth=0)
     top.axhline(0, color="0.2", linewidth=0.5)
@@ -4563,11 +4516,7 @@ def _plot_om_block_map(ratio, shown, supported, observed, expected, input_names,
     right.tick_params(axis="x", length=2, labelsize=5.5)
     right.spines[["top", "right", "left"]].set_visible(False)
     top.set_title(title, fontsize=8)
-    named = "labelled" if OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES else "most enriched (not drawn)"
-    labelled_text = (f"; {named}: "
-                     f"input {', '.join(input_names[i] for i in kept['x']) or 'none'}, "
-                     f"hidden {', '.join(hidden_names[j] for j in kept['y']) or 'none'}")
-    _save_fig(fig, out_path, extra=extra + labelled_text)
+    _save_fig(fig, out_path, extra=extra)
 
 
 def _om_example_selection():
@@ -4692,13 +4641,9 @@ def plot_overmembership_examples():
     squares, unmeasurable blocks blank, the deciding block ringed in black
     as in the OM-vs-lesion scatter; bars above and to the right of the map
     with each cluster's log2 observed/expected, _marginal_enrichment, on one
-    symmetric axis, with ticks labelled as ratios (chance 1); up to
-    _OVERMEMBERSHIP_DOT_MAX_LABELS input and hidden
-    clusters labelled, ranked by their strongest standardized enrichment
-    (_om_enriched_clusters), dropping a label that would overlap a
-    higher-scoring one). The cluster names are drawn only with
-    OVERMEMBERSHIP_EXAMPLE_CLUSTER_NAMES (off by default: no ticks, the
-    names go to the saved message). The examples come from ANAME, and so
+    symmetric axis, with ticks labelled as ratios (chance 1)). The axes
+    carry no cluster names; the saved message lists each axis in its drawn
+    order. The examples come from ANAME, and so
     does the OM-vs-lesion scatter (_om_scatter_run), unlike the other lesion
     figures, so its points include the example clusters. All examples share
     one color scale, whose upper limit is their peak OM over well-supported
@@ -4706,6 +4651,15 @@ def plot_overmembership_examples():
     is saved once as `overmembership_examples_colorbar` (chance OM = 0
     marked). Earlier versions drew dots sized by the observed count in
     cluster-ID order, which mostly showed the neuron clusters' sizes.
+    Each example is also saved as `overmembership_examples_supported_<r>`,
+    the same map restricted to the blocks that rank the examples (expected
+    >= OVERMEMBERSHIP_EXAMPLE_SELECT_MIN_EXPECTED): the thin blocks, whose
+    ratios rest on a handful of synapses yet draw the eye, are left out, and
+    so are the input and hidden clusters left without a block. Its axes keep
+    the full map's order and its marginal bars still sum over every shown
+    block of the kept clusters, so the thin blocks' trend stays in the bars.
+    Its map is filled with _OM_BLANK_COLOR behind the cells: grey is a block
+    that is not assessed, white a block at chance.
     The full cluster cache can be several GB; run on an allocated compute node.
     """
     selection = _om_example_selection()
@@ -4761,7 +4715,7 @@ def plot_overmembership_examples():
         dropped_text = "; ".join(f"{side} {', '.join(names)}" for side, names in dropped.items() if names)
         _plot_om_block_map(
             sub_ratio, sub_shown, sub_supported, sub_observed, sub_expected, input_names, hidden_names,
-            vmax, margin_limit, deciding, _om_enriched_clusters(sub_observed, sub_expected, sub_shown),
+            vmax, margin_limit, deciding,
             f"Synapse cluster C{cluster_id}", _multitask_out(f"overmembership_examples_dots_{rank}.png"),
             extra=(f"  ({ANAME}; fixed k={OVERMEMBERSHIP_EXAMPLE_FIXED_K}; var-weighted "
                    f"unnormalized modulation; unnormalized input/hidden; blank: expected < "
@@ -4778,6 +4732,32 @@ def plot_overmembership_examples():
                    f"expected >= {select_min:g} rank the examples)"
                    + (f"; runners-up: {runners}" if runners else "")
                    + (f"; dropped (no shown block): {dropped_text}" if dropped_text else "")))
+        # The well-supported-only version: the same sorted axes without the
+        # thin blocks, and without the clusters that then have no block.
+        if not sub_supported[deciding]:
+            print(f"  Skipped overmembership_examples_supported_{rank}: C{cluster_id} has no "
+                  f"block expecting >= {select_min:g} synapses.")
+            continue
+        rows = np.nonzero(sub_supported.any(axis=1))[0]
+        cols = np.nonzero(sub_supported.any(axis=0))[0]
+        grid = np.ix_(rows, cols)
+        kept_input, kept_hidden = [input_names[i] for i in rows], [hidden_names[j] for j in cols]
+        share = sub_expected[sub_supported].sum() / sub_expected[sub_shown].sum()
+        _plot_om_block_map(
+            sub_ratio[grid], sub_supported[grid], sub_supported[grid], sub_observed[grid],
+            sub_expected[grid], kept_input, kept_hidden, vmax, margin_limit,
+            (int(np.searchsorted(rows, deciding[0])), int(np.searchsorted(cols, deciding[1]))),
+            f"Synapse cluster C{cluster_id}",
+            _multitask_out(f"overmembership_examples_supported_{rank}.png"),
+            extra=(f"  ({ANAME}) example {rank}: synapse cluster C{cluster_id}, only the "
+                   f"{int(sub_supported.sum())} blocks expecting >= {select_min:g} synapses of the "
+                   f"{int(sub_shown.sum())} shown in overmembership_examples_dots_{rank} "
+                   f"({share:.0%} of the cluster's expected synapses in shown blocks); axes in "
+                   f"that figure's order, input {', '.join(kept_input)}; hidden "
+                   f"{', '.join(kept_hidden)}; marginal bars over every shown block of the kept "
+                   f"clusters, thin ones included; same color scale and ring; grey: block "
+                   f"not assessed (expected < {select_min:g})"),
+            bar_shown=sub_shown[grid], blank_color=_OM_BLANK_COLOR)
     ticks = sorted({-1.0, 0.0, vmax / 2, vmax})
     cmap, norm = _om_block_cmap_norm(vmax)
     _save_standalone_colorbar(
