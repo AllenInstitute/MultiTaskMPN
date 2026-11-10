@@ -116,8 +116,10 @@ paper_plot.py reads these for the main heatmap
 and scatter figures, but its cluster-size figure derives counts/percentages
 from saved memberships.
 
-Entry points: run_pipeline.py calls `main(seed, feature, control_pool)` as
-pipeline step 4. Standalone, `python multiple_task/lesion_plot.py --seed 749
+Entry points: run_pipeline_analysis.py runs this script for every lesioned
+run of a feature and both control pools (its lesion_plot stage), and
+run_pipeline.py --with-plots calls `main(seed, feature, control_pool)` as
+its optional step 4. Standalone, `python multiple_task/lesion_plot.py --seed 749
 --feature L21e4` (run from the repository root) re-plots one COMPLETED lesion
 run. Passing `--seed all --feature L21e4` re-plots all completed runs
 matching that feature. Single-run filters must still select exactly one run

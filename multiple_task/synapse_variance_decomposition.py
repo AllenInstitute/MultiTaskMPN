@@ -55,11 +55,16 @@ permute the synapse positions (the chance level of that many parameters).
 Reads ``multiple_tasks_analysis/<aname>/cluster_info_<aname>.pkl`` and
 ``cluster_info_mod_<aname>.pkl``, writes
 ``multiple_tasks_analysis/<aname>/synapse_variance_decomposition_<aname>.pkl``
-and prints a per-cohort summary. Nothing is recomputed from network activity.
+and prints a per-cohort summary. Nothing is recomputed from network activity,
+but the permutations take about five minutes per run; --skip-completed
+reuses a run's saved result when it is newer than both clustering pickles
+(``result_is_current``), so a rerun after more clustering computes the new
+runs only.
 
     python multiple_task/synapse_variance_decomposition.py                 # every run
     python multiple_task/synapse_variance_decomposition.py --seed 921 --feature L21e4
-    python multiple_task/synapse_variance_decomposition.py --seed all --feature L21e4
+    python multiple_task/synapse_variance_decomposition.py --seed 11 921 --feature L21e4
+    python multiple_task/synapse_variance_decomposition.py --seed all --feature L21e4 --skip-completed
 """
 from pathlib import Path
 import argparse
@@ -430,11 +435,44 @@ def candidate_runs(analysis_root=ANALYSIS_ROOT):
     return runs
 
 
-def run(anames, analysis_root=ANALYSIS_ROOT, n_permutations=N_PERMUTATIONS, seed=PERMUTATION_SEED):
-    """Analyze the named runs, write one pickle per run and print the summary."""
+def result_is_current(aname, analysis_root=ANALYSIS_ROOT, n_permutations=N_PERMUTATIONS,
+                      seed=PERMUTATION_SEED):
+    """The run's saved decomposition when it can stand for a fresh one: this
+    schema, the requested permutations and seed, and written after both
+    clustering pickles it reads; otherwise None."""
+    run_dir = Path(analysis_root) / aname
+    out_path = run_dir / result_name(aname)
+    inputs = [run_dir / f"cluster_info_{aname}.pkl", run_dir / f"cluster_info_mod_{aname}.pkl"]
+    if not out_path.exists() or not all(path.exists() for path in inputs):
+        return None
+    if out_path.stat().st_mtime_ns < max(path.stat().st_mtime_ns for path in inputs):
+        return None
+    try:
+        with out_path.open("rb") as stream:
+            entry = pickle.load(stream)
+    except (OSError, EOFError, pickle.UnpicklingError):
+        return None
+    current = (isinstance(entry, dict) and entry.get("schema_version") == SCHEMA_VERSION
+               and entry.get("aname") == aname and entry.get("n_permutations") == n_permutations
+               and entry.get("permutation_seed") == seed)
+    return entry if current else None
+
+
+def run(anames, analysis_root=ANALYSIS_ROOT, n_permutations=N_PERMUTATIONS, seed=PERMUTATION_SEED,
+        skip_completed=False):
+    """Analyze the named runs, write one pickle per run and print the summary.
+    With `skip_completed` a run whose saved result is current
+    (result_is_current) is read back instead of recomputed; the summary
+    covers every named run either way."""
     entries = []
     for aname in anames:
         print(f"{aname}")
+        entry = (result_is_current(aname, analysis_root, n_permutations, seed)
+                 if skip_completed else None)
+        if entry is not None:
+            print("  skipped: saved result is current (--skip-completed)")
+            entries.append(entry)
+            continue
         entry = analyze_run(aname, analysis_root, n_permutations=n_permutations, seed=seed)
         print_run(entry)
         out_path = Path(analysis_root) / aname / result_name(aname)
@@ -448,9 +486,11 @@ def run(anames, analysis_root=ANALYSIS_ROOT, n_permutations=N_PERMUTATIONS, seed
 
 
 def select_runs(seed, feature, runs):
-    """The candidate runs chosen by the CLI arguments (None = no filter)."""
+    """The candidate runs chosen by the CLI arguments (None = no filter;
+    `seed` one seed or several)."""
+    seeds = None if seed is None else {seed} if isinstance(seed, int) else set(seed)
     selected = [run_ for run_ in runs
-                if (feature is None or run_[1] == feature) and (seed is None or run_[0] == seed)]
+                if (feature is None or run_[1] == feature) and (seeds is None or run_[0] in seeds)]
     if not selected:
         available = ", ".join(f"seed{s}/{f}" for s, f, _ in runs) or "none found"
         raise SystemExit(f"No run matches seed={seed!r}, feature={feature!r}. Available: {available}")
@@ -461,15 +501,23 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Decompose the synapse tuning variance by endpoint cluster identity "
                     "(reads multiple_tasks_analysis/, cheap). Run from the repository root.")
-    parser.add_argument("--seed", type=str, default=None,
-                        help="Seed of the run (e.g. 921), or 'all' for every run matching --feature; "
-                             "omitted: every analyzed run.")
+    parser.add_argument("--seed", type=str, nargs="+", default=None,
+                        help="Seeds of the runs (e.g. 921, or 11 921), or 'all' for every run "
+                             "matching --feature; omitted: every analyzed run.")
     parser.add_argument("--feature", type=str, default=None, help="Feature tag (e.g. L21e4).")
     parser.add_argument("--n-permutations", type=int, default=N_PERMUTATIONS)
+    parser.add_argument("--skip-completed", action="store_true",
+                        help="Reuse a run's saved result when it is newer than its clustering "
+                             "pickles and was computed with these permutations.")
     args = parser.parse_args()
-    if args.seed == "all" and args.feature is None:
+    every_run = args.seed is None or args.seed == ["all"]
+    if args.seed == ["all"] and args.feature is None:
         raise SystemExit("--seed all requires --feature so the batch run is explicit.")
-    seed_filter = None if args.seed in (None, "all") else int(args.seed)
+    try:
+        seed_filter = None if every_run else [int(seed) for seed in args.seed]
+    except ValueError as error:
+        raise SystemExit("--seed takes integers or the single word 'all'.") from error
     chosen = select_runs(seed_filter, args.feature, candidate_runs())
     print(f"Analyzing {len(chosen)} run(s)")
-    run([aname for _, _, aname in chosen], n_permutations=args.n_permutations)
+    run([aname for _, _, aname in chosen], n_permutations=args.n_permutations,
+        skip_completed=args.skip_completed)

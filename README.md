@@ -89,13 +89,18 @@ and `--seed S [S ...]` to train explicit seeds, while `pretraining.py` reads
 `N_TRIALS` and `SEED_LIST` from its header.
 
 ```bash
-# Multi-task: train, then cluster, lesion, score the lesion controls and
-# plot checkpoints needing current pipeline outputs
+# Multi-task: train, then cluster, lesion and score the lesion controls of
+# the checkpoints needing current pipeline outputs (hours per run)
 python multiple_task/multiple_task.py
 python multiple_task/run_pipeline.py --feature L21e4 --skip-completed
 # Reuse current steps; rebuild stale/missing results and their dependents.
 # Old S1-conditioned caches need reclustering (see docs/multitask_analysis.md).
 python multiple_task/run_pipeline.py --feature L21e4 --skip-completed --resume
+# Post-analysis of the whole cohort from the saved outputs: lesion plots of
+# both control pools, row-sharing summary, synapse variance decomposition and
+# the state-space-vs-lesion link. Rerun it after more runs finish or after a
+# change of the post-processing code (--stages, --seed, --dry-run).
+python multiple_task/run_pipeline_analysis.py --feature L21e4
 # Untrained controls: ten initializations, using seed 749's default config.
 python multiple_task/untrained_clustering.py --feature L21e4 --seed 749 --init-seed 0 1 2 3 4 5 6 7 8 9 --skip-completed
 # After the corresponding clustering batches finish, regenerate sharing summaries.
@@ -110,8 +115,9 @@ python multiple_task/run_state_space_pipeline.py
 # sibling-task fixed-point geometry over every cached run (after
 # sibling_delay_analysis.py, see docs/state_space.md)
 python multiple_task/sibling_cohort.py --feature L21e4
-# share of synapse tuning explained by the endpoint neurons' clusters
-python multiple_task/synapse_variance_decomposition.py --seed all --feature L21e4
+# share of synapse tuning explained by the endpoint neurons' clusters (about
+# five minutes per run; also the variance stage of run_pipeline_analysis.py)
+python multiple_task/synapse_variance_decomposition.py --seed all --feature L21e4 --skip-completed
 
 # Single- and two-task (train + analyze)
 python one_task/run_one_task_pipeline.py

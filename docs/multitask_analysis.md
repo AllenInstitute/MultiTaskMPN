@@ -3,9 +3,12 @@
 Details behind the `multiple_tasks` and `lesion` figure modes of
 `paper_plot.py`: which caches each figure reads, what its statistics are, and
 the conventions of the clustering caches. `python multiple_task/run_pipeline.py`
-produces the per-run clustering, lesion, control and lesion-plot caches; the
-commands are in the README. Row-sharing summaries and the paper figures are
-separate steps.
+produces the per-run clustering, lesion and control caches, the steps that
+evaluate the network; `python multiple_task/run_pipeline_analysis.py --feature
+<feature>` then runs every post-analysis that only reads them (the lesion-plot
+caches, the row-sharing summary, the synapse variance decomposition and the
+state-space-vs-lesion link; see [Post-analysis of a cohort](#post-analysis-of-a-cohort)).
+The commands are in the README; the paper figures are a separate step.
 
 The trial-time variance revision invalidates the old clustering-dependent
 results. Numerical observations below labeled as historical were computed
@@ -15,7 +18,7 @@ presence here does not imply that new results have been generated.
 ## Run selection of the pipeline
 
 ```bash
-# multi-task: train, analyze (clustering), lesion, lesion plots. Every training
+# multi-task: train, analyze (clustering), lesion, lesion controls. Every training
 # script (one_task, one_task_rnn, two_task, multiple_task, pretraining) grows
 # its cohort the same way (core/seed_selection.py): a run adds N_TRIALS seeds
 # new to the setting configured in the script, never redrawing a seed with a
@@ -32,12 +35,13 @@ python multiple_task/run_pipeline.py --feature L21e3 --seed 299 365 487 501 934
 # Every checkpoint of a cohort needing current pipeline outputs. Completion
 # requires the current variance marker, the requested --control-repeats,
 # and outputs newer than their inputs:
-# cluster_info and cluster_info_mod, lesion_prune_results, the
-# lesion_controls pickle of --control-pool (responsive by default) and the
-# two lesion_interaction pickles of each plotted pool (multiple_tasks_norm/
-# and multiple_tasks_norm_<pool>/). With --resume, current steps are reused;
-# missing/outdated steps and their dependents rerun. Without --resume,
-# selected runs restart at clustering.
+# cluster_info and cluster_info_mod, lesion_prune_results and the
+# lesion_controls pickle of --control-pool (responsive by default); with
+# --with-plots, which makes lesion_plot the pipeline's fourth step as it was
+# until 2026-11-09, also the two lesion_interaction pickles of each plotted
+# pool (multiple_tasks_norm/ and multiple_tasks_norm_<pool>/). With --resume,
+# current steps are reused; missing/outdated steps and their dependents
+# rerun. Without --resume, selected runs restart at clustering.
 # --skip-completed needs --feature or --seed; to spread a cohort over nodes,
 # give each process its own --seed list (two bare runs would pick the same
 # checkpoints). Historical timing was about an hour of clustering plus four
@@ -46,6 +50,45 @@ python multiple_task/run_pipeline.py --feature L21e3 --seed 299 365 487 501 934
 python multiple_task/run_pipeline.py --feature L21e4 --skip-completed
 python multiple_task/run_pipeline.py --feature L21e4 --skip-completed --resume
 ```
+
+## Post-analysis of a cohort
+
+Everything downstream of the pipeline only reads its outputs, so it is rerun
+for a whole feature whenever more runs finish or the post-processing code
+changes (a new cache field, a new statistic). `run_pipeline_analysis.py`
+issues the commands in their dependency order, each in its own process, and
+stops at the first failure:
+
+| Stage | Command | Output |
+|---|---|---|
+| `lesion_plot` | `lesion_plot.py --seed S --feature F --control-pool P` for every run with a lesion pickle, with `lesion.py`'s controls and then `--control-pool`'s (responsive by default) | `multiple_tasks_norm/<aname>/`, `multiple_tasks_norm_<pool>/<aname>/` |
+| `row_sharing` | `sibling_row_sharing.py --feature F` (and `--untrained` with `--untrained`) | `multiple_tasks_diagnosis/sibling_row_sharing_*.pkl` |
+| `variance` | `synapse_variance_decomposition.py --seed all --feature F --skip-completed` | one pickle per run in `multiple_tasks_analysis/<aname>/` |
+| `vs_lesion` | `state_space_vs_lesion.py` | `state_space/state_space_vs_lesion_results.pkl` |
+| `figures` (not a default stage) | `paper_plot.py multiple_tasks lesion --multitask-l2 <strength>`, then the lesion mode for the other pool | `paper_plot/`, `paper_plot_<pool>/` |
+
+```bash
+python multiple_task/run_pipeline_analysis.py --feature L21e4
+# list the commands without running them
+python multiple_task/run_pipeline_analysis.py --feature L21e4 --dry-run
+# only some stages, always run in the order of the table
+python multiple_task/run_pipeline_analysis.py --feature L21e4 --stages lesion_plot vs_lesion
+# the per-run stages (lesion_plot, variance) for the runs that just finished
+python multiple_task/run_pipeline_analysis.py --feature L21e4 --seed 303 692 921
+```
+
+A run without a lesion pickle, or without the controls pickle of a pool, is
+left out of `lesion_plot` and named at the end instead of failing the batch.
+The variance decomposition takes about five minutes per run, so the stage
+reuses a saved result that is newer than the run's clustering pickles
+(`--skip-completed`, `result_is_current`); `--force` recomputes. The cohort
+summaries (`row_sharing`, `vs_lesion`) always cover every available run,
+whatever `--seed` says. The `figures` stage clears `paper_plot/` like every
+mode run, so the other modes must be redrawn after it; it needs a plain L2
+feature such as `L21e4`. The analyses that evaluate networks stay with their
+own drivers: `run_pipeline.py` and `run_state_space_pipeline.py`; the
+sibling-task geometry (`sibling_delay_analysis.py`) redraws its trials and is
+never rerun from here.
 
 ## Accuracy across modulation retentions
 
@@ -316,7 +359,8 @@ medians. The cohort Wilcoxon signed-rank tests assess rho < 0 on the left and
 rho > 0 on the right. Both panels use the same networks, offsets and y scale.
 Runs lacking either finite rho/permutation p are excluded from both panels
 with a note; fewer than two complete runs skips the figure. Refresh every
-completed run in the selected cohort, then plot:
+completed run in the selected cohort (the `lesion_plot` stage of
+`run_pipeline_analysis.py` does this for both pools), then plot:
 
 ```bash
 python -u multiple_task/lesion_plot.py --seed all --feature L21e4 --control-pool all
@@ -675,11 +719,12 @@ from `lesion.py`'s pickle so that its three terms share one control.
 `state_space_vs_lesion.py` records the pool of the caches it reads
 (`control_pool` per run). Its default, `lesion_plot.DEFAULT_CONTROL_POOL`
 (`all`), reproduces the historical analyses; `run_pipeline.py` computes the
-responsive pool as its third step (`--control-pool`, `--control-repeats`)
-and its fourth step plots both pools, `lesion.py`'s into
-`multiple_tasks_norm/` and the responsive one into its own directory, and
-`--resume` lets runs lesioned before the step existed get their controls and
-plots without a second lesion pass. `paper_plot.py` reads
+responsive pool as its third step (`--control-pool`, `--control-repeats`),
+and `run_pipeline_analysis.py` (or the pipeline's optional fourth step,
+`--with-plots`) plots both pools, `lesion.py`'s into
+`multiple_tasks_norm/` and the responsive one into its own directory;
+`--resume` lets runs lesioned before the controls step existed get their
+controls without a second lesion pass. `paper_plot.py` reads
 `multiple_tasks_norm/` by default (`LESION_CONTROL_POOL = "all"`), so its
 lesion figures keep showing the historical analyses; `--control-pool
 responsive` reads `multiple_tasks_norm_responsive/` and writes to
@@ -788,7 +833,8 @@ cluster-correlation caches). `abs_weighted` was added after the others; existing
 `cluster_info_mod_*.pkl` and `lesion_prune_results_*.pkl` files do not contain
 it, and their `var_weighted` entries predate the sign fixes. To obtain it, rerun
 the pipeline for the run (`python multiple_task/run_pipeline.py --seed 921
---feature L21e4`), which reclusters, lesions and re-plots all five variants.
+--feature L21e4 --with-plots`), which reclusters, lesions and re-plots all
+five variants.
 The lesion paper figures keep reading the var-weighted variant, while the
 `multiple_tasks` mode draws one aggregate over-membership figure per variant
 (`overmembership_norm`, `overmembership_unnorm`, `overmembership_weighted`,
@@ -807,8 +853,10 @@ of sharing `heatmap_colorbar`.
 `python multiple_task/synapse_variance_decomposition.py` asks how much of a
 synapse's task tuning is the cluster identity of its two endpoint neurons.
 For every run with `cluster_info_<aname>.pkl` and `cluster_info_mod_<aname>.pkl`
-(`--seed N --feature TAG` for one run, `--seed all --feature TAG` for a
-cohort, no arguments for every run), it takes the active synapses of the
+(`--seed N [N ...] --feature TAG` for one or several runs, `--seed all
+--feature TAG` for a cohort, no arguments for every run; `--skip-completed`
+reuses a saved result newer than the run's clustering pickles, since the
+permutations take about five minutes per run), it takes the active synapses of the
 var-weighted clustering (the unresponsive synapse class excluded, as the
 over-membership analysis does), their task-period features in two versions,
 `magnitude` = `log1p(|W|·Var(M))` (primary; the sign of W is a per-synapse
@@ -990,7 +1038,8 @@ migration; existing PNGs are historical until regenerated.
 Other files in `multiple_tasks_diagnosis/` need the same migration:
 `multiple_task_diagnosis.py` regenerates `diagnosis_*` and
 `same_cluster_diagnoses_*`, and `rule_cue_ablation.py` regenerates its own
-variance-based results. These scripts are not run by `run_pipeline.py`.
+variance-based results. These scripts are not run by `run_pipeline.py` or
+`run_pipeline_analysis.py`.
 The `modulation_feedback_*` results measure feedback dynamics and saturation
 independently of the variance estimator and can be retained.
 

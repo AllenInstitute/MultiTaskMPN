@@ -1,32 +1,40 @@
 """
-Run the full analysis pipeline for each experiment:
+Run the network-evaluating pipeline for each experiment:
   optional: sibling_delay_analysis — DelayDM/DMC fixed-point geometry, selected
             explicitly with --families
   1. multiple_task_analysis  — weight structure and clustering (produces the
-     cluster_info pickles steps 2-4 need)
+     cluster_info pickles the later steps need)
   2. lesion                  — lesion & pruning experiments
   3. lesion_controls         — the single-cluster lesions scored again on a
      seeded test set with activity-matched random controls (--control-pool,
      --control-repeats)
+  optional, with --with-plots:
   4. lesion_plot             — normalized lesion effect plots with lesion.py's
      controls (multiple_tasks_norm/, the historical caches paper_plot reads
      by default) and, unless --control-pool is all, again with that pool
      (multiple_tasks_norm_<pool>/)
 
+Steps 1-3 run the network and take hours per run. Everything that only reads
+their outputs (lesion_plot and the cohort summaries) is post-analysis and
+lives in run_pipeline_analysis.py, which reruns it for a whole feature after
+this pipeline or after a change of the post-processing code. Until
+2026-11-09 lesion_plot was this pipeline's fourth step; --with-plots keeps
+that behavior for a run that should end with its plots.
+
 Run selection: every checkpoint in multiple_tasks/ that matches --feature and
---seed. With --skip-completed, runs whose four steps have all written their
-last output file (pipeline_markers), use trial_time cluster features, match
---control-repeats, and have outputs newer than their inputs are left out, so rerunning the command
-after more training adds the pipeline outputs of the new checkpoints only. A
-run with missing or outdated outputs is redone from step 1, unless --resume, which skips
-the steps whose outputs are current and redoes the rest. Recomputed clusters
-invalidate all downstream steps; step 4 is never
-skipped after step 3 ran, since its plots read the controls (so runs
-lesioned before step 3 existed get their controls and plots without a
-second lesion pass when their clusters are current). Reclustering clears its old
-analysis artifacts while preserving independent sibling geometry. lesion.main overwrites its outputs by name and lesion_plot.main clears
-the run's directory under its pool's cache root, so no partial state is
-reused.
+--seed. With --skip-completed, runs whose steps (pipeline_steps: three, or
+four with --with-plots) have all written their last output file
+(pipeline_markers), use trial_time cluster features, match --control-repeats,
+and have outputs newer than their inputs are left out, so rerunning the
+command after more training adds the pipeline outputs of the new checkpoints
+only. A run with missing or outdated outputs is redone from step 1, unless
+--resume, which skips the steps whose outputs are current and redoes the
+rest. Recomputed clusters invalidate all downstream steps; with --with-plots
+step 4 is never skipped after step 3 ran, since its plots read the controls.
+Reclustering clears its old analysis artifacts while preserving independent
+sibling geometry. lesion.main overwrites its outputs by name and
+lesion_plot.main clears the run's directory under its pool's cache root, so
+no partial state is reused.
 """
 import argparse
 import pickle
@@ -49,12 +57,20 @@ ANALYSIS_DIR = Path("multiple_tasks_analysis")
 PERF_DIR = Path("multiple_tasks_perf")
 CHECKPOINT_PATTERN = re.compile(
     r"savednet_everything_seed(\d+)_([^+]+)\+hidden\d+\+batch\d+\+angle\.pt")
-# The control pool the pipeline computes (step 3) and reads (step 4): the
-# activity-matched one, which is what step 3 exists for. lesion_plot.py run
-# by hand reads lesion_plot.DEFAULT_CONTROL_POOL instead.
+# The control pool the pipeline computes (step 3) and, with --with-plots,
+# plots (step 4): the activity-matched one, which is what step 3 exists for.
+# lesion_plot.py run by hand reads lesion_plot.DEFAULT_CONTROL_POOL instead.
 DEFAULT_CONTROL_POOL = lesion_controls.DEFAULT_POOL
 DEFAULT_CONTROL_REPEATS = lesion_controls.DEFAULT_REPEATS
+# Every step in order; the last one, the post-analysis plots, runs only with
+# --with-plots (pipeline_steps).
 STEPS = ("multiple_task_analysis", "lesion", "lesion_controls", "lesion_plot")
+PLOT_STEP = "lesion_plot"
+
+
+def pipeline_steps(with_plots=False):
+    """The steps a pipeline run performs and its completion requires."""
+    return STEPS if with_plots else tuple(step for step in STEPS if step != PLOT_STEP)
 
 
 def run_name(seed, feature):
@@ -63,7 +79,7 @@ def run_name(seed, feature):
 
 
 def lesion_plot_pools(control_pool):
-    """The control pools step 4 plots: lesion.py's (all) always, and
+    """The control pools the optional step 4 plots: lesion.py's (all) always, and
     `control_pool` when it is another one."""
     return ("all",) if control_pool == "all" else ("all", control_pool)
 
@@ -118,10 +134,11 @@ def step_is_completed(step, markers, control_repeats=DEFAULT_CONTROL_REPEATS):
 
 
 def is_completed(aname, root=Path("."), control_pool=DEFAULT_CONTROL_POOL,
-                 control_repeats=DEFAULT_CONTROL_REPEATS):
-    """Every step is complete and derived from current cluster features."""
-    return step_is_completed(STEPS[-1], pipeline_markers(aname, root, control_pool),
-                             control_repeats)
+                 control_repeats=DEFAULT_CONTROL_REPEATS, with_plots=False):
+    """Every step of pipeline_steps(with_plots) is complete and derived from
+    current cluster features."""
+    return step_is_completed(pipeline_steps(with_plots)[-1],
+                             pipeline_markers(aname, root, control_pool), control_repeats)
 
 
 def discover_runs(checkpoint_dir=CHECKPOINT_DIR):
@@ -135,7 +152,8 @@ def discover_runs(checkpoint_dir=CHECKPOINT_DIR):
 
 
 def select_runs(runs, feature=None, seeds=None, skip_completed=False, root=Path("."),
-                control_pool=DEFAULT_CONTROL_POOL, control_repeats=DEFAULT_CONTROL_REPEATS):
+                control_pool=DEFAULT_CONTROL_POOL, control_repeats=DEFAULT_CONTROL_REPEATS,
+                with_plots=False):
     """Apply the command-line filters to the discovered (seed, feature) runs.
 
     Returns (selected, skipped, missing): the runs to process, in the order
@@ -154,15 +172,18 @@ def select_runs(runs, feature=None, seeds=None, skip_completed=False, root=Path(
     skipped = []
     if skip_completed:
         skipped = [run for run in runs
-                   if is_completed(run_name(*run), root, control_pool, control_repeats)]
+                   if is_completed(run_name(*run), root, control_pool, control_repeats,
+                                   with_plots)]
         runs = [run for run in runs if run not in skipped]
     return runs, skipped, missing
 
 
 def run_pipeline(seed, feature, families=(), sibling_method=None, resume=False,
-                 control_pool=DEFAULT_CONTROL_POOL, control_repeats=DEFAULT_CONTROL_REPEATS):
+                 control_pool=DEFAULT_CONTROL_POOL, control_repeats=DEFAULT_CONTROL_REPEATS,
+                 with_plots=False):
     aname = run_name(seed, feature)
     markers = pipeline_markers(aname, control_pool=control_pool)
+    n_steps = len(pipeline_steps(with_plots))
     print(f"\n{'='*60}")
     print(f"  Pipeline start: {aname}")
     print(f"{'='*60}")
@@ -177,7 +198,7 @@ def run_pipeline(seed, feature, families=(), sibling_method=None, resume=False,
     def done(step):
         return resume and step_is_completed(step, markers, control_repeats)
 
-    print("\n--- Step 1/4: multiple_task_analysis ---")
+    print(f"\n--- Step 1/{n_steps}: multiple_task_analysis ---")
     if done("multiple_task_analysis"):
         print("    skipped: outputs exist (--resume)")
     else:
@@ -191,7 +212,7 @@ def run_pipeline(seed, feature, families=(), sibling_method=None, resume=False,
         print("    Skipping lesion steps: complete current cluster files not found")
         return
 
-    print("\n--- Step 2/4: lesion ---")
+    print(f"\n--- Step 2/{n_steps}: lesion ---")
     if done("lesion"):
         print("    skipped: outputs exist (--resume)")
     else:
@@ -199,7 +220,8 @@ def run_pipeline(seed, feature, families=(), sibling_method=None, resume=False,
         lesion.main(seed, feature)
         print(f"    done ({time.time() - t2:.1f}s)")
 
-    print(f"\n--- Step 3/4: lesion_controls ({control_pool} pool, {control_repeats} repeats) ---")
+    print(f"\n--- Step 3/{n_steps}: lesion_controls ({control_pool} pool, "
+          f"{control_repeats} repeats) ---")
     controls_ran = not done("lesion_controls")
     if not controls_ran:
         print("    skipped: outputs exist (--resume)")
@@ -208,18 +230,23 @@ def run_pipeline(seed, feature, families=(), sibling_method=None, resume=False,
         lesion_controls.main(seed, feature, pool=control_pool, repeats=control_repeats)
         print(f"    done ({time.time() - t3:.1f}s)")
 
-    pools = lesion_plot_pools(control_pool)
-    print(f"\n--- Step 4/4: lesion_plot ({', '.join(pools)} pool{'s' if len(pools) > 1 else ''}) ---")
-    # The plots read the controls, so new controls always get new plots.
-    if done("lesion_plot") and not controls_ran:
-        print("    skipped: outputs exist (--resume)")
-    else:
-        for pool in pools:
-            t4 = time.time()
-            lesion_plot.main(seed, feature, control_pool=pool)
-            print(f"    {pool} pool done ({time.time() - t4:.1f}s)")
+    if with_plots:
+        pools = lesion_plot_pools(control_pool)
+        print(f"\n--- Step 4/{n_steps}: lesion_plot ({', '.join(pools)} "
+              f"pool{'s' if len(pools) > 1 else ''}) ---")
+        # The plots read the controls, so new controls always get new plots.
+        if done(PLOT_STEP) and not controls_ran:
+            print("    skipped: outputs exist (--resume)")
+        else:
+            for pool in pools:
+                t4 = time.time()
+                lesion_plot.main(seed, feature, control_pool=pool)
+                print(f"    {pool} pool done ({time.time() - t4:.1f}s)")
 
     print(f"\n  Pipeline complete: {aname} ({time.time() - t0:.1f}s total)")
+    if not with_plots:
+        print("  Post-analysis (lesion_plot and the cohort summaries): "
+              f"python multiple_task/run_pipeline_analysis.py --feature {feature}")
 
 
 def parse_args(argv=None):
@@ -231,19 +258,23 @@ def parse_args(argv=None):
                              "given order (e.g. --seed 299 365 487). Combine "
                              "with --feature to disambiguate.")
     parser.add_argument("--skip-completed", action="store_true",
-                        help="Leave out runs whose four steps have all written "
+                        help="Leave out runs whose steps have all written "
                              "their last output, so only checkpoints without "
                              "current pipeline outputs are processed. Requires --feature "
                              "unless --seed is given.")
+    parser.add_argument("--with-plots", action="store_true",
+                        help="Also run lesion_plot as step 4 of every run and require "
+                             "its outputs for completion (default: the plots and cohort "
+                             "summaries are left to run_pipeline_analysis.py).")
     parser.add_argument("--resume", action="store_true",
                         help="Skip steps with current outputs newer than their inputs "
                              "and run the rest (default: a selected run is "
                              "redone from step 1).")
     parser.add_argument("--control-pool", choices=lesion_controls.CONTROL_POOLS,
                         default=DEFAULT_CONTROL_POOL,
-                        help="Random-control pool step 3 computes and step 4 plots in "
-                             "addition to lesion.py's, into multiple_tasks_norm_<pool>/ "
-                             f"(default: {DEFAULT_CONTROL_POOL}).")
+                        help="Random-control pool step 3 computes and, with --with-plots, "
+                             "step 4 plots in addition to lesion.py's, into "
+                             f"multiple_tasks_norm_<pool>/ (default: {DEFAULT_CONTROL_POOL}).")
     parser.add_argument("--control-repeats", type=int, default=DEFAULT_CONTROL_REPEATS,
                         help="Random controls per (side, size) and task in step 3 "
                              f"(default: {DEFAULT_CONTROL_REPEATS}).")
@@ -271,7 +302,8 @@ def main():
     args = parse_args()
     runs, skipped, missing = select_runs(
         discover_runs(), args.feature, args.seed, args.skip_completed,
-        control_pool=args.control_pool, control_repeats=args.control_repeats)
+        control_pool=args.control_pool, control_repeats=args.control_repeats,
+        with_plots=args.with_plots)
     if missing:
         print(f"WARNING: no checkpoint for seed(s) {missing}"
               + (f" with feature {args.feature}" if args.feature else "")
@@ -294,7 +326,8 @@ def main():
     for seed, feature in runs:
         run_pipeline(seed, feature, families=tuple(args.families),
                      sibling_method=args.sibling_method, resume=args.resume,
-                     control_pool=args.control_pool, control_repeats=args.control_repeats)
+                     control_pool=args.control_pool, control_repeats=args.control_repeats,
+                     with_plots=args.with_plots)
 
 
 if __name__ == "__main__":

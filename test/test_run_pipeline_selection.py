@@ -1,8 +1,10 @@
 """run_pipeline.py processes the saved multi-task checkpoints that match
 --feature and --seed and, with --skip-completed, leaves out the runs whose
-four steps already wrote their last output, so a rerun after more training
+steps already wrote their last output, so a rerun after more training
 adds the pipeline outputs of the new checkpoints only; --resume skips the
-steps whose outputs use the current variance estimator and are newer than their inputs."""
+steps whose outputs use the current variance estimator and are newer than their inputs.
+The lesion plots are a step only with --with-plots; otherwise they belong to
+run_pipeline_analysis.py."""
 
 import argparse
 import pickle
@@ -24,10 +26,11 @@ from script_namespace import load_script_namespace
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "multiple_task" / "run_pipeline.py"
-FUNCTIONS = ["run_name", "lesion_plot_pools", "pipeline_markers", "step_is_completed", "is_completed",
+FUNCTIONS = ["run_name", "pipeline_steps", "lesion_plot_pools", "pipeline_markers",
+             "step_is_completed", "is_completed",
              "discover_runs", "select_runs", "run_pipeline", "parse_args", "main"]
 CONSTANTS = ["CHECKPOINT_DIR", "ANALYSIS_DIR", "PERF_DIR", "CHECKPOINT_PATTERN",
-             "DEFAULT_CONTROL_POOL", "DEFAULT_CONTROL_REPEATS", "STEPS"]
+             "DEFAULT_CONTROL_POOL", "DEFAULT_CONTROL_REPEATS", "STEPS", "PLOT_STEP"]
 # lesion_controls' pool constants, read by the markers and the CLI defaults.
 CONTROLS_STUB = SimpleNamespace(CONTROL_POOLS=("responsive", "all"), DEFAULT_POOL="responsive",
                                 DEFAULT_REPEATS=30, main=Mock())
@@ -106,6 +109,10 @@ class RunPipelineSelectionTests(unittest.TestCase):
         self.assertEqual(list(markers), list(self.ns["STEPS"]))
         self.assertEqual(list(markers), ["multiple_task_analysis", "lesion", "lesion_controls",
                                          "lesion_plot"])
+        # The plots are a pipeline step only on request.
+        self.assertEqual(self.ns["pipeline_steps"](),
+                         ("multiple_task_analysis", "lesion", "lesion_controls"))
+        self.assertEqual(self.ns["pipeline_steps"](with_plots=True), self.ns["STEPS"])
         self.assertEqual(
             [path.relative_to(self.root).as_posix() for paths in markers.values() for path in paths],
             [f"multiple_tasks_analysis/{aname}/cluster_info_{aname}.pkl",
@@ -157,11 +164,20 @@ class RunPipelineSelectionTests(unittest.TestCase):
                             skip_paths=["lesion_interaction_unnorm_"
                                         "everything_seed842_L21e4+hidden300+batch128+angle.pkl"])
         self._write_markers(86, "L21e3")                                    # other cohort
+        # Seed 842 lacks one plot cache: complete for the pipeline, whose
+        # steps end with the controls, but not when the plots are a step.
         selected, skipped, missing = self.ns["select_runs"](
             runs, feature="L21e4", skip_completed=True, root=self.root)
+        self.assertEqual(selected, [(11, "L21e4"), (749, "L21e4")])
+        self.assertEqual(skipped, [(408, "L21e4"), (842, "L21e4")])
+        self.assertEqual(missing, [])
+        selected, skipped, _ = self.ns["select_runs"](
+            runs, feature="L21e4", skip_completed=True, root=self.root, with_plots=True)
         self.assertEqual(selected, [(11, "L21e4"), (749, "L21e4"), (842, "L21e4")])
         self.assertEqual(skipped, [(408, "L21e4")])
-        self.assertEqual(missing, [])
+        aname = self.ns["run_name"](842, "L21e4")
+        self.assertTrue(self.ns["is_completed"](aname, self.root))
+        self.assertFalse(self.ns["is_completed"](aname, self.root, with_plots=True))
         self.assertTrue(self.ns["is_completed"](self.ns["run_name"](86, "L21e3"), self.root))
         self.assertFalse(self.ns["is_completed"](self.ns["run_name"](749, "L21e4"), self.root))
 
@@ -210,13 +226,13 @@ class RunPipelineSelectionTests(unittest.TestCase):
             os.chdir(previous)
 
     def test_resume_skips_the_steps_whose_outputs_exist(self):
-        """A run lesioned before step 3 existed gets its controls and plots
-        without a second clustering or lesion pass; without --resume every
-        step runs."""
+        """A run lesioned before step 3 existed gets its controls (and, with
+        the plots as a step, its plots) without a second clustering or lesion
+        pass; without --resume every step runs."""
         ns, calls = self._stubbed_pipeline()
         self._write_markers(749, "L21e4", steps=["multiple_task_analysis", "lesion"])
         self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=True,
-                            control_pool="responsive", control_repeats=7)
+                            control_pool="responsive", control_repeats=7, with_plots=True)
         # lesion_plot runs for lesion.py's controls first (the historical
         # caches), then for the activity-matched pool.
         self.assertEqual([name for name, _, _ in calls],
@@ -225,12 +241,42 @@ class RunPipelineSelectionTests(unittest.TestCase):
         self.assertEqual(calls[1][1:], ((749, "L21e4"), {"control_pool": "all"}))
         self.assertEqual(calls[2][1:], ((749, "L21e4"), {"control_pool": "responsive"}))
         calls.clear()
-        self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=False)
+        self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=False, with_plots=True)
         self.assertEqual([name for name, _, _ in calls],
                          ["multiple_task_analysis", "lesion", "lesion_controls", "lesion_plot",
                           "lesion_plot"])
         self.assertEqual(calls[1][1:], ((749, "L21e4"), {}))
         self.assertEqual(calls[2][2], {"pool": "responsive", "repeats": 30})
+
+    def test_plots_are_left_to_the_post_analysis_by_default(self):
+        """Without with_plots the pipeline ends with the controls and names
+        run_pipeline_analysis.py; a run with those three outputs runs nothing
+        even when it has no plot cache."""
+        ns, calls = self._stubbed_pipeline()
+
+        def cluster(*args, **kwargs):
+            calls.append(("multiple_task_analysis", args, kwargs))
+            self._write_markers(749, "L21e4", steps=["multiple_task_analysis"])
+
+        ns["multiple_task_analysis"].main.side_effect = cluster
+        self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=False)
+        self.assertEqual([name for name, _, _ in calls],
+                         ["multiple_task_analysis", "lesion", "lesion_controls"])
+        calls.clear()
+        self._write_markers(749, "L21e4",
+                            steps=["multiple_task_analysis", "lesion", "lesion_controls"])
+        import os
+        previous = os.getcwd()
+        os.chdir(self.root)
+        try:
+            with patch("builtins.print") as printed:
+                ns["run_pipeline"](749, "L21e4", resume=True)
+        finally:
+            os.chdir(previous)
+        self.assertEqual(calls, [])
+        output = "\n".join(str(call.args[0]) for call in printed.call_args_list if call.args)
+        self.assertIn("Step 3/3", output)
+        self.assertIn("run_pipeline_analysis.py --feature L21e4", output)
 
     def test_resume_replots_after_computing_controls(self):
         """A run plotted before the controls step existed has lesion_plot
@@ -239,15 +285,16 @@ class RunPipelineSelectionTests(unittest.TestCase):
         ns, calls = self._stubbed_pipeline()
         self._write_markers(749, "L21e4",
                             steps=["multiple_task_analysis", "lesion", "lesion_plot"])
-        self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=True)
+        self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=True, with_plots=True)
         self.assertEqual([name for name, _, _ in calls],
                          ["lesion_controls", "lesion_plot", "lesion_plot"])
         calls.clear()
         self._write_markers(749, "L21e4")
-        self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=True)
+        self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=True, with_plots=True)
         self.assertEqual(calls, [])
         # With the all pool the plots are made once, with lesion.py's controls.
-        self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=False, control_pool="all")
+        self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=False, control_pool="all",
+                            with_plots=True)
         self.assertEqual([(name, kwargs) for name, _, kwargs in calls][-2:],
                          [("lesion_controls", {"pool": "all", "repeats": 30}),
                           ("lesion_plot", {"control_pool": "all"})])
@@ -294,7 +341,7 @@ class RunPipelineSelectionTests(unittest.TestCase):
             calls.append(("multiple_task_analysis", args, kwargs))
             self._write_markers(749, "L21e4", steps=["multiple_task_analysis"])
         ns["multiple_task_analysis"].main.side_effect = rebuild
-        self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=True)
+        self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=True, with_plots=True)
         self.assertEqual([name for name, _, _ in calls],
                          ["multiple_task_analysis", "lesion", "lesion_controls", "lesion_plot", "lesion_plot"])
 
@@ -317,8 +364,9 @@ class RunPipelineSelectionTests(unittest.TestCase):
     def test_control_pool_flags(self):
         parse_args = self.ns["parse_args"]
         args = parse_args(["--feature", "L21e4"])
-        self.assertEqual((args.control_pool, args.control_repeats, args.resume),
-                         ("responsive", 30, False))
+        self.assertEqual((args.control_pool, args.control_repeats, args.resume, args.with_plots),
+                         ("responsive", 30, False, False))
+        self.assertTrue(parse_args(["--feature", "L21e4", "--with-plots"]).with_plots)
         args = parse_args(["--feature", "L21e4", "--control-pool", "all", "--control-repeats",
                            "12", "--resume", "--skip-completed"])
         self.assertEqual((args.control_pool, args.control_repeats, args.resume), ("all", 12, True))
@@ -331,7 +379,8 @@ class RunPipelineSelectionTests(unittest.TestCase):
         aname = ns["run_name"](749, "L21e4")
         self.assertTrue(ns["is_completed"](aname, self.root, control_repeats=30))
         self.assertFalse(ns["is_completed"](aname, self.root, control_repeats=7))
-        self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=True, control_repeats=7)
+        self._run_from_root(ns["run_pipeline"], 749, "L21e4", resume=True, control_repeats=7,
+                            with_plots=True)
         self.assertEqual([name for name, _, _ in calls],
                          ["lesion_controls", "lesion_plot", "lesion_plot"])
         self.assertEqual(calls[0][2]["repeats"], 7)
@@ -343,9 +392,14 @@ class RunPipelineSelectionTests(unittest.TestCase):
         with patch("sys.argv", ["run_pipeline.py", "--feature", "L21e4", "--resume",
                                 "--skip-completed", "--control-repeats", "7"]):
             self._run_from_root(ns["main"])
+        self.assertEqual([name for name, _, _ in calls], ["lesion_controls"])
+        self.assertEqual(calls[0][2]["repeats"], 7)
+        calls.clear()
+        with patch("sys.argv", ["run_pipeline.py", "--feature", "L21e4", "--resume",
+                                "--skip-completed", "--control-repeats", "7", "--with-plots"]):
+            self._run_from_root(ns["main"])
         self.assertEqual([name for name, _, _ in calls],
                          ["lesion_controls", "lesion_plot", "lesion_plot"])
-        self.assertEqual(calls[0][2]["repeats"], 7)
 
     def test_skip_completed_needs_feature_or_seed(self):
         parse_args = self.ns["parse_args"]

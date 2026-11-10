@@ -191,10 +191,28 @@ class RunTests(unittest.TestCase):
                              [(5, "L21e4", aname)])
             with self.assertRaisesRegex(SystemExit, "No run matches"):
                 decomposition.select_runs(7, None, decomposition.candidate_runs(root))
+            self.assertIsNone(decomposition.result_is_current(aname, root, 15, 2))
             with patch("builtins.print") as output:
                 entries = decomposition.run([aname], root, n_permutations=15, seed=2)
             with (root / aname / decomposition.result_name(aname)).open("rb") as stream:
                 saved = pickle.load(stream)
+            # --skip-completed reuses the saved result, but not for other
+            # permutations, several seeds select by membership, and a newer
+            # clustering pickle makes the result stale.
+            self.assertEqual(decomposition.select_runs([5, 9], "L21e4", decomposition.candidate_runs(root)),
+                             [(5, "L21e4", aname)])
+            self.assertEqual(decomposition.result_is_current(aname, root, 15, 2)["aname"], aname)
+            self.assertIsNone(decomposition.result_is_current(aname, root, 16, 2))
+            with patch.object(decomposition, "analyze_run") as analyze, patch("builtins.print") as reused:
+                again = decomposition.run([aname], root, n_permutations=15, seed=2, skip_completed=True)
+            analyze.assert_not_called()
+            self.assertEqual(again[0]["aname"], aname)
+            self.assertIn("skipped", "\n".join(str(call.args[0]) for call in reused.call_args_list))
+            result_path = root / aname / decomposition.result_name(aname)
+            newer = result_path.stat().st_mtime_ns + 10 ** 9
+            import os
+            os.utime(root / aname / f"cluster_info_mod_{aname}.pkl", ns=(newer, newer))
+            self.assertIsNone(decomposition.result_is_current(aname, root, 15, 2))
         self.assertEqual(len(entries), 1)
         entry = saved
         self.assertEqual(entry["aname"], aname)
