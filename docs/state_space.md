@@ -269,8 +269,9 @@ distances are averaged equally across categories; different-category distances
 are averaged equally across category pairs. The score is
 `(between - within) / (between + within)`, with larger scores preferred.
 Categories follow the six paper color groups. All valid seeds are ranked and
-summarized in `paper_plot/multitask_state_space_centroid_scores.json`; missing
-high-dimensional centers are reported, never replaced with a 2D score.
+their scores printed when the figures render (the ranking was saved as
+`paper_plot/multitask_state_space_centroid_scores.json` until 2026-11-09);
+missing high-dimensional centers are reported, never replaced with a 2D score.
 The best seed supplies all three PCA example panels, with names breaking ties.
 Each of the three PCA figures (`multitask_state_space_{hidden,mod,eff_mod}.png`,
 `--only state_space_combined`) has three panels: on the left the untrained
@@ -278,8 +279,8 @@ control (titled "Untrained", described below; without its cache the figure
 holds the two trained panels and the command to build it is printed), in
 the middle that selected L2 = 1e-4 run, on the right the run of the
 L2 = 1e-2 cohort (`STATE_SPACE_STRONG_L2`), whose category structure is the
-strongest, selected by the same criterion; that cohort's ranking is saved
-as `paper_plot/multitask_state_space_centroid_scores_L21e2.json`. The
+strongest, selected by the same criterion; that cohort's ranking is
+printed too (formerly `multitask_state_space_centroid_scores_L21e2.json`). The
 panels are separate PCA spaces with their own axes, the trained ones titled
 by their L2, under one color key; a figure is skipped when either trained
 cohort has no analyzed run.

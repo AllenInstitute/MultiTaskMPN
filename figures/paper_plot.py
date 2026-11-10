@@ -2552,11 +2552,6 @@ def _eff_mod_task_centroid_metrics(data):
     return task_centroid_separation(record["task_centroids"], categories)
 
 
-def _l2_feature_tag(strength):
-    """The run-name feature tag of an L2 strength: 1e-4 -> 'L21e4'."""
-    return f"L21e{-int(round(np.log10(strength)))}"
-
-
 def _state_space_centroid_ranking(result_dict, pca_loader=None, strength=STATE_SPACE_EXAMPLE_L2):
     """Rank all valid seeds of the L2 `strength` cohort and summarize their
     high-dimensional separation."""
@@ -2618,22 +2613,17 @@ def _best_state_space_trial(result_dict, pca_loader=None, strength=STATE_SPACE_E
 
 
 def _load_best_state_space_trial(strength=STATE_SPACE_EXAMPLE_L2):
-    """Report all seed scores of the L2 `strength` cohort and select its example
-    without a 2D fallback. The default cohort's ranking is saved as
-    state_space_centroid_scores.json, another cohort's with its feature tag
-    (state_space_centroid_scores_L21e2.json)."""
+    """Print every seed score of the L2 `strength` cohort and select its
+    example without a 2D fallback. Nothing is written: the figures are the
+    output (the ranking was saved as state_space_centroid_scores{_L21e2}.json
+    until 2026-11-09)."""
     result_dict = _load_pkl_or_skip(
         RVAL_RESULT_PATH, "Run python multiple_task/state_space_shift.py first.")
     if result_dict is None:
         return None
     report = _state_space_centroid_ranking(result_dict, strength=strength)
-    _ensure_out_dir()
-    suffix = "" if strength == STATE_SPACE_EXAMPLE_L2 else f"_{_l2_feature_tag(strength)}"
-    report_path = _multitask_out(f"state_space_centroid_scores{suffix}.json")
-    with report_path.open("w") as stream:
-        json.dump(report, stream, indent=2, allow_nan=False)
     print(f"  Task-center ranking: {report['n_scored']}/{report['n_candidates']} seeds "
-          f"at L2={strength:.0e}; saved {report_path}")
+          f"at L2={strength:.0e}")
     for row in report["rankings"]:
         print(f"    {row['aname']}: S={row['score']:.6f}, "
               f"within={row['within_distance']:.6g}, "
@@ -2811,8 +2801,7 @@ def plot_state_space_combined():
     high-dimensional task-center separation; and the run of the
     L2 = STATE_SPACE_STRONG_L2 cohort, whose category structure is the
     strongest (state_space_category_vs_untrained), selected by the same criterion
-    (STATE_SPACE_PCA_COHORTS; the rankings are saved as
-    state_space_centroid_scores.json and state_space_centroid_scores_L21e2.json).
+    (STATE_SPACE_PCA_COHORTS; each cohort's ranking is printed, not saved).
 
     The untrained control is a network with the architecture and config of
     the example run, or of another run of its training setting

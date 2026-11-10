@@ -2,7 +2,6 @@
 
 import copy
 import inspect
-import json
 import pickle
 import tempfile
 import numpy as np
@@ -381,8 +380,6 @@ class PaperPlotModeTests(unittest.TestCase):
         result_dict = {"strong_mixed": {"l2_info": 1e-2}, "strong_good": {"l2_info": 1e-2},
                        "weak_good": {"l2_info": 1e-4}}
         pca_data = {"strong_mixed": mixed, "strong_good": good, "weak_good": good}
-        self.assertEqual(paper_plot._l2_feature_tag(1e-2), "L21e2")
-        self.assertEqual(paper_plot._l2_feature_tag(1e-4), "L21e4")
         selected = paper_plot._best_state_space_trial(result_dict, pca_loader=pca_data.get,
                                                       strength=1e-2)
         self.assertEqual(selected[0], "strong_good")
@@ -468,14 +465,15 @@ class PaperPlotModeTests(unittest.TestCase):
                     patch.object(paper_plot, "RVAL_RESULT_PATH", result_path), \
                     patch.object(paper_plot, "OUT_DIR", root / "plots"):
                 selected = paper_plot._load_best_state_space_trial()
+                report = paper_plot._state_space_centroid_ranking(saved_results)
             self.assertEqual(selected[0], "new_run")
             self.assertAlmostEqual(selected[1], 0.8)
             self.assertEqual(selected[2], saved_results["new_run"])
-            with (root / "plots/multitask_state_space_centroid_scores.json").open() as stream:
-                report = json.load(stream)
             self.assertEqual(report["best_aname"], "new_run")
             self.assertEqual(report["n_scored"], 1)
             self.assertIsNone(report["summary"]["score"]["std"])
+            # The ranking is printed; nothing is written beside the figures.
+            self.assertFalse((root / "plots").exists())
 
     def test_state_space_pca_outputs_include_raw_modulation(self):
         data = {"pca_results": {}}
