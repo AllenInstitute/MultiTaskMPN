@@ -534,6 +534,106 @@ def _rank_pair_matrix(matrix):
     return ranked + ranked.T
 
 
+def _restricted_orders(members, n_items, count, rng):
+    """`count` item orders that shuffle the items of each group in `members`
+    (index arrays) among themselves and leave every other item in place."""
+    orders = np.broadcast_to(np.arange(n_items), (count, n_items)).copy()
+    for rows in members:
+        if rows.size > 1:
+            orders[:, rows] = rng.permuted(np.broadcast_to(rows, (count, rows.size)), axis=1)
+    return orders
+
+
+def mantel_spearman_restricted_permutation(x_matrix, y_matrix, groups, n_permutations=10000,
+                                           seed=0):
+    """Two-sided Spearman Mantel test whose null keeps the items' group
+    structure: ``groups`` (one label per item) partitions the items, and each
+    permutation shuffles the item labels of ``y_matrix`` within every group
+    only. Pairs of the same group stay same-group pairs, so an association
+    carried by group membership alone (items of one group lying together in
+    both matrices) is part of the null; what the test detects is the
+    association the arrangement of the items within their groups adds.
+
+    Returns, like ``mantel_spearman_permutation``, rho over all pairs with its
+    restricted p and null, and under ``within`` the Spearman rho over the
+    same-group pairs alone (that set of pairs is invariant under the
+    permutations) with its own null and p, and the number of such pairs.
+    """
+    from scipy.stats import rankdata
+
+    x_matrix = _validated_distance_like(x_matrix)
+    y_matrix = _validated_distance_like(y_matrix)
+    groups = np.asarray(groups)
+    n_items = x_matrix.shape[0]
+    if y_matrix.shape != x_matrix.shape or n_items < 3 or groups.shape != (n_items,):
+        raise ValueError("Restricted Mantel test needs two square matrices of one size over "
+                         ">= 3 items and one group label per item.")
+    if n_permutations < 1:
+        raise ValueError("Need at least one permutation.")
+    members = [np.flatnonzero(groups == label) for label in np.unique(groups)]
+    if max(rows.size for rows in members) < 2:
+        raise ValueError("Restricted permutations need a group with at least two items.")
+    upper = np.triu_indices(n_items, 1)
+    same = groups[upper[0]] == groups[upper[1]]
+    if np.count_nonzero(same) < 3:
+        raise ValueError("Need at least three same-group pairs.")
+    # Ranks over all pairs, and ranks over the same-group pairs alone, each as
+    # a matrix the permuted labels index.
+    x_all = _rank_pair_matrix(x_matrix)[upper]
+    y_all_matrix = _rank_pair_matrix(y_matrix)
+    x_within = rankdata(x_matrix[upper][same])
+    y_within_matrix = np.zeros_like(y_matrix)
+    y_within_matrix[upper[0][same], upper[1][same]] = rankdata(y_matrix[upper][same])
+    y_within_matrix = y_within_matrix + y_within_matrix.T
+    within_rows, within_cols = upper[0][same], upper[1][same]
+    y_within = y_within_matrix[within_rows, within_cols]
+    for values in (x_all, y_all_matrix[upper], x_within, y_within):
+        if np.std(values) < 1e-12:
+            raise ValueError("Pair values must vary, over all pairs and over the same-group pairs.")
+    centered_all = x_all - x_all.mean()
+    norm_all = np.sqrt((centered_all ** 2).sum())
+    centered_within = x_within - x_within.mean()
+    norm_within = np.sqrt((centered_within ** 2).sum())
+    observed_all = float(_pearson_rows(y_all_matrix[upper][None, :], centered_all, norm_all)[0])
+    observed_within = float(_pearson_rows(y_within[None, :], centered_within, norm_within)[0])
+    rng = np.random.default_rng(seed)
+    null_all = np.empty(n_permutations)
+    null_within = np.empty(n_permutations)
+    for start in range(0, n_permutations, _PERMUTATION_BLOCK):
+        count = min(_PERMUTATION_BLOCK, n_permutations - start)
+        orders = _restricted_orders(members, n_items, count, rng)
+        null_all[start:start + count] = _pearson_rows(
+            y_all_matrix[orders[:, upper[0]], orders[:, upper[1]]], centered_all, norm_all)
+        null_within[start:start + count] = _pearson_rows(
+            y_within_matrix[orders[:, within_rows], orders[:, within_cols]], centered_within, norm_within)
+
+    def two_sided_p(observed, null):
+        return float((1 + np.count_nonzero(np.abs(null) >= abs(observed))) / (1 + null.size))
+
+    return {
+        "rho": observed_all,
+        "p_value": two_sided_p(observed_all, null_all),
+        "null": null_all,
+        "n_permutations": int(n_permutations),
+        "n_items": int(n_items),
+        "seed": int(seed),
+        "sided": "two-sided",
+        "statistic": "spearman",
+        "null_statistic": ("Spearman rho over item pairs under item labels permuted within "
+                           "groups (restricted Mantel)"),
+        "group_sizes": {str(label): int(rows.size) for label, rows in
+                        zip(np.unique(groups), members)},
+        "within": {
+            "rho": observed_within,
+            "p_value": two_sided_p(observed_within, null_within),
+            "null": null_within,
+            "n_pairs": int(np.count_nonzero(same)),
+            "statistic": "spearman",
+            "sided": "two-sided",
+        },
+    }
+
+
 def mantel_spearman_permutation(x_matrix, y_matrix, n_permutations=10000, seed=0):
     """Two-sided Spearman Mantel test between two symmetric pair matrices.
 

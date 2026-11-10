@@ -8,47 +8,69 @@ that has both a state-space structure cache
 from ``lesion_plot.py`` with lesion.py's every-unit controls, the ``all``
 pool, which every entry records), it relates, over the 105 task pairs, the distance
 between the two tasks' full-dimensional context-end centroids (hidden state
-and W * M, the saved distance matrices) to the similarity of their
-lesion-effect profiles:
+and W * M, the saved distance matrices) to two measures of how alike their
+lesion-effect profiles (random-control minus lesion accuracy, one value per
+cluster) are, the two the OM-vs-lesion scatter compares its clusters with:
 
-- neuron clusters: the saved Pearson correlation of the two tasks'
-  lesion-effect profiles (random-control minus lesion accuracy) over all
-  unnormalized input and hidden neuron clusters (``causal_similarity`` in
-  ``causal_vs_activity_tasksim_hidden_<aname>.pkl``, the matrix the
-  causal-vs-activity figures use);
-- synapse clusters: the Pearson correlation of the two tasks' freeze_M
-  lesion-effect profiles (``SYNAPSE_LESION_MODE``, the intervention of the
-  paper's lesion heatmap) over the var-weighted unnormalized synapse clusters
-  (``normalized_lesion_effects_<aname>.pkl``), computed here without the
-  unresponsive class. That class holds most synapses, so its size-matched
-  random control destroys the network while the class itself does little, a
-  large negative effect for every task that would dominate the profiles; its
-  label is read from the lesion pickle (``multiple_tasks_perf/<aname>/``),
-  as the task-specificity analysis does.
+- the Pearson correlation of the two profiles (``similarities``), which
+  removes each profile's mean and scale;
+- their L1/C distance (``profile_distances``), the mean over clusters of the
+  absolute effect difference in accuracy fraction, which keeps the effect
+  magnitudes.
 
-Each (representation, cluster type) pair gets a two-sided Spearman task-label
-permutation (Mantel) test (``N_PERMUTATIONS`` permutations, seed
+Both are computed over the same clusters per cluster type:
+
+- neuron clusters: all unnormalized input and hidden neuron clusters, the
+  ``lesion_unnorm`` entry of ``normalized_lesion_effects_<aname>.pkl``. Their
+  Pearson matrix is the one the causal-vs-activity figures use
+  (``causal_similarity`` in ``causal_vs_activity_tasksim_hidden_<aname>.pkl``,
+  the correlation of these same effects), which is read and checked against
+  the recomputation;
+- synapse clusters: the var-weighted unnormalized synapse clusters lesioned
+  with freeze_M (``SYNAPSE_LESION_MODE``, the intervention of the paper's
+  lesion heatmap), from the same cache, without the unresponsive class. That
+  class holds most synapses, so its size-matched random control destroys the
+  network while the class itself does little, a large negative effect for
+  every task that would dominate the profiles; its label is read from the
+  lesion pickle (``multiple_tasks_perf/<aname>/``), as the task-specificity
+  analysis does.
+
+Each (representation, cluster type, measure) gets a two-sided Spearman
+task-label permutation (Mantel) test (``N_PERMUTATIONS`` permutations, seed
 ``PERMUTATION_SEED``), because the pairs share tasks, and a descriptive OLS
 guide line for the figure (as the causal-vs-activity scatter has; the
-statistic stays the rank correlation). A negative rho means that tasks whose
-context-end states lie closer depend on more similar clusters. Nothing is
-recomputed from network activity; the script reads caches and runs in
-seconds. Rerun it after ``state_space_structure.py`` or ``lesion_plot.py``
-(the state-space batch run clears its output too).
+statistic stays the rank correlation). Tasks whose context-end states lie
+closer depending on more similar clusters shows as a negative rho for the
+similarity and a positive rho for the distance. Because the tasks form
+three families (``TASK_FAMILIES``: go, decision-making, matching) whose
+members lie together in state space and share lesion profiles, each test is
+also run with the labels permuted within families only (restricted Mantel,
+``core.state_space_geometry.mantel_spearman_restricted_permutation``): that
+p says whether the arrangement of the tasks within their families adds to
+the association family membership alone produces, and its ``within`` part
+is the rho over the same-family pairs alone; ``per_family`` repeats this
+for each family on its own pairs (labels shuffled within that family only;
+four matching tasks allow 24 distinct permutations, so that p is coarse).
+Nothing is recomputed from network activity; the script reads caches and
+runs in seconds. Rerun it after ``state_space_structure.py`` or
+``lesion_plot.py`` (the state-space batch run clears its output too).
 
 Output: ``state_space/state_space_vs_lesion_results.pkl``, {aname: entry}
-with the per-pair coordinates, the tests (null arrays included), the guide
-lines and the run's L2 strength; ``paper_plot.py`` draws them in ``lesion`` mode
-(``state_space_vs_lesion`` and ``state_space_vs_lesion_seeds``).
+with the per-pair coordinates of both measures, the full and restricted
+tests (null arrays included), the guide lines, the task families and the
+run's L2 strength; ``paper_plot.py`` draws them in ``lesion`` mode
+(``state_space_vs_lesion`` and ``state_space_vs_lesion_seeds``, their
+``_families`` versions and ``state_space_vs_lesion_family_seeds``).
 """
 from pathlib import Path
+import math
 import pickle
 
 import numpy as np
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 from lesion_cache import load_lesion_pickle, normalize_lesion_cache, resolve_lesion_cache_path
-from state_space_geometry import mantel_spearman_permutation
+from state_space_geometry import mantel_spearman_permutation, mantel_spearman_restricted_permutation
 from state_space_cache import M_ALIGNMENT, require_aligned
 from core.task_variance import VARIANCE_METHOD
 
@@ -59,12 +81,22 @@ NOISE_LEVEL = 0.01
 N_PERMUTATIONS = 10000
 PERMUTATION_SEED = 0
 # 2: every (representation, cluster type) test has a saved OLS guide line.
-SCHEMA_VERSION = 2
+# 3: the L1/C lesion-profile distance beside the Pearson similarity, with its
+#    own tests and guide lines (MEASURES).
+# 4: the within-family restricted permutation test of every panel, with the
+#    rho over the same-family pairs, and the task families.
+# 5: each restricted test also holds, under per_family, the test over one
+#    family's pairs alone, for every family.
+SCHEMA_VERSION = 5
 RESULT_NAME = "state_space_vs_lesion_results.pkl"
 REPRESENTATIONS = ("hidden", "eff_mod")
 CLUSTER_TYPES = ("neuron", "synapse")
 NEURON_TASKSIM_NAME = "causal_vs_activity_tasksim_hidden"
 NEURON_SIMILARITY_DEFINITION = "pearson_corr_of_task_lesion_effect_profiles_over_neuron_clusters"
+# The normalized-effects entry of the unnormalized input and hidden neuron
+# clusters, the profiles the causal-vs-activity matrix correlates.
+NEURON_EFFECT_ENTRY = "lesion_unnorm"
+NEURON_DISTANCE_DEFINITION = "mean_over_neuron_clusters_abs_task_lesion_effect_difference"
 # Synapse intervention of the synapse-cluster column: freeze_M (M held at its
 # initial value, W kept), as in paper_plot's lesion heatmap
 # (LESION_HEATMAP_MODE); test_state_space_vs_lesion checks the two agree.
@@ -72,8 +104,32 @@ SYNAPSE_LESION_MODE = "freeze_M"
 SYNAPSE_EFFECT_ENTRY = f"modulation_all_var_weighted_unnormalized__{SYNAPSE_LESION_MODE}"
 SYNAPSE_SIMILARITY_DEFINITION = (f"pearson_corr_of_task_{SYNAPSE_LESION_MODE}_lesion_effect_profiles"
                                  "_over_var_weighted_synapse_clusters")
+SYNAPSE_DISTANCE_DEFINITION = (f"mean_over_var_weighted_synapse_clusters_abs_task_{SYNAPSE_LESION_MODE}"
+                               "_lesion_effect_difference")
 SYNAPSE_CONDITION_PREFIX = "mod_c"
 SYNAPSE_BASELINE_CONDITIONS = ("mod_nolesion", "mod_cNone")
+# The two lesion-profile measures of a profile record (its key) and the
+# results-entry keys holding their pair values, Mantel tests, guide lines and
+# within-family restricted tests; paper_plot._SSL_MEASURES mirrors this.
+MEASURES = (("similarity", "similarities", "tests", "trend_lines", "restricted_tests"),
+            ("distance", "profile_distances", "profile_distance_tests",
+             "profile_distance_trend_lines", "profile_distance_restricted_tests"))
+# The ruleset's three task families (README): the restricted null permutes
+# task labels within them.
+TASK_FAMILIES = {
+    "go": ("fdgo", "fdanti", "delaygo", "delayanti", "reactgo", "reactanti"),
+    "decision": ("delaydm1", "delaydm2", "contextdelaydm1", "contextdelaydm2", "multidelaydm"),
+    "matching": ("dmsgo", "dmsnogo", "dmcgo", "dmcnogo"),
+}
+
+
+def task_families(tasks):
+    """The TASK_FAMILIES family of each task, in order."""
+    family_of = {task: family for family, members in TASK_FAMILIES.items() for task in members}
+    unknown = [task for task in tasks if task not in family_of]
+    if unknown:
+        raise ValueError(f"tasks of no family: {unknown}")
+    return [family_of[task] for task in tasks]
 
 
 def structure_cache_paths(state_space_dir=STATE_SPACE_DIR, noise_level=NOISE_LEVEL):
@@ -101,12 +157,48 @@ def load_structure_distances(path):
     return saved["aname"], float(saved["l2_info"]), tasks, distances
 
 
-def neuron_cluster_similarity(aname, lesion_root=LESION_NORM_ROOT):
-    """(tasks, matrix) with the saved Pearson correlation between the two
-    tasks' z-scored lesion-effect profiles over the unnormalized input and
-    hidden neuron clusters; None when the run has no such cache."""
-    path = resolve_lesion_cache_path(Path(lesion_root) / aname / f"{NEURON_TASKSIM_NAME}_{aname}.pkl")
+def _profile_measures(effect, source):
+    """(similarity, distance) task x task matrices of a (tasks, clusters)
+    lesion-effect matrix: the Pearson correlation of the two tasks' profiles
+    and their L1/C distance, the mean over clusters of the absolute effect
+    difference. A constant profile has no correlation and is an error."""
+    effect = np.asarray(effect, dtype=float)
+    if effect.ndim != 2 or effect.shape[1] < 3 or not np.isfinite(effect).all():
+        raise ValueError(f"{source}: invalid lesion effects")
+    # A profile without spread has no correlation: the OM scatter's constant
+    # criterion (centered norm <= 1e-12), not NaN alone, because a constant
+    # row of rounded accuracies leaves a 1e-17 residual that corrcoef accepts.
+    centered = effect - effect.mean(axis=1, keepdims=True)
+    if (np.linalg.norm(centered, axis=1) <= 1e-12).any():
+        raise ValueError(f"{source}: a task has a constant lesion profile")
+    similarity = np.corrcoef(effect)
+    distance = np.abs(effect[:, None, :] - effect[None, :, :]).mean(axis=2)
+    return similarity, distance
+
+
+def _normalized_effects(aname, lesion_root):
+    """(path, cache) of the run's validated normalized-effects cache
+    (lesion_plot.py), or None when the run has none."""
+    path = resolve_lesion_cache_path(Path(lesion_root) / aname / f"normalized_lesion_effects_{aname}.pkl")
     if not path.exists():
+        return None
+    saved = normalize_lesion_cache(load_lesion_pickle(path))
+    if saved.get("schema_version") != 1 or saved.get("aname") != aname:
+        raise ValueError(f"{path.name}: legacy cache or another run")
+    return path, saved
+
+
+def neuron_cluster_profiles(aname, lesion_root=LESION_NORM_ROOT):
+    """{"tasks", "similarity", "distance", "excluded"} of the two tasks'
+    lesion-effect profiles over all unnormalized input and hidden neuron
+    clusters: the similarity is the saved causal-vs-activity Pearson matrix,
+    the distance their L1/C from the normalized-effects cache's
+    NEURON_EFFECT_ENTRY, whose correlation must reproduce that matrix (the
+    two caches describe the same effects). None when the run lacks either
+    cache; nothing is excluded."""
+    path = resolve_lesion_cache_path(Path(lesion_root) / aname / f"{NEURON_TASKSIM_NAME}_{aname}.pkl")
+    effects = _normalized_effects(aname, lesion_root)
+    if not path.exists() or effects is None:
         return None
     saved = load_lesion_pickle(path)
     if saved.get("schema_version") != 2 or saved.get("aname") != aname:
@@ -114,10 +206,20 @@ def neuron_cluster_similarity(aname, lesion_root=LESION_NORM_ROOT):
     if saved.get("y_definition") != NEURON_SIMILARITY_DEFINITION:
         raise ValueError(f"{path.name}: unexpected lesion similarity definition")
     tasks = list(saved["tasks"])
-    matrix = np.asarray(saved["causal_similarity"], dtype=float)
-    if matrix.shape != (len(tasks), len(tasks)) or not np.isfinite(matrix).all():
+    similarity = np.asarray(saved["causal_similarity"], dtype=float)
+    if similarity.shape != (len(tasks), len(tasks)) or not np.isfinite(similarity).all():
         raise ValueError(f"{path.name}: invalid causal similarity matrix")
-    return tasks, matrix
+    effects_path, effects = effects
+    entry = effects["entries"].get(NEURON_EFFECT_ENTRY)
+    if entry is None:
+        raise ValueError(f"{effects_path.name}: no {NEURON_EFFECT_ENTRY} entry")
+    if entry.get("definition") != "random_minus_lesion" or list(entry["tasks"]) != tasks:
+        raise ValueError(f"{effects_path.name}: unexpected neuron effect definition or tasks")
+    recomputed, distance = _profile_measures(entry["effect"], effects_path.name)
+    if not np.allclose(recomputed, similarity, atol=1e-6):
+        raise ValueError(f"{effects_path.name}: the {NEURON_EFFECT_ENTRY} effects do not reproduce "
+                         f"the causal similarity of {path.name}")
+    return {"tasks": tasks, "similarity": similarity, "distance": distance, "excluded": None}
 
 
 def synapse_unresponsive_condition(aname, lesion_perf_root=LESION_PERF_ROOT):
@@ -138,19 +240,17 @@ def synapse_unresponsive_condition(aname, lesion_perf_root=LESION_PERF_ROOT):
     return f"{SYNAPSE_CONDITION_PREFIX}{ids[-1]}" if ids else None
 
 
-def synapse_cluster_similarity(aname, lesion_root=LESION_NORM_ROOT, lesion_perf_root=LESION_PERF_ROOT):
-    """(tasks, matrix, excluded condition) with the Pearson correlation
-    between the two tasks' SYNAPSE_LESION_MODE (freeze_M) lesion-effect
-    profiles over the var-weighted unnormalized synapse clusters, leaving out
-    the recorded unresponsive class; None when the run has no
-    normalized-effects cache. An entry recording another mode is an error,
-    never a substitute."""
-    path = resolve_lesion_cache_path(Path(lesion_root) / aname / f"normalized_lesion_effects_{aname}.pkl")
-    if not path.exists():
+def synapse_cluster_profiles(aname, lesion_root=LESION_NORM_ROOT, lesion_perf_root=LESION_PERF_ROOT):
+    """{"tasks", "similarity", "distance", "excluded"} of the two tasks'
+    SYNAPSE_LESION_MODE (freeze_M) lesion-effect profiles over the
+    var-weighted unnormalized synapse clusters, leaving out the recorded
+    unresponsive class (``excluded``, its condition name); None when the run
+    has no normalized-effects cache. An entry recording another mode is an
+    error, never a substitute."""
+    effects = _normalized_effects(aname, lesion_root)
+    if effects is None:
         return None
-    saved = normalize_lesion_cache(load_lesion_pickle(path))
-    if saved.get("schema_version") != 1 or saved.get("aname") != aname:
-        raise ValueError(f"{path.name}: legacy cache or another run")
+    path, saved = effects
     entry = saved["entries"][SYNAPSE_EFFECT_ENTRY]
     if (entry.get("mod_lesion_mode", SYNAPSE_LESION_MODE) != SYNAPSE_LESION_MODE
             or entry.get("definition") != "random_minus_lesion"):
@@ -165,12 +265,10 @@ def synapse_cluster_similarity(aname, lesion_root=LESION_NORM_ROOT, lesion_perf_
         raise ValueError(f"{path.name}: too few synapse clusters")
     effect = np.asarray(entry["effect"], dtype=float)[:, columns]
     tasks = list(entry["tasks"])
-    if effect.shape[0] != len(tasks) or not np.isfinite(effect).all():
+    if effect.shape[0] != len(tasks):
         raise ValueError(f"{path.name}: invalid synapse lesion effects")
-    similarity = np.corrcoef(effect)
-    if not np.isfinite(similarity).all():
-        raise ValueError(f"{path.name}: a task has a constant synapse lesion profile")
-    return tasks, similarity, excluded
+    similarity, distance = _profile_measures(effect, path.name)
+    return {"tasks": tasks, "similarity": similarity, "distance": distance, "excluded": excluded}
 
 
 def lesion_control_pool(aname, lesion_root=LESION_NORM_ROOT):
@@ -181,11 +279,11 @@ def lesion_control_pool(aname, lesion_root=LESION_NORM_ROOT):
     return str(load_lesion_pickle(path).get("control_pool", "all"))
 
 
-def lesion_similarities(aname, lesion_root=LESION_NORM_ROOT, lesion_perf_root=LESION_PERF_ROOT):
-    """{cluster type: (tasks, matrix[, excluded])} of a run, or None when
-    either lesion cache is missing."""
-    neuron = neuron_cluster_similarity(aname, lesion_root)
-    synapse = synapse_cluster_similarity(aname, lesion_root, lesion_perf_root)
+def lesion_profiles(aname, lesion_root=LESION_NORM_ROOT, lesion_perf_root=LESION_PERF_ROOT):
+    """{cluster type: profile record} of a run, or None when a lesion cache
+    is missing."""
+    neuron = neuron_cluster_profiles(aname, lesion_root)
+    synapse = synapse_cluster_profiles(aname, lesion_root, lesion_perf_root)
     if neuron is None or synapse is None:
         return None
     return {"neuron": neuron, "synapse": synapse}
@@ -216,19 +314,44 @@ def descriptive_trend_line(x, y):
             "role": "descriptive_guide_for_spearman_scatter"}
 
 
-def analyze_run(aname, l2_info, tasks, distances, similarities,
+def family_tests(distance, aligned, tasks, families, n_permutations=N_PERMUTATIONS,
+                 seed=PERMUTATION_SEED):
+    """{family: test over that family's pairs alone}: the ``within`` part of
+    a restricted test that shuffles that family's tasks only (every other
+    task a group of its own), with the family's size and its number of
+    distinct label permutations, which bounds the p's resolution (four
+    matching tasks: 24, so p >= about 0.04)."""
+    tests = {}
+    for family in TASK_FAMILIES:
+        groups = [family if own == family else task for task, own in zip(tasks, families)]
+        result = mantel_spearman_restricted_permutation(
+            distance, aligned, groups, n_permutations=n_permutations, seed=seed)
+        size = families.count(family)
+        tests[family] = {**result["within"], "n_items": size,
+                         "n_distinct_permutations": math.factorial(size)}
+    return tests
+
+
+def analyze_run(aname, l2_info, tasks, distances, profiles,
                 n_permutations=N_PERMUTATIONS, seed=PERMUTATION_SEED, control_pool="all",
                 *, m_alignment):
     """The results entry of one run: per task pair (``pairs``, i < j in the
     structure cache's task order) the centroid distances per representation
-    and the lesion-profile similarities per cluster type, and under
-    ``tests[representation][cluster_type]`` the Spearman Mantel test of
-    distance against similarity, under ``trend_lines`` (same keys) its
-    descriptive OLS guide; ``control_pool`` names the random-control pool
-    of the lesion caches the similarities came from. The caller must pass the
-    validated structure distances' time-alignment marker as ``m_alignment``."""
+    and, per cluster type, the lesion-profile similarities and L1/C distances
+    of ``profiles`` ({cluster type: profile record}); for each MEASURES row,
+    under ``<tests>[representation][cluster_type]`` the Spearman Mantel test
+    of centroid distance against that measure, under ``<trend lines>`` (same
+    keys) its descriptive OLS guide and under ``<restricted tests>`` the
+    within-family restricted test with, under ``per_family``, the test over
+    each family's pairs alone (``families`` maps each task to its
+    TASK_FAMILIES family, ``pair_same_family`` flags the pairs of one
+    family). ``excluded_conditions`` names the cluster condition each profile
+    left out; ``control_pool`` the random-control pool of the lesion caches
+    the profiles came from. The caller must pass the validated structure
+    distances' time-alignment marker as ``m_alignment``."""
     require_aligned({"m_alignment": m_alignment}, "structure distances")
     upper = np.triu_indices(len(tasks), 1)
+    families = task_families(tasks)
     entry = {
         "schema_version": SCHEMA_VERSION, "aname": aname, "l2_info": l2_info,
         "variance_method": VARIANCE_METHOD,
@@ -241,20 +364,35 @@ def analyze_run(aname, l2_info, tasks, distances, similarities,
             "neuron": NEURON_SIMILARITY_DEFINITION,
             "synapse": SYNAPSE_SIMILARITY_DEFINITION,
         },
+        "profile_distance_definitions": {
+            "neuron": NEURON_DISTANCE_DEFINITION,
+            "synapse": SYNAPSE_DISTANCE_DEFINITION,
+        },
         "distances": {name: matrix[upper] for name, matrix in distances.items()},
-        "similarities": {}, "excluded_conditions": {}, "tests": {name: {} for name in distances},
-        "trend_lines": {name: {} for name in distances},
+        "excluded_conditions": {},
+        "families": dict(zip(tasks, families)),
+        "pair_same_family": np.array([families[i] == families[j] for i, j in zip(*upper)]),
     }
-    for cluster_type, (sim_tasks, matrix, *extra) in similarities.items():
-        aligned = _aligned(matrix, sim_tasks, tasks)
-        entry["similarities"][cluster_type] = aligned[upper]
-        if extra:
-            entry["excluded_conditions"][cluster_type] = extra[0]
-        for representation, distance in distances.items():
-            entry["tests"][representation][cluster_type] = mantel_spearman_permutation(
-                distance, aligned, n_permutations=n_permutations, seed=seed)
-            entry["trend_lines"][representation][cluster_type] = descriptive_trend_line(
-                distance[upper], aligned[upper])
+    for _, values_key, tests_key, trends_key, restricted_key in MEASURES:
+        entry[values_key] = {}
+        for key in (tests_key, trends_key, restricted_key):
+            entry[key] = {name: {} for name in distances}
+    for cluster_type, profile in profiles.items():
+        if profile["excluded"] is not None:
+            entry["excluded_conditions"][cluster_type] = profile["excluded"]
+        for measure, values_key, tests_key, trends_key, restricted_key in MEASURES:
+            aligned = _aligned(profile[measure], profile["tasks"], tasks)
+            entry[values_key][cluster_type] = aligned[upper]
+            for representation, distance in distances.items():
+                entry[tests_key][representation][cluster_type] = mantel_spearman_permutation(
+                    distance, aligned, n_permutations=n_permutations, seed=seed)
+                entry[trends_key][representation][cluster_type] = descriptive_trend_line(
+                    distance[upper], aligned[upper])
+                restricted = mantel_spearman_restricted_permutation(
+                    distance, aligned, families, n_permutations=n_permutations, seed=seed)
+                restricted["per_family"] = family_tests(
+                    distance, aligned, tasks, families, n_permutations=n_permutations, seed=seed)
+                entry[restricted_key][representation][cluster_type] = restricted
     return entry
 
 
@@ -263,8 +401,10 @@ def _format_p(p_value):
 
 
 def print_summary(results):
-    """Per L2 cohort, representation and cluster type: the median rho over
-    runs and the number of runs with permutation p below 0.05."""
+    """Per L2 cohort, representation, cluster type and measure: the median
+    rho over runs and the number of runs with permutation p below 0.05, then
+    the same under the within-family restricted test, the median rho over
+    the same-family pairs alone, and each family's own rho and count."""
     strengths = sorted({entry["l2_info"] for entry in results.values()})
     print("=" * 78)
     print(f"Context-end task distance vs lesion-profile similarity, {len(results)} runs")
@@ -274,15 +414,27 @@ def print_summary(results):
         print(f"\nL2 = {strength:g}: {len(cohort)} runs")
         for representation in REPRESENTATIONS:
             for cluster_type in CLUSTER_TYPES:
-                tests = [entry["tests"][representation][cluster_type] for entry in cohort
-                         if cluster_type in entry["tests"][representation]]
-                if not tests:
-                    continue
-                rhos = np.array([test["rho"] for test in tests])
-                significant = sum(test["p_value"] < 0.05 for test in tests)
-                print(f"  {representation} distance vs {cluster_type} lesion similarity: "
-                      f"rho median {np.median(rhos):+.3f} (range {rhos.min():+.3f} to "
-                      f"{rhos.max():+.3f}), {significant}/{len(tests)} runs with p < 0.05")
+                for measure, _, tests_key, _, restricted_key in MEASURES:
+                    tests = [entry[tests_key][representation][cluster_type] for entry in cohort
+                             if cluster_type in entry[tests_key][representation]]
+                    if not tests:
+                        continue
+                    restricted = [entry[restricted_key][representation][cluster_type]
+                                  for entry in cohort]
+                    rhos = np.array([test["rho"] for test in tests])
+                    within = np.array([test["within"]["rho"] for test in restricted])
+                    significant = sum(test["p_value"] < 0.05 for test in tests)
+                    significant_restricted = sum(test["p_value"] < 0.05 for test in restricted)
+                    print(f"  {representation} distance vs {cluster_type} lesion-profile {measure}: "
+                          f"rho median {np.median(rhos):+.3f} (range {rhos.min():+.3f} to "
+                          f"{rhos.max():+.3f}), {significant}/{len(tests)} runs with p < 0.05; "
+                          f"within-family permutation: {significant_restricted}/{len(tests)} runs "
+                          f"with p < 0.05, same-family pairs rho median {np.median(within):+.3f}")
+                    per_family = ", ".join(
+                        f"{family} {np.median([test['per_family'][family]['rho'] for test in restricted]):+.3f}"
+                        f" ({sum(test['per_family'][family]['p_value'] < 0.05 for test in restricted)} sig.)"
+                        for family in TASK_FAMILIES)
+                    print(f"    per family (rho median over runs, runs with p < 0.05): {per_family}")
 
 
 def run_all(state_space_dir=STATE_SPACE_DIR, lesion_root=LESION_NORM_ROOT,
@@ -299,18 +451,22 @@ def run_all(state_space_dir=STATE_SPACE_DIR, lesion_root=LESION_NORM_ROOT,
     results = {}
     for path in paths:
         aname, l2_info, tasks, distances = load_structure_distances(path)
-        similarities = lesion_similarities(aname, lesion_root, lesion_perf_root)
-        if similarities is None:
+        profiles = lesion_profiles(aname, lesion_root, lesion_perf_root)
+        if profiles is None:
             print(f"{aname}: no lesion caches under {Path(lesion_root) / aname}; skipped")
             continue
-        entry = analyze_run(aname, l2_info, tasks, distances, similarities,
+        entry = analyze_run(aname, l2_info, tasks, distances, profiles,
                             n_permutations=n_permutations, seed=seed,
                             control_pool=lesion_control_pool(aname, lesion_root),
                             m_alignment=M_ALIGNMENT)
         results[aname] = entry
-        test = entry["tests"]["eff_mod"]["synapse"]
-        print(f"{aname}: W*M distance vs synapse lesion similarity rho = {test['rho']:+.3f} "
-              f"({_format_p(test['p_value'])})")
+        similarity = entry["tests"]["eff_mod"]["synapse"]
+        distance = entry["profile_distance_tests"]["eff_mod"]["synapse"]
+        restricted = entry["profile_distance_restricted_tests"]["eff_mod"]["synapse"]
+        print(f"{aname}: W*M distance vs synapse lesion-profile similarity rho = "
+              f"{similarity['rho']:+.3f} ({_format_p(similarity['p_value'])}), "
+              f"vs L1/C distance rho = {distance['rho']:+.3f} ({_format_p(distance['p_value'])}; "
+              f"within-family {_format_p(restricted['p_value'])})")
     if not results:
         raise FileNotFoundError(
             f"No run has lesion caches under {lesion_root}/; run multiple_task/lesion_plot.py first.")

@@ -81,8 +81,11 @@ The `lesion` figure mode contains `lesion_heatmap`, `lesion_cluster_sizes`,
 `causal_vs_activity_seeds`, `task_specificity`, `task_specificity_seeds`,
 `task_specificity_threshold_seeds`, `task_specificity_size`,
 `task_specificity_pool_seeds`, `task_sharing_cohort`,
-`state_space_vs_lesion` and `state_space_vs_lesion_seeds`. All but the seven
-`_seeds`, the size and three `_cohort` figures read one run, `LESION_ANAME`,
+`state_space_vs_lesion`, `state_space_vs_lesion_seeds`,
+`state_space_vs_lesion_families`, `state_space_vs_lesion_families_seeds` and
+`state_space_vs_lesion_family_seeds`.
+All but the nine `_seeds`, the size and three `_cohort` figures read one
+run, `LESION_ANAME`,
 independently of `ANAME`, which selects the `multiple_tasks` clustering
 figures; the exception is `om_vs_lesion`, which reads `ANAME` (see the OM
 scatter below). These figures no longer run under `multiple_tasks`; use
@@ -109,7 +112,9 @@ figures (overmembership, `cluster_corr_vs_lesion_seeds`, `om_vs_lesion_seeds`,
 `causal_vs_activity_seeds`, `task_specificity_seeds`,
 `task_specificity_threshold_seeds`, `task_specificity_size`,
 `task_specificity_pool_seeds`, `task_sharing_cohort`,
-`state_space_vs_lesion_seeds`) summarize every cached seed of that cohort. The single-run figures use the
+`state_space_vs_lesion_seeds`, `state_space_vs_lesion_families_seeds`,
+`state_space_vs_lesion_family_seeds`)
+summarize every cached seed of that cohort. The single-run figures use the
 cohort's designated seed from `MULTITASK_DESIGNATED_SEEDS` (749 for clustering
 and 921 for lesions in the 1e4 cohort; none for 1e3) when its cache directory
 holds pickles; otherwise `paper_plot` picks the cached seed covering the most of
@@ -198,7 +203,7 @@ the same synapse clusters, so the sizes do not depend on the mode.
 metadata; missing freeze_M results are never replaced by zero_W in these two
 figures. Every modulation tuning-vs-lesion scatter, the modulation side of
 causal-vs-activity, the synapse clusters of task specificity and task sharing
-and the synapse column of `state_space_vs_lesion` (below) follow the same
+and the synapse panels of `state_space_vs_lesion` (below) follow the same
 mode, and so do the OM scatter and its cohort view (`paper_plot.OM_LESION_MODE`,
 equal to `LESION_HEATMAP_MODE`; they read **zero_W**, selected synaptic weights
 set to zero, until 2026-11-08). Plasticity share compares the two modes by
@@ -511,46 +516,96 @@ removed.
 lesion analyses over the task pairs. For every run with both a state-space
 structure cache (`state_space/state_space_structure_<aname>_noise0.01.pkl`)
 and lesion caches (`multiple_tasks_norm/<aname>/`, `lesion.py`'s controls),
-it relates the Euclidean
-distance between the two tasks' full-dimensional context-end centroids (hidden
-state and W ⊙ M, the saved distance matrices) to the similarity of their
-lesion-effect profiles: for neuron clusters the saved `causal_similarity` of
-`causal_vs_activity_tasksim_hidden_<aname>.pkl` (Pearson correlation of the
-random-minus-lesion effects over all unnormalized input and hidden neuron
-clusters, the causal-vs-activity matrix), for synapse clusters the Pearson
-correlation of the var-weighted **freeze_M** effects (`SYNAPSE_LESION_MODE`,
-the lesion heatmap's intervention) in `normalized_lesion_effects_<aname>.pkl`
-over the synapse clusters without the unresponsive class, whose label is read
-from the lesion pickle in `multiple_tasks_perf/` (the class holds most
-synapses, so its size-matched random control collapses the network and its
-effect is strongly negative for every task). `paper_plot.py` skips results
-whose synapse similarity was computed with another mode (results written
-before the switch from zero_W, `schema_version=1`); rerun the script to
-refresh them. Each (representation, cluster type) pair gets a two-sided
-Spearman task-label permutation (Mantel) test (10,000 permutations, seed 0;
-`core.state_space_geometry.mantel_spearman_permutation`), a negative rho
-meaning that tasks whose context-end states lie closer depend on more similar
-clusters, and a descriptive OLS guide line for the figure. Nothing is
-recomputed from network activity, so it runs in seconds; the results go to
+it relates the Euclidean distance between the two tasks' full-dimensional
+context-end centroids (hidden state and W ⊙ M, the saved distance matrices)
+to two measures of how alike their lesion-effect profiles (random-minus-lesion
+accuracy, one value per cluster) are, the two the OM-vs-lesion scatter uses:
+the **Pearson correlation** of the two profiles, which removes each profile's
+mean and scale, and their **L1/C distance**, the mean over clusters of the
+absolute effect difference in accuracy fraction, which keeps the effect
+magnitudes (added 2026-11-09, `schema_version=3`). Both are computed over the
+same clusters: for neuron clusters all unnormalized input and hidden neuron
+clusters, the `lesion_unnorm` entry of `normalized_lesion_effects_<aname>.pkl`,
+whose correlation matrix is the saved `causal_similarity` of
+`causal_vs_activity_tasksim_hidden_<aname>.pkl` (the causal-vs-activity
+matrix; the script reads it and checks that the effects reproduce it); for
+synapse clusters the var-weighted **freeze_M** effects (`SYNAPSE_LESION_MODE`,
+the lesion heatmap's intervention) of the same cache over the synapse
+clusters without the unresponsive class, whose label is read from the lesion
+pickle in `multiple_tasks_perf/` (the class holds most synapses, so its
+size-matched random control collapses the network and its effect is strongly
+negative for every task). `paper_plot.py` skips results of an earlier schema
+or whose synapse measures were computed with another mode (results written
+before the switch from zero_W); rerun the script to refresh them. Each
+(representation, cluster type, measure) gets a two-sided Spearman task-label
+permutation (Mantel) test (10,000 permutations, seed 0;
+`core.state_space_geometry.mantel_spearman_permutation`) and a descriptive
+OLS guide line for the figure; tasks whose context-end states lie closer
+depending on more similar clusters shows as a negative rho for the
+similarity and a positive rho for the distance. The tasks form three
+families (`TASK_FAMILIES`: the go, decision-making and matching families of
+the README) whose members lie together in state space and share lesion
+profiles, so the full test is significant whenever the families separate
+on both axes. Each test is therefore also run with the task labels permuted
+within families only (`mantel_spearman_restricted_permutation`, added
+2026-11-09, keys `restricted_tests` and
+`profile_distance_restricted_tests`): family membership is then part of the
+null, and that p is the p of the association the arrangement of the tasks
+within their families adds; its `within` part is the rho over the 31
+same-family pairs alone, with its own p from the same permutations, and
+its `per_family` part (`schema_version=5`) repeats that for each family on
+its own pairs, with only that family's labels shuffled (`family_tests`;
+the four matching tasks allow 24 distinct permutations, recorded as
+`n_distinct_permutations`, so that p is coarse). In the L2 = 1e-4 cohort
+the full tests are significant in most runs but the within-family ones in
+2 to 5 of 19, and the same-family rhos sit near zero: the link lives at
+the family level. Per family, the decision-making tasks are the exception
+(their closer pairs do have more similar profiles), the go family's lesion
+similarity follows pro/anti while its context-end distances do not, and the
+matching tasks lie far apart yet share profiles. Nothing is recomputed from
+network activity, so it runs in seconds; the results go to
 `state_space/state_space_vs_lesion_results.pkl` (one entry per run with the
-pair coordinates, the tests with their null arrays, the guide lines and the
-L2), which the state-space batch run clears like every top-level file there,
-so rerun it after `state_space_structure.py` or `lesion_plot.py`.
+pair coordinates of both measures, the full and restricted tests with their
+null arrays, the guide lines, the task families and the L2), which the
+state-space batch run clears like every top-level file there, so rerun it
+after `state_space_structure.py` or `lesion_plot.py`.
 `python figures/paper_plot.py --only state_space_vs_lesion` draws
-`multitask_state_space_vs_lesion_n.png` for `LESION_ANAME`: a 2 × 2 grid
+`multitask_state_space_vs_lesion_n.png` for `LESION_ANAME`: a 2 × 4 grid
 with one row per representation (hidden-state and W ⊙ M centroid distance)
-and one column per cluster type (neuron clusters, synapse clusters), one
-point per task pair, x the centroid distance, y the lesion-profile
-similarity, each panel's saved rho and permutation p in its legend and the
-script's saved OLS guide line, descriptive only as in the causal-vs-activity
-scatter (the statistic is the rank correlation).
+and, per cluster type (neuron clusters, synapse clusters, titled over the
+pair), the OM scatter's pair of panels, the L1/C distance on the left (y
+axis from zero) and the Pearson similarity on the right; one point per task
+pair, x the centroid distance, each panel's saved rho and permutation p in
+its legend and the script's saved OLS guide line, descriptive only as in the
+causal-vs-activity scatter (the statistic is the rank correlation). Before
+2026-11-09 the figure was the 2 × 2 Pearson half.
 `--only state_space_vs_lesion_seeds` draws
-`multitask_state_space_vs_lesion_seeds_n.png`: per cluster type, every
-sibling run's rho for the hidden-state and the W ⊙ M distance, filled when
-its saved permutation p is below 0.05, the median over runs as a dash and
-under each tick the two-sided Wilcoxon signed-rank p of the runs' rhos
+`multitask_state_space_vs_lesion_seeds_n.png`: one row per measure (L1/C
+distance above, Pearson similarity below) and one column per cluster type,
+every sibling run's rho for the hidden-state and the W ⊙ M distance, filled
+when its saved permutation p is below 0.05, the median over runs as a dash
+and under each tick the two-sided Wilcoxon signed-rank p of the runs' rhos
 against zero, computed in `paper_plot.py` from the saved per-run rhos; it is
 skipped below two runs with results.
+`--only state_space_vs_lesion_families` draws
+`multitask_state_space_vs_lesion_families_n.png`, the same 2 × 4 grid with
+the task families visible: the pairs of two tasks of one family in that
+family's color (`_SSL_FAMILIES`: go blue, decision-making purple, matching
+gold, the categorical `c_vals`) over the pairs of different families in
+grey, and in each legend, under the full permutation p, the within-family
+permutation p.
+`--only state_space_vs_lesion_families_seeds` draws
+`multitask_state_space_vs_lesion_families_seeds_n.png`, the cohort grid
+for the same-family pairs alone: per run the rho over those 31 pairs,
+filled when its within-family permutation p is below 0.05, with the median
+dash and the Wilcoxon p as in the full-pairs figure.
+`--only state_space_vs_lesion_family_seeds` draws
+`multitask_state_space_vs_lesion_family_seeds_n.png`, the same grid per
+family: one tick per family, per run the rho over that family's pairs (15,
+10 or 6) for the hidden-state distance only (the W ⊙ M distances rank the
+pairs alike, rho 0.93), filled when the family's own permutation p is
+below 0.05. All three were added 2026-11-09; the full-pairs figures are
+unchanged.
 
 On a compute node, regenerate the post-processing cache and then the paper figure:
 ```bash

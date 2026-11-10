@@ -194,6 +194,10 @@ class PaperPlotModeTests(unittest.TestCase):
             "task_sharing_cohort": paper_plot.plot_task_sharing_cohort,
             "state_space_vs_lesion": paper_plot.plot_state_space_vs_lesion,
             "state_space_vs_lesion_seeds": paper_plot.plot_state_space_vs_lesion_seeds,
+            "state_space_vs_lesion_families": paper_plot.plot_state_space_vs_lesion_families,
+            "state_space_vs_lesion_families_seeds":
+                paper_plot.plot_state_space_vs_lesion_families_seeds,
+            "state_space_vs_lesion_family_seeds": paper_plot.plot_state_space_vs_lesion_family_seeds,
         }
         self.assertEqual(paper_plot.FIGURES_BY_MODE["lesion"], expected)
         self.assertTrue(set(expected).isdisjoint(

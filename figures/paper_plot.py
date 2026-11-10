@@ -5805,127 +5805,142 @@ _STATE_SPACE_VS_LESION_HINT = "Run python multiple_task/state_space_vs_lesion.py
 _SSL_CLUSTER_TYPES = (("neuron", "Neuron clusters"), ("synapse", "Synapse clusters"))
 _SSL_REPRESENTATIONS = (("hidden", "Hidden"), ("eff_mod", r"W $\odot$ M"))
 _SSL_DISTANCE_LABELS = {"hidden": "hidden-state centroids", "eff_mod": r"W $\odot$ M centroids"}
-# The synapse column's lesion similarity, as state_space_vs_lesion.py records
-# it: freeze_M, the lesion heatmap's mode. Entries computed with zero_W (before
-# the switch) are skipped, never drawn as freeze_M.
+# The synapse panels' lesion-profile measures, as state_space_vs_lesion.py
+# records them: freeze_M, the lesion heatmap's mode. Entries computed with
+# zero_W (before the switch) are skipped, never drawn as freeze_M.
 _SSL_SYNAPSE_DEFINITION = ("pearson_corr_of_task_freeze_M_lesion_effect_profiles"
                            "_over_var_weighted_synapse_clusters")
+_SSL_SYNAPSE_DISTANCE_DEFINITION = ("mean_over_var_weighted_synapse_clusters_abs_task_freeze_M"
+                                    "_lesion_effect_difference")
+# The two lesion-profile measures of every (representation, cluster type)
+# pair, in the OM-vs-lesion scatter's order: the L1/C distance (mean absolute
+# effect difference over clusters, keeping effect magnitude) then the Pearson
+# correlation (scale-free). Each names its panels' y label, the short form
+# for the cohort figures' y labels, and the results-entry keys of its pair
+# values, Mantel tests, OLS guides and within-family restricted tests
+# (state_space_vs_lesion.MEASURES).
+_SSL_MEASURES = (
+    {"key": "distance", "ylabel": "Lesion-profile\ndistance (L1/C)", "short": "L1/C distance",
+     "entry_keys": ("profile_distances", "profile_distance_tests", "profile_distance_trend_lines",
+                    "profile_distance_restricted_tests")},
+    {"key": "similarity", "ylabel": "Lesion-profile\nsimilarity (r)", "short": "similarity (r)",
+     "entry_keys": ("similarities", "tests", "trend_lines", "restricted_tests")},
+)
+# The single-run grids' column titles span a cluster type's pair of panels,
+# this far above the taller of the pair's statistics legends (which sit
+# above the axes), with the layout leaving them the top of the figure.
+_SSL_PAIR_TITLE_GAP_PT = 5
+_SSL_PAIR_TITLE_TOP = 0.91
+# The task families (key, label, color), in the script's TASK_FAMILIES
+# order; the labels are short because they sit in the 2.5 in panels'
+# legends and under three ticks. The `_families` grid colors the pairs of
+# one family by it (categorical c_vals, SCHEME.md: statistics overlay) over
+# the lesion scatters' grey; the red guide stays the only line.
+_SSL_FAMILIES = (("go", "go", c_vals[1]), ("decision", "decision", c_vals[9]),
+                 ("matching", "matching", c_vals[3]))
+# The per-family cohort figure reads one representation: the hidden-state
+# and W * M distances rank the task pairs alike (rho 0.93 over the cohort).
+_SSL_PER_FAMILY_REPRESENTATION = "hidden"
 
 
-def _state_space_vs_lesion_entry(combined, aname):
-    """The validated results entry of run `aname`, or None with a message."""
-    entry = combined.get(aname)
-    if entry is None:
-        print(f"  Skipped: {aname} has no state-space-vs-lesion results. "
-              f"{_STATE_SPACE_VS_LESION_HINT}")
-        return None
-    try:
-        require_aligned(entry, "state-space-vs-lesion result")
-        # Schema 2 adds the saved OLS guide line of every panel.
-        require_current_variance_result(entry, aname)
-        if entry["schema_version"] != 2 or entry["aname"] != aname:
-            raise ValueError("schema or run does not match")
-        # state_space_vs_lesion.py reads the lesion caches of one pool (all,
-        # unless it is pointed elsewhere) and records it; a render of another
-        # pool must not show these numbers as that pool's.
-        if entry.get("control_pool", "all") != LESION_CONTROL_POOL:
-            raise ValueError(f"computed from the {entry.get('control_pool', 'all')} control "
-                             f"pool, not {LESION_CONTROL_POOL}")
-        if entry["similarity_definitions"]["synapse"] != _SSL_SYNAPSE_DEFINITION:
-            raise ValueError("synapse lesion similarity of another lesion mode (rerun the script)")
-        n_pairs = len(entry["pairs"])
-        for representation, _ in _SSL_REPRESENTATIONS:
-            if np.asarray(entry["distances"][representation]).shape != (n_pairs,):
-                raise ValueError(f"{representation} distances do not match the pairs")
-            for cluster_type, _ in _SSL_CLUSTER_TYPES:
-                test = entry["tests"][representation][cluster_type]
-                if (test["statistic"] != "spearman" or test["sided"] != "two-sided"
-                        or not np.isfinite(test["rho"]) or not np.isfinite(test["p_value"])):
-                    raise ValueError(f"invalid test for {representation} vs {cluster_type}")
-                trend = entry["trend_lines"][representation][cluster_type]
-                if trend is not None and not all(np.isfinite(float(trend[key]))
-                                                 for key in ("slope", "intercept")):
-                    raise ValueError(f"invalid guide line for {representation} vs {cluster_type}")
-        for cluster_type, _ in _SSL_CLUSTER_TYPES:
-            if np.asarray(entry["similarities"][cluster_type]).shape != (n_pairs,):
-                raise ValueError(f"{cluster_type} similarities do not match the pairs")
-    except (KeyError, TypeError, ValueError) as error:
-        print(f"  Skipped: incompatible state-space-vs-lesion entry for {aname} ({error}). "
-              f"{_STATE_SPACE_VS_LESION_HINT}")
-        return None
-    return entry
+def _ssl_panel(entry, measure, representation, cluster_type):
+    """(pair values, Mantel test, OLS guide, within-family restricted test)
+    of one _SSL_MEASURES measure in one (representation, cluster type) panel
+    of a results entry."""
+    values_key, tests_key, trends_key, restricted_key = measure["entry_keys"]
+    return (np.asarray(entry[values_key][cluster_type], dtype=float),
+            entry[tests_key][representation][cluster_type],
+            entry[trends_key][representation][cluster_type],
+            entry[restricted_key][representation][cluster_type])
 
 
-def plot_state_space_vs_lesion():
-    """
-    Figure: multitask_state_space_vs_lesion.png — do tasks whose context-end
-    states lie closer depend on the same clusters? LESION_ANAME, a 2 x 2 grid:
-    one row per representation of the context-end state (hidden state, W * M),
-    one column per cluster type (neuron clusters, synapse clusters).
+def _ssl_pair_titles(fig, top_axes, titles):
+    """`titles` centered over consecutive pairs of `top_axes`,
+    _SSL_PAIR_TITLE_GAP_PT above the pair's legends (or axes, without
+    legends), placed once the layout is final (tight_layout with rect top
+    _SSL_PAIR_TITLE_TOP leaves the room)."""
+    renderer = fig.canvas.get_renderer()
+    gap = _SSL_PAIR_TITLE_GAP_PT / 72.0 / fig.get_size_inches()[1]
+    for pair, title in zip(zip(top_axes[0::2], top_axes[1::2]), titles):
+        boxes = [axis.get_position() for axis in pair]
+        top = max(box.y1 for box in boxes)
+        for axis in pair:
+            if axis.get_legend() is not None:
+                top = max(top, axis.get_legend().get_window_extent(renderer).y1 / fig.bbox.height)
+        fig.text((boxes[0].x0 + boxes[1].x1) / 2.0, top + gap, title,
+                 ha="center", va="bottom", fontsize=9)
 
-    Each point is one task pair: x the Euclidean distance between the two
-    tasks' full-dimensional context-end centroids in that row's
-    representation (the state-space analysis, state_space_structure.py), y
-    the Pearson correlation of their lesion-effect profiles (random-control
-    minus lesion accuracy), over all unnormalized input and hidden neuron
-    clusters (the causal-vs-activity matrix) or over the var-weighted
-    synapse clusters lesioned with freeze_M (_SSL_SYNAPSE_DEFINITION), without
-    the unresponsive class. Each panel's legend
-    reports the saved Spearman rho with its two-sided task-label permutation
-    (Mantel) p, from multiple_task/state_space_vs_lesion.py; a negative rho
-    links the task geometry of the state-space chapter to the causal
-    dependence of the lesion chapter. The red line is the script's saved OLS
-    guide, as in the causal-vs-activity scatter: descriptive only, the
-    statistic is the rank correlation.
-    """
-    _ensure_out_dir()
-    combined = _load_pkl_or_skip(STATE_SPACE_VS_LESION_RESULT_PATH, _STATE_SPACE_VS_LESION_HINT)
-    if combined is None:
-        return
-    entry = _state_space_vs_lesion_entry(combined, LESION_ANAME)
-    if entry is None:
-        return
-    # One _LESION_SCATTER_FIGSIZE square per panel, so each panel matches the
-    # single-panel lesion scatters.
-    n_rows, n_cols = len(_SSL_REPRESENTATIONS), len(_SSL_CLUSTER_TYPES)
+
+def _ssl_xlabel(representation):
+    return f"Context-end distance\n({_SSL_DISTANCE_LABELS[representation]})"
+
+
+def _ssl_legend_text(test, n_pairs):
+    """The two statistics lines of a panel: the saved rho over the pairs and
+    its task-label permutation p."""
+    return (rf"$\rho$ = {test['rho']:.2f} (n = {n_pairs} pairs)" + "\n"
+            f"permutation {_permutation_p_text(test['p_value'])}")
+
+
+def _ssl_grid(entry, out_name, draw_panel):
+    """The single-run figures' 2 x 4 grid: one _LESION_SCATTER_FIGSIZE square
+    per panel (so each matches the single-panel lesion scatters), a row per
+    representation and, per cluster type, the pair of _SSL_MEASURES panels
+    with the cluster type titled over the pair. `draw_panel(ax, x,
+    representation, cluster_type, measure, ylabel)` draws one panel and
+    returns its note for the saved message; each measure's y label is given
+    once per row, on the first pair, and the distance panels start at zero."""
+    columns = [(cluster_type, measure) for cluster_type, _ in _SSL_CLUSTER_TYPES
+               for measure in _SSL_MEASURES]
+    n_rows, n_cols = len(_SSL_REPRESENTATIONS), len(columns)
     panel_width, panel_height = _LESION_SCATTER_FIGSIZE
     fig, axs = plt.subplots(n_rows, n_cols, figsize=(n_cols * panel_width, n_rows * panel_height))
     notes = []
     for row, (representation, _) in enumerate(_SSL_REPRESENTATIONS):
         x = np.asarray(entry["distances"][representation], dtype=float)
-        for column, (cluster_type, title) in enumerate(_SSL_CLUSTER_TYPES):
+        for column, (cluster_type, measure) in enumerate(columns):
             ax = axs[row, column]
-            y = np.asarray(entry["similarities"][cluster_type], dtype=float)
-            test = entry["tests"][representation][cluster_type]
-            label = (rf"$\rho$ = {test['rho']:.2f} (n = {x.size} pairs)" + "\n"
-                     f"permutation {_permutation_p_text(test['p_value'])}")
-            _stat_scatter(ax, x, y, label,
-                          trend_line=entry["trend_lines"][representation][cluster_type],
-                          xlabel=f"Context-end distance\n({_SSL_DISTANCE_LABELS[representation]})",
-                          ylabel="Lesion-profile\nsimilarity (r)" if column == 0 else "",
-                          point_color=_LESION_POINT_COLOR)
-            if row == 0:
-                ax.set_title(title, fontsize=9, pad=22)
-            notes.append(f"{representation}/{cluster_type}: rho = {test['rho']:.3f}, "
-                         f"p = {test['p_value']:.4f}")
-    fig.tight_layout()
-    _save_fig(fig, _multitask_out("state_space_vs_lesion.png"),
-              extra=f"  [{LESION_ANAME}] " + "; ".join(notes))
+            notes.append(draw_panel(ax, x, representation, cluster_type, measure,
+                                    measure["ylabel"] if column < len(_SSL_MEASURES) else ""))
+            if measure["key"] == "distance":
+                ax.set_ylim(bottom=0)
+    fig.tight_layout(rect=(0, 0, 1, _SSL_PAIR_TITLE_TOP))
+    _ssl_pair_titles(fig, axs[0], [title for _, title in _SSL_CLUSTER_TYPES])
+    _save_fig(fig, _multitask_out(out_name), extra=f"  [{LESION_ANAME}] " + "; ".join(notes))
 
 
-def plot_state_space_vs_lesion_seeds():
-    """
-    Figure: multitask_state_space_vs_lesion_seeds.png — the Spearman rho of
-    context-end distance vs lesion-profile similarity for every sibling run of
-    LESION_ANAME, one panel per cluster type (neuron, synapse), hidden-state
-    and W * M distances side by side.
+def _ssl_full_statistic(entry, measure, representation, cluster_type):
+    """(rho, p) of the panel's full task-label permutation test."""
+    test = _ssl_panel(entry, measure, representation, cluster_type)[1]
+    return test["rho"], test["p_value"]
 
-    One point per run, filled when its saved two-sided task-label permutation
-    p is below 0.05, the median over runs as a dash, and under each tick the
-    two-sided Wilcoxon signed-rank p of the runs' rhos against zero, the
-    cohort-level test computed here from the saved per-run rhos. Only runs of
-    the selected cohort with saved results are drawn; skipped below two runs.
-    """
+
+def _ssl_same_family_statistic(entry, measure, representation, cluster_type):
+    """(rho, p) over the panel's same-family pairs alone, p from the
+    within-family restricted permutations."""
+    within = _ssl_panel(entry, measure, representation, cluster_type)[3]["within"]
+    return within["rho"], within["p_value"]
+
+
+def _ssl_family_statistic(entry, measure, family, cluster_type):
+    """(rho, p) over the pairs of one task family alone, for the
+    _SSL_PER_FAMILY_REPRESENTATION distance, p from permutations of that
+    family's labels."""
+    restricted = _ssl_panel(entry, measure, _SSL_PER_FAMILY_REPRESENTATION, cluster_type)[3]
+    test = restricted["per_family"][family]
+    return test["rho"], test["p_value"]
+
+
+def _ssl_seeds(out_name, columns, statistic, ylabel_suffix, significance_label):
+    """The cohort figures' grid: one row per _SSL_MEASURES measure, one
+    column per cluster type, and in each panel one tick per `columns` entry
+    ((key, label): the representations, or the task families). One point
+    per sibling run of LESION_ANAME with results, at the (rho, p)
+    `statistic(entry, measure, key, cluster_type)` returns, filled when
+    p < 0.05 (`significance_label` names the test in the legend), the median
+    over runs as a dash and under each tick the two-sided Wilcoxon
+    signed-rank p of the runs' rhos against zero, the cohort-level test
+    computed here. Skipped below two runs."""
     _ensure_out_dir()
     combined = _load_pkl_or_skip(STATE_SPACE_VS_LESION_RESULT_PATH, _STATE_SPACE_VS_LESION_HINT)
     if combined is None:
@@ -5937,41 +5952,270 @@ def plot_state_space_vs_lesion_seeds():
     if len(entries) < 2:
         print(f"  Skipped: {len(entries)} run(s) with state-space-vs-lesion results; need >= 2.")
         return
-    fig, axs = plt.subplots(1, len(_SSL_CLUSTER_TYPES), figsize=(3.8, 2.3), sharey=True)
-    positions = np.arange(len(_SSL_REPRESENTATIONS))
+    n_rows, n_cols = len(_SSL_MEASURES), len(_SSL_CLUSTER_TYPES)
+    # 1.9 in per panel for two ticks, wider in proportion for more.
+    fig, axs = plt.subplots(n_rows, n_cols, figsize=(3.8 * len(columns) / 2, 2.2 * n_rows),
+                            sharey="row")
+    positions = np.arange(len(columns))
     offsets = _run_offsets(len(entries), 0.05, 0.3)
     summaries = []
-    for ax, (cluster_type, title) in zip(axs, _SSL_CLUSTER_TYPES):
-        ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
-        tick_labels = []
-        for position, (representation, label) in zip(positions, _SSL_REPRESENTATIONS):
-            tests = [entry["tests"][representation][cluster_type] for entry in entries]
-            rhos = np.array([test["rho"] for test in tests])
-            for offset, test in zip(offsets, tests):
-                _significance_marker(ax, position + offset, test["rho"],
-                                     test["p_value"] < _STATE_SPACE_SIGNIFICANCE, size=22,
-                                     color=_LESION_POINT_COLOR, hollow_edge=_LESION_POINT_COLOR)
-            ax.hlines(np.median(rhos), position - 0.3, position + 0.3, color=_TREND_LINE_COLOR,
-                      linewidth=1.8, zorder=4)
-            p_cohort, p_text = _wilcoxon_vs_zero(rhos)
-            tick_labels.append(f"{label}\n{p_text}")
-            summaries.append(f"{cluster_type}/{representation}: "
-                             f"{int(np.sum(rhos < 0))}/{len(rhos)} rho < 0, "
-                             f"{sum(test['p_value'] < 0.05 for test in tests)} significant, "
-                             f"Wilcoxon p = {p_cohort:.3f}")
-        ax.set_xticks(positions)
-        ax.set_xticklabels(tick_labels, fontsize=7)
-        ax.set_xlim(-0.6, len(positions) - 0.4)
-        ax.set_title(title, fontsize=9, pad=4)
-        ax.spines[["top", "right"]].set_visible(False)
-        ax.tick_params(axis="y", labelsize=7)
-    axs[0].set_ylabel(r"Spearman $\rho$" + "\n(distance vs lesion similarity)", fontsize=7)
+    for row, measure in enumerate(_SSL_MEASURES):
+        # Closer tasks depending on more similar clusters: a negative rho for
+        # the similarity, a positive one for the distance.
+        expected_sign = "<" if measure["key"] == "similarity" else ">"
+        for ax, (cluster_type, title) in zip(axs[row], _SSL_CLUSTER_TYPES):
+            ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
+            tick_labels = []
+            for position, (key, label) in zip(positions, columns):
+                statistics = [statistic(entry, measure, key, cluster_type) for entry in entries]
+                rhos = np.array([rho for rho, _ in statistics])
+                for offset, (rho, p_value) in zip(offsets, statistics):
+                    _significance_marker(ax, position + offset, rho,
+                                         p_value < _STATE_SPACE_SIGNIFICANCE, size=22,
+                                         color=_LESION_POINT_COLOR, hollow_edge=_LESION_POINT_COLOR)
+                ax.hlines(np.median(rhos), position - 0.3, position + 0.3, color=_TREND_LINE_COLOR,
+                          linewidth=1.8, zorder=4)
+                p_cohort, p_text = _wilcoxon_vs_zero(rhos)
+                tick_labels.append(f"{label}\n{p_text}")
+                as_expected = int(np.sum(rhos < 0) if expected_sign == "<" else np.sum(rhos > 0))
+                summaries.append(f"{measure['key']}/{cluster_type}/{key}: "
+                                 f"{as_expected}/{len(rhos)} rho {expected_sign} 0, "
+                                 f"{sum(p_value < 0.05 for _, p_value in statistics)} significant, "
+                                 f"Wilcoxon p = {p_cohort:.3f}")
+            ax.set_xticks(positions)
+            ax.set_xticklabels(tick_labels, fontsize=7)
+            ax.set_xlim(-0.6, len(positions) - 0.4)
+            if row == 0:
+                ax.set_title(title, fontsize=9, pad=4)
+            ax.spines[["top", "right"]].set_visible(False)
+            ax.tick_params(axis="y", labelsize=7)
+        axs[row, 0].set_ylabel(r"Spearman $\rho$" + f"{ylabel_suffix}\n(distance vs lesion-profile\n"
+                               f"{measure['short']})", fontsize=7)
+    handles = _significance_legend_handles(_LESION_POINT_COLOR, _LESION_POINT_COLOR)
+    handles[0].set_label(f"{significance_label} p < {_STATE_SPACE_SIGNIFICANCE}")
     _state_space_figure_legend(
-        fig, _significance_legend_handles(_LESION_POINT_COLOR, _LESION_POINT_COLOR) + [
-            mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8,
-                             label="median over runs")])
-    _save_fig(fig, _multitask_out("state_space_vs_lesion_seeds.png"),
-              extra=f"  {len(entries)} runs; " + "; ".join(summaries))
+        fig, handles + [mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8,
+                                         label="median over runs")])
+    _save_fig(fig, _multitask_out(out_name), extra=f"  {len(entries)} runs; " + "; ".join(summaries))
+
+
+def _state_space_vs_lesion_entry(combined, aname):
+    """The validated results entry of run `aname`, or None with a message."""
+    entry = combined.get(aname)
+    if entry is None:
+        print(f"  Skipped: {aname} has no state-space-vs-lesion results. "
+              f"{_STATE_SPACE_VS_LESION_HINT}")
+        return None
+    try:
+        require_aligned(entry, "state-space-vs-lesion result")
+        # Schema 5 adds each family's own test to the within-family
+        # restricted test of every panel (schema 4), after the L1/C
+        # lesion-profile distance beside the Pearson similarity (3) and the
+        # saved OLS guide line of every panel (2).
+        require_current_variance_result(entry, aname)
+        if entry["schema_version"] != 5 or entry["aname"] != aname:
+            raise ValueError("schema or run does not match")
+        # state_space_vs_lesion.py reads the lesion caches of one pool (all,
+        # unless it is pointed elsewhere) and records it; a render of another
+        # pool must not show these numbers as that pool's.
+        if entry.get("control_pool", "all") != LESION_CONTROL_POOL:
+            raise ValueError(f"computed from the {entry.get('control_pool', 'all')} control "
+                             f"pool, not {LESION_CONTROL_POOL}")
+        if entry["similarity_definitions"]["synapse"] != _SSL_SYNAPSE_DEFINITION:
+            raise ValueError("synapse lesion similarity of another lesion mode (rerun the script)")
+        if entry["profile_distance_definitions"]["synapse"] != _SSL_SYNAPSE_DISTANCE_DEFINITION:
+            raise ValueError("synapse lesion-profile distance of another lesion mode "
+                             "(rerun the script)")
+        n_pairs = len(entry["pairs"])
+        if np.asarray(entry["pair_same_family"]).shape != (n_pairs,):
+            raise ValueError("same-family flags do not match the pairs")
+        for representation, _ in _SSL_REPRESENTATIONS:
+            if np.asarray(entry["distances"][representation]).shape != (n_pairs,):
+                raise ValueError(f"{representation} distances do not match the pairs")
+            for cluster_type, _ in _SSL_CLUSTER_TYPES:
+                for measure in _SSL_MEASURES:
+                    values, test, trend, restricted = _ssl_panel(
+                        entry, measure, representation, cluster_type)
+                    panel = f"{representation} vs {cluster_type} {measure['key']}"
+                    if values.shape != (n_pairs,):
+                        raise ValueError(f"{panel} values do not match the pairs")
+                    candidates = [("test", test), ("within-family test", restricted),
+                                  ("same-family pairs test", restricted["within"])]
+                    candidates += [(f"{family} family test", restricted["per_family"][family])
+                                   for family, _, _ in _SSL_FAMILIES]
+                    for name, candidate in candidates:
+                        if (candidate["statistic"] != "spearman" or candidate["sided"] != "two-sided"
+                                or not np.isfinite(candidate["rho"])
+                                or not np.isfinite(candidate["p_value"])):
+                            raise ValueError(f"invalid {name} for {panel}")
+                    if trend is not None and not all(np.isfinite(float(trend[key]))
+                                                     for key in ("slope", "intercept")):
+                        raise ValueError(f"invalid guide line for {panel}")
+    except (KeyError, TypeError, ValueError) as error:
+        print(f"  Skipped: incompatible state-space-vs-lesion entry for {aname} ({error}). "
+              f"{_STATE_SPACE_VS_LESION_HINT}")
+        return None
+    return entry
+
+
+def plot_state_space_vs_lesion():
+    """
+    Figure: multitask_state_space_vs_lesion.png — do tasks whose context-end
+    states lie closer depend on the same clusters? LESION_ANAME, a 2 x 4
+    grid: one row per representation of the context-end state (hidden state,
+    W * M) and, per cluster type (neuron clusters, synapse clusters, titled
+    over the pair), the OM-vs-lesion scatter's pair of panels: the L1/C
+    lesion-profile distance on the left, the Pearson similarity on the right
+    (_SSL_MEASURES).
+
+    Each point is one task pair: x the Euclidean distance between the two
+    tasks' full-dimensional context-end centroids in that row's
+    representation (the state-space analysis, state_space_structure.py), y
+    how alike their lesion-effect profiles (random-control minus lesion
+    accuracy) are over all unnormalized input and hidden neuron clusters (the
+    causal-vs-activity matrix's profiles) or over the var-weighted synapse
+    clusters lesioned with freeze_M (_SSL_SYNAPSE_DEFINITION), without the
+    unresponsive class: the mean absolute effect difference over clusters
+    (L1/C, in accuracy fraction, axis from zero) or the Pearson correlation
+    of the two profiles. Each panel's legend reports the saved Spearman rho
+    with its two-sided task-label permutation (Mantel) p, from
+    multiple_task/state_space_vs_lesion.py; a positive rho for the distance
+    and a negative one for the similarity link the task geometry of the
+    state-space chapter to the causal dependence of the lesion chapter. The
+    red line is the script's saved OLS guide, as in the causal-vs-activity
+    scatter: descriptive only, the statistic is the rank correlation.
+    plot_state_space_vs_lesion_families is the same grid with the task
+    families marked and the within-family permutation p added.
+    """
+    _ensure_out_dir()
+    combined = _load_pkl_or_skip(STATE_SPACE_VS_LESION_RESULT_PATH, _STATE_SPACE_VS_LESION_HINT)
+    if combined is None:
+        return
+    entry = _state_space_vs_lesion_entry(combined, LESION_ANAME)
+    if entry is None:
+        return
+
+    def draw_panel(ax, x, representation, cluster_type, measure, ylabel):
+        y, test, trend, _ = _ssl_panel(entry, measure, representation, cluster_type)
+        _stat_scatter(ax, x, y, _ssl_legend_text(test, x.size), trend_line=trend,
+                      xlabel=_ssl_xlabel(representation), ylabel=ylabel,
+                      point_color=_LESION_POINT_COLOR)
+        return (f"{representation}/{cluster_type}/{measure['key']}: "
+                f"rho = {test['rho']:.3f}, p = {test['p_value']:.4f}")
+
+    _ssl_grid(entry, "state_space_vs_lesion.png", draw_panel)
+
+
+def plot_state_space_vs_lesion_families():
+    """
+    Figure: multitask_state_space_vs_lesion_families.png — the grid of
+    multitask_state_space_vs_lesion with the task families made visible.
+    The same points and guide lines; the pairs of two tasks of one family
+    (go, decision-making or matching, the results' `families`) in that
+    family's _SSL_FAMILIES color over the pairs of different families in
+    grey, and each legend adds, under the full permutation p, the
+    within-family permutation p: the task labels permuted within families
+    only (multiple_task/state_space_vs_lesion.py, restricted Mantel), so
+    family membership is part of the null and the p is that of the
+    association the arrangement of the tasks within their families adds.
+
+    Same-family pairs lie close in state space and share lesion profiles, so
+    the full test is significant whenever the families separate on both
+    axes; a within-family p above 0.05 says the link does not resolve
+    beyond the family level. The companion cohort figures draw per run the
+    rho over the same-family pairs alone
+    (plot_state_space_vs_lesion_families_seeds) and over each family's
+    pairs (plot_state_space_vs_lesion_family_seeds).
+    """
+    _ensure_out_dir()
+    combined = _load_pkl_or_skip(STATE_SPACE_VS_LESION_RESULT_PATH, _STATE_SPACE_VS_LESION_HINT)
+    if combined is None:
+        return
+    entry = _state_space_vs_lesion_entry(combined, LESION_ANAME)
+    if entry is None:
+        return
+    family_of = entry["families"]
+    pair_family = np.array([family_of[a] if family_of[a] == family_of[b] else ""
+                            for a, b in entry["pairs"]])
+    classes = [(color, pair_family == family, f"{label} ({np.sum(pair_family == family)} pairs)")
+               for family, label, color in _SSL_FAMILIES]
+    classes.append((_LESION_POINT_COLOR, pair_family == "",
+                    f"different families ({np.sum(pair_family == '')} pairs)"))
+    handles = [mpl.lines.Line2D([], [], marker="o", linestyle="none", markersize=4,
+                                color=color, label=label) for color, _, label in classes]
+
+    def draw_panel(ax, x, representation, cluster_type, measure, ylabel):
+        y, test, trend, restricted = _ssl_panel(entry, measure, representation, cluster_type)
+        text = (_ssl_legend_text(test, x.size) + "\n"
+                f"within-family {_permutation_p_text(restricted['p_value'])}")
+        _stat_scatter(ax, x, y, text, trend_line=trend, legend_handles=handles,
+                      xlabel=_ssl_xlabel(representation), ylabel=ylabel,
+                      point_color=_LESION_POINT_COLOR)
+        for color, mask, _ in classes[:-1]:
+            ax.scatter(x[mask], y[mask], **dict(_SCATTER_POINT_STYLE, color=color, zorder=3.5))
+        return (f"{representation}/{cluster_type}/{measure['key']}: "
+                f"rho = {test['rho']:.3f}, p = {test['p_value']:.4f}, "
+                f"within-family p = {restricted['p_value']:.4f}, "
+                f"same-family pairs rho = {restricted['within']['rho']:.3f}")
+
+    _ssl_grid(entry, "state_space_vs_lesion_families.png", draw_panel)
+
+
+def plot_state_space_vs_lesion_seeds():
+    """
+    Figure: multitask_state_space_vs_lesion_seeds.png — the Spearman rho of
+    context-end distance vs each lesion-profile measure for every sibling run
+    of LESION_ANAME: one row per measure (L1/C distance above, Pearson
+    similarity below, _SSL_MEASURES), one column per cluster type (neuron,
+    synapse), hidden-state and W * M distances side by side.
+
+    One point per run, filled when its saved two-sided task-label permutation
+    p is below 0.05, the median over runs as a dash, and under each tick the
+    two-sided Wilcoxon signed-rank p of the runs' rhos against zero, the
+    cohort-level test computed here from the saved per-run rhos. Only runs of
+    the selected cohort with saved results are drawn; skipped below two runs.
+    """
+    _ssl_seeds("state_space_vs_lesion_seeds.png", _SSL_REPRESENTATIONS, _ssl_full_statistic,
+               "", "permutation")
+
+
+def plot_state_space_vs_lesion_families_seeds():
+    """
+    Figure: multitask_state_space_vs_lesion_families_seeds.png — the grid of
+    multitask_state_space_vs_lesion_seeds for the same-family task pairs
+    alone: per run the Spearman rho of context-end distance vs each
+    lesion-profile measure over the pairs of two tasks of one family (the
+    results' `pair_same_family`), filled when its within-family permutation
+    p (labels permuted within families, multiple_task/state_space_vs_lesion.py)
+    is below 0.05, the median over runs as a dash and under each tick the
+    two-sided Wilcoxon signed-rank p of these rhos against zero.
+
+    Beside the full-pairs figure it shows whether the link holds within the
+    task families or only between them. Skipped below two runs.
+    """
+    _ssl_seeds("state_space_vs_lesion_families_seeds.png", _SSL_REPRESENTATIONS,
+               _ssl_same_family_statistic, ", same-family pairs", "within-family permutation")
+
+
+def plot_state_space_vs_lesion_family_seeds():
+    """
+    Figure: multitask_state_space_vs_lesion_family_seeds.png — the cohort
+    grid of multitask_state_space_vs_lesion_seeds per task family: one row
+    per measure, one column per cluster type, one tick per family, and per
+    run the Spearman rho of the hidden-state context-end distance
+    (_SSL_PER_FAMILY_REPRESENTATION; the W * M distances rank the pairs
+    alike) vs the measure over that family's pairs alone (go 15 pairs,
+    decision-making 10, matching 6), filled when its permutation p (that
+    family's labels shuffled, the results' `per_family`) is below 0.05, the
+    median over runs as a dash and under each tick the Wilcoxon p of the
+    runs' rhos against zero.
+
+    Four matching tasks allow only 24 distinct permutations, so that
+    family's p cannot fall below about 0.04. Skipped below two runs.
+    """
+    _ssl_seeds("state_space_vs_lesion_family_seeds.png",
+               [(family, label) for family, label, _ in _SSL_FAMILIES],
+               _ssl_family_statistic, ", one family's pairs", "within-family permutation")
 
 
 # ─── Figure: Fixed-point PCA trajectories ────────────────────────────────────
@@ -15584,6 +15828,9 @@ FIGURES_BY_MODE = {
         # (multiple_task/state_space_vs_lesion.py).
         "state_space_vs_lesion": plot_state_space_vs_lesion,
         "state_space_vs_lesion_seeds": plot_state_space_vs_lesion_seeds,
+        "state_space_vs_lesion_families": plot_state_space_vs_lesion_families,
+        "state_space_vs_lesion_families_seeds": plot_state_space_vs_lesion_families_seeds,
+        "state_space_vs_lesion_family_seeds": plot_state_space_vs_lesion_family_seeds,
     },
     "state_space": {
         "state_space_combined": plot_state_space_combined,
