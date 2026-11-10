@@ -3088,12 +3088,94 @@ _STATE_SPACE_R_BARS = (
 _STATE_SPACE_HEBB_HATCH = "///"
 
 
-def _draw_r_value_panel(ax, runs, title, jitter, bars=_STATE_SPACE_R_BARS):
+# Cohort-level tests of the R-value figures, computed here from the saved
+# per-network r: each bar against zero (two-sided Wilcoxon signed-rank) and
+# each trained bar against the same bar of the untrained panel (two-sided
+# Mann-Whitney U; the networks are independent). BH-adjusted within each
+# kind of test over the figure's bars. The marks sit in a band above the
+# data, which ends at r = 1.
+_R_VALUE_UNTRAINED_TITLE = "Untrained"
+_R_VALUE_MARKS = {"zero": "*", "untrained": "\u2020"}          # asterisk, dagger
+_R_VALUE_MARK_Y = {"zero": 1.07, "untrained": 1.15}
+_R_VALUE_YLIM_TOP = 1.24
+
+
+def _r_value_cohort_tests(panels, bars):
+    """{(panel title, bar name): {"n", "median", "p_zero", "q_zero",
+    "p_untrained", "q_untrained"}} for the (title, runs) panels of an
+    R-value figure. A test that cannot be run (fewer than two networks, all
+    values zero, or no untrained panel) is NaN; the untrained panel has no
+    untrained comparison. q is the Benjamini-Hochberg adjustment within one
+    kind of test over every bar of the figure."""
+    from scipy.stats import false_discovery_control, mannwhitneyu
+
+    values = {(title, name): np.array([run["r"] for run in runs[name]], dtype=float)
+              for title, runs in panels for name, _, _, _ in bars}
+    tests = {}
+    for (title, name), r in values.items():
+        reference = values.get((_R_VALUE_UNTRAINED_TITLE, name))
+        p_untrained = np.nan
+        if (title != _R_VALUE_UNTRAINED_TITLE and reference is not None
+                and r.size >= 2 and reference.size >= 2):
+            p_untrained = float(mannwhitneyu(r, reference, alternative="two-sided").pvalue)
+        tests[(title, name)] = {
+            "n": int(r.size), "median": float(np.median(r)) if r.size else np.nan,
+            "p_zero": _wilcoxon_vs_zero(r)[0], "p_untrained": p_untrained,
+            "q_zero": np.nan, "q_untrained": np.nan}
+    for kind in ("zero", "untrained"):
+        finite = [key for key, test in tests.items() if np.isfinite(test[f"p_{kind}"])]
+        if finite:
+            adjusted = false_discovery_control([tests[key][f"p_{kind}"] for key in finite], method="bh")
+            for key, q_value in zip(finite, adjusted):
+                tests[key][f"q_{kind}"] = float(q_value)
+    return tests
+
+
+def _significance_marks(q_value, mark):
+    """`mark` repeated for q < 0.05, 0.01, 0.001; "n.s." otherwise; "" for
+    a test that was not run."""
+    if not np.isfinite(q_value):
+        return ""
+    levels = sum(q_value < threshold for threshold in (0.05, 0.01, 0.001))
+    return mark * levels if levels else "n.s."
+
+
+def _r_value_test_legend_handles(tests):
+    """Legend entries naming the marks of the cohort tests that were run."""
+    labels = {"zero": "vs 0 (Wilcoxon)", "untrained": "vs untrained (Mann\u2013Whitney)"}
+    return [mpl.lines.Line2D([], [], linestyle="none", marker=f"${_R_VALUE_MARKS[kind]}$",
+                             color="k", markersize=5,
+                             label=f"q < 0.05 / 0.01 / 0.001 {labels[kind]}")
+            for kind in ("zero", "untrained")
+            if any(np.isfinite(test[f"q_{kind}"]) for test in tests.values())]
+
+
+def _r_value_test_summary(tests, bars):
+    """One line per panel for the saved message: each bar's n, median r and
+    the two BH q values."""
+    lines = []
+    for title in dict.fromkeys(title for title, _ in tests):
+        parts = []
+        for name, _, _, _ in bars:
+            test = tests[(title, name)]
+            text = f"{name} n={test['n']} median r={test['median']:.2f} q(vs 0)={test['q_zero']:.3g}"
+            if np.isfinite(test["q_untrained"]):
+                text += f" q(vs untrained)={test['q_untrained']:.3g}"
+            parts.append(text)
+        lines.append(f"{title}: " + "; ".join(parts))
+    return ("  cohort tests (two-sided; Wilcoxon signed-rank vs 0, Mann-Whitney U vs untrained; "
+            "BH within each kind): " + " | ".join(lines))
+
+
+def _draw_r_value_panel(ax, runs, title, jitter, bars=_STATE_SPACE_R_BARS, tests=None):
     """One panel of the R-value figure: per bar of `bars` (saved name,
     label, color, hatched; _STATE_SPACE_R_BARS by default) the mean r of
     `runs` ({data type: [{"r", "p_perm"}]}) with the sample SD, and one dot
-    per run or network, filled when its permutation p is below 0.05.
-    Returns the lowest r drawn (0 when none)."""
+    per run or network, filled when its permutation p is below 0.05. With
+    `tests` (_r_value_cohort_tests) each bar carries its cohort-level marks
+    above the data: _R_VALUE_MARKS by BH q against zero and, one line up,
+    against the untrained networks. Returns the lowest r drawn (0 when
+    none)."""
     lowest = 0.0
     if not any(runs[name] for name, _, _, _ in bars):
         ax.text(0.5, 0.5, "No data", ha="center", va="center",
@@ -3113,6 +3195,12 @@ def _draw_r_value_panel(ax, runs, title, jitter, bars=_STATE_SPACE_R_BARS):
             ax.scatter(position + offset, run["r"], s=15, zorder=5,
                        color="k" if significant else "white",
                        edgecolors="k", linewidths=0.6)
+        if tests is not None:
+            for kind, mark in _R_VALUE_MARKS.items():
+                text = _significance_marks(tests[(title, name)][f"q_{kind}"], mark)
+                ax.text(position, _R_VALUE_MARK_Y[kind], text, ha="center", va="center",
+                        fontsize=5 if text == "n.s." else 7,
+                        color="0.45" if text == "n.s." else "k")
     ax.set_title(title)
     ax.set_xticks(positions)
     ax.set_xticklabels([label for _, label, _, _ in bars], fontsize=7)
@@ -3133,7 +3221,12 @@ def plot_state_space_r_values():
     mean over runs with the sample SD; the dots are the runs, filled when the
     run's saved two-sided task-label permutation p is below 0.05 and hollow
     otherwise. Nothing is recomputed; runs whose cache has no saved
-    permutation test are left out.
+    permutation test are left out. Above each bar, the cohort-level tests
+    computed here from those r (_r_value_cohort_tests): asterisks for the
+    two-sided Wilcoxon signed-rank test against zero and, one line up,
+    daggers for the two-sided Mann-Whitney U test against the same bar of
+    the untrained networks, one to three marks for BH q < 0.05, 0.01,
+    0.001 ("n.s." otherwise); the saved message lists every n, median and q.
 
     When the untrained networks built from the selected example run's config
     have distance-angle results (state_space_shift.py --untrained), a first
@@ -3153,13 +3246,15 @@ def plot_state_space_r_values():
               for strength in STATE_SPACE_L2_STRENGTHS]
     untrained = _untrained_r_values(names)
     if untrained is not None:
-        panels.insert(0, ("Untrained", untrained))
+        panels.insert(0, (_R_VALUE_UNTRAINED_TITLE, untrained))
+    tests = _r_value_cohort_tests(panels, _STATE_SPACE_R_BARS)
     fig, axs = plt.subplots(1, len(panels), figsize=(2.5 * len(panels), 3.2), sharey=True)
     jitter = np.random.default_rng(42)
-    lowest = min(_draw_r_value_panel(ax, runs, title, jitter)
+    lowest = min(_draw_r_value_panel(ax, runs, title, jitter, tests=tests)
                  for ax, (title, runs) in zip(axs, panels))
     axs[0].set_ylabel("R-value")
-    axs[0].set_ylim(min(0.0, lowest - 0.05), 1.05)
+    axs[0].set_ylim(min(0.0, lowest - 0.05), _R_VALUE_YLIM_TOP)
+    axs[0].set_yticks(np.arange(0.0, 1.01, 0.2))
 
     handles = [
         mpl.lines.Line2D([], [], marker="o", linestyle="none", color="k", markersize=4,
@@ -3170,8 +3265,10 @@ def plot_state_space_r_values():
         mpl.patches.Patch(facecolor="white", edgecolor="k", hatch=_STATE_SPACE_HEBB_HATCH,
                           label=r"- decay: $M[t] - \lambda M[t-1]$, the linear decay removed (clipping kept)"),
     ]
-    _state_space_figure_legend(fig, handles)
-    _save_fig(fig, _multitask_out("state_space_r_values.png"))
+    _state_space_figure_legend(fig, handles + _r_value_test_legend_handles(tests), ncol=3,
+                               top=0.88)
+    _save_fig(fig, _multitask_out("state_space_r_values.png"),
+              extra=_r_value_test_summary(tests, _STATE_SPACE_R_BARS))
 
 
 # The modulation transplant experiment (multiple_task/state_space_transplant.py):
@@ -3207,7 +3304,8 @@ def plot_state_space_transplant_r_values():
     networks of a matching transplant configuration have results, one bar
     per representation (hidden state, raw and effective modulation) with
     the mean over runs and the sample SD, and one dot per run, filled when
-    its saved two-sided task-label permutation p is below 0.05. The r is
+    its saved two-sided task-label permutation p is below 0.05, and the same
+    cohort-level marks above each bar (_r_value_cohort_tests). The r is
     the correlation, over the 105 task pairs, between the distance of two
     tasks' Context-end M and the angle between response vectors from either
     state under one and the same input: the full M update, W times that
@@ -3232,13 +3330,16 @@ def plot_state_space_transplant_r_values():
                                     STATE_SPACE_TRANSPLANT_SCHEMA, _transplant_untrained_command,
                                     trained_results=result_dict)
     if untrained is not None:
-        panels.insert(0, ("Untrained", untrained))
+        panels.insert(0, (_R_VALUE_UNTRAINED_TITLE, untrained))
+    tests = _r_value_cohort_tests(panels, _STATE_SPACE_TRANSPLANT_BARS)
     fig, axs = plt.subplots(1, len(panels), figsize=(1.9 * len(panels), 3.2), sharey=True)
     jitter = np.random.default_rng(42)
-    lowest = min(_draw_r_value_panel(ax, runs, title, jitter, _STATE_SPACE_TRANSPLANT_BARS)
+    lowest = min(_draw_r_value_panel(ax, runs, title, jitter, _STATE_SPACE_TRANSPLANT_BARS,
+                                     tests=tests)
                  for ax, (title, runs) in zip(axs, panels))
     axs[0].set_ylabel("R-value")
-    axs[0].set_ylim(min(0.0, lowest - 0.05), 1.05)
+    axs[0].set_ylim(min(0.0, lowest - 0.05), _R_VALUE_YLIM_TOP)
+    axs[0].set_yticks(np.arange(0.0, 1.01, 0.2))
     handles = [
         mpl.lines.Line2D([], [], marker="o", linestyle="none", color="k", markersize=4,
                          label=f"permutation p < {_STATE_SPACE_SIGNIFICANCE}"),
@@ -3246,8 +3347,10 @@ def plot_state_space_transplant_r_values():
                          markeredgecolor="k", markersize=4,
                          label=rf"p $\geq$ {_STATE_SPACE_SIGNIFICANCE}"),
     ]
-    _state_space_figure_legend(fig, handles)
-    _save_fig(fig, _multitask_out("state_space_transplant_r_values.png"))
+    _state_space_figure_legend(fig, handles + _r_value_test_legend_handles(tests), ncol=2,
+                               top=0.88)
+    _save_fig(fig, _multitask_out("state_space_transplant_r_values.png"),
+              extra=_r_value_test_summary(tests, _STATE_SPACE_TRANSPLANT_BARS))
 
 
 _DISTANCE_ANGLE_XLABEL = "Distance between\ninitial conditions"

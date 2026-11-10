@@ -377,7 +377,14 @@ panels of the selected run, the hidden state and W ⊙ M with the full first
 step and W ⊙ M with the decay removed (the two W ⊙ M panels on one y
 range), each with r and the permutation p; `state_space_r_values` shows one
 bar per representation and L2 cohort, raw M included (decay-removed bars
-hatched, one dot per run, filled when its permutation p < 0.05), preceded by
+hatched, one dot per run, filled when its permutation p < 0.05; above each
+bar the cohort-level tests `paper_plot.py` computes from those r since
+2026-11-10: asterisks for the two-sided Wilcoxon signed-rank test of the
+cohort's r against zero and, one line up, daggers for the two-sided
+Mann–Whitney U test against the same bar of the untrained networks, one to
+three marks for BH q < 0.05, 0.01, 0.001 within each kind of test over the
+figure's bars; the saved message lists every n, median and q, and a cohort
+of six networks cannot reach a Wilcoxon p below 0.031), preceded by
 an "Untrained" panel of the same bars when `state_space/untrained/` holds
 distance-angle results of networks built from the selected example run's
 config or from another run of its setting (one dot per init seed; without
@@ -455,6 +462,8 @@ with the marks of the distance-angle untrained entries (`untrained`,
 one bar per representation (frozen-M hidden response, full M and W ⊙ M updates; no
 decay-removed bar, the decay term's share is in `step_norms`)
 and L2 cohort with one dot per run, filled when its permutation p < 0.05,
+and the same cohort-level marks above each bar (against zero, and against
+the untrained networks' transplant r),
 preceded by an "Untrained" panel when `state_space/transplant/untrained/`
 holds networks of a matching trained transplant configuration. Selection
 uses the transplant results' own `config_source` metadata, prefers the

@@ -334,6 +334,68 @@ class StateSpaceDistanceAngleFigureTests(unittest.TestCase):
         self.addCleanup(paper_plot.plt.close, figure)
         return figure, save_fig, output
 
+    def test_r_value_cohort_tests_compare_each_bar_with_zero_and_with_the_untrained_networks(self):
+        from scipy.stats import false_discovery_control, mannwhitneyu, wilcoxon
+
+        rng = np.random.default_rng(0)
+        bars = paper_plot._STATE_SPACE_R_BARS[:2]
+
+        def runs(center, count):
+            return {name: [{"r": float(value), "p_perm": 0.5}
+                           for value in center + 0.05 * rng.standard_normal(count)]
+                    for name, _, _, _ in bars}
+
+        panels = [("Untrained", runs(0.0, 8)), ("A", runs(0.5, 9)), ("B", runs(0.02, 7)),
+                  ("C", {name: [{"r": 0.4, "p_perm": 0.5}] for name, _, _, _ in bars})]
+        tests = paper_plot._r_value_cohort_tests(panels, bars)
+        self.assertEqual(list(tests), [(title, name) for title, _ in panels for name, _, _, _ in bars])
+        values = {(title, name): [run["r"] for run in panel[name]]
+                  for title, panel in panels for name, _, _, _ in bars}
+        for key, test in tests.items():
+            self.assertEqual(test["n"], len(values[key]))
+            if key[0] == "C":                         # one network: nothing to test
+                self.assertTrue(np.isnan([test["p_zero"], test["q_zero"], test["p_untrained"]]).all())
+                continue
+            self.assertAlmostEqual(test["p_zero"], wilcoxon(values[key]).pvalue)
+            if key[0] == "Untrained":
+                self.assertTrue(np.isnan(test["p_untrained"]) and np.isnan(test["q_untrained"]))
+            else:
+                self.assertAlmostEqual(
+                    test["p_untrained"],
+                    mannwhitneyu(values[key], values[("Untrained", key[1])]).pvalue)
+        # BH within each kind of test, over the bars that were tested.
+        for kind in ("zero", "untrained"):
+            tested = [key for key in tests if np.isfinite(tests[key][f"p_{kind}"])]
+            np.testing.assert_allclose(
+                [tests[key][f"q_{kind}"] for key in tested],
+                false_discovery_control([tests[key][f"p_{kind}"] for key in tested], method="bh"))
+        self.assertLess(tests[("A", "hidden")]["q_zero"], 0.05)
+        self.assertLess(tests[("A", "hidden")]["q_untrained"], 0.01)
+        self.assertGreater(tests[("B", "hidden")]["q_untrained"], 0.05)
+        marks = paper_plot._significance_marks
+        self.assertEqual([marks(q, "*") for q in (0.2, 0.04, 0.009, 0.0005, np.nan)],
+                         ["n.s.", "*", "**", "***", ""])
+        # Without an untrained panel only the test against zero is run and named.
+        alone = paper_plot._r_value_cohort_tests(panels[1:2], bars)
+        self.assertTrue(np.isnan(alone[("A", "hidden")]["p_untrained"]))
+        self.assertEqual(len(paper_plot._r_value_test_legend_handles(alone)), 1)
+        self.assertEqual(len(paper_plot._r_value_test_legend_handles(tests)), 2)
+        summary = paper_plot._r_value_test_summary(tests, bars)
+        self.assertIn("A: hidden n=9", summary)
+        self.assertIn("q(vs untrained)=", summary)
+        # The marks sit above each bar: against zero, then against untrained.
+        figure, axis = paper_plot.plt.subplots()
+        self.addCleanup(paper_plot.plt.close, figure)
+        paper_plot._draw_r_value_panel(axis, panels[1][1], "A", np.random.default_rng(1), bars, tests=tests)
+        texts = {(round(text.get_position()[0]), text.get_position()[1]): text.get_text()
+                 for text in axis.texts}
+        self.assertEqual(texts[(0, paper_plot._R_VALUE_MARK_Y["zero"])],
+                         marks(tests[("A", "hidden")]["q_zero"], "*"))
+        self.assertEqual(texts[(0, paper_plot._R_VALUE_MARK_Y["untrained"])],
+                         marks(tests[("A", "hidden")]["q_untrained"], "\u2020"))
+        self.assertGreater(min(paper_plot._R_VALUE_MARK_Y.values()), 1.0)
+        self.assertLess(max(paper_plot._R_VALUE_MARK_Y.values()), paper_plot._R_VALUE_YLIM_TOP)
+
     def test_r_values_figure_hatches_decay_removed_bars_and_fills_significant_runs(self):
         result_dict = {f"run{index}": _distance_angle_entry() for index in range(2)}
         with tempfile.TemporaryDirectory() as tmp:
