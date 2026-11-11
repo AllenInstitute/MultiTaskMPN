@@ -28,18 +28,26 @@ Usage:
     python figures/paper_plot.py --multitask-l2 1e4 multiple_tasks lesion
                                                         # both from the L2=1e-4 cohort
                                                         # (default cohort: MULTITASK_L2)
+    python figures/paper_plot.py lesion --multitask-l2 1e4 --control-pool responsive
+                                                        # lesion figures from the
+                                                        # activity-matched controls,
+                                                        # into paper_plot_responsive/
     python figures/paper_plot.py state_space            # only the state-space figures
     python figures/paper_plot.py acc_plot              # only the accuracy figures
     python figures/paper_plot.py two_in_multiple       # only the two-in-multiple figures
     python figures/paper_plot.py pretraining           # only the pretraining figures
     python figures/paper_plot.py pretraining --pretraining-bound mod2
                                                         # pretraining with M in [-2, 2]
+    python figures/paper_plot.py pretraining --pretraining-lambda 0.9
+                                                        # the lam0.9 pretraining cohort
     python figures/paper_plot.py pretraining --pretraining-groups motifs
                                                         # Relevant / Irrelevant only
     python figures/paper_plot.py pretraining --pretraining-groups all
                                                         # also DelayAnti / DelayPro (default)
     python figures/paper_plot.py two_task              # only the two-task figures
     python figures/paper_plot.py --only input          # generate a single figure
+                                                        # (other figures are kept;
+                                                        # a mode run clears the folder)
 """
 import pickle
 import json
@@ -371,7 +379,7 @@ def _set_multitask_l2(l2):
 # Clustering run (`multiple_tasks` figures) and its analysis directory, and the
 # lesion run shared by every single-run figure of the `lesion` mode with its
 # multiple_tasks_perf directory and its directory under LESION_NORM_ROOT (the
-# lesion control pool's cache root, _set_lesion_control_pool). All six are
+# lesion control pool's cache root, _set_lesion_control_pool). All five are
 # assigned by _set_multitask_l2 from the cohort above.
 ANAME = DATA_DIR = LESION_ANAME = LESION_DIR = LESION_NORM_DIR = None
 _set_multitask_l2(MULTITASK_L2)
@@ -1194,7 +1202,7 @@ def _add_period_strip(ax, spans, xmax, height=0.05, pad=0.02):
 
 def _plot_clustered_variance(
     cell_vars, result, tb_break_name,
-    title="", cmap=_MULTITASK_HEATMAP_CMAP,
+    cmap=_MULTITASK_HEATMAP_CMAP,
     vmin=_MULTITASK_HEATMAP_VLIM[0], vmax=_MULTITASK_HEATMAP_VLIM[1],
     figsize=(8.4, 7),          # 5% wider than the original 8 in
     row_k_override=None,
@@ -1280,7 +1288,6 @@ def plot_clustered_input():
         cell_vars=data["cell_vars_rules_sorted_norm"],
         result=data["result"],
         tb_break_name=data["tb_break_name"],
-        title="Input Layer — Normalized Task Variance",
     )
 
     out_path = _multitask_out("clustered_input_normalized.png")
@@ -1299,7 +1306,6 @@ def plot_clustered_hidden(col_k_override=20):
         cell_vars=data["cell_vars_rules_sorted_norm"],
         result=data["result"],
         tb_break_name=data["tb_break_name"],
-        title="Hidden Layer — Normalized Task Variance",
         col_k_override=col_k_override,
     )
 
@@ -2566,7 +2572,8 @@ def _eff_mod_task_centroid_metrics(data):
 
 
 def _state_space_centroid_ranking(result_dict, pca_loader=None, strength=STATE_SPACE_EXAMPLE_L2):
-    """Rank all valid seeds of the L2 `strength` cohort and summarize their
+    """Rank all valid seeds of the L2 `strength` cohort, best task-center
+    separation first with ties broken by run name, and summarize their
     high-dimensional separation."""
     if pca_loader is None:
         pca_loader = _load_state_space_pca
@@ -2614,15 +2621,6 @@ def _state_space_centroid_ranking(result_dict, pca_loader=None, strength=STATE_S
         "summary": summary,
         "skipped": skipped,
     }
-
-
-def _best_state_space_trial(result_dict, pca_loader=None, strength=STATE_SPACE_EXAMPLE_L2):
-    """Select maximal task-center separation; break ties by run name."""
-    report = _state_space_centroid_ranking(result_dict, pca_loader, strength)
-    if not report["rankings"]:
-        return None
-    best = report["rankings"][0]
-    return best["aname"], best["score"]
 
 
 def _load_best_state_space_trial(strength=STATE_SPACE_EXAMPLE_L2):
@@ -3255,7 +3253,7 @@ def plot_state_space_r_values():
 
     names = [name for name, _, _, _ in _STATE_SPACE_R_BARS]
     grouped = _state_space_r_values_by_l2(result_dict, names)
-    panels = [(rf"$L_2 = 10^{{{int(round(np.log10(strength)))}}}$", grouped[strength])
+    panels = [(_l2_panel_title(strength), grouped[strength])
               for strength in STATE_SPACE_L2_STRENGTHS]
     untrained = _untrained_r_values(names)
     if untrained is not None:
@@ -3707,8 +3705,8 @@ def plot_state_space_dist_angle():
     _save_fig(fig, _multitask_out("state_space_dist_angle.png"), extra=note)
 
 
-# ─── Figure: State space structure (category test, RDM, task vectors) ───────
-# All three read the caches of multiple_task/state_space_structure.py: the
+# ─── Figure: State space structure (task distance matrices, category test) ──
+# These figures read the caches of multiple_task/state_space_structure.py: the
 # per-run `state_space_structure_<aname>_noise0.01.pkl` (distances, linkage,
 # null arrays) and the combined `state_space_structure_results.pkl` (every
 # run's statistics). Nothing is recomputed here.
@@ -3888,7 +3886,7 @@ def plot_state_space_rdm():
             continue
         entry = cohort["representations"][key]
         text = (f"{title}, mean of {cohort['n_runs']} runs at "
-                rf"$L_2 = 10^{{{int(round(np.log10(STATE_SPACE_EXAMPLE_L2)))}}}$")
+                f"{_l2_panel_title(STATE_SPACE_EXAMPLE_L2)}")
         _plot_state_space_rdm_panel(cohort["all_rules"], entry, text,
                                     f"state_space_rdm_{key}.png",
                                     f"state_space_rdm_colorbar_{key}.png",
@@ -3925,7 +3923,7 @@ def plot_state_space_rdm_stats():
     cohort = _state_space_cohort_structure(combined, STATE_SPACE_EXAMPLE_L2)
     if cohort is None:
         return
-    cohort_text = rf"{cohort['n_runs']} runs at $L_2 = 10^{{{int(round(np.log10(STATE_SPACE_EXAMPLE_L2)))}}}$"
+    cohort_text = f"{cohort['n_runs']} runs at {_l2_panel_title(STATE_SPACE_EXAMPLE_L2)}"
     for key, title in _STATE_SPACE_RDM_PANELS:
         if key not in cohort["representations"]:
             print(f"  Skipped {key}: not in the cohort means.")
@@ -4990,7 +4988,8 @@ def plot_lesion_cluster_sizes():
     from the saved memberships of that same entry. Percentages are calculated
     here using each panel's summed counts; no lesion effects or significance
     tests are fitted.
-    The input panel in the main heatmap has no size panel here. Numberings are
+    The input clusters, which the heatmap does not draw either, have no size
+    panel. Numberings are
     independent and displayed as C1..Cn; unlike the heatmap, C21 is not relabeled
     U in this figure. Percentages use log y axes; zero-size clusters are labeled
     0% without a bar. Sizes provide context for interpreting lesion effects.
@@ -5281,7 +5280,7 @@ def plot_om_vs_lesion():
     correlation = saved["profile_correlation"]
     highlight = _om_scatter_highlight(saved["om_vals"], aname, saved["point_ids"])
     width, height = _LESION_SCATTER_FIGSIZE
-    fig1, axes = plt.subplots(1, 2, figsize=(2 * width + 0.4, height), sharex=True)
+    fig, axes = plt.subplots(1, 2, figsize=(2 * width + 0.4, height), sharex=True)
     panels = ((saved, lesion_diffs, "Lesion-effect\ndistance (L1)", "less"),
               (correlation, correlation["values"], "Task-profile similarity\n(Pearson r)", "greater"))
     for ax, (panel, values, ylabel, side) in zip(axes, panels):
@@ -5319,15 +5318,15 @@ def plot_om_vs_lesion():
         print(f"  om_vs_lesion_scatter [{saved['mode']}, {side}]: Spearman rho={rho:.3f}, "
               f"p_perm={p_perm:.3f} ({panel['n_perm']} saved permutations, "
               f"{panel['n_clusters']} clusters, {valid.sum()} points)")
-    fig1.tight_layout()
-    out_path1 = _multitask_out("om_vs_lesion_scatter.png")
+    fig.tight_layout()
+    out_path = _multitask_out("om_vs_lesion_scatter.png")
     run_note = ("" if aname == LESION_ANAME else
                 f"; the OM examples' run, not the lesion example {LESION_ANAME}")
     highlight_note = ("" if highlight is None else
                       f"; highlighted: example 1 block, synapse cluster C{highlight['cluster_id']} "
                       f"at input C{highlight['input']} / hidden C{highlight['hidden']}, "
                       f"OM {highlight['om']:.2f}, L1 {lesion_diffs[highlight['point']]:.3f}")
-    _save_fig(fig1, out_path1, extra=(f"  [{aname}{run_note}{highlight_note}; "
+    _save_fig(fig, out_path, extra=(f"  [{aname}{run_note}{highlight_note}; "
               f"Pearson excluded {correlation['n_excluded']} constant-profile points; "
               f"min_expected={saved['min_expected']:g}; {saved['path'].name}]"))
 
@@ -5846,7 +5845,7 @@ def plot_task_sharing_cohort():
 
 
 # ─── Figure: Context-end task geometry vs causal dependence ──────────────────
-# Both read the combined results of multiple_task/state_space_vs_lesion.py,
+# These figures read the combined results of multiple_task/state_space_vs_lesion.py,
 # which links the state-space structure caches to the lesion caches over the
 # task pairs; nothing is recomputed here.
 
@@ -6280,15 +6279,14 @@ def plot_state_space_vs_lesion_family_seeds():
                _ssl_family_statistic, ", one family's pairs", "within-family permutation")
 
 
-# ─── Figure: Fixed-point PCA trajectories ────────────────────────────────────
-
 # ─── Figure: Input weight correlation ────────────────────────────────────────
 
 def plot_input_weight_correlation():
     """
     Figure: Pearson correlation between columns of W_initial_linear (input weight).
 
-    Each column corresponds to an input feature: 6 stimulus channels + 15 task indicators.
+    Each column corresponds to an input feature: two fixation channels, four
+    stimulus channels and the 15 task indicators.
     """
     import torch
     import json as _json
@@ -7883,7 +7881,7 @@ def plot_cluster_corr_vs_lesion_seeds():
     correlation vs lesion-profile similarity, sign-flipped from the cached
     dissimilarity), joined by a thin line; filled markers have a saved
     cluster-label permutation p below 0.05, hollow ones do not. The dash is
-    the median over runs, and the tick label carries the two-sided Wilcoxon
+    the median over runs, and the legend title carries the two-sided Wilcoxon
     signed-rank p of the runs' rhos against zero, the cohort-level test. Only
     saved per-run statistics enter; the saved message counts the runs with
     positive and with significant rho.
@@ -8837,13 +8835,13 @@ def _select_pretraining_rulesets(entries):
 
 
 def _pretraining_combined_pkls(suffix):
-    """Return combined pickles strictly matched to the selected M bound."""
+    """Return combined pickles strictly matched to the selected M bound and retention."""
     pattern = f"*_dmpn_{PRETRAINING_ADDON_NAME}_{suffix}.pkl"
     return sorted(PRETRAINING_ANALYSIS_DIR.glob(pattern))
 
 
 def _pretraining_result_pkls():
-    """Return per-seed results matching both the M bound and selected groups."""
+    """Return per-seed results matching the M bound, the retention and the selected groups."""
     pattern = f"*_dmpn_seed*_{PRETRAINING_ADDON_NAME}_result.pkl"
     selected = _PRETRAINING_GROUPS[PRETRAINING_GROUPS]
     return [path for path in sorted(PRETRAINING_ANALYSIS_DIR.glob(pattern))
@@ -9595,13 +9593,10 @@ def _plot_aggregate_cve_period(period):
     """
     Draw a one-row aggregate-CVE figure for a single task period.
 
-    Supported periods are "stimulus" and "response". The layout is hidden
-    on the left and effective modulation on the right.
-    """
-    """
-    Figure: single-period-only CVE. Single row, two columns — hidden (left)
-    and effective modulation (right) — overlaying the relevant and irrelevant
-    motifs plus the DelayAnti and DelayPro single-task controls.
+    Supported periods are "stimulus" and "response". Single row, two columns:
+    hidden (left) and effective modulation (right), overlaying the relevant
+    and irrelevant motifs plus the DelayAnti and DelayPro single-task
+    controls.
     """
     if period not in {"stimulus", "response"}:
         raise ValueError(f"Unsupported aggregate CVE period: {period}")
@@ -9830,8 +9825,8 @@ def plot_onetask_example_trial():
     period_spans = _period_spans(d)
 
     # (channel indices, per-channel colors+labels, panel ylabel). Colors: cos/sin
-    # of a modality share a hue (dark/light); Fixation and Modality 2 (the active
-    # stimulus) colors are reused in the output figure for the matching channels.
+    # of a modality share a hue (dark/light); the Fixation color is reused in
+    # the output figure for its fixation channel.
     n_in = inp.shape[1]
     input_groups = [
         ([0], [_IO_FIXATION], ["Fixation"], "Fixation"),
@@ -9900,7 +9895,8 @@ def plot_onetask_example_trial():
     # Output channels are [Fixation, Output Cos, Output Sin]. Fixation shares the
     # input figure's fixation color; the response Cos/Sin get their OWN purple hue
     # (_IO_RESPONSE), distinct from the stimulus modalities so the readout isn't
-    # confused with an input modality. Extra channels (if any) fall back to brown.
+    # confused with an input modality. Extra channels (if any) fall back to the
+    # stimulus greens.
     out_colors = [_IO_FIXATION, _IO_RESPONSE[0], _IO_RESPONSE[1],
                   _IO_MOD1[0], _IO_MOD1[1]]
     # Panel y-labels by output-channel meaning. The response cosθ and sinθ
@@ -10085,8 +10081,8 @@ def plot_onetask_stimulus_colorwheel():
     """
     Illustration: the stimulus color convention used throughout the one-task
     figures. Each of the N ring stimulus directions (angle = 2*pi*k/N) is drawn
-    as a dot on the unit circle in its c_vals[k] color — the same mapping used
-    to color trajectories/rings by stimulus. A pure legend/illustration; uses no
+    as a dot on the unit circle in its stim_color(k, N) color — the same mapping
+    used to color trajectories/rings by stimulus. A pure legend/illustration; uses no
     saved data. Also saves the DMC category companion
     (`_plot_dmc_category_colorwheel`).
     """
@@ -10184,8 +10180,8 @@ def plot_onetask_show():
     # so read it from the run's param json to relabel the x-axis in ms.
     dt = _read_onetask_dt()
 
-    # Trial periods: fixation | stimulus | memory(delay) | response, bounded by
-    # the saved break times, drawn as a top colorbar (colors only, no shading).
+    # Trial periods: Context | Stimulus | Memory | Response, bounded by the
+    # saved break times, drawn as a top colorbar (colors only, no shading).
     period_spans = []
     if stimulus_start is not None and stimulus_end is not None and response_start is not None:
         fix_c, stim_c, mem_c, resp_c = _ONETASK_PERIOD_COLORS
@@ -10336,7 +10332,6 @@ def _plot_onetask_snapshot_single(mat, out_name, cbar_out_name):
         sp.set_visible(True)
         sp.set_linewidth(0.6)
         sp.set_edgecolor("0.4")
-    # No title (was `title`); kept off per figure spec.
     ax.set_xlabel("Input", fontsize=12)
     ax.set_ylabel("Hidden", fontsize=12)
     fig.tight_layout()
@@ -10363,7 +10358,6 @@ def _plot_onetask_hidden_single(hidden_vec, out_name, cbar_out_name):
         sp.set_visible(True)
         sp.set_linewidth(0.6)
         sp.set_edgecolor("0.4")
-    # No title (was `title`); kept off per figure spec.
     ax.set_ylabel("Hidden", fontsize=12)
     fig.tight_layout()
     out_path = OUT_DIR / out_name
@@ -10430,11 +10424,12 @@ _ONETASK_MARKERS = ['o', 'v', '*', '+', '>', '1', '2', '3', '4', 's',
                     'p', '*', 'h', 'H', '+', 'x', 'D', 'd', '|', '_']
 
 
-def _plot_onetask_fulltrial_panel(d, ylabel, show_legend):
+def _plot_onetask_fulltrial_panel(d, ylabel):
     """Render a single-panel full-trial PCA figure (PC1-PC2 only) from a
     fulltrial pickle dict written by one_task_analysis.py. Mirrors the original
     two-task style: per-trial trajectory line + per-phase markers + large solid
-    transition markers at each period boundary. Returns the figure."""
+    transition markers at each period boundary. The panel carries no legend
+    (_save_onetask_fulltrial_legend saves it separately). Returns the figure."""
     proj = np.asarray(d["lowd"])              # (batch, T, n_pc)
     labels = np.asarray(d["labels"]).reshape(-1)
     phases = [(n, int(t0), int(t1), int(mk)) for (n, t0, t1, mk) in d["phases"]]
@@ -10448,13 +10443,6 @@ def _plot_onetask_fulltrial_panel(d, ylabel, show_legend):
     start_to_mk = {t0: mk for (_n, t0, _t1, mk) in phases}
     transition_ts = [(t, start_to_mk.get(t, 0))
                      for t in (stimulus_start, stimulus_end, response_start)]
-
-    legend_handles = [
-        plt.Line2D([0], [0], marker=_ONETASK_MARKERS[mk], linestyle="None",
-                   markersize=10, markerfacecolor="k", markeredgecolor="k",
-                   label=_period_display(name))
-        for name, _t0, _t1, mk in phases
-    ]
 
     n_stim = int(np.max(labels)) + 1 if len(labels) else ONETASK_N_STIM
     figd, ax = plt.subplots(1, 1, figsize=(5, 5))
@@ -10478,9 +10466,6 @@ def _plot_onetask_fulltrial_panel(d, ylabel, show_legend):
     ax.set_xticks([])
     ax.set_yticks([])
     ax.spines[["top", "right"]].set_visible(False)
-    if show_legend:
-        _legend(ax, handles=legend_handles, loc="upper right",
-                  frameon=True, fontsize=10)
     figd.tight_layout()
     return figd
 
@@ -10524,8 +10509,7 @@ def plot_onetask_pca_fulltrial():
             continue
         with open(pkl_path, "rb") as f:
             d = pickle.load(f)
-        # Panels are drawn WITHOUT an inset legend.
-        fig = _plot_onetask_fulltrial_panel(d, ylabel, show_legend=False)
+        fig = _plot_onetask_fulltrial_panel(d, ylabel)
         out_path = OUT_DIR / out_name
         _save_fig(fig, out_path)
         # Emit the shared per-phase legend once, as its own figure.
@@ -10539,7 +10523,7 @@ def plot_onetask_cancel():
     Figure: fixon/task readout-cancellation across training, replotted from the
     pickle saved by one_task_analysis.py. Three curves — |Fix − Task| (combined
     residual, incl. bias), |Fix|, |Task| — of the mean readout-projection
-    magnitude over the STIMULUS + DELAY period, vs number of training datasets
+    magnitude over the STIMULUS + MEMORY period, vs number of training datasets
     (log x). Each curve shows a mean line with a ±1 SEM (std/sqrt(n) across
     trials) shaded band.
     """
@@ -10762,7 +10746,7 @@ def plot_onetask_long_fixed_points():
     """
     Figure: per-period trajectory + fixed point (last frame) of the single-task
     network, in each period's own top-2 PCA. One grid: top row = hidden, bottom
-    row = e_modulation; columns = periods (Context/Stimulus/Delay/Response).
+    row = e_modulation; columns = periods (Context/Stimulus/Memory/Response).
     Color = stimulus. Reloaded from the pickle saved by one_task_analysis.py's
     long_period_fixed_points.
     """
@@ -10947,7 +10931,7 @@ def _grad_fp_2d_project(d, rep_key, pca):
 
     # Exemplar stimulus (angle 0): its within-period RECORDED trajectory and its
     # fixed point per period, for the anchored connector.
-    _TRAJ_STIM = 0
+    _TRAJ_STIM = _GRAD_FP_TRAJ_STIM
     _traj_field = {"fixed_M": "traj_M", "fixed_WM": "traj_WM",
                    "fixed_hidden": "traj_hidden"}.get(rep_key)
     traj_by_period = {}
@@ -10977,7 +10961,7 @@ def _draw_grad_fp_2d_row(axs_row, results, periods, proj_by_period, traj_by_peri
     `overlay[period]` (from _grad_fp_period_panels) lists further probes solved
     under that period's input — they are drawn into the SAME panel, marker-coded,
     so every fixed point belonging to a period appears in that period's panel."""
-    _TRAJ_STIM = 0
+    _TRAJ_STIM = _GRAD_FP_TRAJ_STIM
     _traj_col = stim_color(_TRAJ_STIM, n_stim)
     overlay = overlay or {}
     for j, (ax, v) in enumerate(zip(axs_row, periods)):
@@ -11301,7 +11285,8 @@ _GRAD_FP_3D_OVERLAY_PROBES = {
 }
 _GRAD_FP_3D_OVERLAY_COLOR = "0.55"
 
-# Which stimulus is the exemplar whose within-period trajectory the 3D panels draw.
+# Which stimulus is the exemplar whose within-period trajectory the 2D and 3D
+# panels draw.
 # Module-level so the renderers' axis-limit computation and _draw_grad_fp_3d_row
 # pick the SAME anchor point (they must, or a panel can draw a point outside its
 # own axes box).
@@ -11521,7 +11506,7 @@ def _grad_fp_3d_project(d, rep_key, pca):
 
     # Within-period RECORDED trajectory of the exemplar stimulus (how the state
     # moves and converges during each period), projected into the same basis.
-    _TRAJ_STIM = 0
+    _TRAJ_STIM = _GRAD_FP_TRAJ_STIM
     _traj_field = {"fixed_M": "traj_M", "fixed_WM": "traj_WM",
                    "fixed_hidden": "traj_hidden"}.get(rep_key)
     traj_by_period = {}
@@ -11602,8 +11587,8 @@ def _draw_grad_fp_3d_row(fig, results, periods, proj_by_period, z_by_period,
             i0 = int(idx[0])
             angle0_pt[v] = (proj_by_period[v][i0, 0], proj_by_period[v][i0, 1],
                             float(z_by_period[v][i0]))
-    # NB no per-stimulus trajectory color here any more: the path is colored by
-    # time (see the trajectory block below), not by which stimulus it belongs to.
+    # NB no per-stimulus trajectory color here: the path is drawn in black (see
+    # the trajectory block below), not in its stimulus's color.
 
     for j, v in enumerate(draw_periods):
         # `row_idx` indexes the row normally, the COLUMN when transposed; `j` (the
@@ -11639,7 +11624,7 @@ def _draw_grad_fp_3d_row(fig, results, periods, proj_by_period, z_by_period,
                          z_vals=np.asarray(z, dtype=float), alpha=_FP_ALPHA)
         # Plus this period's added fixed points, in gray (Context: the ring-alike
         # memory-seeded ring; Response: the naive-seeded solve — see
-        # _GRAD_FP_3D_OVERLAY_KIND).
+        # _GRAD_FP_3D_OVERLAY_PROBES).
         for name in _grad_fp_3d_overlay(v, results):
             if name not in proj_by_period:      # not projected for this figure
                 continue
@@ -11678,7 +11663,7 @@ def _draw_grad_fp_3d_row(fig, results, periods, proj_by_period, z_by_period,
         # with the solved fixed points (unlike the raw recorded window, whose ends
         # are recorded boundary states, not the relaxed fixed points). z sits at
         # this period's level along the path; the leading segment shows the jump
-        # from the previous period's z. Start = dashed-edge, end = solid-edge.
+        # from the previous period's z.
         tp = traj_by_period.get(v)
         # Previous period = the one before `v` in the FULL period order (which may
         # be an undrawn fixation panel), so the first DRAWN panel still gets its
@@ -11834,9 +11819,8 @@ def _render_grad_fixed_points_3d(d, rep_key, out_path, basis=None, solid_candida
     # for the modulation / eff-modulation representations.
     proj, traj = _rotate_hidden_3d_content(rep_key, proj, traj)
 
-    # Limits span exactly what the panels draw: the period probes plus the few
-    # overlaid ones the 3D figures keep (the naive probes are not drawn here, so
-    # they must not stretch the axes either).
+    # Limits span exactly what the panels draw: the period probes plus the
+    # overlaid ones the 3D figures keep (_GRAD_FP_3D_OVERLAY_PROBES).
     drawn_3d = [v for p in periods
                 for v in [p] + _grad_fp_3d_overlay(p, results)
                 if v in proj]
@@ -12598,8 +12582,7 @@ _TWOTASK_FP_BASIS = ("longstimulus", "stimpc", "Stimulus")
 _TWOTASK_FP_3D_SKIP_PANELS = ("fixation", "delay")
 
 
-def _plot_two_task_grad_fp_combined(stem_prefix, log_label, render_fn,
-                                    with_pc_label):
+def _plot_two_task_grad_fp_combined(stem_prefix, log_label, render_fn):
     """Shared driver for the combined two-task grad fixed-point figures (2D and
     3D). Loads each rule's pickle once, then for every representation (raw M*,
     W⊙M*, hidden) loads the shared delayanti stimulus-period basis and calls
@@ -12612,9 +12595,8 @@ def _plot_two_task_grad_fp_combined(stem_prefix, log_label, render_fn,
     log_label     : short tag for the shared-basis log line ("twotask-2d"/"-3d").
     render_fn     : the combined renderer (_render_two_task_grad_fp_2d_combined or
                     _..._3d_combined); called as
-                    render_fn(rule_data, rep_key, out_path, basis[, pc_label=...]).
-    with_pc_label : pass "Stimulus" as pc_label= so axes explicitly identify the
-                    shared PCA basis. Both renderers accept it."""
+                    render_fn(rule_data, rep_key, out_path, basis, pc_label=...),
+                    the label naming the shared PCA basis on the axes."""
     paths = _twotask_grad_fp_paths()
     if not paths:
         print("  Skipped: no fixed_points_grad_*_{rule}.pkl in "
@@ -12636,8 +12618,7 @@ def _plot_two_task_grad_fp_combined(stem_prefix, log_label, render_fn,
             print(f"  Skipped '{rep_key}' ({period}): no saved reference-rule basis.")
             continue
         out_path = OUT_DIR / f"{stem_prefix}_{tag}_{infix}_{suffix}.png"
-        extra = {"pc_label": pc_label} if with_pc_label else {}
-        render_fn(rule_data, rep_key, out_path, basis, **extra)
+        render_fn(rule_data, rep_key, out_path, basis, pc_label=pc_label)
 
 
 def plot_two_task_grad_fixed_points():
@@ -12662,7 +12643,7 @@ def plot_two_task_grad_fixed_points():
     """
     _plot_two_task_grad_fp_combined(
         "twotask_grad_fixed_points", "twotask-2d",
-        _render_two_task_grad_fp_2d_combined, with_pc_label=True)
+        _render_two_task_grad_fp_2d_combined)
 
 
 def _render_two_task_grad_fp_3d_combined(rule_data, rep_key, out_path, basis,
@@ -12781,15 +12762,16 @@ def plot_two_task_grad_fixed_points_3d():
     """
     _plot_two_task_grad_fp_combined(
         "twotask_grad_fixed_points_3d", "twotask-3d",
-        _render_two_task_grad_fp_3d_combined, with_pc_label=True)
+        _render_two_task_grad_fp_3d_combined)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Multi-task sibling-family fixed-point geometry
 # ═════════════════════════════════════════════════════════════════════════════
-# This is the sole retained two_in_multiple analysis. It reads both gradient
-# fixed-point and long-delay-endpoint artifacts in each family's joint six-PC
-# delay-trajectory basis; paper_plot never refits PCA on fixed points.
+# The single-run two_in_multiple figures. They read both gradient fixed-point
+# and long-delay-endpoint artifacts in each family's joint six-PC
+# delay-trajectory basis; paper_plot never refits PCA on fixed points. The
+# cohort figures (plot_sibling_cohort_*) follow further down.
 _MULTITASK_SIBLING_FAMILIES = {
     "delaydm1": ("delaydm1", "delaydm2"),
     "dmcgo": ("dmcgo", "dmcnogo"),
@@ -15344,7 +15326,7 @@ def plot_two_task_d_combine():
     if not names:
         print("  Skipped: no PCA representations in d_combine pickle.")
         return
-    # Shared color range across panels so a single colorbar applies to both.
+    # Shared color range across panels so a single colorbar applies to all.
     vmin = min(d_combine[n].get("vmin", 0.0) for n in names)
     vmax = max(d_combine[n].get("vmax", 1.0) for n in names)
 
@@ -15423,7 +15405,7 @@ def plot_two_task_pc_cumvar():
                 else c_vals[pi % len(c_vals)])
 
     n_task = len(d[names[0]]["task_names"])
-    # Per-panel size matches onetask_pc_cumvar (1.4 wide x 1.33 tall).
+    # 1.4 in wide x 1.33 in tall per panel.
     fig, axs = plt.subplots(len(names), n_task,
                             figsize=(1.4 * n_task, 1.33 * len(names)),
                             squeeze=False)
@@ -15466,8 +15448,8 @@ def plot_two_task_pc_cumvar():
 
 def _plot_m_pca_panels(data, out_name, legend_frameon=False, show_legend=True):
     """Redraw the m_pca trajectory figure (PCA 1-2 only) from the data dict
-    stashed by two_task_analysis.py (cell 86, "normal" variant). Mirrors the
-    original alpha / marker / color conventions."""
+    stashed by two_task_analysis.py ("normal" variant). Mirrors the original
+    alpha / marker / color conventions."""
     _ensure_out_dir()
     projected = np.asarray(data["projected_data"])          # (batch, T, 3)
     ltc = np.asarray(data["label_task_comb"])
@@ -15576,9 +15558,9 @@ def plot_two_task_cancel():
     # dt, so read it from the run's param json to relabel the x-axis in ms.
     dt = _read_twotask_dt()
 
-    # Trial periods: fixation | stimulus | memory(delay) | response, bounded by
-    # the saved marker times. Drawn as a top color bar (colors only, no shading),
-    # matching the one-task figures' _ONETASK_PERIOD_COLORS grayscale palette.
+    # Trial periods: Context | Stimulus | Memory | Response, bounded by the
+    # saved marker times. Drawn as a top color bar (colors only, no shading),
+    # in the one-task figures' period palette (_ONETASK_PERIOD_COLORS).
     fix_end = markers["fixation_end"]
     stim_end = markers["stimulus_end"]
     delay_end = markers["delay_end"]
@@ -15814,7 +15796,7 @@ def plot_two_task_w_gram_matrix():
 def plot_two_task_w_hurt():
     """
     Figure: magnitude-pruning accuracy curve for the two-task network — test
-    accuracy vs. the fraction of recurrent MP weights (W) zeroed out by smallest
+    accuracy vs. the fraction of plastic-layer weights (W) zeroed out by smallest
     magnitude. A slow accuracy drop until high sparsity indicates the task
     computation is carried by a small subset of large-magnitude weights (W is
     prunable). Reads the self-contained pickle written by two_task_analysis.py.
@@ -16004,8 +15986,8 @@ FIGURES_BY_MODE = {
         "state_space_r_timecourse": plot_state_space_r_timecourse,
         "state_space_r_vs_context": plot_state_space_r_vs_context,
         "state_space_transplant_r_values": plot_state_space_transplant_r_values,
-        # Category structure and task-vector additivity of the context-end
-        # task centroids, from state_space_structure.py.
+        # Category structure of the context-end task centroids, from
+        # state_space_structure.py.
         "state_space_rdm": plot_state_space_rdm,
         "state_space_rdm_stats": plot_state_space_rdm_stats,
         "state_space_rdm_stats_vs_l2": plot_state_space_rdm_stats_vs_l2,

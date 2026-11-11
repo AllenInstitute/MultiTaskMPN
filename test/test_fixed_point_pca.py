@@ -152,7 +152,7 @@ class FixedPointPCATests(unittest.TestCase):
                     patch.object(PCA, "fit", side_effect=AssertionError("paper refit")), \
                     patch.object(PCA, "fit_transform", side_effect=AssertionError("paper refit")):
                 renderer = Mock()
-                paper._plot_two_task_grad_fp_combined("test", "test", renderer, with_pc_label=True)
+                paper._plot_two_task_grad_fp_combined("test", "test", renderer)
                 self.assertEqual(renderer.call_count, 3)
                 for call in renderer.call_args_list:
                     representation, basis = call.args[1], call.args[3]

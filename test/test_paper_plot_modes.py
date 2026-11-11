@@ -365,12 +365,10 @@ class PaperPlotModeTests(unittest.TestCase):
         }
         # Equal scores use the alphabetically first aname, independent of dict
         # insertion order, so regeneration cannot silently switch examples.
-        selected = paper_plot._best_state_space_trial(
-            result_dict, pca_loader=pca_data.get)
-        self.assertEqual(selected[0], "best1")
-        self.assertAlmostEqual(selected[1], 0.8)
         report = paper_plot._state_space_centroid_ranking(
             result_dict, pca_loader=pca_data.get)
+        self.assertEqual(report["best_aname"], "best1")
+        self.assertAlmostEqual(report["rankings"][0]["score"], 0.8)
         self.assertEqual(report["n_scored"], 3)
         self.assertEqual([row["aname"] for row in report["rankings"]],
                          ["best1", "best2", "mixed"])
@@ -384,11 +382,9 @@ class PaperPlotModeTests(unittest.TestCase):
         result_dict = {"strong_mixed": {"l2_info": 1e-2}, "strong_good": {"l2_info": 1e-2},
                        "weak_good": {"l2_info": 1e-4}}
         pca_data = {"strong_mixed": mixed, "strong_good": good, "weak_good": good}
-        selected = paper_plot._best_state_space_trial(result_dict, pca_loader=pca_data.get,
-                                                      strength=1e-2)
-        self.assertEqual(selected[0], "strong_good")
         report = paper_plot._state_space_centroid_ranking(result_dict, pca_loader=pca_data.get,
                                                           strength=1e-2)
+        self.assertEqual(report["best_aname"], "strong_good")
         self.assertEqual(report["l2"], 1e-2)
         self.assertEqual([row["aname"] for row in report["rankings"]],
                          ["strong_good", "strong_mixed"])
@@ -432,11 +428,13 @@ class PaperPlotModeTests(unittest.TestCase):
         plot_figure.assert_not_called()
 
     def test_state_space_trial_returns_none_without_valid_centers(self):
-        self.assertIsNone(paper_plot._best_state_space_trial({
+        report = paper_plot._state_space_centroid_ranking({
             "missing": {},
             "wrong_l2": {"l2_info": 1e-2},
             "missing_pca": {"l2_info": 1e-4},
-        }, pca_loader=lambda _: None))
+        }, pca_loader=lambda _: None)
+        self.assertIsNone(report["best_aname"])
+        self.assertEqual(report["rankings"], [])
 
     def test_state_space_ranking_does_not_fall_back_to_two_dimensional_points(self):
         legacy = {"all_rules": ["fdgo", "delaygo", "fdanti", "delayanti"],
