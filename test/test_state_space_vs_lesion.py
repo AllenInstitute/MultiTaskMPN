@@ -680,9 +680,12 @@ class PaperFigureTests(unittest.TestCase):
         aname = paper_plot.LESION_ANAME
         combined = self.results([aname])
         save, _ = self.render(paper_plot.plot_state_space_vs_lesion_families, combined, [aname])
-        save.assert_called_once()
-        figure, path = save.call_args.args[:2]
-        self.assertEqual(path.name, "multitask_state_space_vs_lesion_families.png")
+        # The grid, then its color key as a separate small figure.
+        self.assertEqual([call.args[1].name for call in save.call_args_list],
+                         ["multitask_state_space_vs_lesion_families.png",
+                          "multitask_state_space_vs_lesion_families_legend.png"])
+        figure, path = save.call_args_list[0].args[:2]
+        key = save.call_args_list[1].args[0]
         self.assertEqual(len(figure.axes), 8)
         self.assertEqual([text.get_text() for text in figure.texts],
                          ["Neuron clusters", "Synapse clusters"])
@@ -712,19 +715,35 @@ class PaperFigureTests(unittest.TestCase):
                 self.assertEqual(paper_plot.mpl.colors.to_hex(collection.get_facecolors()[0]),
                                  paper_plot.mpl.colors.to_hex(color))
                 self.assertLess(collection.get_zorder(), axis.lines[0].get_zorder())
-            # The statistics are the legend's title, the point classes its entries.
-            legend = axis.get_legend()
-            title = legend.get_title().get_text()
-            self.assertIn(f"{test['rho']:.2f}", title)
-            self.assertIn(paper_plot._permutation_p_text(test["p_value"]), title)
-            self.assertIn("within-family " + paper_plot._permutation_p_text(restricted["p_value"]), title)
-            self.assertEqual([text.get_text() for text in legend.get_texts()],
-                             ["go (15 pairs)", "decision (10 pairs)", "matching (6 pairs)",
-                              f"different families ({(~same).sum()} pairs)"])
+            # The panel's legend holds the statistics only.
+            texts = [text.get_text() for text in axis.get_legend().get_texts()]
+            self.assertEqual(len(texts), 1)
+            self.assertIn(f"{test['rho']:.2f}", texts[0])
+            self.assertIn(paper_plot._permutation_p_text(test["p_value"]), texts[0])
+            self.assertIn("within-family " + paper_plot._permutation_p_text(restricted["p_value"]),
+                          texts[0])
             self.assertEqual(len(axis.lines), 1)
             self.assertEqual(axis.get_ylim()[0] == 0, measure["key"] == "distance")
-        self.assertIn("within-family p = ", save.call_args.kwargs["extra"])
-        self.assertIn("same-family pairs rho = ", save.call_args.kwargs["extra"])
+        extra = save.call_args_list[0].kwargs["extra"]
+        self.assertIn("within-family p = ", extra)
+        self.assertIn("same-family pairs rho = ", extra)
+        # The panels are as large as the full-pairs grid's; the color key
+        # names the families with their pair counts and colors.
+        np.testing.assert_allclose(figure.get_size_inches(),
+                                   np.asarray(paper_plot._LESION_SCATTER_FIGSIZE) * (4, 2))
+        self.assertEqual(len(key.axes), 0)
+        legend = key.legends[0]
+        self.assertEqual([text.get_text() for text in legend.get_texts()],
+                         ["go (15 pairs)", "decision (10 pairs)", "matching (6 pairs)",
+                          f"different families ({(~same).sum()} pairs)"])
+        self.assertEqual([paper_plot.mpl.colors.to_hex(handle.get_color())
+                          for handle in legend.legend_handles],
+                         [paper_plot.mpl.colors.to_hex(color) for _, _, color in paper_plot._SSL_FAMILIES]
+                         + [paper_plot.mpl.colors.to_hex(paper_plot._LESION_POINT_COLOR)])
+        # Without legends the grid is saved alone.
+        save, _ = self.render(paper_plot.plot_state_space_vs_lesion_families, combined, [aname],
+                              show_legend=False)
+        save.assert_called_once()
 
     def test_families_seed_figure_draws_the_same_family_rho_per_run(self):
         import re

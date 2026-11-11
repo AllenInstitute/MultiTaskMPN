@@ -255,6 +255,10 @@ class TaskSpecificitySeedsTests(TaskSpecificityFigureTests):
         self.assertGreater(tied.max() - tied.min(), 0)
         self.assertEqual(sorted(offsets[np.isclose(offsets[:, 0], 1, atol=0.3), 1].tolist()),
                          [4, 5, 5])
+        # The axis starts below zero, so a run with a median of 0 is a whole
+        # point; the ticks still start at 0.
+        self.assertEqual(axis.get_ylim()[0], paper_plot._TASK_SPECIFICITY_COUNT_YMIN)
+        self.assertEqual(min(axis.get_yticks()), 0)
         # Hollow (white face) where the saved dispersion p is >= 0.05: the
         # hidden point of seed 22 (p = 0.30) and every modulation point (0.7).
         hollow = [c for c in dots if np.allclose(c.get_facecolors()[0][:3], 1.0)]
@@ -605,6 +609,11 @@ class TaskSpecificityPoolTests(TaskSpecificitySeedsTests):
         by_column = [sorted(offsets[np.isclose(np.round(offsets[:, 0]), column), 1].tolist())
                      for column in columns]
         self.assertEqual(by_column, [[1, 1, 2], [0.5, 1, 1], [4, 5, 5], [2, 2, 3]])
+        # The axis starts below zero, so a run with a median of 0 is a whole
+        # point; the ticks still start at 0.
+        self.assertEqual(axis.get_ylim()[0], paper_plot._TASK_SPECIFICITY_COUNT_YMIN)
+        self.assertLess(paper_plot._TASK_SPECIFICITY_COUNT_YMIN, -0.5)
+        self.assertEqual(min(axis.get_yticks()), 0)
         self.assertFalse(any(np.allclose(c.get_facecolors()[0][:3], 1.0) for c in dots))
         # The paired test between the responsive and the all pool, per type.
         expected = [wilcoxon([0.5 - 1, 1 - 2, 1 - 1]).pvalue, wilcoxon([2 - 4, 2 - 5, 3 - 5]).pvalue]

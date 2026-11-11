@@ -646,7 +646,9 @@ the task families visible: the pairs of two tasks of one family in that
 family's color (`_SSL_FAMILIES`: go blue, decision-making purple, matching
 gold, the categorical `c_vals`) over the pairs of different families in
 grey, and in each legend, under the full permutation p, the within-family
-permutation p.
+permutation p; the color key (family names and pair counts) is saved as
+`multitask_state_space_vs_lesion_families_legend_n.png`, so the panels carry
+the statistics only and keep the full-pairs grid's size.
 `--only state_space_vs_lesion_families_seeds` draws
 `multitask_state_space_vs_lesion_families_seeds_n.png`, the cohort grid
 for the same-family pairs alone: per run the rho over those 31 pairs,
@@ -1068,10 +1070,14 @@ sharing result (schema 1: the `row_tol_k` and `col_tol_k` of the normalized
 clustering, the modulation at its plotted G=300 pre-grouping, the K whose
 labels every row-cluster figure reads): the task x period row clusters on
 the left and the column clusters (neurons; synapses for modulation) on the
-right, as means with SD whiskers over networks, trained filled and untrained
-hollow as in the sharing bar figures. The figure carries no test; the save
-message adds the medians, ranges and the raw two-sided Mann-Whitney p of
-trained against untrained per representation and axis. A sharing result
+right, as medians with interquartile whiskers
+(means with SD until 2026-11-10; the counts are skewed, the hidden column
+count running from 5 to over 100), trained filled and untrained hollow as in
+the sharing bar figures. A bracket over each pair carries the two-sided
+Mann-Whitney test of trained against untrained computed in `paper_plot.py`:
+a star for BH q < 0.05 over the figure's six tests, "n.s." otherwise; the
+save message adds the medians, ranges, p and q per representation and axis.
+The counts barely move with training, and the stars mark the exceptions. A sharing result
 written before this entry existed asks for a rerun of the summary.
 
 `multitask_variance_partition_matched_tasks_n.png` quantifies task and period
@@ -1191,13 +1197,36 @@ restricted-null chance dashes are unchanged. Its bracket annotations instead
 test the directional alternative **trained > untrained** within each period:
 one-sided Mann-Whitney U (`alternative="greater"`, trained samples first), using
 tie- and continuity-corrected asymptotic p values. BH correction includes all
-five periods, including those with lower trained sharing. Both raw p and
-adjusted q are shown; a small value supports greater sharing in trained networks.
+five periods, including those with lower trained sharing. A bracket over each
+cohort pair carries a star for q < 0.05 and "n.s." otherwise (the exact p and
+q are in the save message; they were printed on the figure until 2026-11-10,
+when it took the size and styles of the other row-sharing bar figures); a
+star supports greater sharing in trained networks.
 This directional follow-up replaces this figure's earlier two-sided comparison.
 Each network contributes one sharing fraction; task pairs are not independent
 samples and the cohorts are not paired. The tests concern the distributions
 of those fractions, not specifically the difference of their means. Zero
-sharing is retained. Both cohorts are required. These comparisons are computed
+sharing is retained. Both cohorts are required. Since 2026-11-10 a bottom panel
+repeats the comparison for the **chance-corrected** sharing, each network's
+fraction minus its own restricted-null chance in percentage points (the
+dashes of the top panel, per network), with the top panel's one-sided
+Mann-Whitney U tests (trained > untrained) and their own BH correction over
+the five periods; a pair in which the untrained networks are the higher
+ones therefore reads "n.s." in both panels. The raw fractions depend
+on the clustering's granularity, which differs between the cohorts: the
+synapse row clusters number 10 to 20 with training (median 14) against 10
+to 14 without (median 11, usually with one cluster of about 14 of the 49
+rows), and within the trained cohort the cluster count and the pooled
+sharing correlate at −0.66. Each network's null carries that granularity,
+so the bottom panel shows what the period adds: in the L21e4 cohort
+Stimulus 1 stays higher without training (+7.6 against +22.7 points),
+Stimulus 2 stays higher with it, and Memory 1 reverses, above chance with
+training (+2.7) and below without (−3.6) although its raw fraction is the
+lower one. Stimulus 2 and Memory 2 have ten task pairs per network (five
+tasks), so their fractions move in steps of ten points; the Memory 2 star of
+the top panel rests on one shared pair in five of 25 networks and does not
+survive the correction. The matched-task figure gets the same panel.
+These comparisons are computed
 from current v6 per-network counts while plotting; once clustering and sharing
 have been migrated, this extra figure needs no further summary rerun:
 

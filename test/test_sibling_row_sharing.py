@@ -1079,18 +1079,38 @@ class PaperFigureTests(unittest.TestCase):
         for ax, key in zip(axes, ("row_k", "col_k")):
             bars = ax.patches
             self.assertEqual(len(bars), 6)  # three representations x (trained, untrained)
-            expected = [np.mean(saved["cluster_counts"]["representations"][rep][key])
+            # Medians, not means: the counts are skewed.
+            expected = [np.median(saved["cluster_counts"]["representations"][rep][key])
                         for rep in ("input", "hidden", "modulation")
                         for saved in (payload, control)]
             np.testing.assert_allclose([bar.get_height() for bar in bars], expected)
             self.assertEqual(sum(bar.get_facecolor()[:3] == (1.0, 1.0, 1.0) for bar in bars), 3)
+            # No per-network dots; one test mark per trained/untrained pair.
+            self.assertFalse(any(isinstance(c, paper_plot.mpl.collections.PathCollection)
+                                 for c in ax.collections))
+            marks = [text.get_text() for text in ax.texts]
+            self.assertEqual(len(marks), 3)
+            self.assertTrue(set(marks) <= {"*", "n.s."})
+            self.assertEqual(ax.get_ylim()[0], 0)
         extra = save.call_args.kwargs["extra"]
         self.assertIn("Mann-Whitney", extra)
+        # The marks follow the BH q of the six two-sided Mann-Whitney tests.
+        from scipy.stats import false_discovery_control, mannwhitneyu
+        pairs = [(key, rep) for key in ("row_k", "col_k") for rep in ("input", "hidden", "modulation")]
+        p_values = [mannwhitneyu(payload["cluster_counts"]["representations"][rep][key],
+                                 control["cluster_counts"]["representations"][rep][key],
+                                 alternative="two-sided").pvalue for key, rep in pairs]
+        q_values = false_discovery_control(p_values, method="bh")
+        drawn = [text.get_text() for ax in axes for text in ax.texts]
+        self.assertEqual(drawn, ["*" if q < 0.05 else "n.s." for q in q_values])
+        self.assertIn(f"q = {q_values[-1]:.2g}", extra)
+        self.assertIn("Mann", save.call_args.args[0].legends[0].get_texts()[-1].get_text())
         self.assertIn("col_k modulation: trained median 71.5, range 69-74", extra)
         # Without the control: full-width trained bars only, and a request for it.
         del control["cluster_counts"]
         save, printed = self._render(paper_plot.plot_row_cluster_counts_seeds, payload, control)
         self.assertEqual(len(save.call_args.args[0].axes[0].patches), 3)
+        self.assertEqual(len(save.call_args.args[0].axes[0].texts), 0)
         self.assertIn("--untrained", str(printed.call_args_list))
         self.assertNotIn("Mann-Whitney", save.call_args.kwargs["extra"])
 
@@ -1340,10 +1360,17 @@ class PaperFigureTests(unittest.TestCase):
         with patch("scipy.stats.mannwhitneyu", wraps=mannwhitneyu) as compare:
             save, _ = self._render(paper_plot.plot_row_cluster_same_period_synapses,
                                    payload, control)
-        self.assertEqual(compare.call_count, 5)
-        for call in compare.call_args_list:
+        # Five one-sided tests of the raw fractions, then the same five tests
+        # of the fractions minus each network's own chance (10% here).
+        self.assertEqual(compare.call_count, 10)
+        for call in compare.call_args_list[:5]:
             for actual, expected in zip(call.args, samples):
                 np.testing.assert_allclose(actual, expected)
+            self.assertEqual(call.kwargs, {"alternative": "greater",
+                                           "method": "asymptotic", "use_continuity": True})
+        for call in compare.call_args_list[5:]:
+            for actual, expected in zip(call.args, samples):
+                np.testing.assert_allclose(actual, np.asarray(expected) - 10.0)
             self.assertEqual(call.kwargs, {"alternative": "greater",
                                            "method": "asymptotic", "use_continuity": True})
         self.assertEqual(Path(save.call_args.args[1]).name,
@@ -1352,11 +1379,15 @@ class PaperFigureTests(unittest.TestCase):
         np.testing.assert_allclose([bar.get_height() for bar in ax.patches],
                                    [100 / 3, 50] * 5)
         self.assertLess(ax.get_ylim()[0], np.mean(samples[0]) - np.std(samples[0], ddof=1))
-        self.assertEqual(len(ax.texts), 5)
-        self.assertTrue(all("p=" in text.get_text() and "q=" in text.get_text()
-                            and "*" not in text.get_text() for text in ax.texts))
+        # One mark per period: the trained values rank lower, so no star.
+        self.assertEqual([text.get_text() for text in ax.texts], ["n.s."] * 5)
         self.assertIn("trained > untrained", ax.get_title())
-        self.assertIn("One-sided", ax.get_title())
+        self.assertIn("one-sided", ax.get_title())
+        # The figure has the row-sharing bar figures' width.
+        figure = save.call_args.args[0]
+        self.assertAlmostEqual(figure.get_size_inches()[0],
+                               1.0 + paper_plot._ROW_SHARING_GROUP_IN[True] * 5)
+        self.assertEqual(figure.axes[1].get_title(), "Chance-corrected sharing")
         expected_p = mannwhitneyu(*samples, alternative="greater",
                                   method="asymptotic").pvalue
         # The trained values rank lower here: the greater alternative must
@@ -1369,13 +1400,23 @@ class PaperFigureTests(unittest.TestCase):
 
     def test_synapse_comparison_corrects_only_the_five_cohort_tests(self):
         # Different from all saved within-cohort p/q values; BH in period order.
+        # The five raw-fraction tests come first, then the five
+        # chance-corrected ones, each family adjusted on its own.
         with patch("scipy.stats.mannwhitneyu", side_effect=[
-                SimpleNamespace(pvalue=p) for p in (0.04, 0.001, 0.03, 0.8, 0.2)]):
+                SimpleNamespace(pvalue=p) for p in (0.04, 0.001, 0.03, 0.8, 0.2,
+                                                    0.5, 0.001, 0.002, 0.3, 0.9)]):
             save, _ = self._render(paper_plot.plot_row_cluster_same_period_synapses,
                                    self._payload(), self._untrained_payload())
+        # q = 0.0667, 0.005, 0.0667, 0.8, 0.25: a raw p of 0.04 loses its star.
         self.assertEqual([text.get_text() for text in save.call_args.args[0].axes[0].texts],
-                         ["p=0.04\nq=0.0667", "p=0.001\nq=0.005", "p=0.03\nq=0.0667",
-                          "p=0.8\nq=0.8", "p=0.2\nq=0.25"])
+                         ["n.s.", "*", "n.s.", "n.s.", "n.s."])
+        # q = 0.625, 0.005, 0.005, 0.5, 0.9.
+        self.assertEqual([text.get_text() for text in save.call_args.args[0].axes[1].texts],
+                         ["n.s.", "*", "*", "n.s.", "n.s."])
+        extra = save.call_args.kwargs["extra"]
+        self.assertIn("p=0.04, q=0.0666667", extra)
+        self.assertIn("above chance: trained", extra)
+        self.assertIn("p=0.002, q=0.005", extra)
 
     def test_synapse_comparison_skips_missing_control_or_period(self):
         payload, control = self._payload(), self._untrained_payload()
@@ -1410,16 +1451,26 @@ class PaperFigureTests(unittest.TestCase):
                       wraps=false_discovery_control) as adjust:
             save, _ = self._render(
                 paper_plot.plot_row_cluster_same_period_synapses_matched_tasks, payload, control)
-        self.assertEqual(compare.call_count, 5)
+        # Five tests of the raw fractions, then five of the chance-corrected
+        # ones (every network's null is 15% here), each family with its own BH.
+        self.assertEqual(compare.call_count, 10)
         expected_p = []
-        for call, group in zip(compare.call_args_list, zip(*samples)):
+        for call, group in zip(compare.call_args_list[:5], zip(*samples)):
             for actual, expected in zip(call.args, group):
                 np.testing.assert_allclose(actual, expected)
             self.assertEqual(call.kwargs, {"alternative": "greater",
                                            "method": "asymptotic", "use_continuity": True})
             expected_p.append(mannwhitneyu(*group, **call.kwargs).pvalue)
-        adjust.assert_called_once()
-        np.testing.assert_allclose(adjust.call_args.args[0], expected_p)
+        expected_excess_p = []
+        for call, group in zip(compare.call_args_list[5:], zip(*samples)):
+            for actual, expected in zip(call.args, group):
+                np.testing.assert_allclose(actual, expected - 15.0)
+            self.assertEqual(call.kwargs, {"alternative": "greater",
+                                           "method": "asymptotic", "use_continuity": True})
+            expected_excess_p.append(mannwhitneyu(*group, **call.kwargs).pvalue)
+        self.assertEqual(adjust.call_count, 2)
+        np.testing.assert_allclose(adjust.call_args_list[0].args[0], expected_p)
+        np.testing.assert_allclose(adjust.call_args_list[1].args[0], expected_excess_p)
         self.assertEqual(adjust.call_args.kwargs, {"method": "bh"})
         self.assertEqual(Path(save.call_args.args[1]).name,
                          "multitask_row_cluster_same_period_synapses_matched_tasks.png")
@@ -1430,10 +1481,21 @@ class PaperFigureTests(unittest.TestCase):
             [segment[:, 1] for collection in ax.collections[1::2]
              for segment in collection.get_segments()], [[15.0, 15.0]] * 10)
         self.assertEqual([text.get_text() for text in ax.texts],
-                         [f"p={p:.3g}\nq={q:.3g}" for p, q in zip(
-                             expected_p, false_discovery_control(expected_p, method="bh"))])
+                         ["*" if q < 0.05 else "n.s."
+                          for q in false_discovery_control(expected_p, method="bh")])
         self.assertIn("Same five tasks", ax.get_title())
         self.assertIn("10 task pairs per period per network", save.call_args.kwargs["extra"])
+        # Bottom panel: the same bars minus each network's own chance, with a
+        # zero line and its own p/q annotations.
+        bottom = save.call_args.args[0].axes[1]
+        np.testing.assert_allclose([bar.get_height() for bar in bottom.patches],
+                                   [values.mean() - 15.0 for group in zip(*samples) for values in group])
+        self.assertEqual([text.get_text() for text in bottom.texts],
+                         ["*" if q < 0.05 else "n.s."
+                          for q in false_discovery_control(expected_excess_p, method="bh")])
+        self.assertIn("Chance-corrected", bottom.get_title())
+        self.assertTrue(any(np.allclose(line.get_ydata(), 0.0) for line in bottom.lines))
+        self.assertIn("above chance: trained", save.call_args.kwargs["extra"])
 
     def test_matched_synapse_comparison_never_falls_back_to_all_task_counts(self):
         payload, control = self._payload(), self._untrained_payload()

@@ -5915,15 +5915,18 @@ _SSL_MEASURES = (
 _SSL_PAIR_TITLE_GAP_PT = 5
 _SSL_PAIR_TITLE_TOP = 0.91
 # The task families (key, label, color), in the script's TASK_FAMILIES
-# order; the labels are short because they sit in the 2.5 in panels'
-# legends and under three ticks. The `_families` grid colors the pairs of
-# one family by it (categorical c_vals, SCHEME.md: statistics overlay) over
-# the lesion scatters' grey; the red guide stays the only line.
+# order; the labels are short because they sit under three ticks of the
+# per-family cohort figure. The `_families` grid colors the pairs of one
+# family by it (categorical c_vals, SCHEME.md: statistics overlay) over the
+# lesion scatters' grey; the red guide stays the only line. The color key is
+# its own small figure (_SSL_FAMILY_LEGEND_FIGSIZE), so the panels keep the
+# full-pairs grid's size.
 _SSL_FAMILIES = (("go", "go", c_vals[1]), ("decision", "decision", c_vals[9]),
                  ("matching", "matching", c_vals[3]))
 # The per-family cohort figure reads one representation: the hidden-state
 # and W * M distances rank the task pairs alike (rho 0.93 over the cohort).
 _SSL_PER_FAMILY_REPRESENTATION = "hidden"
+_SSL_FAMILY_LEGEND_FIGSIZE = (1.9, 0.9)
 
 
 def _ssl_panel(entry, measure, representation, cluster_type):
@@ -6201,6 +6204,9 @@ def plot_state_space_vs_lesion_families():
     only (multiple_task/state_space_vs_lesion.py, restricted Mantel), so
     family membership is part of the null and the p is that of the
     association the arrangement of the tasks within their families adds.
+    The color key (family names and pair counts) is saved as its own figure,
+    state_space_vs_lesion_families_legend, when legends are on, so every
+    panel carries the statistics only and keeps the full-pairs grid's size.
 
     Same-family pairs lie close in state space and share lesion profiles, so
     the full test is significant whenever the families separate on both
@@ -6224,14 +6230,12 @@ def plot_state_space_vs_lesion_families():
                for family, label, color in _SSL_FAMILIES]
     classes.append((_LESION_POINT_COLOR, pair_family == "",
                     f"different families ({np.sum(pair_family == '')} pairs)"))
-    handles = [mpl.lines.Line2D([], [], marker="o", linestyle="none", markersize=4,
-                                color=color, label=label) for color, _, label in classes]
 
     def draw_panel(ax, x, representation, cluster_type, measure, ylabel):
         y, test, trend, restricted = _ssl_panel(entry, measure, representation, cluster_type)
         text = (_ssl_legend_text(test, x.size) + "\n"
                 f"within-family {_permutation_p_text(restricted['p_value'])}")
-        _stat_scatter(ax, x, y, text, trend_line=trend, legend_handles=handles,
+        _stat_scatter(ax, x, y, text, trend_line=trend,
                       xlabel=_ssl_xlabel(representation), ylabel=ylabel,
                       point_color=_LESION_POINT_COLOR)
         for color, mask, _ in classes[:-1]:
@@ -6242,6 +6246,14 @@ def plot_state_space_vs_lesion_families():
                 f"same-family pairs rho = {restricted['within']['rho']:.3f}")
 
     _ssl_grid(entry, "state_space_vs_lesion_families.png", draw_panel)
+    if SHOW_LEGEND:
+        handles = [mpl.lines.Line2D([], [], marker="o", linestyle="none", markersize=4,
+                                    color=color, label=label) for color, _, label in classes]
+        fig = plt.figure(figsize=_SSL_FAMILY_LEGEND_FIGSIZE)
+        fig.legend(handles=handles, loc="center", frameon=False, fontsize=6,
+                   handletextpad=0.4, labelspacing=0.5, title="Task pair", title_fontsize=6)
+        _save_fig(fig, _multitask_out("state_space_vs_lesion_families_legend.png"),
+                  extra="  (color key of state_space_vs_lesion_families)")
 
 
 def plot_state_space_vs_lesion_seeds():
@@ -6828,14 +6840,18 @@ def plot_row_cluster_counts_seeds():
     right the column clusters (neurons of the input and hidden heatmaps,
     synapses of the modulation one at its plotted pre-grouping), of the
     normalized clustering whose labels every row-cluster figure reads. Bars
-    are means over the networks of the MULTITASK_L2 cohort with SD whiskers;
-    hollow twins are the architecture's untrained networks, as in
-    row_cluster_same_period_seeds. The figure carries no test; the save
-    message adds medians, ranges and the raw two-sided Mann-Whitney p of
-    trained against untrained per representation and axis. Read from the
-    `cluster_counts` entry of the sharing results (sibling_row_sharing.py).
+    are medians over the networks of the MULTITASK_L2 cohort with
+    interquartile whiskers (the counts are skewed: the hidden column count
+    runs from 5 to over 100, so a mean with its SD reached below zero);
+    hollow twins are the architecture's untrained
+    networks, as in row_cluster_same_period_seeds. A bracket over each pair
+    carries the two-sided Mann-Whitney test of trained against untrained,
+    computed here: a star for BH q < 0.05 over the figure's six tests,
+    "n.s." otherwise. The save message adds medians, ranges, p and q per
+    representation and axis. Read from the `cluster_counts` entry of the
+    sharing results (sibling_row_sharing.py).
     """
-    from scipy.stats import mannwhitneyu
+    from scipy.stats import false_discovery_control, mannwhitneyu
 
     loaded = _load_row_sharing_view("cluster_counts")
     if loaded is None:
@@ -6848,32 +6864,56 @@ def plot_row_cluster_counts_seeds():
     columns = [(rep, label) for rep, label in _ROW_SHARING_REPRESENTATIONS if rep in reps]
     split = bool(control_reps)
     width = 0.36 if split else 0.6
+    # Trained against untrained per (axis, representation): two-sided
+    # Mann-Whitney, BH-adjusted over the figure's tests.
+    counts = {(axis_key, rep): (np.asarray(reps[rep][axis_key], dtype=float),
+                                np.asarray(control_reps[rep][axis_key], dtype=float)
+                                if rep in control_reps else np.array([]))
+              for axis_key, _ in _CLUSTER_COUNT_PANELS for rep, _ in columns}
+    tested = [key for key, (_, fresh) in counts.items() if fresh.size]
+    p_values = [float(mannwhitneyu(*counts[key], alternative="two-sided").pvalue) for key in tested]
+    tests = dict(zip(tested, zip(p_values, false_discovery_control(p_values, method="bh")
+                                 if p_values else [])))
     fig, axs = plt.subplots(1, 2, figsize=(4.6, 2.4))
     notes = []
     for ax, (axis_key, title) in zip(axs, _CLUSTER_COUNT_PANELS):
+        # The tallest whisker of the panel scales the brackets and the axis.
+        panel_top = max(np.percentile(values, 75) for key, pair in counts.items()
+                        if key[0] == axis_key for values in pair if values.size)
         for position, (rep, _) in enumerate(columns):
             color = _TASK_SPECIFICITY_COLORS[rep]
-            trained = np.asarray(reps[rep][axis_key], dtype=float)
-            fresh = (np.asarray(control_reps[rep][axis_key], dtype=float)
-                     if rep in control_reps else np.array([]))
+            trained, fresh = counts[(axis_key, rep)]
             groups = [(trained, position - width / 2 if split else position,
                        dict(color=color, edgecolor="k", linewidth=0.3))]
             if fresh.size:
                 groups.append((fresh, position + width / 2,
                                dict(color="white", edgecolor=color, linewidth=0.6)))
             for values, x, style in groups:
-                spread = values.std(ddof=1) if values.size > 1 else 0.0
-                ax.bar(x, values.mean(), width=width * 0.92, zorder=2, **style)
-                if spread > 0:
-                    ax.errorbar(x, values.mean(), yerr=spread, color=_ROW_SHARING_SPREAD_COLOR,
-                                linewidth=0.7, capsize=1.5, capthick=0.7, zorder=4)
+                median = float(np.median(values))
+                lower, upper = np.percentile(values, [25, 75])
+                ax.bar(x, median, width=width * 0.92, zorder=2, **style)
+                if upper > lower:
+                    ax.errorbar(x, median, yerr=[[median - lower], [upper - median]],
+                                color=_ROW_SHARING_SPREAD_COLOR, linewidth=0.7, capsize=1.5,
+                                capthick=0.7, zorder=4)
             note = (f"{axis_key} {rep}: trained median {np.median(trained):g}, range "
                     f"{int(trained.min())}-{int(trained.max())}")
             if fresh.size:
-                p_value = float(mannwhitneyu(trained, fresh, alternative="two-sided").pvalue)
+                p_value, q_value = tests[(axis_key, rep)]
                 note += (f"; untrained median {np.median(fresh):g}, range {int(fresh.min())}-"
-                         f"{int(fresh.max())}; Mann-Whitney p = {p_value:.2g}")
+                         f"{int(fresh.max())}; Mann-Whitney p = {p_value:.2g}, q = {q_value:.2g}")
+                # The bracket joins the cohort twins over their higher whisker.
+                y = max(np.percentile(trained, 75), np.percentile(fresh, 75)) + 0.05 * panel_top
+                tip = 0.03 * panel_top
+                ax.plot([position - width / 2, position - width / 2,
+                         position + width / 2, position + width / 2],
+                        [y, y + tip, y + tip, y], color="0.3", linewidth=0.5)
+                significant = q_value < _ROW_SHARING_SIGNIFICANCE
+                ax.text(position, y + tip, "*" if significant else "n.s.", ha="center",
+                        va="bottom", fontsize=6 if significant else 5,
+                        color="k" if significant else "0.45")
             notes.append(note)
+        ax.set_ylim(0, panel_top * 1.2)
         ax.set_title(title, fontsize=8)
         ax.set_xticks(np.arange(len(columns)))
         ax.set_xticklabels([label for _, label in columns], fontsize=6)
@@ -6889,8 +6929,12 @@ def plot_row_cluster_counts_seeds():
         handles.append(mpl.patches.Patch(facecolor="white", edgecolor="0.3", linewidth=0.6,
                                          label="untrained (hollow)"))
     handles.append(mpl.lines.Line2D([], [], color=_ROW_SHARING_SPREAD_COLOR, linewidth=0.7,
-                                    marker="_", markersize=4, label="mean ± SD over networks"))
-    _state_space_figure_legend(fig, handles, ncol=len(handles), top=0.9)
+                                    marker="_", markersize=4, label="median, IQR over networks"))
+    if tests:
+        handles.append(mpl.lines.Line2D(
+            [], [], linestyle="none", marker="$*$", color="k", markersize=5,
+            label=f"q < {_ROW_SHARING_SIGNIFICANCE} trained vs untrained (Mann\u2013Whitney, BH)"))
+    _state_space_figure_legend(fig, handles, ncol=3, top=0.84)
     n_runs = max(len(reps[rep]["anames"]) for rep, _ in columns)
     _save_fig(fig, _multitask_out("row_cluster_counts_seeds.png"),
               extra=(f"  {n_runs} {data['feature']} runs{_row_sharing_untrained_note(untrained)}; "
@@ -7308,6 +7352,12 @@ def plot_row_cluster_same_period_synapses_matched_tasks():
         "same_period_matched_tasks", "row_cluster_same_period_synapses_matched_tasks.png")
 
 
+# Half-distance between the trained and untrained bars of the synapse cohort
+# comparison, and their width.
+_SYNAPSE_COHORT_OFFSET = 0.16
+_SYNAPSE_COHORT_BAR = 0.29
+
+
 def _plot_row_cluster_same_period_synapses(entry_key, out_filename):
     """Shared direct cohort comparison for all-task and matched-task synapses.
 
@@ -7318,7 +7368,21 @@ def _plot_row_cluster_same_period_synapses(entry_key, out_filename):
     (not task pairs or pooled counts) are the samples, with tie/continuity-corrected
     asymptotic p values and BH correction across all displayed periods within
     this figure, separately from the other task population and within-cohort
-    chance tests. The p/q annotations compare cohorts, not sharing with chance.
+    chance tests. The brackets compare cohorts, not sharing with chance: a
+    star for BH q < 0.05, "n.s." otherwise, the exact p and q in the save
+    message. Size, bar and whisker styles, chance dashes and fonts are those
+    of the row-sharing bar figures (_row_sharing_bar_figure).
+
+    The bottom panel repeats the comparison for the chance-corrected sharing:
+    each network's sharing fraction minus its own restricted-null chance
+    (observed minus expected pairs over the pairs, in percentage points).
+    The raw fractions of the top panel depend on how many row clusters a
+    network has and how large they are, which differ between the cohorts
+    (fewer, larger clusters without training), and each network's null
+    carries exactly that; the difference is what the period adds. Its tests
+    are the top panel's: one-sided Mann-Whitney U, trained > untrained,
+    BH-adjusted over the periods on their own, so a pair in which the
+    untrained networks are the higher ones reads "n.s." in both panels.
     """
     from scipy.stats import false_discovery_control, mannwhitneyu
 
@@ -7346,61 +7410,102 @@ def _plot_row_cluster_same_period_synapses(entry_key, out_filename):
     p_values = [mannwhitneyu(*group, alternative="greater", method="asymptotic",
                              use_continuity=True).pvalue for group in values]
     q_values = false_discovery_control(p_values, method="bh")
+    # Chance-corrected: each network's sharing minus its own restricted null.
+    excess = [[np.subtract(*_row_sharing_run_values(stats)) for stats in group]
+              for group in groups]
+    excess_p = [mannwhitneyu(*group, alternative="greater", method="asymptotic",
+                             use_continuity=True).pvalue for group in excess]
+    excess_q = false_discovery_control(excess_p, method="bh")
 
-    fig, ax = plt.subplots(figsize=(5.4, 3.3))
+    # Two stacked panels in the row-sharing bar figures' style and size:
+    # their bar, whisker and chance-dash styles, a star or "n.s." over each
+    # cohort pair (the exact p and q go to the save message).
+    fig, (ax, ax_excess) = plt.subplots(
+        2, 1, figsize=(1.0 + _ROW_SHARING_GROUP_IN[True] * len(periods), 3.9), sharex=True)
     color = _TASK_SPECIFICITY_COLORS["modulation"]
+    styles = ((-_SYNAPSE_COHORT_OFFSET, dict(color=color, edgecolor="k", linewidth=0.3)),
+              (_SYNAPSE_COHORT_OFFSET, dict(color="white", edgecolor=color, linewidth=0.6)))
+
+    def draw(axis, x, height, spread, style):
+        axis.bar(x, height, width=_SYNAPSE_COHORT_BAR, zorder=2, **style)
+        if spread > 0:
+            axis.errorbar(x, height, yerr=spread, color=_ROW_SHARING_SPREAD_COLOR,
+                          linewidth=0.7, capsize=1.5, capthick=0.7, zorder=4)
+
+    def mark_pairs(axis, low, high, q_list, minimum_span):
+        """Bracket every cohort pair above the tallest whisker with its mark
+        and set the y limits around them."""
+        span = max(minimum_span, high - low)
+        bracket = high + 0.06 * span
+        for position, q in enumerate(q_list):
+            axis.plot([position - _SYNAPSE_COHORT_OFFSET, position - _SYNAPSE_COHORT_OFFSET,
+                       position + _SYNAPSE_COHORT_OFFSET, position + _SYNAPSE_COHORT_OFFSET],
+                      [bracket, bracket + 0.03 * span, bracket + 0.03 * span, bracket],
+                      color="0.3", linewidth=0.5)
+            significant = q < _ROW_SHARING_SIGNIFICANCE
+            axis.text(position, bracket + 0.03 * span, "*" if significant else "n.s.",
+                      ha="center", va="bottom", fontsize=6 if significant else 5,
+                      color="k" if significant else "0.45")
+        axis.set_ylim(low - 0.05 * span if low < 0 else 0, bracket + 0.2 * span)
+        axis.spines[["top", "right"]].set_visible(False)
+        axis.tick_params(axis="y", labelsize=7)
+
     low, high = 0.0, 0.0
     notes = []
     for position, (phase, group, samples, p, q) in enumerate(
             zip(periods, groups, values, p_values, q_values)):
-        for stats, offset, face in zip(group, (-0.16, 0.16), (color, "white")):
+        for stats, (offset, style) in zip(group, styles):
             height, chance, spread = _row_sharing_bar_values(stats)
             x = position + offset
-            ax.bar(x, height, width=0.29, color=face, edgecolor=color,
-                   linewidth=0.8, zorder=2)
-            ax.errorbar(x, height, yerr=spread, color=_ROW_SHARING_SPREAD_COLOR,
-                        linewidth=0.7, capsize=2, capthick=0.7, zorder=4)
-            ax.hlines(chance, x - 0.145, x + 0.145,
+            draw(ax, x, height, spread, style)
+            ax.hlines(chance, x - _SYNAPSE_COHORT_BAR / 2, x + _SYNAPSE_COHORT_BAR / 2,
                       color=_ROW_SHARING_CHANCE_COLOR, linewidth=1.0, zorder=3)
             low, high = min(low, height - spread), max(high, height + spread, chance)
         notes.append(f"{phase}: trained {samples[0].mean():.3f}% (n={samples[0].size}), "
                      f"untrained {samples[1].mean():.3f}% (n={samples[1].size}), "
                      f"difference {samples[0].mean() - samples[1].mean():+.3f} pp, "
                      f"p={p:.6g}, q={q:.6g}")
-    span = max(20.0, high - low)
-    bracket = high + 0.06 * span
-    for position, p, q in zip(range(len(periods)), p_values, q_values):
-        ax.plot([position - 0.16, position - 0.16, position + 0.16, position + 0.16],
-                [bracket, bracket + 0.025 * span, bracket + 0.025 * span, bracket],
-                color="0.3", linewidth=0.6)
-        ax.text(position, bracket + 0.04 * span,
-                f"p={p:.3g}\nq={q:.3g}",
-                ha="center", va="bottom", fontsize=6.5)
-    ax.set_ylim(low - 0.03 * span if low < 0 else 0, bracket + 0.25 * span)
+    mark_pairs(ax, low, high, q_values, 20.0)
     ax.set_xlim(-0.6, len(periods) - 0.4)
-    ax.set_xticks(range(len(periods)), [_PHASE_DISPLAY.get(phase, phase) for phase in periods],
-                  rotation=30, ha="right", fontsize=7)
-    for label, phase in zip(ax.get_xticklabels(), periods):
+    ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=100, decimals=0))
+    ax.set_ylabel("Task pairs of one period\nin one synapse row cluster", fontsize=8)
+    title_prefix = "Same five tasks · " if matched else ""
+    ax.set_title(title_prefix + "Synapses, one-sided: trained > untrained\nSharing",
+                 fontsize=7)
+    # Bottom panel: the same bars for the chance-corrected sharing.
+    low, high = 0.0, 0.0
+    for position, (phase, samples, p, q) in enumerate(zip(periods, excess, excess_p, excess_q)):
+        for cohort, (offset, style) in zip(samples, styles):
+            height, spread = float(cohort.mean()), float(cohort.std(ddof=1))
+            draw(ax_excess, position + offset, height, spread, style)
+            low, high = min(low, height - spread), max(high, height + spread)
+        notes.append(f"{phase} above chance: trained {samples[0].mean():+.3f} pp, "
+                     f"untrained {samples[1].mean():+.3f} pp, "
+                     f"difference {samples[0].mean() - samples[1].mean():+.3f} pp, "
+                     f"p={p:.6g}, q={q:.6g}")
+    mark_pairs(ax_excess, low, high, excess_q, 10.0)
+    ax_excess.axhline(0.0, color=_ROW_SHARING_CHANCE_COLOR, linewidth=1.0, zorder=3)
+    ax_excess.set_xticks(range(len(periods)),
+                         [_PHASE_DISPLAY.get(phase, phase) for phase in periods],
+                         rotation=40, ha="right", fontsize=6)
+    for label, phase in zip(ax_excess.get_xticklabels(), periods):
         if phase in _PHASE_COLORS:
             label.set_bbox(dict(facecolor=_PHASE_COLORS[phase], edgecolor="none",
                                 boxstyle="round,pad=0.15", alpha=0.8))
-    ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=100, decimals=0))
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.set_ylabel("Task pairs of one period\nin one synapse row cluster", fontsize=8)
-    title_prefix = "Same five tasks · " if matched else ""
-    ax.set_title(title_prefix + "Synapses: trained > untrained\n"
-                 f"One-sided Mann–Whitney U; BH across {len(periods)} periods", fontsize=8)
+    ax_excess.set_ylabel("Sharing minus chance\n(percentage points)", fontsize=8)
+    ax_excess.set_title("Chance-corrected sharing", fontsize=7)
     handles = [
-        mpl.patches.Patch(facecolor=color, edgecolor=color,
+        mpl.patches.Patch(facecolor=color, edgecolor="k", linewidth=0.3,
                           label=f"trained (n={len(data['experiments'])})"),
-        mpl.patches.Patch(facecolor="white", edgecolor=color,
+        mpl.patches.Patch(facecolor="white", edgecolor=color, linewidth=0.6,
                           label=f"untrained (n={len(untrained['experiments'])})"),
-        mpl.lines.Line2D([], [], color=_ROW_SHARING_CHANCE_COLOR, linewidth=1.0,
-                         label="restricted-null chance"),
+        mpl.lines.Line2D([], [], color=_ROW_SHARING_CHANCE_COLOR, linewidth=1.0, label="chance"),
         mpl.lines.Line2D([], [], color=_ROW_SHARING_SPREAD_COLOR, linewidth=0.7,
                          marker="_", markersize=4, label="mean ± SD over runs"),
+        mpl.lines.Line2D([], [], linestyle="none", marker="$*$", color="k", markersize=5,
+                         label=f"Mann\u2013Whitney, BH-FDR q < {_ROW_SHARING_SIGNIFICANCE}"),
     ]
-    _state_space_figure_legend(fig, handles, ncol=2, top=0.92)
+    _state_space_figure_legend(fig, handles, ncol=2, top=0.87)
     task_note = ("; matched tasks: " + ", ".join(entry["tasks"])
                  + f"; {entry['n_pairs_per_period']} task pairs per period per network"
                  + "; original clustering retained" if matched else "")
@@ -7409,7 +7514,9 @@ def _plot_row_cluster_same_period_synapses(entry_key, out_filename):
                      + "; bars: mean over runs, whiskers: SD over runs; "
                      "one-sided Mann-Whitney U, trained > untrained "
                      "(asymptotic, tie/continuity corrected); "
-                     f"BH across {len(periods)} periods; " + "; ".join(notes) + task_note))
+                     f"BH across {len(periods)} periods; bottom panel: sharing minus each "
+                     "network's restricted-null chance, the same one-sided test, its own BH "
+                     f"across {len(periods)} periods; " + "; ".join(notes) + task_note))
 
 
 def plot_row_cluster_same_period_matched_tasks_seeds():
@@ -8389,6 +8496,12 @@ def _task_specificity_run_handles():
     return [run, _causal_seeds_legend_handles()[-1]]
 
 
+# Lower y limit of the per-run task-count figures (the seeds renderer and the
+# pool figure), in tasks: below zero, so that a run whose median count is 0
+# is a whole point instead of one cut by the axis. The ticks start at 0.
+_TASK_SPECIFICITY_COUNT_YMIN = -0.7
+
+
 def _draw_task_specificity_seeds(medians, significant, ylabel, out_name, handles, notes):
     """Renderer of the task-specificity seeds figures: one column per cluster
     type of `medians` ({type: one value per run}), runs tied on a value
@@ -8430,7 +8543,7 @@ def _draw_task_specificity_seeds(medians, significant, ylabel, out_name, handles
                 color="0.3", linewidth=0.7, zorder=4)
         ax.text(left + 0.5, top + 0.15, p_text, ha="center", va="bottom", fontsize=6)
         tests.append(f"{upper} vs {lower} paired Wilcoxon p = {p_value:.2g}")
-    ax.set_ylim(0, top + 1.6)
+    ax.set_ylim(_TASK_SPECIFICITY_COUNT_YMIN, top + 1.6)
     ax.yaxis.set_major_locator(mticker.MultipleLocator(5))
     ax.set_yticks([tick for tick in ax.get_yticks() if 0 <= tick <= base])
     ax.set_xticks(np.arange(len(types)))
@@ -8593,8 +8706,10 @@ def plot_task_specificity_pool_seeds():
              rotation_mode="anchor", fontsize=6)
     top = max(values.max() for group in groups for _, values in group)
     # Room above the points for the type name and, under it, the p text; the
-    # slanted pool labels take the space below the axis.
-    ax.set_ylim(0, top + 3.2)
+    # slanted pool labels take the space below the axis. The axis starts
+    # below zero so that the runs whose median is 0 (most hidden clusters
+    # under the responsive pool) are whole points, not ones cut by the axis.
+    ax.set_ylim(_TASK_SPECIFICITY_COUNT_YMIN, top + 3.2)
     ax.yaxis.set_major_locator(mticker.MaxNLocator(integer=True))
     ax.set_yticks([tick for tick in ax.get_yticks() if 0 <= tick <= top + 0.5])
     notes, tests = [], []
