@@ -118,12 +118,15 @@ M_BOUNDS = (-1.0, 1.0)
 # training (lam_train is False). Historical multi-task cohorts use
 # 4000 ms (lambda = 0.99), so those run names carry no lambda tag.
 # Any other value is encoded in the effective ADDON_NAME automatically, after
-# the bound tag, as in pretrain/pretraining.py (800 ms -> L21e4lam0.95;
-# 400 ms -> L21e4lam0.9, or
+# the bound tag, as in pretrain/pretraining.py (40000 ms -> L21e4lam0.999;
+# 2000 ms -> L21e4lam0.98; 800 ms -> L21e4lam0.95; 400 ms -> L21e4lam0.9, or
 # L21e4mb2lam0.9 with bounds (-2, 2)), so such runs never share a name, or an
-# exact --feature filter, with the lambda = 0.99 cohorts.
+# exact --feature filter, with the lambda = 0.99 cohorts. The current value
+# trains the lambda = 0.999 cohort: a 40 s time constant, far longer than a
+# trial, so M barely decays within one. --m-time-scale overrides it for one
+# invocation, so another retention is trained without editing this file.
 DT_MS = 40
-M_TIME_SCALE = 800
+M_TIME_SCALE = 40000
 LEGACY_M_LAMBDA = 0.99
 train = True                    # whether or not to train the network
 verbose = True
@@ -749,7 +752,12 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, nargs="+", default=SEED_LIST,
                         help="explicit seeds instead of a draw; a seed with a saved checkpoint "
                              "of this setting is refused")
+    parser.add_argument("--m-time-scale", type=int, default=M_TIME_SCALE, metavar="MS",
+                        help="time constant of M's decay in ms, lambda = 1 - "
+                             f"{DT_MS} / MS (default {M_TIME_SCALE}; 2000 trains lambda = 0.98)")
     args = parser.parse_args()
+    # Every naming and parameter helper reads the module-level value.
+    M_TIME_SCALE = args.m_time_scale
     with tee_output("multiple_task"):
         main(n_trials=args.n_trials, seeds=args.seed)
 

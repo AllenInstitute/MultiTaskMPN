@@ -2309,17 +2309,25 @@ def _plot_dimension_accuracy(*, vary_hidden):
     _save_fig(fig, out_path, extra=f" ({counts})")
 
 
-# ─── Figure: M retention comparison (lambda 0.99, 0.95, 0.9) ─────────────────
+# ─── Figure: M retention comparison (lambda 0.999 to 0.9) ───────────────────
 
-# The three M retentions of the regular L2 = 1e-4 cohort: feature tag,
-# m_time_scale (ms) and tick label. The 4000 ms cohort is the historical one
-# and carries no tag; multiple_task.py tags every other retention after the
-# bound tag (400 ms -> lam0.9, SCHEME.md). lambda = 1 - 40 ms / m_time_scale.
+# The M retentions of the regular L2 = 1e-4 cohort, slowest decay first:
+# feature tag, m_time_scale (ms) and tick label. The 4000 ms cohort is the
+# historical one and carries no tag; multiple_task.py tags every other
+# retention after the bound tag (400 ms -> lam0.9, SCHEME.md).
+# lambda = 1 - 40 ms / m_time_scale. A cohort without evaluated runs keeps
+# its column and is named on the figure.
 _RETENTION_SPECS = (
+    ("L21e4lam0.999", 40000, "$\\lambda = 0.999$\n(40000 ms)"),
     ("L21e4", MULTITASK_M_TIME_SCALE_MS, "$\\lambda = 0.99$\n(4000 ms)"),
+    ("L21e4lam0.98", 2000, "$\\lambda = 0.98$\n(2000 ms)"),
     ("L21e4lam0.95", 800, "$\\lambda = 0.95$\n(800 ms)"),
     ("L21e4lam0.9", 400, "$\\lambda = 0.9$\n(400 ms)"),
 )
+# The cohort every other retention is tested against: the main lambda = 0.99
+# one, with the most runs. All pairs of five cohorts would be ten tests, more
+# than the figures can name.
+_RETENTION_REFERENCE_TAG = "L21e4"
 RETENTION_L2_STRENGTH = 1e-4
 # Runs each cohort needs before the Mann-Whitney U test between them is run.
 _MANN_WHITNEY_MIN_RUNS = 2
@@ -2400,15 +2408,18 @@ def _holm_adjusted(p_values):
 
 
 def _retention_pairwise_tests(groups, *, per_task=False):
-    """(task, pair label, raw p, Holm p) for every retention pair.
+    """(task, pair label, raw p, Holm p) for every retention against the
+    reference cohort (_RETENTION_REFERENCE_TAG), each pair in spec order.
 
-    Holm correction covers all valid tests in one figure: three overall,
-    or up to 45 across the fifteen tasks. Pairs with fewer than two networks
+    Holm correction covers all valid tests in one figure: one per
+    non-reference retention overall (four with five cohorts), or up to
+    fifteen times that across the tasks. Pairs with fewer than two networks
     in either group have NaN p values and do not enter the correction.
     """
-    from itertools import combinations
-
-    pairs = list(combinations(_RETENTION_SPECS, 2))
+    reference = next(index for index, (tag, _, _) in enumerate(_RETENTION_SPECS)
+                     if tag == _RETENTION_REFERENCE_TAG)
+    pairs = [(_RETENTION_SPECS[min(index, reference)], _RETENTION_SPECS[max(index, reference)])
+             for index in range(len(_RETENTION_SPECS)) if index != reference]
     records = []
     for task in _TASK_DISPLAY if per_task else (None,):
         for (first, first_scale, _), (second, second_scale, _) in pairs:
@@ -2447,18 +2458,19 @@ def _load_retention_groups(per_task):
 
 
 def plot_retention_accuracy():
-    """Overall accuracy at lambda = 0.99, 0.95 and 0.9 (L2 = 1e-4).
+    """Overall accuracy at every retention of _RETENTION_SPECS (L2 = 1e-4).
 
     One dot per seed, with the across-seed mean as a white diamond. The title
-    reports two-sided Mann-Whitney U tests, Holm-adjusted across all three
-    retention pairs with sufficient data.
+    reports two-sided Mann-Whitney U tests of each retention against
+    lambda = 0.99, Holm-adjusted across the pairs with sufficient data.
     """
     groups = _load_retention_groups(per_task=False)
     if groups is None:
         return
 
     positions = np.arange(len(_RETENTION_SPECS), dtype=float)
-    fig, ax = plt.subplots(1, 1, figsize=(3.5, 3.4))
+    # 3.5 in wide for three columns, wider in proportion for more.
+    fig, ax = plt.subplots(1, 1, figsize=(3.5 * len(_RETENTION_SPECS) / 3, 3.4))
     means, all_values, missing = [], [], []
     for position, (tag, _, _) in zip(positions, _RETENTION_SPECS):
         values = np.asarray(groups[tag], dtype=float)
@@ -2507,11 +2519,12 @@ def plot_retention_accuracy():
 
 
 def plot_retention_task_accuracy():
-    """Per-task accuracy at lambda = 0.99, 0.95 and 0.9, in fifteen panels.
+    """Per-task accuracy at every retention of _RETENTION_SPECS, in fifteen
+    panels.
 
-    Each panel's right column reports two-sided Mann-Whitney U tests for its
-    three retention pairs, Holm-adjusted jointly across all tasks and pairs
-    with sufficient data (up to 45 tests).
+    Each panel's right column reports two-sided Mann-Whitney U tests of each
+    retention against lambda = 0.99, Holm-adjusted jointly across all tasks
+    and pairs with sufficient data.
     """
     groups = _load_retention_groups(per_task=True)
     if groups is None:

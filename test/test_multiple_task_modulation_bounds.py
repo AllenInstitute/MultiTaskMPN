@@ -56,6 +56,22 @@ class MultipleTaskModulationBoundsTests(unittest.TestCase):
             with self.subTest(m_time_scale=m_time_scale), self.assertRaises(ValueError):
                 add_lambda("L21e4", m_time_scale, 40)
 
+    def test_command_line_time_scale_names_the_other_retention_cohorts(self):
+        """--m-time-scale replaces the module-level M_TIME_SCALE, which the
+        naming helper then reads (2000 ms -> lam0.98, 40000 ms -> lam0.999)."""
+        add_lambda = self.helpers["_addon_name_with_lambda"]
+        self.assertEqual(add_lambda("L21e4", 2000, 40), "L21e4lam0.98")
+        self.assertEqual(add_lambda("L21e4", 40000, 40), "L21e4lam0.999")
+        self.addCleanup(self.helpers.__setitem__, "M_TIME_SCALE", self.helpers["M_TIME_SCALE"])
+        self.helpers["M_TIME_SCALE"] = 2000
+        self.assertEqual(add_lambda("L21e4"), "L21e4lam0.98")
+
+        main_block = ast.unparse(ast.parse(SOURCE.read_text()).body[-1])
+        self.assertIn("'--m-time-scale', type=int, default=M_TIME_SCALE", main_block)
+        # The override is bound at module level before any run is named.
+        self.assertLess(main_block.index("M_TIME_SCALE = args.m_time_scale"),
+                        main_block.index("main(n_trials"))
+
     def test_invalid_bounds_fail_before_training(self):
         normalize = self.helpers["_normalize_m_bounds"]
         for bounds in ((1,), (1, -1), (0, np.inf), "bad"):

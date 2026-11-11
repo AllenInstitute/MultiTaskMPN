@@ -93,24 +93,33 @@ never rerun from here.
 ## Accuracy across modulation retentions
 
 The `acc_plot` figures `retention_accuracy` and `retention_task_accuracy`
-compare lambda = 0.99, 0.95 and 0.9 at L2 = 1e-4, with the same default
-network architecture and modulation bounds. The feature tags are `L21e4`,
-`L21e4lam0.95` and `L21e4lam0.9`; their saved `m_time_scale` values must be
-4000, 800 and 400 ms respectively. Each dot is one network and the connected
+compare lambda = 0.999, 0.99, 0.98, 0.95 and 0.9 at L2 = 1e-4, with the same
+default network architecture and modulation bounds. The feature tags are
+`L21e4lam0.999`, `L21e4`, `L21e4lam0.98`, `L21e4lam0.95` and `L21e4lam0.9`;
+their saved `m_time_scale` values must be 40000, 4000, 2000, 800 and 400 ms
+respectively. The lambda = 0.999 and 0.98 cohorts were added on 2026-11-10.
+At 0.999 (the script's `M_TIME_SCALE = 40000`) the time constant is 40 s, far
+longer than a trial, so M barely decays within one (M is reset at every trial
+onset, so nothing carries between trials at any retention). Train another
+retention without editing the script, e.g.
+`python multiple_task/multiple_task.py --m-time-scale 2000` for 0.98. Until a
+cohort's runs are trained and evaluated its column stays empty and the figure
+names it. Each dot is one network and the connected
 diamonds are the across-network means. These figures use performance results,
 not clustering or lesion caches.
 
 ```bash
 # Add the newly trained cohort without replacing the existing evaluations.
-python multiple_task/multiple_task_performance.py --feature L21e4lam0.95 --merge
+python multiple_task/multiple_task_performance.py --feature L21e4lam0.999 --feature L21e4lam0.98 --merge
 python figures/paper_plot.py --only retention_accuracy
 python figures/paper_plot.py --only retention_task_accuracy
 ```
 
-Both figures report two-sided Mann-Whitney U tests for all three retention
-pairs. Holm correction covers the three overall comparisons in the first
-figure, and all 15 tasks times three pairs (up to 45 comparisons) jointly in
-the second. A pair needs at least two networks in each group; unavailable
+Both figures report two-sided Mann-Whitney U tests of each retention against
+the main lambda = 0.99 cohort (four pairs with five cohorts; before
+2026-11-10 every pair of the three cohorts then present was tested). Holm
+correction covers the overall comparisons in the first figure, and all 15
+tasks times the pairs (up to 60 comparisons) jointly in the second. A pair needs at least two networks in each group; unavailable
 comparisons have no p value and do not enter the correction. Missing cohorts
 keep their axis position and produce a message with the evaluation command.
 
