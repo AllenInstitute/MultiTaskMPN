@@ -263,49 +263,43 @@ definition.
 `lesion_plot.py` records freeze_M as `primary_modulation_mode` in the
 normalized-effect cache.
 
-The `overmembership_examples_dots_<r>` panels (`--only overmembership_examples`,
+The `overmembership_examples_supported_<r>` panels (`--only overmembership_examples`,
 run `ANAME`) draw the synapse clusters with the strongest block enrichment, by
 default the two with the highest OM over blocks expecting at least five
 synapses, as input × hidden block maps. These are most-enriched examples,
 not representative clusters, and the selection does not perform a block-level
-significance test. Optional endpoint labels are prioritized by the largest
-descriptive Poisson z score, not by a tested p value. Each shown block is a cell colored by
+significance test. Each drawn block is a cell colored by
 its OM = observed/expected − 1 on a diverging scale centered on chance
 (`paper_plot._om_block_cmap_norm`: blue below chance down to −1, white at 0,
 red above, up to the examples' peak OM over well-supported blocks; higher OM
-saturates); a block expecting fewer than five synapses, the ranking threshold,
-is a smaller square (`_OM_THIN_BLOCK_SIDE`) so a ratio over a handful of
-synapses does not read like a well-supported one; blocks expecting fewer than
-one synapse are blank, and a neuron cluster with no shown block is dropped
-from the axes. The deciding block (the peak OM over well-supported blocks) is
-ringed in black, the marker the OM-vs-lesion scatter gives the same block.
-The input and hidden clusters are sorted by the cluster's observed/expected
-over their shown blocks, most enriched first, and the bars above and to the
-right of the map show that marginal ratio in log2 coordinates, with ticks
-labelled as observed/expected ratios (chance 1). One symmetric axis covers
-every example and spans at least one doubling. The shared colorbar
-`overmembership_examples_colorbar` marks chance; the saved message names the
-axis order, the deciding block and the runners-up. An intermediate version of
-2026-11-08 drew discs sized by the observed count under rings sized by the
-expected count; on a linear area scale spanning expected counts from 1 to
-over 200 the enriched small blocks were specks and their colors invisible,
-which the full cells fix. In the L21e4 run the examples are
+saturates). Only the well-supported blocks are drawn, those expecting at
+least five synapses, the ranking threshold; the map has a light grey
+background, so grey is a block that is not assessed and white a block at
+chance, and an input or hidden cluster without a well-supported block is
+dropped from the axes. The deciding block (the peak OM over well-supported
+blocks) is ringed in black, the marker the OM-vs-lesion scatter gives the
+same block. The input and hidden clusters are sorted by the cluster's
+observed/expected over their counted blocks (those expecting at least one
+synapse, so the thin blocks the map leaves out still count), most enriched
+first, and the bars above and to the right of the map show that marginal
+ratio in log2 coordinates, with ticks labelled as observed/expected ratios
+(chance 1). One symmetric axis covers every example and spans at least one
+doubling. The shared colorbar `overmembership_examples_colorbar` marks
+chance; the saved message names the axis order, the deciding block and the
+runners-up. In the L21e4 run the examples are
 diffuse, not concentrated: C3's three most enriched well-supported blocks hold
 4% of its 3244 synapses (1% expected) and its ten fullest blocks 16%, against
 33% for the ten largest blocks, because it avoids the largest input and hidden
 clusters (0.4 to 0.6 of expected) and spreads at 1.5 to 2.4 times expected over
-the small ones. The sorted axes and marginal bars show this profile, which the
-original unsorted dots, with area proportional to the observed count alone,
-hid behind the neuron clusters' sizes. Since 2026-11-10 each example is also
-saved as `multitask_overmembership_examples_supported_<r>_n.png`, the same
-map with only the well-supported blocks (expected ≥ 5 synapses): the thin
-blocks' saturated small squares, which rest on a handful of synapses yet draw
-the eye first, are left out, together with the input and hidden clusters
-left without a block; its map has a light grey background, so grey is a
-block that is not assessed and white a block at chance. For C3 that keeps 120 of 288 blocks holding 87% of its
-expected synapses (C11: 86 of 236, 82%). The axes keep the full map's order
-and the marginal bars still sum over every shown block of the kept clusters,
-so the thin blocks' trend stays in the bars. Both versions are kept for now.
+the small ones. The sorted axes and marginal bars show this profile. For C3
+the map keeps 120 of the 288 counted blocks, holding 87% of its expected
+synapses (C11: 86 of 236, 82%). Earlier versions were removed: unsorted dots
+with area proportional to the observed count, which mostly showed the neuron
+clusters' sizes; discs under rings sized by the expected count (2026-11-08),
+whose small enriched blocks were specks; and, until 2026-11-10,
+`overmembership_examples_dots_<r>`, which also drew the thin blocks as
+smaller squares, whose saturated colors drew the eye to the least reliable
+ratios.
 
 The OM-versus-lesion-profile figure has two panels with the same OM x axis.
 The left panel retains task-profile L1/T distance, which includes differences
@@ -335,13 +329,13 @@ until 2026-11-08, when seed 749's L1 association rho moved from −0.59 under ze
 under freeze_M, both with permutation p ≤ 0.002). **Run selection differs from the other
 lesion figures:** the single-run scatter is drawn from `ANAME`, the clustering
 example (seed 749 under `--multitask-l2 1e4`), the run of the
-`overmembership_examples_dots_*` panels, so the example clusters are among its
+`overmembership_examples_supported_*` panels, so the example clusters are among its
 points; other single-run lesion figures use `LESION_ANAME` (designated seed
 921 at L2 = 1e-4). Both selections can fall back to another cached run when
 the designated run is unavailable, as described above.
 `paper_plot._om_scatter_run` holds the choice and the saved message names the
 run. `om_vs_lesion_seeds` pools eligible sibling runs in the cohort. Because of the
-shared run, the deciding block of `overmembership_examples_dots_1` (its most
+shared run, the deciding block of `overmembership_examples_supported_1` (its most
 enriched supported input × hidden block, from `_om_example_selection`) is
 drawn on both scatters where defined, in the color the
 examples' block maps give its OM, with a black ring ("Example block"), the

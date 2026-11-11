@@ -10,7 +10,7 @@ import paper_plot
 
 def block_cells(axis):
     """{(input position, hidden position): (facecolor, square side)} of the
-    blocks a block map draws, from its PolyCollections."""
+    blocks a block map draws, from its PolyCollection."""
     cells = {}
     for collection in axis.collections:
         if not isinstance(collection, paper_plot.mpl.collections.PolyCollection):
@@ -83,7 +83,6 @@ class OvermembershipExampleTests(unittest.TestCase):
         saved = self.render(cache)
         # Two block maps and the colorbar; no heatmap, no size key.
         self.assertEqual(set(saved), {
-            "multitask_overmembership_examples_dots_1.png", "multitask_overmembership_examples_dots_2.png",
             "multitask_overmembership_examples_supported_1.png",
             "multitask_overmembership_examples_supported_2.png",
             "multitask_overmembership_examples_colorbar.png"})
@@ -91,7 +90,7 @@ class OvermembershipExampleTests(unittest.TestCase):
         # at input C2 x hidden C3); both share the colorbar's (-1, 7).
         for rank, cluster_id, peak in ((1, 3, "peak OM 7.00 at input C4 / hidden C2"),
                                        (2, 4, "peak OM 5.00 at input C2 / hidden C3")):
-            figure = saved[f"multitask_overmembership_examples_dots_{rank}.png"].args[0]
+            figure = saved[f"multitask_overmembership_examples_supported_{rank}.png"].args[0]
             # The map, the input bars above it (which carry the title) and
             # the hidden bars to its right.
             self.assertEqual(len(figure.axes), 3)
@@ -100,7 +99,7 @@ class OvermembershipExampleTests(unittest.TestCase):
             self.assertEqual(axis.get_title(), "")
             self.assertEqual(axis.get_xlabel(), "Input cluster")
             self.assertEqual(axis.get_ylabel(), "Hidden cluster")
-            # Input C1 has no shown block and is dropped: 3 inputs x 3 hiddens;
+            # Input C1 has no block to draw and is dropped: 3 inputs x 3 hiddens;
             # the bar axes share the map's limits.
             self.assertEqual(axis.get_xlim(), (0, 3))
             self.assertEqual(axis.get_ylim(), (3, 0))
@@ -109,13 +108,16 @@ class OvermembershipExampleTests(unittest.TestCase):
             self.assertEqual(len(axis.texts), 0)
             self.assertEqual(len(figure.texts), 0)
             np.testing.assert_allclose(figure.get_size_inches(), paper_plot._OVERMEMBERSHIP_EXAMPLE_FIGSIZE)
-            extra = saved[f"multitask_overmembership_examples_dots_{rank}.png"].kwargs["extra"]
+            extra = saved[f"multitask_overmembership_examples_supported_{rank}.png"].kwargs["extra"]
             self.assertIn(f"example {rank}: synapse cluster C{cluster_id}", extra)
             self.assertIn("fixed k=20", extra)
-            self.assertIn("blank: expected < 5", extra)
+            self.assertIn("the 9 blocks expecting >= 5 synapses", extra)
+            self.assertIn("grey: block not assessed (expected < 5)", extra)
             self.assertIn(peak, extra)
-            self.assertIn("dropped (no shown block): input C1", extra)
+            self.assertNotIn("C1,", extra.split("input ")[1].split(";")[0] + ",")
             self.assertIn("runners-up: C1 -1.0", extra)
+            self.assertEqual(paper_plot.mpl.colors.to_rgb(axis.get_facecolor()),
+                             paper_plot.mpl.colors.to_rgb(paper_plot._OM_BLANK_COLOR))
         self.assertEqual(tuple(paper_plot._OVERMEMBERSHIP_EXAMPLE_FIGSIZE), (2.5, 2.5))
         colorbar = saved["multitask_overmembership_examples_colorbar.png"].args[0]
         self.assertEqual(colorbar.axes[0].get_ylim(), (-1, 7))
@@ -135,10 +137,10 @@ class OvermembershipExampleTests(unittest.TestCase):
         self.assertEqual(norm(-1.0), 0.0)
         self.assertEqual(norm(7.0), 1.0)
         # Sorting puts each example's one enriched block at the top left; the
-        # other eight shown blocks hold no synapse (OM -1). Every block expects
-        # 10 synapses, so all are full cells.
+        # other eight drawn blocks hold no synapse (OM -1). Every cell fills
+        # its block.
         for rank, cluster_id, om in ((1, 3, 7.0), (2, 4, 5.0)):
-            figure = saved[f"multitask_overmembership_examples_dots_{rank}.png"].args[0]
+            figure = saved[f"multitask_overmembership_examples_supported_{rank}.png"].args[0]
             axis = figure.axes[0]
             self.assertEqual(figure.axes[1].get_title(), f"Synapse cluster C{cluster_id}")
             self.assertIsNone(axis.get_legend())
@@ -152,19 +154,19 @@ class OvermembershipExampleTests(unittest.TestCase):
             ring = deciding_ring(axis)
             np.testing.assert_allclose(ring.get_offsets(), [[0.5, 0.5]])
             self.assertGreater(ring.get_zorder(), 2)
-        rank1 = saved["multitask_overmembership_examples_dots_1.png"].args[0].axes[0]
+        rank1 = saved["multitask_overmembership_examples_supported_1.png"].args[0].axes[0]
         # The axes carry their titles and no cluster names; the saved
         # message lists the clusters in their drawn order.
         self.assertEqual(len(rank1.get_xticks()), 0)
         self.assertEqual(len(rank1.get_yticks()), 0)
         self.assertEqual((rank1.get_xlabel(), rank1.get_ylabel()), ("Input cluster", "Hidden cluster"))
-        extra = saved["multitask_overmembership_examples_dots_1.png"].kwargs["extra"]
+        extra = saved["multitask_overmembership_examples_supported_1.png"].kwargs["extra"]
         self.assertNotIn("labelled", extra)
         self.assertIn("cell color = OM (observed/expected - 1), diverging about chance, saturating above 7",
                       extra)
         self.assertIn("black ring: deciding block", extra)
-        self.assertIn("axes sorted by observed/expected over shown blocks, input C4, C2, C3; "
-                      "hidden C2, C1, C3", extra)
+        self.assertIn("axes sorted by observed/expected over the blocks expecting >= 5, "
+                      "input C4, C2, C3; hidden C2, C1, C3", extra)
 
     def enriched_cache(self):
         """The base cache with four more C3 blocks: C3 x C2 at OM 1 (20
@@ -184,7 +186,7 @@ class OvermembershipExampleTests(unittest.TestCase):
         cached_ratios = assignment["om_stack"].copy()
         saved = self.render(cache)
         np.testing.assert_array_equal(assignment["om_stack"], cached_ratios)
-        axis = saved["multitask_overmembership_examples_dots_1.png"].args[0].axes[0]
+        axis = saved["multitask_overmembership_examples_supported_1.png"].args[0].axes[0]
         cmap, norm = paper_plot._om_block_cmap_norm(7.0)
         # Inputs C4, C3 and C2 hold 95, 25 and 10 of C3's synapses against 30
         # expected each, hiddens C2, C1 and C3 hold 100, 15 and 15, so the
@@ -203,7 +205,7 @@ class OvermembershipExampleTests(unittest.TestCase):
 
     def test_marginal_bars_show_log2_enrichment_on_one_symmetric_axis(self):
         saved = self.render(self.enriched_cache())
-        figure = saved["multitask_overmembership_examples_dots_1.png"].args[0]
+        figure = saved["multitask_overmembership_examples_supported_1.png"].args[0]
         axis, top, right = figure.axes
         # One bar per kept cluster, centered on its cell, log2 of the sorted
         # marginal ratios (95, 25, 10 and 100, 15, 15 over 30 expected).
@@ -224,28 +226,29 @@ class OvermembershipExampleTests(unittest.TestCase):
         self.assertEqual([label.get_text() for label in top.get_yticklabels()], ["1/4", "1", "4"])
         self.assertEqual([label.get_text() for label in right.get_xticklabels()], ["1/4", "1", "4"])
         self.assertEqual(top.get_ylabel(), "obs / exp")
-        self.assertIn("marginal bars log2(observed/expected) on +-2 doublings",
-                      saved["multitask_overmembership_examples_dots_1.png"].kwargs["extra"])
+        self.assertIn("marginal bars log2(observed/expected) over those blocks on +-2 doublings",
+                      saved["multitask_overmembership_examples_supported_1.png"].kwargs["extra"])
         # Example 2 (C4) has synapses in input C2 and hidden C3 only (60 of 30
         # expected, one doubling): the other clusters sit at the floor.
-        second = saved["multitask_overmembership_examples_dots_2.png"].args[0]
+        second = saved["multitask_overmembership_examples_supported_2.png"].args[0]
         np.testing.assert_allclose([patch.get_height() for patch in second.axes[1].patches], [1., -2., -2.])
         np.testing.assert_allclose([patch.get_width() for patch in second.axes[2].patches], [1., -2., -2.])
         self.assertEqual(second.axes[1].get_ylim(), (-2, 2))
         # With every example within one doubling the axis stays at +-1.
         saved = self.render(self.cache(), clusters=(4,))
-        self.assertEqual(saved["multitask_overmembership_examples_dots_1.png"].args[0].axes[1].get_ylim(),
+        self.assertEqual(saved["multitask_overmembership_examples_supported_1.png"].args[0].axes[1].get_ylim(),
                          (-1, 1))
         self.assertEqual([label.get_text() for label in
-                          saved["multitask_overmembership_examples_dots_1.png"].args[0].axes[1].get_yticklabels()],
+                          saved["multitask_overmembership_examples_supported_1.png"].args[0].axes[1].get_yticklabels()],
                          ["1/2", "1", "2"])
 
-    def test_thin_blocks_are_smaller_squares_and_do_not_set_the_color_limit(self):
-        """A block expecting 1 to 5 synapses is shown (display threshold 1)
-        but neither ranks the example nor stretches the color scale: input
-        C1's block with hidden C2 expects 2 synapses of C3 at a cached ratio
-        of 100, so it is a smaller, saturated square, while the peak over
-        well-supported blocks (OM 7) sets vmax and the deciding block."""
+    def test_thin_blocks_are_left_out_of_the_map_but_counted_in_the_bars(self):
+        """A block expecting 1 to 5 synapses counts toward the axis order and
+        the marginal bars (threshold 1) but is not drawn, does not rank the
+        example and does not stretch the color scale: input C1's block with
+        hidden C2 expects 2 synapses of C3 at a cached ratio of 100, so its
+        cell is left grey, while the peak over well-supported blocks (OM 7)
+        sets vmax and the deciding block."""
         cache = self.cache()
         assignment = cache["modulation_all_var_weighted_unnormalized"]["global_assignment_fixed_k20"]
         assignment["n_active_block"][0] = [0., 20., 100.]
@@ -254,73 +257,45 @@ class OvermembershipExampleTests(unittest.TestCase):
         # become the first example.
         assignment["om_stack"][2, 0, 1] = 0.
         saved = self.render(cache, min_expected=1.0)
-        first = saved["multitask_overmembership_examples_dots_1.png"]
-        axis = first.args[0].axes[0]
-        self.assertEqual(first.args[0].axes[1].get_title(), "Synapse cluster C3")
-        self.assertEqual(axis.get_xlim(), (0, 4))                 # input C1 is kept
-        self.assertIn("11/12 blocks shown", first.kwargs["extra"])
+        first = saved["multitask_overmembership_examples_supported_1.png"]
+        axis, top, right = first.args[0].axes
+        self.assertEqual(top.get_title(), "Synapse cluster C3")
+        # Input C1 keeps its supported block with hidden C3, so no cluster goes.
+        self.assertEqual((axis.get_xlim(), axis.get_ylim()), ((0, 4), (3, 0)))
+        self.assertIn("the 10 blocks expecting >= 5 synapses", first.kwargs["extra"])
         cmap, norm = paper_plot._om_block_cmap_norm(7.0)
         cells = block_cells(axis)
-        self.assertEqual(len(cells), 11)
+        self.assertEqual(len(cells), 10)
+        self.assertTrue(all(side == 1.0 for _, side in cells.values()))
         # C1 holds 200 of C3's 12 expected synapses and sorts first, hidden C2
-        # likewise: the thin block sits at (0.5, 0.5), 0.6 of a cell wide and
-        # saturated; its supported neighbour C1 x C3 is a full, empty cell.
-        self.assertEqual(cells[(0.5, 0.5)][1], paper_plot._OM_THIN_BLOCK_SIDE)
-        np.testing.assert_allclose(cells[(0.5, 0.5)][0], cmap(1.0))
-        self.assertEqual(cells[(0.5, 2.5)][1], 1.0)
+        # likewise: the thin block would sit at (0.5, 0.5) and is not drawn;
+        # its supported neighbour C1 x C3 is an empty cell.
+        self.assertNotIn((0.5, 0.5), cells)
         np.testing.assert_allclose(cells[(0.5, 2.5)][0], cmap(0.0))
-        self.assertEqual(sum(side < 1 for _, side in cells.values()), 1)
+        to_rgb = paper_plot.mpl.colors.to_rgb
+        self.assertEqual(to_rgb(axis.get_facecolor()), to_rgb(paper_plot._OM_BLANK_COLOR))
+        self.assertIn("grey: block not assessed", first.kwargs["extra"])
         colorbar = saved["multitask_overmembership_examples_colorbar.png"].args[0]
         self.assertEqual(colorbar.axes[0].get_ylim(), (-1, 7))
         # The deciding block stays C4 x C2 (input position 1 after C1).
         np.testing.assert_allclose(deciding_ring(axis).get_offsets(), [[1.5, 0.5]])
         self.assertIn("peak OM 7.00 at input C4 / hidden C2", first.kwargs["extra"])
-        self.assertIn("blocks expecting < 5 synapses are smaller squares", first.kwargs["extra"])
         self.assertIn("input C1, C4, C2, C3; hidden C2, C1, C3", first.kwargs["extra"])
-
-    def test_supported_version_drops_thin_blocks_and_keeps_the_full_maps_bars(self):
-        """overmembership_examples_supported_<r> is the same map with only
-        the blocks that rank the examples: no smaller square, the axes in
-        the full map's order, and marginal bars that still count the thin
-        blocks."""
-        cache = self.cache()
-        assignment = cache["modulation_all_var_weighted_unnormalized"]["global_assignment_fixed_k20"]
-        assignment["n_active_block"][0] = [0., 20., 100.]
-        assignment["om_stack"][2, 0, 1] = 0.
-        saved = self.render(cache, min_expected=1.0)
-        full = saved["multitask_overmembership_examples_dots_1.png"]
-        supported = saved["multitask_overmembership_examples_supported_1.png"]
-        axis, top, right = supported.args[0].axes
-        self.assertEqual(top.get_title(), "Synapse cluster C3")
-        # Input C1 keeps its supported block with hidden C3, so no cluster goes.
-        self.assertEqual((axis.get_xlim(), axis.get_ylim()), ((0, 4), (3, 0)))
-        cells = block_cells(axis)
-        self.assertEqual(len(cells), 10)
-        self.assertNotIn((0.5, 0.5), cells)
-        self.assertTrue(all(side == 1.0 for _, side in cells.values()))
-        full_cells = block_cells(full.args[0].axes[0])
-        for center, (color, _) in cells.items():
-            np.testing.assert_allclose(color, full_cells[center][0])
-        np.testing.assert_allclose(deciding_ring(axis).get_offsets(), [[1.5, 0.5]])
-        # Unassessed blocks show the grey background, the full map stays white.
-        to_rgb = paper_plot.mpl.colors.to_rgb
-        self.assertEqual(to_rgb(axis.get_facecolor()), to_rgb(paper_plot._OM_BLANK_COLOR))
-        self.assertEqual(to_rgb(full.args[0].axes[0].get_facecolor()), (1.0, 1.0, 1.0))
-        self.assertIn("grey: block not assessed", supported.kwargs["extra"])
-        # The bars are the full map's: the thin block still counts in them.
-        for ours, theirs in zip((top, right), full.args[0].axes[1:]):
-            np.testing.assert_allclose([patch_.get_height() + patch_.get_width() for patch_ in ours.patches],
-                                       [patch_.get_height() + patch_.get_width() for patch_ in theirs.patches])
-        self.assertIn("only the 10 blocks expecting >= 5 synapses of the 11 shown", supported.kwargs["extra"])
-        # A cluster left without a supported block leaves the axes: with
-        # input C1 below the display threshold everywhere but one thin block,
-        # the full map keeps it and this one does not.
+        # The bars still count the thin block: input C1 holds 200 of 12
+        # expected synapses (0 of 10 without it), hidden C2 280 of 32; the
+        # clusters without a synapse sit at the floor of the +-5 axis.
+        self.assertEqual(top.get_ylim(), (-5, 5))
+        np.testing.assert_allclose([patch_.get_height() for patch_ in top.patches],
+                                   [np.log2(200 / 12), np.log2(80 / 30), -5., -5.])
+        np.testing.assert_allclose([patch_.get_width() for patch_ in right.patches],
+                                   [np.log2(280 / 32), -5., -5.])
+        # A cluster left without a supported block leaves the axes: input C1
+        # is below the ranking threshold everywhere here.
         cache = self.cache()
         assignment = cache["modulation_all_var_weighted_unnormalized"]["global_assignment_fixed_k20"]
         assignment["n_active_block"][0] = [0., 20., 0.]
         assignment["om_stack"][2, 0, 1] = 0.
         saved = self.render(cache, min_expected=1.0)
-        self.assertEqual(saved["multitask_overmembership_examples_dots_1.png"].args[0].axes[0].get_xlim(), (0, 4))
         self.assertEqual(saved["multitask_overmembership_examples_supported_1.png"].args[0].axes[0].get_xlim(),
                          (0, 3))
 
@@ -330,18 +305,18 @@ class OvermembershipExampleTests(unittest.TestCase):
         examples stay C3 then C4 because only blocks expecting at least 5
         synapses rank them, and that block does not stretch the color scale."""
         saved = self.render(self.cache(), min_expected=1.0)
-        titles = [saved[f"multitask_overmembership_examples_dots_{rank}.png"].args[0].axes[1].get_title()
+        titles = [saved[f"multitask_overmembership_examples_supported_{rank}.png"].args[0].axes[1].get_title()
                   for rank in (1, 2)]
         self.assertEqual(titles, ["Synapse cluster C3", "Synapse cluster C4"])
         self.assertIn("blocks with expected >= 5 rank the examples",
-                      saved["multitask_overmembership_examples_dots_1.png"].kwargs["extra"])
+                      saved["multitask_overmembership_examples_supported_1.png"].kwargs["extra"])
         self.assertEqual(saved["multitask_overmembership_examples_colorbar.png"].args[0].axes[0].get_ylim(),
                          (-1, 7))
         # Lowering the ranking threshold to the display threshold lets that
         # thin block decide, and C1 becomes the first example with its OM 99
         # at the top of the scale.
         saved = self.render(self.cache(), min_expected=1.0, select_min_expected=1.0)
-        first = saved["multitask_overmembership_examples_dots_1.png"]
+        first = saved["multitask_overmembership_examples_supported_1.png"]
         self.assertEqual(first.args[0].axes[1].get_title(), "Synapse cluster C1")
         self.assertIn("peak OM 99.00 at input C1 / hidden C2", first.kwargs["extra"])
         self.assertEqual(saved["multitask_overmembership_examples_colorbar.png"].args[0].axes[0].get_ylim(),
@@ -349,14 +324,14 @@ class OvermembershipExampleTests(unittest.TestCase):
 
     def test_forced_cluster_ids_override_the_automatic_choice(self):
         saved = self.render(self.cache(), clusters=(4,))
-        self.assertIn("multitask_overmembership_examples_dots_1.png", saved)
-        self.assertNotIn("multitask_overmembership_examples_dots_2.png", saved)
-        figure = saved["multitask_overmembership_examples_dots_1.png"].args[0]
+        self.assertIn("multitask_overmembership_examples_supported_1.png", saved)
+        self.assertNotIn("multitask_overmembership_examples_supported_2.png", saved)
+        figure = saved["multitask_overmembership_examples_supported_1.png"].args[0]
         self.assertEqual(figure.axes[1].get_title(), "Synapse cluster C4")
         colorbar = saved["multitask_overmembership_examples_colorbar.png"].args[0]
         self.assertEqual(colorbar.axes[0].get_ylim(), (-1, 5))
         saved = self.render(self.cache(), clusters=(1, 3))
-        titles = [saved[f"multitask_overmembership_examples_dots_{rank}.png"].args[0].axes[1].get_title()
+        titles = [saved[f"multitask_overmembership_examples_supported_{rank}.png"].args[0].axes[1].get_title()
                   for rank in (1, 2)]
         self.assertEqual(titles, ["Synapse cluster C1", "Synapse cluster C3"])
 
@@ -365,16 +340,15 @@ class OvermembershipExampleTests(unittest.TestCase):
         assignment = cache["modulation_all_var_weighted_unnormalized"]["global_assignment_fixed_k20"]
         assignment["n_active_block"][0] = [0., 5., 100.]   # C1 keeps one shown block (share 0.1)
         saved = self.render(cache)
-        first = saved["multitask_overmembership_examples_dots_1.png"]
+        first = saved["multitask_overmembership_examples_supported_1.png"]
         axis = first.args[0].axes[0]
         self.assertEqual(axis.get_xlim(), (0, 4))                 # input C1 is kept now
         # C4 holds the only synapses and sorts first; the others, with none,
         # tie at the floor and keep their cluster order.
         self.assertIn("input C4, C1, C2, C3;", first.kwargs["extra"])
-        # Its two unmeasurable blocks stay blank: 10 of 12 blocks are drawn.
-        self.assertIn("10/12 blocks shown", first.kwargs["extra"])
+        # Its two unmeasurable blocks stay grey: 10 of 12 blocks are drawn.
+        self.assertIn("the 10 blocks expecting >= 5 synapses", first.kwargs["extra"])
         self.assertEqual(len(block_cells(axis)), 10)
-        self.assertNotIn("dropped", first.kwargs["extra"])
 
     def test_missing_data_unsupported_cache_or_absent_forced_cluster_skips_without_saving(self):
         unsupported = self.cache()
@@ -401,7 +375,7 @@ class OvermembershipExampleTests(unittest.TestCase):
         assignment = cache["modulation_all_var_weighted_unnormalized"]["global_assignment_fixed_k20"]
         assignment["unresponsive_mod_label"] = 3          # the would-be winner is the silent class
         saved = self.render(cache)
-        titles = [saved[f"multitask_overmembership_examples_dots_{rank}.png"].args[0].axes[1].get_title()
+        titles = [saved[f"multitask_overmembership_examples_supported_{rank}.png"].args[0].axes[1].get_title()
                   for rank in (1, 2)]
         self.assertEqual(titles, ["Synapse cluster C4", "Synapse cluster C1"])
 
@@ -415,7 +389,7 @@ class OvermembershipExampleTests(unittest.TestCase):
         assignment["om_stack"][0, 1, 13] = 4.
         assignment["om_stack"][1, 3, 13] = 5.
         saved = self.render(cache)
-        first = saved["multitask_overmembership_examples_dots_1.png"]
+        first = saved["multitask_overmembership_examples_supported_1.png"]
         axis = first.args[0].axes[0]
         # C3 peaks at input C4 x hidden C14 (om_stack[1, 3, 13]), its only
         # enriched block, sorted to the front of both axes.
@@ -423,9 +397,10 @@ class OvermembershipExampleTests(unittest.TestCase):
         np.testing.assert_allclose(deciding_ring(axis).get_offsets(), [[0.5, 0.5]])
         self.assertIn("input C4,", first.kwargs["extra"])
         self.assertIn("hidden C14,", first.kwargs["extra"])
+        # The empty unresponsive group U is on neither axis.
         self.assertEqual((axis.get_xlim(), axis.get_ylim()), ((0, 20), (20, 0)))
-        self.assertIn("dropped (no shown block): input U; hidden U", first.kwargs["extra"])
-        self.assertEqual(saved["multitask_overmembership_examples_dots_2.png"].args[0].axes[1].get_title(),
+        self.assertNotIn("U", first.kwargs["extra"].split("axes sorted")[1].split("marginal bars")[0])
+        self.assertEqual(saved["multitask_overmembership_examples_supported_2.png"].args[0].axes[1].get_title(),
                          "Synapse cluster C4")
 
 

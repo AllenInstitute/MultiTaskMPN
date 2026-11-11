@@ -4439,33 +4439,31 @@ OVERMEMBERSHIP_EXAMPLE_FIXED_K = 20
 # meaningful for one run only and the figure skips when an ID is absent.
 OVERMEMBERSHIP_EXAMPLE_N = 2
 OVERMEMBERSHIP_EXAMPLE_CLUSTERS = None
-# Blocks must expect at least this many synapses to rank the examples. The
-# display threshold below is 1 synapse, where a ratio of 9 is nine synapses
-# and mostly noise; at 5 expected a ratio of 6 is thirty synapses. Without
-# this, the pick is the cluster with the luckiest near-empty block.
+# Blocks must expect at least this many synapses to rank the examples and to
+# be drawn as a cell of the block map. At 1 expected synapse a ratio of 9 is
+# nine synapses and mostly noise; at 5 expected a ratio of 6 is thirty
+# synapses. Without this, the pick is the cluster with the luckiest
+# near-empty block.
 OVERMEMBERSHIP_EXAMPLE_SELECT_MIN_EXPECTED = 5.0
-# Blocks expecting fewer synapses than this under the label-shuffle null are
-# left blank: their observed/expected ratio swings wildly with one or two
-# synapses. NOT the OM-vs-lesion scatter's threshold: that scatter's points
+# Blocks expecting at least this many synapses under the label-shuffle null
+# count toward the axis order and the marginal bars of the block map; below
+# it the observed/expected ratio swings wildly with one or two synapses.
+# Blocks between this and the ranking threshold above are counted but not
+# drawn. NOT the OM-vs-lesion scatter's threshold: that scatter's points
 # were selected by lesion_plot.py with its own OM_MIN_EXPECTED (3, saved as
-# the cache's min_expected), so blocks expecting 1 to 3 synapses appear here
-# but not in the scatter.
+# the cache's min_expected).
 OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED = 1.0
 # The block map keeps the lesion scatters' footprint, a 1.5-inch square; the
 # figure is larger to fit the marginal enrichment bars above and to its right.
 _OVERMEMBERSHIP_EXAMPLE_FIGSIZE = (2.5, 2.5)
-# Block maps: each shown block is a cell colored by its OM on _OM_BLOCK_CMAP,
-# a diverging map centered on chance (OM = 0; _om_block_cmap_norm). A block
-# expecting fewer synapses than the ranking threshold is drawn as a square of
-# this fraction of the cell side, so a ratio over a handful of synapses does
-# not carry the weight of a well-supported one.
+# Block maps: each drawn block is a cell colored by its OM on _OM_BLOCK_CMAP,
+# a diverging map centered on chance (OM = 0; _om_block_cmap_norm).
 _OM_BLOCK_CMAP = "RdBu_r"
-_OM_THIN_BLOCK_SIDE = 0.6
-# Background of the well-supported-only maps: a block that is not assessed
-# (too few expected synapses) is this light grey, so white means OM = 0.
+# Background of the block maps: a block that is not assessed (too few
+# expected synapses) is this light grey, so white means OM = 0.
 _OM_BLANK_COLOR = "0.9"
 # The marginal bars show log2 of each input or hidden cluster's
-# observed/expected over its shown blocks, on an axis symmetric about chance
+# observed/expected over its counted blocks, on an axis symmetric about chance
 # (0) that spans at least this many doublings and grows to cover every
 # example; a cluster with no synapse of the example sits at the floor.
 _OVERMEMBERSHIP_MARGIN_MIN_DOUBLINGS = 1.0
@@ -4542,34 +4540,30 @@ def _doublings_tick_label(doublings):
     return f"1/{factor:g}" if doublings < 0 else f"{factor:g}"
 
 
-def _plot_om_block_map(ratio, shown, supported, observed, expected, input_names, hidden_names,
-                       vmax, margin_limit, deciding, title, out_path, extra="",
-                       bar_shown=None, blank_color=None):
+def _plot_om_block_map(ratio, shown, counted, observed, expected, vmax, margin_limit, deciding,
+                       title, out_path, extra=""):
     """The block map of one synapse cluster, with its marginal enrichment
     bars.
 
-    `ratio`, `shown`, `supported`, `observed` and `expected` are (inputs,
+    `ratio`, `shown`, `counted`, `observed` and `expected` are (inputs,
     hiddens) over the kept clusters in their sorted order; `ratio` retains
     observed/expected. x is the input (pre) cluster, y the hidden (post)
     cluster. Each shown block is a cell colored by OM = ratio - 1 on the
     shared diverging scale of _om_block_cmap_norm (below chance toward blue,
     chance white, above toward red, `vmax` the examples' peak OM over
-    well-supported blocks, higher OM saturated); a shown block below the
-    ranking threshold (`supported` False) is a smaller square,
-    _OM_THIN_BLOCK_SIDE of the cell; unshown blocks are blank. `deciding`
+    well-supported blocks, higher OM saturated). The map is filled with
+    _OM_BLANK_COLOR behind the cells, so an unshown block reads as "not
+    assessed" and white is left to shown blocks at chance. `deciding`
     (input, hidden) is the example's deciding block, ringed in black like
     the OM-vs-lesion scatter's highlighted point. The bars above (inputs)
     and to the right (hiddens) of the map show each cluster's log2
-    observed/expected over its shown blocks on an axis of +-`margin_limit`
+    observed/expected over its `counted` blocks (the shown ones and the
+    thinner ones the map leaves out) on an axis of +-`margin_limit`
     doublings, with ticks labelled as ratios (chance 1 at log2 coordinate 0),
     so the sorted axes read as a monotone profile. The axes carry no
-    cluster names; `input_names` and `hidden_names` go to the caller's saved
-    message. `bar_shown`, when given, is the block mask the marginal bars
-    sum over in place of `shown` (the well-supported-only map draws fewer
-    blocks than its bars count). `blank_color`, when given, fills the map
-    behind the cells, so an unshown block reads as "not assessed" and white
-    is left to shown blocks at chance. The title sits over the top bar axis.
-    The color scale is saved separately (plot_overmembership_examples)."""
+    cluster names; the caller's saved message lists them. The title sits
+    over the top bar axis. The color scale is saved separately
+    (plot_overmembership_examples)."""
     n_in, n_hid = ratio.shape
     layout = _OM_DOT_LAYOUT
     cell_pt = _om_dot_cell_pt(n_in, n_hid, layout)
@@ -4584,33 +4578,25 @@ def _plot_om_block_map(ratio, shown, supported, observed, expected, input_names,
     right = fig.add_axes([layout["left"] + width + layout["gap"], layout["bottom"],
                           layout["margin"], height], sharey=axis)
     cmap, norm = _om_block_cmap_norm(vmax)
-    for mask, side in ((shown & supported, 1.0), (shown & ~supported, _OM_THIN_BLOCK_SIDE)):
-        rows, cols = np.nonzero(mask)
-        if not rows.size:
-            continue
-        half = side / 2.0
-        squares = [[(i + 0.5 - half, j + 0.5 - half), (i + 0.5 + half, j + 0.5 - half),
-                    (i + 0.5 + half, j + 0.5 + half), (i + 0.5 - half, j + 0.5 + half)]
-                   for i, j in zip(rows, cols)]
-        axis.add_collection(mpl.collections.PolyCollection(
-            squares, facecolors=cmap(norm(ratio[rows, cols] - 1.0)), edgecolors="none", zorder=2))
+    rows, cols = np.nonzero(shown)
+    squares = [[(i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)] for i, j in zip(rows, cols)]
+    axis.add_collection(mpl.collections.PolyCollection(
+        squares, facecolors=cmap(norm(ratio[rows, cols] - 1.0)), edgecolors="none", zorder=2))
     # The deciding block, as the scatter rings its point.
     axis.scatter([deciding[0] + 0.5], [deciding[1] + 0.5], s=(1.1 * cell_pt) ** 2,
                  facecolors="none", edgecolors="k", linewidths=0.8, zorder=5)
     axis.set_xlim(0, n_in)
     axis.set_ylim(n_hid, 0)
-    if blank_color is not None:
-        axis.set_facecolor(blank_color)
+    axis.set_facecolor(_OM_BLANK_COLOR)
     axis.set_xticks([])
     axis.set_yticks([])
     axis.set_xlabel("Input cluster", fontsize=8)
     axis.set_ylabel("Hidden cluster", fontsize=8)
     axis.spines[["top", "right"]].set_visible(False)
     # Marginal enrichment bars; the floor holds clusters without a synapse.
-    bar_shown = shown if bar_shown is None else bar_shown
-    bars = {"x": np.clip(_marginal_enrichment(observed, expected, bar_shown, axis=1),
+    bars = {"x": np.clip(_marginal_enrichment(observed, expected, counted, axis=1),
                          -margin_limit, margin_limit),
-            "y": np.clip(_marginal_enrichment(observed, expected, bar_shown, axis=0),
+            "y": np.clip(_marginal_enrichment(observed, expected, counted, axis=0),
                          -margin_limit, margin_limit)}
     top.bar(np.arange(n_in) + 0.5, bars["x"], width=0.8, color=_OM_DOT_BAR_COLOR, linewidth=0)
     top.axhline(0, color="0.2", linewidth=0.5)
@@ -4740,42 +4726,37 @@ def plot_overmembership_examples():
     Even these are diffuse in the L21e4 run: their most enriched blocks hold
     a few per cent of their synapses, and their structure is marginal (which
     neuron clusters they avoid or favor), which the sorted axes and bars show.
-    Blocks whose expected count is below OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED
-    are left blank, because a ratio over a handful of expected synapses is
-    unstable; zero-expectation blocks are a special case of this. Input or
-    hidden clusters with no shown block are dropped from an example's axes,
-    which is what removes U and very small neuron clusters. The fixed k, the
-    blanking rule, the deciding block (the peak OM over well-supported
-    blocks) and the dropped clusters go to the saved message rather than
-    onto the figure.
+    The fixed k, the thresholds, the deciding block (the peak OM over
+    well-supported blocks) and the axis order go to the saved message rather
+    than onto the figure.
 
-    Outputs, rank r = 1..N: `overmembership_examples_dots_<r>` (block map:
-    the input and hidden clusters sorted by the example's observed/expected
-    over their shown blocks, most enriched first, _om_axis_order; each shown
-    block a cell colored by OM on a diverging scale centered on chance,
-    _om_block_cmap_norm, blocks below the ranking threshold as smaller
-    squares, unmeasurable blocks blank, the deciding block ringed in black
-    as in the OM-vs-lesion scatter; bars above and to the right of the map
-    with each cluster's log2 observed/expected, _marginal_enrichment, on one
-    symmetric axis, with ticks labelled as ratios (chance 1)). The axes
-    carry no cluster names; the saved message lists each axis in its drawn
-    order. The examples come from ANAME, and so
-    does the OM-vs-lesion scatter (_om_scatter_run), unlike the other lesion
-    figures, so its points include the example clusters. All examples share
-    one color scale, whose upper limit is their peak OM over well-supported
-    blocks (thinner blocks saturate), and one marginal bar axis; the scale
-    is saved once as `overmembership_examples_colorbar` (chance OM = 0
-    marked). Earlier versions drew dots sized by the observed count in
-    cluster-ID order, which mostly showed the neuron clusters' sizes.
-    Each example is also saved as `overmembership_examples_supported_<r>`,
-    the same map restricted to the blocks that rank the examples (expected
-    >= OVERMEMBERSHIP_EXAMPLE_SELECT_MIN_EXPECTED): the thin blocks, whose
-    ratios rest on a handful of synapses yet draw the eye, are left out, and
-    so are the input and hidden clusters left without a block. Its axes keep
-    the full map's order and its marginal bars still sum over every shown
-    block of the kept clusters, so the thin blocks' trend stays in the bars.
-    Its map is filled with _OM_BLANK_COLOR behind the cells: grey is a block
-    that is not assessed, white a block at chance.
+    Outputs, rank r = 1..N: `overmembership_examples_supported_<r>`, a block
+    map of the blocks that rank the examples (expected >=
+    OVERMEMBERSHIP_EXAMPLE_SELECT_MIN_EXPECTED synapses), each a cell colored
+    by OM on a diverging scale centered on chance (_om_block_cmap_norm), the
+    deciding block ringed in black as in the OM-vs-lesion scatter. Thinner
+    blocks, whose ratios rest on a handful of synapses, are not drawn, and
+    neither are the input and hidden clusters left without a block; the map
+    is filled with _OM_BLANK_COLOR behind the cells, so grey is a block that
+    is not assessed and white a block at chance. The input and hidden
+    clusters are sorted by the example's observed/expected over their
+    counted blocks (expected >= OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED; zero-
+    expectation blocks, and with them U and very small neuron clusters, never
+    count), most enriched first (_om_axis_order); the bars above and to the
+    right of the map show that log2 ratio (_marginal_enrichment) on one
+    symmetric axis, with ticks labelled as ratios (chance 1), so the thin
+    blocks' trend stays in the bars. The axes carry no cluster names; the
+    saved message lists each axis in its drawn order. An example without a
+    well-supported block (possible only for a forced cluster) is skipped.
+    The examples come from ANAME, and so does the OM-vs-lesion scatter
+    (_om_scatter_run), unlike the other lesion figures, so its points
+    include the example clusters. All examples share one color scale, whose
+    upper limit is their peak OM over well-supported blocks, and one
+    marginal bar axis; the scale is saved once as
+    `overmembership_examples_colorbar` (chance OM = 0 marked). Until
+    2026-11-10 `overmembership_examples_dots_<r>` also drew the thin blocks,
+    as smaller squares; their saturated colors drew the eye to the least
+    reliable ratios, and those maps were removed.
     The full cluster cache can be several GB; run on an allocated compute node.
     """
     selection = _om_example_selection()
@@ -4784,7 +4765,6 @@ def plot_overmembership_examples():
     ratios, cluster_ids, expected = (selection[key] for key in ("ratios", "cluster_ids", "expected"))
     stable, supported, select_min = (selection[key] for key in ("stable", "supported", "select_min"))
     ranked, chosen, vmax = selection["ranked"], selection["chosen"], selection["vmax"]
-    n_in, n_hid = ratios.shape[1:]
     # Peak OM over well-supported blocks of every ranked candidate, for the
     # saved messages (runners-up after the chosen examples).
     peaks = [(float(np.max(np.where(supported[index], ratios[index], -np.inf))) - 1.0, cluster_ids[index])
@@ -4806,74 +4786,48 @@ def plot_overmembership_examples():
     margin_limit = max(_OVERMEMBERSHIP_MARGIN_MIN_DOUBLINGS, float(np.ceil(max(doublings, default=0.0))))
     for rank, (cluster_index, top) in enumerate(zip(chosen, selection["tops"]), start=1):
         cluster_id = cluster_ids[cluster_index]
-        ratio, shown = ratios[cluster_index], stable[cluster_index]
-        keep_input = np.nonzero(shown.any(axis=1))[0]
-        keep_hidden = np.nonzero(shown.any(axis=0))[0]
-        dropped = {
-            "input": _labels([i for i in range(n_in) if i not in keep_input]),
-            "hidden": _labels([j for j in range(n_hid) if j not in keep_hidden]),
-        }
-        # Kept clusters in enrichment order, most enriched at the top left.
-        order_input = _om_axis_order(observed[cluster_index], expected[cluster_index], shown,
-                                     keep_input, axis=1)
-        order_hidden = _om_axis_order(observed[cluster_index], expected[cluster_index], shown,
-                                      keep_hidden, axis=0)
-        sub_ratio = ratio[np.ix_(order_input, order_hidden)]
-        sub_shown = shown[np.ix_(order_input, order_hidden)]
-        sub_supported = supported[cluster_index][np.ix_(order_input, order_hidden)]
-        sub_expected = expected[cluster_index][np.ix_(order_input, order_hidden)]
-        sub_observed = observed[cluster_index][np.ix_(order_input, order_hidden)]
-        input_names, hidden_names = _labels(order_input), _labels(order_hidden)
-        # `top` is the deciding block (_om_example_selection), the one the
-        # OM-vs-lesion scatter highlights; it is ringed and named.
-        observed_top = observed[cluster_index][top]
-        deciding = (order_input.index(top[0]), order_hidden.index(top[1]))
-        dropped_text = "; ".join(f"{side} {', '.join(names)}" for side, names in dropped.items() if names)
-        _plot_om_block_map(
-            sub_ratio, sub_shown, sub_supported, sub_observed, sub_expected, input_names, hidden_names,
-            vmax, margin_limit, deciding,
-            f"Synapse cluster C{cluster_id}", _multitask_out(f"overmembership_examples_dots_{rank}.png"),
-            extra=(f"  ({ANAME}; fixed k={OVERMEMBERSHIP_EXAMPLE_FIXED_K}; var-weighted "
-                   f"unnormalized modulation; unnormalized input/hidden; blank: expected < "
-                   f"{OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED:g} synapses) example {rank}: synapse "
-                   f"cluster C{cluster_id}: {int(sub_shown.sum())}/{sub_shown.size} blocks shown; "
-                   f"cell color = OM (observed/expected - 1), diverging about chance, saturating "
-                   f"above {vmax:g}; blocks expecting < {select_min:g} synapses are smaller squares; "
-                   f"black ring: deciding block; axes sorted by observed/expected over shown blocks, "
-                   f"input {', '.join(input_names)}; hidden {', '.join(hidden_names)}; marginal bars "
-                   f"log2(observed/expected) on +-{margin_limit:g} doublings; "
-                   f"peak OM {ratio[top] - 1.0:.2f} at input "
-                   f"{_labels([top[0]])[0]} / hidden {_labels([top[1]])[0]} ({observed_top:.0f} "
-                   f"observed / {expected[cluster_index][top]:.2f} expected; blocks with "
-                   f"expected >= {select_min:g} rank the examples)"
-                   + (f"; runners-up: {runners}" if runners else "")
-                   + (f"; dropped (no shown block): {dropped_text}" if dropped_text else "")))
-        # The well-supported-only version: the same sorted axes without the
-        # thin blocks, and without the clusters that then have no block.
-        if not sub_supported[deciding]:
+        ratio, counted = ratios[cluster_index], stable[cluster_index]
+        if not supported[cluster_index][top]:
             print(f"  Skipped overmembership_examples_supported_{rank}: C{cluster_id} has no "
                   f"block expecting >= {select_min:g} synapses.")
             continue
-        rows = np.nonzero(sub_supported.any(axis=1))[0]
-        cols = np.nonzero(sub_supported.any(axis=0))[0]
-        grid = np.ix_(rows, cols)
-        kept_input, kept_hidden = [input_names[i] for i in rows], [hidden_names[j] for j in cols]
-        share = sub_expected[sub_supported].sum() / sub_expected[sub_shown].sum()
+        # Clusters in enrichment order over their counted blocks, most
+        # enriched at the top left.
+        order_input = _om_axis_order(observed[cluster_index], expected[cluster_index], counted,
+                                     np.nonzero(counted.any(axis=1))[0], axis=1)
+        order_hidden = _om_axis_order(observed[cluster_index], expected[cluster_index], counted,
+                                      np.nonzero(counted.any(axis=0))[0], axis=0)
+        # The map keeps the clusters with a well-supported block.
+        order_input = [i for i in order_input if supported[cluster_index][i].any()]
+        order_hidden = [j for j in order_hidden if supported[cluster_index][:, j].any()]
+        grid = np.ix_(order_input, order_hidden)
+        sub_shown, sub_counted = supported[cluster_index][grid], counted[grid]
+        input_names, hidden_names = _labels(order_input), _labels(order_hidden)
+        # `top` is the deciding block (_om_example_selection), the one the
+        # OM-vs-lesion scatter highlights; it is ringed and named.
+        share = expected[cluster_index][supported[cluster_index]].sum() / expected[cluster_index][counted].sum()
         _plot_om_block_map(
-            sub_ratio[grid], sub_supported[grid], sub_supported[grid], sub_observed[grid],
-            sub_expected[grid], kept_input, kept_hidden, vmax, margin_limit,
-            (int(np.searchsorted(rows, deciding[0])), int(np.searchsorted(cols, deciding[1]))),
+            ratio[grid], sub_shown, sub_counted, observed[cluster_index][grid],
+            expected[cluster_index][grid], vmax, margin_limit,
+            (order_input.index(top[0]), order_hidden.index(top[1])),
             f"Synapse cluster C{cluster_id}",
             _multitask_out(f"overmembership_examples_supported_{rank}.png"),
-            extra=(f"  ({ANAME}) example {rank}: synapse cluster C{cluster_id}, only the "
-                   f"{int(sub_supported.sum())} blocks expecting >= {select_min:g} synapses of the "
-                   f"{int(sub_shown.sum())} shown in overmembership_examples_dots_{rank} "
-                   f"({share:.0%} of the cluster's expected synapses in shown blocks); axes in "
-                   f"that figure's order, input {', '.join(kept_input)}; hidden "
-                   f"{', '.join(kept_hidden)}; marginal bars over every shown block of the kept "
-                   f"clusters, thin ones included; same color scale and ring; grey: block "
-                   f"not assessed (expected < {select_min:g})"),
-            bar_shown=sub_shown[grid], blank_color=_OM_BLANK_COLOR)
+            extra=(f"  ({ANAME}; fixed k={OVERMEMBERSHIP_EXAMPLE_FIXED_K}; var-weighted "
+                   f"unnormalized modulation; unnormalized input/hidden) example {rank}: synapse "
+                   f"cluster C{cluster_id}: the {int(sub_shown.sum())} blocks expecting >= "
+                   f"{select_min:g} synapses ({share:.0%} of the cluster's expected synapses in "
+                   f"blocks expecting >= {OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED:g}); cell color = "
+                   f"OM (observed/expected - 1), diverging about chance, saturating above "
+                   f"{vmax:g}; grey: block not assessed (expected < {select_min:g}); black ring: "
+                   f"deciding block; axes sorted by observed/expected over the blocks expecting "
+                   f">= {OVERMEMBERSHIP_EXAMPLE_MIN_EXPECTED:g}, input {', '.join(input_names)}; "
+                   f"hidden {', '.join(hidden_names)}; marginal bars log2(observed/expected) over "
+                   f"those blocks on +-{margin_limit:g} doublings; peak OM {ratio[top] - 1.0:.2f} "
+                   f"at input {_labels([top[0]])[0]} / hidden {_labels([top[1]])[0]} "
+                   f"({observed[cluster_index][top]:.0f} observed / "
+                   f"{expected[cluster_index][top]:.2f} expected; blocks with expected >= "
+                   f"{select_min:g} rank the examples)"
+                   + (f"; runners-up: {runners}" if runners else "")))
     ticks = sorted({-1.0, 0.0, vmax / 2, vmax})
     cmap, norm = _om_block_cmap_norm(vmax)
     _save_standalone_colorbar(
@@ -5149,7 +5103,7 @@ def _om_scatter_run():
     """(post-processing directory, run name) of the OM-vs-lesion scatter.
 
     The scatter reads ANAME, the run of the OM example panels
-    (overmembership_examples_dots_*), so their run-specific cluster IDs
+    (overmembership_examples_supported_*), so their run-specific cluster IDs
     refer to the same clusters. Other single-run lesion figures read
     LESION_ANAME. At L2=1e-4 the designated seeds are 749 and 921,
     respectively; either selection can fall back to another cached run.
@@ -5164,7 +5118,7 @@ _OM_SCATTER_HIGHLIGHT_SIZE = 46
 
 
 def _om_scatter_highlight(om_vals, aname, point_ids=None):
-    """The scatter point that is the deciding block of overmembership_examples_dots_1
+    """The scatter point that is the deciding block of overmembership_examples_supported_1
     (its most enriched supported input x hidden block), or None with a note.
 
     Only possible because the scatter and the examples share a run
@@ -5314,7 +5268,7 @@ def plot_om_vs_lesion():
     NOTE the run: _om_scatter_run, i.e. ANAME (the clustering example, the
     OM example panels' run), NOT LESION_ANAME like the other lesion figures.
     Because the two share that run, the deciding block of
-    overmembership_examples_dots_1 (its most enriched supported block) is
+    overmembership_examples_supported_1 (its most enriched supported block) is
     one of the scatter's points; it is drawn on top in the color the
     examples' block maps give its OM, with a black ring (_om_scatter_highlight).
     """
