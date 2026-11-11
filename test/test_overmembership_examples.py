@@ -22,6 +22,31 @@ def block_cells(axis):
     return cells
 
 
+def circle_cells(axis):
+    """{(input position, hidden position): (ring radius, disc radius or
+    None)} of the blocks a circle map draws, and the frame's lower-left
+    corner, from its patches."""
+    Circle, Rectangle = paper_plot.mpl.patches.Circle, paper_plot.mpl.patches.Rectangle
+    cells, frames = {}, []
+    for patch_ in axis.patches:
+        if isinstance(patch_, Rectangle):
+            frames.append(tuple(round(float(value), 6) for value in patch_.get_xy()))
+            continue
+        assert isinstance(patch_, Circle), patch_
+        center = tuple(round(float(value), 6) for value in patch_.center)
+        ring, disc = cells.get(center, (None, None))
+        if patch_.get_facecolor()[3] == 0:          # the hollow expected ring
+            np.testing.assert_allclose(patch_.get_edgecolor()[:3], 0.)
+            ring = float(patch_.radius)
+        else:
+            assert (paper_plot.mpl.colors.to_rgb(patch_.get_facecolor())
+                    == paper_plot.mpl.colors.to_rgb(paper_plot._OM_CIRCLE_FILL))
+            disc = float(patch_.radius)
+        cells[center] = (ring, disc)
+    assert len(frames) == 1, frames
+    return cells, frames[0]
+
+
 def deciding_ring(axis):
     """The one hollow black-edged marker of a block map, its deciding block."""
     rings = [c for c in axis.collections if isinstance(c, paper_plot.mpl.collections.PathCollection)]
@@ -81,11 +106,14 @@ class OvermembershipExampleTests(unittest.TestCase):
         self.assertEqual(paper_plot.OVERMEMBERSHIP_EXAMPLE_N, 2)
         cache = self.cache()
         saved = self.render(cache)
-        # Two block maps and the colorbar; no heatmap, no size key.
+        # Two block maps with their colorbar, two circle maps with their key.
         self.assertEqual(set(saved), {
             "multitask_overmembership_examples_supported_1.png",
             "multitask_overmembership_examples_supported_2.png",
-            "multitask_overmembership_examples_colorbar.png"})
+            "multitask_overmembership_examples_colorbar.png",
+            "multitask_overmembership_examples_circles_1.png",
+            "multitask_overmembership_examples_circles_2.png",
+            "multitask_overmembership_examples_circles_legend.png"})
         # Rank 1 is C3 (peak OM 7 at input C4 x hidden C2), rank 2 is C4 (peak 5
         # at input C2 x hidden C3); both share the colorbar's (-1, 7).
         for rank, cluster_id, peak in ((1, 3, "peak OM 7.00 at input C4 / hidden C2"),
@@ -298,6 +326,84 @@ class OvermembershipExampleTests(unittest.TestCase):
         saved = self.render(cache, min_expected=1.0)
         self.assertEqual(saved["multitask_overmembership_examples_supported_1.png"].args[0].axes[0].get_xlim(),
                          (0, 3))
+
+    def test_circle_map_draws_the_clusters_of_the_most_extreme_blocks(self):
+        """C3's three most enriched blocks (ratios 8, 2, 1.5) lie on inputs
+        C4 and C3 and hiddens C2 and C3; its most depleted ones (no synapse,
+        the first three in block order) add input C2. The 3 x 2 grid is
+        drawn in the block map's order, a ring per block with a disc of
+        ratio times its area."""
+        saved = self.render(self.enriched_cache())
+        first = saved["multitask_overmembership_examples_circles_1.png"]
+        figure = first.args[0]
+        self.assertEqual(len(figure.axes), 1)           # no marginal bars
+        axis = figure.axes[0]
+        self.assertEqual(axis.get_title(), "Synapse cluster C3")
+        self.assertEqual((axis.get_xlabel(), axis.get_ylabel()), ("Input cluster", "Hidden cluster"))
+        self.assertEqual((axis.get_xlim(), axis.get_ylim()), ((0, 3), (2, 0)))
+        self.assertEqual((len(axis.get_xticks()), len(axis.get_yticks())), (0, 0))
+        self.assertEqual(len(axis.collections), 0)      # no colored cells
+        np.testing.assert_allclose(figure.get_size_inches(), paper_plot._OM_CIRCLE_FIGSIZE)
+        cells, frame = circle_cells(axis)
+        # One ring size for both examples: the largest disc (ratio 8) has the
+        # maximum radius.
+        ring = paper_plot._OM_CIRCLE_MAX_RADIUS / np.sqrt(8.)
+        ratios = {(0.5, 0.5): 8., (1.5, 0.5): 2., (2.5, 0.5): 0.,
+                  (0.5, 1.5): 1.5, (1.5, 1.5): 0., (2.5, 1.5): 0.}
+        self.assertEqual(set(cells), set(ratios))
+        for center, ratio in ratios.items():
+            self.assertAlmostEqual(cells[center][0], ring)
+            if ratio:
+                self.assertAlmostEqual(cells[center][1], ring * np.sqrt(ratio))
+            else:
+                self.assertIsNone(cells[center][1])     # a ring alone: no synapse
+        np.testing.assert_allclose(frame, (0.02, 0.02))  # the deciding block, C4 x C2
+        extra = first.kwargs["extra"]
+        self.assertIn("example 1: synapse cluster C3", extra)
+        self.assertIn("3 most enriched and 3 most depleted blocks expecting >= 5 synapses: "
+                      "input C4, C3, C2; hidden C2, C3", extra)
+        self.assertIn("6/6 blocks drawn", extra)
+        # 115 of the cluster's 180 synapses (50 of them in a masked thin block).
+        self.assertIn("holding 64% of the cluster's synapses", extra)
+        self.assertIn("disc area: observed/expected (0.00 to 8.00)", extra)
+        # The second example shares the ring size although its peak is 6.
+        second, _ = circle_cells(saved["multitask_overmembership_examples_circles_2.png"].args[0].axes[0])
+        self.assertTrue(all(abs(found - ring) < 1e-12 for found, _ in second.values()))
+        self.assertAlmostEqual(max(disc for _, disc in second.values() if disc), ring * np.sqrt(6.))
+        # The key: three examples of the two circles, saved with the legends.
+        key = saved["multitask_overmembership_examples_circles_legend.png"].args[0].axes[0]
+        key_cells, key_discs = {}, []
+        for patch_ in key.patches:
+            key_cells.setdefault(round(float(patch_.center[0]), 6), []).append(float(patch_.radius))
+        self.assertEqual(sorted(key_cells), [0.5, 1.5, 2.5])
+        for (ratio, label), radii in zip(paper_plot._OM_CIRCLE_LEGEND_RATIOS, key_cells.values()):
+            self.assertAlmostEqual(min(radii) / max(radii), np.sqrt(min(ratio, 1 / ratio)))
+            key_discs.append(label)
+        self.assertEqual([text.get_text() for text in key.texts][:3], key_discs)
+
+    def test_circle_map_leaves_thin_blocks_empty_and_needs_legends_for_its_key(self):
+        """A block below the ranking threshold inside the selected grid is
+        not drawn at all, which a block without a synapse never is (it keeps
+        its ring); the key is a legend figure."""
+        cache = self.cache()
+        assignment = cache["modulation_all_var_weighted_unnormalized"]["global_assignment_fixed_k20"]
+        assignment["n_active_block"][0] = [0., 20., 100.]
+        assignment["om_stack"][2, 0, 1] = 0.
+        saved = self.render(cache, min_expected=1.0)
+        first = saved["multitask_overmembership_examples_circles_1.png"]
+        cells, frame = circle_cells(first.args[0].axes[0])
+        # Inputs C1, C4, C2 x hiddens C2, C1, C3; C1 x C2 expects 2 synapses
+        # and C1 x C1 none.
+        self.assertIn("input C1, C4, C2; hidden C2, C1, C3", first.kwargs["extra"])
+        self.assertIn("7/9 blocks drawn", first.kwargs["extra"])
+        self.assertEqual(len(cells), 7)
+        self.assertNotIn((0.5, 0.5), cells)
+        self.assertNotIn((0.5, 1.5), cells)
+        np.testing.assert_allclose(frame, (1.02, 0.02))  # C4 x C2
+        with patch.object(paper_plot, "SHOW_LEGEND", False):
+            saved = self.render(self.cache())
+        self.assertIn("multitask_overmembership_examples_circles_1.png", saved)
+        self.assertNotIn("multitask_overmembership_examples_circles_legend.png", saved)
 
     def test_ranking_ignores_high_ratios_on_thinly_supported_blocks(self):
         """With the display threshold at 1 synapse, cluster C1 (share 0.8) shows

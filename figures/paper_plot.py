@@ -4465,6 +4465,22 @@ _OM_BLANK_COLOR = "0.9"
 # (0) that spans at least this many doublings and grows to cover every
 # example; a cluster with no synapse of the example sits at the floor.
 _OVERMEMBERSHIP_MARGIN_MIN_DOUBLINGS = 1.0
+# Circle maps (overmembership_examples_circles_<r>): a few blocks of each
+# example as two circles, a ring for the expected synapse count, the same
+# size in every cell, and a disc whose area is the observed count relative to
+# it, so a disc spilling over its ring is enrichment and one inside it
+# depletion. The cells are those of the input and hidden clusters of the
+# example's OVERMEMBERSHIP_CIRCLE_N_BLOCKS most enriched and most depleted
+# well-supported blocks. One grey, no color: the two sizes carry the ratio.
+OVERMEMBERSHIP_CIRCLE_N_BLOCKS = 3
+_OM_CIRCLE_FIGSIZE = (2.5, 2.5)
+_OM_CIRCLE_FILL = "0.72"
+# Radius of the largest disc of the figures, in cells; the ring radius
+# follows from it, shared by the examples.
+_OM_CIRCLE_MAX_RADIUS = 0.46
+_OM_CIRCLE_LEGEND_FIGSIZE = (2.2, 0.95)
+# (observed / expected, label) of the legend figure's three examples.
+_OM_CIRCLE_LEGEND_RATIOS = ((0.5, "half"), (1.0, "as expected"), (2.0, "twice"))
 
 
 def _ranked_om_clusters(ratios, expected, cluster_ids, skip_ids=()):
@@ -4619,6 +4635,79 @@ def _plot_om_block_map(ratio, shown, counted, observed, expected, vmax, margin_l
     _save_fig(fig, out_path, extra=extra)
 
 
+def _om_circle_clusters(ratio, expected, supported, deciding):
+    """(input indices, hidden indices) of a circle map: the clusters of the
+    OVERMEMBERSHIP_CIRCLE_N_BLOCKS most enriched and of the as many most
+    depleted well-supported blocks of one synapse cluster (ties toward the
+    larger expected count, then the lower indices), with those of the
+    `deciding` block (input, hidden). `ratio`, `expected` and `supported`
+    are (inputs, hiddens); indices are ascending."""
+    blocks = [(ratio[i, j], expected[i, j], int(i), int(j)) for i, j in zip(*np.nonzero(supported))]
+    enriched = sorted(blocks, key=lambda block: (-block[0], -block[1]))
+    depleted = sorted(blocks, key=lambda block: (block[0], -block[1]))
+    chosen = (enriched[:OVERMEMBERSHIP_CIRCLE_N_BLOCKS] + depleted[:OVERMEMBERSHIP_CIRCLE_N_BLOCKS])
+    return (sorted({block[2] for block in chosen} | {int(deciding[0])}),
+            sorted({block[3] for block in chosen} | {int(deciding[1])}))
+
+
+def _om_circle_patches(ax, center, ratio, ring_radius):
+    """One block as two circles at `center`: the disc of the observed count
+    (area `ratio` times the ring's; none without a synapse) under the ring
+    of the expected count."""
+    if ratio > 0:
+        ax.add_patch(mpl.patches.Circle(center, ring_radius * np.sqrt(ratio),
+                                        facecolor=_OM_CIRCLE_FILL, edgecolor="none", zorder=2))
+    ax.add_patch(mpl.patches.Circle(center, ring_radius, facecolor="none", edgecolor="k",
+                                    linewidth=0.7, zorder=3))
+
+
+def _plot_om_circle_map(ratio, shown, ring_radius, deciding, title, out_path, extra=""):
+    """The circle map of one synapse cluster: `ratio` (observed/expected) and
+    `shown` are (inputs, hiddens) over the selected clusters in their drawn
+    order, x the input (pre) cluster, y the hidden (post) cluster. Each shown
+    block is drawn by _om_circle_patches with one `ring_radius`; a block
+    that is not shown (too few expected synapses) stays empty, which no
+    drawn block does, since even one without a synapse keeps its ring. The
+    `deciding` block (input, hidden) is framed. The axes carry no cluster
+    names; the caller's saved message lists them."""
+    n_in, n_hid = ratio.shape
+    fig, ax = plt.subplots(figsize=_OM_CIRCLE_FIGSIZE)
+    for i, j in zip(*np.nonzero(shown)):
+        _om_circle_patches(ax, (i + 0.5, j + 0.5), ratio[i, j], ring_radius)
+    ax.add_patch(mpl.patches.Rectangle((deciding[0] + 0.02, deciding[1] + 0.02), 0.96, 0.96,
+                                       facecolor="none", edgecolor="k", linewidth=0.9, zorder=4))
+    ax.set_xlim(0, n_in)
+    ax.set_ylim(n_hid, 0)
+    ax.set_aspect("equal")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.set_xlabel("Input cluster", fontsize=8)
+    ax.set_ylabel("Hidden cluster", fontsize=8)
+    ax.set_title(title, fontsize=8)
+    fig.tight_layout()
+    _save_fig(fig, out_path, extra=extra)
+
+
+def _save_om_circle_legend(out_path):
+    """The circle maps' key as its own small figure (only when legends are
+    on): the two circles at _OM_CIRCLE_LEGEND_RATIOS."""
+    if not SHOW_LEGEND:
+        return
+    fig, ax = plt.subplots(figsize=_OM_CIRCLE_LEGEND_FIGSIZE)
+    ring_radius = _OM_CIRCLE_MAX_RADIUS / np.sqrt(max(ratio for ratio, _ in _OM_CIRCLE_LEGEND_RATIOS))
+    for position, (ratio, label) in enumerate(_OM_CIRCLE_LEGEND_RATIOS):
+        _om_circle_patches(ax, (position + 0.5, 0.5), ratio, ring_radius)
+        ax.text(position + 0.5, 1.05, label, ha="center", va="top", fontsize=6)
+    ax.text(len(_OM_CIRCLE_LEGEND_RATIOS) / 2, -0.08,
+            "ring: expected synapses; disc: observed (area)", ha="center", va="bottom", fontsize=6)
+    ax.set_xlim(0, len(_OM_CIRCLE_LEGEND_RATIOS))
+    ax.set_ylim(1.3, -0.3)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    _save_fig(fig, out_path, extra="  (key of overmembership_examples_circles)")
+
+
 def _om_example_selection():
     """Data and choice of the OM examples of ANAME, shared by
     plot_overmembership_examples and the OM-vs-lesion scatter's highlight so
@@ -4755,6 +4844,21 @@ def plot_overmembership_examples():
     2026-11-10 `overmembership_examples_dots_<r>` also drew the thin blocks,
     as smaller squares; their saturated colors drew the eye to the least
     reliable ratios, and those maps were removed.
+
+    Each example is also saved as `overmembership_examples_circles_<r>`, a
+    reading aid for what over-membership is: a few of its well-supported
+    blocks as two circles each, a black ring for the expected synapse count,
+    the same size in every cell and both figures, and a grey disc whose
+    area is observed/expected times the ring's, so a disc beyond its ring
+    is enrichment, one inside it depletion and a ring alone a block without
+    a synapse (_plot_om_circle_map; one grey, no color scale, no marginal
+    bars). The cells are those of the input and hidden clusters of the
+    example's OVERMEMBERSHIP_CIRCLE_N_BLOCKS most enriched and most depleted
+    well-supported blocks (_om_circle_clusters), in the block map's axis
+    order; a cell below the ranking threshold stays empty and the deciding
+    block is framed. These are the example's most extreme blocks, a
+    fraction of its synapses that the saved message states; the key is
+    saved as `overmembership_examples_circles_legend` when legends are on.
     The full cluster cache can be several GB; run on an allocated compute node.
     """
     selection = _om_example_selection()
@@ -4782,6 +4886,7 @@ def plot_overmembership_examples():
                  for value in _marginal_enrichment(observed[index], expected[index], stable[index], axis)
                  if np.isfinite(value)]
     margin_limit = max(_OVERMEMBERSHIP_MARGIN_MIN_DOUBLINGS, float(np.ceil(max(doublings, default=0.0))))
+    circle_maps = []
     for rank, (cluster_index, top) in enumerate(zip(chosen, selection["tops"]), start=1):
         cluster_id = cluster_ids[cluster_index]
         ratio, counted = ratios[cluster_index], stable[cluster_index]
@@ -4826,6 +4931,38 @@ def plot_overmembership_examples():
                    f"{expected[cluster_index][top]:.2f} expected; blocks with expected >= "
                    f"{select_min:g} rank the examples)"
                    + (f"; runners-up: {runners}" if runners else "")))
+        # The circle map: the clusters of the most extreme well-supported
+        # blocks, in the block map's axis order.
+        circle_input, circle_hidden = _om_circle_clusters(
+            ratio, expected[cluster_index], supported[cluster_index], top)
+        circle_input = [i for i in order_input if i in circle_input]
+        circle_hidden = [j for j in order_hidden if j in circle_hidden]
+        circle_maps.append((rank, cluster_index, top, circle_input, circle_hidden))
+    # One ring size for every circle map: the largest drawn disc fills its cell.
+    largest = max((ratios[index][np.ix_(rows, cols)][supported[index][np.ix_(rows, cols)]].max()
+                   for _, index, _, rows, cols in circle_maps), default=1.0)
+    ring_radius = _OM_CIRCLE_MAX_RADIUS / np.sqrt(max(1.0, float(largest)))
+    for rank, cluster_index, top, rows, cols in circle_maps:
+        grid = np.ix_(rows, cols)
+        shown = supported[cluster_index][grid]
+        drawn_ratio = ratios[cluster_index][grid]
+        drawn_observed = observed[cluster_index][grid][shown].sum()
+        _plot_om_circle_map(
+            drawn_ratio, shown, ring_radius, (rows.index(top[0]), cols.index(top[1])),
+            f"Synapse cluster C{cluster_ids[cluster_index]}",
+            _multitask_out(f"overmembership_examples_circles_{rank}.png"),
+            extra=(f"  ({ANAME}) example {rank}: synapse cluster C{cluster_ids[cluster_index]}, "
+                   f"the clusters of its {OVERMEMBERSHIP_CIRCLE_N_BLOCKS} most enriched and "
+                   f"{OVERMEMBERSHIP_CIRCLE_N_BLOCKS} most depleted blocks expecting >= "
+                   f"{select_min:g} synapses: input {', '.join(_labels(rows))}; hidden "
+                   f"{', '.join(_labels(cols))}; {int(shown.sum())}/{shown.size} blocks drawn "
+                   f"(the others expect < {select_min:g} synapses and stay empty), holding "
+                   f"{drawn_observed / observed[cluster_index].sum():.0%} of the cluster's "
+                   f"synapses; ring: expected count, disc area: observed/expected "
+                   f"({drawn_ratio[shown].min():.2f} to {drawn_ratio[shown].max():.2f}); "
+                   f"framed: deciding block"))
+    if circle_maps:
+        _save_om_circle_legend(_multitask_out("overmembership_examples_circles_legend.png"))
     ticks = sorted({-1.0, 0.0, vmax / 2, vmax})
     cmap, norm = _om_block_cmap_norm(vmax)
     _save_standalone_colorbar(
