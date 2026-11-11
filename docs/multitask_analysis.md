@@ -1286,6 +1286,71 @@ independent evidence or a trained/untrained comparison.
 python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_coassignment
 ```
 
+`multitask_row_cluster_period_pairs_n.png` reduces those matrices to the period
+types: for each representation, which two periods tend to share a row cluster.
+For every unordered pair of period types (a period with itself included: two
+rows of that period, of different tasks), each network counts its row pairs of
+those two types and the ones that fall in one cluster
+(`sibling_row_sharing.summarize_period_pair_coassignment`), which gives one
+probability per network. A bar is the mean of that probability over the
+networks, its whisker the sample SD; the pairs are sorted per panel, most
+probable first (at most `_ROW_PERIOD_PAIRS_TOP` = 20; five periods give
+fifteen), and the two period names of a row sit on their heatmap phase colors.
+A pair of different periods pools the rows of one task with those of two
+tasks. Each panel has its own x range: the full 0–100% when its bars pass
+50% (input and hidden), a shorter one fitted to the bars otherwise (30% for
+the synapses in the L21e4 cohort), so bar lengths are not comparable between
+panels and the tick labels carry the scale. The dashed line is the cohort mean of the probability over all row
+pairs, the level the networks' cluster sizes give; it differs between the
+panels (the representations select different numbers of row clusters), so a
+bar is read against its own panel's line. As with the co-clustering heatmaps
+these are raw frequencies of the trained networks, with no chance correction,
+test or untrained control. In the L21e4 cohort (25 networks) the input and
+hidden rows of the two memory periods always share a cluster (Memory 1 with
+Memory 1, Memory 1 with Memory 2, Memory 2 with Memory 2: 100%, against 30%
+for any two rows), memory and response rows do so in 47% of their pairs, and
+stimulus and memory rows never; the synapse rows are far less period-bound
+(9% for any two rows), led by the stimulus-memory pairs of one epoch
+(Stimulus 2 with Memory 2 18%, Stimulus 1 with Memory 1 15%), with Memory 2
+with Memory 2 last at 2%.
+
+```bash
+python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_period_pairs
+```
+
+`multitask_row_cluster_joint_pairs_n.png` asks which particular row pairs the
+three clusterings agree on: for rows $i,j$ the joint frequency is
+$J_{ij}=N^{-1}\sum_{s=1}^{N}\prod_{r}\mathbf{1}[c^{(r,s)}_i=c^{(r,s)}_j]$, the
+fraction of networks in which the two rows share a row cluster in the input,
+the hidden and the synapse clustering at once (`joint` of
+`sibling_row_sharing.summarize_row_coassignment`). The figure lists the 20
+pairs with the highest $J_{ij}$ (`_ROW_JOINT_PAIRS_TOP`), ties in the fixed
+task and period order, as four bar panels sharing the rows: $C^{(r)}_{ij}$ for
+input, hidden and synapses, then $J_{ij}$. Each row is labelled by its two
+task-period rows on their period colors; a panel's dashed line is its mean
+over all 1176 row pairs (30%, 29%, 9% and 2.7% in the L21e4 cohort). A
+separate top 20 per representation would not be informative for input and
+hidden, where 266 and 256 pairs sit at exactly 100%.
+
+In the L21e4 cohort (25 networks) the seven leading pairs, at 92 to 100%, are
+all one task's last memory period with its own response period (MemoryPro and
+MemoryAnti: Memory 1 with Response; the five integration tasks: Memory 2
+with Response). DelayPro's stimulus with ReactAnti's response follows at 88%,
+then five pairs at 56 to 64% (a stimulus row with a reaction task's response
+row, or two tasks' Stimulus 1 rows); 13 pairs reach 50%, and the rest of the
+list sits at 32 to 36%. Three limits apply. The leading pairs share a cluster
+in the input and hidden clusterings in every network, so $J_{ij}$ is close to
+the synapse frequency: the figure shows which synapse-level pairings also
+hold at the neuron level, not three independent agreements. The input rows of
+periods without a changing input are all zero (23 of the 49) and cluster
+together by construction, which accounts for part of the input panel's 100%.
+And, as above, these are raw frequencies of the trained networks, with no
+chance correction, test or untrained control.
+
+```bash
+python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_joint_pairs
+```
+
 The matched-task supplement, `same_period_matched_tasks`, keeps the original
 full-task clustering and restricts every phase to the same five tasks:
 `delaydm1`, `delaydm2`, `contextdelaydm1`, `contextdelaydm2`, and `multidelaydm`.

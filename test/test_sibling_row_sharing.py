@@ -117,6 +117,26 @@ class CoassignmentTests(unittest.TestCase):
         }
         for rep, matrix in expected.items():
             np.testing.assert_array_equal(result["representations"][rep], matrix)
+        # No pair shares a cluster in all three representations of one network.
+        np.testing.assert_array_equal(result["joint"], np.eye(3))
+
+    def test_joint_counts_networks_sharing_in_every_representation(self):
+        """Identical clusterings give joint = marginal; splitting one
+        representation of one network removes that network from the joint
+        count of the pairs it separates, and from nothing else."""
+        runs = _experiments(4)
+        result = sharing.summarize_row_coassignment(runs)
+        for rep in sharing.REPRESENTATIONS:
+            np.testing.assert_array_equal(result["joint"], result["representations"][rep])
+        split = copy.deepcopy(_experiment())
+        split["hidden"]["row_labels"] = np.arange(_NAMES.size)        # every row alone
+        result = sharing.summarize_row_coassignment(runs[:3] + [("run3", split)])
+        pair = [int(np.flatnonzero(np.sort(_NAMES) == name)[0])
+                for name in ("fdanti-go1", "fdgo-go1")]
+        self.assertEqual(result["representations"]["input"][pair[0], pair[1]], 1.0)
+        self.assertEqual(result["representations"]["hidden"][pair[0], pair[1]], 0.75)
+        self.assertEqual(result["joint"][pair[0], pair[1]], 0.75)
+        np.testing.assert_array_equal(np.diag(result["joint"]), 1.0)
 
     def test_rejects_missing_or_invalid_rows_instead_of_changing_the_denominator(self):
         incomplete = copy.deepcopy(_experiment())
@@ -136,6 +156,60 @@ class CoassignmentTests(unittest.TestCase):
                                     [("run0", _experiment()), ("run1", different_rows)])):
             with self.subTest(case=case), self.assertRaises(ValueError):
                 sharing.summarize_row_coassignment(runs)
+
+
+class PeriodPairCoassignmentTests(unittest.TestCase):
+    def test_counts_row_pairs_of_two_period_types_in_one_cluster_per_network(self):
+        """The fixture puts the four Memory 1 rows in one cluster, the two
+        Memory 2 rows in another and two of the six Response rows together;
+        every other row is alone."""
+        result = sharing.summarize_period_pair_coassignment(iter(_experiments(3)))
+        self.assertEqual(result["experiments"], ["run0", "run1", "run2"])
+        self.assertEqual(result["n_runs"], 3)
+        phases = ("stim1", "delay1", "stim2", "delay2", "go1")     # chronological
+        self.assertEqual(result["pairs"], [(a, b) for index, a in enumerate(phases)
+                                           for b in phases[index:]])
+        counts = dict(zip(result["pairs"], result["n_row_pairs"]))
+        # 6 stimulus, 4 memory-1, 2 stimulus-2, 2 memory-2 and 6 response rows.
+        self.assertEqual(counts[("stim1", "stim1")], 15)
+        self.assertEqual(counts[("stim1", "delay1")], 24)
+        self.assertEqual(counts[("stim2", "stim2")], 1)
+        self.assertEqual(sum(counts.values()), 20 * 19 // 2)
+        expected = {("delay1", "delay1"): 1.0, ("delay2", "delay2"): 1.0, ("go1", "go1"): 1 / 15}
+        for rep in sharing.REPRESENTATIONS:
+            stats = result["representations"][rep]
+            self.assertEqual(stats["fractions"].shape, (3, 15))
+            for column, pair in enumerate(result["pairs"]):
+                np.testing.assert_allclose(stats["fractions"][:, column], expected.get(pair, 0.0))
+            np.testing.assert_allclose(stats["any"], 8 / 190)
+
+    def test_networks_weigh_equally_and_cluster_numbering_is_ignored(self):
+        names = np.array(["a-delay1", "a-stim1", "b-stim1"])
+        label_sets = ({"input": [4, 4, 9], "hidden": [3, 3, 3], "modulation": [1, 2, 3]},
+                      {"input": [10, 20, 20], "hidden": [7, 8, 9], "modulation": [6, 5, 6]})
+        runs = [(f"run{seed}", {rep: {"tb_break_name": names[::-1], "row_labels": np.asarray(labels)[::-1]}
+                                for rep, labels in label_set.items()})
+                for seed, label_set in enumerate(label_sets)]
+        result = sharing.summarize_period_pair_coassignment(runs)
+        # A single Memory 1 row has no pair of its own type.
+        self.assertEqual(result["pairs"], [("stim1", "stim1"), ("stim1", "delay1")])
+        self.assertEqual(result["n_row_pairs"], [1, 2])
+        np.testing.assert_allclose(result["representations"]["input"]["fractions"],
+                                   [[0, 0.5], [1, 0]])
+        np.testing.assert_allclose(result["representations"]["hidden"]["fractions"],
+                                   [[1, 1], [0, 0]])
+        np.testing.assert_allclose(result["representations"]["modulation"]["any"], [0, 1 / 3])
+
+    def test_rejects_an_empty_incomplete_or_inconsistent_cohort(self):
+        different_rows = copy.deepcopy(_experiment())
+        for rows in different_rows.values():
+            rows["tb_break_name"] = rows["tb_break_name"][:-1]
+            rows["row_labels"] = rows["row_labels"][:-1]
+        for case, runs in enumerate(([], [("run0", None)],
+                                    [("run0", _experiment()), ("run0", _experiment())],
+                                    [("run0", _experiment()), ("run1", different_rows)])):
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                sharing.summarize_period_pair_coassignment(runs)
 
 
 class ClusterCountTests(unittest.TestCase):
@@ -1023,6 +1097,144 @@ class PaperFigureTests(unittest.TestCase):
                 save, printed = self._render(paper_plot.plot_row_cluster_coassignment, payload)
                 save.assert_not_called()
                 self.assertIn("Skipped co-clustering heatmap", str(printed.call_args_list))
+
+    def test_period_pair_plot_ranks_the_pairs_per_representation(self):
+        payload = self._payload()
+        experiments = [(name, _experiment()) for name in payload["experiments"]]
+        payload["organization"] = sharing.summarize_organization(experiments)
+        with patch.object(sharing.diag, "_load_experiment",
+                          side_effect=lambda name, root: dict(experiments)[name]) as load:
+            save, _ = self._render(paper_plot.plot_row_cluster_period_pairs, payload)
+        self.assertEqual([call.args[0] for call in load.call_args_list], payload["experiments"])
+        self.assertEqual(Path(save.call_args.args[1]).name,
+                         "multitask_row_cluster_period_pairs.png")
+        figure = save.call_args.args[0]
+        self.assertEqual([ax.get_title() for ax in figure.axes],
+                         ["Input neurons", "Hidden neurons", "Synapses"])
+        for ax, rep in zip(figure.axes, sharing.REPRESENTATIONS):
+            # Fifteen period pairs, most probable at the top: the two memory
+            # pairs (always one cluster), the response pair (1 of 15), then
+            # the pairs that never share, in chronological pair order.
+            widths = [bar.get_width() for bar in ax.patches]
+            np.testing.assert_allclose(widths[:3], [100, 100, 100 / 15])
+            np.testing.assert_allclose(widths[3:], 0, atol=1e-12)
+            self.assertEqual(len(widths), 15)
+            self.assertEqual(ax.get_ylim(), (14.5, -0.5))
+            self.assertEqual(ax.get_xlim(), (0, 100))
+            np.testing.assert_allclose(ax.patches[0].get_facecolor(),
+                                       paper_plot.mpl.colors.to_rgba(
+                                           paper_plot._TASK_SPECIFICITY_COLORS[rep]))
+            # Two labels per row, each on its period's heatmap color.
+            labels = [(text.get_text(), text.get_position()[1]) for text in ax.texts]
+            self.assertEqual(len(labels), 30)
+            self.assertEqual(labels[:6], [("Memory 1", 0), ("Memory 1", 0), ("Memory 2", 1),
+                                          ("Memory 2", 1), ("Response", 2), ("Response", 2)])
+            self.assertEqual(labels[6:8], [("Stimulus 1", 3), ("Stimulus 1", 3)])
+            for text, phase in zip(ax.texts[:6], ("delay1", "delay1", "delay2", "delay2",
+                                                 "go1", "go1")):
+                np.testing.assert_allclose(
+                    text.get_bbox_patch().get_facecolor(),
+                    paper_plot.mpl.colors.to_rgba(paper_plot._PHASE_COLORS[phase], alpha=0.8))
+            # The dashed line: 8 of the 190 row pairs share a cluster.
+            dashed = [line for line in ax.lines if line.get_linestyle() == "--"]
+            self.assertEqual(len(dashed), 1)
+            np.testing.assert_allclose(dashed[0].get_xdata(), 100 * 8 / 190)
+        extra = save.call_args.kwargs["extra"]
+        self.assertIn("6 trained networks, equal weight", extra)
+        self.assertIn("delay1-delay1 6", extra)
+        self.assertIn("modulation (any two rows 4.2%): delay1-delay1 100.0% (SD 0.0)", extra)
+        # A panel whose bars stay small gets a shorter axis of its own; one
+        # that passes 50% keeps the full range.
+        for highest, limit in ((100, 100), (50.1, 100), (43, 50), (23.6, 30), (8, 10), (0, 10)):
+            self.assertEqual(paper_plot._percent_axis_limit(highest), limit)
+        rare = copy.deepcopy(_experiment())
+        rare["modulation"]["row_labels"] = np.arange(_NAMES.size)
+        rare["modulation"]["row_labels"][[0, 2]] = 0        # the two delayed stimulus rows
+        mixed = [(name, rare) for name, _ in experiments]
+        rare_payload = dict(payload, organization=sharing.summarize_organization(mixed))
+        with patch.object(sharing.diag, "_load_experiment",
+                          side_effect=lambda name, root: dict(mixed)[name]):
+            save, _ = self._render(paper_plot.plot_row_cluster_period_pairs, rare_payload)
+        limits = [ax.get_xlim() for ax in save.call_args.args[0].axes]
+        self.assertEqual(limits, [(0, 100), (0, 100), (0, 10)])     # 1 of 15 pairs: 6.7%
+        self.assertEqual([tick.get_text() for tick in save.call_args.args[0].axes[2].get_xticklabels()],
+                         ["0%", "5%", "10%"])
+        # The panels show at most _ROW_PERIOD_PAIRS_TOP pairs.
+        with patch.object(sharing.diag, "_load_experiment",
+                          side_effect=lambda name, root: dict(experiments)[name]), \
+                patch.object(paper_plot, "_ROW_PERIOD_PAIRS_TOP", 3):
+            save, _ = self._render(paper_plot.plot_row_cluster_period_pairs, payload)
+        self.assertEqual([len(ax.patches) for ax in save.call_args.args[0].axes], [3, 3, 3])
+        self.assertIs(paper_plot.FIGURES_BY_MODE["multiple_tasks"]["row_cluster_period_pairs"],
+                      paper_plot.plot_row_cluster_period_pairs)
+
+    def test_joint_pair_plot_ranks_row_pairs_shared_in_every_representation(self):
+        payload = self._payload()
+        experiments = [(name, _experiment()) for name in payload["experiments"]]
+        payload["organization"] = sharing.summarize_organization(experiments)
+        with patch.object(sharing.diag, "_load_experiment",
+                          side_effect=lambda name, root: dict(experiments)[name]):
+            save, _ = self._render(paper_plot.plot_row_cluster_joint_pairs, payload)
+        self.assertEqual(Path(save.call_args.args[1]).name,
+                         "multitask_row_cluster_joint_pairs.png")
+        figure = save.call_args.args[0]
+        self.assertEqual([ax.get_title() for ax in figure.axes],
+                         ["Input neurons", "Hidden neurons", "Synapses", "All three"])
+        # The fixture's 8 sharing pairs (identical in every representation
+        # and network) lead; the other 12 shown pairs never share.
+        for ax in figure.axes:
+            widths = [bar.get_width() for bar in ax.patches]
+            self.assertEqual(len(widths), 20)
+            np.testing.assert_allclose(widths[:8], 100)
+            np.testing.assert_allclose(widths[8:], 0)
+            dashed = [line for line in ax.lines if line.get_linestyle() == "--"]
+            np.testing.assert_allclose(dashed[0].get_xdata(), 100 * 8 / 190)
+            self.assertEqual(ax.get_xlim(), (0, 100))
+        self.assertEqual(figure.axes[0].get_ylim(), (19.5, -0.5))
+        np.testing.assert_allclose(figure.axes[3].patches[0].get_facecolor(),
+                                   paper_plot.mpl.colors.to_rgba(paper_plot._ROW_JOINT_PAIRS_COLOR))
+        # Ties keep the fixed task and period order: the two delayed-response
+        # rows first, then the Memory 1 rows of the integration tasks.
+        labels = [text.get_text() for text in figure.axes[0].texts]
+        self.assertEqual(len(labels), 40)
+        self.assertEqual(labels[:4], ["DelayPro \u00b7 Resp", "DelayAnti \u00b7 Resp",
+                                      "IntegrationModality1 \u00b7 Mem 1",
+                                      "IntegrationModality2 \u00b7 Mem 1"])
+        for text, phase in zip(figure.axes[0].texts[:4], ("go1", "go1", "delay1", "delay1")):
+            np.testing.assert_allclose(
+                text.get_bbox_patch().get_facecolor(),
+                paper_plot.mpl.colors.to_rgba(paper_plot._PHASE_COLORS[phase], alpha=0.8))
+        self.assertTrue(all(len(ax.texts) == 0 for ax in figure.axes[1:]))
+        extra = save.call_args.kwargs["extra"]
+        self.assertIn("top 20 of 190 row pairs by joint probability; 8 pairs at >= 50%", extra)
+        self.assertIn("fdgo-go1 + fdanti-go1 100 / 100 / 100 / 100", extra)
+        self.assertIn("joint 4.2%", extra)
+        # A pair split in one representation of half the networks keeps its
+        # marginals elsewhere and drops in the joint panel.
+        split = copy.deepcopy(_experiment())
+        split["modulation"]["row_labels"] = np.arange(_NAMES.size)
+        mixed = [(name, split if index % 2 else rows) for index, (name, rows) in enumerate(experiments)]
+        payload["organization"] = sharing.summarize_organization(mixed)
+        with patch.object(sharing.diag, "_load_experiment",
+                          side_effect=lambda name, root: dict(mixed)[name]):
+            save, _ = self._render(paper_plot.plot_row_cluster_joint_pairs, payload)
+        widths = [[bar.get_width() for bar in ax.patches][:8] for ax in save.call_args.args[0].axes]
+        np.testing.assert_allclose(widths[0], 100)
+        np.testing.assert_allclose(widths[2], 50)
+        np.testing.assert_allclose(widths[3], 50)
+        self.assertIs(paper_plot.FIGURES_BY_MODE["multiple_tasks"]["row_cluster_joint_pairs"],
+                      paper_plot.plot_row_cluster_joint_pairs)
+
+    def test_period_pair_plot_skips_a_changed_source_cache(self):
+        payload = self._payload()
+        payload["organization"] = sharing.summarize_organization(
+            [(name, _experiment()) for name in payload["experiments"]])
+        changed = copy.deepcopy(_experiment())
+        changed["input"]["row_labels"][:] = 0
+        with patch.object(sharing.diag, "_load_experiment", return_value=changed):
+            save, printed = self._render(paper_plot.plot_row_cluster_period_pairs, payload)
+        save.assert_not_called()
+        self.assertIn("Skipped period-pair figure", str(printed.call_args_list))
 
     def test_matched_cut_plot_ticks_carry_k_alone_and_log_the_25_row_counts(self):
         """The ticks show the target K as in the all-task twin; the clusters

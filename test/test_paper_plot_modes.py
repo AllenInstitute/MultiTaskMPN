@@ -208,7 +208,7 @@ class PaperPlotModeTests(unittest.TestCase):
             "overmembership_weighted", "overmembership_var_weighted",
             "overmembership_abs_weighted", "overmembership_examples",
             "input_weight_correlation", "row_cluster_organization", "row_cluster_same_task_seeds",
-            "row_cluster_coassignment",
+            "row_cluster_coassignment", "row_cluster_period_pairs", "row_cluster_joint_pairs",
             "row_cluster_same_period_seeds",
             "row_cluster_same_period_synapses",
             "row_cluster_same_period_synapses_matched_tasks",

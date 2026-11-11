@@ -6566,6 +6566,275 @@ def _load_untrained_row_sharing():
     return None
 
 
+def _import_sibling_row_sharing():
+    """multiple_task/sibling_row_sharing.py as a module. Analysis scripts
+    also run as flat modules; in that environment the training script
+    multiple_task.py shadows the directory's package name."""
+    try:
+        import sibling_row_sharing as sharing
+    except ModuleNotFoundError as exc:
+        if exc.name != "sibling_row_sharing":
+            raise
+        from multiple_task import sibling_row_sharing as sharing
+    return sharing
+
+
+def _row_sharing_source_rows(data, sharing):
+    """(aname, row clusterings) of every network of the saved sharing summary
+    `data`, read from the current source caches one network at a time,
+    without reclustering. Raises ValueError when a cache is incomplete or
+    its cluster counts differ from the summary, so a refreshed source is
+    never mixed silently with an older summary."""
+    if data.get("mod_g_index") != sharing.diag.MOD_G_INDEX:
+        raise ValueError("sharing summary uses a missing or different modulation variant")
+    for aname in data["experiments"]:
+        rows = sharing.diag._load_experiment(aname, root=MULTITASK_ANALYSIS_ROOT)
+        if rows is None or any(rep not in rows for rep in sharing.REPRESENTATIONS):
+            raise ValueError(f"{aname}: current clustering is incomplete")
+        for rep in sharing.REPRESENTATIONS:
+            saved = data.get("organization", {}).get("representations", {}).get(rep, {})
+            if sharing._organization_counts(rows[rep]) != saved.get("counts", {}).get(aname):
+                raise ValueError(f"{aname}/{rep}: cluster counts differ from the sharing summary")
+        yield aname, rows
+
+
+def _canonical_row_order(names):
+    """Indices that put '{rule}-{phase}' rows in the figures' fixed order:
+    tasks as in _TASK_DISPLAY, periods chronologically within a task."""
+    task_order = {task: i for i, task in enumerate(_TASK_DISPLAY)}
+    phase_order = {phase: i for i, phase in enumerate(
+        ("stim1", "delay1", "stim2", "delay2", "go1"))}
+    parts = [name.rsplit("-", 1) for name in names]
+    return sorted(range(len(names)), key=lambda i: (
+        task_order.get(parts[i][0], len(task_order)), parts[i][0],
+        phase_order.get(parts[i][1], len(phase_order)), parts[i][1]))
+
+
+# Joint-pair figure: this many row pairs, a bar panel this wide and a row this
+# high (inches), the two row labels this far left of the first panel, and the
+# short period names of those labels.
+_ROW_JOINT_PAIRS_TOP = 20
+_ROW_JOINT_PAIRS_PANEL_WIDTH_IN = 0.95
+_ROW_JOINT_PAIRS_ROW_IN = 0.18
+_ROW_JOINT_PAIRS_LABEL_IN = (-1.34, -0.06)
+_ROW_JOINT_PAIRS_PERIODS = {"stim1": "Stim 1", "delay1": "Mem 1", "stim2": "Stim 2",
+                            "delay2": "Mem 2", "go1": "Resp"}
+_ROW_JOINT_PAIRS_COLOR = "0.3"
+
+
+def plot_row_cluster_joint_pairs():
+    """
+    Figure: multitask_row_cluster_joint_pairs.png — the task-period row pairs
+    most often placed in one row cluster by the input, the hidden and the
+    synapse clustering at once, in the trained MULTITASK_L2 cohort.
+
+    One row per pair, the _ROW_JOINT_PAIRS_TOP pairs with the highest joint
+    probability: the fraction of networks in which the two rows share a
+    cluster in all three representations (the `joint` matrix of
+    sibling_row_sharing.summarize_row_coassignment), most probable at the
+    top, ties in the fixed task and period order. Four bar panels share the
+    rows: the fraction of networks in which the pair shares a cluster in the
+    input, the hidden and the synapse clustering alone, and in all three.
+    Each row is labelled by its two rows, task and period, on the period's
+    heatmap color. The dashed line of a panel is its mean over all row
+    pairs. A proportion of networks has no spread, so there are no whiskers.
+
+    Read with three limits. Most of the leading pairs share a cluster in the
+    input and hidden clusterings in every network, so the joint probability
+    is close to the synapse one: the figure shows which synapse-level
+    pairings also hold at the neuron level. The input rows of periods
+    without a changing input are all zero and cluster together by
+    construction, which is part of the input panel's 100%. And these are
+    raw frequencies of the trained networks, with no chance correction,
+    test or untrained control, as in row_cluster_coassignment, whose
+    source caches and checks this figure shares.
+    """
+    sharing = _import_sibling_row_sharing()
+    _ensure_out_dir()
+    data = _load_row_cluster_sharing()
+    if data is None:
+        return
+    try:
+        summary = sharing.summarize_row_coassignment(_row_sharing_source_rows(data, sharing))
+    except ValueError as exc:
+        print(f"  Skipped joint-pair figure: {exc}. Check source caches and "
+              f"run {_row_sharing_commands()}.")
+        return
+    order = _canonical_row_order(summary["row_names"])
+    names = [summary["row_names"][i] for i in order]
+    first, second = np.triu_indices(len(names), k=1)
+    panels = [(rep, title.replace("\n", " "), _TASK_SPECIFICITY_COLORS[rep],
+               summary["representations"][rep][np.ix_(order, order)][first, second])
+              for rep, title in _ROW_SHARING_REPRESENTATIONS]
+    joint = summary["joint"][np.ix_(order, order)][first, second]
+    panels.append(("joint", "All three", _ROW_JOINT_PAIRS_COLOR, joint))
+    top = np.argsort(-joint, kind="stable")[:_ROW_JOINT_PAIRS_TOP]
+    positions = np.arange(top.size)
+
+    fig, axs = plt.subplots(
+        1, len(panels), sharex=True, sharey=True,
+        figsize=(-2 * _ROW_JOINT_PAIRS_LABEL_IN[0] + 0.2
+                 + _ROW_JOINT_PAIRS_PANEL_WIDTH_IN * len(panels),
+                 1.0 + _ROW_JOINT_PAIRS_ROW_IN * top.size))
+    for ax, (_, title, color, values) in zip(axs, panels):
+        ax.barh(positions, 100.0 * values[top], height=0.72, color=color, edgecolor="k",
+                linewidth=0.3, zorder=2)
+        ax.axvline(100.0 * float(values.mean()), color=_ROW_SHARING_CHANCE_COLOR, linewidth=1.0,
+                   linestyle="--", zorder=3)
+        ax.set_xlim(0, 100)
+        ax.set_xticks([0, 100])
+        ax.xaxis.set_major_formatter(mticker.PercentFormatter(xmax=100, decimals=0))
+        ax.tick_params(axis="x", labelsize=7)
+        ax.set_yticks([])
+        ax.set_title(title, fontsize=8)
+        ax.spines[["top", "right", "left"]].set_visible(False)
+    axs[0].set_ylim(top.size - 0.5, -0.5)
+    fig.supxlabel("Networks placing the two rows in one cluster", fontsize=8)
+
+    def row_label(name):
+        rule, phase = name.rsplit("-", 1)
+        return (f"{_TASK_DISPLAY.get(rule, rule)} \u00b7 "
+                f"{_ROW_JOINT_PAIRS_PERIODS.get(phase, phase)}"), phase
+
+    row_axis = mpl.transforms.blended_transform_factory(axs[0].transAxes, axs[0].transData)
+    for position, pair in zip(positions, top):
+        for row, offset in zip((first[pair], second[pair]), _ROW_JOINT_PAIRS_LABEL_IN):
+            text, phase = row_label(names[row])
+            axs[0].text(0.0, position, text, ha="right", va="center", fontsize=5.5,
+                        transform=row_axis + mpl.transforms.ScaledTranslation(
+                            offset, 0, fig.dpi_scale_trans),
+                        bbox=dict(facecolor=_PHASE_COLORS.get(phase, "none"), edgecolor="none",
+                                  boxstyle="round,pad=0.15", alpha=0.8))
+    handles = [mpl.lines.Line2D([], [], color=_ROW_SHARING_CHANCE_COLOR, linewidth=1.0,
+                                linestyle="--", label="mean over all row pairs")]
+    _state_space_figure_legend(fig, handles, top=0.94)
+    listed = "; ".join(
+        f"{names[first[pair]]} + {names[second[pair]]} "
+        + " / ".join(f"{100 * values[pair]:.0f}" for _, _, _, values in panels)
+        for pair in top)
+    _save_fig(fig, _multitask_out("row_cluster_joint_pairs.png"),
+              extra=(f"  {data['feature']}; {summary['n_runs']} trained networks; top {top.size} "
+                     f"of {joint.size} row pairs by joint probability; "
+                     f"{int(np.sum(joint >= 0.5))} pairs at >= 50%; mean over all pairs: "
+                     + ", ".join(f"{name} {100 * values.mean():.1f}%" for name, _, _, values in panels)
+                     + "; pair: input / hidden / synapse / all three (%): " + listed))
+
+
+# Period-pair figure: at most this many pairs per panel, most probable first
+# (five periods give fifteen), a panel this wide and a row this high, in
+# inches, and the two period labels of a row this far left of the axis.
+_ROW_PERIOD_PAIRS_TOP = 20
+_ROW_PERIOD_PAIRS_PANEL_WIDTH_IN = 2.6
+_ROW_PERIOD_PAIRS_ROW_IN = 0.17
+_ROW_PERIOD_PAIRS_LABEL_IN = (-0.68, -0.06)
+
+
+def _percent_axis_limit(highest):
+    """Upper limit of a percentage axis whose largest drawn value is
+    `highest`: the full 100% when the values pass half of it, otherwise the
+    multiple of 10 that leaves them some room (at least 10), so a panel of
+    small probabilities is not drawn as slivers of a 0-100% axis."""
+    if highest > 50.0:
+        return 100.0
+    return max(10.0, 10.0 * np.ceil(1.15 * highest / 10.0))
+
+
+def plot_row_cluster_period_pairs():
+    """
+    Figure: multitask_row_cluster_period_pairs.png — which pairs of trial
+    periods tend to share a row cluster, for the input, hidden and synapse
+    clusterings of the trained MULTITASK_L2 cohort.
+
+    One panel per representation, one bar per pair of period types (a period
+    with itself included: two rows of that period, from different tasks),
+    the _ROW_PERIOD_PAIRS_TOP most probable pairs of the panel, most
+    probable at the top. In each network the row pairs of the two period
+    types that fall in one cluster are counted over all such row pairs
+    (sibling_row_sharing.summarize_period_pair_coassignment); the bar is
+    the mean of that network-level probability over the networks, the
+    whisker its sample SD, clipped to 0-100%. Each panel has its own x
+    range (_percent_axis_limit): the full 0-100% when its bars pass 50%, as
+    for the input and hidden rows, and a shorter one fitted to the bars
+    otherwise, as for the synapse rows, so the panels' bar lengths are not
+    comparable and the tick labels carry the scale. The two period names of
+    a row sit on their heatmap phase colors (_PHASE_COLORS). The dashed line is
+    the cohort mean of the same probability over all row pairs, the level
+    the networks' cluster sizes give; it differs between the panels because
+    the representations select different numbers of row clusters, so a bar
+    is read against its own panel's line. Raw frequencies of the trained
+    networks, as in row_cluster_coassignment: no chance correction, no test
+    and no untrained control. Read from the current source caches of the
+    saved sharing summary's cohort, without reclustering.
+    """
+    sharing = _import_sibling_row_sharing()
+    _ensure_out_dir()
+    data = _load_row_cluster_sharing()
+    if data is None:
+        return
+    try:
+        summary = sharing.summarize_period_pair_coassignment(
+            _row_sharing_source_rows(data, sharing))
+    except ValueError as exc:
+        print(f"  Skipped period-pair figure: {exc}. Check source caches and "
+              f"run {_row_sharing_commands()}.")
+        return
+    pairs, n_runs = summary["pairs"], summary["n_runs"]
+    n_shown = min(_ROW_PERIOD_PAIRS_TOP, len(pairs))
+    fig, axs = plt.subplots(
+        1, len(_ROW_SHARING_REPRESENTATIONS),
+        figsize=(_ROW_PERIOD_PAIRS_PANEL_WIDTH_IN * len(_ROW_SHARING_REPRESENTATIONS),
+                 1.0 + _ROW_PERIOD_PAIRS_ROW_IN * n_shown))
+    label_base = [mpl.transforms.ScaledTranslation(offset, 0, fig.dpi_scale_trans)
+                  for offset in _ROW_PERIOD_PAIRS_LABEL_IN]
+    notes = []
+    for ax, (rep, title) in zip(axs, _ROW_SHARING_REPRESENTATIONS):
+        stats = summary["representations"][rep]
+        values = 100.0 * stats["fractions"]                 # (networks, period pairs)
+        mean = values.mean(axis=0)
+        spread = values.std(axis=0, ddof=1) if n_runs > 1 else np.zeros_like(mean)
+        order = np.argsort(-mean, kind="stable")[:n_shown]
+        positions = np.arange(order.size)
+        upper = np.minimum(spread[order], 100.0 - mean[order])
+        ax.barh(positions, mean[order], height=0.72, color=_TASK_SPECIFICITY_COLORS[rep],
+                edgecolor="k", linewidth=0.3, zorder=2,
+                xerr=[np.minimum(spread[order], mean[order]), upper],
+                error_kw=dict(ecolor=_ROW_SHARING_SPREAD_COLOR, elinewidth=0.7, capsize=1.5,
+                              capthick=0.7))
+        baseline = 100.0 * float(stats["any"].mean())
+        ax.axvline(baseline, color=_ROW_SHARING_CHANCE_COLOR, linewidth=1.0, linestyle="--",
+                   zorder=3)
+        row_axis = mpl.transforms.blended_transform_factory(ax.transAxes, ax.transData)
+        for position, index in zip(positions, order):
+            for phase, offset in zip(pairs[index], label_base):
+                ax.text(0.0, position, _PHASE_DISPLAY.get(phase, phase), ha="right", va="center",
+                        fontsize=6, transform=row_axis + offset,
+                        bbox=dict(facecolor=_PHASE_COLORS.get(phase, "none"), edgecolor="none",
+                                  boxstyle="round,pad=0.15", alpha=0.8))
+        ax.set_ylim(order.size - 0.5, -0.5)
+        ax.set_yticks([])
+        limit = _percent_axis_limit(max(float(np.max(mean[order] + upper)), baseline))
+        ax.set_xlim(0, limit)
+        ax.set_xticks([0, limit / 2, limit])
+        ax.xaxis.set_major_formatter(mticker.PercentFormatter(xmax=100, decimals=0))
+        ax.tick_params(axis="x", labelsize=7)
+        ax.set_xlabel("Row pairs in one cluster", fontsize=8)
+        ax.set_title(title.replace("\n", " "), fontsize=8)
+        ax.spines[["top", "right", "left"]].set_visible(False)
+        notes.append(f"{rep} (any two rows {baseline:.1f}%): " + ", ".join(
+            f"{pairs[index][0]}-{pairs[index][1]} {mean[index]:.1f}% (SD {spread[index]:.1f})"
+            for index in order))
+    handles = [mpl.lines.Line2D([], [], color=_ROW_SHARING_SPREAD_COLOR, linewidth=0.7,
+                                marker="|", markersize=4, label="mean ± SD over networks"),
+               mpl.lines.Line2D([], [], color=_ROW_SHARING_CHANCE_COLOR, linewidth=1.0,
+                                linestyle="--", label="any two rows")]
+    _state_space_figure_legend(fig, handles, top=0.93)
+    counts = ", ".join(f"{a}-{b} {count}" for (a, b), count in zip(pairs, summary["n_row_pairs"]))
+    _save_fig(fig, _multitask_out("row_cluster_period_pairs.png"),
+              extra=(f"  {data['feature']}; {n_runs} trained networks, equal weight; original "
+                     f"selected row clusters; raw fractions, no chance correction; row pairs per "
+                     f"period pair: {counts}; " + "; ".join(notes)))
+
+
 def plot_row_cluster_coassignment():
     """Trained-only pairwise co-clustering frequencies for input, hidden and M.
 
@@ -6579,49 +6848,19 @@ def plot_row_cluster_coassignment():
     descriptive frequencies, not correlations, chance-corrected enrichment,
     or a test of a training effect.
     """
-    # Analysis scripts also run as flat modules; in that environment the
-    # training script multiple_task.py shadows the directory's package name.
-    try:
-        import sibling_row_sharing as sharing
-    except ModuleNotFoundError as exc:
-        if exc.name != "sibling_row_sharing":
-            raise
-        from multiple_task import sibling_row_sharing as sharing
-
+    sharing = _import_sibling_row_sharing()
     _ensure_out_dir()
     data = _load_row_cluster_sharing()
     if data is None:
         return
-
-    def experiments():
-        if data.get("mod_g_index") != sharing.diag.MOD_G_INDEX:
-            raise ValueError("sharing summary uses a missing or different modulation variant")
-        for aname in data["experiments"]:
-            rows = sharing.diag._load_experiment(aname, root=MULTITASK_ANALYSIS_ROOT)
-            if rows is None or any(rep not in rows for rep in sharing.REPRESENTATIONS):
-                raise ValueError(f"{aname}: current clustering is incomplete")
-            # As in the cut-only updater, reject source/summary discrepancies
-            # instead of silently mixing a refreshed source with old summaries.
-            for rep in sharing.REPRESENTATIONS:
-                saved = data.get("organization", {}).get("representations", {}).get(rep, {})
-                if sharing._organization_counts(rows[rep]) != saved.get("counts", {}).get(aname):
-                    raise ValueError(f"{aname}/{rep}: cluster counts differ from the sharing summary")
-            yield aname, rows
-
     try:
-        summary = sharing.summarize_row_coassignment(experiments())
+        summary = sharing.summarize_row_coassignment(_row_sharing_source_rows(data, sharing))
     except ValueError as exc:
         print(f"  Skipped co-clustering heatmap: {exc}. Check source caches and "
               f"run {_row_sharing_commands()}.")
         return
     names = summary["row_names"]
-    task_order = {task: i for i, task in enumerate(_TASK_DISPLAY)}
-    phase_order = {phase: i for i, phase in enumerate(
-        ("stim1", "delay1", "stim2", "delay2", "go1"))}
-    parts = [name.rsplit("-", 1) for name in names]
-    order = sorted(range(len(names)), key=lambda i: (
-        task_order.get(parts[i][0], len(task_order)), parts[i][0],
-        phase_order.get(parts[i][1], len(phase_order)), parts[i][1]))
+    order = _canonical_row_order(names)
     names = [names[i] for i in order]
     tasks = [name.rsplit("-", 1)[0] for name in names]
     boundaries = [i - 0.5 for i in range(1, len(tasks)) if tasks[i] != tasks[i - 1]]
@@ -16074,6 +16313,8 @@ FIGURES_BY_MODE = {
         "input_weight_correlation": plot_input_weight_correlation,
         "row_cluster_organization": plot_row_cluster_organization,
         "row_cluster_coassignment": plot_row_cluster_coassignment,
+        "row_cluster_period_pairs": plot_row_cluster_period_pairs,
+        "row_cluster_joint_pairs": plot_row_cluster_joint_pairs,
         "row_cluster_same_task_seeds": plot_row_cluster_same_task_seeds,
         "row_cluster_same_period_seeds": plot_row_cluster_same_period_seeds,
         "row_cluster_same_period_synapses": plot_row_cluster_same_period_synapses,

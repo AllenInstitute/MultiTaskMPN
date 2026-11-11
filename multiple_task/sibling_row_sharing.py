@@ -326,18 +326,14 @@ def _aligned_rows(aname, data):
     return rules, phases, aligned
 
 
-def summarize_row_coassignment(experiments):
-    """Fraction of networks placing each pair of task-period rows in one cluster.
-
-    Align row identities across all networks and representations before counting.
-    Compare labels only within a network: relabeling its clusters cannot change
-    the result. Every cell uses the same network denominator; missing rows or
-    representations reject the cohort rather than becoming zero or reducing N.
-    The symmetric matrices include the unit diagonal and are descriptive raw
-    frequencies, without a chance correction or reclustering. Accepts an iterator
-    so full source caches can be read one network at a time.
-    """
-    names, counts, anames = None, {}, []
+def _aligned_cohort(experiments):
+    """(aname, row names, phases, {representation: row labels}) of every
+    network of `experiments` (an iterable of (aname, clustering), so full
+    source caches can be read one network at a time), rows in one canonical
+    order. Raises ValueError for a duplicate or missing network, missing or
+    nonfinite labels, or networks with different task-period rows, so a
+    cohort statistic never changes its denominator silently."""
+    names, anames = None, set()
     for aname, data in experiments:
         if aname in anames:
             raise ValueError(f"{aname}: duplicate network in co-clustering cohort")
@@ -349,19 +345,95 @@ def summarize_row_coassignment(experiments):
             raise ValueError(f"{aname}: no task-period rows")
         if names is None:
             names = current
-            counts = {rep: np.zeros((len(names), len(names)), dtype=int)
-                      for rep in REPRESENTATIONS}
         elif not np.array_equal(names, current):
             raise ValueError(f"{aname}: networks have different task/phase rows")
         for rep, values in labels.items():
             if not np.isfinite(values).all():
                 raise ValueError(f"{aname}/{rep}: nonfinite cluster labels")
-            counts[rep] += values[:, None] == values[None, :]
+        anames.add(aname)
+        yield aname, current, phases, labels
+
+
+def summarize_row_coassignment(experiments):
+    """Fraction of networks placing each pair of task-period rows in one cluster.
+
+    Align row identities across all networks and representations before counting.
+    Compare labels only within a network: relabeling its clusters cannot change
+    the result. Every cell uses the same network denominator; missing rows or
+    representations reject the cohort rather than becoming zero or reducing N.
+    The symmetric matrices include the unit diagonal and are descriptive raw
+    frequencies, without a chance correction or reclustering. `joint` is the
+    same fraction for sharing a cluster in every representation at once,
+    within one network. Accepts an iterator so full source caches can be read
+    one network at a time.
+    """
+    names, counts, joint, anames = None, {}, None, []
+    for aname, current, _, labels in _aligned_cohort(experiments):
+        if names is None:
+            names = current
+            counts = {rep: np.zeros((len(names), len(names)), dtype=int)
+                      for rep in REPRESENTATIONS}
+            joint = np.zeros((len(names), len(names)), dtype=int)
+        together = np.ones((len(names), len(names)), dtype=bool)
+        for rep, values in labels.items():
+            same = values[:, None] == values[None, :]
+            counts[rep] += same
+            together &= same
+        joint += together
         anames.append(aname)
     if not anames:
         raise ValueError("No networks for co-clustering")
     return {"row_names": names.tolist(), "experiments": anames, "n_runs": len(anames),
-            "representations": {rep: count / len(anames) for rep, count in counts.items()}}
+            "representations": {rep: count / len(anames) for rep, count in counts.items()},
+            "joint": joint / len(anames)}
+
+
+# Chronological order of the trial periods; a period outside it sorts after.
+PERIOD_ORDER = ("stim1", "delay1", "stim2", "delay2", "go1")
+
+
+def summarize_period_pair_coassignment(experiments):
+    """Per network, how often two rows of given period types share a row cluster.
+
+    For every unordered pair of period types (a period with itself included:
+    two rows of one period, which are of different tasks), count in each
+    network the row pairs of those two types and the ones that fall in one
+    cluster, per representation; `fractions` holds that network-level
+    probability (networks x period pairs), so cohort statistics weight every
+    network equally. A pair of different periods includes the rows of one
+    task as well as those of two tasks. `any` is the same fraction over all
+    row pairs of the network, the level its cluster sizes alone give. Rows
+    are aligned and validated as in summarize_row_coassignment, so every
+    network counts the same row pairs (`n_row_pairs`). Raw descriptive
+    fractions: no chance correction, no test.
+    """
+    pairs, masks, upper, anames = None, None, None, []
+    fractions = {rep: [] for rep in REPRESENTATIONS}
+    overall = {rep: [] for rep in REPRESENTATIONS}
+    for aname, _, phases, labels in _aligned_cohort(experiments):
+        if pairs is None:
+            present = sorted(set(phases.tolist()), key=lambda phase: (
+                PERIOD_ORDER.index(phase) if phase in PERIOD_ORDER else len(PERIOD_ORDER), phase))
+            upper = np.triu(np.ones((phases.size, phases.size), dtype=bool), k=1)
+            first, second = phases[:, None], phases[None, :]
+            masks = {(a, b): upper & (((first == a) & (second == b)) | ((first == b) & (second == a)))
+                     for index, a in enumerate(present) for b in present[index:]}
+            pairs = [pair for pair, mask in masks.items() if mask.any()]
+            if not pairs:
+                raise ValueError(f"{aname}: fewer than two task-period rows")
+        for rep, values in labels.items():
+            same = values[:, None] == values[None, :]
+            fractions[rep].append([same[masks[pair]].mean() for pair in pairs])
+            overall[rep].append(same[upper].mean())
+        anames.append(aname)
+    if not anames:
+        raise ValueError("No networks for co-clustering")
+    return {"schema_version": 1, "pairs": pairs,
+            "n_row_pairs": [int(masks[pair].sum()) for pair in pairs],
+            "experiments": anames, "n_runs": len(anames),
+            "representations": {rep: {"fractions": np.asarray(fractions[rep], dtype=float),
+                                      "any": np.asarray(overall[rep], dtype=float)}
+                                for rep in REPRESENTATIONS}}
 
 
 def _restricted_permutations(blocks, n_permutations, rng):
