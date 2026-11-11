@@ -93,11 +93,12 @@ never rerun from here.
 ## Accuracy across modulation retentions
 
 The `acc_plot` figures `retention_accuracy` and `retention_task_accuracy`
-compare lambda = 0.999, 0.99, 0.98, 0.95 and 0.9 at L2 = 1e-4, with the same
-default network architecture and modulation bounds. The feature tags are
-`L21e4lam0.999`, `L21e4`, `L21e4lam0.98`, `L21e4lam0.95` and `L21e4lam0.9`;
-their saved `m_time_scale` values must be 40000, 4000, 2000, 800 and 400 ms
-respectively. The lambda = 0.999 and 0.98 cohorts were added on 2026-11-10.
+compare lambda = 0.9999, 0.999, 0.99, 0.98, 0.95 and 0.9 at L2 = 1e-4, with the
+same default network architecture and modulation bounds. The feature tags are
+`L21e4lam0.9999`, `L21e4lam0.999`, `L21e4`, `L21e4lam0.98`, `L21e4lam0.95` and
+`L21e4lam0.9`; their saved `m_time_scale` values must be 400000, 40000, 4000,
+2000, 800 and 400 ms respectively. The lambda = 0.999 and 0.98 cohorts were
+added on 2026-11-10 and 0.9999 (`--m-time-scale 400000`) on 2026-11-11.
 At 0.999 (the script's `M_TIME_SCALE = 40000`) the time constant is 40 s, far
 longer than a trial, so M barely decays within one (M is reset at every trial
 onset, so nothing carries between trials at any retention). Train another
@@ -116,10 +117,10 @@ python figures/paper_plot.py --only retention_task_accuracy
 ```
 
 Both figures report two-sided Mann-Whitney U tests of each retention against
-the main lambda = 0.99 cohort (four pairs with five cohorts; before
+the main lambda = 0.99 cohort (five pairs with six cohorts; before
 2026-11-10 every pair of the three cohorts then present was tested). Holm
 correction covers the overall comparisons in the first figure, and all 15
-tasks times the pairs (up to 60 comparisons) jointly in the second. A pair needs at least two networks in each group; unavailable
+tasks times the pairs (up to 75 comparisons) jointly in the second. A pair needs at least two networks in each group; unavailable
 comparisons have no p value and do not enter the correction. Missing cohorts
 keep their axis position and produce a message with the evaluation command.
 

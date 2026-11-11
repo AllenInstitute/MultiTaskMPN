@@ -2315,7 +2315,7 @@ def _plot_dimension_accuracy(*, vary_hidden):
     _save_fig(fig, out_path, extra=f" ({counts})")
 
 
-# ─── Figure: M retention comparison (lambda 0.999 to 0.9) ───────────────────
+# ─── Figure: M retention comparison (lambda 0.9999 to 0.9) ──────────────────
 
 # The M retentions of the regular L2 = 1e-4 cohort, slowest decay first:
 # feature tag, m_time_scale (ms) and tick label. The 4000 ms cohort is the
@@ -2324,6 +2324,7 @@ def _plot_dimension_accuracy(*, vary_hidden):
 # lambda = 1 - 40 ms / m_time_scale. A cohort without evaluated runs keeps
 # its column and is named on the figure.
 _RETENTION_SPECS = (
+    ("L21e4lam0.9999", 400000, "$\\lambda = 0.9999$\n(400000 ms)"),
     ("L21e4lam0.999", 40000, "$\\lambda = 0.999$\n(40000 ms)"),
     ("L21e4", MULTITASK_M_TIME_SCALE_MS, "$\\lambda = 0.99$\n(4000 ms)"),
     ("L21e4lam0.98", 2000, "$\\lambda = 0.98$\n(2000 ms)"),
@@ -2331,8 +2332,8 @@ _RETENTION_SPECS = (
     ("L21e4lam0.9", 400, "$\\lambda = 0.9$\n(400 ms)"),
 )
 # The cohort every other retention is tested against: the main lambda = 0.99
-# one, with the most runs. All pairs of five cohorts would be ten tests, more
-# than the figures can name.
+# one, with the most runs. All pairs of six cohorts would be fifteen tests,
+# more than the figures can name.
 _RETENTION_REFERENCE_TAG = "L21e4"
 RETENTION_L2_STRENGTH = 1e-4
 # Runs each cohort needs before the Mann-Whitney U test between them is run.
@@ -2418,7 +2419,7 @@ def _retention_pairwise_tests(groups, *, per_task=False):
     reference cohort (_RETENTION_REFERENCE_TAG), each pair in spec order.
 
     Holm correction covers all valid tests in one figure: one per
-    non-reference retention overall (four with five cohorts), or up to
+    non-reference retention overall (five with six cohorts), or up to
     fifteen times that across the tasks. Pairs with fewer than two networks
     in either group have NaN p values and do not enter the correction.
     """

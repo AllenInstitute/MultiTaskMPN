@@ -46,12 +46,14 @@ class RetentionAccuracyTests(unittest.TestCase):
         mb2["net_params"]["ml_params"]["m_bounds"] = [-2.0, 2.0]
         narrow = copy.deepcopy(fast)
         narrow["net_params"]["linear_embed"] = 200
-        configs = {"slowest": _regular_config(40000), "near": _regular_config(2000),
+        configs = {"longest": _regular_config(400000),
+                   "slowest": _regular_config(40000), "near": _regular_config(2000),
                    "slow": slow, "slow2": slow, "middle": _regular_config(800), "fast": fast,
                    "mislabeled": fast, "no_time_scale": no_time_scale,
                    "mislabeled_middle": fast,
                    "mb2": mb2, "narrow": narrow, "other_l2": slow}
         results = {
+            "longest": {"feature": "L21e4lam0.9999", "acc": 0.97},
             "slowest": {"feature": "L21e4lam0.999", "acc": 0.95},
             "slow": {"feature": "L21e4", "acc": 0.9},
             "slow2": {"feature": "L21e4", "acc": 0.8},
@@ -70,9 +72,10 @@ class RetentionAccuracyTests(unittest.TestCase):
         }
         with contextlib.redirect_stdout(io.StringIO()) as notes:
             groups = self.group(configs, results)
-        self.assertEqual(list(groups), ["L21e4lam0.999", "L21e4", "L21e4lam0.98",
-                                        "L21e4lam0.95", "L21e4lam0.9"])
-        self.assertEqual(groups, {"L21e4lam0.999": [95.0], "L21e4": [90.0, 80.0],
+        self.assertEqual(list(groups), ["L21e4lam0.9999", "L21e4lam0.999", "L21e4",
+                                        "L21e4lam0.98", "L21e4lam0.95", "L21e4lam0.9"])
+        self.assertEqual(groups, {"L21e4lam0.9999": [97.0],
+                                 "L21e4lam0.999": [95.0], "L21e4": [90.0, 80.0],
                                  "L21e4lam0.98": [88.0],
                                  "L21e4lam0.95": [85.0], "L21e4lam0.9": [70.0]})
         self.assertIn("skipped mislabeled", notes.getvalue())
@@ -93,7 +96,7 @@ class RetentionAccuracyTests(unittest.TestCase):
         }
         with contextlib.redirect_stdout(io.StringIO()):
             groups = self.group(configs, results, per_task=True)
-        self.assertEqual(groups, {"L21e4lam0.999": {},
+        self.assertEqual(groups, {"L21e4lam0.9999": {}, "L21e4lam0.999": {},
                                  "L21e4": {"fdgo": [50.0]},
                                  "L21e4lam0.98": {},
                                  "L21e4lam0.95": {"fdgo": [75.0]},
@@ -118,35 +121,38 @@ class RetentionAccuracyTests(unittest.TestCase):
         np.testing.assert_array_equal(paper_plot._holm_adjusted([0.9, 0.8]), [1.0, 1.0])
 
     def test_pairwise_holm_covers_each_retention_against_the_reference(self):
-        groups = {"L21e4lam0.999": [95, 96, 97, 98, 99],
+        groups = {"L21e4lam0.9999": [100, 101, 102, 103, 104],
+                  "L21e4lam0.999": [95, 96, 97, 98, 99],
                   "L21e4": [90, 91, 92, 93, 94],
                   "L21e4lam0.98": [85, 86, 87, 88, 89],
                   "L21e4lam0.95": [80, 81, 82, 83, 84],
                   "L21e4lam0.9": [70, 71, 72, 73, 74]}
         records = paper_plot._retention_pairwise_tests(groups)
         self.assertEqual([label for _, label, _, _ in records],
-                         ["0.999 vs 0.99", "0.99 vs 0.98", "0.99 vs 0.95", "0.99 vs 0.9"])
+                         ["0.9999 vs 0.99", "0.999 vs 0.99", "0.99 vs 0.98", "0.99 vs 0.95",
+                          "0.99 vs 0.9"])
         np.testing.assert_allclose([p for _, _, p, _ in records], 2 / 252)
-        np.testing.assert_allclose([p for _, _, _, p in records], 4 * 2 / 252)
+        np.testing.assert_allclose([p for _, _, _, p in records], 5 * 2 / 252)
         # Without the 0.999 cohort its pair drops out of the family.
         groups["L21e4lam0.999"] = []
         records = paper_plot._retention_pairwise_tests(groups)
-        self.assertTrue(np.isnan(records[0][3]))
-        np.testing.assert_allclose([p for _, _, _, p in records[1:]], 3 * 2 / 252)
+        self.assertTrue(np.isnan(records[1][3]))
+        np.testing.assert_allclose([p for _, _, _, p in records[:1] + records[2:]], 4 * 2 / 252)
 
-    def test_task_holm_covers_all_60_tests_jointly(self):
+    def test_task_holm_covers_all_75_tests_jointly(self):
         groups = {tag: {task: list(range(start, start + 5)) for task in paper_plot._TASK_DISPLAY}
-                  for tag, start in (("L21e4lam0.999", 95), ("L21e4", 90), ("L21e4lam0.98", 85),
-                                     ("L21e4lam0.95", 80), ("L21e4lam0.9", 70))}
+                  for tag, start in (("L21e4lam0.9999", 100), ("L21e4lam0.999", 95), ("L21e4", 90),
+                                     ("L21e4lam0.98", 85), ("L21e4lam0.95", 80),
+                                     ("L21e4lam0.9", 70))}
         records = paper_plot._retention_pairwise_tests(groups, per_task=True)
-        self.assertEqual(len(records), 60)
+        self.assertEqual(len(records), 75)
         self.assertEqual({task for task, _, _, _ in records}, set(paper_plot._TASK_DISPLAY))
         np.testing.assert_allclose([p for _, _, p, _ in records], 2 / 252)
-        np.testing.assert_allclose([p for _, _, _, p in records], 60 * 2 / 252)
+        np.testing.assert_allclose([p for _, _, _, p in records], 75 * 2 / 252)
 
     def test_missing_cohorts_keep_the_remaining_test(self):
-        groups = {"L21e4lam0.999": [], "L21e4": [90, 91, 92, 93, 94], "L21e4lam0.98": [],
-                  "L21e4lam0.95": [], "L21e4lam0.9": [70, 71, 72, 73, 74]}
+        groups = {"L21e4lam0.9999": [], "L21e4lam0.999": [], "L21e4": [90, 91, 92, 93, 94],
+                  "L21e4lam0.98": [], "L21e4lam0.95": [], "L21e4lam0.9": [70, 71, 72, 73, 74]}
         records = paper_plot._retention_pairwise_tests(groups)
         valid = [(label, p) for _, label, _, p in records if np.isfinite(p)]
         self.assertEqual(len(valid), 1)
@@ -167,8 +173,9 @@ class RetentionAccuracyTests(unittest.TestCase):
         self.addCleanup(paper_plot.plt.close, figure)
         return save.call_args, console.getvalue()
 
-    def test_overall_plot_five_columns_test_and_registration(self):
-        groups = {"L21e4lam0.999": [95.0, 96.0, 97.0, 98.0, 99.0],
+    def test_overall_plot_six_columns_test_and_registration(self):
+        groups = {"L21e4lam0.9999": [100.0, 101.0, 102.0, 103.0, 104.0],
+                  "L21e4lam0.999": [95.0, 96.0, 97.0, 98.0, 99.0],
                   "L21e4": [90.0, 91.0, 92.0, 93.0, 94.0],
                   "L21e4lam0.98": [85.0, 86.0, 87.0, 88.0, 89.0],
                   "L21e4lam0.95": [80.0, 81.0, 82.0, 83.0, 84.0],
@@ -178,47 +185,53 @@ class RetentionAccuracyTests(unittest.TestCase):
         axis = figure.axes[0]
         self.assertEqual(output_path.name, "multitask_retention_accuracy.png")
         self.assertEqual([label.get_text() for label in axis.get_xticklabels()],
-                         ["$\\lambda = 0.999$\n(40000 ms)", "$\\lambda = 0.99$\n(4000 ms)",
+                         ["$\\lambda = 0.9999$\n(400000 ms)",
+                          "$\\lambda = 0.999$\n(40000 ms)", "$\\lambda = 0.99$\n(4000 ms)",
                           "$\\lambda = 0.98$\n(2000 ms)",
                           "$\\lambda = 0.95$\n(800 ms)", "$\\lambda = 0.9$\n(400 ms)"])
-        self.assertEqual(len(axis.collections), 5)
-        np.testing.assert_allclose(axis.lines[0].get_ydata(), [97.0, 92.0, 87.0, 82.0, 72.0])
-        p_text = paper_plot._short_p(4 * 2 / 252)
+        self.assertEqual(len(axis.collections), 6)
+        np.testing.assert_allclose(axis.lines[0].get_ydata(),
+                                   [102.0, 97.0, 92.0, 87.0, 82.0, 72.0])
+        p_text = paper_plot._short_p(5 * 2 / 252)
         self.assertEqual(axis.get_title(), "Mann-Whitney, Holm\n" + "\n".join(
-            f"{pair}: {p_text}" for pair in ("0.999 vs 0.99", "0.99 vs 0.98",
+            f"{pair}: {p_text}" for pair in ("0.9999 vs 0.99", "0.999 vs 0.99", "0.99 vs 0.98",
                                              "0.99 vs 0.95", "0.99 vs 0.9")))
-        self.assertIn("L21e4lam0.999 n=5, L21e4 n=5, L21e4lam0.98 n=5, L21e4lam0.95 n=5, "
-                      "L21e4lam0.9 n=5", call.kwargs["extra"])
-        self.assertIn("0.99 vs 0.95: Mann-Whitney p=0.00794, Holm-adjusted p=0.0317", console)
+        self.assertIn("L21e4lam0.9999 n=5, L21e4lam0.999 n=5, L21e4 n=5, L21e4lam0.98 n=5, "
+                      "L21e4lam0.95 n=5, L21e4lam0.9 n=5", call.kwargs["extra"])
+        self.assertIn("0.99 vs 0.95: Mann-Whitney p=0.00794, Holm-adjusted p=0.0397", console)
         self.assertGreater(figure.get_size_inches()[0], 3.5)
         self.assertIs(paper_plot.FIGURES_BY_MODE["acc_plot"]["retention_accuracy"],
                       paper_plot.plot_retention_accuracy)
 
     def test_overall_plot_reports_a_missing_cohort(self):
         call, console = self._render(paper_plot.plot_retention_accuracy,
-                                     {"L21e4lam0.999": [], "L21e4": [90.0], "L21e4lam0.98": [],
+                                     {"L21e4lam0.9999": [], "L21e4lam0.999": [],
+                                      "L21e4": [90.0], "L21e4lam0.98": [],
                                       "L21e4lam0.95": [], "L21e4lam0.9": []})
         axis = call.args[0].axes[0]
         self.assertEqual(axis.get_title(), "")
         self.assertEqual(len(axis.collections), 1)
-        self.assertIn("No L21e4lam0.999/L21e4lam0.98/L21e4lam0.95/L21e4lam0.9 performance data",
-                      [text.get_text() for text in axis.texts])
-        self.assertIn("--merge --feature L21e4lam0.999 --feature L21e4lam0.98 "
-                      "--feature L21e4lam0.95 --feature L21e4lam0.9", console)
+        self.assertIn("No L21e4lam0.9999/L21e4lam0.999/L21e4lam0.98/L21e4lam0.95/L21e4lam0.9 "
+                      "performance data", [text.get_text() for text in axis.texts])
+        self.assertIn("--merge --feature L21e4lam0.9999 --feature L21e4lam0.999 "
+                      "--feature L21e4lam0.98 --feature L21e4lam0.95 --feature L21e4lam0.9",
+                      console)
 
     def test_overall_plot_with_middle_cohort_missing(self):
         call, console = self._render(paper_plot.plot_retention_accuracy,
-                                     {"L21e4lam0.999": [], "L21e4": [90, 91, 92, 93, 94],
+                                     {"L21e4lam0.9999": [], "L21e4lam0.999": [],
+                                      "L21e4": [90, 91, 92, 93, 94],
                                       "L21e4lam0.98": [], "L21e4lam0.95": [],
                                       "L21e4lam0.9": [70, 71, 72, 73, 74]})
         axis = call.args[0].axes[0]
         self.assertEqual(len(axis.collections), 2)
         self.assertEqual(axis.get_title(), "Mann-Whitney, Holm\n0.99 vs 0.9: p=.008")
-        self.assertIn("--merge --feature L21e4lam0.999 --feature L21e4lam0.98 "
-                      "--feature L21e4lam0.95", console)
+        self.assertIn("--merge --feature L21e4lam0.9999 --feature L21e4lam0.999 "
+                      "--feature L21e4lam0.98 --feature L21e4lam0.95", console)
 
     def test_task_plot_annotates_holm_p_per_task(self):
         groups = {
+            "L21e4lam0.9999": {},
             "L21e4lam0.999": {},
             "L21e4": {"fdgo": [90.0, 91.0, 92.0, 93.0, 94.0], "delaygo": [90.0]},
             "L21e4lam0.98": {},
@@ -236,7 +249,8 @@ class RetentionAccuracyTests(unittest.TestCase):
         self.assertEqual(len(panels["delaygo"].texts), 0)
         self.assertEqual(panels["fdanti"].texts[0].get_text(), "No data")
         self.assertEqual([label.get_text() for label in figure.axes[-1].get_xticklabels()],
-                         ["$\\lambda = 0.999$\n(40000 ms)", "$\\lambda = 0.99$\n(4000 ms)",
+                         ["$\\lambda = 0.9999$\n(400000 ms)",
+                          "$\\lambda = 0.999$\n(40000 ms)", "$\\lambda = 0.99$\n(4000 ms)",
                           "$\\lambda = 0.98$\n(2000 ms)",
                           "$\\lambda = 0.95$\n(800 ms)", "$\\lambda = 0.9$\n(400 ms)"])
         self.assertEqual(figure.axes[-1].get_xlabel(), "Modulation retention")

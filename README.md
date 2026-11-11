@@ -28,7 +28,7 @@ weight matrices: `W_initial_linear` (input projection), `mp_layer1.W`
 
 | Experiment | hidden | batch | L2 | `m_time_scale` (λ) |
 |---|---|---|---|---|
-| multi-task (`multiple_task/`) | 300 | 128 | 1e-4 (cohorts from 1e-2 to 1e-5) | 4000 ms (0.99); 40000 ms (`lam0.999`), 2000 ms (`lam0.98`), 800 ms (`lam0.95`) and 400 ms (`lam0.9`) at L2 = 1e-4 |
+| multi-task (`multiple_task/`) | 300 | 128 | 1e-4 (cohorts from 1e-2 to 1e-5) | 4000 ms (0.99); 400000 ms (`lam0.9999`), 40000 ms (`lam0.999`), 2000 ms (`lam0.98`), 800 ms (`lam0.95`) and 400 ms (`lam0.9`) at L2 = 1e-4 |
 | single-task (`one_task/`) | 200 | 128 | 1e-4 | 400 ms (0.9) |
 | two-task (`two_task/`) | 200 | 128 | 1e-3 | 4000 ms (0.99) |
 | pretraining (`pretrain/`) | 200 | 128 | 1e-3 | 400 ms (0.9); historical cohort 4000 ms (0.99) |

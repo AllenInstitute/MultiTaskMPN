@@ -118,7 +118,8 @@ M_BOUNDS = (-1.0, 1.0)
 # training (lam_train is False). Historical multi-task cohorts use
 # 4000 ms (lambda = 0.99), so those run names carry no lambda tag.
 # Any other value is encoded in the effective ADDON_NAME automatically, after
-# the bound tag, as in pretrain/pretraining.py (40000 ms -> L21e4lam0.999;
+# the bound tag, as in pretrain/pretraining.py (400000 ms -> L21e4lam0.9999;
+# 40000 ms -> L21e4lam0.999;
 # 2000 ms -> L21e4lam0.98; 800 ms -> L21e4lam0.95; 400 ms -> L21e4lam0.9, or
 # L21e4mb2lam0.9 with bounds (-2, 2)), so such runs never share a name, or an
 # exact --feature filter, with the lambda = 0.99 cohorts. The current value
