@@ -113,7 +113,8 @@ class OvermembershipExampleTests(unittest.TestCase):
             "multitask_overmembership_examples_colorbar.png",
             "multitask_overmembership_examples_circles_1.png",
             "multitask_overmembership_examples_circles_2.png",
-            "multitask_overmembership_examples_circles_legend.png"})
+            "multitask_overmembership_examples_circles_legend.png",
+            "multitask_overmembership_examples_overview.png"})
         # Rank 1 is C3 (peak OM 7 at input C4 x hidden C2), rank 2 is C4 (peak 5
         # at input C2 x hidden C3); both share the colorbar's (-1, 7).
         for rank, cluster_id, peak in ((1, 3, "peak OM 7.00 at input C4 / hidden C2"),
@@ -380,6 +381,57 @@ class OvermembershipExampleTests(unittest.TestCase):
             self.assertAlmostEqual(min(radii) / max(radii), np.sqrt(min(ratio, 1 / ratio)))
             key_discs.append(label)
         self.assertEqual([text.get_text() for text in key.texts][:3], key_discs)
+
+    def test_overview_places_the_examples_among_all_ranked_clusters(self):
+        """One column per cluster with a well-supported block, at its
+        synapse count: its peak as a point, the median and interquartile
+        range in the red overlay, the range in grey, the examples ringed."""
+        saved = self.render(self.enriched_cache())
+        overview = saved["multitask_overmembership_examples_overview.png"]
+        axis = overview.args[0].axes[0]
+        self.assertEqual(axis.get_xscale(), "log")
+        self.assertEqual(axis.get_xlabel(), "Synapses in the cluster")
+        np.testing.assert_allclose(overview.args[0].get_size_inches(), paper_plot._LESION_SCATTER_FIGSIZE)
+        ranges, iqrs, medians, peaks, examples = axis.collections
+        to_rgb = paper_plot.mpl.colors.to_rgb
+        # Clusters in rank order C3, C4, C1; 908 surviving synapses, a tenth
+        # each for C3 and C4, the rest for C1, whose nine blocks are empty.
+        # C3's blocks: OM 7, 1, 0.5, 0, -0.5 and four at -1; C4's: 5 and eight at -1.
+        c3 = np.percentile([7, 1, 0.5, 0, -0.5, -1, -1, -1, -1], [0, 25, 50, 75, 100])
+        np.testing.assert_allclose(ranges.get_segments(), [[[90.8, c3[0]], [90.8, c3[4]]],
+                                                           [[90.8, -1], [90.8, 5]],
+                                                           [[726.4, -1], [726.4, -1]]])
+        np.testing.assert_allclose(iqrs.get_segments()[0], [[90.8, c3[1]], [90.8, c3[3]]])
+        factor = paper_plot._OM_OVERVIEW_DASH_FACTOR
+        np.testing.assert_allclose(medians.get_segments()[0],
+                                   [[90.8 / factor, c3[2]], [90.8 * factor, c3[2]]])
+        np.testing.assert_allclose(medians.get_segments()[2][:, 1], -1.0)
+        # The summary is the red overlay, the range neutral, the peaks the data blue.
+        for collection in (iqrs, medians):
+            self.assertEqual(to_rgb(collection.get_colors()[0]),
+                             to_rgb(paper_plot._TREND_LINE_COLOR))
+        self.assertEqual(to_rgb(ranges.get_colors()[0]),
+                         to_rgb(paper_plot._OM_OVERVIEW_RANGE_COLOR))
+        np.testing.assert_allclose(peaks.get_offsets(), [[726.4, -1.0]])
+        np.testing.assert_allclose(examples.get_offsets(), [[90.8, 7.0], [90.8, 5.0]])
+        self.assertEqual(to_rgb(examples.get_facecolors()[0]),
+                         to_rgb(paper_plot._SCATTER_POINT_COLOR))
+        np.testing.assert_allclose(examples.get_edgecolors()[0][:3], 0.)
+        self.assertEqual(sorted(text.get_text() for text in axis.texts), ["C3", "C4"])
+        legend = axis.get_legend()
+        self.assertEqual(legend.get_title().get_text(), "3 synapse clusters")
+        self.assertEqual([text.get_text() for text in legend.get_texts()],
+                         ["peak", "example", "median, IQR", "range"])
+        chance = [line for line in axis.lines if line.get_linestyle() == "--"]
+        self.assertEqual(list(chance[0].get_ydata()), [0.0, 0.0])
+        extra = overview.kwargs["extra"]
+        self.assertIn("3 synapse clusters with a block expecting >= 5 synapses", extra)
+        self.assertIn("C3 peak 7.00, median -0.50, IQR -1.00 to 0.50 (9 blocks, 91 synapses)", extra)
+        self.assertIn("2 peaks above chance", extra)
+        # A forced example is the ringed peak wherever it ranks.
+        saved = self.render(self.cache(), clusters=(1,))
+        collections = saved["multitask_overmembership_examples_overview.png"].args[0].axes[0].collections
+        np.testing.assert_allclose(collections[4].get_offsets(), [[726.4, -1.0]])
 
     def test_circle_map_leaves_thin_blocks_empty_and_needs_legends_for_its_key(self):
         """A block below the ranking threshold inside the selected grid is

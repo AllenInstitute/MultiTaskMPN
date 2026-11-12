@@ -321,6 +321,32 @@ construction, so the figure must not be read as where the cluster's synapses
 are; the saved message states the selection and the share. The key is
 `overmembership_examples_circles_legend` (saved with the legends).
 
+`overmembership_examples_overview` shows where the examples stand among the
+synapse clusters: one column per cluster with a well-supported block, at its
+synapse count (log axis), for the distribution of its OM over those blocks
+(every block one sample, unweighted). It follows the per-run `_seeds`
+figures' convention: the data value is a point in the statistics blue, here
+the cluster's peak OM that ranks the examples, and the summary is the red
+overlay, a dash at the median with a bar over the interquartile range; a thin
+grey line spans the full range. The examples' peaks are ringed in black, as
+the OM-vs-lesion scatter marks its example block, and named. The
+examples are the top of that ranking, not typical clusters, and a peak is
+the extreme of its own cluster. In the L21e4 run (seed 749, 19 assessable
+clusters) C3 and C11 lead with peaks of 2.86 and 2.75, yet their median block
+is close to chance (0.36 and 0.14; interquartile ranges −0.28 to 0.97 and
+−0.28 to 0.62). C17 and C8 follow at 2.54 and 2.34 with medians below chance;
+the two largest clusters, C14 and C13, hold 63% of the retained synapses and
+peak near 1 (1.09 and 0.91); and the twelve smallest clusters (109 to 642
+synapses) have no well-supported block above chance, their median at or near
+−1, because their synapses lie in blocks expecting fewer than five. Three
+cautions: the range widens with the number of blocks (120 for C3 against 2
+to 28 for the small clusters), so the peak alone favors clusters large enough
+to fill many assessable blocks; the expected-weighted mean OM of a cluster
+over all its blocks is zero by construction, so the medians say where the
+well-supported blocks sit, not whether a cluster is enriched overall; and
+nothing here is tested. A figure caption should call the examples the most
+enriched ones.
+
 The OM-versus-lesion-profile figure has two panels with the same OM x axis.
 The left panel retains task-profile L1/T distance, which includes differences
 in overall damage. The right panel uses Pearson correlation between the two

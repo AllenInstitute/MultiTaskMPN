@@ -4709,6 +4709,76 @@ def _save_om_circle_legend(out_path):
     _save_fig(fig, out_path, extra="  (key of overmembership_examples_circles)")
 
 
+# Overview of the example ranking: on the log size axis a cluster's median
+# dash reaches this factor to either side of its synapse count, and its range
+# is a line in this neutral grey.
+_OM_OVERVIEW_DASH_FACTOR = 1.14
+_OM_OVERVIEW_RANGE_COLOR = "0.7"
+
+
+def _plot_om_cluster_overview(sizes, block_oms, names, shown, out_path, extra=""):
+    """Where the examples stand among the synapse clusters: one column per
+    cluster with a well-supported block, at its synapse count (log x), for
+    the distribution of its OM over those blocks (`block_oms`, one array per
+    cluster, every block one sample).
+
+    Drawn like the per-run `_seeds` figures: the data value is a point in
+    the statistics blue, here each cluster's peak OM, the quantity that
+    ranks the examples, and the summary of the distribution is the red
+    overlay, a dash at the median with a bar over the interquartile range
+    (_TREND_LINE_COLOR); a thin grey line spans the full range down from
+    the peak. `shown` flags the example clusters, whose peaks are larger
+    with a black edge, as the OM-vs-lesion scatter marks its example block,
+    and are named by `names`; the dashed line is chance (OM = 0). The legend
+    sits above the axes with the cluster count as its title, and the figure
+    has the lesion scatters' footprint and square axes box."""
+    sizes, shown = np.asarray(sizes, float), np.asarray(shown, bool)
+    low, q25, median, q75, peak = np.array(
+        [np.percentile(values, [0, 25, 50, 75, 100]) for values in block_oms], dtype=float).T
+    fig, ax = plt.subplots(figsize=_LESION_SCATTER_FIGSIZE)
+    ax.axhline(0.0, color="0.6", linewidth=0.6, linestyle="--", zorder=1)
+    ax.vlines(sizes, low, peak, color=_OM_OVERVIEW_RANGE_COLOR, linewidth=0.6, zorder=2)
+    ax.vlines(sizes, q25, q75, color=_TREND_LINE_COLOR, linewidth=1.0, zorder=4)
+    ax.hlines(median, sizes / _OM_OVERVIEW_DASH_FACTOR, sizes * _OM_OVERVIEW_DASH_FACTOR,
+              color=_TREND_LINE_COLOR, linewidth=1.8, zorder=4)
+    ax.scatter(sizes[~shown], peak[~shown], **_SCATTER_POINT_STYLE)
+    ax.scatter(sizes[shown], peak[shown], **dict(
+        _SCATTER_POINT_STYLE, s=_OM_SCATTER_HIGHLIGHT_SIZE, alpha=1.0, edgecolors="k",
+        linewidths=0.8, zorder=5))
+    # Names beside the peaks: the smallest example's to its left, the
+    # others' to their right, so two neighboring examples keep their names.
+    by_size = sorted(np.flatnonzero(shown), key=lambda index: sizes[index])
+    for position, index in enumerate(by_size):
+        left = position == 0 and len(by_size) > 1
+        ax.annotate(names[index], (sizes[index], peak[index]),
+                    xytext=(-6 if left else 6, 0), textcoords="offset points",
+                    ha="right" if left else "left", va="center", fontsize=6)
+    ax.set_xscale("log")
+    ax.set_box_aspect(1)
+    ax.set_xlabel("Synapses in the cluster", fontsize=8)
+    ax.set_ylabel("OM over\nwell-supported blocks", fontsize=8)
+    ax.tick_params(labelsize=_STAT_SCATTER_TICK_FONTSIZE)
+    ax.yaxis.set_major_locator(mticker.MaxNLocator(_STAT_SCATTER_MAX_TICKS, steps=[1, 2, 5, 10]))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(_short_tick))
+    ax.spines[["top", "right"]].set_visible(False)
+    handles = [
+        mpl.lines.Line2D([], [], marker="o", linestyle="none", color=_SCATTER_POINT_COLOR,
+                         markeredgecolor="none", markersize=4.5, label="peak"),
+        mpl.lines.Line2D([], [], marker="o", linestyle="none", color=_SCATTER_POINT_COLOR,
+                         markeredgecolor="k", markeredgewidth=0.8, markersize=5.5,
+                         label="example"),
+        mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8, marker="|",
+                         markersize=6, markeredgewidth=1.0, label="median, IQR"),
+        mpl.lines.Line2D([], [], color=_OM_OVERVIEW_RANGE_COLOR, linewidth=0.6, label="range"),
+    ]
+    # The `_seeds` figures' legend: above the axes, the count as its title.
+    _legend(ax, handles=handles, loc="lower left", bbox_to_anchor=(0.0, 1.0), borderaxespad=0.0,
+            ncol=2, columnspacing=0.8, handletextpad=0.3, fontsize=6, frameon=False,
+            title=f"{sizes.size} synapse clusters", title_fontsize=6)
+    fig.tight_layout()
+    _save_fig(fig, out_path, extra=extra)
+
+
 def _om_example_selection():
     """Data and choice of the OM examples of ANAME, shared by
     plot_overmembership_examples and the OM-vs-lesion scatter's highlight so
@@ -4860,6 +4930,20 @@ def plot_overmembership_examples():
     block is framed. These are the example's most extreme blocks, a
     fraction of its synapses that the saved message states; the key is
     saved as `overmembership_examples_circles_legend` when legends are on.
+
+    `overmembership_examples_overview` places the examples among the other
+    synapse clusters: every cluster with a well-supported block as a column
+    at its synapse count, showing the distribution of its OM over those
+    blocks: the peak that ranks the examples as a point, the median and
+    interquartile range as the red overlay and the full range as a grey
+    line (_plot_om_cluster_overview); the examples' peaks are ringed in
+    black and named. A cluster's peak is the upper end of its
+    own distribution, and the range widens with the number of blocks a
+    cluster has, so the peak alone favors clusters with many. The examples
+    are the top of that ranking, not typical clusters: in the L21e4 run most
+    synapses lie in two large clusters whose highest OM is near 1, and most
+    small clusters have no enriched well-supported block at all, their
+    synapses lying in blocks too thin to assess.
     The full cluster cache can be several GB; run on an allocated compute node.
     """
     selection = _om_example_selection()
@@ -4964,6 +5048,25 @@ def plot_overmembership_examples():
                    f"framed: deciding block"))
     if circle_maps:
         _save_om_circle_legend(_multitask_out("overmembership_examples_circles_legend.png"))
+    # Every ranked cluster, by size and by the peak OM that ranks it. A
+    # cluster's size is its expected count summed over the blocks.
+    sizes = [float(expected[index].sum()) for index in ranked]
+    shown = [index in chosen for index in ranked]
+    block_oms = [ratios[index][supported[index]] - 1.0 for index in ranked]
+    ranking = ", ".join(
+        f"C{cid} peak {peak:.2f}, median {np.median(values):.2f}, IQR "
+        f"{np.percentile(values, 25):.2f} to {np.percentile(values, 75):.2f} "
+        f"({values.size} blocks, {size:.0f} synapses)"
+        for (peak, cid), size, values in zip(peaks, sizes, block_oms))
+    n_unranked = len(cluster_ids) - len(ranked)
+    _plot_om_cluster_overview(
+        sizes, block_oms, [f"C{cid}" for _, cid in peaks], shown,
+        _multitask_out("overmembership_examples_overview.png"),
+        extra=(f"  ({ANAME}) {len(ranked)} synapse clusters with a block expecting >= "
+               f"{select_min:g} synapses ({n_unranked} without one or unresponsive left out); "
+               f"OM over those blocks, each block one sample: {ranking}; "
+               f"{int(np.sum(np.array([p for p, _ in peaks]) > 0))} peaks above chance; "
+               f"examples ringed"))
     ticks = sorted({-1.0, 0.0, vmax / 2, vmax})
     cmap, norm = _om_block_cmap_norm(vmax)
     _save_standalone_colorbar(
