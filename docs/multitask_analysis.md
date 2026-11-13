@@ -90,6 +90,65 @@ own drivers: `run_pipeline.py` and `run_state_space_pipeline.py`; the
 sibling-task geometry (`sibling_delay_analysis.py`) redraws its trials and is
 never rerun from here.
 
+## Accuracy figures: tests against the default setting
+
+Every accuracy figure of the `acc_plot` mode tests its other columns against
+the column of the default setting, the `L21e4` cohort (L2 = 1e-4, Tanh,
+M in [-1, 1], lambda = 0.99, 300-dimensional projection and hidden layer):
+
+| Figure | Reference column | Tests |
+|---|---|---|
+| `l2_accuracy`, `l2_task_accuracy` | L2 = 1e-4 | one per other L2 strength (and task, up to 45) |
+| `l2e4_activation_accuracy` | Tanh | one per other activation |
+| `projection_dim_accuracy`, `hidden_dim_accuracy` | width 300 | one per other width |
+| `projection_dim_task_accuracy`, `hidden_dim_task_accuracy` | width 300 | one per other width and task (up to 75) |
+| `retention_accuracy`, `retention_task_accuracy` | lambda = 0.99 | one per other retention (and task) |
+| `modulation_bound_accuracy` | mb1 of the same L2 | one per L2 panel |
+
+The modulation-bound figure is the one exception to the global default: each
+of its panels holds one L2 strength, so mb2 is tested against the default
+bound at that strength rather than against `L21e4`, which would mix the two
+factors. The tests are two-sided Mann-Whitney U tests, Holm-adjusted jointly
+over all valid tests of one figure (`_reference_column_tests` in
+`figures/paper_plot.py`); a test needs at least two networks in each group.
+Each tested column carries the mark of its test, as in the other cohort
+figures: one to three asterisks for Holm p < 0.05, 0.01, 0.001 and a small
+grey "n.s." otherwise, over the column's highest network (in a row above
+each panel in the task-grid figures). The reference column and a column
+that was not tested carry no mark; a legend names the test and the
+reference, and the exact raw and Holm p values are printed when the figure
+is generated. The activation-diagnosis figures of the same mode
+(`l2e4_activation_embedding_offset`, `l2e4_activation_modulation_dimension`,
+`l2e4_activation_modulation_common_accuracy`) are not accuracy comparisons
+and are not tested.
+
+The figures share one drawing style, that of the per-run `_seeds` figures
+(`_plot_accuracy_columns`): a 2.6 in tall panel as wide as its columns need,
+at most five round y ticks, one blue dot per network and the summary over
+networks in the statistics red of [SCHEME.md](../SCHEME.md). A sweep (L2,
+width, retention) joins the medians of its columns; the activation figure,
+whose columns are categories, draws each column's median dash and
+interquartile bar and keeps one color per activation, as do its two
+diagnosis companions. The one-panel figures of `_plot_accuracy_columns`
+(L2, activation, the two widths, retention) and the per-task grids also give
+each column its mean as a near-black diamond with the sample SD as an error
+bar, just right of the dots, so the red median and the mean can be read
+side by side.
+`l2e4_activation_modulation_common_accuracy` is drawn like the other
+association scatters (outline-free dots in the activation colors, a square
+box, the legend above the panel). `modulation_bound_accuracy` is one panel with the two
+bounds side by side at every L2 strength (mb1 filled, mb2 hollow) and the
+mark of each test on a bracket over the pair. The per-task figures are a
+grid of fifteen small panels, three per row, in the order of the task
+table. Before 2026-11-13 these figures drew the across-network means as
+connected black diamonds on larger panels with a tick every 5 %, the bound
+figure had one panel per L2 and the task figures stacked their fifteen
+panels in one column.
+
+The width sweeps select their runs by configuration, and since 2026-11-13
+they also require the default M bounds: before that the five `L21e4mb2`
+runs were pooled into the 300-wide group (30 networks instead of 25).
+
 ## Accuracy across modulation retentions
 
 The `acc_plot` figures `retention_accuracy` and `retention_task_accuracy`
@@ -104,10 +163,10 @@ longer than a trial, so M barely decays within one (M is reset at every trial
 onset, so nothing carries between trials at any retention). Train another
 retention without editing the script, e.g.
 `python multiple_task/multiple_task.py --m-time-scale 2000` for 0.98. Until a
-cohort's runs are trained and evaluated its column stays empty and the figure
-names it. Each dot is one network and the connected
-diamonds are the across-network means. These figures use performance results,
-not clustering or lesion caches.
+cohort's runs are trained and evaluated its column stays empty. Each dot is
+one network and the red line joins the across-network medians; the tick
+labels are the lambda values (their time scales are listed above). These
+figures use performance results, not clustering or lesion caches.
 
 ```bash
 # Add the newly trained cohort without replacing the existing evaluations.
@@ -123,6 +182,9 @@ correction covers the overall comparisons in the first figure, and all 15
 tasks times the pairs (up to 75 comparisons) jointly in the second. A pair needs at least two networks in each group; unavailable
 comparisons have no p value and do not enter the correction. Missing cohorts
 keep their axis position and produce a message with the evaluation command.
+
+The marks follow [the convention of every accuracy figure](#accuracy-figures-tests-against-the-default-setting)
+(before 2026-11-13 the p values were written on the two figures instead).
 
 ## Figures
 

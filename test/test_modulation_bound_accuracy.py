@@ -1,11 +1,14 @@
 """Regression checks for the matched mb1/mb2 accuracy figure."""
 
+import contextlib
 import copy
 import io
 import json
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+
+import numpy as np
 
 import _bootstrap  # noqa: F401
 import paper_plot
@@ -66,7 +69,25 @@ class ModulationBoundAccuracyTests(unittest.TestCase):
         self.assertEqual(groups[1e-3]["mb2"], [70.0])
         self.assertEqual(groups[1e-5]["mb1"], [])
 
-    def test_plot_has_four_l2_panels_and_is_registered_in_acc_plot(self):
+    def _render(self, groups):
+        with patch.object(Path, "exists", return_value=True), \
+                patch.object(Path, "open", return_value=io.StringIO("{}")), \
+                patch.object(paper_plot, "_ensure_out_dir"), \
+                patch.object(
+                    paper_plot, "_modulation_bound_accuracy_groups",
+                    return_value=groups), \
+                patch.object(paper_plot, "_save_fig") as save, \
+                contextlib.redirect_stdout(io.StringIO()) as console:
+            paper_plot.plot_modulation_bound_accuracy()
+        figure, output_path = save.call_args.args[:2]
+        self.addCleanup(paper_plot.plt.close, figure)
+        return figure, output_path, console.getvalue()
+
+    @staticmethod
+    def _marks(axis):
+        return [(text.get_text(), text.xy[0]) for text in axis.texts]
+
+    def test_plot_is_one_panel_and_is_registered_in_acc_plot(self):
         groups = {
             strength: {
                 bound_name: [60.0 + 5.0 * bound_index]
@@ -75,35 +96,21 @@ class ModulationBoundAccuracyTests(unittest.TestCase):
             }
             for strength in paper_plot.MODULATION_BOUND_L2_STRENGTHS
         }
-        with patch.object(Path, "exists", return_value=True), \
-                patch.object(Path, "open", return_value=io.StringIO("{}")), \
-                patch.object(paper_plot, "_ensure_out_dir"), \
-                patch.object(
-                    paper_plot, "_modulation_bound_accuracy_groups",
-                    return_value=groups), \
-                patch.object(paper_plot, "_save_fig") as save:
-            paper_plot.plot_modulation_bound_accuracy()
-
-        figure, output_path = save.call_args.args[:2]
-        self.addCleanup(paper_plot.plt.close, figure)
-        self.assertEqual(len(figure.axes), 4)
+        figure, output_path, _ = self._render(groups)
+        self.assertEqual(len(figure.axes), 1)
+        axis = figure.axes[0]
         self.assertEqual(
-            [axis.get_title(loc="left") for axis in figure.axes],
-            [
-                "a   L2 = $10^{-5}$",
-                "b   L2 = $10^{-4}$",
-                "c   L2 = $10^{-3}$",
-                "d   L2 = $10^{-2}$",
-            ],
-        )
-        self.assertEqual(len(figure.axes[-1].get_xticklabels()), 2)
-        self.assertEqual(
-            [label.get_text() for label in figure.axes[-1].get_xticklabels()],
-            ["$[-1, 1]$\n(mb1)", "$[-2, 2]$\n(mb2)"],
-        )
-        self.assertEqual(len(figure.axes[0].collections), 2)
-        self.assertEqual(
-            figure.axes[0].lines[0].get_ydata().tolist(), [60.0, 65.0])
+            [label.get_text() for label in axis.get_xticklabels()],
+            ["$10^{-5}$", "$10^{-4}$", "$10^{-3}$", "$10^{-2}$"])
+        self.assertEqual(axis.get_xlabel(), "L2 regularization strength")
+        self.assertEqual(axis.get_ylabel(), "Test accuracy (%)")
+        # the two bounds sit side by side at every strength
+        dots = [dots.get_offsets() for dots in axis.collections
+                if isinstance(dots, paper_plot.mpl.collections.PathCollection)]
+        self.assertEqual(len(dots), 8)
+        offset = paper_plot._MODULATION_BOUND_OFFSET
+        self.assertEqual([tuple(points[0]) for points in dots[:2]],
+                         [(-offset, 60.0), (offset, 65.0)])
         self.assertEqual(
             output_path.name, "multitask_modulation_bound_accuracy.png")
         self.assertIs(
@@ -111,7 +118,32 @@ class ModulationBoundAccuracyTests(unittest.TestCase):
             ["modulation_bound_accuracy"],
             paper_plot.plot_modulation_bound_accuracy,
         )
-        self.assertEqual(figure.axes[0].get_ylabel(), "")
+        self.assertLess(max(figure.get_size_inches()), 3.5)
+        # One run per group: nothing is tested, bracketed or marked.
+        self.assertEqual((self._marks(axis), len(axis.lines)), ([], 0))
+        self.assertEqual([text.get_text() for text in axis.get_legend().get_texts()],
+                         ["$M \\in [-1, 1]$ (mb1)", "$M \\in [-2, 2]$ (mb2)", "median, IQR"])
+
+    def test_mb2_is_tested_against_mb1_of_the_same_l2(self):
+        mb1, mb2 = [80.0, 81.0, 82.0, 83.0, 84.0], [90.0, 91.0, 92.0, 93.0, 94.0]
+        groups = {strength: {"mb1": mb1, "mb2": mb2 if index else mb1}
+                  for index, strength in enumerate(paper_plot.MODULATION_BOUND_L2_STRENGTHS)}
+        figure, _, console = self._render(groups)
+        axis = figure.axes[0]
+        # Holm over the four strengths' tests: 4 * 2/252 = .032 where the bounds differ.
+        self.assertEqual(self._marks(axis), [("n.s.", 0), ("*", 1), ("*", 2), ("*", 3)])
+        # one bracket per tested pair, over the pair's highest network
+        self.assertEqual(len(axis.lines), 4)
+        offset = paper_plot._MODULATION_BOUND_OFFSET
+        np.testing.assert_allclose(axis.lines[1].get_xdata(),
+                                   [1 - offset, 1 - offset, 1 + offset, 1 + offset])
+        self.assertGreater(min(axis.lines[1].get_ydata()), 94.0)
+        self.assertGreater(axis.get_ylim()[1], max(axis.lines[1].get_ydata()))
+        self.assertEqual(
+            axis.get_legend().get_texts()[-1].get_text(),
+            "Holm p < 0.05 / 0.01 / 0.001\nvs mb1 at the same L2 (Mann\u2013Whitney)")
+        self.assertIn(
+            "L2=0.0001, mb2 vs mb1: Mann-Whitney p=0.00794, Holm-adjusted p=0.0317", console)
 
 
 if __name__ == "__main__":

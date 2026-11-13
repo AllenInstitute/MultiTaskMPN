@@ -1,9 +1,11 @@
 """Regression checks for metadata-based projection and hidden accuracy grouping."""
 
+import contextlib
 import copy
 import io
 import json
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -74,10 +76,19 @@ class ProjectionAccuracyTests(unittest.TestCase):
                     for task, panel in panels.items():
                         self.assertEqual(panel.get_title(loc="left"), paper_plot._TASK_DISPLAY[task])
                         np.testing.assert_array_equal(panel.lines[0].get_xdata(), [0, 1, 2])
-                        self.assertEqual(panel.lines[0].get_marker(), "D")
+                        self.assertEqual(panel.lines[0].get_marker(), "o")
                     np.testing.assert_array_equal(panels["fdgo"].collections[0].get_offsets(),
                                                   [[0, 50], [0, 100]])
-                    self.assertEqual(sum(len(dots.get_offsets()) for dots in panels["fdgo"].collections), 4)
+                    dots = [item for item in panels["fdgo"].collections
+                            if isinstance(item, paper_plot.mpl.collections.PathCollection)]
+                    self.assertEqual(sum(len(item.get_offsets()) for item in dots), 4)
+                    # beside the dots, each width's mean; an SD bar where it has two runs
+                    offset = paper_plot._ACCURACY_MEAN_OFFSET
+                    np.testing.assert_allclose(
+                        [bar.lines[0].get_xydata()[0] for bar in panels["fdgo"].containers],
+                        [[offset, 75.0], [1 + offset, 90.0], [2 + offset, 100.0]])
+                    self.assertEqual([len(bar.lines[2]) for bar in panels["fdgo"].containers],
+                                     [1, 0, 0])
                     self.assertEqual(len(panels["delaygo"].collections), 2)
                     self.assertGreater(panels["fdgo"].get_ylim()[1], 100)
                     self.assertEqual(panels["fdanti"].texts[0].get_text(), "No data")
@@ -138,6 +149,92 @@ class ProjectionAccuracyTests(unittest.TestCase):
                 config = copy.deepcopy(self.config)
                 config[section][field] = value
                 self.assertEqual(self.group({"L21e4": config}, {"L21e4": {"acc": 0.9}}), {})
+
+    def test_only_the_default_bounds_join_the_sweep(self):
+        """The 300-wide group is the default cohort the other widths are
+        tested against, so the wider-bound L21e4mb2 runs stay out of it."""
+        default = copy.deepcopy(self.config)
+        default["net_params"]["linear_embed"] = 300
+        explicit = copy.deepcopy(default)
+        explicit["net_params"]["ml_params"]["m_bounds"] = [-1.0, 1.0]
+        wider = copy.deepcopy(default)
+        wider["net_params"]["ml_params"]["m_bounds"] = [-2.0, 2.0]
+        configs = {"default": default, "explicit": explicit, "wider": wider}
+        results = {"default": {"acc": 0.9}, "explicit": {"acc": 0.8}, "wider": {"acc": 0.7}}
+        for vary_hidden in (False, True):
+            with self.subTest(vary_hidden=vary_hidden):
+                self.assertEqual(self.group(configs, results, vary_hidden=vary_hidden),
+                                 {300: [90.0, 80.0]})
+
+    def _render(self, plot, groups, **kwargs):
+        with tempfile.TemporaryDirectory() as directory:
+            result_path = Path(directory) / "performance_results.json"
+            result_path.write_text("{}")
+            with patch.object(paper_plot, "_projection_accuracy_groups", return_value=groups), \
+                    patch.object(paper_plot, "PERF_RESULT_PATH", result_path), \
+                    patch.object(paper_plot, "_ensure_out_dir"), \
+                    patch.object(paper_plot, "_save_fig") as save, \
+                    contextlib.redirect_stdout(io.StringIO()) as console:
+                plot(**kwargs)
+        figure = save.call_args.args[0]
+        self.addCleanup(paper_plot.plt.close, figure)
+        return figure, console.getvalue()
+
+    @staticmethod
+    def _marks(axis):
+        return [(text.get_text(), text.xy[0]) for text in axis.texts
+                if isinstance(text, paper_plot.mpl.text.Annotation)]
+
+    def test_overall_sweep_marks_each_width_against_300(self):
+        groups = {10: [70.0, 71.0, 72.0, 73.0, 74.0], 100: [91.5, 92.5, 93.5],
+                  300: [90.0, 91.0, 92.0, 93.0, 94.0], 400: [95.0]}
+        for vary_hidden, name in ((False, "projection"), (True, "hidden")):
+            with self.subTest(vary_hidden=vary_hidden):
+                figure, console = self._render(paper_plot._plot_dimension_accuracy, groups,
+                                               vary_hidden=vary_hidden)
+                axis = figure.axes[0]
+                # Holm over the two valid tests; one run at 400 is not tested.
+                self.assertEqual(self._marks(axis), [("*", 0.0), ("n.s.", 1.0)])
+                self.assertEqual([text.get_text() for text in axis.get_legend().get_texts()],
+                                 ["median", "mean \u00b1 SD",
+                                  "Holm p < 0.05 / 0.01 / 0.001\n"
+                                  f"vs {name} dimension 300 (Mann\u2013Whitney)"])
+                # the mean of every width, beside its dots
+                np.testing.assert_allclose(
+                    [bar.lines[0].get_xydata()[0] for bar in axis.containers],
+                    [[index + paper_plot._ACCURACY_MEAN_OFFSET, mean]
+                     for index, mean in enumerate([72.0, 92.5, 92.0, 95.0])])
+                # medians joined in red, a compact panel with few ticks
+                np.testing.assert_allclose(axis.lines[0].get_ydata(), [72.0, 92.5, 92.0, 95.0])
+                np.testing.assert_allclose(figure.get_size_inches(),
+                                           paper_plot._accuracy_figsize(4))
+                self.assertLessEqual(len(axis.get_yticks()),
+                                     paper_plot._STAT_SCATTER_MAX_TICKS + 1)
+                self.assertIn("10 vs 300: Mann-Whitney p=0.00794, Holm-adjusted p=0.0159", console)
+                self.assertNotIn("400 vs 300", console)
+
+    def test_sweep_without_the_default_width_is_not_tested(self):
+        figure, console = self._render(paper_plot._plot_dimension_accuracy,
+                                       {10: [70.0, 71.0], 100: [90.0, 91.0]}, vary_hidden=False)
+        self.assertEqual(self._marks(figure.axes[0]), [])
+        self.assertEqual([text.get_text() for text in figure.axes[0].get_legend().get_texts()],
+                         ["median", "mean \u00b1 SD"])
+        self.assertNotIn("Mann-Whitney", console)
+
+    def test_task_sweep_marks_each_width_against_300(self):
+        groups = {10: {"fdgo": [70.0, 71.0, 72.0, 73.0, 74.0]},
+                  300: {"fdgo": [90.0, 91.0, 92.0, 93.0, 94.0], "delaygo": [95.0, 96.0]},
+                  400: {"delaygo": [97.0]}}
+        figure, console = self._render(paper_plot._plot_dimension_task_accuracy, groups,
+                                       vary_hidden=True)
+        panels = dict(zip(paper_plot._TASK_DISPLAY, figure.axes))
+        self.assertEqual(self._marks(panels["fdgo"]), [("**", 0.0)])
+        self.assertEqual(self._marks(panels["delaygo"]), [])
+        self.assertEqual([text.get_text() for text in figure.legends[0].get_texts()[:2]],
+                         ["median", "mean \u00b1 SD"])
+        self.assertIn("vs hidden dimension 300", figure.legends[0].get_texts()[2].get_text())
+        self.assertIn("DelayPro, 10 vs 300: Mann-Whitney p=0.00794, Holm-adjusted p=0.00794",
+                      console)
 
     def test_missing_retention_is_skipped_not_defaulted(self):
         """core/mpn.py falls back to lam_clamp without m_time_scale, so a config

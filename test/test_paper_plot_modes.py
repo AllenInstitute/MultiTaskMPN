@@ -1709,7 +1709,7 @@ class PaperPlotModeTests(unittest.TestCase):
 
         figure, output_path = save_fig.call_args.args[:2]
         self.addCleanup(paper_plot.plt.close, figure)
-        # Five seed scatters plus one error-bar collection per activation.
+        # Five seed scatters plus each activation's median dash and IQR bar.
         self.assertGreaterEqual(len(figure.axes[0].collections), 5)
         self.assertEqual(
             output_path.name,
@@ -1735,6 +1735,22 @@ class PaperPlotModeTests(unittest.TestCase):
         self.assertEqual(len(axis.lines), 0)
         self.assertFalse(axis.texts)
         self.assertEqual(axis.get_ylabel(), "Mean accuracy\nacross tasks (%)")
+        # Drawn like the other association scatters: outline-free dots of the
+        # shared size, a square box, few ticks, the legend above the panel.
+        for dots in axis.collections:
+            self.assertEqual(dots.get_sizes().tolist(), [paper_plot._SCATTER_POINT_STYLE["s"]])
+            self.assertEqual(len(dots.get_edgecolors()), 0)
+        self.assertEqual(len({tuple(dots.get_facecolor()[0]) for dots in axis.collections}), 5)
+        self.assertEqual(tuple(figure.get_size_inches()), paper_plot._LESION_SCATTER_FIGSIZE)
+        self.assertEqual(axis.get_box_aspect(), 1)
+        low, high = axis.get_xlim()
+        self.assertEqual([tick for tick in axis.get_xticks() if low <= tick <= high],
+                         [0, 25, 50, 75, 100])
+        legend = axis.get_legend()
+        self.assertEqual(len(legend.get_texts()), 5)
+        self.assertRegex(legend.get_title().get_text(), r"^\d+ networks$")
+        figure.canvas.draw()
+        self.assertGreaterEqual(legend.get_window_extent().y0, axis.get_window_extent().y1)
         self.assertEqual(
             output_path.name,
             "multitask_l2e4_activation_modulation_common_accuracy.png",

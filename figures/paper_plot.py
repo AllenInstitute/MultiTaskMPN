@@ -911,6 +911,13 @@ def _stat_scatter(ax, x, y, legend_text, *, trend_line=None, xlabel="", ylabel="
     else:
         _legend(ax, [_invisible_legend_handle()], [legend_text], handlelength=0,
                 handletextpad=0, **placement)
+    _style_stat_scatter_axes(ax, xlabel, ylabel, label_fontsize)
+
+
+def _style_stat_scatter_axes(ax, xlabel="", ylabel="", label_fontsize=8):
+    """Axes of an association scatter (_stat_scatter): no top or right
+    spine, a square box, the shared label and tick sizes and a few round
+    ticks. Also used by scatters that color their points by category."""
     ax.spines[["top", "right"]].set_visible(False)
     ax.set_box_aspect(1)
     ax.set_xlabel(xlabel, fontsize=label_fontsize)
@@ -1510,66 +1517,380 @@ def _performance_feature_tag(model_name, result):
     return match.group(1) if match else None
 
 
-def plot_l2_vs_accuracy():
-    """Figure: Tanh-model test accuracy (%) vs L2 regularization strength."""
-    import json as _json
+# ─── Accuracy figures: cohort tests against the default setting ─────────────
+
+# The default multi-task setting is the `L21e4` cohort: L2 = 1e-4, Tanh,
+# M in [-1, 1], 4000 ms retention, 300-dimensional projection and hidden
+# layer. Every accuracy figure tests its other columns against the column of
+# that cohort (the modulation-bound figure, whose panels each hold one L2,
+# against the default bound of the same L2).
+_ACCURACY_REFERENCE_L2 = 1e-4
+_ACCURACY_REFERENCE_BOUNDS = (-1.0, 1.0)
+_ACCURACY_REFERENCE_WIDTH = 300
+# Runs each cohort needs before the Mann-Whitney U test between them is run.
+_MANN_WHITNEY_MIN_RUNS = 2
+
+
+def _mann_whitney_p(first, second):
+    """Two-sided Mann-Whitney U p value between two groups of per-run values,
+    NaN when either holds fewer than _MANN_WHITNEY_MIN_RUNS runs."""
+    from scipy.stats import mannwhitneyu
+
+    if min(len(first), len(second)) < _MANN_WHITNEY_MIN_RUNS:
+        return float("nan")
+    return float(mannwhitneyu(first, second, alternative="two-sided").pvalue)
+
+
+def _holm_adjusted(p_values):
+    """Holm step-down adjusted p values (family-wise error over the finite
+    entries); NaN entries stay NaN and do not count toward the family."""
+    p_values = np.asarray(p_values, dtype=float)
+    adjusted = np.full(p_values.shape, np.nan)
+    finite = np.flatnonzero(np.isfinite(p_values))
+    order = finite[np.argsort(p_values[finite])]
+    running = 0.0
+    for rank, index in enumerate(order):
+        running = max(running, (order.size - rank) * p_values[index])
+        adjusted[index] = min(1.0, running)
+    return adjusted
+
+
+def _reference_column_tests(panels, reference):
+    """Two-sided Mann-Whitney U test of every column against the column at
+    index `reference`, in every panel of one figure.
+
+    `panels` maps a panel key to its columns' value lists. Returns panel key
+    -> (raw p, Holm p), arrays over the columns that are NaN at the
+    reference and where a group has fewer than _MANN_WHITNEY_MIN_RUNS runs.
+    Holm correction covers all valid tests of the figure jointly.
+    """
+    raw = {key: np.array([np.nan if index == reference
+                          else _mann_whitney_p(values, columns[reference])
+                          for index, values in enumerate(columns)], dtype=float)
+           for key, columns in panels.items()}
+    if not raw:
+        return {}
+    adjusted = _holm_adjusted(np.concatenate(list(raw.values())))
+    bounds = np.cumsum([0] + [p_values.size for p_values in raw.values()])
+    return {key: (p_values, adjusted[start:stop])
+            for (key, p_values), start, stop in zip(raw.items(), bounds, bounds[1:])}
+
+
+def _print_reference_tests(tests, column_names, reference, panel_names=None):
+    """Print the raw and Holm p of every test that was run; `panel_names`
+    maps the panel keys of a multi-panel figure to their printed names."""
+    for key, (raw, adjusted) in tests.items():
+        prefix = f"{panel_names[key]}, " if panel_names else ""
+        for name, p_raw, p_adj in zip(column_names, raw, adjusted):
+            if np.isfinite(p_adj):
+                print(f"  {prefix}{name} vs {column_names[reference]}: "
+                      f"Mann-Whitney p={p_raw:.3g}, Holm-adjusted p={p_adj:.3g}")
+
+
+def _annotate_significance(ax, x, y, p_value, xycoords="data", lift=0.0):
+    """Significance mark of one adjusted p value, centred just above (x, y):
+    one to three asterisks or a small grey "n.s." (_significance_marks), in
+    the style of the other cohort-test marks; nothing for a test that was
+    not run. `lift` (points) moves it, e.g. down onto a bracket. Returns the
+    annotation or None."""
+    text = _significance_marks(p_value, "*")
+    if not text:
+        return None
+    significant = text != "n.s."
+    # An asterisk sits high in its line, so the smaller "n.s." is raised to
+    # put the ink of both about 4 pt above the anchor.
+    # annotation_clip off: a column topping out at the axis limit keeps its mark.
+    return ax.annotate(text, (x, y), xycoords=xycoords,
+                       xytext=(0, lift + (0 if significant else 3)),
+                       textcoords="offset points", ha="center", va="bottom",
+                       annotation_clip=False,
+                       fontsize=7 if significant else 5,
+                       color="k" if significant else "0.45")
+
+
+def _reference_test_legend_handles(tests, reference_label, wrap=False):
+    """Legend entry naming the marks of _reference_column_tests results, or
+    no entry when no test was run; `wrap` breaks the label for a narrow
+    panel."""
+    if not any(np.isfinite(adjusted).any() for _, adjusted in tests.values()):
+        return []
+    return [mpl.lines.Line2D(
+        [], [], linestyle="none", marker="$*$", color="k", markersize=5,
+        label=("Holm p < 0.05 / 0.01 / 0.001" + ("\n" if wrap else " ")
+               + f"vs {reference_label} (Mann\u2013Whitney)"))]
+
+
+def _mark_reference_tests(ax, x_positions, columns, reference, column_names, tops=None):
+    """Test every column of a one-panel accuracy figure against the column
+    at index `reference` and mark the result over each tested column, at its
+    highest value or at its entry of `tops` (_annotate_significance). The
+    exact p values are printed. `reference` None (the default cohort has no
+    runs) draws nothing. Returns the tests (_reference_column_tests)."""
+    if reference is None:
+        return {}
+    tests = _reference_column_tests({None: columns}, reference)
+    _print_reference_tests(tests, column_names, reference)
+    for index, (x, values, p_adjusted) in enumerate(zip(x_positions, columns, tests[None][1])):
+        if len(values):
+            _annotate_significance(ax, x, np.max(values) if tops is None else tops[index],
+                                   p_adjusted)
+    return tests
+
+
+# The accuracy dot figures follow the per-run `_seeds` figures: 2.6 in tall
+# panels, a few ticks, runs as blue dots and the summary over runs in the
+# statistics red (SCHEME.md family 4).
+_ACCURACY_PANEL_HEIGHT_IN = 2.6
+# Sideways spread of a column's runs and half-width of its median dash, in
+# column units.
+_ACCURACY_POINT_SPREAD = 0.1
+_ACCURACY_DASH_HALF_WIDTH = 0.24
+# The mean with its sample SD, beside the column's dots so that it does not
+# hide the median: a near-black diamond, apart from the red median overlay.
+_ACCURACY_MEAN_OFFSET = 0.27
+_ACCURACY_MEAN_STYLE = dict(color="0.15", marker="D", markerfacecolor="white",
+                            markeredgewidth=0.8, markersize=3.5, linewidth=0.9)
+
+
+def _mean_sd(values):
+    """Mean and sample SD of one column (SD 0 for a single run)."""
+    values = np.asarray(values, dtype=float)
+    return float(values.mean()), float(values.std(ddof=1)) if values.size > 1 else 0.0
+
+
+def _accuracy_figsize(n_columns):
+    """Size of a one-panel accuracy figure: as wide as its columns need."""
+    return (0.9 + 0.38 * n_columns, _ACCURACY_PANEL_HEIGHT_IN)
+
+
+def _median_iqr(ax, x, values, half_width=_ACCURACY_DASH_HALF_WIDTH):
+    """Median dash and interquartile bar of one column, as in the `_seeds`
+    figures."""
+    q25, median, q75 = np.percentile(values, [25, 50, 75])
+    ax.vlines(x, q25, q75, color=_TREND_LINE_COLOR, linewidth=1.0, zorder=4)
+    ax.hlines(median, x - half_width, x + half_width, color=_TREND_LINE_COLOR,
+              linewidth=1.8, zorder=4)
+
+
+def _draw_run_columns(ax, positions, columns, *, colors=None, connect=False, mean_sd=False):
+    """One column of dots per group: every run a dot in _SCATTER_POINT_STYLE
+    (in the column's entry of `colors` when given), spread sideways in run
+    order, and the summary over runs in red: with `connect` (a sweep) the
+    medians joined across the columns, otherwise each column's median dash
+    and interquartile bar. With `mean_sd` each column also carries its mean
+    as a diamond with the sample SD as an error bar, just right of the dots
+    (_ACCURACY_MEAN_STYLE). Empty columns are skipped. Returns the legend
+    handles of the summaries."""
+    medians, drawn = [], []
+    for index, (position, values) in enumerate(zip(positions, columns)):
+        values = np.asarray(values, dtype=float)
+        if values.size == 0:
+            continue
+        spread = (np.linspace(-_ACCURACY_POINT_SPREAD, _ACCURACY_POINT_SPREAD, values.size)
+                  if values.size > 1 else np.zeros(1))
+        style = dict(_SCATTER_POINT_STYLE)
+        if colors is not None:
+            style["color"] = colors[index]
+        ax.scatter(position + spread, values, **style)
+        medians.append((position, float(np.median(values))))
+        drawn.append((position, values))
+        if not connect:
+            _median_iqr(ax, position, values)
+    if connect:
+        connector = dict(marker="o", markersize=3.5, **_TREND_LINE_STYLE)
+        if medians:
+            ax.plot(*zip(*medians), **connector)
+        handles = [mpl.lines.Line2D([], [], label="median", **connector)]
+    else:
+        handles = [mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8,
+                                    label="median, IQR")]
+    if mean_sd:
+        # After the dots and the median, so the diamonds stay on top.
+        for position, values in drawn:
+            mean, spread = _mean_sd(values)
+            ax.errorbar(position + _ACCURACY_MEAN_OFFSET, mean, yerr=spread or None,
+                        capsize=2, zorder=5, **_ACCURACY_MEAN_STYLE)
+        handles.append(mpl.lines.Line2D([], [], label="mean \u00b1 SD", **_ACCURACY_MEAN_STYLE))
+    return handles
+
+
+def _set_accuracy_ylim(ax, values, max_ticks=_STAT_SCATTER_MAX_TICKS):
+    """Adaptive accuracy axis: the observed span padded below to a multiple
+    of 5 and above by the room the significance marks need, with a few round
+    ticks that never pass 100 %."""
+    low, high = float(np.nanmin(values)), float(np.nanmax(values))
+    span = high - low
+    top = high + max(0.12 * span, 3.0)
+    ax.set_ylim(np.floor(max(0.0, low - max(0.08 * span, 2.0)) / 5.0) * 5.0, top)
+    ax.yaxis.set_major_locator(mticker.MaxNLocator(max_ticks, steps=[1, 2, 5, 10]))
+    ax.set_yticks([tick for tick in ax.get_yticks()
+                   if ax.get_ylim()[0] <= tick <= min(100.0, top)])
+
+
+def _accuracy_legend(ax, handles, tests, reference_label):
+    """Legend of a one-panel accuracy figure, above the axes like every
+    `_seeds` legend: `handles` and the entry naming the test marks."""
+    _legend(ax, handles=list(handles) + _reference_test_legend_handles(
+                tests, reference_label, wrap=True),
+            loc="lower left", bbox_to_anchor=(0.0, 1.0), borderaxespad=0.0, frameon=False,
+            fontsize=6, handletextpad=0.4, labelspacing=0.3)
+
+
+def _plot_accuracy_columns(columns, tick_labels, xlabel, *, reference, column_names,
+                           reference_label, colors=None, connect=True, rotation=0,
+                           ylabel="Test accuracy (%)"):
+    """The one-panel accuracy figure every comparison shares: one column of
+    runs per group with its median and its mean and SD (_draw_run_columns),
+    each column but the one at index `reference` marked with its test
+    against it (_mark_reference_tests), the legend above the axes and the
+    shared axis style. Returns the figure for the caller to save."""
+    columns = [np.asarray(values, dtype=float) for values in columns]
+    positions = np.arange(len(columns), dtype=float)
+    fig, ax = plt.subplots(1, 1, figsize=_accuracy_figsize(len(columns)))
+    summaries = _draw_run_columns(ax, positions, columns, colors=colors, connect=connect,
+                                  mean_sd=True)
+    # The marks and the axis clear the SD whiskers as well as the networks.
+    whiskers = [(mean - spread, mean + spread)
+                for mean, spread in (_mean_sd(values) if values.size else (np.nan, 0.0)
+                                     for values in columns)]
+    tops = [max(values.max(), high) if values.size else np.nan
+            for values, (_, high) in zip(columns, whiskers)]
+    tests = _mark_reference_tests(ax, positions, columns, reference, column_names, tops=tops)
+    _accuracy_legend(ax, summaries, tests, reference_label)
+    _set_accuracy_ylim(ax, np.concatenate(columns + [np.ravel(whiskers)]))
+    ax.set_xticks(positions)
+    # Six columns of labels need the smaller default size to stay apart.
+    ax.set_xticklabels(tick_labels, rotation=rotation, ha="right" if rotation else "center",
+                       fontsize=_STAT_SCATTER_TICK_FONTSIZE if len(columns) <= 5 else 7)
+    ax.set_xlim(-0.6, len(columns) - 0.4)
+    ax.set_xlabel(xlabel, fontsize=8)
+    ax.set_ylabel(ylabel, fontsize=8)
+    ax.tick_params(axis="y", labelsize=_STAT_SCATTER_TICK_FONTSIZE)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+def _l2_tick_label(strength):
+    """Tick label of an L2 strength: a power of ten when it is one."""
+    exponent = np.log10(strength)
+    if np.isclose(exponent, round(exponent)):
+        return rf"$10^{{{int(round(exponent))}}}$"
+    return f"{strength:g}"
+
+
+def _task_reference_tests(groups, reference_key, column_names, reference_label):
+    """Per-task tests of the task-grid figures: every column of `groups`
+    (column key -> task -> accuracy list) against the `reference_key`
+    column, Holm-adjusted jointly over all tasks and columns, printed.
+    Returns the `column_p` and `legend_handles` arguments of
+    _plot_task_accuracy_columns (empty without the reference column)."""
+    keys = list(groups)
+    if reference_key not in keys:
+        return {}
+    reference = keys.index(reference_key)
+    tests = _reference_column_tests(
+        {task: [groups[key].get(task, []) for key in keys] for task in _TASK_DISPLAY}, reference)
+    _print_reference_tests(tests, column_names, reference, _TASK_DISPLAY)
+    return {"column_p": {task: adjusted for task, (_, adjusted) in tests.items()},
+            "legend_handles": _reference_test_legend_handles(tests, reference_label)}
+
+
+def _figure_top_legend(fig, handles, ncol=1):
+    """Frameless legend across the top of a subplots_adjust figure, gated by
+    SHOW_LEGEND; returns whether one was drawn (the caller lowers `top`)."""
+    if not (SHOW_LEGEND and handles):
+        return False
+    fig.legend(handles=list(handles), loc="upper center", frameon=False, fontsize=6,
+               handletextpad=0.4, columnspacing=1.5, ncol=ncol, bbox_to_anchor=(0.5, 1.0))
+    return True
+
+
+def _l2_accuracy_groups(result_dict, *, per_task=False):
+    """Group the Tanh runs' accuracies (%) by L2 strength, weakest first:
+    strength -> accuracy list, or with per_task strength -> task -> list.
+
+    A bare L2 tag denotes the default Tanh activation. Exact matching
+    deliberately excludes activation experiments such as L21e4relu and
+    L21e4sigmoid, and every other tagged cohort, from the
+    regularization-strength comparison. Missing or invalid task scores are
+    left out rather than replaced (_task_accuracies_percent).
+    """
     import re as _re
+
+    groups = {}
+    for model_name, result in result_dict.items():
+        if not _re.fullmatch(r"L2\d+(?:\.\d+)?e\d+",
+                             _performance_feature_tag(model_name, result) or ""):
+            continue
+        strength = float(result["l2_info"])
+        if not per_task:
+            groups.setdefault(strength, []).append(float(result["acc"]) * 100.0)
+            continue
+        tasks = groups.setdefault(strength, {})
+        for task, value in (_task_accuracies_percent(model_name, result) or {}).items():
+            tasks.setdefault(task, []).append(value)
+    return dict(sorted(groups.items()))
+
+
+def _load_l2_accuracy_groups(per_task):
+    """The L2 groups of the saved performance results, with the default
+    strength's key (None when it has no runs) and the printed column names;
+    None, with the reason printed, when there is nothing to plot."""
+    import json as _json
 
     _ensure_out_dir()
     if not PERF_RESULT_PATH.exists():
         print(f"  Skipped: {PERF_RESULT_PATH} not found. Run multiple_task_performance.py first.")
-        return
-
+        return None
     with open(PERF_RESULT_PATH) as f:
-        result_dict = _json.load(f)
-
-    # A bare L2 tag denotes the default Tanh activation.  Exact matching
-    # deliberately excludes activation experiments such as L21e4relu and
-    # L21e4sigmoid from the regularization-strength comparison.
-    tanh_results = [
-        result
-        for model_name, result in result_dict.items()
-        if _re.fullmatch(
-            r"L2\d+(?:\.\d+)?e\d+",
-            _performance_feature_tag(model_name, result) or "",
-        )
-    ]
-    if not tanh_results:
+        groups = _l2_accuracy_groups(_json.load(f), per_task=per_task)
+    if not any(groups.values()):
         print("  Skipped: no Tanh performance results with a bare L2 feature tag.")
+        return None
+    reference = next((strength for strength in groups
+                      if np.isclose(strength, _ACCURACY_REFERENCE_L2, rtol=1e-9, atol=0)), None)
+    return groups, reference, [f"L2={strength:g}" for strength in groups]
+
+
+_L2_REFERENCE_LABEL = "L2 = $10^{-4}$"
+
+
+def plot_l2_vs_accuracy():
+    """Figure: Tanh-model test accuracy (%) vs L2 regularization strength.
+
+    One dot per network and the medians joined in red; each strength is
+    tested against the default L2 = 1e-4 (_plot_accuracy_columns)."""
+    loaded = _load_l2_accuracy_groups(per_task=False)
+    if loaded is None:
         return
+    groups, reference, names = loaded
+    # The strengths are decades apart, so index positions are a log axis.
+    strengths = list(groups)
+    fig = _plot_accuracy_columns(
+        list(groups.values()), [_l2_tick_label(strength) for strength in strengths],
+        "L2 regularization strength",
+        reference=None if reference is None else strengths.index(reference),
+        column_names=names, reference_label=_L2_REFERENCE_LABEL)
+    n_runs = sum(len(values) for values in groups.values())
+    _save_fig(fig, _multitask_out("l2_vs_accuracy.png"), extra=f" (Tanh n={n_runs})")
 
-    l2_vals = np.array([e["l2_info"] for e in tanh_results])
-    acc_vals = np.array([e["acc"] for e in tanh_results]) * 100
 
-    fig, ax = plt.subplots(1, 1, figsize=(2.3, 3))
-    ax.scatter(l2_vals, acc_vals, **_SCATTER_POINT_STYLE)
-
-    # Overlay the across-seed mean at each L2 value and connect those means to
-    # make the regularization trend visible without hiding the individual runs.
-    unique_l2 = np.unique(l2_vals)
-    mean_acc = np.array([acc_vals[l2_vals == l2].mean() for l2 in unique_l2])
-    ax.plot(
-        unique_l2, mean_acc, color="k", linewidth=1.2, marker="D",
-        markerfacecolor="white", markeredgecolor="k", markeredgewidth=0.8,
-        markersize=4, zorder=4,
-    )
-    ax.set_xscale("log")
-    ax.set_xlabel("L2 regularization strength")
-    ax.set_ylabel("Test accuracy (%)")
-    # Adaptive y-range: pad the observed accuracy span by 5% of its extent
-    # (min 2 pts), clamped to [0, 100], then snapped outward to multiples of 5
-    # so the 5%-interval ticks land on the axis edges.
-    lo, hi = float(acc_vals.min()), float(acc_vals.max())
-    pad = max((hi - lo) * 0.05, 2.0)
-    ax.set_ylim(np.floor(max(0.0, lo - pad) / 5.0) * 5.0,
-                np.ceil(min(100.0, hi + pad) / 5.0) * 5.0)
-    ax.yaxis.set_major_locator(mpl.ticker.MultipleLocator(5))
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
-
-    fig.tight_layout()
-    out_path = _multitask_out("l2_vs_accuracy.png")
-    _save_fig(fig, out_path, extra=f" (Tanh n={len(tanh_results)})")
+def plot_l2_task_accuracy():
+    """Per-task accuracy at every L2 strength, in the grid of fifteen task
+    panels (_plot_task_accuracy_columns): the companion of
+    plot_l2_vs_accuracy, as the width sweeps and the retention comparison
+    have theirs. Each strength of a panel is tested against the default
+    L2 = 1e-4, Holm-adjusted jointly over all tasks and strengths
+    (_task_reference_tests)."""
+    loaded = _load_l2_accuracy_groups(per_task=True)
+    if loaded is None:
+        return
+    groups, reference, names = loaded
+    _plot_task_accuracy_columns(
+        groups, [_l2_tick_label(strength) for strength in groups],
+        "L2 regularization strength", "l2_task_accuracy.png",
+        **_task_reference_tests(groups, reference, names, _L2_REFERENCE_LABEL))
 
 
 def _regular_multitask_config(config):
@@ -1667,8 +1988,18 @@ def _modulation_bound_accuracy_groups(
     return groups
 
 
+# Sideways offset of the two bounds around their L2 position.
+_MODULATION_BOUND_OFFSET = 0.2
+
+
 def plot_modulation_bound_accuracy():
-    """Four vertical L2 panels comparing matched mb1/mb2 overall accuracy."""
+    """Matched mb1/mb2 overall accuracy at every L2 strength, in one panel.
+
+    At each strength the default bound mb1 (filled dots) and mb2 (hollow)
+    sit side by side with their median dashes and interquartile bars in red.
+    A bracket over each pair carries the mark of the two-sided Mann-Whitney U
+    test of mb2 against mb1 at that strength, Holm-adjusted over the
+    strengths; the exact p values are printed."""
     import json as _json
 
     _ensure_out_dir()
@@ -1686,77 +2017,71 @@ def plot_modulation_bound_accuracy():
         print("  Skipped: no metadata-matched regular mb1/mb2 accuracies.")
         return
 
-    x_positions = np.arange(len(_MODULATION_BOUND_SPECS), dtype=float)
-    fig, axes = plt.subplots(
-        len(MODULATION_BOUND_L2_STRENGTHS), 1,
-        figsize=(3.5, 8.2), sharex=True)
+    bound_names = [bound_name for bound_name, _, _, _ in _MODULATION_BOUND_SPECS]
+    reference = next(index for index, (_, bounds, _, _) in enumerate(_MODULATION_BOUND_SPECS)
+                     if bounds == _ACCURACY_REFERENCE_BOUNDS)
+    tests = _reference_column_tests(
+        {strength: [groups[strength][bound_name] for bound_name in bound_names]
+         for strength in MODULATION_BOUND_L2_STRENGTHS}, reference)
+    _print_reference_tests(tests, bound_names, reference,
+                           {strength: f"L2={strength:g}"
+                            for strength in MODULATION_BOUND_L2_STRENGTHS})
 
-    missing_features = []
-    count_summary = []
-    for panel_index, (ax, strength) in enumerate(
-            zip(axes, MODULATION_BOUND_L2_STRENGTHS)):
+    fig, ax = plt.subplots(1, 1, figsize=_accuracy_figsize(len(MODULATION_BOUND_L2_STRENGTHS) + 1))
+    offsets = (np.arange(len(bound_names)) - (len(bound_names) - 1) / 2) * 2 * _MODULATION_BOUND_OFFSET
+    all_values, missing_features, count_summary, brackets = [], [], [], []
+    for position, strength in enumerate(MODULATION_BOUND_L2_STRENGTHS):
         exponent = int(round(-np.log10(strength)))
-        ax.set_title(
-            f"{chr(ord('a') + panel_index)}   L2 = $10^{{-{exponent}}}$",
-            loc="left", fontsize=9.5, pad=3)
-        missing_labels = []
-        panel_values = []
-        means = []
-        for position, (bound_name, _, _, _) in zip(
-                x_positions, _MODULATION_BOUND_SPECS):
+        tops = []
+        for index, (offset, bound_name) in enumerate(zip(offsets, bound_names)):
             values = np.asarray(groups[strength][bound_name], dtype=float)
-            count_summary.append(
-                f"L21e{exponent}{'mb2' if bound_name == 'mb2' else ''} "
-                f"n={values.size}")
+            feature = f"L21e{exponent}{'mb2' if bound_name == 'mb2' else ''}"
+            count_summary.append(f"{feature} n={values.size}")
             if values.size == 0:
-                means.append(np.nan)
-                missing_labels.append(bound_name)
-                missing_features.append(
-                    f"L21e{exponent}{'mb2' if bound_name == 'mb2' else ''}")
+                missing_features.append(feature)
                 continue
-            means.append(float(values.mean()))
-            panel_values.extend(values.tolist())
-            jitter = (np.linspace(-0.06, 0.06, values.size)
-                      if values.size > 1 else np.zeros(1))
-            ax.scatter(
-                position + jitter, values, **_SCATTER_POINT_STYLE)
-        means = np.asarray(means, dtype=float)
-        finite_means = np.isfinite(means)
-        ax.plot(
-            x_positions[finite_means], means[finite_means], color="k",
-            linewidth=1.2, marker="D", markerfacecolor="white",
-            markeredgecolor="k", markeredgewidth=0.8,
-            markersize=4, zorder=4)
-        if missing_labels:
-            ax.text(
-                0.98, 0.08,
-                "No " + "/".join(missing_labels) + " performance data",
-                transform=ax.transAxes, ha="right", va="bottom",
-                fontsize=6.5, color="0.42")
-        if panel_values:
-            lo, hi = min(panel_values), max(panel_values)
-            pad = max((hi - lo) * 0.08, 2.0)
-            ax.set_ylim(
-                np.floor(max(0.0, lo - pad) / 5.0) * 5.0,
-                np.ceil(min(100.0, hi + pad) / 5.0) * 5.0)
-            ax.yaxis.set_major_locator(mpl.ticker.MultipleLocator(5))
-        else:
-            ax.set_ylim(0, 100)
-        ax.spines[["top", "right"]].set_visible(False)
-        ax.yaxis.grid(True, linestyle=":", linewidth=0.5,
-                      color="0.82", zorder=0)
-        ax.tick_params(axis="both", length=2.5)
+            all_values.extend(values.tolist())
+            tops.append(values.max())
+            spread = (np.linspace(-0.07, 0.07, values.size) if values.size > 1 else np.zeros(1))
+            style = dict(_SCATTER_POINT_STYLE)
+            if index != reference:
+                style.update(color="white", edgecolors=_SCATTER_POINT_COLOR, linewidths=0.8)
+            ax.scatter(position + offset + spread, values, **style)
+            _median_iqr(ax, position + offset, values, half_width=0.14)
+        p_adjusted = tests[strength][1][1 - reference]
+        if np.isfinite(p_adjusted):
+            brackets.append((position, max(tops), p_adjusted))
+    _set_accuracy_ylim(ax, all_values)
+    # The bracket joins the two bounds over their higher network.
+    span = np.ptp(ax.get_ylim())
+    for position, top, p_adjusted in brackets:
+        y, tip = top + 0.03 * span, 0.015 * span
+        ax.plot([position + offsets[0], position + offsets[0],
+                 position + offsets[-1], position + offsets[-1]],
+                [y, y + tip, y + tip, y], color="0.3", linewidth=0.5, clip_on=False)
+        _annotate_significance(ax, position, y + tip, p_adjusted, lift=-2.5)
+    ax.set_ylim(top=max(ax.get_ylim()[1], max(all_values) + 0.14 * span))
 
-    axes[-1].set_xticks(x_positions)
-    axes[-1].set_xticklabels([
-        "$[-1, 1]$\n(mb1)", "$[-2, 2]$\n(mb2)"])
-    axes[-1].set_xlabel("Modulation bound")
-    fig.supylabel("Overall test accuracy (%)", x=0.015, fontsize=9)
-    fig.subplots_adjust(left=0.19, right=0.98, top=0.985,
-                        bottom=0.085, hspace=0.32)
+    positions = np.arange(len(MODULATION_BOUND_L2_STRENGTHS))
+    ax.set_xticks(positions)
+    ax.set_xticklabels([_l2_tick_label(strength) for strength in MODULATION_BOUND_L2_STRENGTHS],
+                       fontsize=_STAT_SCATTER_TICK_FONTSIZE)
+    ax.set_xlim(-0.6, len(positions) - 0.4)
+    ax.set_xlabel("L2 regularization strength", fontsize=8)
+    ax.set_ylabel("Test accuracy (%)", fontsize=8)
+    ax.tick_params(axis="y", labelsize=_STAT_SCATTER_TICK_FONTSIZE)
+    ax.spines[["top", "right"]].set_visible(False)
+    marker = dict(marker="o", linestyle="none", markersize=4.5, markeredgewidth=0.8,
+                  markeredgecolor=_SCATTER_POINT_COLOR)
+    handles = [
+        mpl.lines.Line2D([], [], label=label, **marker,
+                         markerfacecolor=_SCATTER_POINT_COLOR if index == reference else "white")
+        for index, (_, _, label, _) in enumerate(_MODULATION_BOUND_SPECS)
+    ] + [mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8, label="median, IQR")]
+    _accuracy_legend(ax, handles, tests, "mb1 at the same L2")
+    fig.tight_layout()
 
     if missing_features:
-        missing_features = list(dict.fromkeys(missing_features))
         mb2_missing = [feature for feature in missing_features
                        if feature.endswith("mb2")]
         print("  Note: missing matched performance data for "
@@ -1778,10 +2103,12 @@ def plot_modulation_bound_accuracy():
 def plot_l2e4_activation_accuracy():
     """Figure: Test accuracy at L2=1e-4 for every trained activation function.
 
-    Compares linear, ReLU, softplus, sigmoid, and the default Tanh.  The full
+    Compares linear, ReLU, softplus, sigmoid, and the default Tanh, one dot
+    per network with the median and interquartile range in red.  The full
     feature tag is read from each result's ``feature`` field when available and
     otherwise inferred from its model identifier.  The unadorned ``L21e4`` tag
-    denotes the default Tanh activation.
+    denotes the default Tanh activation, against which every other
+    activation is tested (_plot_accuracy_columns).
     """
     import json as _json
     _ensure_out_dir()
@@ -1818,43 +2145,20 @@ def plot_l2e4_activation_accuracy():
         print("  Skipped: no L2=1e-4 activation results found.")
         return
 
-    # Same per-column width as plot_l2_vs_accuracy (2.3 in / 4 L2 values).
-    fig, ax = plt.subplots(1, 1, figsize=(0.575 * len(group_specs), 3))
-    positions = np.arange(len(group_specs))
-
-    all_values = []
-    for x, (feature, _, color) in zip(positions, group_specs):
-        values = np.asarray(accuracies[feature], dtype=float)
-        all_values.extend(values.tolist())
-        jitter = np.linspace(-0.10, 0.10, len(values)) if len(values) > 1 else np.zeros(1)
-        # Shared marker style; the color stays per activation function.
-        ax.scatter(x + jitter, values, **{**_SCATTER_POINT_STYLE, "color": color})
-        ax.errorbar(
-            x, values.mean(), yerr=values.std(), fmt="D", color="k",
-            markerfacecolor="white", markeredgewidth=0.8, markersize=4,
-            capsize=3, linewidth=1.0, zorder=4,
-        )
-
     labels = [label for _, label, _ in group_specs]
-    ax.set_xticks(positions)
-    ax.set_xticklabels(labels, rotation=45, ha="right")
-    ax.set_xlabel("Activation function")
-    ax.set_ylabel("Test accuracy (%)")
-    lo, hi = min(all_values), max(all_values)
-    pad = max((hi - lo) * 0.08, 2.0)
-    ax.set_ylim(np.floor(max(0.0, lo - pad) / 5.0) * 5.0,
-                np.ceil(min(100.0, hi + pad) / 5.0) * 5.0)
-    ax.yaxis.set_major_locator(mpl.ticker.MultipleLocator(5))
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
-
-    fig.tight_layout()
-    out_path = _multitask_out("l2e4_activation_accuracy.png")
+    features = [feature for feature, _, _ in group_specs]
+    # Categories, not a sweep: a median dash per activation, no connector;
+    # the color stays per activation function.
+    fig = _plot_accuracy_columns(
+        [accuracies[feature] for feature in features], labels, "Activation function",
+        reference=features.index("L21e4") if "L21e4" in features else None,
+        column_names=labels, reference_label="Tanh",
+        colors=[color for _, _, color in group_specs], connect=False, rotation=45)
     counts = ", ".join(
         f"{label} n={len(accuracies[feature])}"
         for feature, label, _ in group_specs
     )
-    _save_fig(fig, out_path, extra=f" ({counts})")
+    _save_fig(fig, _multitask_out("l2e4_activation_accuracy.png"), extra=f" ({counts})")
 
 
 # ─── Figures: L2=1e-4 activation-function diagnosis ─────────────────────────
@@ -1902,7 +2206,8 @@ def _diagnosis_record_value(record, path):
 
 def _plot_activation_diagnosis_metric(metric_path, ylabel, filename,
                                       percentage=True):
-    """Draw a seed-level activation comparison for one diagnosis metric.
+    """Draw a seed-level activation comparison for one diagnosis metric, in
+    the columns of plot_l2e4_activation_accuracy (_draw_run_columns).
 
     ``percentage=True`` scales a fractional metric to percent and keeps the
     axis inside [0, 100]; otherwise the raw value is plotted from zero.
@@ -1913,9 +2218,9 @@ def _plot_activation_diagnosis_metric(metric_path, ylabel, filename,
         return
 
     scale = 100.0 if percentage else 1.0
-    # Same per-column width as plot_l2e4_activation_accuracy.
+    # Same size and columns as plot_l2e4_activation_accuracy.
     fig, ax = plt.subplots(
-        1, 1, figsize=(0.575 * len(_ACTIVATION_DIAGNOSIS_SPECS) + 0.3, 2.35))
+        1, 1, figsize=_accuracy_figsize(len(_ACTIVATION_DIAGNOSIS_SPECS)))
     plotted = []
     for x, (activation, label, color) in enumerate(
             _ACTIVATION_DIAGNOSIS_SPECS):
@@ -1928,33 +2233,27 @@ def _plot_activation_diagnosis_metric(metric_path, ylabel, filename,
         if values.size == 0:
             continue
         plotted.append((x, label, values))
-        jitter = (np.linspace(-0.10, 0.10, values.size)
-                  if values.size > 1 else np.zeros(1))
-        ax.scatter(
-            x + jitter, values, color=color, edgecolors="k", linewidths=0.5,
-            s=38, alpha=0.8, zorder=3,
-        )
-        ax.errorbar(
-            x, values.mean(), yerr=values.std(), fmt="D", color="k",
-            markerfacecolor="white", markeredgewidth=0.8, markersize=4,
-            capsize=3, linewidth=1.0, zorder=4,
-        )
+        summaries = _draw_run_columns(ax, [x], [values], colors=[color])
 
     if not plotted:
         plt.close(fig)
         print(f"  Skipped: metric {metric_path!r} has no finite values.")
         return
     ax.set_xticks([entry[0] for entry in plotted])
-    ax.set_xticklabels([entry[1] for entry in plotted], rotation=45, ha="right")
-    ax.set_xlabel("Activation function")
-    ax.set_ylabel(ylabel)
+    ax.set_xticklabels([entry[1] for entry in plotted], rotation=45, ha="right",
+                       fontsize=_STAT_SCATTER_TICK_FONTSIZE)
+    ax.set_xlim(-0.6, len(_ACTIVATION_DIAGNOSIS_SPECS) - 0.4)
+    ax.set_xlabel("Activation function", fontsize=8)
+    ax.set_ylabel(ylabel, fontsize=8)
+    ax.tick_params(axis="y", labelsize=_STAT_SCATTER_TICK_FONTSIZE)
+    _accuracy_legend(ax, summaries, {}, "")
     all_values = np.concatenate([entry[2] for entry in plotted])
     if percentage:
         value_span = max(float(np.ptp(all_values)), 1.0)
         padding = max(2.5, 0.03 * value_span)
         # Keep zero inside the panel with a small negative margin, so the
-        # near-zero Tanh points and their error bars are not clipped against
-        # the bottom spine.
+        # near-zero Tanh points and their median dash are not clipped
+        # against the bottom spine.
         lower = min(-2.5, float(all_values.min()) - padding)
         upper = min(100.0, float(all_values.max()) + padding)
         ax.set_ylim(lower, upper)
@@ -1964,7 +2263,6 @@ def _plot_activation_diagnosis_metric(metric_path, ylabel, filename,
         ax.set_ylim(0.0, float(all_values.max()) + padding)
         ax.yaxis.set_major_locator(mticker.MaxNLocator(5, integer=True))
     ax.spines[["top", "right"]].set_visible(False)
-    ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
     fig.tight_layout()
     counts = ", ".join(
         f"{label} n={values.size}" for _, label, values in plotted)
@@ -2003,15 +2301,20 @@ def plot_l2e4_activation_modulation_dimension():
 
 
 def plot_l2e4_activation_modulation_common_accuracy():
-    """Figure D: accuracy versus common-across-trial modulation energy."""
+    """Figure D: accuracy versus common-across-trial modulation energy.
+
+    One dot per network in its activation's color, drawn like the other
+    association scatters (_SCATTER_POINT_STYLE dots without outline, the
+    axes of _style_stat_scatter_axes, the legend above the panel). It
+    reports no statistic: the activations form two separate groups."""
     _ensure_out_dir()
     records = _load_activation_diagnosis_records()
     if records is None:
         return
 
-    fig, ax = plt.subplots(1, 1, figsize=(2.65, 2.35))
+    fig, ax = plt.subplots(1, 1, figsize=_LESION_SCATTER_FIGSIZE)
     all_x, all_y = [], []
-    counts = []
+    counts, handles = [], []
     for activation, label, color in _ACTIVATION_DIAGNOSIS_SPECS:
         selected = [
             record for record in records
@@ -2032,10 +2335,11 @@ def plot_l2e4_activation_modulation_common_accuracy():
         x, y = x[finite], y[finite]
         if x.size == 0:
             continue
-        ax.scatter(
-            x, y, color=color, edgecolors="k", linewidths=0.5, s=38,
-            alpha=0.8, label=f"{label} (n={x.size})", zorder=3,
-        )
+        ax.scatter(x, y, **{**_SCATTER_POINT_STYLE, "color": color})
+        handles.append(mpl.lines.Line2D(
+            [], [], marker="o", linestyle="none", markersize=4, markerfacecolor=color,
+            markeredgecolor="none", alpha=_SCATTER_POINT_STYLE["alpha"],
+            label=f"{label} ({x.size})"))
         all_x.extend(x.tolist())
         all_y.extend(y.tolist())
         counts.append(f"{label} n={x.size}")
@@ -2047,15 +2351,19 @@ def plot_l2e4_activation_modulation_common_accuracy():
         print("  Skipped: no finite modulation/accuracy pairs.")
         return
 
-    ax.set_xlabel("Common-across-trial\nmodulation energy (%)")
-    ax.set_ylabel("Mean accuracy\nacross tasks (%)")
     ax.set_xlim(0.0, 105.0)
     y_pad = max(2.0, 0.08 * (all_y.max() - all_y.min()))
     ax.set_ylim(max(0.0, all_y.min() - y_pad),
                 min(100.0, all_y.max() + y_pad))
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.grid(True, linestyle=":", linewidth=0.5, color="0.85", zorder=0)
-    _legend(ax, frameon=False, fontsize=6, loc="lower left")
+    _style_stat_scatter_axes(ax, "Common-across-trial\nmodulation energy (%)",
+                             "Mean accuracy\nacross tasks (%)")
+    # A percent axis in quarters, like the embedding-offset companion.
+    ax.xaxis.set_major_locator(mticker.MultipleLocator(25))
+    # Two legend columns: a wider legend would make tight_layout shrink the
+    # square axes (_seeds_legend).
+    _legend(ax, handles=handles, loc="lower left", bbox_to_anchor=(0.0, 1.0),
+            borderaxespad=0.0, ncol=2, columnspacing=0.8, handletextpad=0.1, fontsize=6,
+            frameon=False, title=f"{all_x.size} networks", title_fontsize=6)
     fig.tight_layout()
     _save_fig(
         fig,
@@ -2095,8 +2403,10 @@ def _projection_accuracy_groups(result_dict, config_dir=Path("multiple_tasks"), 
 
     By default vary projection at hidden300; vary_hidden selects hidden widths
     at projection300. Only single-hidden-layer configurations trained at the
-    regular M retention (MULTITASK_M_TIME_SCALE_MS) are included, so a lambda
-    cohort such as L21e4lam0.9 never joins the 300-wide group.
+    regular M retention (MULTITASK_M_TIME_SCALE_MS) with the default M bounds
+    are included, so a lambda cohort such as L21e4lam0.9 or the wider-bound
+    L21e4mb2 never joins the 300-wide group: that group is the default
+    cohort the other widths are tested against.
     Model identifiers locate configuration files only; feature tags and cached
     filename-derived dimensions are not used to select or group runs.
     per_task returns dimension -> task name -> accuracy list; missing or invalid
@@ -2121,6 +2431,11 @@ def _projection_accuracy_groups(result_dict, config_dir=Path("multiple_tasks"), 
                 continue
             m_time_scale = float(net_params["ml_params"]["m_time_scale"])
             if not np.isclose(m_time_scale, MULTITASK_M_TIME_SCALE_MS, rtol=1e-9, atol=0):
+                continue
+            # Older default-bound configs omit m_bounds (the model default).
+            bounds = tuple(float(value) for value in net_params["ml_params"].get(
+                "m_bounds", _ACCURACY_REFERENCE_BOUNDS))
+            if bounds != _ACCURACY_REFERENCE_BOUNDS:
                 continue
             if not net_params["input_layer_add"]:
                 continue
@@ -2169,50 +2484,69 @@ def plot_hidden_dim_accuracy():
 
 
 def plot_projection_dim_task_accuracy():
-    """Plot stacked task panels vs projection width at hidden300/Tanh/L2=1e-4."""
+    """Plot the grid of task panels vs projection width at hidden300/Tanh/L2=1e-4."""
     _plot_dimension_task_accuracy(vary_hidden=False)
 
 
 def plot_hidden_dim_task_accuracy():
-    """Plot stacked task panels vs hidden width at projection300/Tanh/L2=1e-4."""
+    """Plot the grid of task panels vs hidden width at projection300/Tanh/L2=1e-4."""
     _plot_dimension_task_accuracy(vary_hidden=True)
 
 
+# The per-task accuracy figures: fifteen small panels, three per row.
+_TASK_ACCURACY_GRID = (5, 3)
+_TASK_ACCURACY_FIGSIZE = (6.8, 5.7)
+
+
 def _plot_task_accuracy_columns(groups, column_labels, xlabel, out_name, *,
-                                column_p_text=None):
-    """Fifteen stacked task panels, one column per group: every run a dot and
-    the across-run means connected, titled with the paper task names in their
-    order. `groups` maps each column's key, in column order, to task ->
-    accuracy list (%); `column_labels` are the columns' tick labels. Each
-    panel has an adaptive y range; a task without any score keeps an empty
-    panel rather than disappearing. `column_p_text` maps a task to comparison
-    text drawn in a reserved column to the right of its panel.
-    Shared by the width sweeps and the retention comparison."""
-    has_statistics = bool(column_p_text)
-    fig, axes = plt.subplots(len(_TASK_DISPLAY), 1,
-                             figsize=(5.3 if has_statistics else 3.5, 11.5), sharex=True)
+                                column_p=None, legend_handles=()):
+    """Fifteen task panels in a grid, one column per group: every run a dot,
+    the across-run medians joined in red and, beside the dots, the mean as a
+    diamond with the sample SD as an error bar (as in _draw_run_columns),
+    titled with the paper task names in their order (row by row). `groups`
+    maps each column's key, in column order, to task -> accuracy list (%);
+    `column_labels` are the columns' tick labels. Each panel has an adaptive y range; a task without
+    any score keeps an empty panel rather than disappearing. `column_p` maps
+    a task to one adjusted p value per column (NaN for a column without a
+    test), drawn over the panel as significance marks
+    (_annotate_significance) that `legend_handles` name in a legend across
+    the top. Shared by the width sweeps and the retention comparison."""
+    has_statistics = any(np.isfinite(p_values).any() for p_values in (column_p or {}).values())
+    width, height = _TASK_ACCURACY_FIGSIZE
+    fig, axes = plt.subplots(*_TASK_ACCURACY_GRID, figsize=(width, height), sharex=True)
     positions = np.arange(len(groups))
-    for ax, (task, display_name) in zip(axes, _TASK_DISPLAY.items()):
+    connector = dict(_TREND_LINE_STYLE, linewidth=1.0, marker="o", markersize=2.5)
+    # The mean and SD of the one-panel figures, scaled to the small panels.
+    mean_style = dict(_ACCURACY_MEAN_STYLE, markersize=2.5, markeredgewidth=0.6, linewidth=0.7)
+    for ax, (task, display_name) in zip(axes.ravel(), _TASK_DISPLAY.items()):
         entries = [tasks.get(task, []) for tasks in groups.values()]
-        means = [float(np.mean(values)) if values else np.nan for values in entries]
+        medians = [float(np.median(values)) if values else np.nan for values in entries]
         for position, values in zip(positions, entries):
             if values:
-                ax.scatter(np.full(len(values), position), values, color=c_vals[1],
-                           edgecolors="k", linewidths=0.4, s=12, alpha=0.8, zorder=3)
-        ax.plot(positions, means, color="k", linewidth=1.0, marker="D",
-                markerfacecolor="white", markeredgecolor="k", markeredgewidth=0.6,
-                markersize=3, zorder=4)
-        ax.set_title(display_name, loc="left", fontsize=7, pad=2)
-        if column_p_text and task in column_p_text:
-            ax.text(1.05, 0.5, column_p_text[task], transform=ax.transAxes,
-                    ha="left", va="center", fontsize=6, color="0.3")
+                ax.scatter(np.full(len(values), position), values,
+                           **{**_SCATTER_POINT_STYLE, "s": 9})
+        ax.plot(positions, medians, **connector)
+        whiskers = []
+        for position, values in zip(positions, entries):
+            if values:
+                mean, spread = _mean_sd(values)
+                whiskers.extend([mean - spread, mean + spread])
+                ax.errorbar(position + _ACCURACY_MEAN_OFFSET, mean, yerr=spread or None,
+                            capsize=1.2, zorder=5, **mean_style)
+        # The marks sit in a row just above the panel, under its raised title.
+        ax.set_title(display_name, loc="left", fontsize=7, pad=11 if has_statistics else 2)
+        if has_statistics:
+            for position, p_value in zip(positions, column_p.get(task, ())):
+                _annotate_significance(ax, position, 1.0, p_value,
+                                       xycoords=("data", "axes fraction"))
         all_values = [value for values in entries for value in values]
         if all_values:
-            lo, hi = min(all_values), max(all_values)
+            # The axis holds the SD whiskers as well as the networks.
+            lo, hi = min(all_values + whiskers), max(all_values + whiskers)
             pad = max((hi - lo) * 0.08, 2.0)
             ax.set_ylim(np.floor(max(0.0, lo - pad) / 5.0) * 5.0,
                         np.ceil((hi + pad) / 5.0) * 5.0)
-            locator = mpl.ticker.MaxNLocator(nbins=2, steps=[1, 2, 5, 10])
+            locator = mpl.ticker.MaxNLocator(nbins=3, steps=[1, 2, 5, 10])
             ticks = locator.tick_values(*ax.get_ylim())
             ax.set_yticks([tick for tick in ticks if 0 <= tick <= 100
                           and ax.get_ylim()[0] <= tick <= ax.get_ylim()[1]])
@@ -2221,25 +2555,31 @@ def _plot_task_accuracy_columns(groups, column_labels, xlabel, out_name, *,
             ax.set_yticks([0, 100])
             ax.text(0.5, 0.5, "No data", transform=ax.transAxes,
                     ha="center", va="center", fontsize=7, color="0.5")
+        ax.set_xlim(-0.5, len(groups) - 0.5)
         ax.tick_params(axis="both", labelsize=6, length=2)
         ax.spines[["top", "right"]].set_visible(False)
-        ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
         print(f"  {display_name}: " + ", ".join(f"{key} n={len(values)}"
                                        for key, values in zip(groups, entries)))
-    axes[-1].set_xticks(positions)
-    axes[-1].set_xticklabels(column_labels)
-    axes[-1].set_xlabel(xlabel)
-    fig.supylabel("Task test accuracy (%)", x=0.02, fontsize=9)
-    fig.subplots_adjust(left=0.12 if has_statistics else 0.18,
-                        right=0.62 if has_statistics else 0.98,
-                        top=0.98, bottom=0.045, hspace=0.9)
+    for ax in axes[-1]:
+        ax.set_xticks(positions)
+        ax.set_xticklabels(column_labels)
+    fig.supxlabel(xlabel, y=0.012, fontsize=8)
+    fig.supylabel("Task test accuracy (%)", x=0.012, fontsize=8)
+    handles = [mpl.lines.Line2D([], [], label="median", **connector),
+               mpl.lines.Line2D([], [], label="mean \u00b1 SD", **mean_style)] + list(legend_handles)
+    show_legend = _figure_top_legend(fig, handles, ncol=len(handles))
+    fig.subplots_adjust(left=0.5 / width, right=1 - 0.08 / width,
+                        top=1 - (0.5 if show_legend else 0.28) / height, bottom=0.4 / height,
+                        hspace=0.8 if has_statistics else 0.55, wspace=0.3)
     _save_fig(fig, _multitask_out(out_name))
 
 
 def _plot_dimension_task_accuracy(*, vary_hidden):
-    """Show 15 compact task panels with seed dots and connected seed means
-    across the saved widths, at index positions labeled by the actual
-    dimensions (see _plot_task_accuracy_columns)."""
+    """Show 15 compact task panels with seed dots, connected seed medians
+    and the means with their SD across the saved widths, at index positions
+    labeled by the actual dimensions (see _plot_task_accuracy_columns), each
+    width marked with its test against the default 300
+    (_task_reference_tests)."""
     import json as _json
 
     _ensure_out_dir()
@@ -2253,14 +2593,19 @@ def _plot_dimension_task_accuracy(*, vary_hidden):
         print("  Skipped: no metadata-matched per-task accuracies; rerun multiple_task_performance.py.")
         return
     dimension_name = "hidden" if vary_hidden else "projection"
+    names = [str(dimension) for dimension in groups]
     _plot_task_accuracy_columns(
-        groups, [str(dimension) for dimension in groups],
+        groups, names,
         "Hidden dimension" if vary_hidden else "Projection dimension",
-        f"{dimension_name}_dim_task_accuracy.png")
+        f"{dimension_name}_dim_task_accuracy.png",
+        **_task_reference_tests(groups, _ACCURACY_REFERENCE_WIDTH, names,
+                                f"{dimension_name} dimension {_ACCURACY_REFERENCE_WIDTH}"))
 
 
 def _plot_dimension_accuracy(*, vary_hidden):
-    """Render either width sweep at index positions labeled by actual dimensions."""
+    """Render either width sweep at index positions labeled by actual
+    dimensions, each width marked with its test against the default 300
+    (_plot_accuracy_columns)."""
     import json as _json
     _ensure_out_dir()
     if not PERF_RESULT_PATH.exists():
@@ -2277,67 +2622,43 @@ def _plot_dimension_accuracy(*, vary_hidden):
         print(f"  Skipped: no metadata-matched {fixed_name}/Tanh/L2=1e-4 {dimension_name} results.")
         return
 
-    # Same layout as plot_l2_vs_accuracy: individual seeds as scatter, the
-    # across-seed means connected to show the trend over the varying dimension.
-    fig, ax = plt.subplots(1, 1, figsize=(3.5, 3))
-    positions = np.arange(len(accuracies))
-    mean_acc = []
-    all_values = []
-    for position, entries in zip(positions, accuracies.values()):
-        values = np.asarray(entries, dtype=float)
-        all_values.extend(values.tolist())
-        mean_acc.append(values.mean())
-        ax.scatter(np.full(len(values), position), values, **_SCATTER_POINT_STYLE)
-    ax.plot(
-        positions, mean_acc, color="k", linewidth=1.2, marker="D",
-        markerfacecolor="white", markeredgecolor="k", markeredgewidth=0.8,
-        markersize=4, zorder=4,
-    )
-
-    ax.set_xticks(positions)
-    ax.set_xticklabels([str(dimension) for dimension in accuracies])
-    ax.set_xlabel("Hidden dimension" if vary_hidden else "Projection dimension")
-    ax.set_ylabel("Test accuracy (%)")
-    lo, hi = min(all_values), max(all_values)
-    pad = max((hi - lo) * 0.08, 2.0)
-    ax.set_ylim(np.floor(max(0.0, lo - pad) / 5.0) * 5.0,
-                np.ceil(min(100.0, hi + pad) / 5.0) * 5.0)
-    ax.yaxis.set_major_locator(mpl.ticker.MultipleLocator(5))
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
-
-    fig.tight_layout()
-    out_path = _multitask_out(f"{dimension_name}_dim_accuracy.png")
+    dimensions = list(accuracies)
+    names = [str(dimension) for dimension in dimensions]
+    fig = _plot_accuracy_columns(
+        list(accuracies.values()), names,
+        "Hidden dimension" if vary_hidden else "Projection dimension",
+        reference=(dimensions.index(_ACCURACY_REFERENCE_WIDTH)
+                   if _ACCURACY_REFERENCE_WIDTH in dimensions else None),
+        column_names=names,
+        reference_label=f"{dimension_name} dimension {_ACCURACY_REFERENCE_WIDTH}")
     count_prefix = "hidden" if vary_hidden else "proj"
     counts = ", ".join(
         f"{count_prefix}{dimension} n={len(entries)}" for dimension, entries in accuracies.items()
     )
-    _save_fig(fig, out_path, extra=f" ({counts})")
+    _save_fig(fig, _multitask_out(f"{dimension_name}_dim_accuracy.png"), extra=f" ({counts})")
 
 
 # ─── Figure: M retention comparison (lambda 0.9999 to 0.9) ──────────────────
 
 # The M retentions of the regular L2 = 1e-4 cohort, slowest decay first:
-# feature tag, m_time_scale (ms) and tick label. The 4000 ms cohort is the
-# historical one and carries no tag; multiple_task.py tags every other
-# retention after the bound tag (400 ms -> lam0.9, SCHEME.md).
-# lambda = 1 - 40 ms / m_time_scale. A cohort without evaluated runs keeps
-# its column and is named on the figure.
+# feature tag, m_time_scale (ms) and tick label (lambda; the time scales are
+# in SCHEME.md). The 4000 ms cohort is the historical one and carries no
+# tag; multiple_task.py tags every other retention after the bound tag
+# (400 ms -> lam0.9, SCHEME.md). lambda = 1 - 40 ms / m_time_scale. A
+# cohort without evaluated runs keeps its empty column.
 _RETENTION_SPECS = (
-    ("L21e4lam0.9999", 400000, "$\\lambda = 0.9999$\n(400000 ms)"),
-    ("L21e4lam0.999", 40000, "$\\lambda = 0.999$\n(40000 ms)"),
-    ("L21e4", MULTITASK_M_TIME_SCALE_MS, "$\\lambda = 0.99$\n(4000 ms)"),
-    ("L21e4lam0.98", 2000, "$\\lambda = 0.98$\n(2000 ms)"),
-    ("L21e4lam0.95", 800, "$\\lambda = 0.95$\n(800 ms)"),
-    ("L21e4lam0.9", 400, "$\\lambda = 0.9$\n(400 ms)"),
+    ("L21e4lam0.9999", 400000, "0.9999"),
+    ("L21e4lam0.999", 40000, "0.999"),
+    ("L21e4", MULTITASK_M_TIME_SCALE_MS, "0.99"),
+    ("L21e4lam0.98", 2000, "0.98"),
+    ("L21e4lam0.95", 800, "0.95"),
+    ("L21e4lam0.9", 400, "0.9"),
 )
-# The cohort every other retention is tested against: the main lambda = 0.99
-# one, with the most runs. All pairs of six cohorts would be fifteen tests,
-# more than the figures can name.
+_RETENTION_XLABEL = "Modulation retention $\\lambda$"
+# The cohort every other retention is tested against: the default
+# lambda = 0.99 one, with the most runs (_mark_reference_tests).
 _RETENTION_REFERENCE_TAG = "L21e4"
-RETENTION_L2_STRENGTH = 1e-4
-# Runs each cohort needs before the Mann-Whitney U test between them is run.
-_MANN_WHITNEY_MIN_RUNS = 2
+RETENTION_L2_STRENGTH = _ACCURACY_REFERENCE_L2
 
 
 def _retention_accuracy_groups(result_dict, config_dir=Path("multiple_tasks"), *,
@@ -2390,54 +2711,13 @@ def _retention_accuracy_groups(result_dict, config_dir=Path("multiple_tasks"), *
     return groups
 
 
-def _mann_whitney_p(first, second):
-    """Two-sided Mann-Whitney U p value between two groups of per-run values,
-    NaN when either holds fewer than _MANN_WHITNEY_MIN_RUNS runs."""
-    from scipy.stats import mannwhitneyu
-
-    if min(len(first), len(second)) < _MANN_WHITNEY_MIN_RUNS:
-        return float("nan")
-    return float(mannwhitneyu(first, second, alternative="two-sided").pvalue)
-
-
-def _holm_adjusted(p_values):
-    """Holm step-down adjusted p values (family-wise error over the finite
-    entries); NaN entries stay NaN and do not count toward the family."""
-    p_values = np.asarray(p_values, dtype=float)
-    adjusted = np.full(p_values.shape, np.nan)
-    finite = np.flatnonzero(np.isfinite(p_values))
-    order = finite[np.argsort(p_values[finite])]
-    running = 0.0
-    for rank, index in enumerate(order):
-        running = max(running, (order.size - rank) * p_values[index])
-        adjusted[index] = min(1.0, running)
-    return adjusted
-
-
-def _retention_pairwise_tests(groups, *, per_task=False):
-    """(task, pair label, raw p, Holm p) for every retention against the
-    reference cohort (_RETENTION_REFERENCE_TAG), each pair in spec order.
-
-    Holm correction covers all valid tests in one figure: one per
-    non-reference retention overall (five with six cohorts), or up to
-    fifteen times that across the tasks. Pairs with fewer than two networks
-    in either group have NaN p values and do not enter the correction.
-    """
-    reference = next(index for index, (tag, _, _) in enumerate(_RETENTION_SPECS)
-                     if tag == _RETENTION_REFERENCE_TAG)
-    pairs = [(_RETENTION_SPECS[min(index, reference)], _RETENTION_SPECS[max(index, reference)])
-             for index in range(len(_RETENTION_SPECS)) if index != reference]
-    records = []
-    for task in _TASK_DISPLAY if per_task else (None,):
-        for (first, first_scale, _), (second, second_scale, _) in pairs:
-            left = groups[first].get(task, []) if per_task else groups[first]
-            right = groups[second].get(task, []) if per_task else groups[second]
-            # All retention cohorts use 40 ms steps, lambda = 1 - dt / time_scale.
-            label = f"{1 - 40 / first_scale:g} vs {1 - 40 / second_scale:g}"
-            records.append((task, label, _mann_whitney_p(left, right)))
-    adjusted = _holm_adjusted([p for _, _, p in records])
-    return [(task, label, p_raw, p_adj)
-            for (task, label, p_raw), p_adj in zip(records, adjusted)]
+def _retention_reference():
+    """(column index, printed column names, legend label) of the reference
+    retention; the names are the lambda values (40 ms steps)."""
+    names = [f"{1 - 40 / time_scale:g}" for _, time_scale, _ in _RETENTION_SPECS]
+    index = next(index for index, (tag, _, _) in enumerate(_RETENTION_SPECS)
+                 if tag == _RETENTION_REFERENCE_TAG)
+    return index, names, f"$\\lambda = {names[index]}$"
 
 
 def _load_retention_groups(per_task):
@@ -2467,60 +2747,20 @@ def _load_retention_groups(per_task):
 def plot_retention_accuracy():
     """Overall accuracy at every retention of _RETENTION_SPECS (L2 = 1e-4).
 
-    One dot per seed, with the across-seed mean as a white diamond. The title
-    reports two-sided Mann-Whitney U tests of each retention against
-    lambda = 0.99, Holm-adjusted across the pairs with sufficient data.
+    One dot per network and the medians joined in red. Over each retention,
+    the mark of its two-sided Mann-Whitney U test against lambda = 0.99,
+    Holm-adjusted across the tests with sufficient data: one to three
+    asterisks for p < 0.05, 0.01, 0.001, "n.s." otherwise, nothing for a
+    cohort with fewer than two runs. The exact p values are printed.
     """
     groups = _load_retention_groups(per_task=False)
     if groups is None:
         return
-
-    positions = np.arange(len(_RETENTION_SPECS), dtype=float)
-    # 3.5 in wide for three columns, wider in proportion for more.
-    fig, ax = plt.subplots(1, 1, figsize=(3.5 * len(_RETENTION_SPECS) / 3, 3.4))
-    means, all_values, missing = [], [], []
-    for position, (tag, _, _) in zip(positions, _RETENTION_SPECS):
-        values = np.asarray(groups[tag], dtype=float)
-        if values.size == 0:
-            means.append(np.nan)
-            missing.append(tag)
-            continue
-        means.append(float(values.mean()))
-        all_values.extend(values.tolist())
-        jitter = (np.linspace(-0.06, 0.06, values.size)
-                  if values.size > 1 else np.zeros(1))
-        ax.scatter(position + jitter, values, **_SCATTER_POINT_STYLE)
-    means = np.asarray(means, dtype=float)
-    finite_means = np.isfinite(means)
-    ax.plot(positions[finite_means], means[finite_means], color="k",
-            linewidth=1.2, marker="D", markerfacecolor="white",
-            markeredgecolor="k", markeredgewidth=0.8, markersize=4, zorder=4)
-    comparisons = _retention_pairwise_tests(groups)
-    annotations = []
-    for _, label, p_raw, p_adj in comparisons:
-        if np.isfinite(p_adj):
-            annotations.append(f"{label}: {_short_p(p_adj)}")
-            print(f"  {label}: Mann-Whitney p={p_raw:.3g}, Holm-adjusted p={p_adj:.3g}")
-    if annotations:
-        ax.set_title("Mann-Whitney, Holm\n" + "\n".join(annotations), fontsize=7, pad=3)
-    if missing:
-        ax.text(0.98, 0.08, "No " + "/".join(missing) + " performance data",
-                transform=ax.transAxes, ha="right", va="bottom",
-                fontsize=6.5, color="0.42")
-
-    lo, hi = min(all_values), max(all_values)
-    pad = max((hi - lo) * 0.08, 2.0)
-    ax.set_ylim(np.floor(max(0.0, lo - pad) / 5.0) * 5.0,
-                np.ceil(min(100.0, hi + pad) / 5.0) * 5.0)
-    ax.yaxis.set_major_locator(mpl.ticker.MultipleLocator(5))
-    ax.set_xticks(positions)
-    ax.set_xticklabels([label for _, _, label in _RETENTION_SPECS])
-    ax.set_xlim(-0.5, len(_RETENTION_SPECS) - 0.5)
-    ax.set_xlabel("Modulation retention")
-    ax.set_ylabel("Test accuracy (%)")
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.yaxis.grid(True, linestyle=":", linewidth=0.5, color="0.8", zorder=0)
-    fig.tight_layout()
+    reference, names, reference_label = _retention_reference()
+    fig = _plot_accuracy_columns(
+        [groups[tag] for tag, _, _ in _RETENTION_SPECS],
+        [label for _, _, label in _RETENTION_SPECS], _RETENTION_XLABEL,
+        reference=reference, column_names=names, reference_label=reference_label)
     counts = ", ".join(f"{tag} n={len(groups[tag])}" for tag, _, _ in _RETENTION_SPECS)
     _save_fig(fig, _multitask_out("retention_accuracy.png"), extra=f" ({counts})")
 
@@ -2529,23 +2769,19 @@ def plot_retention_task_accuracy():
     """Per-task accuracy at every retention of _RETENTION_SPECS, in fifteen
     panels.
 
-    Each panel's right column reports two-sided Mann-Whitney U tests of each
-    retention against lambda = 0.99, Holm-adjusted jointly across all tasks
-    and pairs with sufficient data.
+    Over each retention of a panel, the mark of its two-sided Mann-Whitney U
+    test against lambda = 0.99 (asterisks or "n.s." as in
+    plot_retention_accuracy), Holm-adjusted jointly across all tasks and
+    pairs with sufficient data. The exact p values are printed.
     """
     groups = _load_retention_groups(per_task=True)
     if groups is None:
         return
-    p_text = {}
-    for task, label, p_raw, p_adj in _retention_pairwise_tests(groups, per_task=True):
-        if np.isfinite(p_adj):
-            p_text.setdefault(task, []).append(f"{label}: Holm {_short_p(p_adj)}")
-            print(f"  {_TASK_DISPLAY[task]}, {label}: Mann-Whitney p={p_raw:.3g}, "
-                  f"Holm-adjusted p={p_adj:.3g}")
+    _, names, reference_label = _retention_reference()
     _plot_task_accuracy_columns(
         groups, [label for _, _, label in _RETENTION_SPECS],
-        "Modulation retention", "retention_task_accuracy.png",
-        column_p_text={task: "\n".join(lines) for task, lines in p_text.items()})
+        _RETENTION_XLABEL, "retention_task_accuracy.png",
+        **_task_reference_tests(groups, _RETENTION_REFERENCE_TAG, names, reference_label))
 
 
 # ─── Figure: State space PCA ─────────────────────────────────────────────────
@@ -16478,6 +16714,7 @@ FIGURES_BY_MODE = {
     },
     "acc_plot": {
         "l2_accuracy": plot_l2_vs_accuracy,
+        "l2_task_accuracy": plot_l2_task_accuracy,
         "modulation_bound_accuracy": plot_modulation_bound_accuracy,
         "retention_accuracy": plot_retention_accuracy,
         "retention_task_accuracy": plot_retention_task_accuracy,
