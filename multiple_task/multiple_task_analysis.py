@@ -50,7 +50,7 @@ row-cluster organization. Its outputs carry the name
 looks into (`output_names`).
 
 Sibling-task DelayDM/DMC fixed-point geometry is intentionally separate in
-``sibling_delay_analysis.py``, which has its own CLI. No CLI entry point here:
+``sibling_fixed_point_analysis.py``, which has its own CLI. No CLI entry point here:
 ``main(seed, feature, ...)`` is invoked by ``run_pipeline.py`` and, for the
 untrained control, by ``untrained_clustering.py``.
 """
@@ -98,7 +98,7 @@ import mpn_tasks
 from memory_limit import GIB, memory_report
 from network_loading import build_network
 from modulation_variants import LESION_MODULATION_TYPES, weight_modulation_variance, signed_log1p
-from sibling_delay_analysis import is_sibling_artifact
+from sibling_fixed_point_analysis import is_sibling_artifact
 
 # Log every saved figure path (like paper_plot.py). Wrap Figure.savefig once so
 # all call sites — including multi-line ones — print their destination without
@@ -246,7 +246,7 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
     ``untrained_init_seed`` the network is an untrained one of the same
     architecture and the outputs are those of the untrained control
     (`output_names`). ``clean=True`` removes earlier clustering-owned outputs
-    while preserving artifacts owned by ``sibling_delay_analysis.py``.
+    while preserving artifacts owned by ``sibling_fixed_point_analysis.py``.
     Sibling-task DelayDM/DMC geometry is run independently by that module.
     """
     print(memory_report())

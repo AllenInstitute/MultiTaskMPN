@@ -106,15 +106,57 @@ def _dmc_caches(rng, code="orthogonal", end="sibling", noise=0.02):
     return endpoint, {"kind": "cue_interp", "alphas": alphas, "sweeps": sweeps}
 
 
+def _memory_caches(rng, code="same", end="sibling", repeats=2, noise=0.0, fixed=True):
+    """Endpoint and sweep caches of one MemoryPro / MemoryAnti run, eight
+    stimulus directions `repeats` times per task. MemoryPro holds direction k
+    on a unit ring in the first two dimensions. MemoryAnti holds it three
+    units away along the fourth, on the same ring (`code` "same"), on the
+    ring turned by pi, i.e. at the place of the opposite direction
+    ("opposite"), or on a ring in the last two dimensions ("orthogonal").
+    The MemoryPro sweep ends on the MemoryAnti endpoint of each trial's
+    stimulus (`end` "sibling") or stays on its own ("own")."""
+    stim = np.tile(np.arange(8), repeats)
+    angles = 2 * np.pi * stim / 8
+    pro = rng.normal(scale=noise, size=(stim.size, DIM)) if noise else np.zeros((stim.size, DIM))
+    pro[:, 0] += np.cos(angles)
+    pro[:, 1] += np.sin(angles)
+    anti = np.zeros((stim.size, DIM))
+    turn = np.pi if code == "opposite" else 0.0
+    axes = (4, 5) if code == "orthogonal" else (0, 1)
+    anti[:, axes[0]] = np.cos(angles + turn)
+    anti[:, axes[1]] = np.sin(angles + turn)
+    anti += 3.0 * _unit(3)
+    points = np.concatenate([pro, anti])
+    task = np.repeat([0, 1], stim.size)
+    endpoint = {"task_idx": task, "stim_idx": np.concatenate([stim, stim]),
+                "stimulus_magnitude": np.ones(2 * stim.size),
+                "is_fixed": np.ones(2 * stim.size, dtype=bool),
+                "representations": _as_cache_states(points)}
+    endpoint["is_fixed"][0] = fixed
+    target = anti if end == "sibling" else pro
+    alphas = np.linspace(0.0, 1.0, N_ALPHA)
+    path = pro[None] + alphas[:, None, None] * (target - pro)[None]
+    sweeps = {"delaygo": {"target_rule": "delayanti", "stim_idx": stim,
+                          "stimulus_magnitude": np.ones(stim.size),
+                          "is_fixed": np.ones((N_ALPHA, stim.size), dtype=bool),
+                          "representations": _as_cache_states(path)}}
+    return endpoint, {"kind": "cue_interp", "alphas": alphas, "sweeps": sweeps}
+
+
 def _write(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as stream:
         pickle.dump(value, stream)
 
 
-def _write_run(root, aname, delaydm=None, dmc=None):
+def _write_run(root, aname, delaydm=None, dmc=None, memory=None):
     run_dir = root / aname
     run_dir.mkdir(parents=True, exist_ok=True)
+    if memory is not None:
+        endpoint, sweep = memory
+        _write(cohort.endpoint_path(run_dir, "delaygo", aname), endpoint)
+        if sweep is not None:
+            _write(cohort.sweep_path(run_dir, "delaygo", aname), sweep)
     if delaydm is not None:
         endpoint, sweep = delaydm
         _write(cohort.endpoint_path(run_dir, "delaydm1", aname), endpoint)
@@ -294,7 +336,124 @@ class DMCStatisticsTests(unittest.TestCase):
         self.assertEqual(cohort.dmc_category(np.arange(8)).tolist(), [1, 1, 1, 1, 0, 0, 0, 0])
 
 
+class ProAntiStatisticsTests(unittest.TestCase):
+    """MemoryPro / MemoryAnti, settled in the stimulus period."""
+    RULES = ("delaygo", "delayanti")
+
+    def setUp(self):
+        self.rng = np.random.default_rng(4)
+
+    def statistics(self, rep_key="fixed_hidden", **kwargs):
+        return cohort.pro_anti_statistics(*_memory_caches(self.rng, **kwargs), self.RULES, rep_key)
+
+    def test_ring_cosine_tells_stimulus_from_response_coding(self):
+        expected = {"same": (1.0, -1.0), "opposite": (-1.0, 1.0), "orthogonal": (0.0, 0.0)}
+        for code, (same, opposite) in expected.items():
+            for rep_key in cohort.REPRESENTATIONS.values():
+                with self.subTest(code=code, rep_key=rep_key):
+                    stats = self.statistics(rep_key, code=code)
+                    self.assertAlmostEqual(stats["ring_cosine_same"], same, places=9)
+                    self.assertAlmostEqual(stats["ring_cosine_opposite"], opposite, places=9)
+                    # The shift between the rules is three units for a unit ring.
+                    self.assertAlmostEqual(stats["translation_length"], 3.0)
+                    self.assertAlmostEqual(stats["ring_radius"], 1.0)
+                    self.assertAlmostEqual(stats["translation_to_ring"], 3.0)
+                    self.assertEqual(stats["n_conditions"], 8)
+                    self.assertEqual(stats["n_endpoints"], 32)
+
+    def test_one_translation_explains_the_matching_that_holds(self):
+        same = self.statistics(code="same")
+        self.assertAlmostEqual(same["translation_explained_same"], 1.0)
+        # Matched by response, the same ring is turned by pi: the displacement
+        # is the shift (9) plus a diameter squared (4) on average.
+        self.assertAlmostEqual(same["translation_explained_opposite"], 9 / 13)
+        self.assertAlmostEqual(same["geometry_r"], 1.0)
+        opposite = self.statistics(code="opposite")
+        self.assertAlmostEqual(opposite["translation_explained_opposite"], 1.0)
+        self.assertAlmostEqual(opposite["translation_explained_same"], 9 / 13)
+        # Removing the rule means aligns the directions under the matching
+        # that holds, and only under that one.
+        noisy = self.statistics(code="same", noise=0.02)
+        self.assertGreater(noisy["alignment_gain_same"], 5.0)
+        self.assertGreater(noisy["separation_aligned_same"],
+                           20 * noisy["separation_aligned_opposite"])
+        turned = self.statistics(code="opposite", noise=0.02)
+        self.assertGreater(turned["alignment_gain_opposite"], 5.0)
+        self.assertGreater(turned["separation_aligned_opposite"],
+                           20 * turned["separation_aligned_same"])
+        # Exact opposite points cancel: no raw separation, so no gain.
+        self.assertTrue(np.isnan(same["alignment_gain_opposite"]))
+        self.assertEqual(same["separation_aligned_opposite"], 0.0)
+
+    def test_cue_sweep_is_read_against_the_sibling_endpoint_of_the_stimulus(self):
+        landed = self.statistics(code="opposite", end="sibling")
+        self.assertAlmostEqual(landed["cue_traversed"], 1.0)
+        self.assertAlmostEqual(landed["cue_end_residual"], 0.0)
+        self.assertEqual(landed["cue_end_nearer_sibling"], 1.0)
+        self.assertEqual(landed["n_sweep_trials"], 16)
+        stayed = self.statistics(code="opposite", end="own")
+        self.assertAlmostEqual(stayed["cue_traversed"], 0.0)
+        self.assertEqual(stayed["cue_end_nearer_sibling"], 0.0)
+        self.assertGreater(stayed["cue_end_residual"], 1.0)
+
+    def test_incomplete_or_unsettled_caches_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "fixed-point criterion"):
+            self.statistics(fixed=False)
+        endpoint, sweep = _memory_caches(self.rng)
+        endpoint["stim_idx"] = np.where(endpoint["stim_idx"] == 7, 6, endpoint["stim_idx"])
+        with self.assertRaisesRegex(ValueError, "lacks a stimulus direction"):
+            cohort.pro_anti_statistics(endpoint, sweep, self.RULES, "fixed_hidden")
+        endpoint, sweep = _memory_caches(self.rng)
+        sweep["sweeps"]["delaygo"]["is_fixed"][1, 0] = False
+        with self.assertRaisesRegex(ValueError, "sweep from delaygo"):
+            cohort.pro_anti_statistics(endpoint, sweep, self.RULES, "fixed_hidden")
+        endpoint, _ = _memory_caches(self.rng)
+        with self.assertRaisesRegex(ValueError, "no rule-cue sweep"):
+            cohort.pro_anti_statistics(endpoint, {"sweeps": {}}, self.RULES, "fixed_hidden")
+
+
 class ScriptTests(unittest.TestCase):
+    def test_optional_family_enters_only_the_runs_that_have_its_caches(self):
+        rng = np.random.default_rng(5)
+        translation = 2.0 * _unit(3)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "two_in_multiples"
+            _write_run(root, _aname(1), _delaydm_caches(rng, translation),
+                       _dmc_caches(rng, "orthogonal"), _memory_caches(rng, "opposite"))
+            _write_run(root, _aname(2), _delaydm_caches(rng, translation),
+                       _dmc_caches(rng, "orthogonal"))                       # not run yet
+            _write_run(root, _aname(3), _delaydm_caches(rng, translation),
+                       _dmc_caches(rng, "orthogonal"), _memory_caches(rng, fixed=False))
+            with patch("builtins.print") as output:
+                results = cohort.run_all(root, FEATURE, out_dir=root / "out")
+            printed = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
+        # Every run keeps its DelayDM and DMC statistics; none is skipped.
+        self.assertEqual(list(results["runs"]), [_aname(1), _aname(2), _aname(3)])
+        self.assertEqual(results["skipped"], [])
+        self.assertEqual(cohort.REQUIRED_FAMILIES + cohort.OPTIONAL_FAMILIES,
+                         tuple(cohort.FAMILIES))
+        with_memory = results["runs"][_aname(1)]
+        self.assertEqual(set(with_memory["families"]), set(cohort.FAMILIES))
+        self.assertEqual(with_memory["optional_missing"], {})
+        self.assertAlmostEqual(
+            with_memory["families"]["delaygo"]["e_modulation"]["ring_cosine_same"], -1.0)
+        for seed, reason in ((2, "no delaygo_long_stimulus_endpoints"),
+                             (3, "fixed-point criterion")):
+            run = results["runs"][_aname(seed)]
+            self.assertEqual(set(run["families"]), set(cohort.REQUIRED_FAMILIES))
+            self.assertIn(reason, run["optional_missing"]["delaygo"])
+        self.assertIn("delaygo / delayanti (1 of 3 runs have its caches)", printed)
+        self.assertIn("ring_cosine_same", printed)
+        self.assertIn("1/1 runs below 0", printed)
+        self.assertIn("MemoryPro/Anti: no stimulus-period caches", printed)
+        self.assertIn("MemoryPro/Anti ring cosine -1.00", printed)
+        self.assertEqual(
+            cohort.endpoint_path(Path("d"), "delaygo", "run").name,
+            "delaygo_long_stimulus_endpoints_run.pkl")
+        self.assertEqual(
+            cohort.sweep_path(Path("d"), "dmcgo", "run").name,
+            "dmcgo_cue_interp_long_delay_endpoints_run.pkl")
+
     def test_run_all_writes_every_settled_run_of_the_feature_and_lists_the_rest(self):
         rng = np.random.default_rng(2)
         translation = 2.0 * _unit(3)
@@ -318,7 +477,7 @@ class ScriptTests(unittest.TestCase):
             printed = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
             # No run of the feature at all, and no run that can be scored,
             # are errors rather than empty files.
-            with self.assertRaisesRegex(FileNotFoundError, "sibling_delay_analysis"):
+            with self.assertRaisesRegex(FileNotFoundError, "sibling_fixed_point_analysis"):
                 cohort.run_all(root, "L21e9", out_dir=root / "out")
             only_bad = Path(directory) / "bad"
             _write_run(only_bad, _aname(7), _delaydm_caches(rng, translation, fixed=False),
@@ -331,7 +490,8 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(saved["feature"], FEATURE)
         self.assertEqual(list(saved["runs"]), [_aname(1), _aname(2)])
         self.assertEqual(saved["runs"][_aname(2)]["seed"], 2)
-        self.assertEqual(set(saved["runs"][_aname(1)]["families"]), set(cohort.FAMILIES))
+        self.assertEqual(set(saved["runs"][_aname(1)]["families"]),
+                         set(cohort.REQUIRED_FAMILIES))
         self.assertEqual(set(saved["runs"][_aname(1)]["families"]["dmcgo"]), set(REPRESENTATIONS))
         self.assertEqual(results["runs"].keys(), saved["runs"].keys())
         self.assertEqual([row["seed"] for row in saved["skipped"]], [4, 5])
@@ -340,7 +500,8 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(set(saved["definitions"]), {
             "translation_explained", "alignment_gain", "cue_traversed", "cue_end_residual",
             "category_axis_cosine", "category_separation", "category_best_other_split",
-            "category_is_best_split", "category_nearest_centroid_accuracy"})
+            "category_is_best_split", "category_nearest_centroid_accuracy",
+            "ring_cosine_same", "ring_cosine_opposite", "translation_to_ring"})
         self.assertIn("category_is_best_split_dmcnogo", printed)
         self.assertIn(f"{_aname(4)}: skipped", printed)
         self.assertIn("2 runs, 2 skipped", printed)
@@ -350,7 +511,11 @@ class ScriptTests(unittest.TestCase):
 
 
 class FigureTests(unittest.TestCase):
-    def results(self, seeds, feature=FEATURE, schema=cohort.SCHEMA_VERSION, code="orthogonal"):
+    def results(self, seeds, feature=FEATURE, schema=cohort.SCHEMA_VERSION, code="orthogonal",
+                memory=()):
+        """Saved cohort results of `seeds`; the seeds of `memory` also carry
+        the optional MemoryPro / MemoryAnti statistics (response-coded for
+        the odd ones)."""
         rng = np.random.default_rng(3)
         runs = {}
         for seed in seeds:
@@ -364,6 +529,11 @@ class FigureTests(unittest.TestCase):
                 "dmcgo": {name: cohort.dmc_statistics(*dmc, cohort.FAMILIES["dmcgo"], rep_key)
                           for name, rep_key in cohort.REPRESENTATIONS.items()},
             }
+            if seed in memory:
+                caches = _memory_caches(rng, "opposite" if seed % 2 else "same")
+                families["delaygo"] = {
+                    name: cohort.pro_anti_statistics(*caches, cohort.FAMILIES["delaygo"], rep_key)
+                    for name, rep_key in cohort.REPRESENTATIONS.items()}
             runs[_aname(seed, feature)] = {"aname": _aname(seed, feature), "seed": seed,
                                            "families": families}
         return {"schema_version": schema, "feature": feature, "runs": runs, "skipped": [],
@@ -511,6 +681,199 @@ class FigureTests(unittest.TestCase):
                 if note != "need >= 2":
                     self.assertIn("sibling_cohort.py --feature L21e4", printed)
 
+    def test_ring_cosine_figure_draws_the_runs_that_have_the_optional_family(self):
+        results = self.results((5, 3, 8, 6), memory=(5, 3, 8))
+        save, _ = self.render(paper_plot.plot_sibling_cohort_ring_cosine, results)
+        save.assert_called_once()
+        figure, path = save.call_args.args[:2]
+        self.assertEqual(path.name, "multitask_sibling_cohort_ring_cosine.png")
+        axis = figure.axes[0]
+        # Three of the four runs have the family; by seed: 3 and 5 hold a
+        # direction at the opposite one's place (-1), 8 at the same place (+1).
+        points = self._points(axis)
+        self.assertEqual(len(points), 2)
+        for column in points:
+            np.testing.assert_allclose(column.get_offsets()[:, 1], [-1.0, -1.0, 1.0], atol=1e-9)
+        np.testing.assert_allclose(self._medians(axis), [-1.0, -1.0], atol=1e-9)
+        self.assertEqual(axis.get_ylim(), (-1.15, 1.15))
+        self.assertEqual([label.get_text() for label in axis.get_xticklabels()],
+                         ["Hidden", r"W $\odot$ M"])
+        codes = figure.axes[0].child_axes[0]
+        self.assertEqual([label.get_text() for label in codes.get_yticklabels()],
+                         ["opposite direction", "orthogonal", "same direction"])
+        self.assertEqual(axis.get_legend().get_title().get_text(), "3 runs")
+        extra = save.call_args.kwargs["extra"]
+        self.assertIn("3 runs; MemoryPro/Anti ring_cosine_same: hidden -1.000", extra)
+        self.assertIn("MemoryPro/Anti translation_to_ring", extra)
+        self.assertIn("hidden 2/3 runs below 0", extra)
+        # The delay families' figures still draw all four runs.
+        save, _ = self.render(paper_plot.plot_sibling_cohort_translation, results)
+        self.assertEqual(save.call_args.args[0].axes[0].get_legend().get_title().get_text(),
+                         "4 runs")
+        # Fewer than two runs with the family: skipped, with the commands.
+        save, output = self.render(paper_plot.plot_sibling_cohort_ring_cosine,
+                                   self.results((5, 3, 8), memory=(5,)))
+        save.assert_not_called()
+        printed = "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
+        self.assertIn("1 of 3 cohort runs have MemoryPro / MemoryAnti", printed)
+        self.assertIn("--families delaygo --method settled_endpoint", printed)
+
+    @staticmethod
+    def _memory_projection(aname, rule_gap=0.1, settled=True):
+        """A stimulus-period projection cache: two repeats of eight directions
+        per rule on a ring in PC3 and PC1, MemoryAnti shifted by `rule_gap`
+        within that plane."""
+        stim = np.tile(np.arange(8), 2)
+        angles = 2 * np.pi * stim / 8
+        base = np.zeros((stim.size, 6))
+        base[:, 2] = 3.0 * np.cos(angles)            # the widest spread: PC3
+        base[:, 0] = 2.0 * np.sin(angles)            # then PC1
+        proj = np.concatenate([base, base + rule_gap * _unit(0)[:6]])
+        path = np.linspace(0.0, 1.0, 5)[None, :, None] * proj[:, None, :]
+        is_fixed = np.ones(proj.shape[0], dtype=bool)
+        is_fixed[0] = settled
+        entry = {"proj": proj, "trajectory_proj": path,
+                 "task_idx": np.repeat([0, 1], stim.size), "stim_idx": np.tile(stim, 2),
+                 "task_names": ["delaygo", "delayanti"], "is_fixed": is_fixed,
+                 "explained_variance_ratio": np.array([0.3, 0.1, 0.4, 0.05, 0.05, 0.05])}
+        return {"aname": aname, "family": "delaygo", "method": "long_stimulus_endpoint",
+                "representations": {"hidden": entry, "e_modulation": entry}}
+
+    @staticmethod
+    def _memory_sweep(aname, jump=0.0):
+        """A rule-cue sweep projection cache: the eight directions spread
+        along PC3 (and less along PC1) and every trial moves along PC6; the
+        first trial also hops by `jump` along PC6 halfway through."""
+        stim = np.tile(np.arange(8), 2)
+        angles = 2 * np.pi * stim / 8
+        base = np.zeros((stim.size, 6))
+        base[:, 2] = 3.0 * np.cos(angles)
+        base[:, 0] = 2.0 * np.sin(angles)
+        alphas = np.linspace(0.0, 1.0, 11)
+        proj = base[None] + 5.0 * alphas[:, None, None] * _unit(5)[None, None, :6]
+        proj[5:, 0, 5] += jump
+        sweep = {"target_rule": "delayanti", "proj": proj, "stim_idx": stim,
+                 "stimulus_magnitude": np.ones(stim.size),
+                 "is_fixed": np.ones(proj.shape[:2], dtype=bool)}
+        entry = {"sweeps": {"delaygo": sweep}}
+        return {"kind": "cue_interp", "aname": aname, "family": "delaygo",
+                "method": "long_stimulus_endpoint", "alphas": alphas,
+                "task_names": ["delaygo", "delayanti"],
+                "representations": {"hidden": entry, "e_modulation": entry}}
+
+    def _render_memory(self, function, caches):
+        """Run a MemoryPro / MemoryAnti illustration on the cached runs of
+        `caches`, {seed: (endpoint rule gap, sweep jump, endpoints settled)}."""
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            for seed, (rule_gap, jump, settled) in caches.items():
+                aname = _aname(seed)
+                _write(base / aname / f"delaygo_long_stimulus_endpoint_pc_projections_{aname}.pkl",
+                       self._memory_projection(aname, rule_gap, settled))
+                _write(base / aname / ("delaygo_cue_interp_long_stimulus_endpoint_pc_projections_"
+                                       f"{aname}.pkl"), self._memory_sweep(aname, jump))
+            # A run of another cohort is never a candidate.
+            other = _aname(1, "L21e3")
+            _write(base / other / f"delaygo_long_stimulus_endpoint_pc_projections_{other}.pkl",
+                   self._memory_projection(other, 0.001))
+            with patch.object(paper_plot, "TWO_IN_MULTIPLES_DIR", base), \
+                    patch.object(paper_plot, "SIBLING_L2", "1e4"), \
+                    patch.object(paper_plot, "SHOW_LEGEND", True), \
+                    patch.object(paper_plot, "_ensure_out_dir"), \
+                    patch.object(paper_plot, "_save_fig") as save, \
+                    patch("builtins.print") as output:
+                function()
+        for call in save.call_args_list:
+            self.addCleanup(paper_plot.plt.close, call.args[0])
+        return save, "\n".join(str(call.args[0]) for call in output.call_args_list if call.args)
+
+    # {seed: (endpoint rule gap, sweep jump, endpoints settled)}: seed 5 has
+    # the clearest endpoints among the settled runs, seed 8 the smoothest sweep.
+    MEMORY_CACHES = {3: (0.5, 2.0, True), 5: (0.1, 1.0, True), 8: (0.3, 0.0, True),
+                     2: (0.01, 3.0, False)}
+
+    def test_memory_endpoint_figure_draws_the_most_legible_run_in_its_widest_plane(self):
+        self.assertEqual(paper_plot._endpoint_spread_pc_pair(
+            np.array([[0.0, 5.0, 1.0], [2.0, 5.0, -1.0], [-2.0, 5.0, 1.0]])), (0, 2))
+        # Neighboring directions of the (3 cos, 2 sin) ring are at least
+        # 1.665 apart; the two rules' points of a stimulus `rule_gap` apart.
+        self.assertAlmostEqual(
+            paper_plot._memory_endpoint_legibility(self._memory_projection("run", 0.1)),
+            16.65, places=2)
+        save, printed = self._render_memory(
+            paper_plot.plot_multitask_memory_stimulus_endpoints, self.MEMORY_CACHES)
+        save.assert_called_once()
+        figure, path = save.call_args.args[:2]
+        self.assertEqual(path.name, "multitask_memory_stimulus_endpoints.png")
+        self.assertEqual([ax.get_title() for ax in figure.axes],
+                         ["Hidden state", r"W $\odot$ M"])
+        for ax in figure.axes:
+            # Eight directions per rule: one marker each, its path behind it,
+            # and one grey connector per stimulus.
+            self.assertEqual(len(self._points(ax)), 16)
+            self.assertEqual(len(ax.lines), 16 + 8)
+            connectors = [line for line in ax.lines
+                          if isinstance(line.get_color(), str) and line.get_color() == "0.45"]
+            self.assertEqual(len(connectors), 8)
+            self.assertEqual(ax.get_xlabel(), "Joint Stimulus PC3 (40.0%)")
+            self.assertEqual(ax.get_ylabel(), "Joint Stimulus PC1 (30.0%)")
+            # Hue is the stimulus direction, for both rules.
+            np.testing.assert_allclose(self._points(ax)[0].get_facecolor()[0][:3],
+                                       paper_plot.stim_color(0, 8)[:3])
+        self.assertEqual([text.get_text() for text in figure.legends[0].get_texts()],
+                         ["MemoryPro", "MemoryAnti", "same stimulus"])
+        extra = save.call_args.kwargs["extra"]
+        # Seed 2 would score highest but has an unsettled endpoint.
+        self.assertIn(f"{_aname(5)}: most legible of 3 cached runs: smallest direction gap "
+                      "over largest rule gap 16.65", extra)
+        self.assertIn("hidden PC3-PC1", extra)
+        self.assertIn(f"Skipped {_aname(2)}", printed)
+        self.assertIn("above the fixed-point criterion", printed)
+
+    def test_memory_cue_sweep_figures_draw_the_smoothest_run(self):
+        cache = self._memory_sweep("run")
+        sweep = cache["representations"]["hidden"]["sweeps"]["delaygo"]
+        self.assertEqual(paper_plot._memory_sweep_pc_pair(sweep), (3, 6))
+        self.assertAlmostEqual(paper_plot._memory_sweep_legibility(cache, "hidden"), 0.0)
+        # A hop of 1 beyond the drawn trials' common (median) step, on a
+        # rule PC that then spans 6.
+        self.assertAlmostEqual(paper_plot._memory_sweep_legibility(
+            self._memory_sweep("run", jump=1.0), "hidden"), -1.0 / 6.0)
+        save, _ = self._render_memory(paper_plot.plot_multitask_memory_cue_interp,
+                                      self.MEMORY_CACHES)
+        self.assertEqual(
+            [call.args[1].name for call in save.call_args_list],
+            [f"multitask_memory_cue_interp_long_stimulus_endpoint_{name}_{view}.png"
+             for name in ("emodulation", "hidden") for view in ("2d", "3d")])
+        figure = save.call_args_list[0].args[0]                 # the 2d view
+        stimulus, rule = figure.axes
+        self.assertEqual(stimulus.get_ylabel(), "Joint Stimulus PC3")
+        self.assertEqual(rule.get_ylabel(), "Joint Stimulus PC6")
+        self.assertEqual(stimulus.get_title(), "MemoryPro stimulus\n→ MemoryAnti cue")
+        # One trial per stimulus direction; the stimulus PC stays flat along
+        # the sweep and the rule PC moves, without the other runs' hop.
+        self.assertEqual(len(stimulus.lines), 8)
+        for line in stimulus.lines:
+            self.assertAlmostEqual(float(np.ptp(line.get_ydata())), 0.0)
+        for line in rule.lines:
+            np.testing.assert_allclose(line.get_ydata(), 5.0 * np.linspace(0.0, 1.0, 11))
+        for call in save.call_args_list:
+            self.assertIn("Joint Stimulus PC3-PC6, stimulus PC and rule PC", call.kwargs["extra"])
+            self.assertIn(f"{_aname(8)}, most legible of 4 cached runs: largest drawn "
+                          "departure from the common motion 0.00 of a panel",
+                          call.kwargs["extra"])
+
+    def test_memory_figures_break_ties_by_seed_and_skip_without_a_cache(self):
+        same = {8: (0.1, 0.0, True), 5: (0.1, 0.0, True)}
+        for function in (paper_plot.plot_multitask_memory_stimulus_endpoints,
+                         paper_plot.plot_multitask_memory_cue_interp):
+            save, _ = self._render_memory(function, same)
+            self.assertIn(_aname(5), save.call_args.kwargs["extra"])
+            save, printed = self._render_memory(function, {})
+            save.assert_not_called()
+            self.assertIn("no scorable MemoryPro / MemoryAnti", printed)
+            self.assertIn("--families delaygo --method settled_endpoint", printed)
+
     def test_no_legend_leaves_the_axes_bare(self):
         save, _ = self.render(paper_plot.plot_sibling_cohort_translation, self.results((1, 2)),
                               show_legend=False)
@@ -529,10 +892,24 @@ class FigureTests(unittest.TestCase):
                       paper_plot.plot_sibling_cohort_category_memory)
         self.assertEqual(paper_plot.SIBLING_COHORT_RESULT_NAME, cohort.RESULT_NAME)
         self.assertEqual(paper_plot._SIBLING_COHORT_SCHEMA_VERSION, cohort.SCHEMA_VERSION)
-        self.assertEqual(dict(paper_plot._MULTITASK_SIBLING_FAMILIES), cohort.FAMILIES)
+        # The delay-family figures draw the two required families; the
+        # optional stimulus-period family has its own two figures.
+        self.assertEqual(dict(paper_plot._MULTITASK_SIBLING_FAMILIES),
+                         {family: cohort.FAMILIES[family]
+                          for family in cohort.REQUIRED_FAMILIES})
         self.assertEqual([name for name, _ in paper_plot._SIBLING_COHORT_REPRESENTATIONS],
                          list(cohort.REPRESENTATIONS))
-        self.assertEqual(set(paper_plot._SIBLING_COHORT_FAMILY_LABELS), set(cohort.FAMILIES))
+        self.assertEqual(set(paper_plot._SIBLING_COHORT_FAMILY_LABELS),
+                         set(cohort.REQUIRED_FAMILIES))
+        self.assertEqual(set(paper_plot._SIBLING_COHORT_OPTIONAL_FAMILY_LABELS),
+                         set(cohort.OPTIONAL_FAMILIES))
+        self.assertEqual(paper_plot._MEMORY_ENDPOINT_TAG,
+                         cohort.ENDPOINT_TAGS[paper_plot._MEMORY_FAMILY])
+        self.assertIs(mode["sibling_cohort_ring_cosine"],
+                      paper_plot.plot_sibling_cohort_ring_cosine)
+        self.assertIs(mode["memory_stimulus_endpoints"],
+                      paper_plot.plot_multitask_memory_stimulus_endpoints)
+        self.assertIs(mode["memory_cue_interp"], paper_plot.plot_multitask_memory_cue_interp)
 
 
 if __name__ == "__main__":

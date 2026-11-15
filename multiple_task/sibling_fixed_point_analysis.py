@@ -1,27 +1,42 @@
-"""Standalone delay-memory geometry analysis for sibling task families.
+"""Standalone fixed-point geometry analysis for sibling task families.
 
-The supported families are DelayDM1/DelayDM2 and DMCGo/DMCNoGo inside a trained
-``everything`` multi-task network. This module loads the run, generates aligned
-sibling trials, and fits shared delay-trajectory PCA bases. ``--method`` then
-selects either gradient fixed-point solving or long-delay trials settled to
-their fixed points. Gradient analysis uses IncrementalPCA, while long-delay
-analysis uses one conventional PCA fit with randomized SVD at a fixed seed;
-their method-specific bases are stored separately. All outputs are isolated
-under ``two_in_multiples/{aname}/``.
+Three pairs of sibling tasks inside a trained ``everything`` multi-task
+network are supported, each read in one trial period (``SIBLING_FAMILY_PERIOD``):
 
-Run one or both families without rerunning clustering or lesion analysis::
+  delaydm1   DelayDM1 / DelayDM2          the memory delay (``delay1``)
+  dmcgo      DMCGo / DMCNoGo              the memory delay (``delay1``)
+  delaygo    MemoryPro / MemoryAnti       the stimulus period (``stim1``)
+             (delaygo / delayanti)
 
-    python multiple_task/sibling_delay_analysis.py \
+This module loads the run, generates aligned sibling trials, and fits shared
+PCA bases on the period's trajectories. ``--method`` then selects either
+gradient fixed-point solving (delay families only) or settled endpoints:
+trials whose period is lengthened and which then keep running on the
+period's constant input until they meet the fixed-point criterion. Gradient
+analysis uses IncrementalPCA, while the settled-endpoint analysis uses one
+conventional PCA fit with randomized SVD at a fixed seed; their
+method-specific bases are stored separately. All outputs are isolated under
+``two_in_multiples/{aname}/``, and a family's settled-endpoint files carry the
+name of its period (``long_delay_endpoint``, ``long_stimulus_endpoint``;
+`settled_endpoint_tag`).
+
+Run one or more families without rerunning clustering or lesion analysis::
+
+    python multiple_task/sibling_fixed_point_analysis.py \
     --seed 749 --feature L21e4 --families delaydm1 --method gradient
 
-Select ``--method long_delay_endpoint`` instead to run generated long-delay
-trials, keep each one running on its delay input until it meets the gradient
-solver's fixed-point criterion, and save that endpoint with its sampled path.
+    python multiple_task/sibling_fixed_point_analysis.py \
+    --seed 749 --feature L21e4 --families delaygo --method settled_endpoint
+
+``--method settled_endpoint`` (``long_delay_endpoint`` is accepted as its
+earlier name) runs the generated long-period trials, keeps each one running
+on the period's input until it meets the gradient solver's fixed-point
+criterion, and saves that endpoint with its sampled path.
 
 Both methods finish with a rule-cue interpolation sweep between the two
 sibling rules (``SIBLING_CUE_INTERP_N_ALPHA`` + 1 alphas; the multi-task
 analog of the two-task pro<->anti sweep), projected onto the method's joint
-delay basis.
+basis.
 """
 import copy
 import gc
@@ -52,8 +67,10 @@ from grad_fixed_points import (
 
 __all__ = [
     "SIBLING_FAMILIES",
+    "SIBLING_FAMILY_PERIOD",
+    "SIBLING_METHOD_CHOICES",
     "SIBLING_ANALYSIS_DIR",
-    "DELAY_PCA_SCOPES",
+    "PERIOD_PCA_SCOPES",
     "SIBLING_METHODS",
     "SIBLING_CUE_INTERP_BASE_RULES",
     "SIBLING_CUE_INTERP_N_ALPHA",
@@ -61,32 +78,75 @@ __all__ = [
     "SIBLING_FIXED_POINT_STEPS",
     "SIBLING_NORMAL_GPU_BATCH_SIZE",
     "SIBLING_NORMAL_TRIALS_PER_RULE",
-    "SIBLING_LONG_DELAY_TRAJECTORY_SAMPLES",
+    "SIBLING_LONG_PERIOD_TRAJECTORY_SAMPLES",
     "build_aname",
     "cue_channel_indices",
     "cue_interp_alphas",
     "cue_interp_artifact_paths",
     "cue_interpolated_inputs",
-    "extract_cue_interp_long_delay_endpoints",
-    "extract_long_delay_endpoints",
+    "extract_cue_interp_settled_endpoints",
+    "extract_settled_endpoints",
     "is_sibling_artifact",
+    "normalize_method",
+    "settled_endpoint_tag",
     "run_sibling_analysis",
     "save_cue_interp_pc_projections",
-    "save_long_delay_endpoint_pc_projections",
+    "save_settled_endpoint_pc_projections",
     "save_sibling_fixed_point_pc_projections",
     "solve_cue_interp_fixed_points",
-    "stream_normal_delay_analysis",
+    "stream_normal_period_analysis",
 ]
 
 SIBLING_FAMILIES = {
     "dmcgo": ("dmcgo", "dmcnogo"),
     "delaydm1": ("delaydm1", "delaydm2"),
+    "delaygo": ("delaygo", "delayanti"),
+}
+# The trial period each family's states are read in and settled on. DelayDM and
+# DMC are asked what their memory delay holds. MemoryPro and MemoryAnti
+# (delaygo / delayanti) see one stimulus and differ only in the response it
+# calls for, so they are read while that stimulus is on: is one direction held
+# at the same place under the two rules, or at the place of the opposite
+# direction, the one MemoryAnti will answer with?
+SIBLING_FAMILY_PERIOD = {"dmcgo": "delay1", "delaydm1": "delay1", "delaygo": "stim1"}
+# Per period: its name in artifact file names and messages, and the task
+# generator's switch that lengthens it (mpn_tasks: "normal" / "long").
+_PERIOD_SPECS = {
+    "delay1": {"name": "delay", "long_key": "long_delay"},
+    "stim1": {"name": "stimulus", "long_key": "long_stimulus"},
 }
 
 # Keep sibling-task analysis independent from the general multi-task clustering
 # database. paper_plot.py uses the same root when loading two_in_multiple data.
 SIBLING_ANALYSIS_DIR = Path("two_in_multiples")
-SIBLING_METHODS = ("gradient", "long_delay_endpoint")
+SIBLING_METHODS = ("gradient", "settled_endpoint")
+# The settled-endpoint method was named after the delay it first ran on; that
+# name is still accepted, and it remains the token of the delay families'
+# artifacts (`settled_endpoint_tag`), so their saved caches stay valid.
+SIBLING_METHOD_ALIASES = {"long_delay_endpoint": "settled_endpoint"}
+SIBLING_METHOD_CHOICES = SIBLING_METHODS + tuple(SIBLING_METHOD_ALIASES)
+
+
+def normalize_method(method):
+    """The current name of a sibling method (an alias resolved), or ValueError."""
+    method = SIBLING_METHOD_ALIASES.get(method, method)
+    if method not in SIBLING_METHODS:
+        raise ValueError(f"unknown sibling method {method!r}; choose from "
+                         f"{SIBLING_METHODS}")
+    return method
+
+
+def _period_name(addtask):
+    """'delay' or 'stimulus': the name of a family's period in file names."""
+    return _PERIOD_SPECS[SIBLING_FAMILY_PERIOD[addtask]]["name"]
+
+
+def settled_endpoint_tag(addtask):
+    """Token of a family's settled-endpoint artifacts, in their file names and
+    their ``method`` field: ``long_delay_endpoint`` or
+    ``long_stimulus_endpoint``, after the period its trials settle on."""
+    return f"long_{_period_name(addtask)}_endpoint"
+
 
 # Match the task generator's native eight stimulus directions. This sibling
 # analysis deliberately does not solve additional between-direction inputs.
@@ -96,7 +156,7 @@ SIBLING_FP_N_STIM = 8
 # at the same angle relax to the same or different delay fixed points.
 DELAYDM_FP_STIM_MAGNITUDES = (0.6, 0.8, 1.0, 1.2, 1.4)
 
-DELAY_PCA_SCOPES = ("joint", "first_task_only")
+PERIOD_PCA_SCOPES = ("joint", "first_task_only")
 # Deterministic task-template seeds tried independently for each sibling rule.
 # core/grad_fixed_points.py saves only the seed with the lowest median rel_step.
 SIBLING_FIXED_POINT_N_SEEDS = 1
@@ -107,19 +167,27 @@ SIBLING_FIXED_POINT_STEPS = 200000
 # CPU and only this many are transferred to the GPU at once.
 SIBLING_NORMAL_TRIALS_PER_RULE = 100
 SIBLING_NORMAL_GPU_BATCH_SIZE = 200
-# Long-delay trials for the settled endpoints and their rule-cue sweep.
+# Long-period trials for the settled endpoints and their rule-cue sweep.
 # DelayDM is direction-balanced and gives each of the eight directions one
-# trial at every level of its family's SIBLING_LONG_DELAY_STIM_MAGNITUDES (the
+# trial at every level of its family's SIBLING_STIM_MAGNITUDES (the
 # gradient solve's DELAYDM_FP_STIM_MAGNITUDES), 8 x 5 = 40 per rule, in place
 # of the generator's random amplitude/coherence draws
-# (`_apply_long_delay_stimulus_magnitudes`). The DMC generator draws its
+# (`_apply_stimulus_magnitudes`). The DMC generator draws its
 # directions at random at magnitude 1, so DMC keeps
-# SIBLING_LONG_DELAY_TRIALS_PER_RULE unbalanced trials. Aligned RNG state makes
-# every local trial a matched cross-task condition.
-SIBLING_LONG_DELAY_STIM_MAGNITUDES = {"delaydm1": DELAYDM_FP_STIM_MAGNITUDES}
-SIBLING_LONG_DELAY_TRIALS_PER_RULE = 32
-SIBLING_LONG_DELAY_TRAJECTORY_SAMPLES = 51
-# The trials' own long delay (DelayDM 5 s, DMC 10 s) is too short for the
+# SIBLING_LONG_PERIOD_TRIALS_PER_RULE unbalanced trials. MemoryPro/MemoryAnti
+# also run that many, but with their randomly drawn continuous directions
+# replaced by the eight native ones in turn at magnitude 1
+# (`_apply_balanced_stimulus_directions`), so every direction has its opposite
+# among the trials. Aligned RNG state makes every local trial a matched
+# cross-task condition.
+SIBLING_STIM_MAGNITUDES = {"delaydm1": DELAYDM_FP_STIM_MAGNITUDES}
+SIBLING_LONG_PERIOD_TRIALS_PER_RULE = 32
+# Families whose long-period trials are given the eight native directions in
+# turn instead of the generator's random continuous ones.
+SIBLING_BALANCED_DIRECTION_FAMILIES = ("delaygo",)
+SIBLING_LONG_PERIOD_TRAJECTORY_SAMPLES = 51
+# The trials' own long period (the delay: DelayDM 5 s, DMC 10 s; the stimulus:
+# MemoryPro/Anti 10 s) is too short for the
 # modulation to settle: tau_M is 4 s at lambda = 0.99, and on seed 921 no
 # endpoint met the fixed-point criterion at the end of the trial (normalized
 # residual 0.24 for DelayDM, 0.04 for DMC). After the trial's delay the network
@@ -127,13 +195,13 @@ SIBLING_LONG_DELAY_TRAJECTORY_SAMPLES = 51
 # leak-normalized one-step residual ||F(M) - M|| / (||M|| (1 - lambda)) is at
 # most DEFAULT_REL_TOL_UNDAMPED, the gradient solver's criterion, or until this
 # cap; trials still above it are saved with is_fixed False.
-SIBLING_LONG_DELAY_MAX_SETTLE_MS = 100000
-# Long-delay analysis uses conventional sklearn PCA with randomized SVD at one
+SIBLING_MAX_SETTLE_MS = 100000
+# The settled-endpoint analysis uses conventional sklearn PCA with randomized SVD at one
 # fixed seed. Ten seeds used to be fitted and the best-scoring one kept, but
 # on every saved basis (28 files, both representations) all ten gave the same
 # components (same signs, elements within 5e-5) and the same best PC pair, so
 # the sweep only re-fitted one basis ten times.
-SIBLING_LONG_DELAY_PCA_SEED = 0
+SIBLING_SETTLED_PCA_SEED = 0
 
 # Rule-cue interpolation between the two sibling rules (the multi-task analog
 # of the two-task pro<->anti sweep). The stimulus is held at one BASE rule's
@@ -157,6 +225,8 @@ SIBLING_CUE_INTERP_N_ALPHA = 10
 SIBLING_CUE_INTERP_BASE_RULES = {
     "delaydm1": ("delaydm1", "delaydm2"),
     "dmcgo": ("dmcgo",),
+    # MemoryPro and MemoryAnti also share one stimulus structure.
+    "delaygo": ("delaygo",),
 }
 # L-BFGS polishing after the Adam phase of each cue-interpolation solve; the
 # Adam budget is SIBLING_FIXED_POINT_STEPS, as for the per-rule solves.
@@ -201,8 +271,8 @@ def _artifact_method(path):
     """Classify a sibling artifact as method-specific or shared preprocessing."""
     path = Path(path)
     name = path.name
-    if "long_delay_endpoint" in name:
-        return "long_delay_endpoint"
+    if any(f"long_{spec['name']}_endpoint" in name for spec in _PERIOD_SPECS.values()):
+        return "settled_endpoint"
     if "_delay_trajectory_pca" in name:
         # Before PCA filenames became method-specific, randomized long-delay
         # candidates used the gradient filename. Inspect that legacy artifact
@@ -213,7 +283,7 @@ def _artifact_method(path):
         except (OSError, EOFError, pickle.PickleError, TypeError, ValueError):
             return "gradient"
         if artifact.get("pca_strategy") == "randomized_candidates":
-            return "long_delay_endpoint"
+            return "settled_endpoint"
         return "gradient"
     if (name.startswith("fixed_points_grad_")
             or "_cue_interp_fixed_points" in name
@@ -232,9 +302,8 @@ def _clean_stale_sibling_artifacts(save_dir, families, method=None):
     """
     save_dir = Path(save_dir)
     families = _validate_families(families)
-    if method is not None and method not in SIBLING_METHODS:
-        raise ValueError(f"unknown sibling method {method!r}; choose from "
-                         f"{SIBLING_METHODS}")
+    if method is not None:
+        method = normalize_method(method)
     stale = sorted(
         path for path in save_dir.iterdir()
         if (path.is_file()
@@ -266,9 +335,11 @@ def _run_sibling_family(*, aname, save_name, save_dir, family, method,
     basis it produced.
     """
     rules = list(SIBLING_FAMILIES[family])
-    if method not in SIBLING_METHODS:
-        raise ValueError(f"unknown sibling method {method!r}; choose from "
-                         f"{SIBLING_METHODS}")
+    method = normalize_method(method)
+    if method == "gradient" and SIBLING_FAMILY_PERIOD[family] != "delay1":
+        raise ValueError(
+            f"{family}: the gradient method solves delay fixed points only; "
+            f"use --method settled_endpoint for the {_period_name(family)} period")
     cfg_fp = {
         "task_params": task_params,
         "train_params": train_params,
@@ -292,11 +363,12 @@ def _run_cue_interp(*, aname, save_dir, family, rules, method, model, device,
     Grid and solver budgets are passed explicitly (as for the per-rule
     solves) so the module-level settings are read at call time."""
     n_alpha = SIBLING_CUE_INTERP_N_ALPHA
+    method = normalize_method(method)
     print(f"  [cue-interp/{family}] method={method}, "
           f"{n_alpha + 1} alphas, base rules "
           f"{list(SIBLING_CUE_INTERP_BASE_RULES[family])}", flush=True)
-    if method == "long_delay_endpoint":
-        sweep_path = extract_cue_interp_long_delay_endpoints(
+    if method == "settled_endpoint":
+        sweep_path = extract_cue_interp_settled_endpoints(
             aname, save_dir, family, rules, model, device,
             converted_task_params, W_fp, layer_index=1, n_alpha=n_alpha)
     else:
@@ -313,13 +385,16 @@ def _run_sibling_family_base(*, aname, save_name, save_dir, family, rules,
                              method, model, device, cfg_fp,
                              converted_task_params, W_fp):
     """Shared PCA bases plus the method's per-rule fixed points or endpoints."""
+    method = normalize_method(method)
     task_params_family = copy.deepcopy(converted_task_params)
     task_params_family["rules"] = rules
     task_params_family["hp"]["batch_size_train"] = SIBLING_NORMAL_TRIALS_PER_RULE
-    task_params_family["long_delay"] = "normal"
+    period = SIBLING_FAMILY_PERIOD[family]
+    period_name = _period_name(family)
+    task_params_family[_PERIOD_SPECS[period]["long_key"]] = "normal"
 
     # Resetting the shared RNG for each rule aligns their epoch boundaries. A
-    # single delay window can then be used safely for both tasks' PCA samples.
+    # single period window can then be used safely for both tasks' PCA samples.
     norm_data, norm_extra = mpn_tasks.generate_trials_wrap(
         task_params_family, SIBLING_NORMAL_TRIALS_PER_RULE,
         rules=rules, mode_input="random",
@@ -331,17 +406,18 @@ def _run_sibling_family_base(*, aname, save_name, save_dir, family, rules,
 
     norm_task_arr = np.asarray(norm_task)
     _, norm_trials, _ = norm_extra
-    acc_all, per_task_acc, norm_out_preview = stream_normal_delay_analysis(
+    acc_all, per_task_acc, norm_out_preview = stream_normal_period_analysis(
         aname, save_dir, family, rules, model, device,
         norm_input, norm_output, norm_mask, norm_trials, norm_task_arr, W_fp,
         layer_index=1, gpu_batch_size=SIBLING_NORMAL_GPU_BATCH_SIZE,
         n_components=6,
         pca_strategy=("randomized"
-                      if method == "long_delay_endpoint" else "incremental"))
-    print(f"  [acc] {family} (normal delay, both tasks): {acc_all:.3f}")
+                      if method == "settled_endpoint" else "incremental"),
+        period=period)
+    print(f"  [acc] {family} (normal {period_name}, both tasks): {acc_all:.3f}")
     for task_i, task_name in enumerate(rules):
         n_task = int(np.sum(norm_task_arr == task_i))
-        print(f"  [acc] {task_name} (normal delay): "
+        print(f"  [acc] {task_name} (normal {period_name}): "
               f"{per_task_acc[task_name]:.3f}  (n={n_task})")
 
     acc_str = ", ".join(
@@ -361,7 +437,7 @@ def _run_sibling_family_base(*, aname, save_name, save_dir, family, rules,
             axs[trial_idx, 1].plot(
                 norm_output[trial_idx, :, outp].detach().cpu().numpy(),
                 color=_TRACE_COLORS[outp], alpha=0.5, linestyle="--")
-    fig.suptitle(f"{family} (normal delay)  |  {acc_str}", fontsize=12)
+    fig.suptitle(f"{family} (normal {period_name})  |  {acc_str}", fontsize=12)
     fig.tight_layout()
     io_path = Path(save_dir) / f"{family}_{save_name}.png"
     fig.savefig(io_path, dpi=300)
@@ -371,12 +447,12 @@ def _run_sibling_family_base(*, aname, save_name, save_dir, family, rules,
     del norm_extra, norm_trials, norm_out_preview
     del norm_data, norm_input, norm_output, norm_mask
 
-    if method == "long_delay_endpoint":
-        endpoint_path = extract_long_delay_endpoints(
+    if method == "settled_endpoint":
+        endpoint_path = extract_settled_endpoints(
             aname, save_dir, family, rules, model, device,
             converted_task_params, W_fp, layer_index=1)
-        for basis_scope in DELAY_PCA_SCOPES:
-            save_long_delay_endpoint_pc_projections(
+        for basis_scope in PERIOD_PCA_SCOPES:
+            save_settled_endpoint_pc_projections(
                 aname, save_dir, family, rules, endpoint_path,
                 basis_scope=basis_scope)
         return
@@ -406,7 +482,7 @@ def _run_sibling_family_base(*, aname, save_name, save_dir, family, rules,
             traceback.print_exc()
 
     if len(solved_rules) == len(rules):
-        for basis_scope in DELAY_PCA_SCOPES:
+        for basis_scope in PERIOD_PCA_SCOPES:
             save_sibling_fixed_point_pc_projections(
                 aname, save_dir, family, solved_rules,
                 basis_scope=basis_scope)
@@ -419,9 +495,7 @@ def _run_sibling_family_base(*, aname, save_name, save_dir, family, rules,
 def run_sibling_analysis(seed, feature, families, method):
     """Run selected sibling analyses without clustering or lesion experiments."""
     families = _validate_families(families)
-    if method not in SIBLING_METHODS:
-        raise ValueError(f"unknown sibling method {method!r}; choose from "
-                         f"{SIBLING_METHODS}")
+    method = normalize_method(method)
     aname = build_aname(seed, feature)
     result_path = Path("multiple_tasks") / f"param_{aname}_result.npz"
     param_path = Path("multiple_tasks") / f"param_{aname}_param.json"
@@ -486,12 +560,13 @@ def run_sibling_analysis(seed, feature, families, method):
     return save_dir
 
 
-def _delay_pca_scope_spec(rules, basis_scope):
-    """Metadata shared by PCA fitting and fixed-point projection."""
+def _period_pca_scope_spec(rules, basis_scope, period="delay1"):
+    """Metadata shared by PCA fitting and fixed-point projection; `period`
+    only names the fitted trajectories in ``source``."""
     if basis_scope == "joint":
         return {
             "fit_rule_indices": tuple(range(len(rules))),
-            "source": "concatenated normal-trial delay1 trajectories from both tasks",
+            "source": f"concatenated normal-trial {period} trajectories from both tasks",
             "artifact_suffix": "",
             "title": "joint",
         }
@@ -499,28 +574,24 @@ def _delay_pca_scope_spec(rules, basis_scope):
         reference_rule = rules[0]
         return {
             "fit_rule_indices": (0,),
-            "source": (f"normal-trial delay1 trajectories from "
+            "source": (f"normal-trial {period} trajectories from "
                        f"{reference_rule} only"),
             "artifact_suffix": f"_{reference_rule}_only",
             "title": f"{reference_rule}-only",
         }
     raise ValueError(f"unknown basis_scope {basis_scope!r}; choose from "
-                     f"{DELAY_PCA_SCOPES}")
+                     f"{PERIOD_PCA_SCOPES}")
 
 
-def _delay_pca_path(save_dir, aname, addtask, rules, basis_scope, method):
+def _period_pca_path(save_dir, aname, addtask, rules, basis_scope, method):
     """Return the method-specific PCA artifact path for one family/scope."""
-    scope = _delay_pca_scope_spec(rules, basis_scope)
-    if method == "gradient":
-        # Preserve the historical gradient filename for compatibility.
-        method_suffix = ""
-    elif method == "long_delay_endpoint":
-        method_suffix = "_long_delay_endpoint"
-    else:
-        raise ValueError(f"unknown sibling method {method!r}; choose from "
-                         f"{SIBLING_METHODS}")
+    scope = _period_pca_scope_spec(rules, basis_scope)
+    # The gradient basis keeps its historical name; the settled-endpoint one
+    # carries the family's tag (long_delay_endpoint, long_stimulus_endpoint).
+    method_suffix = ("" if normalize_method(method) == "gradient"
+                     else f"_{settled_endpoint_tag(addtask)}")
     return (Path(save_dir)
-            / f"{addtask}{method_suffix}_delay_trajectory_pca"
+            / f"{addtask}{method_suffix}_{_period_name(addtask)}_trajectory_pca"
               f"{scope['artifact_suffix']}_{aname}.pkl")
 
 
@@ -555,39 +626,40 @@ def _pca_record(pca, n_samples, method):
     }
 
 
-def _aligned_delay1_window(rules, trials):
-    """Return the common scalar ``delay1`` window for aligned sibling trials."""
+def _aligned_period_window(rules, trials, period="delay1"):
+    """Return the common scalar window of epoch `period` (``delay1``,
+    ``stim1``) for aligned sibling trials."""
     if len(trials) != len(rules):
         raise ValueError(f"got {len(trials)} trial objects for {len(rules)} rules")
     windows = []
     for rule, trial in zip(rules, trials):
-        if "delay1" not in trial.epochs:
-            raise KeyError(f"{rule}: trial has no delay1 epoch")
-        start, stop = trial.epochs["delay1"]
+        if period not in trial.epochs:
+            raise KeyError(f"{rule}: trial has no {period} epoch")
+        start, stop = trial.epochs[period]
         if np.ndim(start) or np.ndim(stop):
-            raise ValueError(f"{rule}: delay1 must be a scalar aligned window, "
+            raise ValueError(f"{rule}: {period} must be a scalar aligned window, "
                              f"got {(start, stop)}")
         windows.append((int(start), int(stop)))
     if len(set(windows)) != 1:
-        raise ValueError("sibling delay1 windows are not aligned: "
+        raise ValueError(f"sibling {period} windows are not aligned: "
                          f"{dict(zip(rules, windows))}")
     start, stop = windows[0]
     if stop <= start:
-        raise ValueError(f"empty delay1 window {windows[0]}")
+        raise ValueError(f"empty {period} window {windows[0]}")
     return start, stop
 
 
-def _run_delay_tracking_chunk(model, inputs, delay_start, delay_stop,
+def _run_period_tracking_chunk(model, inputs, period_start, period_stop,
                               layer_index):
-    """Run one GPU batch while retaining states only inside ``delay1``."""
-    if not (0 <= delay_start < delay_stop <= inputs.shape[1]):
-        raise ValueError(f"invalid delay window {(delay_start, delay_stop)} "
+    """Run one GPU batch while retaining states only inside the period."""
+    if not (0 <= period_start < period_stop <= inputs.shape[1]):
+        raise ValueError(f"invalid period window {(period_start, period_stop)} "
                          f"for sequence length {inputs.shape[1]}")
     model.reset_state(B=inputs.shape[0])
     outputs, hidden_delay, modulation_delay = [], [], []
     with torch.no_grad():
         for seq_idx in range(inputs.shape[1]):
-            track = delay_start <= seq_idx < delay_stop
+            track = period_start <= seq_idx < period_stop
             output, _, db = model.network_step(
                 inputs[:, seq_idx, :],
                 run_mode="track_states" if track else "minimal",
@@ -647,32 +719,34 @@ def _fit_randomized_pca(samples, n_components):
     """Fit one reproducible conventional PCA using randomized SVD."""
     pca = PCA(
         n_components=int(n_components), svd_solver="randomized",
-        random_state=SIBLING_LONG_DELAY_PCA_SEED, copy=True)
+        random_state=SIBLING_SETTLED_PCA_SEED, copy=True)
     pca.fit(samples)
     record = _pca_record(
         pca, samples.shape[0],
-        f"PCA(svd_solver=randomized, random_state={SIBLING_LONG_DELAY_PCA_SEED})")
+        f"PCA(svd_solver=randomized, random_state={SIBLING_SETTLED_PCA_SEED})")
     del pca
     gc.collect()
     return record
 
 
-def stream_normal_delay_analysis(
+def stream_normal_period_analysis(
         aname, save_dir, addtask, rules, model, device,
         norm_input, norm_output, norm_mask, norm_trials, norm_task, W,
         layer_index=1, gpu_batch_size=SIBLING_NORMAL_GPU_BATCH_SIZE,
         pca_chunk_samples=128, n_components=6,
-        pca_strategy="incremental"):
-    """Evaluate normal-delay trials and fit the requested PCA bases.
+        pca_strategy="incremental", period="delay1"):
+    """Evaluate normal trials and fit the requested PCA bases on `period`.
 
     Inputs, labels, and masks remain on CPU. Each configured trial batch is
-    moved to the GPU, and only delay-period hidden/M states are copied back.
+    moved to the GPU, and only the hidden/M states of epoch `period`
+    (``delay1``, ``stim1``) are copied back.
     ``incremental`` immediately updates bounded-memory IncrementalPCA models.
     ``randomized`` writes W⊙M to temporary memory-mapped matrices and fits one
     conventional PCA with randomized SVD; this avoids keeping the
     multi-gigabyte effective-modulation matrix in RAM.
     """
-    delay_start, delay_stop = _aligned_delay1_window(rules, norm_trials)
+    period_start, period_stop = _aligned_period_window(rules, norm_trials, period)
+    period_name = _period_name(addtask)
     task_idx = np.asarray(norm_task, dtype=int)
     n_trials = int(norm_input.shape[0])
     if task_idx.shape != (n_trials,):
@@ -681,7 +755,7 @@ def stream_normal_delay_analysis(
     trial_counts = {rule: int(np.sum(task_idx == i))
                     for i, rule in enumerate(rules)}
     if any(count == 0 for count in trial_counts.values()):
-        raise ValueError(f"{addtask}: missing normal-delay trials: {trial_counts}")
+        raise ValueError(f"{addtask}: missing normal trials: {trial_counts}")
 
     W = np.asarray(W, dtype=np.float32)
     n_components = int(n_components)
@@ -690,12 +764,12 @@ def stream_normal_delay_analysis(
 
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
-    timepoints_per_trial = int(delay_stop - delay_start)
+    timepoints_per_trial = int(period_stop - period_start)
     fitters = {}
     sample_stores = {}
     temporary_store = None
     if pca_strategy == "incremental":
-        for basis_scope in DELAY_PCA_SCOPES:
+        for basis_scope in PERIOD_PCA_SCOPES:
             fitters[basis_scope] = {
                 "hidden": IncrementalPCA(n_components=n_components),
                 "fixed_WM": IncrementalPCA(n_components=n_components),
@@ -707,8 +781,8 @@ def stream_normal_delay_analysis(
         temporary_store = tempfile.TemporaryDirectory(
             prefix=f".{addtask}_pca_", dir=save_dir)
         temporary_root = Path(temporary_store.name)
-        for basis_scope in DELAY_PCA_SCOPES:
-            scope = _delay_pca_scope_spec(rules, basis_scope)
+        for basis_scope in PERIOD_PCA_SCOPES:
+            scope = _period_pca_scope_spec(rules, basis_scope)
             n_scope_trials = sum(
                 trial_counts[rules[index]]
                 for index in scope["fit_rule_indices"])
@@ -739,8 +813,8 @@ def stream_normal_delay_analysis(
         output_cpu = norm_output[start:stop]
         mask_cpu = norm_mask[start:stop]
         input_device = input_cpu.to(device)
-        predicted_cpu, hidden_delay, modulation_delay = _run_delay_tracking_chunk(
-            model, input_device, delay_start, delay_stop, layer_index)
+        predicted_cpu, hidden_delay, modulation_delay = _run_period_tracking_chunk(
+            model, input_device, period_start, period_stop, layer_index)
 
         if preview_output is None:
             preview_output = predicted_cpu[:5].clone()
@@ -773,8 +847,8 @@ def stream_normal_delay_analysis(
         if tuple(modulation_delay.shape[-2:]) != tuple(W.shape):
             raise ValueError(f"{addtask}: streamed M/W shapes disagree: "
                              f"{modulation_delay.shape[-2:]} vs {W.shape}")
-        for basis_scope in DELAY_PCA_SCOPES:
-            scope = _delay_pca_scope_spec(rules, basis_scope)
+        for basis_scope in PERIOD_PCA_SCOPES:
+            scope = _period_pca_scope_spec(rules, basis_scope)
             selected = np.isin(batch_tasks, scope["fit_rule_indices"])
             if not np.any(selected):
                 continue
@@ -811,8 +885,8 @@ def stream_normal_delay_analysis(
             print(f"  [{addtask}/stream] GPU batch {batch_number}/"
                   f"{n_gpu_batches}; trials {start}:{stop}")
 
-    for basis_scope in DELAY_PCA_SCOPES:
-        scope = _delay_pca_scope_spec(rules, basis_scope)
+    for basis_scope in PERIOD_PCA_SCOPES:
+        scope = _period_pca_scope_spec(rules, basis_scope, period)
         fit_rules = [rules[i] for i in scope["fit_rule_indices"]]
         fit_trial_counts = {rule: trial_counts[rule] for rule in fit_rules}
         if pca_strategy == "incremental":
@@ -842,7 +916,7 @@ def stream_normal_delay_analysis(
             }
             wm_samples = store["n_samples"]
             fit_summary = (
-                f"randomized PCA random_state={SIBLING_LONG_DELAY_PCA_SEED}")
+                f"randomized PCA random_state={SIBLING_SETTLED_PCA_SEED}")
         artifact = {
             "version": 4 if pca_strategy == "incremental" else 7,
             "aname": aname,
@@ -850,8 +924,8 @@ def stream_normal_delay_analysis(
             "rules": list(rules),
             "basis_scope": basis_scope,
             "fit_rules": fit_rules,
-            "period": "delay1",
-            "period_window": (int(delay_start), int(delay_stop)),
+            "period": period,
+            "period_window": (int(period_start), int(period_stop)),
             "source": scope["source"],
             "trial_counts": trial_counts,
             "fit_trial_counts": fit_trial_counts,
@@ -862,15 +936,15 @@ def stream_normal_delay_analysis(
             "representations": representations,
         }
         method = ("gradient" if pca_strategy == "incremental"
-                  else "long_delay_endpoint")
-        out_path = _delay_pca_path(
+                  else "settled_endpoint")
+        out_path = _period_pca_path(
             save_dir, aname, addtask, rules, basis_scope, method)
         with out_path.open("wb") as stream:
             pickle.dump(artifact, stream)
-        print(f"  [{addtask}/delay-pca/{basis_scope}] trials="
+        print(f"  [{addtask}/{period_name}-pca/{basis_scope}] trials="
               f"{fit_trial_counts}, samples={wm_samples}, "
               f"GPU batch={gpu_batch_size}, {fit_summary}")
-        print(f"  Saved {basis_scope} delay-trajectory PCA basis: {out_path}")
+        print(f"  Saved {basis_scope} {period_name}-trajectory PCA basis: {out_path}")
 
     if temporary_store is not None:
         for store in sample_stores.values():
@@ -902,10 +976,10 @@ def _rel_step_undamped(previous_M, M, leak):
 def _settle_on_constant_input(model, constant_input, seq_idx, db, previous_M,
                               layer_index, leak, rel_tol_undamped,
                               max_settle_steps, on_step=None):
-    """Keep stepping on the delay's constant input until every trial is a
+    """Keep stepping on the period's constant input until every trial is a
     fixed point.
 
-    ``db`` holds the tracked states of the trial's last delay step (sequence
+    ``db`` holds the tracked states of the trial's last period step (sequence
     index ``seq_idx``) and ``previous_M`` the modulation one step earlier, so
     a batch that already meets the criterion settles in zero steps. Trials
     that converge early keep stepping with the rest, which leaves a fixed
@@ -929,25 +1003,25 @@ def _settle_on_constant_input(model, constant_input, seq_idx, db, previous_M,
     return db, residual, n_steps
 
 
-def _run_to_settled_endpoint(model, inputs, delay_stop, layer_index, *, leak,
+def _run_to_settled_endpoint(model, inputs, period_stop, layer_index, *, leak,
                              max_settle_steps,
                              rel_tol_undamped=DEFAULT_REL_TOL_UNDAMPED):
-    """Run through delay1, settle on its last input, and keep the end state.
+    """Run through the period, settle on its last input, and keep the end state.
 
-    Only the last two delay frames and the settling frames are tracked, and
+    Only the last two period frames and the settling frames are tracked, and
     only the current and previous modulation are held, so memory does not
-    grow with the delay or the settling time. Returns (M, hidden, per-trial
+    grow with the period or the settling time. Returns (M, hidden, per-trial
     normalized residual, settling steps); see `_settle_on_constant_input`.
     """
-    delay_stop = int(delay_stop)
-    if not (2 <= delay_stop <= inputs.shape[1]):
-        raise ValueError(f"delay stop {delay_stop} outside sequence length "
+    period_stop = int(period_stop)
+    if not (2 <= period_stop <= inputs.shape[1]):
+        raise ValueError(f"period stop {period_stop} outside sequence length "
                          f"{inputs.shape[1]}")
     model.reset_state(B=inputs.shape[0])
     db = previous_M = None
     with torch.no_grad():
-        for seq_idx in range(delay_stop):
-            track = seq_idx >= delay_stop - 2
+        for seq_idx in range(period_stop):
+            track = seq_idx >= period_stop - 2
             _, _, step_db = model.network_step(
                 inputs[:, seq_idx, :],
                 run_mode="track_states" if track else "minimal",
@@ -957,7 +1031,7 @@ def _run_to_settled_endpoint(model, inputs, delay_stop, layer_index, *, leak,
                     previous_M = _tracked_tensor(db[f"M{layer_index}"]).clone()
                 db = step_db
         db, residual, n_settle = _settle_on_constant_input(
-            model, inputs[:, delay_stop - 1, :], delay_stop - 1, db, previous_M,
+            model, inputs[:, period_stop - 1, :], period_stop - 1, db, previous_M,
             layer_index, leak, rel_tol_undamped, max_settle_steps)
     modulation = _tracked_numpy(db[f"M{layer_index}"]).astype(
         np.float32, copy=True)
@@ -966,22 +1040,22 @@ def _run_to_settled_endpoint(model, inputs, delay_stop, layer_index, *, leak,
     return modulation, hidden, residual, n_settle
 
 
-def _run_long_delay_projected_trajectory(
-        model, inputs, delay_start, delay_stop, layer_index, W, basis, *,
+def _run_long_period_projected_trajectory(
+        model, inputs, period_start, period_stop, layer_index, W, basis, *,
         leak, max_settle_steps, rel_tol_undamped=DEFAULT_REL_TOL_UNDAMPED,
-        max_samples=SIBLING_LONG_DELAY_TRAJECTORY_SAMPLES):
-    """Run a long delay, settle it, and keep six-PC trajectories plus the end.
+        max_samples=SIBLING_LONG_PERIOD_TRAJECTORY_SAMPLES):
+    """Run a long period, settle it, and keep six-PC trajectories plus the end.
 
-    Every frame from delay onset to the settled end is projected immediately
+    Every frame from period onset to the settled end is projected immediately
     on the compute device and only its six coordinates are copied to CPU, so
     memory does not scale as ``frames × batch × hidden × embedding``. The
     trajectory keeps ``max_samples`` frames evenly spaced over the whole span,
     so it ends on the settled endpoint. Returns (M, hidden, trajectories,
     sample indices, per-trial normalized residual, settling steps); sample
-    indices past ``delay_stop - 1`` are settling steps.
+    indices past ``period_stop - 1`` are settling steps.
     """
-    if not (0 <= delay_start < delay_stop - 1 < inputs.shape[1]):
-        raise ValueError(f"invalid delay window {(delay_start, delay_stop)} "
+    if not (0 <= period_start < period_stop - 1 < inputs.shape[1]):
+        raise ValueError(f"invalid period window {(period_start, period_stop)} "
                          f"for sequence length {inputs.shape[1]}")
 
     projectors = {}
@@ -1022,8 +1096,8 @@ def _run_long_delay_projected_trajectory(
     model.reset_state(B=inputs.shape[0])
     db = previous_M = None
     with torch.no_grad():
-        for seq_idx in range(int(delay_stop)):
-            track = seq_idx >= delay_start
+        for seq_idx in range(int(period_stop)):
+            track = seq_idx >= period_start
             _, _, step_db = model.network_step(
                 inputs[:, seq_idx, :],
                 run_mode="track_states" if track else "minimal",
@@ -1035,7 +1109,7 @@ def _run_long_delay_projected_trajectory(
                 previous_M = _tracked_tensor(db[f"M{layer_index}"]).clone()
             db = step_db
         db, residual, n_settle = _settle_on_constant_input(
-            model, inputs[:, int(delay_stop) - 1, :], int(delay_stop) - 1, db,
+            model, inputs[:, int(period_stop) - 1, :], int(period_stop) - 1, db,
             previous_M, layer_index, leak, rel_tol_undamped, max_settle_steps,
             on_step=project)
 
@@ -1050,16 +1124,16 @@ def _run_long_delay_projected_trajectory(
     endpoint_hidden = _tracked_numpy(db[f"hidden{layer_index}"]).astype(
         np.float32, copy=True)
     return (endpoint_M, endpoint_hidden, projected,
-            delay_start + relative_indices, residual, n_settle)
+            period_start + relative_indices, residual, n_settle)
 
 
-def _long_delay_trials_per_rule(addtask):
-    """Long-delay trials per sibling rule: one per direction and magnitude
-    level for a family with SIBLING_LONG_DELAY_STIM_MAGNITUDES, else
-    SIBLING_LONG_DELAY_TRIALS_PER_RULE."""
-    levels = SIBLING_LONG_DELAY_STIM_MAGNITUDES.get(addtask)
+def _long_period_trials_per_rule(addtask):
+    """Long-period trials per sibling rule: one per direction and magnitude
+    level for a family with SIBLING_STIM_MAGNITUDES, else
+    SIBLING_LONG_PERIOD_TRIALS_PER_RULE."""
+    levels = SIBLING_STIM_MAGNITUDES.get(addtask)
     if levels is None:
-        return SIBLING_LONG_DELAY_TRIALS_PER_RULE
+        return SIBLING_LONG_PERIOD_TRIALS_PER_RULE
     return SIBLING_FP_N_STIM * len(levels)
 
 
@@ -1081,7 +1155,7 @@ def _stimulus_ring_channels(rule_inputs, fix_window, stim_window, rule):
     return int(ring[0]), int(ring[1])
 
 
-def _apply_long_delay_stimulus_magnitudes(inputs, trials, rules, task_idx,
+def _apply_stimulus_magnitudes(inputs, trials, rules, task_idx,
                                           stim_idx, levels):
     """Give every direction of each rule one long-delay trial per magnitude.
 
@@ -1141,32 +1215,156 @@ def _apply_long_delay_stimulus_magnitudes(inputs, trials, rules, task_idx,
     return magnitude
 
 
-def extract_long_delay_endpoints(
+def _apply_balanced_stimulus_directions(inputs, trials, rules, task_idx,
+                                        n_stim=SIBLING_FP_N_STIM):
+    """Give each rule's long-period trials the native directions in turn.
+
+    The MemoryPro/MemoryAnti generator draws one continuous direction per
+    trial at random. Here trial i of a rule takes direction i mod `n_stim`:
+    during ``stim1`` the two channels of the stimulus ring
+    (`_stimulus_ring_channels`) are overwritten with (sin θ, cos θ),
+    θ = 2π k / n_stim, the unit-strength input the generator writes for that
+    direction (`mpn_tasks.Trial.add`). Each trial's generated ``stim1`` is
+    first checked to be one constant unit vector on that ring whose angle is
+    nearest the direction its metadata names, so a wrong ring or channel
+    order raises instead of being overwritten. Both rules get the same
+    directions in the same trial order, so a local trial index is a matched
+    cross-task condition, and every direction has its opposite
+    (k + n_stim / 2) among the trials. Later epochs are left as generated; a
+    settled ``stim1`` endpoint never reaches them. ``inputs`` (trials, time,
+    channels) is changed in place; returns each trial's direction index.
+    """
+    task_idx = np.asarray(task_idx, dtype=int)
+    stim_idx = np.empty(task_idx.size, dtype=int)
+    for task, (rule, trial) in enumerate(zip(rules, trials)):
+        members = np.flatnonzero(task_idx == task)
+        if members.size == 0 or members.size % n_stim:
+            raise ValueError(f"{rule}: {members.size} long-period trials cannot "
+                             f"hold the {n_stim} directions equally often")
+        fix_on, fix_off = trial.epochs["fix1"]
+        stim_on, stim_off = trial.epochs["stim1"]
+        if any(np.ndim(edge) for edge in (fix_on, fix_off, stim_on, stim_off)):
+            raise ValueError(f"{rule}: balanced directions need aligned scalar "
+                             "fix1 and stim1 windows")
+        fix_on = 0 if fix_on is None else int(fix_on)
+        stim_on, stim_off = int(stim_on), int(stim_off)
+        rows = torch.as_tensor(members)
+        ring = _stimulus_ring_channels(
+            inputs[rows].detach().cpu().numpy(), (fix_on, int(fix_off)),
+            (stim_on, stim_off), rule)
+
+        generated = inputs[rows, stim_on:stim_off][:, :, list(ring)].detach().cpu().numpy()
+        if not (np.allclose(generated, generated[:, :1], atol=1e-5)
+                and np.allclose(np.linalg.norm(generated[:, 0], axis=1), 1.0, atol=1e-5)):
+            raise ValueError(f"{rule}: stim1 channels {ring} do not hold one "
+                             "constant unit-strength (sin, cos) per trial")
+        angle = np.arctan2(generated[:, 0, 0], generated[:, 0, 1]) % (2 * np.pi)
+        nearest = np.rint(angle / (2 * np.pi / n_stim)).astype(int) % n_stim
+        named = np.asarray(trial.meta["stim1"], dtype=int).reshape(-1)
+        if not np.array_equal(nearest, named):
+            raise ValueError(f"{rule}: stim1 channels {ring} are not the "
+                             "(sin, cos) of the generated directions")
+
+        stim_idx[members] = np.arange(members.size) % n_stim
+        angles = 2 * np.pi * stim_idx[members] / n_stim
+        values = torch.as_tensor(np.stack([np.sin(angles), np.cos(angles)], axis=1),
+                                 dtype=inputs.dtype)
+        for column, channel in enumerate(ring):
+            inputs[rows, stim_on:stim_off, channel] = (
+                values[:, column:column + 1].expand(-1, stim_off - stim_on))
+    return stim_idx
+
+
+def _checked_direction_counts(addtask, rules, task_idx, stim_idx, n_trials_per_rule):
+    """Per-rule counts of the trials' directions, required to be equal."""
+    expected = int(n_trials_per_rule) // SIBLING_FP_N_STIM
+    counts_by_rule = {}
+    for task_i, rule in enumerate(rules):
+        counts = np.bincount(stim_idx[task_idx == task_i], minlength=SIBLING_FP_N_STIM)
+        if counts.size != SIBLING_FP_N_STIM or not np.all(counts == expected):
+            raise ValueError(
+                f"{rule}: unbalanced long-period directions {counts.tolist()}")
+        counts_by_rule[rule] = counts.tolist()
+    return counts_by_rule
+
+
+def _period_fields(addtask, period_start, period_stop, dt):
+    """The window of a family's long period as artifact fields: ``period``,
+    ``period_window``, ``period_steps`` and ``period_ms`` for every family,
+    and for the delay families also the ``delay_*`` names their caches and
+    readers have always used."""
+    period = SIBLING_FAMILY_PERIOD[addtask]
+    steps = int(period_stop - period_start)
+    fields = {
+        "period": period,
+        "long_period_setting": "long",
+        "period_window": (int(period_start), int(period_stop)),
+        "period_steps": steps,
+        "period_ms": int(steps * dt),
+    }
+    if period == "delay1":
+        fields.update({
+            "long_delay_setting": "long",
+            "delay_epoch": "delay1",
+            "delay_window": fields["period_window"],
+            "delay_steps": steps,
+            "delay_ms": fields["period_ms"],
+        })
+    return fields
+
+
+def _endpoint_period_fields(endpoints):
+    """(window, steps, ms, settle ms, endpoint ms) of a settled-endpoint
+    artifact's period. Delay-family artifacts written before the period_*
+    fields existed carry only their delay_* names, and the earliest ones end
+    with the trial's delay (no settling)."""
+    def field(name, default=None):
+        for key in (f"period_{name}", f"delay_{name}"):
+            if key in endpoints:
+                return endpoints[key]
+        if default is None:
+            raise KeyError(f"endpoint artifact has no period_{name}")
+        return default
+
+    period_ms = int(field("ms"))
+    endpoint_ms = endpoints.get("endpoint_period_ms",
+                                endpoints.get("endpoint_delay_ms", period_ms))
+    return (tuple(field("window")), int(field("steps")), period_ms,
+            int(endpoints.get("settle_ms", 0)), int(endpoint_ms))
+
+
+def extract_settled_endpoints(
         aname, save_dir, addtask, rules, model, device,
         converted_task_params, W, layer_index=1, n_trials_per_rule=None):
-    """Settle generated long-delay trials to their delay fixed points.
+    """Settle generated long-period trials to their fixed points.
 
     This is deliberately a second method, not a replacement for the gradient
     solve: instead of optimizing for M* = F(M*), each trial runs through its
-    long ``delay1`` and then keeps stepping on the delay's constant input until
+    family's lengthened period (SIBLING_FAMILY_PERIOD: ``delay1``, or
+    ``stim1`` for MemoryPro/MemoryAnti) and then keeps stepping on that
+    period's constant input until
     the leak-normalized residual meets the gradient solver's criterion
-    (SIBLING_LONG_DELAY_MAX_SETTLE_MS caps it; see that constant). Sibling
+    (SIBLING_MAX_SETTLE_MS caps it; see that constant). Sibling
     rules are generated with aligned RNG state and equal local trial order, so
     ``condition_idx`` matches the same natural trial across the two rules.
     Full-dimensional state is retained only at the settled endpoint; up to 51
-    frames from delay onset to that endpoint are retained as compact six-PC
-    trajectories. A family with SIBLING_LONG_DELAY_STIM_MAGNITUDES (DelayDM)
-    runs one trial per direction and level (`_long_delay_trials_per_rule`,
-    `_apply_long_delay_stimulus_magnitudes`); ``n_trials_per_rule`` None
-    takes that count.
+    frames from period onset to that endpoint are retained as compact six-PC
+    trajectories. A family with SIBLING_STIM_MAGNITUDES (DelayDM)
+    runs one trial per direction and level (`_long_period_trials_per_rule`,
+    `_apply_stimulus_magnitudes`); ``n_trials_per_rule`` None
+    takes that count. A family of SIBLING_BALANCED_DIRECTION_FAMILIES
+    (MemoryPro/MemoryAnti) has its trials' directions replaced by the native
+    ones in turn (`_apply_balanced_stimulus_directions`).
     """
     rules = list(rules)
     if n_trials_per_rule is None:
-        n_trials_per_rule = _long_delay_trials_per_rule(addtask)
-    magnitude_levels = SIBLING_LONG_DELAY_STIM_MAGNITUDES.get(addtask)
+        n_trials_per_rule = _long_period_trials_per_rule(addtask)
+    magnitude_levels = SIBLING_STIM_MAGNITUDES.get(addtask)
+    period = SIBLING_FAMILY_PERIOD[addtask]
+    tag = settled_endpoint_tag(addtask)
     tp = copy.deepcopy(converted_task_params)
     tp["rules"] = rules
-    tp["long_delay"] = "long"
+    tp[_PERIOD_SPECS[period]["long_key"]] = "long"
     tp["hp"]["batch_size_train"] = int(n_trials_per_rule)
     data, extra = mpn_tasks.generate_trials_wrap(
         tp, int(n_trials_per_rule), rules=rules, mode_input="random",
@@ -1174,7 +1372,7 @@ def extract_long_delay_endpoints(
         balanced_stimulus_directions=(addtask == "delaydm1"))
     long_input = data[0]
     _, trials, _ = extra
-    delay_start, delay_stop = _aligned_delay1_window(rules, trials)
+    period_start, period_stop = _aligned_period_window(rules, trials, period)
 
     task_idx = np.asarray(
         helper.find_task(tp, long_input.detach().cpu().numpy(), 0), dtype=int)
@@ -1199,41 +1397,34 @@ def extract_long_delay_endpoints(
     if not (stim_idx.size == stimulus_magnitude.size == task_idx.size):
         raise ValueError(
             f"{addtask}: endpoint metadata length does not match trial count")
-    direction_counts = None
-    if addtask == "delaydm1":
-        direction_counts = {}
-        expected_per_direction = int(n_trials_per_rule) // SIBLING_FP_N_STIM
-        for task_i, rule in enumerate(rules):
-            counts = np.bincount(
-                stim_idx[task_idx == task_i], minlength=SIBLING_FP_N_STIM)
-            if (counts.size != SIBLING_FP_N_STIM
-                    or not np.all(counts == expected_per_direction)):
-                raise ValueError(
-                    f"{rule}: unbalanced long-delay directions {counts.tolist()}")
-            direction_counts[rule] = counts.tolist()
+    balanced = addtask == "delaydm1" or addtask in SIBLING_BALANCED_DIRECTION_FAMILIES
+    if addtask in SIBLING_BALANCED_DIRECTION_FAMILIES:
+        stim_idx = _apply_balanced_stimulus_directions(
+            long_input, trials, rules, task_idx)
+        stimulus_magnitude = np.ones(stim_idx.size, dtype=float)
+    direction_counts = (_checked_direction_counts(
+        addtask, rules, task_idx, stim_idx, n_trials_per_rule) if balanced else None)
     if magnitude_levels is not None:
-        stimulus_magnitude = _apply_long_delay_stimulus_magnitudes(
+        stimulus_magnitude = _apply_stimulus_magnitudes(
             long_input, trials, rules, task_idx, stim_idx, magnitude_levels)
 
     group_labels = None
     if addtask == "dmcgo":
         group_labels = _dmc_category_labels(task_idx, stim_idx)
-    elif addtask != "delaydm1":
-        raise ValueError(f"no long-delay endpoint analysis for {addtask!r}")
 
     W = np.asarray(W, dtype=np.float32)
     long_input_device = long_input.to(device)
-    basis_path = _delay_pca_path(
-        save_dir, aname, addtask, rules, "joint", "long_delay_endpoint")
+    basis_path = _period_pca_path(
+        save_dir, aname, addtask, rules, "joint", "settled_endpoint")
     with basis_path.open("rb") as stream:
         trajectory_basis = pickle.load(stream)
     dt = tp["dt"]
-    max_settle_steps = int(round(SIBLING_LONG_DELAY_MAX_SETTLE_MS / dt))
+    max_settle_steps = int(round(SIBLING_MAX_SETTLE_MS / dt))
     # One forward pass gives both the endpoint and its projected trajectory, so
     # the two always come from the same realization of any recurrent noise.
     (M, hidden, projected_trajectories, trajectory_sample_indices,
-     rel_step_undamped, n_settle) = _run_long_delay_projected_trajectory(
-        model, long_input_device, delay_start, delay_stop, layer_index,
+     rel_step_undamped, n_settle) = _run_long_period_projected_trajectory(
+        model, long_input_device, period_start, period_stop, layer_index,
         W, trajectory_basis, leak=_modulation_leak(model, layer_index),
         max_settle_steps=max_settle_steps)
     if tuple(M.shape[-2:]) != tuple(W.shape):
@@ -1241,26 +1432,26 @@ def extract_long_delay_endpoints(
                          f"{M.shape[-2:]} vs {W.shape}")
     effective_M = (M * W[None, :, :]).astype(np.float32, copy=False)
     is_fixed = rel_step_undamped <= DEFAULT_REL_TOL_UNDAMPED
-    delay_steps = int(delay_stop - delay_start)
+    period_steps = int(period_stop - period_start)
+    trajectory_steps = np.asarray(trajectory_sample_indices - period_start, dtype=int)
 
     artifact = {
         # Version 4: DelayDM trials at fixed magnitude levels, one per direction.
+        # The period_* fields (and the MemoryPro/MemoryAnti stimulus family)
+        # were added without changing the delay families' fields.
         "version": 4,
-        "method": "long_delay_endpoint",
+        "method": tag,
         "aname": aname,
         "family": addtask,
         "task_names": rules,
-        "long_delay_setting": "long",
-        "delay_epoch": "delay1",
-        "delay_window": (int(delay_start), int(delay_stop)),
-        "delay_endpoint_index": int(delay_stop - 1 + n_settle),
-        "delay_steps": delay_steps,
-        "delay_ms": int(delay_steps * dt),
-        # Settling after the trial's own delay, on the delay's constant input.
+        **_period_fields(addtask, period_start, period_stop, dt),
+        "period_endpoint_index": int(period_stop - 1 + n_settle),
+        # Settling after the trial's own period, on the period's constant input.
         "settle_steps": int(n_settle),
         "settle_ms": int(n_settle * dt),
         "max_settle_ms": int(max_settle_steps * dt),
-        "endpoint_delay_ms": int((delay_steps + n_settle) * dt),
+        "endpoint_period_ms": int((period_steps + n_settle) * dt),
+        "trajectory_period_steps": trajectory_steps,
         "rel_step_undamped": rel_step_undamped,
         "is_fixed": is_fixed,
         "rel_tol_undamped": float(DEFAULT_REL_TOL_UNDAMPED),
@@ -1268,18 +1459,16 @@ def extract_long_delay_endpoints(
         "trajectory_pca_source": str(basis_path),
         "trajectory_sample_indices": np.asarray(
             trajectory_sample_indices, dtype=int),
-        "trajectory_delay_steps": np.asarray(
-            trajectory_sample_indices - delay_start, dtype=int),
-        "trajectory_time_ms": np.asarray(
-            (trajectory_sample_indices - delay_start) * dt, dtype=int),
+        "trajectory_time_ms": np.asarray(trajectory_steps * dt, dtype=int),
         "task_idx": task_idx,
         "condition_idx": condition_idx,
         "stim_idx": stim_idx,
         "stimulus_magnitude": stimulus_magnitude,
-        # None: the generator's own magnitudes (random for DelayDM, 1 for DMC).
+        # None: the generator's own magnitudes (random for DelayDM, 1 for DMC
+        # and MemoryPro/MemoryAnti).
         "stimulus_magnitude_levels": (None if magnitude_levels is None
                                       else [float(v) for v in magnitude_levels]),
-        "balanced_stimulus_directions": addtask == "delaydm1",
+        "balanced_stimulus_directions": balanced,
         "representations": {
             "fixed_M": M,
             "fixed_WM": effective_M,
@@ -1287,22 +1476,28 @@ def extract_long_delay_endpoints(
         },
         "projected_trajectories": projected_trajectories,
     }
+    if SIBLING_FAMILY_PERIOD[addtask] == "delay1":
+        artifact.update({
+            "delay_endpoint_index": artifact["period_endpoint_index"],
+            "endpoint_delay_ms": artifact["endpoint_period_ms"],
+            "trajectory_delay_steps": trajectory_steps,
+        })
     if direction_counts is not None:
         artifact["direction_counts"] = direction_counts
     if addtask == "dmcgo":
         artifact["group_labels"] = group_labels
 
-    out_path = (Path(save_dir)
-                / f"{addtask}_long_delay_endpoints_{aname}.pkl")
+    out_path = Path(save_dir) / f"{addtask}_{tag}s_{aname}.pkl"
     with open(out_path, "wb") as f:
         pickle.dump(artifact, f)
-    print(f"  [{addtask}/long-delay-endpoint] saved {task_idx.size} endpoints "
+    period_name = _period_name(addtask)
+    print(f"  [{addtask}/{tag}] saved {task_idx.size} endpoints "
           f"and {trajectory_sample_indices.size}-step projected trajectories: "
-          f"{artifact['delay_ms']} ms delay + {artifact['settle_ms']} ms "
+          f"{artifact['period_ms']} ms {period_name} + {artifact['settle_ms']} ms "
           f"settling, {int(is_fixed.sum())}/{is_fixed.size} fixed (max "
           f"normalized residual {rel_step_undamped.max():.2e}): {out_path}")
     if not is_fixed.all():
-        print(f"  WARNING [{addtask}/long-delay-endpoint] "
+        print(f"  WARNING [{addtask}/{tag}] "
               f"{int((~is_fixed).sum())} endpoints still above the fixed-point "
               f"criterion after the {artifact['max_settle_ms']} ms settling cap.")
     del long_input_device, long_input, data
@@ -1313,50 +1508,61 @@ _FIXED_POINT_REPS = (("hidden", "fixed_hidden"),
                      ("e_modulation", "fixed_WM"))
 
 
-def save_long_delay_endpoint_pc_projections(
+def save_settled_endpoint_pc_projections(
         aname, save_dir, addtask, rules, endpoint_path,
         basis_scope="joint"):
-    """Project long-delay endpoints through a saved trajectory-PCA basis.
+    """Project settled endpoints through a saved trajectory-PCA basis.
 
-    Endpoint coordinates are produced for every requested basis. Compact delay
+    Endpoint coordinates are produced for every requested basis. Compact period
     trajectories are attached only when their online projection basis matches
     ``basis_scope``; currently they are sampled in the joint sibling basis.
     """
     save_dir = Path(save_dir)
-    scope = _delay_pca_scope_spec(rules, basis_scope)
+    scope = _period_pca_scope_spec(rules, basis_scope)
     artifact_suffix = scope["artifact_suffix"]
-    basis_path = _delay_pca_path(
+    tag = settled_endpoint_tag(addtask)
+    is_delay = SIBLING_FAMILY_PERIOD[addtask] == "delay1"
+    basis_path = _period_pca_path(
         save_dir, aname, addtask, rules, basis_scope,
-        "long_delay_endpoint")
+        "settled_endpoint")
     with open(basis_path, "rb") as f:
         basis = pickle.load(f)
     with open(endpoint_path, "rb") as f:
         endpoints = pickle.load(f)
-    if endpoints.get("method") != "long_delay_endpoint":
-        raise ValueError(f"{endpoint_path}: not a long-delay endpoint artifact")
+    if endpoints.get("method") != tag:
+        raise ValueError(f"{endpoint_path}: not a {tag} artifact")
+    (period_window, period_steps, period_ms, settle_ms,
+     endpoint_period_ms) = _endpoint_period_fields(endpoints)
     if list(endpoints.get("task_names", [])) != list(rules):
         raise ValueError(f"{endpoint_path}: expected rules {rules}, got "
                          f"{endpoints.get('task_names')}")
 
     out = {
         "version": 3,
-        "method": "long_delay_endpoint",
+        "method": tag,
         "aname": aname,
         "family": addtask,
         "task_names": list(rules),
         "basis_scope": basis_scope,
         "pca_source": str(basis_path),
         "endpoint_source": str(endpoint_path),
-        "delay_window": tuple(endpoints["delay_window"]),
-        "delay_steps": int(endpoints["delay_steps"]),
-        "delay_ms": int(endpoints["delay_ms"]),
-        # Endpoints saved before settling existed end with the trial's delay.
-        "settle_ms": int(endpoints.get("settle_ms", 0)),
-        "endpoint_delay_ms": int(endpoints.get(
-            "endpoint_delay_ms", endpoints["delay_ms"])),
+        "period": SIBLING_FAMILY_PERIOD[addtask],
+        "period_window": period_window,
+        "period_steps": period_steps,
+        "period_ms": period_ms,
+        "settle_ms": settle_ms,
+        "endpoint_period_ms": endpoint_period_ms,
         "n_components": 6,
         "representations": {},
     }
+    if is_delay:
+        # The names the delay families' projections have always carried.
+        out.update({
+            "delay_window": out["period_window"],
+            "delay_steps": out["period_steps"],
+            "delay_ms": out["period_ms"],
+            "endpoint_delay_ms": out["endpoint_period_ms"],
+        })
     for plot_name, endpoint_key in _FIXED_POINT_REPS:
         record = basis["representations"][endpoint_key]
         mean = np.asarray(record["mean"], dtype=float)
@@ -1395,24 +1601,27 @@ def save_long_delay_endpoint_pc_projections(
             rep_out["trajectory_proj"] = trajectory
             rep_out["trajectory_sample_indices"] = np.asarray(
                 endpoints["trajectory_sample_indices"], dtype=int)
-            rep_out["trajectory_delay_steps"] = np.asarray(
-                endpoints["trajectory_delay_steps"], dtype=int)
+            rep_out["trajectory_period_steps"] = np.asarray(
+                endpoints.get("trajectory_period_steps",
+                              endpoints.get("trajectory_delay_steps")), dtype=int)
+            if is_delay:
+                rep_out["trajectory_delay_steps"] = rep_out["trajectory_period_steps"]
             rep_out["trajectory_time_ms"] = np.asarray(
                 endpoints["trajectory_time_ms"], dtype=int)
         if addtask == "dmcgo" and "group_labels" in endpoints:
             rep_out["group_labels"] = np.asarray(endpoints["group_labels"])
-        gallery_suffix = f"_long_delay_endpoint{artifact_suffix}"
+        gallery_suffix = f"_{tag}{artifact_suffix}"
         rep_out["gallery_path"] = str(_save_pc_pair_gallery(
             save_dir, aname, addtask, gallery_suffix, basis_scope,
             plot_name, rep_out))
         out["representations"][plot_name] = rep_out
 
     out_path = (save_dir
-                / f"{addtask}_long_delay_endpoint_pc_projections"
+                / f"{addtask}_{tag}_pc_projections"
                   f"{artifact_suffix}_{aname}.pkl")
     with open(out_path, "wb") as f:
         pickle.dump(out, f)
-    print(f"  Saved {basis_scope} {addtask} long-delay endpoint projections: "
+    print(f"  Saved {basis_scope} {addtask} {tag} projections: "
           f"{out_path}")
     return out_path
 
@@ -1458,9 +1667,9 @@ def _save_pc_pair_gallery(save_dir, aname, addtask, artifact_suffix,
 
     The gallery itself computes no score, highlights no panel, and writes no
     selected-plane metadata. ``paper_plot.py`` uses an explicit plane for the
-    gradient method and, for long-delay endpoints, the pair that best
+    gradient method and, for settled endpoints, the pair that best
     separates the fixed points (``core.sibling_geometry``: stimulus directions
-    for DelayDM, response categories for DMC).
+    for DelayDM and MemoryPro/MemoryAnti, response categories for DMC).
     """
     proj = np.asarray(entry["proj"], dtype=float)
     if proj.ndim != 2 or proj.shape[1] != 6:
@@ -1514,12 +1723,13 @@ def _save_pc_pair_gallery(save_dir, aname, addtask, artifact_suffix,
                for t, rule in enumerate(task_names)]
     fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.965),
                ncol=len(handles), frameon=True, fontsize=8)
-    fig.suptitle(f"{addtask} | {basis_scope} delay PCA | {plot_name} | "
+    fig.suptitle(f"{addtask} | {basis_scope} {_period_name(addtask)} PCA | {plot_name} | "
                  "all 15 PC pairs (selection deferred to paper_plot)", fontsize=12,
                  y=0.995)
     fig.tight_layout(rect=(0, 0, 1, 0.92))
     path = (Path(save_dir)
-            / f"{addtask}_delay_pc_gallery{artifact_suffix}_{plot_name}_{aname}.png")
+            / f"{addtask}_{_period_name(addtask)}_pc_gallery{artifact_suffix}"
+              f"_{plot_name}_{aname}.png")
     fig.savefig(path, dpi=250)
     plt.close(fig)
     print(f"  Saved 15-pair PC gallery: {path}")
@@ -1541,9 +1751,9 @@ def save_sibling_fixed_point_pc_projections(
         raise ValueError(f"expected two sibling rules, got {rules}")
 
     save_dir = Path(save_dir)
-    scope = _delay_pca_scope_spec(rules, basis_scope)
+    scope = _period_pca_scope_spec(rules, basis_scope)
     artifact_suffix = scope["artifact_suffix"]
-    basis_path = _delay_pca_path(
+    basis_path = _period_pca_path(
         save_dir, aname, addtask, rules, basis_scope, "gradient")
     with open(basis_path, "rb") as f:
         basis_artifact = pickle.load(f)
@@ -1744,24 +1954,22 @@ def cue_interp_artifact_paths(save_dir, aname, addtask, method):
     """(sweep pickle, PC-projection pickle) for one family and method.
 
     The names carry the owning method's token so method-scoped cleanup keeps
-    attributing them: ``long_delay_endpoint`` for the settled endpoints, and the
-    gradient pair ``_cue_interp_fixed_points`` /
+    attributing them: the family's `settled_endpoint_tag`
+    (``long_delay_endpoint``, ``long_stimulus_endpoint``) for the settled
+    endpoints, and the gradient pair ``_cue_interp_fixed_points`` /
     ``_cue_interp_delay_pc_projections``.
     """
     save_dir = Path(save_dir)
-    if method == "long_delay_endpoint":
+    if normalize_method(method) == "settled_endpoint":
+        tag = settled_endpoint_tag(addtask)
         return (
-            save_dir / f"{addtask}_cue_interp_long_delay_endpoints_{aname}.pkl",
-            save_dir / (f"{addtask}_cue_interp_long_delay_endpoint_"
-                        f"pc_projections_{aname}.pkl"),
+            save_dir / f"{addtask}_cue_interp_{tag}s_{aname}.pkl",
+            save_dir / f"{addtask}_cue_interp_{tag}_pc_projections_{aname}.pkl",
         )
-    if method == "gradient":
-        return (
-            save_dir / f"{addtask}_cue_interp_fixed_points_{aname}.pkl",
-            save_dir / f"{addtask}_cue_interp_delay_pc_projections_{aname}.pkl",
-        )
-    raise ValueError(f"unknown sibling method {method!r}; choose from "
-                     f"{SIBLING_METHODS}")
+    return (
+        save_dir / f"{addtask}_cue_interp_fixed_points_{aname}.pkl",
+        save_dir / f"{addtask}_cue_interp_delay_pc_projections_{aname}.pkl",
+    )
 
 
 def _cue_interp_base_rules(addtask, rules, base_rules=None):
@@ -1779,22 +1987,23 @@ def _cue_interp_base_rules(addtask, rules, base_rules=None):
     return base_rules
 
 
-def extract_cue_interp_long_delay_endpoints(
+def extract_cue_interp_settled_endpoints(
         aname, save_dir, addtask, rules, model, device,
         converted_task_params, W, layer_index=1,
         n_alpha=SIBLING_CUE_INTERP_N_ALPHA, n_trials_per_rule=None,
         base_rules=None):
-    """Sweep the rule cue on long-delay trials and keep each settled endpoint.
+    """Sweep the rule cue on long-period trials and keep each settled endpoint.
 
-    Fresh long-delay trials are generated for both rules with aligned RNG
+    Fresh long-period trials are generated for both rules with aligned RNG
     state, exactly as for the base endpoints (direction-balanced at the
-    family's SIBLING_LONG_DELAY_STIM_MAGNITUDES levels for DelayDM, random
-    directions for DMC; ``n_trials_per_rule`` None takes
-    `_long_delay_trials_per_rule`), so alpha = 0 reruns the base endpoints'
+    family's SIBLING_STIM_MAGNITUDES levels for DelayDM, random
+    directions for DMC, the native directions in turn for
+    MemoryPro/MemoryAnti; ``n_trials_per_rule`` None takes
+    `_long_period_trials_per_rule`), so alpha = 0 reruns the base endpoints'
     trials. For each base rule its own trials are rerun at
     every alpha with the cue shifted toward the sibling
-    (`cue_interpolated_inputs`) and settled on that alpha's delay input as the
-    base endpoints are (SIBLING_LONG_DELAY_MAX_SETTLE_MS); the full-dimensional
+    (`cue_interpolated_inputs`) and settled on that alpha's period input as the
+    base endpoints are (SIBLING_MAX_SETTLE_MS); the full-dimensional
     W⊙M and hidden state there are kept per alpha, with each point's
     normalized residual and convergence flag. The network injects no noise,
     so consecutive alphas differ only in the cue.
@@ -1803,11 +2012,13 @@ def extract_cue_interp_long_delay_endpoints(
     base_rules = _cue_interp_base_rules(addtask, rules, base_rules)
     alphas = cue_interp_alphas(n_alpha)
     if n_trials_per_rule is None:
-        n_trials_per_rule = _long_delay_trials_per_rule(addtask)
-    magnitude_levels = SIBLING_LONG_DELAY_STIM_MAGNITUDES.get(addtask)
+        n_trials_per_rule = _long_period_trials_per_rule(addtask)
+    magnitude_levels = SIBLING_STIM_MAGNITUDES.get(addtask)
+    period = SIBLING_FAMILY_PERIOD[addtask]
+    tag = settled_endpoint_tag(addtask)
     tp = copy.deepcopy(converted_task_params)
     tp["rules"] = rules
-    tp["long_delay"] = "long"
+    tp[_PERIOD_SPECS[period]["long_key"]] = "long"
     tp["hp"]["batch_size_train"] = int(n_trials_per_rule)
     data, extra = mpn_tasks.generate_trials_wrap(
         tp, int(n_trials_per_rule), rules=rules, mode_input="random",
@@ -1815,7 +2026,7 @@ def extract_cue_interp_long_delay_endpoints(
         balanced_stimulus_directions=(addtask == "delaydm1"))
     long_input = data[0]
     _, trials, _ = extra
-    delay_start, delay_stop = _aligned_delay1_window(rules, trials)
+    period_start, period_stop = _aligned_period_window(rules, trials, period)
     channels = cue_channel_indices(tp, rules)
 
     # The cue channels themselves say which rule each trial belongs to; the
@@ -1838,14 +2049,18 @@ def extract_cue_interp_long_delay_endpoints(
     if not (stim_idx.size == stimulus_magnitude.size == task_idx.size):
         raise ValueError(
             f"{addtask}: cue-sweep metadata length does not match trial count")
+    if addtask in SIBLING_BALANCED_DIRECTION_FAMILIES:
+        stim_idx = _apply_balanced_stimulus_directions(
+            long_input, trials, rules, task_idx)
+        stimulus_magnitude = np.ones(stim_idx.size, dtype=float)
     if magnitude_levels is not None:
-        stimulus_magnitude = _apply_long_delay_stimulus_magnitudes(
+        stimulus_magnitude = _apply_stimulus_magnitudes(
             long_input, trials, rules, task_idx, stim_idx, magnitude_levels)
 
     W = np.asarray(W, dtype=np.float32)
     dt = tp["dt"]
     leak = _modulation_leak(model, layer_index)
-    max_settle_steps = int(round(SIBLING_LONG_DELAY_MAX_SETTLE_MS / dt))
+    max_settle_steps = int(round(SIBLING_MAX_SETTLE_MS / dt))
     sweeps = {}
     for base_rule in base_rules:
         base = rules.index(base_rule)
@@ -1860,7 +2075,7 @@ def extract_cue_interp_long_delay_endpoints(
             x_alpha = cue_interpolated_inputs(
                 x_base, channels[base], channels[1 - base], alpha)
             M, hidden, residual, n_settle = _run_to_settled_endpoint(
-                model, x_alpha, delay_stop, layer_index, leak=leak,
+                model, x_alpha, period_stop, layer_index, leak=leak,
                 max_settle_steps=max_settle_steps)
             if tuple(M.shape[-2:]) != tuple(W.shape):
                 raise ValueError(f"{addtask}: endpoint M/W shapes disagree: "
@@ -1892,7 +2107,7 @@ def extract_cue_interp_long_delay_endpoints(
             "rel_tol_undamped": float(DEFAULT_REL_TOL_UNDAMPED),
         }
         print(f"  [{addtask}/cue-interp/{base_rule}] {alphas.size} alphas x "
-              f"{selected.size} long-delay trials, cue -> {target_rule}; "
+              f"{selected.size} long-period trials, cue -> {target_rule}; "
               f"settled {min(settle_by_alpha) * dt}-{max(settle_by_alpha) * dt} "
               f"ms, {int(is_fixed.sum())}/{is_fixed.size} fixed")
         if not is_fixed.all():
@@ -1905,7 +2120,7 @@ def extract_cue_interp_long_delay_endpoints(
         # Version 3: DelayDM trials at fixed magnitude levels, one per direction.
         "version": 3,
         "kind": "cue_interp",
-        "method": "long_delay_endpoint",
+        "method": tag,
         "aname": aname,
         "family": addtask,
         "task_names": rules,
@@ -1913,25 +2128,23 @@ def extract_cue_interp_long_delay_endpoints(
         "base_rules": list(base_rules),
         "cue_channels": {rule: int(ch) for rule, ch in zip(rules, channels)},
         "cue_formula": "x_alpha = x_base + alpha * (e_target - e_base)",
-        "long_delay_setting": "long",
-        "delay_epoch": "delay1",
-        "delay_window": (int(delay_start), int(delay_stop)),
-        "delay_steps": int(delay_stop - delay_start),
-        "delay_ms": int((delay_stop - delay_start) * dt),
+        **_period_fields(addtask, period_start, period_stop, dt),
         # Each alpha settles for its own time (sweeps[...]["settle_ms"]).
         "max_settle_ms": int(max_settle_steps * dt),
         "rel_tol_undamped": float(DEFAULT_REL_TOL_UNDAMPED),
-        "balanced_stimulus_directions": addtask == "delaydm1",
+        "balanced_stimulus_directions": (
+            addtask == "delaydm1" or addtask in SIBLING_BALANCED_DIRECTION_FAMILIES),
         "stimulus_magnitude_levels": (None if magnitude_levels is None
                                       else [float(v) for v in magnitude_levels]),
         "sweeps": sweeps,
     }
     out_path, _ = cue_interp_artifact_paths(
-        save_dir, aname, addtask, "long_delay_endpoint")
+        save_dir, aname, addtask, "settled_endpoint")
     with open(out_path, "wb") as f:
         pickle.dump(artifact, f)
-    print(f"  [{addtask}/cue-interp] saved long-delay endpoint sweep "
-          f"({artifact['delay_ms']} ms delay, then settled): {out_path}")
+    print(f"  [{addtask}/cue-interp] saved {tag} sweep "
+          f"({artifact['period_ms']} ms {_period_name(addtask)}, then settled): "
+          f"{out_path}")
     del long_input, data
     return out_path
 
@@ -2072,7 +2285,7 @@ def solve_cue_interp_fixed_points(
 
 def save_cue_interp_pc_projections(aname, save_dir, addtask, rules, sweep_path,
                                    method, basis_scope="joint"):
-    """Project a rule-cue sweep through the method's saved delay-PCA basis.
+    """Project a rule-cue sweep through the method's saved period-PCA basis.
 
     Each base rule's ``(n_alpha, n_points, features)`` endpoints or fixed
     points become ``(n_alpha, n_points, 6)`` coordinates in the same joint
@@ -2085,8 +2298,13 @@ def save_cue_interp_pc_projections(aname, save_dir, addtask, rules, sweep_path,
     """
     save_dir = Path(save_dir)
     rules = list(rules)
-    basis_path = _delay_pca_path(
-        save_dir, aname, addtask, rules, basis_scope, method)
+    # The artifacts name their method by the family's tag (settled endpoints)
+    # or "gradient".
+    method = (settled_endpoint_tag(addtask)
+              if normalize_method(method) == "settled_endpoint" else "gradient")
+    basis_path = _period_pca_path(
+        save_dir, aname, addtask, rules, basis_scope,
+        "gradient" if method == "gradient" else "settled_endpoint")
     with open(basis_path, "rb") as f:
         basis = pickle.load(f)
     with open(sweep_path, "rb") as f:
@@ -2161,10 +2379,12 @@ def save_cue_interp_pc_projections(aname, save_dir, addtask, rules, sweep_path,
             rep_out["sweeps"][base_rule] = sweep_out
             print(f"  [{addtask}/cue-interp/pc-projection] {plot_name}/"
                   f"{base_rule}: {n_alpha} alphas x {n_points} points in six "
-                  f"{basis_scope} Delay PCs")
+                  f"{basis_scope} {_period_name(addtask)} PCs")
         out["representations"][plot_name] = rep_out
 
-    _, out_path = cue_interp_artifact_paths(save_dir, aname, addtask, method)
+    _, out_path = cue_interp_artifact_paths(
+        save_dir, aname, addtask,
+        "gradient" if method == "gradient" else "settled_endpoint")
     with open(out_path, "wb") as f:
         pickle.dump(out, f)
     print(f"  Saved {basis_scope} {addtask} rule-cue sweep projections: {out_path}")
@@ -2175,8 +2395,9 @@ def build_arg_parser():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description=("Analyze DelayDM or DMC sibling-task memory geometry "
-                     "without running clustering or lesion experiments."))
+        description=("Analyze the fixed-point geometry of a sibling-task pair "
+                     "(DelayDM, DMC, MemoryPro/MemoryAnti) without running "
+                     "clustering or lesion experiments."))
     parser.add_argument("--seed", type=int, required=True,
                         help="Seed of the trained everything network (for example 749).")
     parser.add_argument("--feature", required=True,
@@ -2185,13 +2406,16 @@ def build_arg_parser():
         "--families", nargs="+", required=True,
         choices=tuple(SIBLING_FAMILIES),
         help=("Sibling families to analyze. 'delaydm1' runs DelayDM1 and "
-              "DelayDM2; 'dmcgo' runs DMCGo and DMCNoGo."))
+              "DelayDM2 and 'dmcgo' DMCGo and DMCNoGo, both in the memory "
+              "delay; 'delaygo' runs MemoryPro and MemoryAnti in the stimulus "
+              "period."))
     parser.add_argument(
-        "--method", required=True, choices=SIBLING_METHODS,
+        "--method", required=True, choices=SIBLING_METHOD_CHOICES,
         help=("Fixed-point method to run. 'gradient' runs the optimizer-based "
-              "solver; 'long_delay_endpoint' runs long-delay trials and keeps "
-              "them on the delay input until they settle to a fixed point. "
-              "Only the selected method is run."))
+              "solver (delay families only); 'settled_endpoint' lengthens the "
+              "family's period and keeps the trials on its input until they "
+              "settle to a fixed point ('long_delay_endpoint' is its earlier "
+              "name). Only the selected method is run."))
     return parser
 
 

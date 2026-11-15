@@ -5,12 +5,14 @@ The sibling figures of paper_plot.py (``delaydm_fixed_point_geometry``,
 ``sibling_cue_interp``) are illustrations: each shows the run of the cohort,
 and the pair of its six saved PCs, in which the fixed points it draws
 separate best. This script asks what holds over every run, in the full state
-space, from the settled long-delay endpoint and rule-cue sweep caches that
-``sibling_delay_analysis.py --method long_delay_endpoint`` writes under
+space, from the settled endpoint and rule-cue sweep caches that
+``sibling_fixed_point_analysis.py --method settled_endpoint`` writes under
 ``two_in_multiples/<aname>/`` (nothing is re-simulated; a cohort takes a few
 minutes, most of it reading the W * M sweeps). Per run, family (DelayDM:
-delaydm1 / delaydm2; DMC: dmcgo / dmcnogo) and representation (the hidden
-state and W * M at the settled endpoint, ``REPRESENTATIONS``):
+delaydm1 / delaydm2; DMC: dmcgo / dmcnogo; both settled in the memory delay;
+and, when its caches exist, MemoryPro / MemoryAnti: delaygo / delayanti,
+settled in the stimulus period) and representation (the hidden state and
+W * M at the settled endpoint, ``REPRESENTATIONS``):
 
 DelayDM, whose two rules present the stimulus on different modalities:
 - ``translation_explained``: the two tasks' endpoints matched by (stimulus
@@ -60,16 +62,45 @@ respond to:
   ``category_nearest_centroid_accuracy_<rule>`` the leave-one-out
   nearest-centroid accuracy of the category (0.5 chance, 1 perfect).
 
-A run enters when both families' endpoint and sweep caches exist and every
-point met the fixed-point criterion (``is_fixed``); other runs are listed
-with the reason. Output: ``two_in_multiples/sibling_cohort_results.pkl``
+MemoryPro / MemoryAnti (``OPTIONAL_FAMILIES``), whose two rules see the same
+stimulus and answer with it or with its opposite; their endpoints are
+averaged per stimulus direction (eight per rule):
+- ``ring_cosine_same``: with each rule's mean removed, the cosine between
+  the two rules' eight-point configurations matched by stimulus direction
+  (1: one direction is held at the same place under both rules, apart from
+  a shift; -1: at the place of the opposite direction; 0: the two rules
+  code direction along orthogonal axes). ``ring_cosine_opposite`` is the
+  same with MemoryAnti's directions shifted by pi, i.e. matched by the
+  response direction.
+- ``translation_explained_same`` and ``translation_explained_opposite``:
+  the fraction of the mean squared cross-rule displacement that the one
+  shared vector accounts for under each matching (``translation_metrics``);
+  the vector itself, the difference of the two rules' means, is the same
+  for both, with ``translation_to_ring``, its length over the root mean
+  square radius of the rings.
+- ``separation_aligned_same`` and ``separation_aligned_opposite``: the
+  separation of the pooled endpoints by direction with the rule means
+  removed, labelling MemoryAnti's endpoints by their stimulus or by their
+  response direction; ``alignment_gain_*`` divides each by the raw
+  separation (NaN when the raw one is zero).
+- ``cue_traversed``, ``cue_end_residual`` and ``cue_end_nearer_sibling``, as
+  for DelayDM: the sweep from MemoryPro's cue to MemoryAnti's with the
+  stimulus held, against the shared vector and the MemoryAnti endpoint of
+  the same stimulus (a trained input, as for DMC).
+
+A run enters when the DelayDM and DMC endpoint and sweep caches exist and
+every point met the fixed-point criterion (``is_fixed``); other runs are
+listed with the reason. The MemoryPro / MemoryAnti statistics are added to a
+run that has those caches too, and the reason is kept under
+``optional_missing`` when it has not. Output: ``two_in_multiples/sibling_cohort_results.pkl``
 (the feature, the definitions above, ``runs`` keyed by run name with every
 statistic per family and representation, and ``skipped``), which
 ``paper_plot.py`` draws in ``two_in_multiple`` mode, one statistic per figure
 (``sibling_cohort_translation``, ``sibling_cohort_alignment``,
 ``sibling_cohort_cue_transfer``, ``sibling_cohort_category_axis``,
-``sibling_cohort_category_memory``). Rerun it after
-``sibling_delay_analysis.py`` rewrites any run's caches.
+``sibling_cohort_category_memory``, and ``sibling_cohort_ring_cosine`` for
+MemoryPro / MemoryAnti). Rerun it after
+``sibling_fixed_point_analysis.py`` rewrites any run's caches.
 
     python multiple_task/sibling_cohort.py --feature L21e4
 """
@@ -95,9 +126,19 @@ RUN_PATTERN = re.compile(
 # Representation name (as paper_plot's sibling figures call it) -> key of the
 # settled states in the endpoint and sweep caches.
 REPRESENTATIONS = {"hidden": "fixed_hidden", "e_modulation": "fixed_WM"}
-FAMILIES = {"delaydm1": ("delaydm1", "delaydm2"), "dmcgo": ("dmcgo", "dmcnogo")}
+FAMILIES = {"delaydm1": ("delaydm1", "delaydm2"), "dmcgo": ("dmcgo", "dmcnogo"),
+            "delaygo": ("delaygo", "delayanti")}
+# Families a run needs to enter the cohort, and the ones analyzed when their
+# caches exist (added later, so older runs may not have them).
+REQUIRED_FAMILIES = ("delaydm1", "dmcgo")
+OPTIONAL_FAMILIES = ("delaygo",)
+# Token of each family's settled-endpoint caches, after the period its trials
+# settle on (sibling_fixed_point_analysis.settled_endpoint_tag; not imported,
+# so this script stays free of the training stack).
+ENDPOINT_TAGS = {"delaydm1": "long_delay_endpoint", "dmcgo": "long_delay_endpoint",
+                 "delaygo": "long_stimulus_endpoint"}
 # The task generator's stimulus directions; DMC category 1 is the lower half
-# (sibling_delay_analysis._dmc_category_labels).
+# (sibling_fixed_point_analysis._dmc_category_labels).
 N_STIM = 8
 MAGNITUDE_DECIMALS = 6
 # One-line definitions of the statistics the paper figures draw, saved with
@@ -124,15 +165,23 @@ DEFINITIONS = {
                               "split",
     "category_nearest_centroid_accuracy": "leave-one-out nearest-centroid accuracy of the "
                                           "category within one rule",
+    "ring_cosine_same": "cosine between the MemoryPro and MemoryAnti stimulus-period "
+                        "endpoints of the eight directions, rule means removed, matched by "
+                        "stimulus direction (1 same place, -1 the opposite direction's place, "
+                        "0 orthogonal codes)",
+    "ring_cosine_opposite": "the same with MemoryAnti's directions shifted by pi (matched by "
+                            "response direction)",
+    "translation_to_ring": "length of the MemoryPro-to-MemoryAnti mean shift over the root "
+                           "mean square radius of the two rules' direction rings",
 }
 
 
 def endpoint_path(run_dir, family, aname):
-    return Path(run_dir) / f"{family}_long_delay_endpoints_{aname}.pkl"
+    return Path(run_dir) / f"{family}_{ENDPOINT_TAGS[family]}s_{aname}.pkl"
 
 
 def sweep_path(run_dir, family, aname):
-    return Path(run_dir) / f"{family}_cue_interp_long_delay_endpoints_{aname}.pkl"
+    return Path(run_dir) / f"{family}_cue_interp_{ENDPOINT_TAGS[family]}s_{aname}.pkl"
 
 
 def _load(path):
@@ -147,7 +196,7 @@ def _settled(mask, context):
     """Raise unless `mask`, the saved fixed-point criterion, exists and holds."""
     if mask is None:
         raise ValueError(f"{context} predate settling (no is_fixed mask); rerun "
-                         "multiple_task/sibling_delay_analysis.py")
+                         "multiple_task/sibling_fixed_point_analysis.py")
     mask = np.asarray(mask, dtype=bool)
     if not mask.all():
         raise ValueError(f"{context}: {int((~mask).sum())}/{mask.size} points above the "
@@ -366,21 +415,130 @@ def dmc_statistics(endpoint, sweep_cache, rules, rep_key):
     }
 
 
-STATISTICS = {"delaydm1": delaydm_statistics, "dmcgo": dmc_statistics}
+def direction_means(endpoint, points, context):
+    """(n_stim, dim) mean endpoint of every stimulus direction for each of the
+    two tasks; every direction must be present in both."""
+    task_idx = np.asarray(endpoint["task_idx"], dtype=int)
+    stim_idx = np.asarray(endpoint["stim_idx"], dtype=int)
+    means = []
+    for task in (0, 1):
+        rows = [np.flatnonzero((task_idx == task) & (stim_idx == stim))
+                for stim in range(N_STIM)]
+        if any(row.size == 0 for row in rows):
+            raise ValueError(f"{context}: task {task} lacks a stimulus direction")
+        means.append(np.stack([points[row].mean(axis=0) for row in rows]))
+    return means
+
+
+def _configuration_cosine(first, second):
+    """Cosine between two centered point configurations with matched rows."""
+    norm = np.linalg.norm(first) * np.linalg.norm(second)
+    return float(np.sum(first * second) / norm) if norm > 0 else np.nan
+
+
+def pro_anti_statistics(endpoint, sweep_cache, rules, rep_key):
+    """The MemoryPro / MemoryAnti statistics of one representation (module
+    docstring): is a stimulus direction held at the same place under the two
+    rules, or at the place of the opposite direction?"""
+    context = f"{rules[0]} {rep_key}"
+    _settled(endpoint.get("is_fixed"), f"{context} endpoints")
+    points = _states(endpoint, rep_key, context)
+    pro, anti = direction_means(endpoint, points, context)
+    opposite = (np.arange(N_STIM) + N_STIM // 2) % N_STIM
+    translation = anti.mean(axis=0) - pro.mean(axis=0)
+    length = float(np.linalg.norm(translation))
+    if length == 0:
+        raise ValueError(f"{context}: the two tasks' endpoints coincide")
+    pro_ring, anti_ring = pro - pro.mean(axis=0), anti - anti.mean(axis=0)
+    radius = float(np.sqrt(np.mean(np.sum(np.concatenate([pro_ring, anti_ring]) ** 2, axis=1))))
+    if radius == 0:
+        raise ValueError(f"{context}: the endpoints do not depend on the stimulus direction")
+    same = translation_metrics(pro, anti)
+    shifted = translation_metrics(pro, anti[opposite])
+
+    pooled = np.concatenate([pro, anti])
+    task_idx = np.repeat([0, 1], N_STIM)
+    aligned = remove_task_offsets(pooled, task_idx)
+    separation = {}
+    for name, anti_labels in (("same", np.arange(N_STIM)), ("opposite", opposite)):
+        # Row k of `anti` is stimulus k, whose response direction is opposite[k].
+        labels = np.concatenate([np.arange(N_STIM), anti_labels])
+        raw = float(separation_score(pooled, labels))
+        removed = float(separation_score(aligned, labels))
+        # Under the matching that does not hold the paired points can cancel
+        # exactly, which leaves no raw separation to compare with.
+        separation[name] = (raw, removed, removed / raw if raw > 0 else np.nan)
+
+    traversed, residual, nearer = [], [], []
+    for base_rule, sweep in sweep_cache["sweeps"].items():
+        _settled(sweep.get("is_fixed"), f"{context} sweep from {base_rule}")
+        path = _states(sweep, rep_key, f"{context} sweep from {base_rule}")
+        if path.ndim != 3 or path.shape[0] < 2:
+            raise ValueError(f"{context}: the sweep from {base_rule} needs two or more alphas")
+        base_task = list(rules).index(base_rule)
+        own, sibling = (pro, anti) if base_task == 0 else (anti, pro)
+        shared = translation if base_task == 0 else -translation
+        stim = np.asarray(sweep["stim_idx"], dtype=int)
+        if stim.size != path.shape[1] or stim.min() < 0 or stim.max() >= N_STIM:
+            raise ValueError(f"{context}: a sweep trial from {base_rule} has no matched endpoint")
+        traversed.extend(((path[-1] - path[0]) @ shared) / length ** 2)
+        to_sibling = np.linalg.norm(path[-1] - sibling[stim], axis=1)
+        to_own = np.linalg.norm(path[-1] - own[stim], axis=1)
+        residual.extend(to_sibling / length)
+        nearer.extend(to_sibling < to_own)
+    if not traversed:
+        raise ValueError(f"{context}: no rule-cue sweep")
+    return {
+        "ring_cosine_same": _configuration_cosine(pro_ring, anti_ring),
+        "ring_cosine_opposite": _configuration_cosine(pro_ring, anti_ring[opposite]),
+        "translation_explained_same": float(same["translation_explained"]),
+        "translation_explained_opposite": float(shifted["translation_explained"]),
+        "geometry_r": float(same["geometry_r"]),
+        "translation_length": length,
+        "ring_radius": radius,
+        "translation_to_ring": length / radius,
+        "separation_aligned_same": separation["same"][1],
+        "separation_aligned_opposite": separation["opposite"][1],
+        "alignment_gain_same": separation["same"][2],
+        "alignment_gain_opposite": separation["opposite"][2],
+        "cue_traversed": float(np.median(traversed)),
+        "cue_end_residual": float(np.median(residual)),
+        "cue_end_nearer_sibling": float(np.mean(nearer)),
+        "n_conditions": N_STIM,
+        "n_endpoints": int(points.shape[0]),
+        "n_sweep_trials": len(traversed),
+    }
+
+
+STATISTICS = {"delaydm1": delaydm_statistics, "dmcgo": dmc_statistics,
+              "delaygo": pro_anti_statistics}
+
+
+def analyze_family(run_dir, aname, family):
+    """{representation: statistics} of one family of one cached run, or
+    ValueError naming the cache that is missing or unsettled."""
+    rules = FAMILIES[family]
+    endpoint = _load(endpoint_path(run_dir, family, aname))
+    sweep_cache = _load(sweep_path(run_dir, family, aname))
+    if sweep_cache.get("kind") != "cue_interp" or not sweep_cache.get("sweeps"):
+        raise ValueError(f"{sweep_path(run_dir, family, aname).name} is not a rule-cue sweep")
+    return {name: STATISTICS[family](endpoint, sweep_cache, rules, rep_key)
+            for name, rep_key in REPRESENTATIONS.items()}
 
 
 def analyze_run(run_dir, aname):
-    """{family: {representation: statistics}} of one cached run, or
-    ValueError naming the first cache that is missing or unsettled."""
-    families = {}
-    for family, rules in FAMILIES.items():
-        endpoint = _load(endpoint_path(run_dir, family, aname))
-        sweep_cache = _load(sweep_path(run_dir, family, aname))
-        if sweep_cache.get("kind") != "cue_interp" or not sweep_cache.get("sweeps"):
-            raise ValueError(f"{sweep_path(run_dir, family, aname).name} is not a rule-cue sweep")
-        families[family] = {name: STATISTICS[family](endpoint, sweep_cache, rules, rep_key)
-                            for name, rep_key in REPRESENTATIONS.items()}
-    return families
+    """({family: {representation: statistics}}, {optional family: reason it
+    is missing}) of one cached run. A required family's missing or unsettled
+    cache raises ValueError; an optional family's is recorded instead."""
+    families = {family: analyze_family(run_dir, aname, family)
+                for family in REQUIRED_FAMILIES}
+    missing = {}
+    for family in OPTIONAL_FAMILIES:
+        try:
+            families[family] = analyze_family(run_dir, aname, family)
+        except (KeyError, ValueError, OSError, EOFError, pickle.UnpicklingError) as error:
+            missing[family] = str(error)
+    return families, missing
 
 
 def cohort_run_dirs(sibling_dir, feature):
@@ -408,9 +566,14 @@ def print_summary(results):
           f"{len(results['skipped'])} skipped")
     print("=" * 78)
     for family, rules in FAMILIES.items():
-        print(f"\n{rules[0]} / {rules[1]}")
+        with_family = [entry for entry in runs if family in entry["families"]]
+        print(f"\n{rules[0]} / {rules[1]}" + (
+            "" if len(with_family) == len(runs)
+            else f" ({len(with_family)} of {len(runs)} runs have its caches)"))
+        if not with_family:
+            continue
         for name in REPRESENTATIONS:
-            entries = [entry["families"][family][name] for entry in runs]
+            entries = [entry["families"][family][name] for entry in with_family]
             print(f"  {name}:")
             for key in entries[0]:
                 values = np.array([entry[key] for entry in entries], dtype=float)
@@ -420,9 +583,9 @@ def print_summary(results):
                     print(f"    {key:44s} {int(values.sum())}/{values.size} runs")
                     continue
                 note = ""
-                if key == "alignment_gain" or key.startswith("category_separation"):
+                if key.startswith(("alignment_gain", "category_separation")):
                     note = f"; {int(np.sum(values > 1))}/{values.size} runs above 1"
-                elif key == "category_axis_cosine":
+                elif key in ("category_axis_cosine", "ring_cosine_same"):
                     note = f"; {int(np.sum(values < 0))}/{values.size} runs below 0"
                 print(f"    {key:44s} {_iqr_text(values)}{note}")
 
@@ -436,28 +599,32 @@ def run_all(sibling_dir=SIBLING_DIR, feature=DEFAULT_FEATURE, out_dir=None):
     if not candidates:
         raise FileNotFoundError(
             f"No {feature} run under {sibling_dir}/; run python multiple_task/"
-            f"sibling_delay_analysis.py --seed <seed> --feature {feature} "
-            "--families delaydm1 dmcgo --method long_delay_endpoint first.")
+            f"sibling_fixed_point_analysis.py --seed <seed> --feature {feature} "
+            "--families delaydm1 dmcgo --method settled_endpoint first.")
     results = {"schema_version": SCHEMA_VERSION, "feature": feature,
                "representations": list(REPRESENTATIONS), "families": dict(FAMILIES),
                "definitions": dict(DEFINITIONS), "runs": {}, "skipped": []}
     for run_dir, seed in candidates:
         aname = run_dir.name
         try:
-            families = analyze_run(run_dir, aname)
+            families, optional_missing = analyze_run(run_dir, aname)
         except (KeyError, ValueError, OSError, EOFError, pickle.UnpicklingError) as error:
             results["skipped"].append({"aname": aname, "seed": seed, "reason": str(error)})
             print(f"{aname}: skipped ({error})")
             continue
-        results["runs"][aname] = {"aname": aname, "seed": seed, "families": families}
+        results["runs"][aname] = {"aname": aname, "seed": seed, "families": families,
+                                  "optional_missing": optional_missing}
         delaydm = families["delaydm1"]["e_modulation"]
         dmc = families["dmcgo"]["e_modulation"]
+        memory = families.get("delaygo", {}).get("e_modulation")
         print(f"{aname}: W*M translation explained {delaydm['translation_explained']:.2f}, "
               f"cue traversed {delaydm['cue_traversed']:.2f}; DMC category-axis cosine "
-              f"{dmc['category_axis_cosine']:+.2f}, cue end residual {dmc['cue_end_residual']:.2f}")
+              f"{dmc['category_axis_cosine']:+.2f}, cue end residual {dmc['cue_end_residual']:.2f}"
+              + ("; MemoryPro/Anti: no stimulus-period caches" if memory is None else
+                 f"; MemoryPro/Anti ring cosine {memory['ring_cosine_same']:+.2f}"))
     if not results["runs"]:
         raise FileNotFoundError(f"No {feature} run under {sibling_dir}/ has settled endpoint and "
-                                "rule-cue sweep caches of both families.")
+                                "rule-cue sweep caches of the DelayDM and DMC families.")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / RESULT_NAME
     with out_path.open("wb") as stream:
@@ -470,7 +637,7 @@ def run_all(sibling_dir=SIBLING_DIR, feature=DEFAULT_FEATURE, out_dir=None):
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Cohort statistics of the sibling-task fixed-point geometry, in the full "
-                    "state space, from the settled long-delay endpoint and rule-cue sweep caches.")
+                    "state space, from the settled endpoint and rule-cue sweep caches.")
     parser.add_argument("--feature", default=DEFAULT_FEATURE,
                         help=f"Feature tag of the cohort (default {DEFAULT_FEATURE}).")
     parser.add_argument("--sibling-dir", default=str(SIBLING_DIR),

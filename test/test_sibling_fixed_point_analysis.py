@@ -1,5 +1,7 @@
 """Tests for the standalone sibling-family analysis boundary."""
 
+import contextlib
+import io
 import pickle
 import tempfile
 from pathlib import Path
@@ -10,7 +12,8 @@ from unittest.mock import patch
 import _bootstrap  # noqa: F401
 import mpn_tasks
 import numpy as np
-import sibling_delay_analysis as sibling
+import sibling_cohort
+import sibling_fixed_point_analysis as sibling
 import torch
 
 
@@ -134,7 +137,7 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
         model = FakeModel()
         modulation, hidden, residual, n_settle = (
             sibling._run_to_settled_endpoint(
-                model, torch.zeros(4, 9, 5), delay_stop=6, layer_index=1,
+                model, torch.zeros(4, 9, 5), period_stop=6, layer_index=1,
                 leak=0.5, max_settle_steps=0))
 
         # The last two delay frames give the residual; no settling allowed.
@@ -177,7 +180,7 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
         model = SettlingModel()
         modulation, hidden, residual, n_settle = (
             sibling._run_to_settled_endpoint(
-                model, inputs, delay_stop=4, layer_index=1, leak=0.5,
+                model, inputs, period_stop=4, layer_index=1, leak=0.5,
                 max_settle_steps=50))
         self.assertEqual(n_settle, 5)
         np.testing.assert_allclose(modulation, np.full((2, 2, 3), 1 + 0.5 ** 8))
@@ -188,7 +191,7 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
 
         # The cap stops it early and the residual says so.
         modulation, _, residual, n_settle = sibling._run_to_settled_endpoint(
-            SettlingModel(), inputs, delay_stop=4, layer_index=1, leak=0.5,
+            SettlingModel(), inputs, period_stop=4, layer_index=1, leak=0.5,
             max_settle_steps=2)
         self.assertEqual(n_settle, 2)
         np.testing.assert_allclose(modulation, np.full((2, 2, 3), 1 + 0.5 ** 5))
@@ -200,7 +203,7 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
             key: {"mean": np.zeros(6, dtype=np.float32), "components": identity}
             for key in ("fixed_hidden", "fixed_WM")}}
         modulation, _, trajectories, sample_indices, residual, n_settle = (
-            sibling._run_long_delay_projected_trajectory(
+            sibling._run_long_period_projected_trajectory(
                 SettlingModel(), inputs, 1, 4, 1,
                 np.ones((2, 3), dtype=np.float32), basis, leak=0.5,
                 max_settle_steps=50, max_samples=20))
@@ -234,7 +237,7 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
             for key in ("fixed_hidden", "fixed_WM")
         }}
         modulation, hidden, trajectories, sample_indices, _, n_settle = (
-            sibling._run_long_delay_projected_trajectory(
+            sibling._run_long_period_projected_trajectory(
                 FakeModel(), torch.zeros(2, 8, 4), 2, 7, 1,
                 np.ones((2, 3), dtype=np.float32), basis, leak=1.0,
                 max_settle_steps=0, max_samples=3))
@@ -286,7 +289,7 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             model = FakeModel()
-            acc, per_task, preview = sibling.stream_normal_delay_analysis(
+            acc, per_task, preview = sibling.stream_normal_period_analysis(
                 "run", Path(directory), "delaydm1",
                 ("delaydm1", "delaydm2"), model, torch.device("cpu"),
                 norm_input, norm_output, norm_mask, trials, norm_task,
@@ -333,7 +336,7 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
         trials = [SimpleNamespace(epochs={"delay1": (1, 4)}),
                   SimpleNamespace(epochs={"delay1": (1, 4)})]
         with tempfile.TemporaryDirectory() as directory:
-            sibling.stream_normal_delay_analysis(
+            sibling.stream_normal_period_analysis(
                 "run", Path(directory), "delaydm1",
                 ("delaydm1", "delaydm2"), FakeModel(), torch.device("cpu"),
                 norm_input, torch.zeros(n_trials, time_steps, 3),
@@ -355,19 +358,19 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
                 self.assertEqual(
                     record["method"],
                     "PCA(svd_solver=randomized, random_state="
-                    f"{sibling.SIBLING_LONG_DELAY_PCA_SEED})")
+                    f"{sibling.SIBLING_SETTLED_PCA_SEED})")
                 self.assertEqual(record["components"].shape[0], 2)
 
     def test_aligned_delay_window_validation(self):
         trials = [SimpleNamespace(epochs={"delay1": (4, 12)}),
                   SimpleNamespace(epochs={"delay1": (4, 12)})]
         self.assertEqual(
-            sibling._aligned_delay1_window(("delaydm1", "delaydm2"), trials),
+            sibling._aligned_period_window(("delaydm1", "delaydm2"), trials),
             (4, 12),
         )
         trials[1].epochs["delay1"] = (4, 13)
         with self.assertRaisesRegex(ValueError, "not aligned"):
-            sibling._aligned_delay1_window(("delaydm1", "delaydm2"), trials)
+            sibling._aligned_period_window(("delaydm1", "delaydm2"), trials)
 
     def test_dmc_category_split_holds_when_top_direction_is_not_drawn(self):
         # Directions 0-3 lie below pi (category 1), 4-7 above. A random DMC
@@ -434,7 +437,7 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
 
             with patch.object(sibling, "_save_pc_pair_gallery",
                               return_value=root / "gallery.png"):
-                output_path = sibling.save_long_delay_endpoint_pc_projections(
+                output_path = sibling.save_settled_endpoint_pc_projections(
                     aname, root, family, rules, endpoint_path)
 
             with output_path.open("rb") as stream:
@@ -469,7 +472,7 @@ class SiblingDelayAnalysisTests(unittest.TestCase):
                 pickle.dump(endpoints, stream)
             with patch.object(sibling, "_save_pc_pair_gallery",
                               return_value=root / "gallery.png"):
-                output_path = sibling.save_long_delay_endpoint_pc_projections(
+                output_path = sibling.save_settled_endpoint_pc_projections(
                     aname, root, family, rules, endpoint_path)
             with output_path.open("rb") as stream:
                 projected = pickle.load(stream)
@@ -511,16 +514,16 @@ class LongDelayMagnitudeLevelTests(unittest.TestCase):
     RULES = ("delaydm1", "delaydm2")
 
     def test_delaydm_runs_one_trial_per_direction_and_level(self):
-        self.assertEqual(sibling.SIBLING_LONG_DELAY_STIM_MAGNITUDES,
+        self.assertEqual(sibling.SIBLING_STIM_MAGNITUDES,
                          {"delaydm1": (0.6, 0.8, 1.0, 1.2, 1.4)})
-        self.assertEqual(sibling._long_delay_trials_per_rule("delaydm1"), 40)
-        self.assertEqual(sibling._long_delay_trials_per_rule("dmcgo"),
-                         sibling.SIBLING_LONG_DELAY_TRIALS_PER_RULE)
+        self.assertEqual(sibling._long_period_trials_per_rule("delaydm1"), 40)
+        self.assertEqual(sibling._long_period_trials_per_rule("dmcgo"),
+                         sibling.SIBLING_LONG_PERIOD_TRIALS_PER_RULE)
 
     def test_levels_overwrite_only_each_rules_stim1_ring(self):
         inputs, trials, task_idx, stim_idx = _aligned_delaydm_trials(40)
         generated = inputs.clone()
-        magnitude = sibling._apply_long_delay_stimulus_magnitudes(
+        magnitude = sibling._apply_stimulus_magnitudes(
             inputs, trials, self.RULES, task_idx, stim_idx, LEVELS)
         # Aligned siblings: the same direction and level per local trial.
         np.testing.assert_allclose(magnitude[:40], magnitude[40:])
@@ -551,13 +554,186 @@ class LongDelayMagnitudeLevelTests(unittest.TestCase):
         inputs, trials, task_idx, stim_idx = _aligned_delaydm_trials(40)
         trials[0].meta["stim1_strs"] = trials[0].meta["stim1_strs"] + 0.5
         with self.assertRaisesRegex(ValueError, "do not hold"):
-            sibling._apply_long_delay_stimulus_magnitudes(
+            sibling._apply_stimulus_magnitudes(
                 inputs, trials, self.RULES, task_idx, stim_idx, LEVELS)
         # Four trials per direction cannot take five levels.
         inputs, trials, task_idx, stim_idx = _aligned_delaydm_trials(32)
         with self.assertRaisesRegex(ValueError, "magnitude levels"):
-            sibling._apply_long_delay_stimulus_magnitudes(
+            sibling._apply_stimulus_magnitudes(
                 inputs, trials, self.RULES, task_idx, stim_idx, LEVELS)
+
+
+def _aligned_memory_trials(n_per_rule):
+    """Long-stimulus MemoryPro and MemoryAnti trials from one generator state,
+    as `generate_trials_wrap(align_periods=True)` draws them: one continuous
+    random direction per trial, on the modality the generator picks."""
+    config = {"dt": 40, "rng": np.random.RandomState(5), "n_eachring": 8,
+              "in_out_mode": "low_dim", "fixate_off": True, "n_input": 6,
+              "n_output": 3, "loss_type": "lsq", "sigma_x": 0.0, "alpha": 0.2,
+              "get_meta": True}
+    state = config["rng"].get_state()
+    trials = []
+    for anti_response in (False, True):
+        config["rng"].set_state(state)
+        trials.append(mpn_tasks.delaygo_(
+            config, "random", anti_response, False, True, "normal", "normal",
+            "long", "normal", False, batch_size=n_per_rule))
+    inputs = torch.as_tensor(np.concatenate(
+        [trial.x.transpose(1, 0, 2) for trial in trials]))
+    return inputs, trials, np.repeat([0, 1], n_per_rule)
+
+
+class StimulusPeriodFamilyTests(unittest.TestCase):
+    """MemoryPro / MemoryAnti, read in the stimulus period."""
+    RULES = ("delaygo", "delayanti")
+
+    def test_family_period_and_artifact_names(self):
+        self.assertEqual(sibling.SIBLING_FAMILIES["delaygo"], self.RULES)
+        self.assertEqual(sibling.SIBLING_FAMILY_PERIOD,
+                         {"dmcgo": "delay1", "delaydm1": "delay1", "delaygo": "stim1"})
+        self.assertEqual(set(sibling.SIBLING_FAMILY_PERIOD), set(sibling.SIBLING_FAMILIES))
+        self.assertEqual(sibling.settled_endpoint_tag("delaygo"), "long_stimulus_endpoint")
+        # The delay families keep the names of their saved caches.
+        for family in ("delaydm1", "dmcgo"):
+            self.assertEqual(sibling.settled_endpoint_tag(family), "long_delay_endpoint")
+        root = Path("root")
+        names = {
+            ("delaydm1", "gradient"): "delaydm1_delay_trajectory_pca_run.pkl",
+            ("delaydm1", "settled_endpoint"):
+                "delaydm1_long_delay_endpoint_delay_trajectory_pca_run.pkl",
+            ("delaygo", "settled_endpoint"):
+                "delaygo_long_stimulus_endpoint_stimulus_trajectory_pca_run.pkl",
+        }
+        for (family, method), name in names.items():
+            self.assertEqual(sibling._period_pca_path(
+                root, "run", family, sibling.SIBLING_FAMILIES[family], "joint", method).name,
+                name)
+        self.assertEqual(sibling._period_pca_path(
+            root, "run", "delaygo", self.RULES, "first_task_only", "settled_endpoint").name,
+            "delaygo_long_stimulus_endpoint_stimulus_trajectory_pca_delaygo_only_run.pkl")
+        self.assertEqual(sibling.SIBLING_CUE_INTERP_BASE_RULES["delaygo"], ("delaygo",))
+        # The cohort script names the caches itself (it does not import this
+        # module); the two must agree.
+        self.assertEqual(sibling_cohort.FAMILIES, sibling.SIBLING_FAMILIES)
+        self.assertEqual(sibling_cohort.ENDPOINT_TAGS,
+                         {family: sibling.settled_endpoint_tag(family)
+                          for family in sibling.SIBLING_FAMILIES})
+        self.assertEqual(sibling._long_period_trials_per_rule("delaygo"),
+                         sibling.SIBLING_LONG_PERIOD_TRIALS_PER_RULE)
+        self.assertEqual(sibling.SIBLING_LONG_PERIOD_TRIALS_PER_RULE % sibling.SIBLING_FP_N_STIM, 0)
+
+    def test_method_names_and_the_delay_only_gradient_method(self):
+        self.assertEqual(sibling.SIBLING_METHODS, ("gradient", "settled_endpoint"))
+        self.assertEqual(sibling.normalize_method("long_delay_endpoint"), "settled_endpoint")
+        self.assertEqual(sibling.normalize_method("settled_endpoint"), "settled_endpoint")
+        self.assertEqual(sibling.normalize_method("gradient"), "gradient")
+        with self.assertRaisesRegex(ValueError, "unknown sibling method"):
+            sibling.normalize_method("long_stimulus_endpoint")
+        parser = sibling.build_arg_parser()
+        for method in ("settled_endpoint", "long_delay_endpoint"):
+            args = parser.parse_args(["--seed", "921", "--feature", "L21e4",
+                                      "--families", "delaygo", "--method", method])
+            self.assertEqual(args.families, ["delaygo"])
+        with patch.object(sibling, "_run_sibling_family_base") as base, \
+                self.assertRaisesRegex(ValueError, "delay fixed points only"):
+            sibling._run_sibling_family(
+                aname="run", save_name="save", save_dir=Path("unused"),
+                family="delaygo", method="gradient", model=None, device=None,
+                task_params={}, train_params={}, net_params={},
+                converted_task_params={}, W_fp=None)
+        base.assert_not_called()
+
+    def test_cleanup_of_one_family_leaves_the_others(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stimulus = [root / "delaygo_long_stimulus_endpoints_run.pkl",
+                        root / "delaygo_cue_interp_long_stimulus_endpoints_run.pkl",
+                        root / "delaygo_run.png"]
+            delay = [root / "delaydm1_long_delay_endpoints_run.pkl",
+                     root / "dmcgo_long_delay_endpoint_pc_projections_run.pkl"]
+            for path in stimulus + delay:
+                path.write_bytes(b"x")
+            with contextlib.redirect_stdout(io.StringIO()):
+                removed = sibling._clean_stale_sibling_artifacts(
+                    root, ("delaygo",), method="settled_endpoint")
+            self.assertEqual(sorted(removed), sorted(stimulus))
+            self.assertTrue(all(path.exists() for path in delay))
+            with contextlib.redirect_stdout(io.StringIO()):
+                removed = sibling._clean_stale_sibling_artifacts(
+                    root, ("delaydm1", "dmcgo"), method="long_delay_endpoint")
+            self.assertEqual(sorted(removed), sorted(delay))
+
+    def test_period_window_and_fields(self):
+        _, trials, _ = _aligned_memory_trials(8)
+        start, stop = sibling._aligned_period_window(self.RULES, trials, "stim1")
+        self.assertEqual(stop - start, 10000 // 40)          # the long stimulus
+        self.assertEqual((start, stop), tuple(int(v) for v in trials[0].epochs["stim1"]))
+        self.assertNotEqual(sibling._aligned_period_window(self.RULES, trials), (start, stop))
+        with self.assertRaisesRegex(KeyError, "no stim2 epoch"):
+            sibling._aligned_period_window(self.RULES, trials, "stim2")
+        fields = sibling._period_fields("delaygo", 10, 260, 40)
+        self.assertEqual(fields, {"period": "stim1", "long_period_setting": "long",
+                                  "period_window": (10, 260), "period_steps": 250,
+                                  "period_ms": 10000})
+        delay = sibling._period_fields("dmcgo", 10, 260, 40)
+        self.assertEqual(delay["period"], "delay1")
+        for key in ("window", "steps", "ms"):
+            self.assertEqual(delay[f"delay_{key}"], delay[f"period_{key}"])
+        self.assertEqual(delay["delay_epoch"], "delay1")
+        # Endpoint files written before the period_* fields are still read.
+        legacy = {"delay_window": (10, 260), "delay_steps": 250, "delay_ms": 10000}
+        self.assertEqual(sibling._endpoint_period_fields(legacy),
+                         ((10, 260), 250, 10000, 0, 10000))
+        current = {"period_window": (10, 260), "period_steps": 250, "period_ms": 10000,
+                   "settle_ms": 400, "endpoint_period_ms": 10400}
+        self.assertEqual(sibling._endpoint_period_fields(current),
+                         ((10, 260), 250, 10000, 400, 10400))
+        with self.assertRaisesRegex(KeyError, "endpoint artifact has no period_"):
+            sibling._endpoint_period_fields({})
+
+    def test_native_directions_replace_the_random_ones_on_the_ring(self):
+        inputs, trials, task_idx = _aligned_memory_trials(32)
+        generated = inputs.clone()
+        stim_idx = sibling._apply_balanced_stimulus_directions(
+            inputs, trials, self.RULES, task_idx)
+        # Every native direction four times, in the same order for both rules.
+        np.testing.assert_array_equal(stim_idx[:32], np.arange(32) % 8)
+        np.testing.assert_array_equal(stim_idx[32:], stim_idx[:32])
+        stim_on, stim_off = (int(v) for v in trials[0].epochs["stim1"])
+        ring = sibling._stimulus_ring_channels(
+            generated[:32].numpy(), (0, stim_on), (stim_on, stim_off), "delaygo")
+        self.assertIn(ring, ((2, 3), (4, 5)))                 # one of the two modalities
+        angles = 2 * np.pi * stim_idx / 8
+        expected = np.stack([np.sin(angles), np.cos(angles)], axis=1)
+        np.testing.assert_allclose(
+            inputs[:, stim_on:stim_off][:, :, list(ring)].numpy(),
+            np.repeat(expected[:, None, :], stim_off - stim_on, axis=1), atol=1e-6)
+        # Matched conditions: the two rules see the same stimulus, and each
+        # direction has its opposite among the trials.
+        np.testing.assert_array_equal(inputs[:32, stim_on:stim_off, ring[0]:ring[1] + 1],
+                                      inputs[32:, stim_on:stim_off, ring[0]:ring[1] + 1])
+        self.assertEqual(set((stim_idx + 4) % 8), set(stim_idx))
+        changed = (inputs != generated).numpy()
+        self.assertTrue(changed.any())
+        changed[:, stim_on:stim_off, ring[0]:ring[1] + 1] = False
+        self.assertFalse(changed.any())
+
+    def test_unexpected_stimulus_input_raises_instead_of_being_overwritten(self):
+        inputs, trials, task_idx = _aligned_memory_trials(30)
+        with self.assertRaisesRegex(ValueError, "equally often"):
+            sibling._apply_balanced_stimulus_directions(inputs, trials, self.RULES, task_idx)
+        inputs, trials, task_idx = _aligned_memory_trials(32)
+        stim_on, stim_off = (int(v) for v in trials[0].epochs["stim1"])
+        ring = sibling._stimulus_ring_channels(
+            inputs[:32].numpy(), (0, stim_on), (stim_on, stim_off), "delaygo")
+        weak = inputs.clone()
+        weak[:, stim_on:stim_off, ring[0]:ring[1] + 1] *= 0.5
+        with self.assertRaisesRegex(ValueError, "unit-strength"):
+            sibling._apply_balanced_stimulus_directions(weak, trials, self.RULES, task_idx)
+        swapped = inputs.clone()
+        swapped[:, :, [ring[0], ring[1]]] = inputs[:, :, [ring[1], ring[0]]]
+        with self.assertRaisesRegex(ValueError, "are not the"):
+            sibling._apply_balanced_stimulus_directions(swapped, trials, self.RULES, task_idx)
 
 
 if __name__ == "__main__":

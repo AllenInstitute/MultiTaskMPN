@@ -13,7 +13,7 @@ import torch
 
 import mpn_tasks
 import paper_plot
-import sibling_delay_analysis as sibling
+import sibling_fixed_point_analysis as sibling
 
 
 # Pin the sibling runs: with DELAYDM_ANAME / DMCGO_ANAME = None paper_plot
@@ -159,9 +159,24 @@ class CueInterpArtifactTests(unittest.TestCase):
                 root, "run", "delaydm1", "long_delay_endpoint")
             gradient_sweep, gradient_proj = sibling.cue_interp_artifact_paths(
                 root, "run", "delaydm1", "gradient")
-            for path in (endpoint_sweep, endpoint_proj):
+            # The alias and the current name give the same files, and a
+            # family's files carry the name of its period.
+            self.assertEqual(sibling.cue_interp_artifact_paths(
+                root, "run", "delaydm1", "settled_endpoint"),
+                (endpoint_sweep, endpoint_proj))
+            self.assertEqual(
+                [path.name for path in (endpoint_sweep, endpoint_proj)],
+                ["delaydm1_cue_interp_long_delay_endpoints_run.pkl",
+                 "delaydm1_cue_interp_long_delay_endpoint_pc_projections_run.pkl"])
+            stimulus_paths = sibling.cue_interp_artifact_paths(
+                root, "run", "delaygo", "settled_endpoint")
+            self.assertEqual(
+                [path.name for path in stimulus_paths],
+                ["delaygo_cue_interp_long_stimulus_endpoints_run.pkl",
+                 "delaygo_cue_interp_long_stimulus_endpoint_pc_projections_run.pkl"])
+            for path in (endpoint_sweep, endpoint_proj) + stimulus_paths:
                 self.assertEqual(
-                    sibling._artifact_method(path), "long_delay_endpoint")
+                    sibling._artifact_method(path), "settled_endpoint")
             for path in (gradient_sweep, gradient_proj):
                 self.assertEqual(sibling._artifact_method(path), "gradient")
             self.assertTrue(sibling.is_sibling_artifact(gradient_sweep))
@@ -209,7 +224,7 @@ class CueInterpEndpointSweepTests(unittest.TestCase):
         model = CueChannelModel(channels)
         generated = {}
         # The fixture has no stimulus ring, so the DelayDM magnitude levels
-        # are applied by a stand-in (see test_sibling_delay_analysis).
+        # are applied by a stand-in (see test_sibling_fixed_point_analysis).
         applied = np.tile([0.6, 0.6, 1.4, 1.4], 2)
 
         def fake_generate(tp, n_batches, **kwargs):
@@ -221,10 +236,10 @@ class CueInterpEndpointSweepTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(sibling.mpn_tasks, "generate_trials_wrap",
                              side_effect=fake_generate), \
-                patch.object(sibling, "_apply_long_delay_stimulus_magnitudes",
+                patch.object(sibling, "_apply_stimulus_magnitudes",
                              return_value=applied) as apply_levels, \
                 patch.object(sibling, "_modulation_leak", return_value=0.01):
-            out_path = sibling.extract_cue_interp_long_delay_endpoints(
+            out_path = sibling.extract_cue_interp_settled_endpoints(
                 "run", directory, "delaydm1", RULES, model,
                 torch.device("cpu"), _task_params(),
                 np.ones((2, 3), dtype=np.float32), layer_index=1,
@@ -295,7 +310,7 @@ class CueInterpEndpointSweepTests(unittest.TestCase):
                              return_value=((x, None, None),
                                            (None, trials, None))), \
                 self.assertRaisesRegex(ValueError, "task order"):
-            sibling.extract_cue_interp_long_delay_endpoints(
+            sibling.extract_cue_interp_settled_endpoints(
                 "run", directory, "delaydm1", RULES, CueChannelModel(channels),
                 torch.device("cpu"), _task_params(),
                 np.ones((2, 3), dtype=np.float32), n_alpha=1,
@@ -552,11 +567,12 @@ class CueInterpFamilyWiringTests(unittest.TestCase):
                 family="dmcgo", method="long_delay_endpoint", model=None,
                 device=None, task_params={}, train_params={},
                 net_params={}, converted_task_params={}, W_fp=None)
+        # The earlier method name is resolved before the runners see it.
         self.assertEqual(calls, [
-            "base", ("sweep", "long_delay_endpoint", ["dmcgo", "dmcnogo"])])
+            "base", ("sweep", "settled_endpoint", ["dmcgo", "dmcnogo"])])
 
     def test_sweep_runner_uses_the_fixed_grid_and_budgets(self):
-        with patch.object(sibling, "extract_cue_interp_long_delay_endpoints",
+        with patch.object(sibling, "extract_cue_interp_settled_endpoints",
                           return_value="sweep.pkl") as endpoints, \
                 patch.object(sibling, "solve_cue_interp_fixed_points",
                              return_value="sweep.pkl") as gradient, \
@@ -574,9 +590,10 @@ class CueInterpFamilyWiringTests(unittest.TestCase):
                          sibling.SIBLING_FIXED_POINT_STEPS)
         self.assertEqual(gradient.call_args.kwargs["lbfgs_steps"],
                          sibling.SIBLING_CUE_INTERP_LBFGS_STEPS)
+        # The earlier method name reaches the projection step resolved.
         self.assertEqual(
             [call.args[-1] for call in save.call_args_list],
-            ["long_delay_endpoint", "gradient"])
+            ["settled_endpoint", "gradient"])
 
 
 class CueInterpPaperFigureTests(unittest.TestCase):

@@ -87,7 +87,7 @@ whatever `--seed` says. The `figures` stage clears `paper_plot/` like every
 mode run, so the other modes must be redrawn after it; it needs a plain L2
 feature such as `L21e4`. The analyses that evaluate networks stay with their
 own drivers: `run_pipeline.py` and `run_state_space_pipeline.py`; the
-sibling-task geometry (`sibling_delay_analysis.py`) redraws its trials and is
+sibling-task geometry (`sibling_fixed_point_analysis.py`) redraws its trials and is
 never rerun from here.
 
 ## Accuracy figures: tests against the default setting

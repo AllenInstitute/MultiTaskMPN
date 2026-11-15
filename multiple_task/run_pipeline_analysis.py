@@ -28,7 +28,7 @@ stages (lesion_plot, variance) to those seeds, while the cohort summaries
 always cover the feature; --dry-run prints the commands instead of running
 them. A failing command stops the pipeline. The state-space analyses that
 evaluate networks have their own driver, run_state_space_pipeline.py; the
-sibling-task geometry (sibling_delay_analysis.py) redraws its trials and is
+sibling-task geometry (sibling_fixed_point_analysis.py) redraws its trials and is
 never rerun from here. Run from the repository root; stdout and stderr go to
 log/ as well.
 

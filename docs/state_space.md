@@ -2,24 +2,29 @@
 
 Context-end task geometry of the multi-task runs (`state_space_shift.py`,
 `state_space_structure.py`), the sibling-task fixed-point geometry
-(`sibling_delay_analysis.py`) and the `state_space` figures of `paper_plot.py`.
+(`sibling_fixed_point_analysis.py`) and the `state_space` figures of `paper_plot.py`.
 
 ```bash
 # optional sibling-task geometry only (does not rerun clustering or lesions)
-python multiple_task/sibling_delay_analysis.py \
+python multiple_task/sibling_fixed_point_analysis.py \
   --seed 921 --feature L21e4 --families delaydm1 --method gradient
 
 # alternatively, run long-delay trials and keep each on its delay input until
-# it settles to a fixed point (the gradient solver's residual criterion)
-python multiple_task/sibling_delay_analysis.py \
+# it settles to a fixed point (the gradient solver's residual criterion);
+# --method long_delay_endpoint, the method's earlier name, is still accepted
+python multiple_task/sibling_fixed_point_analysis.py \
   --seed 921 --feature L21e4 --families delaydm1 \
-  --method long_delay_endpoint
+  --method settled_endpoint
 
 # both methods end with a rule-cue interpolation sweep between the two sibling
 # rules (11 alphas, fixed by SIBLING_CUE_INTERP_N_ALPHA)
-python multiple_task/sibling_delay_analysis.py \
+python multiple_task/sibling_fixed_point_analysis.py \
   --seed 921 --feature L21e4 --families delaydm1 dmcgo \
-  --method long_delay_endpoint
+  --method settled_endpoint
+# MemoryPro / MemoryAnti (delaygo / delayanti), settled in the stimulus period
+# (about two minutes per run on CPU; settled endpoints only)
+python multiple_task/sibling_fixed_point_analysis.py \
+  --seed 921 --feature L21e4 --families delaygo --method settled_endpoint
 python figures/paper_plot.py --only sibling_cue_interp
 # the same geometry over every cached run of the cohort, in the full state
 # space, one statistic per figure
@@ -29,6 +34,11 @@ python figures/paper_plot.py --only sibling_cohort_alignment
 python figures/paper_plot.py --only sibling_cohort_cue_transfer
 python figures/paper_plot.py --only sibling_cohort_category_axis
 python figures/paper_plot.py --only sibling_cohort_category_memory
+# MemoryPro / MemoryAnti (after the delaygo family above and a rerun of
+# sibling_cohort.py): the cohort statistic and one run's endpoints
+python figures/paper_plot.py --only sibling_cohort_ring_cosine
+python figures/paper_plot.py --only memory_stimulus_endpoints
+python figures/paper_plot.py --only memory_cue_interp
 
 # every state-space analysis below end to end, each in its own process: shift
 # with the 5-step timecourse, the untrained controls, structure, the lesion
@@ -547,7 +557,7 @@ response-cluster swap the figures show. This is a selection for legibility,
 so the caption must state it, e.g. "one trial per stimulus direction, matched
 in stimulus strength and preferring trials whose endpoint stays on one
 attractor along the sweep".
-`multiple_task/sibling_delay_analysis.py` runs the sweep after each method's
+`multiple_task/sibling_fixed_point_analysis.py` runs the sweep after each method's
 base analysis: the stimulus is held at one base rule's trials while its
 one-hot rule cue fades out and the sibling's fades in,
 `x_alpha = x_base + alpha * (e_sibling - e_base)`, over the 11 alphas 0.0,
@@ -635,7 +645,7 @@ every alpha of the endpoint sweep therefore keep running on the delay's
 constant input after the trial's delay until every trial's leak-normalized
 one-step residual ||F(M) - M|| / (||M|| (1 - lambda)) is at most
 `DEFAULT_REL_TOL_UNDAMPED` (1e-2), the gradient solver's criterion, with
-`SIBLING_LONG_DELAY_MAX_SETTLE_MS` (100 s) as the cap. The endpoint caches
+`SIBLING_MAX_SETTLE_MS` (100 s) as the cap. The endpoint caches
 record `settle_ms`, `endpoint_delay_ms`, each trial's `rel_step_undamped` and
 `is_fixed`, and the projected trajectories run from delay onset to the
 settled endpoint. A trial still above the criterion at the cap is drawn
@@ -650,11 +660,11 @@ state; rerun the analysis to replace them.
 **DelayDM long-delay trials sit on a fixed magnitude grid.** Each DelayDM rule
 runs 40 long-delay trials: the eight directions, balanced, each at every level
 of `DELAYDM_FP_STIM_MAGNITUDES` (0.6, 0.8, 1.0, 1.2, 1.4), the levels the
-gradient solve uses (`SIBLING_LONG_DELAY_STIM_MAGNITUDES`,
-`_long_delay_trials_per_rule`). The generator draws stim1's strength at random
+gradient solve uses (`SIBLING_STIM_MAGNITUDES`,
+`_long_period_trials_per_rule`). The generator draws stim1's strength at random
 (mean 0.8-1.2 plus or minus a coherence of 0.08, 0.16 or 0.32) and writes
 strength * (sin θ, cos θ) on the rule's stimulus ring;
-`_apply_long_delay_stimulus_magnitudes` overwrites those two channels during
+`_apply_stimulus_magnitudes` overwrites those two channels during
 stim1 with level * (sin θ, cos θ), a direction's five trials taking the levels
 in trial order, after checking that they held the generated strength. The
 sibling rules share their generator state, so the k-th trial of both has the
@@ -662,7 +672,7 @@ same direction and level, and the rule-cue sweep draws the same trials again,
 so its alpha = 0 reruns the base endpoints' trials. stim2 and the response, which a
 settled delay1 endpoint never reaches, are left as generated. DMC keeps 32
 trials per rule at random directions and magnitude 1
-(`SIBLING_LONG_DELAY_TRIALS_PER_RULE`). The caches record the levels
+(`SIBLING_LONG_PERIOD_TRIALS_PER_RULE`). The caches record the levels
 (`stimulus_magnitude_levels`; endpoint version 4, sweep version 3). Caches
 written before the grid hold 32 trials per rule, four random magnitudes per
 direction; the DelayDM caches of all 25 L2 = 1e-4 runs were rerun on the
@@ -780,13 +790,147 @@ runs, and the [cohort figures](#sibling-task-cohort-statistics) put every
 run in the full state space. The endpoint figures' axis limits follow the
 drawn points (`_adaptive_pc_limits`) for every run.
 
+## MemoryPro / MemoryAnti in the stimulus period
+
+The sibling analysis has a third family, `delaygo` (MemoryPro and MemoryAnti,
+`delaygo` / `delayanti`), read in the stimulus period instead of the memory
+delay (`SIBLING_FAMILY_PERIOD` in `sibling_fixed_point_analysis.py`). The two
+rules see the same stimulus and differ only in the response it calls for
+(its direction, or the opposite one), so the question is where a direction
+is held while it is on: at the same place under both rules, or at the place
+of the opposite direction, the one MemoryAnti will answer with.
+
+```bash
+python multiple_task/sibling_fixed_point_analysis.py \
+  --seed 921 --feature L21e4 --families delaygo --method settled_endpoint
+```
+
+It runs like the delay families' settled-endpoint method, with the period
+changed: the PCA bases are fitted on the `stim1` trajectories of 100 normal
+trials per rule; 32 trials per rule then run with a 10 s stimulus
+(`long_stimulus`) and keep stepping on the stimulus period's input until the
+fixed-point criterion (`SIBLING_MAX_SETTLE_MS` caps it), and the rule-cue
+sweep reruns the MemoryPro trials at 11 cue levels toward MemoryAnti's cue.
+Three things differ from the delay families:
+
+- **Directions.** The MemoryPro/MemoryAnti generator draws one continuous
+  random direction per trial. The long-stimulus trials have it replaced by
+  the eight native directions in turn at unit strength, four trials each
+  (`_apply_balanced_stimulus_directions`), so the two rules hold matched
+  conditions and every direction has its opposite among the trials. The
+  generated stimulus is checked first (one constant unit vector per trial
+  on a two-channel ring, at the angle its metadata names). The stimulus
+  modality is the one the generator draws for the run, the same for both
+  rules.
+- **Method.** Only settled endpoints; `--method gradient` solves delay fixed
+  points and is refused for this family.
+- **File names.** A family's settled-endpoint files carry the name of its
+  period (`settled_endpoint_tag`): `delaygo_long_stimulus_endpoints_<run>.pkl`,
+  `delaygo_long_stimulus_endpoint_pc_projections[_delaygo_only]_<run>.pkl`,
+  `delaygo_long_stimulus_endpoint_stimulus_trajectory_pca[_delaygo_only]_<run>.pkl`,
+  `delaygo_cue_interp_long_stimulus_endpoint{s,_pc_projections}_<run>.pkl`
+  and the `delaygo_stimulus_pc_gallery_*` figures. The delay families keep
+  their `long_delay_endpoint` names, so their saved caches stay valid. The
+  artifacts carry the window as `period`, `period_window`, `period_steps`,
+  `period_ms` and `endpoint_period_ms`; the delay families' artifacts keep
+  the `delay_*` names beside them.
+
+The script was called `sibling_delay_analysis.py`, and its settled-endpoint
+method `long_delay_endpoint`, until 2026-11-14, when the stimulus-period
+family made both names too narrow.
+
+`sibling_cohort.py` adds this family's statistics to every run that has its
+caches (it is optional: a run without them keeps its DelayDM and DMC
+statistics and records the reason under `optional_missing`). Per run and
+representation, from the eight per-direction mean endpoints of each rule:
+
+- `ring_cosine_same`: with each rule's mean removed, the cosine between the
+  two rules' eight-point configurations matched by stimulus direction: 1 when
+  a direction is held at the same place under both rules apart from a shift,
+  -1 when it is held at the place of the opposite direction, 0 when the two
+  rules code direction along orthogonal axes. `ring_cosine_opposite` matches
+  by response direction instead.
+- `translation_explained_same` / `_opposite`: the fraction of the mean squared
+  cross-rule displacement that one shared vector accounts for under each
+  matching, and `translation_to_ring`, the length of that vector over the
+  root mean square radius of the rings.
+- `separation_aligned_same` / `_opposite` and `alignment_gain_*`: the
+  separation of the pooled endpoints by direction with the rule means removed,
+  labelling MemoryAnti's endpoints by stimulus or by response direction.
+- `cue_traversed`, `cue_end_residual`, `cue_end_nearer_sibling`: the rule-cue
+  sweep against the shared vector and the MemoryAnti endpoint of the same
+  stimulus, as for DelayDM (alpha = 1 is a trained MemoryAnti input).
+
+Three paper figures of the `two_in_multiple` mode draw this family; each
+skips with the commands to run until its caches exist.
+
+- `multitask_sibling_cohort_ring_cosine`: `ring_cosine_same` of every cohort
+  run that has the family, one column per representation (hidden, W ⊙ M), on
+  an axis from -1 ("opposite direction", a response code) through 0
+  ("orthogonal") to +1 ("same direction", a stimulus code). The saved
+  message adds `ring_cosine_opposite`, `translation_to_ring`,
+  `cue_end_residual` and the number of runs below 0. It needs at least two
+  runs with the family in `sibling_cohort_results.pkl`, so rerun
+  `sibling_cohort.py` after the family's batch.
+- `multitask_memory_stimulus_endpoints`: the settled endpoints of one run,
+  one panel per representation. Each rule has one point per direction (the
+  mean of that direction's identical trials), colored by stimulus direction,
+  squares for MemoryPro and triangles for MemoryAnti, with a grey line
+  joining the two rules' points of one stimulus and the faint path from
+  stimulus onset behind each point. The plane is the two of the six joint
+  stimulus PCs along which the sixteen points vary most, so it is chosen for
+  the spread of the endpoints and not for how the rules compare. The figure
+  is an illustration, so it draws the most legible cached run, as the
+  DelayDM and DMC figures do: the run with the largest ratio, in the drawn
+  plane and for the less clear of its two panels, of the smallest distance
+  between two stimulus directions to the largest distance between the two
+  rules' points of one stimulus (`_memory_endpoint_legibility`; runs with a
+  point above the fixed-point criterion are not candidates). The saved
+  message names the run, its score and the planes.
+- `multitask_memory_cue_interp_long_stimulus_endpoint_{emodulation,hidden}_{2d,3d}`
+  (`memory_cue_interp`): the rule-cue sweep, drawn by the
+  renderers of `sibling_cue_interp`: a MemoryPro stimulus held while the cue
+  moves from MemoryPro's (alpha = 0) to MemoryAnti's (alpha = 1), one trial
+  per stimulus direction, lines in the stimulus rainbow and markers on the
+  alpha ramp. The plane is the rule PC (the joint stimulus PC along which
+  the trials' common displacement from alpha = 0 to 1 is largest) and the
+  other PC along which the alpha = 0 direction means vary most, so the `2d`
+  rows read "the stimulus, held" and "the rule". Each representation draws
+  the cached run whose drawn lines follow the cue most smoothly: the one
+  with the smallest largest departure of a drawn trial from the drawn
+  trials' common motion between two alphas, as a fraction of its panel
+  (`_memory_sweep_legibility`), so the two representations and the endpoint
+  figure can come from different networks.
+
+On the 25 L2 = 1e-4 runs (caches and cohort summary of 2026-11-14; medians
+with quartiles) every endpoint settled and the stimulus is held in stimulus
+coordinates in every run: `ring_cosine_same` is 0.95 [0.93, 0.96] for the
+hidden state and 0.73 [0.72, 0.77] for W ⊙ M, above 0 in 25/25 runs (lowest
+0.88 and 0.67), against `ring_cosine_opposite` of -0.84 and -0.37. The two
+rings differ by a rule shift of 0.31 [0.25, 0.42] (hidden) and 0.43
+[0.40, 0.44] (W ⊙ M) of the ring radius, and the rule cue alone carries the
+state the whole way (`cue_traversed` 1.00; the alpha = 1 endpoint, a trained
+MemoryAnti input, lands on MemoryAnti's own, `cue_end_residual` 0.00). The
+illustrations draw the clearest runs of the 25 (2026-11-14): the endpoint
+figure seed 921 (direction gap over rule gap 4.3; the cohort ranges from
+0.05 to 4.3 with a median of 2.3), the sweep figures seed 692 for the
+hidden state and seed 842 for W ⊙ M (largest drawn departure 0.08 and 0.10
+of a panel; cohort 0.08-0.60 and 0.10-0.21). In those planes the two rules'
+points of a stimulus lie nearly on top of each other, while the W ⊙ M
+cosine of 0.73 is the full-space value: part of the difference between the
+rules lies outside the drawn plane, along the rule PC of the sweep figures
+(joint stimulus PC5 in each drawn run, a few percent of the trajectory
+variance), where the stimulus PC stays flat along alpha and every direction
+moves the same way. In other runs the hidden-state sweep is less smooth:
+single directions step between two alphas (seed 379).
+
 ## Sibling-task cohort statistics
 
 `python multiple_task/sibling_cohort.py --feature L21e4` asks what the
 sibling illustrations show over every run of a cohort. It reads the settled
 long-delay endpoint and rule-cue sweep caches of every
 `two_in_multiples/everything_seed*_<feature>+hidden300+batch128+angle/` run
-(both families, every point at the fixed-point criterion; a run missing a
+(the DelayDM and DMC families, every point at the fixed-point criterion; a run missing a
 cache or holding an unsettled point is listed with the reason) and
 computes, in the full hidden-state and W ⊙ M spaces with no PC pair and no
 run chosen, the statistics below per run, family and representation
@@ -799,7 +943,7 @@ figure: every run a point in the statistics blue, a run's hidden-state and
 W ⊙ M columns joined, the median over runs as a red dash with the
 interquartile range and the run count in the legend; skipped below two
 runs or when the file belongs to another cohort than `SIBLING_L2`. Rerun
-the script after `sibling_delay_analysis.py` rewrites any run's caches.
+the script after `sibling_fixed_point_analysis.py` rewrites any run's caches.
 
 - `multitask_sibling_cohort_translation`: the two DelayDM rules' endpoints
   matched by (direction, magnitude), and the fraction of their mean squared

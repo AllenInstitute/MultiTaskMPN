@@ -37,7 +37,9 @@ CONTROLS_STUB = SimpleNamespace(CONTROL_POOLS=("responsive", "all"), DEFAULT_POO
 # parse_args reads the sibling families and methods from the heavy analysis
 # module; the stub keeps the test free of the training stack.
 SIBLING_STUB = SimpleNamespace(SIBLING_FAMILIES={"delaydm1": None, "dmcgo": None},
-                               SIBLING_METHODS=("gradient", "long_delay_endpoint"))
+                               SIBLING_METHODS=("gradient", "settled_endpoint"),
+                               SIBLING_METHOD_CHOICES=("gradient", "settled_endpoint",
+                                                       "long_delay_endpoint"))
 
 
 class RunPipelineStartupTests(unittest.TestCase):
@@ -66,7 +68,7 @@ class RunPipelineSelectionTests(unittest.TestCase):
     def setUpClass(cls):
         cls.ns = load_script_namespace(
             SOURCE, FUNCTIONS, CONSTANTS,
-            extra={"argparse": argparse, "pickle": pickle, "sibling_delay_analysis": SIBLING_STUB,
+            extra={"argparse": argparse, "pickle": pickle, "sibling_fixed_point_analysis": SIBLING_STUB,
                    "lesion_controls": CONTROLS_STUB, "lesion_cache": lesion_cache,
                    "cluster_caches_current": cluster_caches_current})
 
@@ -207,7 +209,7 @@ class RunPipelineSelectionTests(unittest.TestCase):
         controls.main = Mock(side_effect=lambda *a, **k: calls.append(("lesion_controls", a, k)))
         ns = load_script_namespace(
             SOURCE, FUNCTIONS, CONSTANTS,
-            extra={"argparse": argparse, "pickle": pickle, "sibling_delay_analysis": SIBLING_STUB,
+            extra={"argparse": argparse, "pickle": pickle, "sibling_fixed_point_analysis": SIBLING_STUB,
                    "lesion_controls": controls, "lesion_cache": lesion_cache,
                    "cluster_caches_current": cluster_caches_current,
                    "time": __import__("time"), **stubs})

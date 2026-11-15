@@ -1263,7 +1263,7 @@ class PaperPlotModeTests(unittest.TestCase):
                 for method in ("gradient", "long_delay_endpoint"):
                     self.assertEqual(
                         paper_plot._multitask_sibling_hint(family, method),
-                        "Run: python multiple_task/sibling_delay_analysis.py "
+                        "Run: python multiple_task/sibling_fixed_point_analysis.py "
                         f"--seed {seed} --feature L21e4 --families {family} "
                         f"--method {method}",
                     )

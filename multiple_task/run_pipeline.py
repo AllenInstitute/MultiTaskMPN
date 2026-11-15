@@ -1,6 +1,6 @@
 """
 Run the network-evaluating pipeline for each experiment:
-  optional: sibling_delay_analysis — DelayDM/DMC fixed-point geometry, selected
+  optional: sibling_fixed_point_analysis — DelayDM/DMC fixed-point geometry, selected
             explicitly with --families
   1. multiple_task_analysis  — weight structure and clustering (produces the
      cluster_info pickles the later steps need)
@@ -47,7 +47,7 @@ from run_logging import tee_output
 from core.task_variance import cluster_caches_current
 import lesion_cache
 import multiple_task_analysis
-import sibling_delay_analysis
+import sibling_fixed_point_analysis
 import lesion
 import lesion_controls
 import lesion_plot
@@ -191,8 +191,8 @@ def run_pipeline(seed, feature, families=(), sibling_method=None, resume=False,
     t0 = time.time()
 
     if families:
-        print("\n--- Optional: sibling_delay_analysis ---")
-        sibling_delay_analysis.run_sibling_analysis(
+        print("\n--- Optional: sibling_fixed_point_analysis ---")
+        sibling_fixed_point_analysis.run_sibling_analysis(
             seed, feature, families, sibling_method)
 
     def done(step):
@@ -279,12 +279,12 @@ def parse_args(argv=None):
                         help="Random controls per (side, size) and task in step 3 "
                              f"(default: {DEFAULT_CONTROL_REPEATS}).")
     parser.add_argument("--families", nargs="+", default=[],
-                        choices=list(sibling_delay_analysis.SIBLING_FAMILIES),
+                        choices=list(sibling_fixed_point_analysis.SIBLING_FAMILIES),
                         help="Optional sibling-task families to analyze before "
                              "clustering. Default: none. For sibling analysis "
-                             "only, run sibling_delay_analysis.py directly.")
+                             "only, run sibling_fixed_point_analysis.py directly.")
     parser.add_argument(
-        "--sibling-method", choices=sibling_delay_analysis.SIBLING_METHODS,
+        "--sibling-method", choices=sibling_fixed_point_analysis.SIBLING_METHOD_CHOICES,
         help=("Fixed-point method for --families. Required when sibling "
               "families are selected."))
     args = parser.parse_args(argv)

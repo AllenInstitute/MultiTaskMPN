@@ -418,7 +418,7 @@ SIBLING_ONE_TRIAL_PER_STIMULUS = True
 # bottom row (see `core.sibling_geometry.dmc_sweep_axis_scores`). It changes
 # the DMC sweep figures' plane and run. `--sibling-dmc-keep-every-alpha` sets it.
 SIBLING_DMC_KEEP_AT_EVERY_ALPHA = False
-# Produced by multiple_task/sibling_delay_analysis.py, which writes into
+# Produced by multiple_task/sibling_fixed_point_analysis.py, which writes into
 # two_in_multiples/{aname}/ the artifacts the sibling figures read. Gradient
 # method:
 #     fixed_points_grad_{aname}_{rule}.pkl   one per sibling rule
@@ -13636,7 +13636,7 @@ def _require_sibling_converged(is_fixed, context):
     """Raise unless a saved convergence mask exists and is all True."""
     if is_fixed is None:
         raise ValueError(f"{context} predate settling (no is_fixed mask); rerun "
-                         "multiple_task/sibling_delay_analysis.py")
+                         "multiple_task/sibling_fixed_point_analysis.py")
     mask = np.asarray(is_fixed, dtype=bool)
     if not mask.all():
         raise ValueError(f"{context}: {int((~mask).sum())}/{mask.size} points "
@@ -13821,7 +13821,7 @@ def _select_sibling_runs(family):
     if not report["runs"]:
         print(f"  {family}: no scorable {report['cohort']} run under "
               f"{TWO_IN_MULTIPLES_DIR}/. Run: python "
-              "multiple_task/sibling_delay_analysis.py --seed <seed> "
+              "multiple_task/sibling_fixed_point_analysis.py --seed <seed> "
               f"--feature {report['cohort']} --families {family} "
               "--method long_delay_endpoint")
         return {key: multitask_aname(0, SIBLING_L2) for key in report["choices"]}
@@ -13845,11 +13845,11 @@ def _multitask_sibling_hint(family, method="gradient", aname=None):
     match = _re.fullmatch(
         r"everything_seed(\d+)_(.+)\+hidden\d+\+batch\d+\+angle", aname)
     if match is None:
-        return "Run multiple_task/sibling_delay_analysis.py first."
+        return "Run multiple_task/sibling_fixed_point_analysis.py first."
     if method not in ("gradient", "long_delay_endpoint"):
         raise ValueError(f"unknown sibling fixed-point method {method!r}")
     seed, feature = match.groups()
-    return ("Run: python multiple_task/sibling_delay_analysis.py "
+    return ("Run: python multiple_task/sibling_fixed_point_analysis.py "
             f"--seed {seed} --feature {feature} --families {family} "
             f"--method {method}")
 
@@ -14095,7 +14095,7 @@ def _sibling_fixed_point_color_labels(family, entry):
     rule-cue sweep figures: the stimulus direction for DelayDM, the response
     category for DMC ("respond to category 1 / 2", the saved `group_labels`,
     or derived from task and stimulus as
-    `sibling_delay_analysis._dmc_category_labels` derives them)."""
+    `sibling_fixed_point_analysis._dmc_category_labels` derives them)."""
     if family not in ("delaydm1", "dmcgo"):
         raise ValueError(f"no long-delay clustering criterion for {family!r}")
     if "stim_idx" not in entry:
@@ -14167,7 +14167,7 @@ def _cue_interp_endpoint_overlay(family, plot_name):
     """(alphas, sweeps) of `family`'s long-delay rule-cue sweep, or None.
 
     Reads the endpoint-method projection written by
-    `sibling_delay_analysis.save_cue_interp_pc_projections` from the run of
+    `sibling_fixed_point_analysis.save_cue_interp_pc_projections` from the run of
     the `plot_name` endpoint figure, whose basis the sweep shares; a missing
     or foreign cache only drops the overlay, never the endpoint figure."""
     if not _MULTITASK_ENDPOINT_OVERLAY_CUE_INTERP:
@@ -14511,7 +14511,7 @@ def plot_multitask_delaydm_fixed_point_geometry():
 # settling carry no mask and draw filled); the connecting
 # lines carry the plain endpoint figure's grouping instead (see
 # `_cue_interp_line_colors`). Read from the projections that
-# sibling_delay_analysis.save_cue_interp_pc_projections writes.
+# sibling_fixed_point_analysis.save_cue_interp_pc_projections writes.
 _MULTITASK_CUE_INTERP_METHODS = ("gradient", "long_delay_endpoint")
 _MULTITASK_CUE_INTERP_PANEL_IN = 1.8      # in; matches the two-task alpha figures
 _MULTITASK_CUE_INTERP_LIMIT_PADDING = 0.12   # 3D view, shared over panels
@@ -14775,7 +14775,7 @@ def _cue_interp_sweep_arrays(sweep, context):
 # endpoint figure, while the markers keep the alpha ramp, so hue on the line
 # and hue on the markers carry different things.
 #   DMC: the plain figure separates two memory clusters that cut across task
-#   and stimulus (`sibling_delay_analysis._dmc_category_labels`). Stimulus
+#   and stimulus (`sibling_fixed_point_analysis._dmc_category_labels`). Stimulus
 #   category 1 is locations 0-3 (< pi), category 2 locations 4-7. DMCGo
 #   responds when the second stimulus matches the first, DMCNoGo when it does
 #   not, so a DMCGo trial with a category-1 stimulus and a DMCNoGo trial with
@@ -14935,8 +14935,9 @@ def _cue_interp_axis_limits(sweeps, index):
 
 
 def _render_multitask_cue_interp_2d(entry, alphas, family, method, pair,
-                                    out_path, plane_note, rules=None):
-    """x = alpha, y = one Joint Delay PC; rows are the plane's two PCs and
+                                    out_path, plane_note, rules=None, period_name="Delay"):
+    """x = alpha, y = one Joint Delay PC (`period_name` names the period the
+    basis was fitted on); rows are the plane's two PCs and
     columns the base rules whose stimulus is held (two for DelayDM, one for
     DMC). Each panel's y limits hug its own lines (`_cue_interp_panel_ylim`),
     so columns are not on a shared scale; the 3D view below uses the same
@@ -14982,7 +14983,7 @@ def _render_multitask_cue_interp_2d(entry, alphas, family, method, pair,
             ax.set_box_aspect(1)
             ax.spines[["top", "right"]].set_visible(False)
             if col == 0:
-                ax.set_ylabel(f"Joint Delay PC{pc}", fontsize=7)
+                ax.set_ylabel(f"Joint {period_name} PC{pc}", fontsize=7)
             if row == 0:
                 ax.set_title(_cue_interp_column_title(
                     base_rule, sweep["target_rule"]), fontsize=6.5)
@@ -14996,13 +14997,13 @@ def _render_multitask_cue_interp_2d(entry, alphas, family, method, pair,
                 if all(g is None for g in groups_by_sweep.values())
                 else "alpha = 0 cluster")
     _save_fig(fig, out_path,
-              extra=(f"  ({method}; Joint Delay PC{pc_x}-PC{pc_y}, {plane_note}; "
+              extra=(f"  ({method}; Joint {period_name} PC{pc_x}-PC{pc_y}, {plane_note}; "
                      f"{alphas.size} alphas; bases {list(sweeps)}; lines colored "
                      f"by {grouping}{_cue_interp_view_note(sweeps)})"))
 
 
 def _render_multitask_cue_interp_3d(entry, alphas, family, method, pair,
-                                    out_path, plane_note, rules=None):
+                                    out_path, plane_note, rules=None, period_name="Delay"):
     """3D view of `_render_multitask_cue_interp_2d`: x = alpha, y/z = the two
     Joint Delay PCs of the same plane, one panel per base rule. Panel geometry
     and axis styling follow the two-task alpha 3D figure so the two read as a
@@ -15032,8 +15033,8 @@ def _render_multitask_cue_interp_3d(entry, alphas, family, method, pair,
         ax.set_zlim(*zlim)
         ax.set_box_aspect((1, 1, 1))
         ax.set_xlabel(r"$\alpha$", fontsize=7, labelpad=-15)
-        ax.set_ylabel(f"Delay PC{pc_x}", fontsize=7, labelpad=-17)
-        ax.set_zlabel(f"Delay PC{pc_y}", fontsize=7, labelpad=-17)
+        ax.set_ylabel(f"{period_name} PC{pc_x}", fontsize=7, labelpad=-17)
+        ax.set_zlabel(f"{period_name} PC{pc_y}", fontsize=7, labelpad=-17)
         ax.set_xticks([alphas.min(), alphas.max()])
         ax.set_yticklabels([])
         ax.set_zticklabels([])
@@ -15047,7 +15048,7 @@ def _render_multitask_cue_interp_3d(entry, alphas, family, method, pair,
                      fontsize=6.5, y=0.97)
     fig.subplots_adjust(left=0.06, right=0.98, bottom=0.02, top=0.9, wspace=0.12)
     _save_fig(fig, out_path,
-              extra=(f"  ({method}; Joint Delay PC{pc_x}-PC{pc_y}, {plane_note}; "
+              extra=(f"  ({method}; Joint {period_name} PC{pc_x}-PC{pc_y}, {plane_note}; "
                      f"{alphas.size} alphas; bases {list(sweeps)}"
                      f"{_cue_interp_view_note(sweeps)})"))
 
@@ -15138,16 +15139,24 @@ def plot_multitask_sibling_cue_interp():
 
 # ─── Figures: sibling-task cohort statistics ─────────────────────────────────
 # multiple_task/sibling_cohort.py reads every cached SIBLING_L2 run's settled
-# long-delay endpoints and rule-cue sweeps in the full state space, with no PC
-# pair and no run chosen, and saves one value per run, family and
-# representation. The figures below draw those values, one statistic per
-# figure, so the sibling illustrations above, which show the best plane of the
-# best run, have the whole cohort behind them. The names and the schema must
-# agree with the script (test_sibling_cohort checks).
+# endpoints (long delay; long stimulus for MemoryPro / MemoryAnti) and
+# rule-cue sweeps in the full state space, with no PC pair and no run chosen,
+# and saves one value per run, family and representation. The
+# plot_sibling_cohort_* figures below draw those values, one statistic per
+# figure, so the sibling illustrations, which show the best plane of the best
+# run, have the whole cohort behind them. The names and the schema must agree
+# with the script (test_sibling_cohort checks). The MemoryPro / MemoryAnti
+# illustrations (endpoints, rule-cue sweep) follow their cohort figure at the
+# end of this section; they read the per-run caches, not the cohort summary.
 SIBLING_COHORT_RESULT_NAME = "sibling_cohort_results.pkl"
 _SIBLING_COHORT_SCHEMA_VERSION = 2
 _SIBLING_COHORT_REPRESENTATIONS = (("hidden", "Hidden"), ("e_modulation", r"W $\odot$ M"))
 _SIBLING_COHORT_FAMILY_LABELS = {"delaydm1": "DelayDM", "dmcgo": "DMC"}
+# The family sibling_cohort.py analyzes only where its caches exist
+# (OPTIONAL_FAMILIES): MemoryPro / MemoryAnti, settled in the stimulus period.
+_SIBLING_COHORT_OPTIONAL_FAMILY_LABELS = {"delaygo": "MemoryPro/Anti"}
+_MEMORY_FAMILY = "delaygo"
+_MEMORY_ENDPOINT_TAG = "long_stimulus_endpoint"
 _SIBLING_COHORT_POINT_SIZE = 20
 _SIBLING_COHORT_HALF_WIDTH = 0.27
 _SIBLING_COHORT_FIGSIZE = (2.5, 2.5)
@@ -15205,7 +15214,8 @@ def _sibling_cohort_note(runs, family, key, decimals=3):
     for representation, _ in _SIBLING_COHORT_REPRESENTATIONS:
         median = np.median([entry["families"][family][representation][key] for entry in runs])
         medians.append(f"{representation} {median:.{decimals}f}")
-    return f"{_SIBLING_COHORT_FAMILY_LABELS[family]} {key}: {', '.join(medians)}"
+    label = {**_SIBLING_COHORT_FAMILY_LABELS, **_SIBLING_COHORT_OPTIONAL_FAMILY_LABELS}[family]
+    return f"{label} {key}: {', '.join(medians)}"
 
 
 def _draw_sibling_cohort(ax, groups, n_runs, floor=None, ceiling=None,
@@ -15463,6 +15473,315 @@ def plot_sibling_cohort_category_memory():
                                           f"category_nearest_centroid_accuracy_{rule}"))
     _save_fig(fig, _multitask_out("sibling_cohort_category_memory.png"),
               extra=f"  {len(runs)} runs; " + "; ".join(notes))
+
+
+def _memory_family_command(cohort=False):
+    """The upstream command of the MemoryPro / MemoryAnti figures: the
+    per-run analysis the illustrations read and, with `cohort`, the cohort
+    summary the ring-cosine figure reads."""
+    feature = multitask_feature(SIBLING_L2)
+    command = ("Run python multiple_task/sibling_fixed_point_analysis.py --seed <seed> "
+               f"--feature {feature} --families {_MEMORY_FAMILY} --method settled_endpoint "
+               "for each run")
+    if cohort:
+        command += f", then python multiple_task/sibling_cohort.py --feature {feature}"
+    return command + "."
+
+
+def _memory_cohort_runs():
+    """The SIBLING_L2 cohort runs that carry the optional MemoryPro /
+    MemoryAnti stimulus-period statistics, by seed, or None with the commands
+    to run when fewer than two do."""
+    runs = _load_sibling_cohort()
+    if runs is None:
+        return None
+    with_family = [entry for entry in runs if entry["families"].get(_MEMORY_FAMILY)]
+    if len(with_family) < 2:
+        print(f"  Skipped: {len(with_family)} of {len(runs)} cohort runs have MemoryPro / "
+              f"MemoryAnti stimulus-period statistics; need >= 2. "
+              f"{_memory_family_command(cohort=True)}")
+        return None
+    return with_family
+
+
+def plot_sibling_cohort_ring_cosine():
+    """
+    Figure: multitask_sibling_cohort_ring_cosine.png — where MemoryPro and
+    MemoryAnti hold a stimulus direction while it is on. Per run and
+    representation, the cosine between the two rules' settled stimulus-period
+    endpoints of the eight directions, each rule's mean removed, matched by
+    stimulus direction (`ring_cosine_same` of multiple_task/sibling_cohort.py,
+    full space). +1: a direction is held at the same place under both rules
+    apart from a shift, a code for the stimulus; -1: at the place of the
+    opposite direction, the one MemoryAnti answers with, a code for the
+    response; 0: the two rules code direction along orthogonal axes. Drawn
+    like the other cohort figures, from the runs that have this optional
+    family's caches; nothing is recomputed here.
+    """
+    _ensure_out_dir()
+    runs = _memory_cohort_runs()
+    if runs is None:
+        return
+    columns = _sibling_cohort_columns(runs, _MEMORY_FAMILY, "ring_cosine_same")
+    fig, ax, _ = _sibling_cohort_figure(
+        [columns], len(runs), "Cosine of the two rules'\ndirection rings")
+    ax.set_ylim(-1.15, 1.15)
+    # The three reference levels, named on the right as in the DMC
+    # category-axis figure.
+    for level in (1.0, 0.0, -1.0):
+        ax.axhline(level, color="0.6", linewidth=0.6, linestyle="--" if level else "-", zorder=1)
+    codes = ax.secondary_yaxis("right")
+    codes.set_yticks([-1.0, 0.0, 1.0])
+    codes.set_yticklabels(["opposite direction", "orthogonal", "same direction"],
+                          fontsize=6, color="0.4")
+    codes.tick_params(length=0)
+    codes.spines["right"].set_visible(False)
+    counts = "; ".join(f"{representation} {int(np.sum(values < 0))}/{values.size} runs below 0"
+                       for (representation, _), (_, values)
+                       in zip(_SIBLING_COHORT_REPRESENTATIONS, columns))
+    _save_fig(fig, _multitask_out("sibling_cohort_ring_cosine.png"),
+              extra=f"  {len(runs)} runs; " + "; ".join(
+                  _sibling_cohort_note(runs, _MEMORY_FAMILY, key)
+                  for key in ("ring_cosine_same", "ring_cosine_opposite", "translation_to_ring",
+                              "cue_end_residual")) + f"; {counts}")
+
+
+def _memory_best_run(cache_name, score, metric):
+    """(aname, cache, note) of the cached SIBLING_L2 run a MemoryPro /
+    MemoryAnti illustration draws: the one whose
+    `delaygo_{cache_name}_{aname}.pkl` scores highest under `score(cache)`
+    (ties to the lowest seed). These figures are illustrations, so the most
+    legible run is shown, as for the DelayDM and DMC figures
+    (`_select_sibling_runs`); the cohort figure puts every run behind them.
+    A run without the cache, or whose cache `score` rejects (ValueError: a
+    point above the fixed-point criterion, nothing to score), is left out.
+    `metric` names the score in the saved message, with one `{}` field for
+    its magnitude. None, with the commands to run, when no run can be
+    scored."""
+    import re
+
+    feature = multitask_feature(SIBLING_L2)
+    pattern = re.compile(rf"everything_seed(\d+)_{re.escape(feature)}\+.*")
+    best, n_scored = None, 0
+    directories = sorted(TWO_IN_MULTIPLES_DIR.iterdir()) if TWO_IN_MULTIPLES_DIR.is_dir() else []
+    for directory in directories:
+        match = pattern.fullmatch(directory.name)
+        cache_path = directory / f"{_MEMORY_FAMILY}_{cache_name}_{directory.name}.pkl"
+        if match is None or not cache_path.exists():
+            continue
+        try:
+            with cache_path.open("rb") as stream:
+                cache = pickle.load(stream)
+            value = float(score(cache))
+            if not np.isfinite(value):
+                raise ValueError("score is not finite")
+        except (KeyError, ValueError, OSError, EOFError, pickle.UnpicklingError) as exc:
+            print(f"    Skipped {directory.name}: {exc}")
+            continue
+        n_scored += 1
+        key = (-value, int(match.group(1)))
+        if best is None or key < best[0]:
+            best = (key, directory.name, cache)
+    if best is None:
+        print(f"  Skipped: no scorable MemoryPro / MemoryAnti {cache_name} cache of the "
+              f"{feature} cohort. {_memory_family_command()}")
+        return None
+    return best[1], best[2], (f"most legible of {n_scored} cached runs: "
+                              + metric.format(f"{abs(best[0][0]):.2f}"))
+
+
+def _memory_direction_means(entry):
+    """(directions, {task: (n_directions, n_pc) mean endpoint per stimulus
+    direction}) of one representation of the endpoint projection cache."""
+    projection = np.asarray(entry["proj"], dtype=float)
+    task_idx = np.asarray(entry["task_idx"], dtype=int)
+    stim_idx = np.asarray(entry["stim_idx"], dtype=int)
+    directions = np.unique(stim_idx)
+    return directions, {
+        task: np.stack([projection[(task_idx == task) & (stim_idx == stim)].mean(axis=0)
+                        for stim in directions]) for task in (0, 1)}
+
+
+def _memory_endpoint_legibility(cache):
+    """How clearly the endpoint figure of one run reads, the smaller of its
+    two panels: in the drawn plane (`_endpoint_spread_pc_pair`), the smallest
+    distance between two stimulus directions (each at the midpoint of its two
+    rules' points) over the largest distance between the two rules' points of
+    one stimulus. Above 1 no stimulus can be mistaken for its neighbor."""
+    scores = []
+    for plot_name in _SIBLING_REPRESENTATIONS:
+        entry = cache["representations"][plot_name]
+        _require_sibling_converged(entry.get("is_fixed"), f"{plot_name} endpoints")
+        _, means = _memory_direction_means(entry)
+        plane = list(_endpoint_spread_pc_pair(np.concatenate([means[0], means[1]])))
+        pro, anti = means[0][:, plane], means[1][:, plane]
+        centers = (pro + anti) / 2.0
+        gaps = np.linalg.norm(centers[:, None] - centers[None], axis=-1)
+        direction_gap = gaps[np.triu_indices(centers.shape[0], 1)].min()
+        rule_gap = np.linalg.norm(pro - anti, axis=1).max()
+        scores.append(direction_gap / max(rule_gap, np.finfo(float).eps))
+    return min(scores)
+
+
+def _endpoint_spread_pc_pair(means):
+    """The two of the saved PCs along which the per-direction mean endpoints
+    (rows) vary most, as 0-based indices in descending order of variance."""
+    order = np.argsort(-np.var(means, axis=0), kind="stable")[:2]
+    return int(order[0]), int(order[1])
+
+
+def plot_multitask_memory_stimulus_endpoints():
+    """
+    Figure: multitask_memory_stimulus_endpoints.png — the settled
+    stimulus-period endpoints of MemoryPro and MemoryAnti in one run, the
+    illustration behind plot_sibling_cohort_ring_cosine.
+
+    One panel per representation (hidden state, W * M). Each rule's trials
+    of one direction settle on one point (the trials are identical), so a
+    panel holds eight points per rule: colored by stimulus direction (the
+    stimulus rainbow, keyed by the stimulus colorwheel), squares for
+    MemoryPro and triangles for MemoryAnti, the two rules' points of one
+    stimulus joined by a grey line, and behind them the faint path from
+    stimulus onset to the settled endpoint. The plane is the pair of the
+    six joint stimulus PCs along which those sixteen points vary most
+    (`_endpoint_spread_pc_pair`), so it is chosen for the spread of the
+    endpoints, not for how the two rules compare. Short grey lines mean a
+    direction is held at nearly the same place under both rules; lines
+    crossing the ring would mean it is held at the opposite direction's
+    place. The run is the most legible of the cached ones
+    (`_memory_best_run` with `_memory_endpoint_legibility`): an
+    illustration, behind which the cohort figure gives the full-space
+    statistic over every run.
+    """
+    _ensure_out_dir()
+    selected = _memory_best_run(
+        f"{_MEMORY_ENDPOINT_TAG}_pc_projections", _memory_endpoint_legibility,
+        "smallest direction gap over largest rule gap {}")
+    if selected is None:
+        return
+    aname, data, run_note = selected
+    panels = (("hidden", "Hidden state"), ("e_modulation", r"W $\odot$ M"))
+    fig, axs = plt.subplots(1, len(panels), figsize=(4.8, 2.7), squeeze=False)
+    linestyles = ("-", "--")
+    notes = []
+    for ax, (plot_name, title) in zip(axs[0], panels):
+        entry = data["representations"][plot_name]
+        task_idx = np.asarray(entry["task_idx"], dtype=int)
+        stim_idx = np.asarray(entry["stim_idx"], dtype=int)
+        task_names = list(entry["task_names"])
+        directions, means = _memory_direction_means(entry)
+        bx, by = _endpoint_spread_pc_pair(np.concatenate([means[0], means[1]]))
+        trajectories = entry.get("trajectory_proj")
+        for task in (0, 1):
+            for row, stim in enumerate(directions):
+                color = stim_color(int(stim), _SIBLING_N_STIM)
+                if trajectories is not None:
+                    trial = int(np.flatnonzero((task_idx == task) & (stim_idx == stim))[0])
+                    trace = np.asarray(trajectories[trial], dtype=float)
+                    ax.plot(trace[:, bx], trace[:, by], color=color, linewidth=0.65, alpha=0.3,
+                            linestyle=linestyles[task], zorder=1)
+                ax.scatter(means[task][row, bx], means[task][row, by], color=color,
+                           edgecolor="white", linewidth=0.25,
+                           marker=_MULTITASK_RULE_MARKERS[task], s=31, alpha=0.9, zorder=3)
+        for row in range(directions.size):
+            ax.plot([means[0][row, bx], means[1][row, bx]], [means[0][row, by], means[1][row, by]],
+                    color="0.45", linewidth=0.7, zorder=2)
+        evr = np.asarray(entry.get("explained_variance_ratio", []), dtype=float)
+        ax.set_xlabel(f"Joint Stimulus PC{bx + 1}"
+                      + (f" ({100 * evr[bx]:.1f}%)" if evr.size > bx else ""), fontsize=8)
+        ax.set_ylabel(f"Joint Stimulus PC{by + 1}"
+                      + (f" ({100 * evr[by]:.1f}%)" if evr.size > by else ""), fontsize=8)
+        ax.set_title(title, fontsize=9, pad=4)
+        xlim, ylim = _adaptive_pc_limits(np.concatenate([means[0], means[1]]), bx, by,
+                                         padding=_MULTITASK_ENDPOINT_LIMIT_PADDING)
+        ax.set_xlim(*xlim)
+        ax.set_ylim(*ylim)
+        ax.set_box_aspect(1)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.spines[["top", "right"]].set_visible(False)
+        notes.append(f"{plot_name} PC{bx + 1}-PC{by + 1}")
+    handles = [mpl.lines.Line2D([], [], marker=_MULTITASK_RULE_MARKERS[task],
+                                markerfacecolor="0.45", markeredgecolor="white", color="0.45",
+                                linewidth=0.7, linestyle=linestyles[task], markersize=5.5,
+                                label=_TASK_DISPLAY.get(rule, rule))
+               for task, rule in enumerate(task_names)]
+    handles.append(mpl.lines.Line2D([], [], color="0.45", linewidth=0.7, label="same stimulus"))
+    _state_space_figure_legend(fig, handles, top=0.9)
+    _save_fig(fig, _multitask_out("memory_stimulus_endpoints.png"),
+              extra=f"  {aname}: {run_note}; " + ", ".join(notes))
+
+
+def _memory_sweep_pc_pair(sweep):
+    """1-based (stimulus PC, rule PC) the MemoryPro -> MemoryAnti cue sweep is
+    drawn in: the rule PC is the saved PC along which the trials' common
+    displacement from alpha = 0 to alpha = 1 is largest, the stimulus PC the
+    other PC along which the alpha = 0 direction means vary most. The two
+    rows of the `2d` view then read "the stimulus, held" and "the rule"."""
+    proj = np.asarray(sweep["proj"], dtype=float)
+    stim = np.asarray(sweep["stim_idx"], dtype=int)
+    shift = np.abs((proj[-1] - proj[0]).mean(axis=0))
+    rule_pc = int(np.argmax(shift))
+    spread = np.var(np.stack([proj[0][stim == direction].mean(axis=0)
+                              for direction in np.unique(stim)]), axis=0)
+    spread[rule_pc] = -np.inf
+    return int(np.argmax(spread)) + 1, rule_pc + 1
+
+
+def _memory_sweep_legibility(cache, plot_name):
+    """How clearly one representation's sweep figure of a run reads: minus
+    the largest departure of a drawn trial from the common motion of the
+    drawn trials between two alphas, as a fraction of its panel's range
+    (`_cue_interp_attractor_switch_scores` on the two drawn PCs). Near 0 the
+    stimulus PC's lines stay flat and the rule PC's move together."""
+    if cache.get("kind") != "cue_interp":
+        raise ValueError("not a rule-cue sweep projection")
+    sweeps = cache.get("representations", {}).get(plot_name, {}).get("sweeps")
+    if not sweeps:
+        raise ValueError(f"no {plot_name} rule-cue sweep")
+    sweep = next(iter(sweeps.values()))
+    _require_sibling_converged(sweep.get("is_fixed"), f"{plot_name} sweep points")
+    plane = [pc - 1 for pc in _memory_sweep_pc_pair(sweep)]
+    drawn = np.asarray(_cue_interp_sweep_view(sweep, _MEMORY_FAMILY)["proj"], dtype=float)
+    return -float(_cue_interp_attractor_switch_scores(drawn[:, :, plane]).max())
+
+
+def plot_multitask_memory_cue_interp():
+    """
+    Figures: the rule cue interpolated from MemoryPro's (alpha = 0) to
+    MemoryAnti's (alpha = 1) with a MemoryPro stimulus held, each trial
+    settled in the stimulus period:
+      multitask_memory_cue_interp_long_stimulus_endpoint_{emodulation,hidden}_{2d,3d}.png
+    The MemoryPro / MemoryAnti counterpart of plot_multitask_sibling_cue_interp,
+    drawn by the same renderers (one trial per stimulus direction, lines in
+    the stimulus rainbow, markers on the alpha ramp). The plane is one
+    stimulus PC and the rule PC of the joint stimulus basis
+    (`_memory_sweep_pc_pair`), so the `2d` rows show the stimulus staying
+    where it is and every trial moving together along the rule PC. Each
+    representation draws the cached run whose drawn lines follow the cue
+    most smoothly (`_memory_best_run` with `_memory_sweep_legibility`), so
+    the two representations, and the endpoint figure, can come from
+    different networks. Every drawn point met the fixed-point criterion
+    (other runs are not candidates), so there is no legend figure.
+    """
+    _ensure_out_dir()
+    for plot_name, output_suffix in (("e_modulation", "emodulation"), ("hidden", "hidden")):
+        selected = _memory_best_run(
+            f"cue_interp_{_MEMORY_ENDPOINT_TAG}_pc_projections",
+            lambda cache, plot_name=plot_name: _memory_sweep_legibility(cache, plot_name),
+            "largest drawn departure from the common motion {} of a panel")
+        if selected is None:
+            return
+        aname, data, run_note = selected
+        entry = data["representations"][plot_name]
+        pair = _memory_sweep_pc_pair(next(iter(entry["sweeps"].values())))
+        stem = f"memory_cue_interp_{_MEMORY_ENDPOINT_TAG}_{output_suffix}"
+        for render, view in ((_render_multitask_cue_interp_2d, "2d"),
+                             (_render_multitask_cue_interp_3d, "3d")):
+            render(entry, np.asarray(data["alphas"], dtype=float), _MEMORY_FAMILY,
+                   _MEMORY_ENDPOINT_TAG, pair, _multitask_out(f"{stem}_{view}.png"),
+                   f"stimulus PC and rule PC; {aname}, {run_note}",
+                   rules=tuple(data["task_names"]), period_name="Stimulus")
 
 
 def plot_two_task_interp_fixed_points(period="longdelay"):
@@ -16779,7 +17098,7 @@ FIGURES_BY_MODE = {
     },
     "two_in_multiple": {
         # DelayDM and DMCGo sibling-task delay geometry inside the multi-task
-        # network, from sibling_delay_analysis.py: the gradient fixed-point
+        # network, from sibling_fixed_point_analysis.py: the gradient fixed-point
         # translation figures when solved, and the long-delay endpoint figures
         # (plain, and with the rule-cue sweep overlaid when cached).
         "delaydm_fixed_point_geometry":
@@ -16794,6 +17113,12 @@ FIGURES_BY_MODE = {
         "sibling_cohort_cue_transfer": plot_sibling_cohort_cue_transfer,
         "sibling_cohort_category_axis": plot_sibling_cohort_category_axis,
         "sibling_cohort_category_memory": plot_sibling_cohort_category_memory,
+        # MemoryPro / MemoryAnti settled in the stimulus period: the most
+        # legible run's endpoints and rule-cue sweep, and the cohort statistic
+        # behind them.
+        "memory_stimulus_endpoints": plot_multitask_memory_stimulus_endpoints,
+        "memory_cue_interp": plot_multitask_memory_cue_interp,
+        "sibling_cohort_ring_cosine": plot_sibling_cohort_ring_cosine,
     },
     "pretraining": {
         "backbone_probe": plot_backbone_probe,
