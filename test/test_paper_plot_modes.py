@@ -1907,8 +1907,14 @@ class PaperPlotModeTests(unittest.TestCase):
             paper_plot._PRETRAINING_TRAJECTORY_FIGSIZE[1],
         )
         self.assertEqual(paper_plot._TRANSFER_SPEED_YTICKS, (50, 75, 100))
-        self.assertLess(paper_plot._BACKBONE_PROBE_FIGSIZE[0], 4.2)
-        self.assertLess(paper_plot._BACKBONE_PROBE_FIGSIZE[1], 2.4)
+        # backbone_probe: as wide as its columns need, about as tall as the
+        # other pretraining panels.
+        motifs, everything = (paper_plot._backbone_probe_figsize(count) for count in (2, 4))
+        self.assertLess(motifs[0], 2.0)
+        self.assertLess(motifs[0], everything[0])
+        self.assertLess(everything[0], paper_plot._TRANSFER_SPEED_FIGSIZE[0])
+        self.assertEqual(motifs[1], everything[1])
+        self.assertAlmostEqual(motifs[1], paper_plot._TRANSFER_SPEED_FIGSIZE[1], delta=0.1)
 
         transfer_source = inspect.getsource(paper_plot.plot_transfer_speed)
         learning_source = inspect.getsource(paper_plot.plot_learning_trajectory)
@@ -1916,7 +1922,7 @@ class PaperPlotModeTests(unittest.TestCase):
         self.assertIn("_TRANSFER_SPEED_FIGSIZE", transfer_source)
         self.assertIn("_PRETRAINING_TRAJECTORY_FIGSIZE", learning_source)
         self.assertIn("set_yticks(_TRANSFER_SPEED_YTICKS)", transfer_source)
-        self.assertIn("_BACKBONE_PROBE_FIGSIZE", backbone_source)
+        self.assertIn("_backbone_probe_figsize(len(groups))", backbone_source)
 
 
 if __name__ == "__main__":

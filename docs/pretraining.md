@@ -44,21 +44,36 @@ The two options combine (`L21e3mb2lam0.9`). Every pretraining figure aggregates
 all cached seeds of the selected variant, and the run banner prints the
 selected lambda, `m_time_scale` and feature string. Output filenames do not
 encode the variant, so rendering another selection replaces the same figures.
+Every figure of the mode is saved as `pretraining_<figure>.png` (for example
+`--only aggregate_cve_response` writes `pretraining_aggregate_cve_response.png`,
+with the `_n` suffix when legends are on), as the other experiment families
+carry their `onetask_`, `twotask_` and `multitask_` prefixes; before
+2026-11-14 only `pretraining_principal_angles` had the prefix.
 
 `python figures/paper_plot.py --only learning_trajectory_linear` exports
-`learning_trajectory_linear_n.png`: the seeds and condition means of
-`learning_trajectory_n.png` on a broken linear iteration axis. The left panel
-shows the first 1000 iterations at full scale
+`pretraining_learning_trajectory_linear_n.png`: the seeds and condition means of
+`pretraining_learning_trajectory_n.png` on one linear iteration axis to 20000
+(`_LEARNING_TRAJECTORY_LINEAR_XMAX`), a quarter of the 80000 training
+iterations. The slow conditions are still climbing at its right edge: the
+irrelevant motif's mean is 87.3 % at 20000, 91.6 % at 40000 and 92.7 % at the
+end of training at λ = 0.99 (83.4, 93.2 and 96.4 % at λ = 0.9), so the gap to
+the relevant motif there is wider than the final one; the log figure shows
+the whole of training. On that axis the first 1000 iterations
 (`_LEARNING_TRAJECTORY_LINEAR_SPLIT`), where the relevant motif saturates and
-the irrelevant motif does most of its climbing; the right panel continues to
-40000 (`_LEARNING_TRAJECTORY_LINEAR_XMAX`), by which the irrelevant motif's
-mean has reached its plateau in both λ cohorts (about 16k iterations at 0.99,
-28k at 0.9). One unbroken axis to the end of training (80k) squeezed
-everything that happens into its first percent. Each panel resamples the seeds
-on its own linear grid, so its sample points differ from the log figure's
-log-spaced grid, and the saved message names the two ranges. Both figures are
-included in `pretraining` mode and honor the group/bound options.
-`rule_vectors_n.png` is drawn at the `learning_trajectory` size (the six-bar
+the irrelevant motif does most of its climbing, are a sliver at the left
+edge, so an inset in the lower right draws them at full scale on the same
+accuracy axis; a box around that range and two connectors tie it to the
+inset. The inset and the rest of the range are resampled on their own linear
+grids, so their sample points differ from the log figure's log-spaced grid,
+and the saved message names the two ranges; the legend sits above the axes.
+Until 2026-11-14 the figure broke the axis into two panels (0 to 1000 and
+1000 to 40000) instead; the first inset version also ran to 40000. Both
+figures are included in `pretraining` mode and honor the group/bound options.
+`pretraining_backbone_probe_n.png` is as wide as its columns need (two
+conditions with `motifs`, four with `all`) at the height of the other
+pretraining panels, and names the probe in its y label instead of a title;
+until 2026-11-14 it was a fixed 3.4 x 2.0 in.
+`pretraining_rule_vectors_n.png` is drawn at the `learning_trajectory` size (the six-bar
 `all` layout keeps that height and width per bar). Each bar keeps its two-line
 "MemoryAnti ↔ partner" tick label, in a 5 pt font so that neighbouring labels
 do not collide at that width.

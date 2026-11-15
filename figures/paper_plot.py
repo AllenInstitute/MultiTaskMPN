@@ -666,6 +666,17 @@ def _multitask_out(name):
     return OUT_DIR / f"{MULTITASK_PREFIX}_{name}"
 
 
+# The same for the PRETRAINING figures: every figure of the `pretraining` mode
+# is named through `_pretraining_out`. The registry keys (`--only
+# learning_trajectory`) carry no prefix, like the multi-task ones.
+PRETRAINING_PREFIX = "pretraining"
+
+
+def _pretraining_out(name):
+    """OUT_DIR path for a pretraining figure, with the shared `pretraining_` prefix."""
+    return OUT_DIR / f"{PRETRAINING_PREFIX}_{name}"
+
+
 def _breaks(lbls):
     """Cluster boundary positions from an ordered label array."""
     idx = np.nonzero(np.diff(lbls))[0] + 1
@@ -9471,24 +9482,46 @@ _LEARNING_TRAJECTORY_YTICKS = (0, 50, 100)
 # learning_trajectory resamples every seed on a log-spaced iteration grid of
 # this many points, so its log axis is evenly sampled.
 _LEARNING_TRAJECTORY_LOG_GRID_POINTS = 400
-# learning_trajectory_linear breaks its iteration axis into two linear panels,
-# each with its own grid of this many points: the left one holds the first
-# _LEARNING_TRAJECTORY_LINEAR_SPLIT iterations at full scale (the relevant
-# motif saturates and the irrelevant one does most of its climbing there), the
-# right one the slow phase up to _LEARNING_TRAJECTORY_LINEAR_XMAX, by which the
-# irrelevant motif's mean has reached its plateau in both cohorts (about 16k
-# iterations at lambda 0.99, 28k at 0.9). One unbroken linear axis to the end
-# of training (80k) squeezed everything that happens into its first percent.
+# learning_trajectory_linear draws one linear iteration axis up to
+# _LEARNING_TRAJECTORY_LINEAR_XMAX and an inset of the first
+# _LEARNING_TRAJECTORY_LINEAR_SPLIT iterations, where the relevant motif
+# saturates and the irrelevant one does most of its climbing: on the full axis
+# that phase is the first 5 % of the width. Each range is resampled on its
+# own linear grid of this many points.
+# The axis ends at 20000 of the 80000 training iterations (the user's choice,
+# 2026-11-14; it was 40000), which shows the slow phase at twice the width but
+# stops before the irrelevant motif's mean levels off: at lambda 0.99 that
+# mean is 87.3 % at 20000, 91.6 % at 40000 and 92.7 % at the end of training
+# (83.4, 93.2 and 96.4 % at lambda 0.9), so the gap to the relevant motif at
+# the right edge is wider than the final one.
 _LEARNING_TRAJECTORY_LINEAR_GRID_POINTS = 300
 _LEARNING_TRAJECTORY_LINEAR_SPLIT = 1000
-_LEARNING_TRAJECTORY_LINEAR_XMAX = 40000
-_LEARNING_TRAJECTORY_LINEAR_WIDTH_RATIOS = (1, 1)
-_LEARNING_TRAJECTORY_LINEAR_GAP = 0.05  # between the panels, in axes widths
-# The axis break: a short slanted stroke at the foot of each panel's open side.
-_LEARNING_TRAJECTORY_BREAK_MARK = dict(
-    marker=[(-1, -0.5), (1, 0.5)], markersize=7, linestyle="none",
-    color="k", mec="k", mew=1, clip_on=False)
-_BACKBONE_PROBE_FIGSIZE = (3.4, 2.0)
+_LEARNING_TRAJECTORY_LINEAR_XMAX = 20000
+# The inset, in axes fractions (left, bottom, width, height): the lower right
+# of the panel, under the condition means once they are past their climb
+# (it covers the lowest dips of single seeds), clear of the main axis by the
+# height of its own tick labels and ending below the slowest condition's
+# mean, DelayPro at about 57 % and above.
+_LEARNING_TRAJECTORY_INSET_BOUNDS = (0.42, 0.17, 0.55, 0.33)
+# Its frame and the box and connectors that tie it to the first iterations
+# of the main axis.
+_LEARNING_TRAJECTORY_INSET_EDGE = dict(edgecolor="0.5", linewidth=0.5)
+# Taller than the log figure (_PRETRAINING_TRAJECTORY_FIGSIZE, same width):
+# the panel holds the inset and its legend sits above the axes.
+_LEARNING_TRAJECTORY_LINEAR_FIGSIZE = (3.0, 2.0)
+# backbone_probe holds one column of dots per condition (two with
+# --pretraining-groups motifs, four with all): about as tall as the other
+# pretraining panels and only as wide as its columns need. It was a fixed
+# 3.4 x 2.0 in, mostly empty with two columns.
+_BACKBONE_PROBE_HEIGHT_IN = 1.6
+_BACKBONE_PROBE_MARGIN_IN = 0.75
+_BACKBONE_PROBE_COLUMN_IN = 0.5
+
+
+def _backbone_probe_figsize(n_columns):
+    """Size of the backbone-probe figure for `n_columns` conditions."""
+    return (_BACKBONE_PROBE_MARGIN_IN + _BACKBONE_PROBE_COLUMN_IN * n_columns,
+            _BACKBONE_PROBE_HEIGHT_IN)
 PRETRAINING_BOUND = "mb1"
 PRETRAINING_LAMBDA = "0.99"
 
@@ -9679,7 +9712,7 @@ def plot_transfer_speed():
     ax.spines[["top", "right"]].set_visible(False)
 
     fig.tight_layout()
-    out_path = OUT_DIR / "transfer_speed.png"
+    out_path = _pretraining_out("transfer_speed.png")
     _save_fig(fig, out_path)
 
 
@@ -9731,7 +9764,7 @@ def plot_backbone_probe():
         return
 
     _ensure_out_dir()
-    fig, axis = plt.subplots(figsize=_BACKBONE_PROBE_FIGSIZE)
+    fig, axis = plt.subplots(figsize=_backbone_probe_figsize(len(groups)))
     counts = []
     bounds = []
     for position, (ruleset, (_, color)) in enumerate(groups.items()):
@@ -9750,13 +9783,16 @@ def plot_backbone_probe():
     axis.set_xticks(np.arange(len(groups)))
     axis.set_xticklabels([label for label, _ in groups.values()])
     axis.set_xlim(-0.5, len(groups) - 0.5)
-    axis.set_ylabel("Accuracy (%)", fontsize=8)
+    # The small panel has no room for a title: the label names the probe.
+    axis.set_ylabel("Random-rule probe\naccuracy (%)", fontsize=8)
     axis.tick_params(labelsize=6.5)
     axis.spines[["top", "right"]].set_visible(False)
     lower, upper = min(bounds), max(bounds)
     padding = max((upper - lower) * 0.1, 0.5)
     axis.set_ylim(lower - padding, upper + padding)
-    axis.yaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=5))
+    # Round steps; six bins because the locator counts the padded range
+    # (a 0 to 8 % span with its margins needs five steps of 2).
+    axis.yaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=6, steps=[1, 2, 5, 10]))
     irrelevant = np.asarray(values["fdgo_delaygo"], dtype=float)
     relevant = np.asarray(values["fdanti_delaygo"], dtype=float)
     if min(irrelevant.size, relevant.size) >= 2:
@@ -9784,9 +9820,8 @@ def plot_backbone_probe():
             f"bound={PRETRAINING_BOUND}; lambda={PRETRAINING_LAMBDA}: "
             f"{stats_label.replace(chr(10), '; ')}\n"
         )
-    fig.suptitle("Random-rule backbone probe", fontsize=9)
     fig.tight_layout(pad=0.4)
-    _save_fig(fig, OUT_DIR / "backbone_probe.png", extra=f" ({'; '.join(counts)})")
+    _save_fig(fig, _pretraining_out("backbone_probe.png"), extra=f" ({'; '.join(counts)})")
 
 
 def _load_learning_trajectories():
@@ -9836,15 +9871,16 @@ def _learning_trajectory_grid(lo, hi, n_points, *, spacing):
     return grid[grid >= 1].astype(float)
 
 
-def _draw_learning_trajectories(ax, trajs, grid, color, label):
+def _draw_learning_trajectories(ax, trajs, grid, color, label, scale=1.0):
     """Every seed's curve (transparent) and their mean (thick), resampled on
-    `grid` so seeds with slightly different logging cadences average cleanly."""
+    `grid` so seeds with slightly different logging cadences average cleanly.
+    `scale` thins both line widths, for an inset."""
     resampled = np.array([np.interp(grid, it, ac) for (it, ac) in trajs])
     for seed_curve in resampled:
         ax.plot(grid, seed_curve * 100, "-", color=color,
-                linewidth=0.9, alpha=0.18)
+                linewidth=0.9 * scale, alpha=0.18)
     ax.plot(grid, resampled.mean(axis=0) * 100, "-", color=color,
-            linewidth=2.2, label=label)
+            linewidth=2.2 * scale, label=label)
 
 
 def _style_learning_trajectory_axes(ax):
@@ -9866,8 +9902,8 @@ def plot_learning_trajectory():
     Reads per-seed result pickles (learning.acc_iter_post / learning.acc_post).
     Seeds are resampled onto a shared log-spaced iteration grid before
     averaging, so it is robust to slightly different logging cadences across
-    seeds. `learning_trajectory_linear` draws the same seeds on a broken
-    linear axis.
+    seeds. `learning_trajectory_linear` draws the same seeds on a linear axis
+    with an inset of the first iterations.
     """
     _ensure_out_dir()
     by_ruleset_traj = _load_learning_trajectories()
@@ -9893,21 +9929,23 @@ def plot_learning_trajectory():
     _style_learning_trajectory_axes(ax)
     _legend(ax, fontsize=6, frameon=True)
     fig.tight_layout()
-    _save_fig(fig, OUT_DIR / "learning_trajectory.png")
+    _save_fig(fig, _pretraining_out("learning_trajectory.png"))
 
 
 def plot_learning_trajectory_linear():
     """
-    Figure: the `learning_trajectory` curves on a broken linear iteration axis.
+    Figure: the `learning_trajectory` curves on a linear iteration axis.
 
-    The left panel holds the first _LEARNING_TRAJECTORY_LINEAR_SPLIT iterations
-    at full scale, where the relevant motif saturates and the irrelevant motif
-    does most of its climbing; the right panel continues to
-    _LEARNING_TRAJECTORY_LINEAR_XMAX, by which every condition's mean has
-    reached its plateau. The break keeps the slow phase from squeezing the fast
-    one into the axis edge, which one linear axis to the end of training does.
-    Each panel resamples the seeds on its own linear grid; the seeds, colors
-    and means are those of the log figure.
+    The axis runs to _LEARNING_TRAJECTORY_LINEAR_XMAX, a quarter of training:
+    the slow conditions are still climbing at its right edge (see the
+    constant). On it the first
+    _LEARNING_TRAJECTORY_LINEAR_SPLIT iterations, where the relevant motif
+    saturates and the irrelevant motif does most of its climbing, are a sliver
+    at the left edge, so an inset draws them at full scale on the same accuracy
+    axis; a box around that range and two connectors tie it to the inset.
+    Both ranges are resampled on their own linear grids, and the main curves
+    on the two together; the seeds, colors and means are those of the log
+    figure.
     """
     _ensure_out_dir()
     by_ruleset_traj = _load_learning_trajectories()
@@ -9915,46 +9953,53 @@ def plot_learning_trajectory_linear():
         return
 
     split, xmax = _LEARNING_TRAJECTORY_LINEAR_SPLIT, _LEARNING_TRAJECTORY_LINEAR_XMAX
-    # constrained layout, not tight: it reserves room for the shared supxlabel.
-    fig, (fast, slow) = plt.subplots(
-        1, 2, figsize=_PRETRAINING_TRAJECTORY_FIGSIZE, sharey=True,
-        layout="constrained",
-        gridspec_kw={"width_ratios": _LEARNING_TRAJECTORY_LINEAR_WIDTH_RATIOS,
-                     "wspace": _LEARNING_TRAJECTORY_LINEAR_GAP})
+    fig, ax = plt.subplots(1, 1, figsize=_LEARNING_TRAJECTORY_LINEAR_FIGSIZE)
+    inset = ax.inset_axes(_LEARNING_TRAJECTORY_INSET_BOUNDS)
     for rs in sorted(by_ruleset_traj.keys()):
         trajs = by_ruleset_traj[rs]
         label, color = _PRETRAINING_RULESET_STYLES.get(
             rs, (rs, "#718096"))
         lo, hi = _learning_trajectory_span(trajs)
-        for ax, start, stop in ((fast, lo, min(hi, split)),
-                                (slow, split, min(hi, xmax))):
-            if stop <= start:
-                continue  # the seeds end before this panel begins
-            grid = _learning_trajectory_grid(
-                start, stop, _LEARNING_TRAJECTORY_LINEAR_GRID_POINTS,
-                spacing="linear")
-            _draw_learning_trajectories(ax, trajs, grid, color, label)
+        grids = [_learning_trajectory_grid(start, stop, _LEARNING_TRAJECTORY_LINEAR_GRID_POINTS,
+                                           spacing="linear")
+                 for start, stop in ((lo, min(hi, split)), (split, min(hi, xmax)))
+                 if stop > start]          # the seeds may end before a range begins
+        if not grids:
+            continue
+        # The main curves keep the fine grid of the first iterations, so
+        # their climb is the one the inset shows.
+        _draw_learning_trajectories(ax, trajs, np.unique(np.concatenate(grids)), color, label)
+        if lo < split:
+            _draw_learning_trajectories(inset, trajs, grids[0], color, label, scale=0.6)
 
-    fast.set_xlim(0, split)
-    slow.set_xlim(split, xmax)
-    for ax in (fast, slow):
-        _style_learning_trajectory_axes(ax)
-    # Three labels fit the left panel (0, 500, 1000) and two the right (20000,
-    # 40000) at 7 pt; four five-digit labels collide there.
-    fast.xaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=2))
-    slow.xaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=2))
-    # The right panel continues the left one's accuracy axis, so it draws no
-    # spine or ticks of its own; a slanted mark at the foot of each side of the
-    # gap shows the break.
-    slow.spines["left"].set_visible(False)
-    slow.tick_params(axis="y", left=False)
-    fast.plot([1], [0], transform=fast.transAxes, **_LEARNING_TRAJECTORY_BREAK_MARK)
-    slow.plot([0], [0], transform=slow.transAxes, **_LEARNING_TRAJECTORY_BREAK_MARK)
-    fast.set_ylabel("Accuracy (%)")
-    fig.supxlabel("Iteration", fontsize=mpl.rcParams["axes.labelsize"])
-    _legend(slow, fontsize=6, frameon=True)
-    _save_fig(fig, OUT_DIR / "learning_trajectory_linear.png",
-              extra=f" (iterations 0-{split} | {split}-{xmax})")
+    ax.set_xlim(0, xmax)
+    _style_learning_trajectory_axes(ax)
+    ax.xaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=4))
+    ax.set_xlabel("Iteration")
+    ax.set_ylabel("Accuracy (%)")
+
+    inset.set_xlim(0, split)
+    inset.set_ylim(ax.get_ylim())
+    inset.set_xticks([0, split // 2, split])
+    inset.set_yticks(_LEARNING_TRAJECTORY_YTICKS)
+    inset.tick_params(axis="both", labelsize=5.5, length=2, pad=1.5)
+    for spine in inset.spines.values():
+        spine.set(**_LEARNING_TRAJECTORY_INSET_EDGE)
+    indicator = ax.indicate_inset_zoom(inset, alpha=1.0, **_LEARNING_TRAJECTORY_INSET_EDGE)
+    # Connect the box to the inset's near (left) corners: matplotlib's own
+    # choice runs to the far ones, across the whole panel. The connectors come
+    # in the order lower left, upper left, lower right, upper right (a tuple
+    # after the box before matplotlib 3.10, an attribute from then on).
+    connectors = getattr(indicator, "connectors", None) or indicator[1]
+    for index, connector in enumerate(connectors):
+        connector.set_visible(index < 2)
+
+    # Above the axes: the inset takes the corner the log figure's legend uses.
+    _legend(ax, loc="lower left", bbox_to_anchor=(0.0, 1.0), borderaxespad=0.0, ncol=2,
+            columnspacing=1.0, handlelength=1.5, fontsize=6, frameon=False)
+    fig.tight_layout()
+    _save_fig(fig, _pretraining_out("learning_trajectory_linear.png"),
+              extra=f" (iterations 0-{xmax}, inset 0-{split})")
 
 # ─── Figure: Rule vectors ────────────────────────────────────────────────────
 
@@ -10162,7 +10207,7 @@ def plot_rule_vectors():
     ax.spines[["top", "right"]].set_visible(False)
 
     fig.tight_layout()
-    out_path = OUT_DIR / "rule_vectors.png"
+    out_path = _pretraining_out("rule_vectors.png")
     _save_fig(fig, out_path)
 
 
@@ -10361,7 +10406,7 @@ def _plot_aggregate_cve_period(period):
     fig.text(0.005, 0.5, "MemoryAnti\nVariance Explained", va="center",
              ha="center", rotation="vertical", fontsize=9)
     fig.tight_layout(rect=[0.03, 0.04, 1, 1])
-    out_path = OUT_DIR / f"aggregate_cve_{period}.png"
+    out_path = _pretraining_out(f"aggregate_cve_{period}.png")
     _save_fig(fig, out_path)
 
 
@@ -10437,7 +10482,7 @@ def plot_pretraining_principal_angles():
             if axis.get_legend_handles_labels()[0]:
                 _legend(axis, fontsize=6, frameon=False)
     fig.tight_layout()
-    _save_fig(fig, OUT_DIR / "pretraining_principal_angles.png", extra=f" ({'; '.join(counts)})")
+    _save_fig(fig, _pretraining_out("principal_angles.png"), extra=f" ({'; '.join(counts)})")
 
 
 def plot_aggregate_cve_response():

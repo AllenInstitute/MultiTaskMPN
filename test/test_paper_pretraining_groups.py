@@ -29,7 +29,7 @@ import paper_plot
 
 class PretrainingGroupTests(unittest.TestCase):
     # Post-training learning curve of every fixture seed; it runs past the
-    # linear figure's right panel so both panels have data.
+    # end of the linear figure's axis, so the axis and its inset have data.
     LEARNING_ITERATIONS = (1, 10, 100, 1000, 50000)
     LEARNING_ACCURACY = (.5, .8, .9, .95, 1.)
 
@@ -111,6 +111,9 @@ class PretrainingGroupTests(unittest.TestCase):
                             function()
                             save.assert_called_once()
                             figure = save.call_args.args[0]
+                            # Every pretraining figure is named pretraining_<key>.
+                            self.assertEqual(save.call_args.args[1].name,
+                                             f"pretraining_{name}.png")
                             try:
                                 if name == "backbone_probe":
                                     labels = {label.get_text().replace("\n", " ")
@@ -179,14 +182,14 @@ class PretrainingGroupTests(unittest.TestCase):
                             finally:
                                 paper_plot.plt.close(figure)
 
-    def test_linear_trajectory_breaks_the_iteration_axis(self):
+    def test_linear_trajectory_has_a_full_axis_and_an_inset_of_the_start(self):
         self.assertIs(paper_plot.ALL_FIGURES["learning_trajectory_linear"],
                       paper_plot.plot_learning_trajectory_linear)
         split = paper_plot._LEARNING_TRAJECTORY_LINEAR_SPLIT
         xmax = paper_plot._LEARNING_TRAJECTORY_LINEAR_XMAX
         iterations = np.asarray(self.LEARNING_ITERATIONS, dtype=float)
         self.assertLess(split, xmax)
-        self.assertLess(xmax, iterations.max())  # the fixture outlasts both panels
+        self.assertLess(xmax, iterations.max())  # the fixture outlasts the axis
         for bound in ("mb1", "mb2"):
             paper_plot._set_pretraining_bound(bound)
             with self.subTest(bound=bound), tempfile.TemporaryDirectory() as directory:
@@ -206,51 +209,68 @@ class PretrainingGroupTests(unittest.TestCase):
                     linear_figure, linear_path = save.call_args_list[1].args
                     self.addCleanup(paper_plot.plt.close, log_figure)
                     self.addCleanup(paper_plot.plt.close, linear_figure)
-                    self.assertEqual(log_path.name, "learning_trajectory.png")
-                    self.assertEqual(linear_path.name, "learning_trajectory_linear.png")
-                    self.assertIn(f"0-{split} | {split}-{xmax}",
+                    self.assertEqual(log_path.name, "pretraining_learning_trajectory.png")
+                    self.assertEqual(linear_path.name,
+                                     "pretraining_learning_trajectory_linear.png")
+                    self.assertIn(f"iterations 0-{xmax}, inset 0-{split}",
                                   save.call_args_list[1].kwargs["extra"])
                     log_axis = log_figure.axes[0]
-                    fast, slow = linear_figure.axes
                     self.assertEqual(log_axis.get_xscale(), "log")
-                    np.testing.assert_allclose(log_figure.get_size_inches(),
-                                               linear_figure.get_size_inches())
-                    # Two linear panels sharing the log figure's accuracy axis:
-                    # the fast phase at full scale, then the slow one to xmax.
-                    self.assertEqual(fast.get_xlim(), (0, split))
-                    self.assertEqual(slow.get_xlim(), (split, xmax))
-                    for axis in (fast, slow):
+                    # One linear axis over the whole range, as wide as the log
+                    # figure and taller for the inset.
+                    main, = linear_figure.axes
+                    inset, = main.child_axes
+                    self.assertEqual(linear_figure.get_size_inches()[0],
+                                     log_figure.get_size_inches()[0])
+                    self.assertGreater(linear_figure.get_size_inches()[1],
+                                       log_figure.get_size_inches()[1])
+                    self.assertEqual(main.get_xlim(), (0, xmax))
+                    self.assertEqual(inset.get_xlim(), (0, split))
+                    np.testing.assert_array_equal(inset.get_xticks(), [0, split // 2, split])
+                    for axis in (main, inset):
                         self.assertEqual(axis.get_xscale(), "linear")
                         self.assertEqual(axis.get_ylim(), log_axis.get_ylim())
                         np.testing.assert_array_equal(axis.get_yticks(), log_axis.get_yticks())
-                    self.assertTrue(fast.spines["left"].get_visible())
-                    self.assertFalse(slow.spines["left"].get_visible())
-                    self.assertEqual(fast.get_ylabel(), "Accuracy (%)")
-                    self.assertEqual(slow.get_ylabel(), "")
-                    self.assertEqual(linear_figure.get_supxlabel(), "Iteration")
-                    self.assertIsNone(fast.get_legend())
-                    self.assertIsNotNone(slow.get_legend())
-                    # One break mark at the foot of each panel's open side.
-                    for axis, x in ((fast, 1), (slow, 0)):
-                        marks = [line for line in axis.lines if line.get_linestyle() == "None"]
-                        self.assertEqual(len(marks), 1)
-                        self.assertIs(marks[0].get_transform(), axis.transAxes)
-                        np.testing.assert_array_equal(marks[0].get_xydata(), [[x, 0]])
-                    # Each panel resamples the seeds on an even grid of its own
-                    # range, keeping the log figure's colors, alphas and labels.
-                    for axis, (start, stop) in ((fast, (1, split)), (slow, (split, xmax))):
-                        curves = [line for line in axis.lines if line.get_linestyle() != "None"]
-                        self.assertEqual(len(curves), len(log_axis.lines))
-                        for log_line, line in zip(log_axis.lines, curves):
-                            x = line.get_xdata()
-                            self.assertEqual((x.min(), x.max()), (start, stop))
-                            np.testing.assert_allclose(np.diff(x), np.diff(x).mean(), atol=1)
+                    self.assertEqual(main.get_xlabel(), "Iteration")
+                    self.assertEqual(main.get_ylabel(), "Accuracy (%)")
+                    # The inset sits inside the panel, clear of the main axis,
+                    # and is tied to the first iterations by a box and the two
+                    # connectors to its near corners.
+                    left, bottom, width, height = paper_plot._LEARNING_TRAJECTORY_INSET_BOUNDS
+                    self.assertGreater(bottom, 0.1)
+                    self.assertLessEqual(left + width, 1.0)
+                    self.assertLess(bottom + height, 0.6)
+                    connectors = [item for item in main.get_children()
+                                  if isinstance(item, paper_plot.mpl.patches.ConnectionPatch)]
+                    self.assertEqual([connector.get_visible() for connector in connectors],
+                                     [True, True, False, False])
+                    # The legend is above the axes, out of the inset's way.
+                    linear_figure.canvas.draw()
+                    self.assertGreaterEqual(main.get_legend().get_window_extent().y0,
+                                            main.get_window_extent().y1)
+                    self.assertIsNone(inset.get_legend())
+                    # The inset resamples the first iterations on an even grid;
+                    # the main curves add the rest of the range to that grid.
+                    # Both keep the log figure's colors, alphas and labels.
+                    self.assertEqual(len(main.lines), len(log_axis.lines))
+                    self.assertEqual(len(inset.lines), len(log_axis.lines))
+                    for log_line, main_line, inset_line in zip(
+                            log_axis.lines, main.lines, inset.lines):
+                        x = inset_line.get_xdata()
+                        self.assertEqual((x.min(), x.max()), (1, split))
+                        np.testing.assert_allclose(np.diff(x), np.diff(x).mean(), atol=1)
+                        full = main_line.get_xdata()
+                        self.assertEqual((full.min(), full.max()), (1, xmax))
+                        self.assertTrue(set(x) <= set(full))
+                        for line in (main_line, inset_line):
                             np.testing.assert_allclose(
                                 line.get_ydata(),
-                                100 * np.interp(x, iterations, self.LEARNING_ACCURACY))
+                                100 * np.interp(line.get_xdata(), iterations,
+                                                self.LEARNING_ACCURACY))
                             self.assertEqual(log_line.get_color(), line.get_color())
                             self.assertEqual(log_line.get_alpha(), line.get_alpha())
                             self.assertEqual(log_line.get_label(), line.get_label())
+                        self.assertLess(inset_line.get_linewidth(), main_line.get_linewidth())
 
     def test_control_only_data_does_not_create_motif_figures(self):
         paper_plot._set_pretraining_groups("motifs")
