@@ -230,7 +230,7 @@ figures (overmembership, `cluster_corr_vs_lesion_seeds`, `om_vs_lesion_seeds`,
 `state_space_vs_lesion_seeds`, `state_space_vs_lesion_families_seeds`,
 `state_space_vs_lesion_family_seeds`)
 summarize every cached seed of that cohort. The single-run figures use the
-cohort's designated seed from `MULTITASK_DESIGNATED_SEEDS` (749 for clustering
+cohort's designated seed from `MULTITASK_DESIGNATED_SEEDS` (427 for clustering
 and 921 for lesions in the 1e4 cohort; none for 1e3) when its cache directory
 holds pickles; otherwise `paper_plot` picks the cached seed covering the most of
 the category's cache directories, lowest seed on ties, and prints the switch.
@@ -239,6 +239,28 @@ taken from another cohort; this also applies to `--only` and to imported plottin
 functions. Empty directories and pickles of other runs do not count as cached
 data. Missing or incompatible individual caches still use the existing per-figure
 checks rather than switching seeds per figure.
+
+The clustering example is an illustration, chosen on 2026-11-14 to agree with
+the MemoryPro / MemoryAnti fixed-point analysis
+([state_space.md](state_space.md)): in seed 427 the stimulus rows of the two
+tasks share a row cluster in the input, hidden, modulation and |W|-weighted
+modulation heatmaps, and the modulation cluster holds the two tasks' three
+periods with three other rows. Read the input and hidden part of that with
+care. The clustering's evaluation trials draw ONE stimulus modality per task
+for all 50 trials (`mode_input="random"`; the go, match and category tasks,
+10 of the 15), and the generator's seed is fixed per `run_pipeline.py`
+process (`core/mpn_tasks.py` draws it at import), so every network analyzed
+by one process sees the same trials. The stimulus rows of the input and
+hidden heatmaps cluster by that modality, so whether two tasks' stimulus rows
+share a cluster there follows the draw, not the network: MemoryPro and
+MemoryAnti share one in seeds 40 to 692 (both on modality 2 in the two
+processes that analyzed them) and not in seeds 11 and 728 to 921 (different
+modalities; seed 749, the example before, among them). The 25 L2 = 1e-4 runs
+therefore hold four independent trial sets for any statistic built on
+stimulus-row sharing between tasks (the `row_cluster_*_pairs` figures, the
+pro / anti stimulus cells of `sibling_row_sharing.py`). The sibling
+fixed-point analysis is not affected: it resets the generator for each rule
+(`align_periods`), so both rules of a family get the same modality.
 
 `python figures/paper_plot.py --only cluster_corr_vs_lesion` draws the four input/hidden
 scatter figures and three modulation figures:
@@ -393,16 +415,19 @@ overlay, a dash at the median with a bar over the interquartile range; a thin
 grey line spans the full range. The examples' peaks are ringed in black, as
 the OM-vs-lesion scatter marks its example block, and named. The
 examples are the top of that ranking, not typical clusters, and a peak is
-the extreme of its own cluster. In the L21e4 run (seed 749, 19 assessable
-clusters) C3 and C11 lead with peaks of 2.86 and 2.75, yet their median block
-is close to chance (0.36 and 0.14; interquartile ranges −0.28 to 0.97 and
-−0.28 to 0.62). C17 and C8 follow at 2.54 and 2.34 with medians below chance;
-the two largest clusters, C14 and C13, hold 63% of the retained synapses and
-peak near 1 (1.09 and 0.91); and the twelve smallest clusters (109 to 642
-synapses) have no well-supported block above chance, their median at or near
-−1, because their synapses lie in blocks expecting fewer than five. Three
-cautions: the range widens with the number of blocks (120 for C3 against 2
-to 28 for the small clusters), so the peak alone favors clusters large enough
+the extreme of its own cluster. In the L21e4 run (seed 427, 18 assessable
+clusters) C18 and C13 lead with peaks of 4.25 and 3.49, yet their median
+block is below chance (−0.61 and −0.13; interquartile ranges −0.85 to −0.23
+and −0.61 to 0.47). C20 and C19 follow at 3.15 and 2.79 with medians of
+−0.39 and 0.28; the two largest clusters, C11 and C12, hold 67% of the
+assessed clusters' synapses and peak at 0.77 and 1.69; and the nine smallest
+clusters (59 to 319 synapses) have no well-supported block above chance,
+their median at or near −1, because their synapses lie in blocks expecting
+fewer than five. (Seed 749, the example until 2026-11-14, read the same way:
+19 assessable clusters, leading peaks of 2.86 and 2.75 with medians near
+chance.) Three cautions: the range widens with the number of blocks (41 and
+66 for C18 and C13 against 1 to 12 for the small clusters), so the peak alone
+favors clusters large enough
 to fill many assessable blocks; the expected-weighted mean OM of a cluster
 over all its blocks is zero by construction, so the medians say where the
 well-supported blocks sit, not whether a cluster is enriched overall; and
@@ -428,7 +453,7 @@ NaN, not zero. Constant modulation profiles and constant combined profiles
 are removed before permutation, so the valid sample set is fixed across
 permutations. Both the single-run and cohort figures require this entry;
 older v2 caches contain only the L1 result and must be refreshed. Refresh via
-`python multiple_task/lesion_plot.py --seed 749 --feature L21e4 --control-pool all`, then
+`python multiple_task/lesion_plot.py --seed 427 --feature L21e4 --control-pool all`, then
 `python figures/paper_plot.py --only om_vs_lesion --multitask-l2 1e4 --control-pool all`
 for the `_n` figure. This is post-processing of saved results, with no network
 forwards. Pearson similarity alone does not establish a shared causal mechanism.
@@ -436,7 +461,9 @@ forwards. Pearson similarity alone does not establish a shared causal mechanism.
 until 2026-11-08, when seed 749's L1 association rho moved from −0.59 under zero_W to −0.41
 under freeze_M, both with permutation p ≤ 0.002). **Run selection differs from the other
 lesion figures:** the single-run scatter is drawn from `ANAME`, the clustering
-example (seed 749 under `--multitask-l2 1e4`), the run of the
+example (seed 427 under `--multitask-l2 1e4` since 2026-11-14: L1 association
+rho −0.40, permutation p = 0.026 under freeze_M, and no association in the
+Pearson panel, rho 0.01, p = 0.38), the run of the
 `overmembership_examples_supported_*` panels, so the example clusters are among its
 points; other single-run lesion figures use `LESION_ANAME` (designated seed
 921 at L2 = 1e-4). Both selections can fall back to another cached run when

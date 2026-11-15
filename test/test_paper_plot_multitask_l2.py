@@ -86,8 +86,10 @@ class MultitaskRunResolutionTests(unittest.TestCase):
         with patch.dict(paper_plot._MULTITASK_CACHE_ROOTS,
                         {"multiple_tasks": (self.root / "empty",)}), \
                 patch("builtins.print"):
+            designated = paper_plot.MULTITASK_DESIGNATED_SEEDS["1e4"]["multiple_tasks"]
+            self.assertIsNotNone(designated)
             self.assertEqual(paper_plot._resolve_multitask_run("1e4", "multiple_tasks"),
-                             aname(749, "1e4"))
+                             aname(designated, "1e4"))
 
     def test_unknown_cohort_is_rejected(self):
         with self.assertRaises(ValueError):
