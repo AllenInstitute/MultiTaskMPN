@@ -7080,6 +7080,49 @@ def plot_row_cluster_joint_pairs():
     test or untrained control. Read from the current source caches of the
     saved sharing summary's cohort, without reclustering.
     """
+    _plot_row_joint_pairs("row_cluster_joint_pairs.png")
+
+
+def plot_row_cluster_joint_pairs_pro_anti():
+    """
+    Figure: multitask_row_cluster_joint_pairs_pro_anti.png — the joint-pair
+    figure (plot_row_cluster_joint_pairs) for one kind of row pair only: the
+    same period of a task and of its pro / anti sibling, e.g. MemoryPro's
+    memory row with MemoryAnti's.
+
+    The candidates are the row pairs whose two tasks form a pair of
+    sibling_row_sharing.PAIR_GROUPS["Pro / anti"] (DelayPro/Anti,
+    MemoryPro/Anti, ReactPro/Anti, the two matching tasks and the two
+    category tasks) and whose periods are the same; the modality pairs are
+    not included. They are ranked by the joint probability and drawn like
+    that figure, at most _ROW_JOINT_PAIRS_TOP of them (the 49-row set has
+    twelve, so all are shown). The dashed line of a panel is still its mean
+    over all row pairs of any tasks and periods, the level a candidate is
+    read against. Same data, limits and raw frequencies as that figure.
+    The stimulus-row pairs also depend on the stimulus modality the
+    clustering's evaluation trials drew for each task (one draw per task and
+    pipeline process, see MULTITASK_DESIGNATED_SEEDS), so they are not a
+    property of the networks alone.
+    """
+    sharing = _import_sibling_row_sharing()
+    siblings = {frozenset(pair) for pair in sharing.PAIR_GROUPS["Pro / anti"]}
+
+    def eligible(first_name, second_name):
+        (first_rule, first_phase), (second_rule, second_phase) = (
+            name.rsplit("-", 1) for name in (first_name, second_name))
+        return first_phase == second_phase and frozenset((first_rule, second_rule)) in siblings
+
+    _plot_row_joint_pairs("row_cluster_joint_pairs_pro_anti.png", eligible=eligible,
+                          kind="pro / anti same-period ")
+
+
+def _plot_row_joint_pairs(out_name, eligible=None, kind=""):
+    """Renderer of the joint-pair figures (plot_row_cluster_joint_pairs): the
+    _ROW_JOINT_PAIRS_TOP row pairs with the highest joint probability among
+    the candidates, saved as `out_name`. `eligible(first row name, second row
+    name)` selects the candidates (default: every row pair) and `kind` names
+    them in the messages; the panels' dashed means stay over all row pairs.
+    Skipped, with a note, when no row pair is a candidate."""
     sharing = _import_sibling_row_sharing()
     _ensure_out_dir()
     data = _load_row_cluster_sharing()
@@ -7099,7 +7142,13 @@ def plot_row_cluster_joint_pairs():
               for rep, title in _ROW_SHARING_REPRESENTATIONS]
     joint = summary["joint"][np.ix_(order, order)][first, second]
     panels.append(("joint", "All three", _ROW_JOINT_PAIRS_COLOR, joint))
-    top = np.argsort(-joint, kind="stable")[:_ROW_JOINT_PAIRS_TOP]
+    candidates = np.arange(joint.size) if eligible is None else np.array(
+        [pair for pair in range(joint.size)
+         if eligible(names[first[pair]], names[second[pair]])], dtype=int)
+    if candidates.size == 0:
+        print(f"  Skipped joint-pair figure: no {kind}row pair among the cohort's rows.")
+        return
+    top = candidates[np.argsort(-joint[candidates], kind="stable")][:_ROW_JOINT_PAIRS_TOP]
     positions = np.arange(top.size)
 
     fig, axs = plt.subplots(
@@ -7143,10 +7192,11 @@ def plot_row_cluster_joint_pairs():
         f"{names[first[pair]]} + {names[second[pair]]} "
         + " / ".join(f"{100 * values[pair]:.0f}" for _, _, _, values in panels)
         for pair in top)
-    _save_fig(fig, _multitask_out("row_cluster_joint_pairs.png"),
+    _save_fig(fig, _multitask_out(out_name),
               extra=(f"  {data['feature']}; {summary['n_runs']} trained networks; top {top.size} "
-                     f"of {joint.size} row pairs by joint probability; "
-                     f"{int(np.sum(joint >= 0.5))} pairs at >= 50%; mean over all pairs: "
+                     f"of {candidates.size} {kind}row pairs by joint probability; "
+                     f"{int(np.sum(joint[candidates] >= 0.5))} pairs at >= 50%; "
+                     f"mean over all {joint.size} pairs: "
                      + ", ".join(f"{name} {100 * values.mean():.1f}%" for name, _, _, values in panels)
                      + "; pair: input / hidden / synapse / all three (%): " + listed))
 
@@ -17033,6 +17083,7 @@ FIGURES_BY_MODE = {
         "row_cluster_organization": plot_row_cluster_organization,
         "row_cluster_period_pairs": plot_row_cluster_period_pairs,
         "row_cluster_joint_pairs": plot_row_cluster_joint_pairs,
+        "row_cluster_joint_pairs_pro_anti": plot_row_cluster_joint_pairs_pro_anti,
         "row_cluster_same_task_seeds": plot_row_cluster_same_task_seeds,
         "row_cluster_same_period_seeds": plot_row_cluster_same_period_seeds,
         "row_cluster_same_period_synapses": plot_row_cluster_same_period_synapses,

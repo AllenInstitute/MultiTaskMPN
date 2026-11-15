@@ -1171,6 +1171,63 @@ class PaperFigureTests(unittest.TestCase):
         self.assertIs(paper_plot.FIGURES_BY_MODE["multiple_tasks"]["row_cluster_joint_pairs"],
                       paper_plot.plot_row_cluster_joint_pairs)
 
+    def test_pro_anti_joint_pair_plot_keeps_same_period_sibling_rows_only(self):
+        """The fixture's pro / anti pairs are DelayPro/DelayAnti (stimulus,
+        response) and the two category tasks (stimulus, memory, response):
+        five same-period row pairs, of which the DelayPro/DelayAnti responses
+        and the category tasks' memory rows share a cluster."""
+        payload = self._payload()
+        experiments = [(name, _experiment()) for name in payload["experiments"]]
+        payload["organization"] = sharing.summarize_organization(experiments)
+        plot = paper_plot.plot_row_cluster_joint_pairs_pro_anti
+        with patch.object(sharing.diag, "_load_experiment",
+                          side_effect=lambda name, root: dict(experiments)[name]):
+            save, _ = self._render(plot, payload)
+        self.assertEqual(Path(save.call_args.args[1]).name,
+                         "multitask_row_cluster_joint_pairs_pro_anti.png")
+        figure = save.call_args.args[0]
+        self.assertEqual([ax.get_title() for ax in figure.axes],
+                         ["Input neurons", "Hidden neurons", "Synapses", "All three"])
+        for ax in figure.axes:
+            np.testing.assert_allclose([bar.get_width() for bar in ax.patches],
+                                       [100, 100, 0, 0, 0])
+            # the dashed mean stays over all 190 row pairs
+            dashed = [line for line in ax.lines if line.get_linestyle() == "--"]
+            np.testing.assert_allclose(dashed[0].get_xdata(), 100 * 8 / 190)
+        self.assertEqual(figure.axes[0].get_ylim(), (4.5, -0.5))
+        labels = [text.get_text() for text in figure.axes[0].texts]
+        self.assertEqual(labels, [
+            "DelayPro \u00b7 Resp", "DelayAnti \u00b7 Resp",
+            "ReactCategoryPro \u00b7 Mem 1", "ReactCategoryAnti \u00b7 Mem 1",
+            "DelayPro \u00b7 Stim 1", "DelayAnti \u00b7 Stim 1",
+            "ReactCategoryPro \u00b7 Stim 1", "ReactCategoryAnti \u00b7 Stim 1",
+            "ReactCategoryPro \u00b7 Resp", "ReactCategoryAnti \u00b7 Resp"])
+        # every listed pair: one period, a task and its pro / anti sibling;
+        # the modality pair's memory rows share a cluster but are left out
+        self.assertFalse(any("IntegrationModality" in label for label in labels))
+        for left, right in zip(labels[::2], labels[1::2]):
+            self.assertEqual(left.rsplit(" \u00b7 ", 1)[1], right.rsplit(" \u00b7 ", 1)[1])
+        extra = save.call_args.kwargs["extra"]
+        self.assertIn("top 5 of 5 pro / anti same-period row pairs by joint probability; "
+                      "2 pairs at >= 50%; mean over all 190 pairs", extra)
+        self.assertIn("dmcgo-delay1 + dmcnogo-delay1 100 / 100 / 100 / 100", extra)
+        self.assertNotIn("delaydm1", extra)
+        self.assertIs(paper_plot.FIGURES_BY_MODE["multiple_tasks"]
+                      ["row_cluster_joint_pairs_pro_anti"], plot)
+        # at most _ROW_JOINT_PAIRS_TOP candidates are drawn
+        with patch.object(sharing.diag, "_load_experiment",
+                          side_effect=lambda name, root: dict(experiments)[name]), \
+                patch.object(paper_plot, "_ROW_JOINT_PAIRS_TOP", 2):
+            save, _ = self._render(plot, payload)
+        self.assertEqual([len(ax.patches) for ax in save.call_args.args[0].axes], [2] * 4)
+        # without a pro / anti pair among the rows there is nothing to draw
+        with patch.object(sharing.diag, "_load_experiment",
+                          side_effect=lambda name, root: dict(experiments)[name]), \
+                patch.dict(sharing.PAIR_GROUPS, {"Pro / anti": ()}):
+            save, printed = self._render(plot, payload)
+        save.assert_not_called()
+        self.assertIn("no pro / anti same-period row pair", str(printed.call_args_list))
+
     def test_period_pair_plot_skips_a_changed_source_cache(self):
         payload = self._payload()
         payload["organization"] = sharing.summarize_organization(

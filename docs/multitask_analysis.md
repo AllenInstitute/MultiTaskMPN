@@ -1452,6 +1452,34 @@ chance correction, test or untrained control.
 python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_joint_pairs
 ```
 
+`multitask_row_cluster_joint_pairs_pro_anti_n.png` is the same figure for one
+kind of row pair only: the same period of a task and of its pro / anti
+sibling (`sibling_row_sharing.PAIR_GROUPS["Pro / anti"]`: DelayPro/Anti,
+MemoryPro/Anti, ReactPro/Anti, the two matching tasks and the two category
+tasks; the modality pairs are not included), e.g. MemoryPro's memory row with
+MemoryAnti's. The candidates are ranked by $J_{ij}$ and at most 20 are drawn;
+the 49-row set has twelve, so all of them appear. Each panel's dashed line is
+still its mean over all 1176 row pairs, the level a candidate is read
+against. In the L21e4 cohort (25 networks) none of the twelve reaches 50%:
+the highest are MemoryPro/MemoryAnti (stimulus and memory rows, 32% each),
+ReactPro/ReactAnti's response rows (32%) and MemoryPro/MemoryAnti's response
+rows (28%), against 2.7% for any two rows; DelayPro/DelayAnti sit at 4%, and
+the matching and category pairs at 0%, because their synapse rows never
+share a cluster, although their memory rows share an input and a hidden
+cluster in every network (as any two memory rows do). The synapse panel
+alone is highest for DelayPro/DelayAnti's stimulus rows (56%). The
+stimulus-row values depend on the evaluation trials, not only on the
+networks: each task's trials use one stimulus modality, drawn once per
+pipeline process (see the clustering example paragraph under
+[Figures](#figures)), and two tasks' stimulus rows share
+an input and a hidden cluster only when they drew the same one. The 32% of
+MemoryPro/MemoryAnti's stimulus rows is 8 of 25 networks, exactly the eight
+(seeds 379 to 692) analyzed by one process.
+
+```bash
+python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_joint_pairs_pro_anti
+```
+
 The matched-task supplement, `same_period_matched_tasks`, keeps the original
 full-task clustering and restricts every phase to the same five tasks:
 `delaydm1`, `delaydm2`, `contextdelaydm1`, `contextdelaydm2`, and `multidelaydm`.
