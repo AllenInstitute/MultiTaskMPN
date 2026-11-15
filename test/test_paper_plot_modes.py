@@ -275,6 +275,7 @@ class PaperPlotModeTests(unittest.TestCase):
             "state_space_rdm_stats_vs_l2",
             "state_space_rdm_example",
             "state_space_category_vs_untrained",
+            "state_space_category_vs_untrained_l2e4",
         }
         self.assertEqual(set(paper_plot.FIGURES_BY_MODE["state_space"]), expected)
         self.assertTrue(expected.isdisjoint(
@@ -1031,15 +1032,78 @@ class PaperPlotModeTests(unittest.TestCase):
         return {"m_alignment": paper_plot.STATE_SPACE_M_ALIGNMENT,
                 "runs": runs, "untrained": untrained}
 
-    def _draw_category_vs_untrained(self, combined, selected="run"):
+    def _draw_category_vs_untrained(self, combined, selected="run", plot=None):
         with patch.object(paper_plot, "_ensure_out_dir"), \
                 patch.object(paper_plot, "_load_pkl_or_skip", return_value=combined), \
                 patch.object(paper_plot, "_load_best_state_space_trial",
                              return_value=(selected, 0.1, {})), \
                 patch.object(paper_plot, "_save_fig") as save_fig, \
                 patch("builtins.print") as output:
-            paper_plot.plot_state_space_category_vs_untrained()
+            (plot or paper_plot.plot_state_space_category_vs_untrained)()
         return save_fig, output
+
+    def test_state_space_category_vs_untrained_l2e4_is_a_plain_grey_scatter(self):
+        plot = paper_plot.plot_state_space_category_vs_untrained_l2e4
+        save_fig, _ = self._draw_category_vs_untrained(self._structure_with_untrained(),
+                                                       plot=plot)
+        figure = save_fig.call_args.args[0]
+        self.addCleanup(paper_plot.plt.close, figure)
+        self.assertEqual(Path(save_fig.call_args.args[1]).name,
+                         "multitask_state_space_category_vs_untrained_l2e4.png")
+        # both representations, as in the five-column figure
+        self.assertEqual([axis.get_title() for axis in figure.axes],
+                         ["Hidden state", "Eff. modulation"])
+        grey = paper_plot.mpl.colors.to_rgb(paper_plot._LESION_POINT_COLOR)
+        for axis in figure.axes:
+            # the untrained networks and the L2 = 1e-4 cohort only, with no
+            # counts under the ticks and no x label
+            self.assertEqual([label.get_text() for label in axis.get_xticklabels()],
+                             ["Untrained", "$L_2 = 10^{-4}$"])
+            np.testing.assert_allclose(axis.get_xticks(), [0.0, 1.0])
+            self.assertEqual(axis.get_xlabel(), "")
+            # one collection of points per column, every point the same grey
+            # without an outline: no network is marked as significant
+            points = [collection for collection in axis.collections
+                      if isinstance(collection, paper_plot.mpl.collections.PathCollection)]
+            self.assertEqual([len(collection.get_offsets()) for collection in points], [2, 2])
+            np.testing.assert_allclose(points[0].get_offsets()[:, 1], [0.0, 0.002])
+            np.testing.assert_allclose(points[1].get_offsets()[:, 1], [0.2, 0.2])
+            for collection in points:
+                self.assertEqual(tuple(collection.get_facecolor()[0][:3]), grey)
+                self.assertEqual(len(collection.get_edgecolors()), 0)
+            # the medians in red; no null band, no divider, no p text
+            medians = [collection for collection in axis.collections
+                       if isinstance(collection, paper_plot.mpl.collections.LineCollection)]
+            np.testing.assert_allclose(
+                [collection.get_segments()[0][0][1] for collection in medians], [0.001, 0.2])
+            self.assertEqual(len(axis.collections), len(points) + len(medians))
+            self.assertEqual(len(axis.texts), 0)
+            self.assertFalse(any(np.allclose(line.get_xdata(), [0.75, 0.75])
+                                 for line in axis.lines))
+        self.assertEqual([text.get_text() for text in figure.legends[0].get_texts()],
+                         ["median over networks"])
+        self.assertLess(figure.get_size_inches()[0], 5.6)
+        low, high = figure.axes[0].get_ylim()
+        self.assertLessEqual(
+            len([tick for tick in figure.axes[0].get_yticks() if low <= tick <= high]),
+            paper_plot._STAT_SCATTER_MAX_TICKS + 1)
+        # the comparison with the untrained networks stays in the save message
+        expected = paper_plot._short_p(paper_plot._mann_whitney_p([0.2, 0.2], [0.0, 0.002]))
+        extra = save_fig.call_args.kwargs["extra"]
+        self.assertIn("hidden: untrained n=2 median S=0.001, L2 1e-04 n=2 median S=0.200; "
+                      f"Mann-Whitney {expected}", extra)
+        self.assertNotIn("L2 1e-02", extra)
+        self.assertIs(paper_plot.FIGURES_BY_MODE["state_space"]
+                      ["state_space_category_vs_untrained_l2e4"], plot)
+
+    def test_state_space_category_vs_untrained_l2e4_skips_without_untrained_networks(self):
+        combined = self._structure_with_untrained()
+        combined["untrained"] = {}
+        save_fig, output = self._draw_category_vs_untrained(
+            combined, plot=paper_plot.plot_state_space_category_vs_untrained_l2e4)
+        save_fig.assert_not_called()
+        self.assertIn("--untrained --checkpoint multiple_tasks/savednet_run.pt",
+                      output.call_args.args[0])
 
     def test_state_space_category_vs_untrained_puts_untrained_left_of_the_cohorts(self):
         save_fig, _ = self._draw_category_vs_untrained(self._structure_with_untrained())

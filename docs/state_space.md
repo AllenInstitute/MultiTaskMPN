@@ -344,6 +344,14 @@ the two-sided Mann-Whitney p of its runs' S against the untrained
 networks' (also in the save message). It is skipped, with the
 commands above, until the structure results hold an untrained network of
 that training setting.
+`--only state_space_category_vs_untrained_l2e4` draws a plain version for
+the main cohort, `multitask_state_space_category_vs_untrained_l2e4.png`: the
+same two panels with only the untrained networks and the L2 = 1e-4 runs,
+drawn like the other grey scatters of the paper figures, one grey point per
+network and the median as a red dash. It shows no null band and marks no
+significance (no filled points, no counts under the ticks, no p on the
+panel); the Mann-Whitney p against the untrained networks is still printed
+in the save message.
 
 Distance-angle regression uses ordinary least squares with a fitted intercept:
 `angle = intercept + slope * distance`. The existing `(r, slope, p)` tuples

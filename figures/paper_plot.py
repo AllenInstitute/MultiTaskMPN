@@ -4365,10 +4365,6 @@ def _state_space_runs_by_l2(runs):
     return grouped
 
 
-def _l2_tick_label(strength):
-    return rf"$10^{{{int(round(np.log10(strength)))}}}$"
-
-
 def _draw_separation_column(ax, position, runs, key):
     """One column of a category-separation figure at x = `position`: the saved
     S of representation `key` of every run (or untrained network) in `runs`
@@ -4469,6 +4465,35 @@ def _untrained_structure_entries(combined, aname):
     return entries
 
 
+def _category_vs_untrained_columns(strengths):
+    """The columns of a category-separation figure with the untrained
+    networks first: (tick label, summary name, structure summaries) of the
+    untrained networks built from the selected example run's config
+    (_untrained_structure_entries) and then of the trained runs of each L2
+    strength of `strengths`. None, with the reason and the commands to run
+    printed, when the structure results or those untrained networks are
+    missing. Read from the combined state_space_structure.py results."""
+    _ensure_out_dir()
+    combined = _load_aligned_structure(STATE_SPACE_STRUCTURE_RESULT_PATH)
+    if combined is None:
+        return None
+    selected = _load_best_state_space_trial()
+    if selected is None:
+        return None
+    aname = selected[0]
+    untrained = _untrained_structure_entries(combined, aname)
+    if not untrained:
+        print(f"  Skipped: the structure results hold no untrained network built from "
+              f"{aname}'s config or another run of its setting. Run: "
+              f"{_untrained_command(aname)}; then "
+              "python multiple_task/state_space_structure.py")
+        return None
+    grouped = _state_space_runs_by_l2(combined["runs"])
+    return [("Untrained", "untrained", untrained)] + [
+        (_l2_tick_label(strength), f"L2 {strength:.0e}", list(grouped[strength].values()))
+        for strength in strengths]
+
+
 def plot_state_space_category_vs_untrained():
     """
     Figure: multitask_state_space_category_vs_untrained.png — the category
@@ -4494,30 +4519,72 @@ def plot_state_space_category_vs_untrained():
     and ``runs``); nothing is recomputed. Skipped, with the commands to run,
     when no untrained network of that config has been analyzed.
     """
-    _ensure_out_dir()
-    combined = _load_aligned_structure(STATE_SPACE_STRUCTURE_RESULT_PATH)
-    if combined is None:
+    columns = _category_vs_untrained_columns(STATE_SPACE_L2_STRENGTHS)
+    if columns is None:
         return
-    selected = _load_best_state_space_trial()
-    if selected is None:
-        return
-    aname = selected[0]
-    untrained = _untrained_structure_entries(combined, aname)
-    if not untrained:
-        print(f"  Skipped: the structure results hold no untrained network built from "
-              f"{aname}'s config or another run of its setting. Run: "
-              f"{_untrained_command(aname)}; then "
-              "python multiple_task/state_space_structure.py")
-        return
-    grouped = _state_space_runs_by_l2(combined["runs"])
-    columns = [("Untrained", "untrained", untrained)] + [
-        (_l2_tick_label(strength), f"L2 {strength:.0e}", list(grouped[strength].values()))
-        for strength in STATE_SPACE_L2_STRENGTHS]
     # The untrained column sits one and a half steps left of the first cohort.
     positions = np.array([0.0] + [1.5 + index for index in range(len(STATE_SPACE_L2_STRENGTHS))])
     _plot_separation_columns(columns, positions, figsize=(5.6, 2.4),
                              out_name="state_space_category_vs_untrained.png", divider=0.75,
                              reference=0)
+
+
+def plot_state_space_category_vs_untrained_l2e4():
+    """
+    Figure: multitask_state_space_category_vs_untrained_l2e4.png — the
+    category separation S of the untrained networks beside the trained runs
+    of the main cohort, L2 = STATE_SPACE_EXAMPLE_L2 (1e-4, the cohort of the
+    example run whose config the untrained networks are built from), for the
+    hidden state and the effective modulation W * M.
+
+    A plain version of plot_state_space_category_vs_untrained, drawn like the
+    other grey scatters of the paper figures: one grey point per network
+    (_LESION_POINT_COLOR, none marked by its own permutation test) and the
+    median over networks as the red dash. It leaves out that figure's other
+    three cohorts, its null bands, its per-network significance (filled
+    points, counts under the ticks) and the Mann-Whitney p on the panel; that
+    p is still printed in the save message. Same data, nothing recomputed.
+    """
+    columns = _category_vs_untrained_columns((STATE_SPACE_EXAMPLE_L2,))
+    if columns is None:
+        return
+    labels = ["Untrained", rf"$L_2 = {_l2_tick_label(STATE_SPACE_EXAMPLE_L2).strip('$')}$"]
+    positions = np.arange(len(columns), dtype=float)
+    fig, axs = plt.subplots(1, len(_STATE_SPACE_STRUCTURE_PANELS), figsize=(3.2, 2.2),
+                            sharey=True)
+    summaries = []
+    for ax, (key, title) in zip(axs, _STATE_SPACE_STRUCTURE_PANELS):
+        ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
+        scores = [np.array([run["representations"][key]["separation"]["score"]
+                            for run in runs if key in run["representations"]], dtype=float)
+                  for _, _, runs in columns]
+        for position, values in zip(positions, scores):
+            if values.size == 0:
+                continue
+            ax.scatter(position + _run_offsets(values.size, 0.07, 0.3), values,
+                       **{**_SCATTER_POINT_STYLE, "color": _LESION_POINT_COLOR})
+            ax.hlines(np.median(values), position - 0.3, position + 0.3,
+                      color=_TREND_LINE_COLOR, linewidth=1.8, zorder=4)
+        summaries.append(
+            f"{key}: " + ", ".join(f"{name} n={values.size} median S={np.median(values):.3f}"
+                                   for (_, name, _), values in zip(columns, scores) if values.size)
+            + f"; Mann-Whitney {_short_p(_mann_whitney_p(scores[1], scores[0]))}")
+        ax.set_xticks(positions)
+        ax.set_xticklabels(labels, fontsize=7)
+        ax.set_xlim(positions[0] - 0.6, positions[-1] + 0.6)
+        ax.set_title(title, fontsize=9, pad=4)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.tick_params(axis="y", labelsize=7)
+    # A few round ticks, as on the other scatters (_style_stat_scatter_axes).
+    axs[0].yaxis.set_major_locator(
+        mticker.MaxNLocator(_STAT_SCATTER_MAX_TICKS, steps=[1, 2, 5, 10]))
+    axs[0].yaxis.set_major_formatter(mticker.FuncFormatter(_short_tick))
+    axs[0].set_ylabel("Category separation S", fontsize=8)
+    median = mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8,
+                              label="median over networks")
+    _state_space_figure_legend(fig, [median])
+    _save_fig(fig, _multitask_out("state_space_category_vs_untrained_l2e4.png"),
+              extra="  " + "; ".join(summaries))
 
 
 def _state_space_figure_legend(fig, handles, ncol=None, top=0.92):
@@ -16690,6 +16757,7 @@ FIGURES_BY_MODE = {
         "state_space_rdm_stats_vs_l2": plot_state_space_rdm_stats_vs_l2,
         "state_space_rdm_example": plot_state_space_rdm_example,
         "state_space_category_vs_untrained": plot_state_space_category_vs_untrained,
+        "state_space_category_vs_untrained_l2e4": plot_state_space_category_vs_untrained_l2e4,
     },
     "acc_plot": {
         "l2_accuracy": plot_l2_vs_accuracy,
