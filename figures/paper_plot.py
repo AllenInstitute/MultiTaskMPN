@@ -6997,8 +6997,8 @@ def plot_row_cluster_joint_pairs():
     without a changing input are all zero and cluster together by
     construction, which is part of the input panel's 100%. And these are
     raw frequencies of the trained networks, with no chance correction,
-    test or untrained control, as in row_cluster_coassignment, whose
-    source caches and checks this figure shares.
+    test or untrained control. Read from the current source caches of the
+    saved sharing summary's cohort, without reclustering.
     """
     sharing = _import_sibling_row_sharing()
     _ensure_out_dir()
@@ -7113,8 +7113,8 @@ def plot_row_cluster_period_pairs():
     the networks' cluster sizes give; it differs between the panels because
     the representations select different numbers of row clusters, so a bar
     is read against its own panel's line. Raw frequencies of the trained
-    networks, as in row_cluster_coassignment: no chance correction, no test
-    and no untrained control. Read from the current source caches of the
+    networks: no chance correction, no test and no untrained control. Read
+    from the current source caches of the
     saved sharing summary's cohort, without reclustering.
     """
     sharing = _import_sibling_row_sharing()
@@ -7184,71 +7184,6 @@ def plot_row_cluster_period_pairs():
               extra=(f"  {data['feature']}; {n_runs} trained networks, equal weight; original "
                      f"selected row clusters; raw fractions, no chance correction; row pairs per "
                      f"period pair: {counts}; " + "; ".join(notes)))
-
-
-def plot_row_cluster_coassignment():
-    """Trained-only pairwise co-clustering frequencies for input, hidden and M.
-
-    Uses exactly the trained sharing summary's cohort and the same selected row
-    clusters, loading current source caches without rerunning clustering. Each
-    cell is the fraction of those networks assigning its two task-period rows
-    to one cluster. All panels share a fixed task/chronological-period order and
-    a 0-1 scale. Only the strict lower triangle is displayed; the diagonal and
-    upper triangle are masked. The colormap, task-only tick labels and phase
-    backgrounds follow the clustered task-variance heatmaps. These are raw
-    descriptive frequencies, not correlations, chance-corrected enrichment,
-    or a test of a training effect.
-    """
-    sharing = _import_sibling_row_sharing()
-    _ensure_out_dir()
-    data = _load_row_cluster_sharing()
-    if data is None:
-        return
-    try:
-        summary = sharing.summarize_row_coassignment(_row_sharing_source_rows(data, sharing))
-    except ValueError as exc:
-        print(f"  Skipped co-clustering heatmap: {exc}. Check source caches and "
-              f"run {_row_sharing_commands()}.")
-        return
-    names = summary["row_names"]
-    order = _canonical_row_order(names)
-    names = [names[i] for i in order]
-    tasks = [name.rsplit("-", 1)[0] for name in names]
-    boundaries = [i - 0.5 for i in range(1, len(tasks)) if tasks[i] != tasks[i - 1]]
-    labels = [_task_display_name(name) for name in names]
-    fig, axes = plt.subplots(1, 3, figsize=(19.5, 7.1), sharex=True, sharey=True,
-                             layout="constrained")
-    upper_and_diagonal = np.triu(np.ones((len(names), len(names)), dtype=bool))
-    cmap = mpl.colormaps[_MULTITASK_HEATMAP_CMAP].with_extremes(bad="white")
-    for ax, (rep, title) in zip(axes, (("input", "Input"), ("hidden", "Hidden"),
-                                     ("modulation", "Modulation"))):
-        matrix = summary["representations"][rep][np.ix_(order, order)]
-        im = ax.imshow(np.ma.array(matrix, mask=upper_and_diagonal), vmin=0, vmax=1,
-                       cmap=cmap, interpolation="nearest")
-        ax.set_title(title)
-        ax.set_xticks(range(len(names)), labels, rotation=90, fontsize=6)
-        ax.set_yticks(range(len(names)), labels, ha="right", va="center", fontsize=6)
-        ax.tick_params(length=0, pad=2)
-        for axis in ("x", "y"):
-            _color_phase_ticklabels(ax, names, axis=axis)
-            ticks = ax.get_xticklabels() if axis == "x" else ax.get_yticklabels()
-            for tick, name in zip(ticks, names):
-                tick.set_gid(name)  # retain row identity when text shows only the task
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-        for boundary in boundaries:
-            ax.hlines(boundary, -0.5, boundary, color="0.6", linewidth=0.5, alpha=0.6, zorder=3)
-            ax.vlines(boundary, boundary, len(names) - 0.5,
-                      color="0.6", linewidth=0.5, alpha=0.6, zorder=3)
-    colorbar = fig.colorbar(im, ax=axes, shrink=0.7, fraction=0.018, pad=0.015,
-                           ticks=[0, 0.25, 0.5, 0.75, 1])
-    colorbar.set_label("Fraction of trained networks in the same cluster", fontsize=8)
-    fig.suptitle(f"Trained networks (n={summary['n_runs']}) · Task–period co-clustering", fontsize=11)
-    _save_fig(fig, _multitask_out("row_cluster_coassignment.png"),
-              extra=(f"  {data['feature']}; {len(names)} × {len(names)} rows; "
-                     f"{summary['n_runs']} trained networks, equal weight; original selected "
-                     "row clusters; fixed task/chronological-period order; raw fractions, "
-                     "lower triangle only, diagonal omitted, no chance correction"))
 
 
 def _untrained_provenance(experiments):
@@ -16697,7 +16632,6 @@ FIGURES_BY_MODE = {
         "overmembership_examples": plot_overmembership_examples,
         "input_weight_correlation": plot_input_weight_correlation,
         "row_cluster_organization": plot_row_cluster_organization,
-        "row_cluster_coassignment": plot_row_cluster_coassignment,
         "row_cluster_period_pairs": plot_row_cluster_period_pairs,
         "row_cluster_joint_pairs": plot_row_cluster_joint_pairs,
         "row_cluster_same_task_seeds": plot_row_cluster_same_task_seeds,

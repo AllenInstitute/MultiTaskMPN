@@ -1345,35 +1345,21 @@ have been migrated, this extra figure needs no further summary rerun:
 python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_same_period_synapses
 ```
 
-The trained-only `multitask_row_cluster_coassignment_n.png` shows all task-period
-row pairs as three heatmaps (input, hidden and modulation; currently 49 × 49).
-For rows $i,j$ and representation $r$, the cell is
+The next two figures are built from pairwise co-clustering frequencies. For
+rows $i,j$ and representation $r$,
 $C^{(r)}_{ij}=N^{-1}\sum_{s=1}^{N}\mathbf{1}[c^{(r,s)}_i=c^{(r,s)}_j]$,
-using exactly the trained networks named in the current sharing summary.
+the fraction of the trained networks named in the current sharing summary
+that assign the two task-period rows to one cluster
+(`sibling_row_sharing.summarize_row_coassignment`; 49 × 49 rows at present).
 Rows are aligned by task-period identity before counting; cluster numbers are
 compared only within each network. A source with missing rows/representations,
 or organization counts inconsistent with the saved summary, skips the figure
 instead of changing its cohort or using cell-specific denominators. The
 calculation reads current cluster caches at plot time and needs no new trials,
-clustering, or permutation tests.
-
-All panels use the same task order, chronological periods within tasks, and
-0–1 color scale. The viridis palette, task-only tick labels with phase-colored
-backgrounds, and thin gray boundaries follow the clustered task-variance
-heatmaps. The colorbar denotes co-clustering frequency rather than normalized
-variance. Lines separate tasks within the displayed lower triangle; the plot
-does not impose a new consensus clustering or copy a single network's order.
-The underlying matrices are symmetric with a diagonal of one (self-pairs);
-the figure masks the upper triangle and diagonal, showing each distinct row
-pair once. Masked cells are blank, not zero. These raw frequencies show which
-particular pairs account for the aggregate sharing patterns; they are neither correlations nor
-chance-corrected enrichment, and cluster number/size affect their baseline.
-This is a descriptive companion to the sharing and organization figures, not
-independent evidence or a trained/untrained comparison.
-
-```bash
-python figures/paper_plot.py --multitask-l2 1e4 --only row_cluster_coassignment
-```
+clustering, or permutation tests. These raw frequencies are neither
+correlations nor chance-corrected enrichment, and cluster number/size affect
+their baseline. The figure that drew the full matrices as three heatmaps,
+`row_cluster_coassignment`, was removed on 2026-11-14.
 
 `multitask_row_cluster_period_pairs_n.png` reduces those matrices to the period
 types: for each representation, which two periods tend to share a row cluster.
@@ -1392,9 +1378,8 @@ the synapses in the L21e4 cohort), so bar lengths are not comparable between
 panels and the tick labels carry the scale. The dashed line is the cohort mean of the probability over all row
 pairs, the level the networks' cluster sizes give; it differs between the
 panels (the representations select different numbers of row clusters), so a
-bar is read against its own panel's line. As with the co-clustering heatmaps
-these are raw frequencies of the trained networks, with no chance correction,
-test or untrained control. In the L21e4 cohort (25 networks) the input and
+bar is read against its own panel's line. These are raw frequencies of the
+trained networks, with no chance correction, test or untrained control. In the L21e4 cohort (25 networks) the input and
 hidden rows of the two memory periods always share a cluster (Memory 1 with
 Memory 1, Memory 1 with Memory 2, Memory 2 with Memory 2: 100%, against 30%
 for any two rows), memory and response rows do so in 47% of their pairs, and
