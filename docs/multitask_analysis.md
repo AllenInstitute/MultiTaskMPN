@@ -300,8 +300,12 @@ modalities; seed 749, the example before, among them). The 25 L2 = 1e-4 runs
 therefore hold four independent trial sets for any statistic built on
 stimulus-row sharing between tasks (the `row_cluster_*_pairs` figures, the
 pro / anti stimulus cells of `sibling_row_sharing.py`). The sibling
-fixed-point analysis is not affected: it resets the generator for each rule
-(`align_periods`), so both rules of a family get the same modality.
+fixed-point analysis does not have this confound: it resets the generator
+for each rule (`align_periods`), so both rules of a family get the same
+modality. Its own modality issue, the PCA bases and the endpoints of
+MemoryPro / MemoryAnti landing on different rings, was fixed on 2026-11-15
+by pinning one ring for every stage ([state_space.md](state_space.md);
+`task_params["stimulus_modality"]`, the generator's other opt-in setting).
 
 `python figures/paper_plot.py --only cluster_corr_vs_lesion` draws the four input/hidden
 scatter figures and three modulation figures:

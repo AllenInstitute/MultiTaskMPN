@@ -872,9 +872,23 @@ Three things differ from the delay families:
   (`_apply_balanced_stimulus_directions`), so the two rules hold matched
   conditions and every direction has its opposite among the trials. The
   generated stimulus is checked first (one constant unit vector per trial
-  on a two-channel ring, at the angle its metadata names). The stimulus
-  modality is the one the generator draws for the run, the same for both
-  rules.
+  on a two-channel ring, at the angle its metadata names).
+- **Modality.** The rules leave the input ring free, and the generator draws
+  it once per batch. Since 2026-11-15 the analysis pins it: every stage of
+  every run shows the stimulus on ring 1 (`SIBLING_STIMULUS_MODALITY`,
+  written into the task parameters as `stimulus_modality` and recorded in
+  the PCA, endpoint and sweep caches). Before, the two rules always shared a
+  ring and so did the endpoints and the sweep, but the PCA bases come from a
+  batch of another size (100 normal trials against 32 long ones), which
+  drew its ring independently: in 14 of the 25 L2 = 1e-4 caches of
+  2026-11-14 the bases were fitted on one ring and the endpoints settled on
+  the other, and the six PCs then hold 4 to 21% of the W ⊙ M endpoints'
+  direction variance instead of 55 to 75% (hidden: 58 to 82% instead of 86
+  to 94%). The full-space cohort statistics do not use the bases and were
+  not affected; the PC-plane illustrations of those runs were. The same pin
+  applies to DMC, whose stages always agreed on a ring that differed from
+  run to run (its generator draws the rings first), so its caches stay
+  valid; DelayDM's rules fix their rings.
 - **Method.** Only settled endpoints; `--method gradient` solves delay fixed
   points and is refused for this family.
 - **File names.** A family's settled-endpoint files carry the name of its
@@ -955,27 +969,32 @@ skips with the commands to run until its caches exist.
   (`_memory_sweep_legibility`), so the two representations and the endpoint
   figure can come from different networks.
 
-On the 25 L2 = 1e-4 runs (caches and cohort summary of 2026-11-14; medians
-with quartiles) every endpoint settled and the stimulus is held in stimulus
-coordinates in every run: `ring_cosine_same` is 0.95 [0.93, 0.96] for the
-hidden state and 0.73 [0.72, 0.77] for W ⊙ M, above 0 in 25/25 runs (lowest
-0.88 and 0.67), against `ring_cosine_opposite` of -0.84 and -0.37. The two
-rings differ by a rule shift of 0.31 [0.25, 0.42] (hidden) and 0.43
-[0.40, 0.44] (W ⊙ M) of the ring radius, and the rule cue alone carries the
-state the whole way (`cue_traversed` 1.00; the alpha = 1 endpoint, a trained
-MemoryAnti input, lands on MemoryAnti's own, `cue_end_residual` 0.00). The
-illustrations draw the clearest runs of the 25 (2026-11-14): the endpoint
-figure seed 921 (direction gap over rule gap 4.3; the cohort ranges from
-0.05 to 4.3 with a median of 2.3), the sweep figures seed 692 for the
-hidden state and seed 842 for W ⊙ M (largest drawn departure 0.08 and 0.10
-of a panel; cohort 0.08-0.60 and 0.10-0.21). In those planes the two rules'
-points of a stimulus lie nearly on top of each other, while the W ⊙ M
-cosine of 0.73 is the full-space value: part of the difference between the
-rules lies outside the drawn plane, along the rule PC of the sweep figures
-(joint stimulus PC5 in each drawn run, a few percent of the trajectory
-variance), where the stimulus PC stays flat along alpha and every direction
-moves the same way. In other runs the hidden-state sweep is less smooth:
-single directions step between two alphas (seed 379).
+On the 25 L2 = 1e-4 runs (caches and cohort summary of 2026-11-16, every
+stage on ring 1; medians with quartiles) every endpoint settled and the
+stimulus is held in stimulus coordinates in every run: `ring_cosine_same` is
+0.95 [0.94, 0.96] for the hidden state and 0.73 [0.71, 0.77] for W ⊙ M,
+above 0 in 25/25 runs (lowest 0.88 and 0.66), against `ring_cosine_opposite`
+of -0.84 and -0.38. The two rings differ by a rule shift of 0.31
+[0.25, 0.42] (hidden) and 0.42 [0.40, 0.45] (W ⊙ M) of the ring radius, and
+the rule cue alone carries the state the whole way (`cue_traversed` 0.97 and
+1.00; the alpha = 1 endpoint, a trained MemoryAnti input, lands on
+MemoryAnti's own, `cue_end_residual` 0.00). These values are those of the
+2026-11-14 caches to within 0.01 to 0.03, as expected of full-space
+statistics that never used the PCA bases. What the pinned ring changed is the
+bases: the six PCs now hold 85 to 95% of the hidden endpoints' direction
+variance and 56 to 77% of the W ⊙ M one in all 25 runs, one group instead of
+two. The illustrations draw the clearest runs of the 25: the endpoint figure
+seed 101 (direction gap over rule gap 6.9; the cohort ranges from 1.8 to 6.9
+with a median of 3.2, against 0.05 to 4.3 before), the sweep figures seed
+434 for the hidden state and seed 101 for W ⊙ M (largest drawn departure
+0.06 and 0.03 of a panel; cohort 0.06-0.79 and 0.03-0.34). In those planes
+the two rules' points of a stimulus lie nearly on top of each other, while
+the W ⊙ M cosine of 0.73 is the full-space value: part of the difference
+between the rules lies outside the drawn plane, along the rule PC of the
+sweep figures (joint stimulus PC5 for the hidden state and PC6 for W ⊙ M in
+the drawn runs), where the stimulus PC stays flat along alpha and every
+direction moves the same way. In other runs the sweeps are less smooth:
+single directions step between two alphas.
 
 ## Sibling-task cohort statistics
 

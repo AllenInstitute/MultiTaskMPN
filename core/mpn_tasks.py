@@ -286,6 +286,22 @@ def _balanced_stimulus_modalities(rng, batch_size):
     return modalities
 
 
+def _free_stimulus_modality(drawn, rng, batch_size, kwargs):
+    """The stimulus modality of a 'random' batch of a task whose stimulus may
+    come on either ring. `drawn` is the generator's one draw for the batch,
+    used unless the caller pins the modality (``stimulus_modality``: 1 or 2,
+    for an analysis whose batches must all show one ring) or asks for both
+    (``balanced_stimulus_modalities``, see _balanced_stimulus_modalities).
+    The draw itself is always made first, so the batch's other random
+    numbers do not depend on these options."""
+    pinned = kwargs.get('stimulus_modality')
+    if pinned is not None:
+        return int(pinned)
+    if kwargs.get('balanced_stimulus_modalities', False):
+        return _balanced_stimulus_modalities(rng, batch_size)
+    return drawn
+
+
 def delaygo_(config, mode, anti_response, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
     '''
     Fixate whenever fixation point is shown,
@@ -341,9 +357,7 @@ def delaygo_(config, mode, anti_response, separate_input, label_strength, long_d
         if long_all == True: # overwrite
             tdim     = fix_offs + int(700/dt)
             
-        stim_mod  = rng.choice([1,2])
-        if kwargs.get('balanced_stimulus_modalities', False):
-            stim_mod = _balanced_stimulus_modalities(rng, batch_size)
+        stim_mod  = _free_stimulus_modality(rng.choice([1,2]), rng, batch_size, kwargs)
         
     elif mode == 'random_batch': # Randomly generate parameters, times/modalities different across batch
         batch_size = kwargs['batch_size']
@@ -687,9 +701,7 @@ def reactgo_(config, mode, anti_response, long_all, **kwargs):
         # A list of locations of stimuluss (they are always on)
         stim_locs = rng.uniform(0, 2*np.pi, (batch_size,))
 
-        stim_mod  = rng.choice([1,2])
-        if kwargs.get('balanced_stimulus_modalities', False):
-            stim_mod = _balanced_stimulus_modalities(rng, batch_size)
+        stim_mod  = _free_stimulus_modality(rng.choice([1,2]), rng, batch_size, kwargs)
     elif mode == 'random_batch': # Randomly generate parameters, times/modalities different across batch
         batch_size = kwargs['batch_size']
 
@@ -792,9 +804,7 @@ def fdgo_(config, mode, anti_response, long_response, long_stimulus, long_fixati
 
         # A list of locations of stimulus (they are always on)
         stim_locs = rng.rand(batch_size)*2*np.pi
-        stim_mod  = rng.choice([1,2])
-        if kwargs.get('balanced_stimulus_modalities', False):
-            stim_mod = _balanced_stimulus_modalities(rng, batch_size)
+        stim_mod  = _free_stimulus_modality(rng.choice([1,2]), rng, batch_size, kwargs)
         
         if not long_all:
             stim_ons  = int(rng.uniform(300,700)/dt)
@@ -1361,13 +1371,11 @@ def dms_(config, mode, matchnogo, separate_input, label_strength, long_delay, lo
     if mode == 'random': # Randomly generate parameters
         batch_size = kwargs['batch_size']
         
-        stim1_mod  = rng.choice([1,2])
-        stim2_mod  = rng.choice([1,2])
-        if kwargs.get('balanced_stimulus_modalities', False):
-            # stim2 follows stim1 (the other ring) with separate_input; else
-            # it is balanced on its own.
-            stim1_mod = _balanced_stimulus_modalities(rng, batch_size)
-            stim2_mod = _balanced_stimulus_modalities(rng, batch_size)
+        # stim2 follows stim1 (the other ring) with separate_input; else it
+        # takes its own draw, pin or balance.
+        stim1_mod, stim2_mod = rng.choice([1,2]), rng.choice([1,2])
+        stim1_mod = _free_stimulus_modality(stim1_mod, rng, batch_size, kwargs)
+        stim2_mod = _free_stimulus_modality(stim2_mod, rng, batch_size, kwargs)
         # A list of locations of stimuluss
         # Since stim1 is always shown first, it's important that we completely randomize their relative positions
         matchs    = rng.choice([0,1],(batch_size,)) # match or not?
@@ -1528,13 +1536,11 @@ def dmc_(config, mode, matchnogo, separate_input, label_strength, long_delay, lo
         # each batch consists of sequences of equal length
 
         # Use only mod 1 for input
-        stim1_mod  = rng.choice([1,2])
-        stim2_mod  = rng.choice([1,2])
-        if kwargs.get('balanced_stimulus_modalities', False):
-            # stim2 follows stim1 (the other ring) with separate_input; else
-            # it is balanced on its own.
-            stim1_mod = _balanced_stimulus_modalities(rng, batch_size)
-            stim2_mod = _balanced_stimulus_modalities(rng, batch_size)
+        # stim2 follows stim1 (the other ring) with separate_input; else it
+        # takes its own draw, pin or balance.
+        stim1_mod, stim2_mod = rng.choice([1,2]), rng.choice([1,2])
+        stim1_mod = _free_stimulus_modality(stim1_mod, rng, batch_size, kwargs)
+        stim2_mod = _free_stimulus_modality(stim2_mod, rng, batch_size, kwargs)
 
         stim1_locs = rng.choice(np.array([0.05, 0.30, 0.55, 0.80, 1.05, 1.30, 1.55, 1.80])*np.pi,size=(batch_size,)) # avoid ambiguity
         stim2_locs = rng.choice(np.array([0.05, 0.30, 0.55, 0.80, 1.05, 1.30, 1.55, 1.80])*np.pi,size=(batch_size,))
@@ -2081,6 +2087,14 @@ def generate_trials_wrap(task_params,
             the 'random' mode draws for the whole batch. Rules whose modality
             is part of the task are unaffected. Requires
             ``mode_input='random'`` and an even ``n_batches``.
+
+    ``task_params['stimulus_modality']`` (1 or 2; absent or None by default)
+    pins the modality of those same rules instead: every batch generated from
+    these task parameters shows the stimulus on that ring. It is a task
+    parameter, not an argument, so that every stage of an analysis which
+    generates several batches (and the gradient fixed-point template, which
+    receives only the task parameters) agrees on the ring. Requires
+    ``mode_input='random'`` and excludes ``balanced_stimulus_modalities``.
     """
     if rules is None: # Draw a rule randomly, create tuple with single rule in it
         task_params['rules_probs'] = normalize_to_one(task_params['rules_probs'])
@@ -2161,6 +2175,16 @@ def generate_trials_wrap(task_params,
     if balanced_stimulus_modalities and mode_input != "random":
         raise ValueError(
             "balanced stimulus modalities require mode_input='random'")
+    stimulus_modality = task_params.get("stimulus_modality")
+    if stimulus_modality is not None:
+        if stimulus_modality not in (1, 2):
+            raise ValueError(
+                f"task_params['stimulus_modality'] must be 1 or 2, got {stimulus_modality!r}")
+        if mode_input != "random":
+            raise ValueError("a pinned stimulus modality requires mode_input='random'")
+        if balanced_stimulus_modalities:
+            raise ValueError(
+                "a pinned stimulus modality excludes balanced stimulus modalities")
 
     for rule, rule_idx in zip(rules, rule_idxs):
         if align_periods:
@@ -2171,6 +2195,8 @@ def generate_trials_wrap(task_params,
         )
         if balanced_stimulus_modalities:
             balanced_kwargs["balanced_stimulus_modalities"] = True
+        if stimulus_modality is not None:
+            balanced_kwargs["stimulus_modality"] = int(stimulus_modality)
         trial = generate_trials(rule,
                                 task_params['hp'], 
                                 mode_input, 

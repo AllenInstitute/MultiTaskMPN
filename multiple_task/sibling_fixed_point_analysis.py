@@ -182,6 +182,31 @@ SIBLING_NORMAL_GPU_BATCH_SIZE = 200
 # cross-task condition.
 SIBLING_STIM_MAGNITUDES = {"delaydm1": DELAYDM_FP_STIM_MAGNITUDES}
 SIBLING_LONG_PERIOD_TRIALS_PER_RULE = 32
+# Input ring of the first stimulus in every stage of a family whose rules
+# leave the modality free (DMC and MemoryPro/MemoryAnti; with modality_diff
+# the DMC second stimulus is on the other ring). Each stage generates its own
+# trials from the same generator state (normal trials for the PCA bases, long
+# trials for the endpoints, the rule-cue sweep, the gradient template). The
+# MemoryPro/MemoryAnti generator draws its ring once per batch AFTER one
+# random number per trial, so its 100-trial PCA stage and its 32-trial
+# endpoint stage drew the ring independently: in 14 of the 25 L2 = 1e-4
+# caches of 2026-11-14 the bases were fitted on one ring and the endpoints
+# settled on the other, and the six PCs held 4 to 21% of the W * M
+# endpoints' direction variance instead of 55 to 75%. (The endpoint and
+# sweep stages have the same batch size and always agreed, and so did the
+# two rules, so the full-space statistics were not touched.) The DMC
+# generator draws its rings first, so its stages always agreed, on a ring
+# that differed from run to run. The pin makes every stage of every run use
+# one ring; it is written into the task parameters (`stimulus_modality`),
+# which reach every stage. DelayDM's rules fix their own ring and ignore it.
+SIBLING_STIMULUS_MODALITY = 1
+SIBLING_FREE_MODALITY_FAMILIES = ("dmcgo", "delaygo")
+
+
+def family_stimulus_modality(addtask):
+    """The pinned first-stimulus ring of a family (SIBLING_STIMULUS_MODALITY),
+    or None for a family whose rules fix the modality themselves."""
+    return SIBLING_STIMULUS_MODALITY if addtask in SIBLING_FREE_MODALITY_FAMILIES else None
 # Families whose long-period trials are given the eight native directions in
 # turn instead of the generator's random continuous ones.
 SIBLING_BALANCED_DIRECTION_FAMILIES = ("delaygo",)
@@ -508,6 +533,9 @@ def run_sibling_analysis(seed, feature, families, method):
     task_params = raw_cfg["task_params"]
     train_params = raw_cfg["train_params"]
     net_params = raw_cfg["net_params"]
+    # One input ring for every stage of the free-modality families (see
+    # SIBLING_STIMULUS_MODALITY); the key travels with the task parameters.
+    task_params["stimulus_modality"] = SIBLING_STIMULUS_MODALITY
 
     save_name = f"{hyp_dict['ruleset']}_seed{seed}_{hyp_dict['addon_name']}"
     save_dir = SIBLING_ANALYSIS_DIR / save_name
@@ -926,6 +954,9 @@ def stream_normal_period_analysis(
             "fit_rules": fit_rules,
             "period": period,
             "period_window": (int(period_start), int(period_stop)),
+            # Ring of the trials the basis was fitted on; the endpoints and
+            # the sweep carry the same field and must agree with it.
+            "stimulus_modality": family_stimulus_modality(addtask),
             "source": scope["source"],
             "trial_counts": trial_counts,
             "fit_trial_counts": fit_trial_counts,
@@ -1291,12 +1322,15 @@ def _checked_direction_counts(addtask, rules, task_idx, stim_idx, n_trials_per_r
 def _period_fields(addtask, period_start, period_stop, dt):
     """The window of a family's long period as artifact fields: ``period``,
     ``period_window``, ``period_steps`` and ``period_ms`` for every family,
-    and for the delay families also the ``delay_*`` names their caches and
-    readers have always used."""
+    with its pinned ``stimulus_modality`` (family_stimulus_modality), and for
+    the delay families also the ``delay_*`` names their caches and readers
+    have always used."""
     period = SIBLING_FAMILY_PERIOD[addtask]
     steps = int(period_stop - period_start)
     fields = {
         "period": period,
+        # Ring of the first stimulus in every stage; None: fixed by the rules.
+        "stimulus_modality": family_stimulus_modality(addtask),
         "long_period_setting": "long",
         "period_window": (int(period_start), int(period_stop)),
         "period_steps": steps,

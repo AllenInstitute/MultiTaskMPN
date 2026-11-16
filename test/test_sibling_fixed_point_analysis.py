@@ -563,14 +563,19 @@ class LongDelayMagnitudeLevelTests(unittest.TestCase):
                 inputs, trials, self.RULES, task_idx, stim_idx, LEVELS)
 
 
+def _memory_config():
+    """A two-ring, noise-free generator configuration for MemoryPro/MemoryAnti."""
+    return {"dt": 40, "rng": np.random.RandomState(5), "n_eachring": 8,
+            "in_out_mode": "low_dim", "fixate_off": True, "n_input": 6,
+            "n_output": 3, "loss_type": "lsq", "sigma_x": 0.0, "alpha": 0.2,
+            "get_meta": True}
+
+
 def _aligned_memory_trials(n_per_rule):
     """Long-stimulus MemoryPro and MemoryAnti trials from one generator state,
     as `generate_trials_wrap(align_periods=True)` draws them: one continuous
     random direction per trial, on the modality the generator picks."""
-    config = {"dt": 40, "rng": np.random.RandomState(5), "n_eachring": 8,
-              "in_out_mode": "low_dim", "fixate_off": True, "n_input": 6,
-              "n_output": 3, "loss_type": "lsq", "sigma_x": 0.0, "alpha": 0.2,
-              "get_meta": True}
+    config = _memory_config()
     state = config["rng"].get_state()
     trials = []
     for anti_response in (False, True):
@@ -673,10 +678,21 @@ class StimulusPeriodFamilyTests(unittest.TestCase):
             sibling._aligned_period_window(self.RULES, trials, "stim2")
         fields = sibling._period_fields("delaygo", 10, 260, 40)
         self.assertEqual(fields, {"period": "stim1", "long_period_setting": "long",
+                                  "stimulus_modality": sibling.SIBLING_STIMULUS_MODALITY,
                                   "period_window": (10, 260), "period_steps": 250,
                                   "period_ms": 10000})
         delay = sibling._period_fields("dmcgo", 10, 260, 40)
         self.assertEqual(delay["period"], "delay1")
+        # The families whose rules leave the ring free are pinned to one ring
+        # in every stage; DelayDM's rules fix their own.
+        self.assertIn(sibling.SIBLING_STIMULUS_MODALITY, (1, 2))
+        self.assertEqual(delay["stimulus_modality"], sibling.SIBLING_STIMULUS_MODALITY)
+        self.assertIsNone(sibling._period_fields("delaydm1", 10, 260, 40)["stimulus_modality"])
+        self.assertEqual(
+            {family: sibling.family_stimulus_modality(family)
+             for family in sibling.SIBLING_FAMILIES},
+            {"dmcgo": sibling.SIBLING_STIMULUS_MODALITY, "delaydm1": None,
+             "delaygo": sibling.SIBLING_STIMULUS_MODALITY})
         for key in ("window", "steps", "ms"):
             self.assertEqual(delay[f"delay_{key}"], delay[f"period_{key}"])
         self.assertEqual(delay["delay_epoch"], "delay1")
@@ -690,6 +706,29 @@ class StimulusPeriodFamilyTests(unittest.TestCase):
                          ((10, 260), 250, 10000, 400, 10400))
         with self.assertRaisesRegex(KeyError, "endpoint artifact has no period_"):
             sibling._endpoint_period_fields({})
+
+    def test_every_stage_reads_the_pinned_ring_from_the_task_parameters(self):
+        """run_sibling_analysis writes the pin into the raw task parameters
+        before anything is generated, so the PCA trials, the long trials, the
+        sweep and the gradient template all inherit it."""
+        import inspect
+        source = inspect.getsource(sibling.run_sibling_analysis)
+        pin = 'task_params["stimulus_modality"] = SIBLING_STIMULUS_MODALITY'
+        self.assertIn(pin, source)
+        self.assertLess(source.index(pin), source.index("convert_and_init_multitask_params"))
+        # The generator reads that key: batches of different sizes, which
+        # used to draw their ring independently, agree.
+        for n_trials in (100, 32):
+            config = _memory_config()
+            trial = mpn_tasks.delaygo_(
+                config, "random", False, True, True, "normal", "normal", "normal", "normal",
+                False, batch_size=n_trials, stimulus_modality=sibling.SIBLING_STIMULUS_MODALITY)
+            start, stop = trial.epochs["stim1"]
+            ring = sibling._stimulus_ring_channels(
+                np.transpose(trial.x, (1, 0, 2)), (0, int(trial.epochs["fix1"][1])),
+                (int(start), int(stop)), "delaygo")
+            first = 2 + 2 * (sibling.SIBLING_STIMULUS_MODALITY - 1)
+            self.assertEqual(ring, (first, first + 1))
 
     def test_native_directions_replace_the_random_ones_on_the_ring(self):
         inputs, trials, task_idx = _aligned_memory_trials(32)

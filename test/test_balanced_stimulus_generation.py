@@ -156,6 +156,49 @@ class BalancedStimulusModalityTests(unittest.TestCase):
 
 
 
+
+class PinnedStimulusModalityTests(unittest.TestCase):
+    def test_every_free_modality_task_shows_the_pinned_ring_only(self):
+        for modality in (1, 2):
+            for name, (generate, epoch) in FREE_MODALITY_TASKS.items():
+                with self.subTest(task=name, modality=modality):
+                    trial = generate(_config(), batch_size=32, stimulus_modality=modality)
+                    np.testing.assert_array_equal(
+                        _ring_of(trial, trial.epochs[epoch]), np.full(32, modality))
+
+    def test_the_pin_changes_nothing_but_the_ring(self):
+        """The generator's own draw is still made, so timing and directions
+        are those of the unpinned batch of the same generator state."""
+        for name, (generate, epoch) in FREE_MODALITY_TASKS.items():
+            with self.subTest(task=name):
+                free = generate(_config(), batch_size=32)
+                pinned = generate(_config(), batch_size=32, stimulus_modality=1)
+                self.assertEqual(free.epochs, pinned.epochs)
+                np.testing.assert_array_equal(free.meta["stim1"], pinned.meta["stim1"])
+                np.testing.assert_array_equal(free.y, pinned.y)
+
+    def test_second_stimulus_of_the_match_tasks_takes_the_other_ring(self):
+        for name in ("dms", "dmc"):
+            with self.subTest(task=name):
+                generate, _ = FREE_MODALITY_TASKS[name]
+                trial = generate(_config(), batch_size=32, stimulus_modality=1)
+                go_on, go_off = trial.epochs["go1"]
+                second = _ring_of(trial, (go_on, trial.tdim if go_off is None else go_off))
+                np.testing.assert_array_equal(second, np.full(32, 2))
+
+    def test_the_pin_comes_from_the_task_parameters_and_is_validated(self):
+        for value, mode, balanced, message in (
+                (3, "random", False, "must be 1 or 2"),
+                (1, "random_batch", False, "requires mode_input='random'"),
+                (1, "random", True, "excludes balanced")):
+            with self.subTest(value=value, mode=mode, balanced=balanced):
+                with self.assertRaisesRegex(ValueError, message):
+                    mpn_tasks.generate_trials_wrap(
+                        {"rules": ["delaygo"], "stimulus_modality": value}, 4,
+                        rules=["delaygo"], mode_input=mode,
+                        balanced_stimulus_modalities=balanced)
+
+
 class SeededGeneratorTests(unittest.TestCase):
     def test_multisensory_trials_depend_on_the_task_generator_only(self):
         """The multisensory tasks drew their modality split from the global
