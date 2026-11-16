@@ -186,6 +186,40 @@ keep their axis position and produce a message with the evaluation command.
 The marks follow [the convention of every accuracy figure](#accuracy-figures-tests-against-the-default-setting)
 (before 2026-11-13 the p values were written on the two figures instead).
 
+## Evaluation trials of the clustering
+
+`multiple_task_analysis.py` records the activity it clusters on its own
+evaluation trials, 50 per task with one timing per task
+(`generate_evaluation_trials`; `mode_input="random"`, the scalar timing the
+per-period slicing needs). Since 2026-11-15 two things keep that trial set
+from deciding the result:
+
+- **One seed per network.** The task generator is reseeded with
+  `evaluation_trial_seed(seed, untrained_init_seed)`, a function of the run's
+  seed and, for an untrained control, of its init seed. A rerun reproduces
+  the trials and no two networks share them. Before, `core/mpn_tasks.py` drew
+  one seed per process at import, so every network analyzed by one
+  `run_pipeline.py` process saw the same trials and a rerun saw other ones.
+- **Both stimulus modalities per task.** The tasks whose stimulus may come on
+  either ring (DelayPro/Anti, ReactPro/Anti, MemoryPro/Anti, the two matching
+  and the two category tasks) get each modality on half of their trials
+  (`generate_trials_wrap(balanced_stimulus_modalities=True)`; with
+  `modality_diff` the second stimulus of the matching and category tasks is
+  on the other ring of its trial's first). Before, the "random" mode drew one
+  modality per task for all 50 trials, and the stimulus rows of the input and
+  hidden features grouped by that draw. The integration tasks keep the
+  modality their rule defines.
+
+Every entry of the two cluster caches records `evaluation_trial_seed`,
+`evaluation_trials_per_task` and `balanced_stimulus_modalities` beside its
+`variance_method`. Caches without them come from the earlier trial sets;
+nothing checks for the fields, since the old results are to be deleted and
+the pipeline rerun. The same change moved the multisensory tasks' modality
+split from the global `np.random` state to the task generator, which a
+seeded trial set needs to be reproducible. The option is opt-in: the
+training scripts, the lesions and the other analyses generate their trials
+as before.
+
 ## Figures
 
 The `lesion` figure mode contains `lesion_heatmap`, `lesion_cluster_sizes`,
@@ -246,9 +280,12 @@ the MemoryPro / MemoryAnti fixed-point analysis
 tasks share a row cluster in the input, hidden, modulation and |W|-weighted
 modulation heatmaps, and the modulation cluster holds the two tasks' three
 periods with three other rows. Read the input and hidden part of that with
-care. The clustering's evaluation trials draw ONE stimulus modality per task
-for all 50 trials (`mode_input="random"`; the go, match and category tasks,
-10 of the 15), and the generator's seed is fixed per `run_pipeline.py`
+care in every cache clustered before 2026-11-15, which is every cache until
+the pipeline is rerun (see
+[Evaluation trials of the clustering](#evaluation-trials-of-the-clustering)).
+In those caches the clustering's evaluation trials draw ONE stimulus modality
+per task for all 50 trials (`mode_input="random"`; the go, match and category
+tasks, 10 of the 15), and the generator's seed is fixed per `run_pipeline.py`
 process (`core/mpn_tasks.py` draws it at import), so every network analyzed
 by one process sees the same trials. The stimulus rows of the input and
 hidden heatmaps cluster by that modality, so whether two tasks' stimulus rows
@@ -1468,8 +1505,9 @@ the matching and category pairs at 0%, because their synapse rows never
 share a cluster, although their memory rows share an input and a hidden
 cluster in every network (as any two memory rows do). The synapse panel
 alone is highest for DelayPro/DelayAnti's stimulus rows (56%). The
-stimulus-row values depend on the evaluation trials, not only on the
-networks: each task's trials use one stimulus modality, drawn once per
+stimulus-row values of caches clustered before 2026-11-15 depend on the
+evaluation trials, not only on the networks: each task's trials use one
+stimulus modality, drawn once per
 pipeline process (see the clustering example paragraph under
 [Figures](#figures)), and two tasks' stimulus rows share
 an input and a hidden cluster only when they drew the same one. The 32% of

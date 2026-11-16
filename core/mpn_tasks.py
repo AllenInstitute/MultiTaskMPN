@@ -266,6 +266,26 @@ def test_init(config, mode, **kwargs):
     return trial
 
 
+def _balanced_stimulus_modalities(rng, batch_size):
+    """Per-trial stimulus modalities (1 or 2), each on exactly half of the
+    trials, in shuffled order.
+
+    The 'random' mode of the tasks whose stimulus may come on either ring
+    (the go, match and category families) draws ONE modality for the whole
+    batch. A batch analyzed as a sample of the task then shows the network
+    one ring only, and which one is a coin flip. With the opt-in
+    ``balanced_stimulus_modalities`` keyword those tasks call this instead,
+    so a batch holds both rings equally often while its timing stays the
+    scalar one the 'random' mode draws."""
+    batch_size = int(batch_size)
+    if batch_size <= 0 or batch_size % 2:
+        raise ValueError(
+            f"balanced modalities require an even batch_size, got {batch_size}")
+    modalities = np.tile(np.array([1, 2], dtype=int), batch_size // 2)
+    rng.shuffle(modalities)
+    return modalities
+
+
 def delaygo_(config, mode, anti_response, separate_input, label_strength, long_delay, long_response, long_stimulus, long_fixation, long_all, **kwargs):
     '''
     Fixate whenever fixation point is shown,
@@ -322,6 +342,8 @@ def delaygo_(config, mode, anti_response, separate_input, label_strength, long_d
             tdim     = fix_offs + int(700/dt)
             
         stim_mod  = rng.choice([1,2])
+        if kwargs.get('balanced_stimulus_modalities', False):
+            stim_mod = _balanced_stimulus_modalities(rng, batch_size)
         
     elif mode == 'random_batch': # Randomly generate parameters, times/modalities different across batch
         batch_size = kwargs['batch_size']
@@ -477,15 +499,18 @@ def _contextdm(config, mode, attend_mod, separate_input, label_strength, long_de
         else:
             stim1_strengths, stim2_strengths = contextdm_genstim(batch_size, rng, stim_coh_range)
 
+            # Drawn from the task's own generator (`rng`), like every other
+            # trial parameter; the global np.random state used here before
+            # made these trials differ between runs of one seed.
             stim1_mod12_diff = stim1_strengths * \
-                               np.random.uniform(0.2, 0.8, (batch_size,)) * \
-                               np.random.choice([+1, -1], (batch_size,))
+                               rng.uniform(0.2, 0.8, (batch_size,)) * \
+                               rng.choice([+1, -1], (batch_size,))
             stim1_mod1_strengths = stim1_strengths + stim1_mod12_diff/2
             stim1_mod2_strengths = stim1_strengths - stim1_mod12_diff/2
 
             stim2_mod12_diff = stim2_strengths * \
-                               np.random.uniform(0.2, 0.8, (batch_size,)) * \
-                               np.random.choice([+1, -1], (batch_size,))
+                               rng.uniform(0.2, 0.8, (batch_size,)) * \
+                               rng.choice([+1, -1], (batch_size,))
             stim2_mod1_strengths = stim2_strengths + stim2_mod12_diff/2
             stim2_mod2_strengths = stim2_strengths - stim2_mod12_diff/2
 
@@ -663,6 +688,8 @@ def reactgo_(config, mode, anti_response, long_all, **kwargs):
         stim_locs = rng.uniform(0, 2*np.pi, (batch_size,))
 
         stim_mod  = rng.choice([1,2])
+        if kwargs.get('balanced_stimulus_modalities', False):
+            stim_mod = _balanced_stimulus_modalities(rng, batch_size)
     elif mode == 'random_batch': # Randomly generate parameters, times/modalities different across batch
         batch_size = kwargs['batch_size']
 
@@ -766,6 +793,8 @@ def fdgo_(config, mode, anti_response, long_response, long_stimulus, long_fixati
         # A list of locations of stimulus (they are always on)
         stim_locs = rng.rand(batch_size)*2*np.pi
         stim_mod  = rng.choice([1,2])
+        if kwargs.get('balanced_stimulus_modalities', False):
+            stim_mod = _balanced_stimulus_modalities(rng, batch_size)
         
         if not long_all:
             stim_ons  = int(rng.uniform(300,700)/dt)
@@ -1133,15 +1162,18 @@ def contextdelaydm_(config, mode, attend_mod, separate_input, label_strength, lo
             stim1_strengths, stim2_strengths = \
                 contextdm_genstim(batch_size, rng, stim_coh_range)
 
+            # Drawn from the task's own generator (`rng`), like every other
+            # trial parameter; the global np.random state used here before
+            # made these trials differ between runs of one seed.
             stim1_mod12_diff = stim1_strengths * \
-                               np.random.uniform(0.2, 0.8, (batch_size,)) * \
-                               np.random.choice([+1, -1], (batch_size,))
+                               rng.uniform(0.2, 0.8, (batch_size,)) * \
+                               rng.choice([+1, -1], (batch_size,))
             stim1_mod1_strengths = stim1_strengths + stim1_mod12_diff/2
             stim1_mod2_strengths = stim1_strengths - stim1_mod12_diff/2
 
             stim2_mod12_diff = stim2_strengths * \
-                               np.random.uniform(0.2, 0.8, (batch_size,)) * \
-                               np.random.choice([+1, -1], (batch_size,))
+                               rng.uniform(0.2, 0.8, (batch_size,)) * \
+                               rng.choice([+1, -1], (batch_size,))
             stim2_mod1_strengths = stim2_strengths + stim2_mod12_diff/2
             stim2_mod2_strengths = stim2_strengths - stim2_mod12_diff/2
 
@@ -1331,6 +1363,11 @@ def dms_(config, mode, matchnogo, separate_input, label_strength, long_delay, lo
         
         stim1_mod  = rng.choice([1,2])
         stim2_mod  = rng.choice([1,2])
+        if kwargs.get('balanced_stimulus_modalities', False):
+            # stim2 follows stim1 (the other ring) with separate_input; else
+            # it is balanced on its own.
+            stim1_mod = _balanced_stimulus_modalities(rng, batch_size)
+            stim2_mod = _balanced_stimulus_modalities(rng, batch_size)
         # A list of locations of stimuluss
         # Since stim1 is always shown first, it's important that we completely randomize their relative positions
         matchs    = rng.choice([0,1],(batch_size,)) # match or not?
@@ -1493,6 +1530,11 @@ def dmc_(config, mode, matchnogo, separate_input, label_strength, long_delay, lo
         # Use only mod 1 for input
         stim1_mod  = rng.choice([1,2])
         stim2_mod  = rng.choice([1,2])
+        if kwargs.get('balanced_stimulus_modalities', False):
+            # stim2 follows stim1 (the other ring) with separate_input; else
+            # it is balanced on its own.
+            stim1_mod = _balanced_stimulus_modalities(rng, batch_size)
+            stim2_mod = _balanced_stimulus_modalities(rng, batch_size)
 
         stim1_locs = rng.choice(np.array([0.05, 0.30, 0.55, 0.80, 1.05, 1.30, 1.55, 1.80])*np.pi,size=(batch_size,)) # avoid ambiguity
         stim2_locs = rng.choice(np.array([0.05, 0.30, 0.55, 0.80, 1.05, 1.30, 1.55, 1.80])*np.pi,size=(batch_size,))
@@ -2007,7 +2049,8 @@ def generate_trials_wrap(task_params,
                          long_all=False,
                          align_periods=False,
                          fixed_fixation_steps=None,
-                         balanced_stimulus_directions=False):
+                         balanced_stimulus_directions=False,
+                         balanced_stimulus_modalities=False):
     """
     Wrapper to generate the raw datasets, including the inputs, labels, and masks.
 
@@ -2030,6 +2073,14 @@ def generate_trials_wrap(task_params,
             is unchanged.  Scalar timing (``mode_input='random'``) is required.
         balanced_stimulus_directions: Opt-in DelayDM setting that assigns the
             same number of trials to every preferred ``stim1`` direction.
+        balanced_stimulus_modalities: Opt-in setting for the rules whose
+            stimulus may come on either ring (fdgo/fdanti, reactgo/reactanti,
+            delaygo/delayanti, dmsgo/dmsnogo, dmcgo/dmcnogo): each rule's
+            batch holds the two modalities on half of its trials each
+            (``_balanced_stimulus_modalities``) instead of the one modality
+            the 'random' mode draws for the whole batch. Rules whose modality
+            is part of the task are unaffected. Requires
+            ``mode_input='random'`` and an even ``n_batches``.
     """
     if rules is None: # Draw a rule randomly, create tuple with single rule in it
         task_params['rules_probs'] = normalize_to_one(task_params['rules_probs'])
@@ -2107,6 +2158,10 @@ def generate_trials_wrap(task_params,
                 "balanced stimulus directions are implemented only for "
                 f"DelayDM rules, not {sorted(unsupported)}")
 
+    if balanced_stimulus_modalities and mode_input != "random":
+        raise ValueError(
+            "balanced stimulus modalities require mode_input='random'")
+
     for rule, rule_idx in zip(rules, rule_idxs):
         if align_periods:
             _align_rng.set_state(_align_rng_state)
@@ -2114,6 +2169,8 @@ def generate_trials_wrap(task_params,
             {"balanced_stim1": True}
             if balanced_stimulus_directions else {}
         )
+        if balanced_stimulus_modalities:
+            balanced_kwargs["balanced_stimulus_modalities"] = True
         trial = generate_trials(rule,
                                 task_params['hp'], 
                                 mode_input, 

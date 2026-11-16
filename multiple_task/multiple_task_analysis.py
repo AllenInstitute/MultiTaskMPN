@@ -11,7 +11,11 @@ This module owns the following analyses:
      plus the end-to-end pathway W_out @ W_mod @ W_in and its SVD spectrum.
   2. Task-period VARIANCE — per-rule, per-period variance across trials and
      time of input, hidden and modulation activity, without S1 averaging.
-     Epochs exclude padding beyond each task's actual trial endpoint.
+     Epochs exclude padding beyond each task's actual trial endpoint. The
+     trials are the network's own evaluation set (`generate_evaluation_trials`):
+     seeded per network, so a rerun reproduces it and no two networks share
+     one, and with both stimulus modalities on half of the trials of every
+     task whose stimulus may come on either ring.
   3. Hierarchical clustering of those matrices along both axes (task conditions
      and neurons / modulation synapses), k chosen by silhouette within a
      tolerance band. Modulation synapses are clustered under five feature
@@ -206,6 +210,59 @@ def output_names(seed, ruleset, addon_name, untrained_init_seed=None):
 # The recorded trajectories the analysis reads, by key of the network's
 # track_states record: M of the plastic layer, its input and its hidden state.
 TRACKED_STATE_KEYS = ("M1", "input1", "hidden1")
+
+
+# Evaluation trials per task of the variance and clustering analyses (even,
+# so the two stimulus modalities split it equally).
+EVALUATION_TRIALS_PER_TASK = 50
+
+
+def evaluation_trial_seed(seed, untrained_init_seed=None):
+    """Seed of the evaluation trials of one analyzed network: a function of
+    the run's seed and, for an untrained control, of its init seed, so every
+    network has its own reproducible trial set."""
+    entropy = (int(seed), 0 if untrained_init_seed is None else int(untrained_init_seed) + 1)
+    return int(np.random.SeedSequence(entropy).generate_state(1)[0])
+
+
+def generate_evaluation_trials(task_params_c, trial_seed, n_per_task=EVALUATION_TRIALS_PER_TASK):
+    """The trials every analysis of this module reads (activity recording,
+    task variance, clustering): `n_per_task` trials of every rule.
+
+    mode_input="random" is required: the per-period variance slices every
+    trial of a rule with that rule's single epoch boundaries, so all trials
+    of a rule must share one timing. The timing is drawn from the "normal"
+    period ranges the network was trained and lesioned with (long_all=False;
+    long_all=True, used earlier, fixed every period at the top of its
+    training range instead).
+
+    Two things keep the trial set from deciding the result:
+    - The generator is reseeded with `trial_seed` (`evaluation_trial_seed`).
+      `mpn_tasks` otherwise seeds it once per process at import, so every
+      network analyzed by one pipeline process saw the same trials and a
+      rerun saw other ones.
+    - `balanced_stimulus_modalities`: a rule whose stimulus may come on
+      either ring gets both, on half of its trials each. The "random" mode
+      alone draws one modality per rule for all its trials, and the stimulus
+      rows of the input and hidden features then group by that draw (two
+      tasks' rows alike when they drew the same ring) instead of by task.
+
+    Returns generate_trials_wrap's ((inputs, labels, masks), (seq_lens,
+    trials, rule_idxs)), on the CPU.
+    """
+    task_params_c['hp']['batch_size_train'] = n_per_task
+    task_params_c['hp']['seed'] = int(trial_seed)
+    task_params_c['hp']['rng'] = np.random.RandomState(int(trial_seed))
+    return mpn_tasks.generate_trials_wrap(
+        task_params_c,
+        n_per_task,
+        rules=task_params_c['rules'],
+        mode_input="random",
+        device="cpu",
+        verbose=False,
+        long_all=False,
+        balanced_stimulus_modalities=True,
+    )
 
 
 def record_tracked_states(model, inputs, chunk_size):
@@ -573,27 +630,19 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
     )
 
     if reevaluate:
-        test_n_batch = 50 # number of batches for each task
-        task_params_c['hp']['batch_size_train'] = test_n_batch
+        # The network's own evaluation trials: seeded per network and with
+        # both stimulus modalities per task (generate_evaluation_trials).
+        trial_seed = evaluation_trial_seed(seed, untrained_init_seed)
+        print(f"evaluation trials: seed {trial_seed}, {EVALUATION_TRIALS_PER_TASK} per task, "
+              "stimulus modalities balanced")
+        test_data, test_trials_extra = generate_evaluation_trials(task_params_c, trial_seed)
+        # Saved in every cluster entry, beside its variance method.
+        evaluation_provenance = {
+            "evaluation_trial_seed": trial_seed,
+            "evaluation_trials_per_task": EVALUATION_TRIALS_PER_TASK,
+            "balanced_stimulus_modalities": True,
+        }
 
-        # Trials for the whole analysis (activity recording, task variance,
-        # clustering). mode_input="random" is required: the per-period variance
-        # below slices every trial of a rule with that rule's single
-        # rules_epochs boundaries, so all trials of a rule must share one
-        # timing. The timing itself is drawn from the same "normal" period
-        # ranges the network was trained and lesioned with (long_all=False);
-        # long_all=True, used earlier, fixed every period at the top of its
-        # training range instead.
-        test_data, test_trials_extra = mpn_tasks.generate_trials_wrap(
-            task_params_c,
-            test_n_batch,
-            rules=task_params_c['rules'],
-            mode_input="random",
-            device="cpu",
-            verbose=False,
-            long_all=False
-        )
-        
         test_input, test_output, test_mask = test_data
         print(f"test_input.shape: {test_input.shape}; test_output.shape: {test_output.shape}; test_mask.shape: {test_mask.shape}")
         _, test_trials, test_rule_idxs = test_trials_extra
@@ -1204,6 +1253,7 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
             unresponsive_label = clustering.unresponsive_label_from_result(result, "col")
             cluster_info_save[clustering_save_name] = {
                 "variance_method": VARIANCE_METHOD,
+                **evaluation_provenance,
                 "col_clusters": col_clusters,
                 "row_clusters": row_clusters,
                 "tb_break_name": tb_break_name,
@@ -3533,6 +3583,7 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
 
             cluster_info_save_mod[clustering_save_name] = {
                 "variance_method": VARIANCE_METHOD,
+                **evaluation_provenance,
                 "result_pre": _prune_saved(result_pre),
                 "result_post": _prune_saved(result_post),
                 "result_all_lst": [_prune_saved(r) for r in result_all_lst],

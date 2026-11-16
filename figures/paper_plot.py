@@ -251,12 +251,15 @@ LESION_NORM_ROOT = norm_root(LESION_CONTROL_POOL)
 # cluster holds little besides the two tasks' three periods, and its
 # OM-vs-lesion association is as strong as the previous example's (Spearman
 # rho -0.41 against -0.16 for seed 664, whose modulation cluster is the
-# tightest). Whether those rows share a cluster in the input and hidden
-# heatmaps follows the stimulus modality the clustering's evaluation trials
-# drew for each task, which is one draw per task and pipeline process (the
-# same for seeds 379 to 692, where both tasks drew modality 2); seed 749, the
-# example until 2026-11-14, drew different modalities for the two tasks and
-# separates them.
+# tightest). In the caches clustered before 2026-11-15, whether those rows
+# share a cluster in the input and hidden heatmaps follows the stimulus
+# modality the clustering's evaluation trials drew for each task, which is
+# one draw per task and pipeline process (the same for seeds 379 to 692,
+# where both tasks drew modality 2); seed 749, the example until 2026-11-14,
+# drew different modalities for the two tasks and separates them.
+# multiple_task_analysis.generate_evaluation_trials now gives every task both
+# modalities and every network its own seeded trials, so revisit this choice
+# once the cohort is reclustered.
 # EXCEPTION: the OM-vs-lesion scatter is a lesion figure drawn from the
 # clustering example (seed 427), not the lesion example (seed 921), so that it
 # shares a network with the OM example panels; see _om_scatter_run.
@@ -7099,10 +7102,11 @@ def plot_row_cluster_joint_pairs_pro_anti():
     twelve, so all are shown). The dashed line of a panel is still its mean
     over all row pairs of any tasks and periods, the level a candidate is
     read against. Same data, limits and raw frequencies as that figure.
-    The stimulus-row pairs also depend on the stimulus modality the
-    clustering's evaluation trials drew for each task (one draw per task and
-    pipeline process, see MULTITASK_DESIGNATED_SEEDS), so they are not a
-    property of the networks alone.
+    In caches clustered before 2026-11-15 the stimulus-row pairs also depend
+    on the stimulus modality the clustering's evaluation trials drew for each
+    task (one draw per task and pipeline process, see
+    MULTITASK_DESIGNATED_SEEDS), so there they are not a property of the
+    networks alone.
     """
     sharing = _import_sibling_row_sharing()
     siblings = {frozenset(pair) for pair in sharing.PAIR_GROUPS["Pro / anti"]}
