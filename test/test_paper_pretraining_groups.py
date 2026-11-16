@@ -118,10 +118,8 @@ class PretrainingGroupTests(unittest.TestCase):
                                 if name == "backbone_probe":
                                     labels = {label.get_text().replace("\n", " ")
                                               for label in figure.axes[0].get_xticklabels()}
-                                    log_entry = (root / "log/backbone_probe.log").read_text().splitlines()[-1]
-                                    self.assertIn(f"feature={paper_plot.PRETRAINING_ADDON_NAME}", log_entry)
-                                    self.assertIn(f"groups={groups}", log_entry)
-                                    self.assertIn("bound=mb1", log_entry)
+                                    # The statistics are printed; no log file is written.
+                                    self.assertFalse((root / "log").exists())
                                 else:
                                     labels = set(figure.axes[0].get_legend_handles_labels()[1])
                                 self.assertEqual(labels, expected | (

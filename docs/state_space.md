@@ -835,14 +835,15 @@ gradient-method geometry figures; the sweep figure's run serves its `2d` and
 Runs with a missing endpoint or sweep cache, a cache written before
 settling, or any point above the fixed-point criterion are skipped. Every
 run's scores and each figure's ranking are printed when the figures first
-need them and saved as `multitask_sibling_run_scores_{delaydm,dmcgo}.json`
-in `paper_plot/`; with no scorable run the figures print their usual
+need them (`paper_plot.py` writes figures only; the ranking file it saved
+until 2026-11-16 is gone, and `paper_plot._sibling_run_ranking(family)`
+returns the same report); with no scorable run the figures print their usual
 "Skipped" messages. Because the plane and the run are both picked for
 legibility on the drawn fixed points, the figures show the best case of the
 cohort, not a typical run: on the grid caches the chosen DelayDM
 e_modulation sweep keeps its directions 1.66 apart (separation ratio) at its
 worst alpha, against a cohort median of 0.49, so in most runs the directions
-merge somewhere along the sweep. The saved rankings give the spread across
+merge somewhere along the sweep. The printed rankings give the spread across
 runs, and the [cohort figures](#sibling-task-cohort-statistics) put every
 run in the full state space. The endpoint figures' axis limits follow the
 drawn points (`_adaptive_pc_limits`) for every run.

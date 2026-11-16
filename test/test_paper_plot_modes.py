@@ -506,6 +506,15 @@ class PaperPlotModeTests(unittest.TestCase):
             self.assertIs(call.args[0][0][1], untrained)
             self.assertEqual([panel is data for _, panel in call.args[0][1:]], [True, True])
 
+    def test_paper_plot_writes_figures_only(self):
+        """The figure script saves PNG figures and nothing else: no ranking
+        JSON, no log, no cache. Every write goes through savefig."""
+        source = Path(paper_plot.__file__).read_text()
+        for writer in ("json.dump", "pickle.dump", "np.save", ".to_csv", "write_text",
+                       '.open("w', ".open('w", '.open("a', ".open('a"):
+            self.assertNotIn(writer, source)
+        self.assertNotRegex(source, r"""open\([^)\n]*["'][wa]b?["']""")
+
     def test_state_space_panels_are_square_at_the_sweep_subpanel_size(self):
         rules = ["fdgo", "delaydm1", "dmcgo"]
         rng = np.random.RandomState(0)

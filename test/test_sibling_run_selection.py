@@ -1,6 +1,5 @@
 """Tests for the automatic per-figure choice of the sibling example runs."""
 
-import json
 import pickle
 import tempfile
 import unittest
@@ -150,8 +149,10 @@ class SiblingRunSelectionTests(unittest.TestCase):
         self._write_run("delaydm1", _aname(seed), entries, sweeps)
 
     def _report(self, name):
-        return json.loads(
-            (self.out / f"multitask_sibling_run_scores_{name}.json").read_text())
+        """The ranking report of one family, by its output name. paper_plot
+        prints it and saves nothing but figures."""
+        self.assertEqual([path.name for path in self.out.glob("*") if path.suffix != ".png"], [])
+        return paper_plot._sibling_run_ranking({"delaydm": "delaydm1", "dmcgo": "dmcgo"}[name])
 
     def _selected(self, family):
         return {f"{figure} {rep}": paper_plot._multitask_sibling_aname(family, rep, figure)
@@ -197,10 +198,10 @@ class SiblingRunSelectionTests(unittest.TestCase):
         # Every sweep trial drawn first, the jumping one included.
         with patch.object(paper_plot, "SIBLING_ONE_TRIAL_PER_STIMULUS", False):
             selected = self._selected("delaydm1")
+            report = self._report("delaydm")        # the ranking of this view
         self.assertEqual(selected, {
             "endpoint hidden": _aname(3), "endpoint e_modulation": _aname(3),
             "sweep hidden": _aname(7), "sweep e_modulation": _aname(7)})
-        report = self._report("delaydm")
         ranking = report["choices"]["sweep hidden"]["ranking"]
         self.assertEqual([row["seed"] for row in ranking], [7, 3, 9])
         by_seed = {row["seed"]: row for row in ranking}
@@ -224,7 +225,7 @@ class SiblingRunSelectionTests(unittest.TestCase):
             self.assertEqual(
                 paper_plot._multitask_sibling_aname("delaydm1", "hidden", "sweep"),
                 _aname(3))
-        ranking = self._report("delaydm")["choices"]["sweep hidden"]["ranking"]
+            ranking = self._report("delaydm")["choices"]["sweep hidden"]["ranking"]
         self.assertEqual([row["seed"] for row in ranking], [3, 7, 9])
 
     def test_runs_that_are_unconverged_unsettled_or_incomplete_are_skipped(self):

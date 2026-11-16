@@ -50,7 +50,6 @@ Usage:
                                                         # a mode run clears the folder)
 """
 import pickle
-import json
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -411,7 +410,7 @@ _set_multitask_l2(MULTITASK_L2)
 # With None each figure (endpoint or rule-cue sweep, per representation) takes
 # its own run automatically: the cached SIBLING_L2 run whose drawn fixed points
 # separate best (`_select_sibling_runs`; these figures are illustrations, so the
-# most legible run is shown and the whole ranking is printed and saved). A run
+# most legible run is shown and the whole ranking is printed). A run
 # name pins every figure of that family to one run instead.
 SIBLING_L2 = "1e4"
 DELAYDM_ANAME = None
@@ -9961,17 +9960,9 @@ def plot_backbone_probe():
         )
     else:
         stats_label = "Permutation test unavailable: need >=2 seeds/group"
-    print(f"  Backbone probe statistics: {stats_label.replace(chr(10), '; ')}")
-    from datetime import datetime
-    log_path = Path("log") / "backbone_probe.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as handle:
-        handle.write(
-            f"[{datetime.now().isoformat(timespec='seconds')}] "
-            f"feature={PRETRAINING_ADDON_NAME}; groups={PRETRAINING_GROUPS}; "
-            f"bound={PRETRAINING_BOUND}; lambda={PRETRAINING_LAMBDA}: "
-            f"{stats_label.replace(chr(10), '; ')}\n"
-        )
+    print(f"  Backbone probe statistics ({PRETRAINING_ADDON_NAME}; groups "
+          f"{PRETRAINING_GROUPS}; bound {PRETRAINING_BOUND}; lambda {PRETRAINING_LAMBDA}): "
+          f"{stats_label.replace(chr(10), '; ')}")
     fig.tight_layout(pad=0.4)
     _save_fig(fig, _pretraining_out("backbone_probe.png"), extra=f" ({'; '.join(counts)})")
 
@@ -13740,7 +13731,8 @@ def _multitask_sibling_aname(family, plot_name, figure="endpoint"):
 # family can therefore come from different networks. The endpoint figure's run also
 # serves its `_cue_interp` overlay (the overlaid sweep shares that run's basis)
 # and the gradient-method geometry figures; the sweep figure's run serves its
-# 2d and 3d views. The whole ranking is printed and saved beside the figures.
+# 2d and 3d views. The whole ranking is printed; paper_plot writes figures
+# only, no ranking or log file.
 # The cohort figures (plot_sibling_cohort_*) put every run in the full state
 # space, with no plane and no run chosen, behind these illustrations.
 _SIBLING_SELECTED_RUNS = {}
@@ -13939,22 +13931,16 @@ def _select_sibling_runs(family):
     """Rank `family`'s cached runs for every figure, report the rankings and
     return {"<figure> <representation>": run}.
 
-    The rankings are printed and saved as
-    multitask_sibling_run_scores_{delaydm,dmcgo}.json. With no scorable run
-    every figure gets the cohort's seed-0 name, so the figures print their
-    usual "Skipped" messages.
+    The rankings are printed, not saved (`_sibling_run_ranking` returns the
+    whole report). With no scorable run every figure gets the cohort's
+    seed-0 name, so the figures print their usual "Skipped" messages.
     """
     report = _sibling_run_ranking(family)
-    _ensure_out_dir()
-    report_path = _multitask_out(
-        f"sibling_run_scores_{_MULTITASK_SIBLING_OUTPUT_NAMES[family]}.json")
-    with report_path.open("w") as stream:
-        json.dump(report, stream, indent=2, allow_nan=False)
     metrics = "; ".join(f"{figure}: {metric}"
                         for figure, metric in report["metrics"].items())
     print(f"  {family} sibling runs: {len(report['runs'])}/"
           f"{report['n_candidates']} cached {report['cohort']} runs scored "
-          f"({metrics}); saved {report_path}")
+          f"({metrics})")
     for row in report["runs"]:
         scores = ", ".join(f"{figure} {plot_name} {value:.3f}"
                            for figure, by_rep in row["scores"].items()
