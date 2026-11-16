@@ -4545,31 +4545,61 @@ def plot_state_space_category_vs_untrained():
                              reference=0)
 
 
+# The plain untrained-vs-trained figure: the hidden state above the effective
+# modulation, in the footprint of ONE panel of the context-end PCA figures
+# (multitask_state_space_{hidden,mod,eff_mod}), so it can stand beside them.
+# _STATE_SPACE_STACK_BOX_IN is the side of that panel's square axes box as
+# rendered on 2026-11-16 (tight_layout sets it, so it moves by a few
+# hundredths of an inch with the tick labels; test_paper_plot_modes checks
+# the two stay within 0.1 in): the two panels are as wide and share its
+# height, less the gap between them. The margins hold the shared y label, the tick labels and the legend;
+# the saved image is cropped to its content.
+_STATE_SPACE_STACK_BOX_IN = 1.524
+_STATE_SPACE_STACK_GAP_IN = 0.12
+_STATE_SPACE_STACK_MARGINS_IN = dict(left=0.62, right=0.06, bottom=0.28, top=0.26)
+
+
 def plot_state_space_category_vs_untrained_l2e4():
     """
     Figure: multitask_state_space_category_vs_untrained_l2e4.png — the
     category separation S of the untrained networks beside the trained runs
     of the main cohort, L2 = STATE_SPACE_EXAMPLE_L2 (1e-4, the cohort of the
     example run whose config the untrained networks are built from), for the
-    hidden state and the effective modulation W * M.
+    hidden state (top) and the effective modulation W * M (bottom).
 
     A plain version of plot_state_space_category_vs_untrained, drawn like the
     other grey scatters of the paper figures: one grey point per network
     (_LESION_POINT_COLOR, none marked by its own permutation test) and the
-    median over networks as the red dash. It leaves out that figure's other
-    three cohorts, its null bands, its per-network significance (filled
-    points, counts under the ticks) and the Mann-Whitney p on the panel; that
-    p is still printed in the save message. Same data, nothing recomputed.
+    median over networks as the red dash. The two panels are stacked and
+    share the column labels (under the bottom panel), the y axis and its one
+    label; each names its representation inside the axes. Together they
+    take the footprint of one panel of the context-end PCA figures
+    (_STATE_SPACE_STACK_BOX_IN). The figure leaves out the five-column
+    figure's other three cohorts, its null bands, its per-network
+    significance (filled points, counts under the ticks) and the
+    Mann-Whitney p on the panel; that p is still printed in the save
+    message. Same data, nothing recomputed.
     """
     columns = _category_vs_untrained_columns((STATE_SPACE_EXAMPLE_L2,))
     if columns is None:
         return
     labels = ["Untrained", rf"$L_2 = {_l2_tick_label(STATE_SPACE_EXAMPLE_L2).strip('$')}$"]
     positions = np.arange(len(columns), dtype=float)
-    fig, axs = plt.subplots(1, len(_STATE_SPACE_STRUCTURE_PANELS), figsize=(3.2, 2.2),
-                            sharey=True)
-    summaries = []
-    for ax, (key, title) in zip(axs, _STATE_SPACE_STRUCTURE_PANELS):
+    box, gap, margins = (_STATE_SPACE_STACK_BOX_IN, _STATE_SPACE_STACK_GAP_IN,
+                         _STATE_SPACE_STACK_MARGINS_IN)
+    n_panels = len(_STATE_SPACE_STRUCTURE_PANELS)
+    panel_height = (box - gap * (n_panels - 1)) / n_panels
+    width = margins["left"] + box + margins["right"]
+    height = margins["bottom"] + box + margins["top"]
+    fig = plt.figure(figsize=(width, height))
+    axes, summaries = [], []
+    for index, (key, title) in enumerate(_STATE_SPACE_STRUCTURE_PANELS):
+        below = n_panels - 1 - index
+        ax = fig.add_axes([margins["left"] / width,
+                           (margins["bottom"] + below * (panel_height + gap)) / height,
+                           box / width, panel_height / height],
+                          sharey=axes[0] if axes else None)
+        axes.append(ax)
         ax.axhline(0.0, color="0.6", linewidth=0.6, zorder=1)
         scores = [np.array([run["representations"][key]["separation"]["score"]
                             for run in runs if key in run["representations"]], dtype=float)
@@ -4588,17 +4618,26 @@ def plot_state_space_category_vs_untrained_l2e4():
         ax.set_xticks(positions)
         ax.set_xticklabels(labels, fontsize=7)
         ax.set_xlim(positions[0] - 0.6, positions[-1] + 0.6)
-        ax.set_title(title, fontsize=9, pad=4)
-        ax.spines[["top", "right"]].set_visible(False)
+        ax.tick_params(axis="x", labelbottom=below == 0)
         ax.tick_params(axis="y", labelsize=7)
-    # A few round ticks, as on the other scatters (_style_stat_scatter_axes).
-    axs[0].yaxis.set_major_locator(
-        mticker.MaxNLocator(_STAT_SCATTER_MAX_TICKS, steps=[1, 2, 5, 10]))
-    axs[0].yaxis.set_major_formatter(mticker.FuncFormatter(_short_tick))
-    axs[0].set_ylabel("Category separation S", fontsize=8)
-    median = mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8,
-                              label="median over networks")
-    _state_space_figure_legend(fig, [median])
+        ax.spines[["top", "right"]].set_visible(False)
+        # The representation, inside the axes above the untrained column,
+        # whose points sit at zero.
+        ax.text(0.03, 0.97, title, transform=ax.transAxes, ha="left", va="top", fontsize=7)
+    # Round ticks on the shared axis, at most two intervals: the short
+    # panels read better with 0 and 0.1 than with 0.05 between them.
+    axes[0].yaxis.set_major_locator(mticker.MaxNLocator(2, steps=[1, 2, 5, 10]))
+    axes[0].yaxis.set_major_formatter(mticker.FuncFormatter(_short_tick))
+    # One y label for both panels, centered on the stack.
+    fig.text(0.16 / width, (margins["bottom"] + box / 2) / height, "Category separation S",
+             rotation=90, ha="center", va="center", fontsize=8)
+    if SHOW_LEGEND:
+        median = mpl.lines.Line2D([], [], color=_TREND_LINE_COLOR, linewidth=1.8,
+                                  label="median over networks")
+        fig.legend(handles=[median], loc="lower left", frameon=False, fontsize=6,
+                   handletextpad=0.4, borderaxespad=0.0,
+                   bbox_to_anchor=(margins["left"] / width,
+                                   (margins["bottom"] + box + 0.05) / height))
     _save_fig(fig, _multitask_out("state_space_category_vs_untrained_l2e4.png"),
               extra="  " + "; ".join(summaries))
 
@@ -15857,6 +15896,25 @@ def _memory_sweep_legibility(cache, plot_name):
     return -float(_cue_interp_attractor_switch_scores(drawn[:, :, plane]).max())
 
 
+def _memory_sweep_selection(plot_name):
+    """(aname, cache, run note, sweeps entry, 1-based (stimulus PC, rule PC))
+    of the run that representation `plot_name`'s MemoryPro -> MemoryAnti
+    sweep figures draw: the cached run whose drawn lines follow the cue most
+    smoothly (`_memory_best_run` with `_memory_sweep_legibility`), in the
+    plane of `_memory_sweep_pc_pair`. None, after the skip message, when no
+    run can be scored."""
+    selected = _memory_best_run(
+        f"cue_interp_{_MEMORY_ENDPOINT_TAG}_pc_projections",
+        lambda cache: _memory_sweep_legibility(cache, plot_name),
+        "largest drawn departure from the common motion {} of a panel")
+    if selected is None:
+        return None
+    aname, data, run_note = selected
+    entry = data["representations"][plot_name]
+    return aname, data, run_note, entry, _memory_sweep_pc_pair(
+        next(iter(entry["sweeps"].values())))
+
+
 def plot_multitask_memory_cue_interp():
     """
     Figures: the rule cue interpolated from MemoryPro's (alpha = 0) to
@@ -15877,15 +15935,10 @@ def plot_multitask_memory_cue_interp():
     """
     _ensure_out_dir()
     for plot_name, output_suffix in (("e_modulation", "emodulation"), ("hidden", "hidden")):
-        selected = _memory_best_run(
-            f"cue_interp_{_MEMORY_ENDPOINT_TAG}_pc_projections",
-            lambda cache, plot_name=plot_name: _memory_sweep_legibility(cache, plot_name),
-            "largest drawn departure from the common motion {} of a panel")
+        selected = _memory_sweep_selection(plot_name)
         if selected is None:
             return
-        aname, data, run_note = selected
-        entry = data["representations"][plot_name]
-        pair = _memory_sweep_pc_pair(next(iter(entry["sweeps"].values())))
+        aname, data, run_note, entry, pair = selected
         stem = f"memory_cue_interp_{_MEMORY_ENDPOINT_TAG}_{output_suffix}"
         for render, view in ((_render_multitask_cue_interp_2d, "2d"),
                              (_render_multitask_cue_interp_3d, "3d")):
@@ -15893,6 +15946,92 @@ def plot_multitask_memory_cue_interp():
                    _MEMORY_ENDPOINT_TAG, pair, _multitask_out(f"{stem}_{view}.png"),
                    f"stimulus PC and rule PC; {aname}, {run_note}",
                    rules=tuple(data["task_names"]), period_name="Stimulus")
+
+
+# Stacked view of the MemoryPro -> MemoryAnti sweep: one panel of the `2d`
+# figures from each representation, one under the other, in the footprint of
+# ONE panel of those figures. (representation, row label, which PC of its
+# sweep plane: 0 the stimulus PC, the top panel of its `2d` figure, 1 the
+# rule PC, the bottom one.)
+_MEMORY_CUE_STACK_PANELS = (("hidden", "Hidden", 0), ("e_modulation", r"W $\odot$ M", 0))
+# Side of the square axes box of one `2d` panel, in inches (constrained layout
+# of a _MULTITASK_CUE_INTERP_PANEL_IN wide column with a one-line y label);
+# test_sibling_cohort checks it against that figure. The stacked panels are
+# as wide and share its height, less the gap between them.
+_MEMORY_CUE_STACK_BOX_IN = 1.586
+_MEMORY_CUE_STACK_GAP_IN = 0.12
+# Room around the stacked panels for the two-line y labels, the title and the
+# alpha axis; the saved image is cropped to its content.
+_MEMORY_CUE_STACK_MARGINS_IN = dict(left=0.42, right=0.06, bottom=0.34, top=0.34)
+
+
+def plot_multitask_memory_cue_interp_stacked():
+    """
+    Figure: multitask_memory_cue_interp_long_stimulus_endpoint_stacked_2d.png —
+    the hidden-state and the W * M view of the MemoryPro -> MemoryAnti rule-cue
+    sweep in one compact figure.
+
+    Two panels, one under the other, each a panel of the `2d` figures of
+    plot_multitask_memory_cue_interp drawn the same way (alpha on x, one line
+    per stimulus direction in the stimulus rainbow, markers on the alpha
+    ramp): the top one is the hidden state's panel and the bottom one W * M's
+    (_MEMORY_CUE_STACK_PANELS; by default each representation's stimulus PC,
+    the top panel of its `2d` figure). The two panels together take the
+    footprint of ONE `2d` panel: the same width, about half the height each.
+    Each representation draws the run and the plane of its own `2d` figure
+    (`_memory_sweep_selection`), so the two panels can come from different
+    networks; the saved message names them. The y label names the
+    representation and the joint stimulus PC drawn.
+    """
+    _ensure_out_dir()
+    panels = []
+    for plot_name, label, row in _MEMORY_CUE_STACK_PANELS:
+        selected = _memory_sweep_selection(plot_name)
+        if selected is None:
+            return
+        panels.append((plot_name, label, row, *selected))
+    box, gap, margins = (_MEMORY_CUE_STACK_BOX_IN, _MEMORY_CUE_STACK_GAP_IN,
+                         _MEMORY_CUE_STACK_MARGINS_IN)
+    panel_height = (box - gap * (len(panels) - 1)) / len(panels)
+    width = margins["left"] + box + margins["right"]
+    height = margins["bottom"] + box + margins["top"]
+    fig = plt.figure(figsize=(width, height))
+    notes = []
+    for index, (plot_name, label, row, aname, data, run_note, entry, pair) in enumerate(panels):
+        below = len(panels) - 1 - index
+        ax = fig.add_axes([margins["left"] / width,
+                           (margins["bottom"] + below * (panel_height + gap)) / height,
+                           box / width, panel_height / height])
+        alphas = np.asarray(data["alphas"], dtype=float)
+        rules = tuple(data["task_names"])
+        base_rule, sweep = next(iter(_cue_interp_sweeps(entry, _MEMORY_FAMILY).items()))
+        proj, good = _cue_interp_sweep_arrays(
+            sweep, f"{_MEMORY_FAMILY}/cue-interp/{plot_name}/{base_rule}")
+        pc = pair[row]
+        drawn = proj[:, :, pc - 1]
+        _draw_cue_interp_sweep(
+            ax, alphas, drawn, good,
+            line_colors=_cue_interp_line_colors(
+                _cue_interp_sweep_groups(_MEMORY_FAMILY, rules, base_rule, sweep), sweep))
+        xpad = 0.1 * max(alphas.max() - alphas.min(), 1e-9)
+        ax.set_xlim(alphas.min() - xpad, alphas.max() + xpad)
+        ax.set_ylim(*_cue_interp_panel_ylim(drawn))
+        ax.set_xticks([alphas.min(), alphas.max()])
+        ax.set_xticklabels([f"{alphas.min():g}", f"{alphas.max():g}"])
+        ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(3))
+        ax.tick_params(axis="x", labelsize=7, labelbottom=below == 0)
+        ax.tick_params(axis="y", labelleft=False)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.set_ylabel(f"{label}\nStimulus PC{pc}", fontsize=6.5)
+        if index == 0:
+            ax.set_title(_cue_interp_column_title(base_rule, sweep["target_rule"]), fontsize=6.5)
+        if below == 0:
+            ax.set_xlabel(r"Rule cue $\alpha$", fontsize=8, labelpad=-2)
+        notes.append(f"{plot_name}: Joint Stimulus PC{pc} "
+                     f"({'stimulus' if row == 0 else 'rule'} PC), {aname}, {run_note}")
+    _save_fig(fig, _multitask_out(
+        f"memory_cue_interp_{_MEMORY_ENDPOINT_TAG}_stacked_2d.png"),
+        extra="  (" + "; ".join(notes) + ")")
 
 
 def plot_two_task_interp_fixed_points(period="longdelay"):
@@ -17230,6 +17369,7 @@ FIGURES_BY_MODE = {
         # behind them.
         "memory_stimulus_endpoints": plot_multitask_memory_stimulus_endpoints,
         "memory_cue_interp": plot_multitask_memory_cue_interp,
+        "memory_cue_interp_stacked": plot_multitask_memory_cue_interp_stacked,
         "sibling_cohort_ring_cosine": plot_sibling_cohort_ring_cosine,
     },
     "pretraining": {

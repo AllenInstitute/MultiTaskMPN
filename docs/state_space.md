@@ -39,6 +39,7 @@ python figures/paper_plot.py --only sibling_cohort_category_memory
 python figures/paper_plot.py --only sibling_cohort_ring_cosine
 python figures/paper_plot.py --only memory_stimulus_endpoints
 python figures/paper_plot.py --only memory_cue_interp
+python figures/paper_plot.py --only memory_cue_interp_stacked
 
 # every state-space analysis below end to end, each in its own process: shift
 # with the 5-step timecourse, the untrained controls, structure, the lesion
@@ -408,13 +409,16 @@ networks' (also in the save message). It is skipped, with the
 commands above, until the structure results hold an untrained network of
 that training setting.
 `--only state_space_category_vs_untrained_l2e4` draws a plain version for
-the main cohort, `multitask_state_space_category_vs_untrained_l2e4.png`: the
-same two panels with only the untrained networks and the L2 = 1e-4 runs,
-drawn like the other grey scatters of the paper figures, one grey point per
-network and the median as a red dash. It shows no null band and marks no
-significance (no filled points, no counts under the ticks, no p on the
-panel); the Mann-Whitney p against the untrained networks is still printed
-in the save message.
+the main cohort, `multitask_state_space_category_vs_untrained_l2e4.png`:
+the untrained networks and the L2 = 1e-4 runs only, the hidden state above
+the effective modulation, drawn like the other grey scatters of the paper
+figures, one grey point per network and the median as a red dash. The two
+stacked panels share the column labels, the y axis and its label, and
+together take the footprint of one panel of the context-end PCA figures
+(`multitask_state_space_eff_mod` and its siblings), so the figure can stand
+beside them. It shows no null band and marks no significance (no filled
+points, no counts under the ticks, no p on the panel); the Mann-Whitney p
+against the untrained networks is still printed in the save message.
 
 Distance-angle regression uses ordinary least squares with a fitted intercept:
 `angle = intercept + slope * distance`. The existing `(r, slope, p)` tuples
@@ -928,7 +932,7 @@ representation, from the eight per-direction mean endpoints of each rule:
   sweep against the shared vector and the MemoryAnti endpoint of the same
   stimulus, as for DelayDM (alpha = 1 is a trained MemoryAnti input).
 
-Three paper figures of the `two_in_multiple` mode draw this family; each
+Four paper figures of the `two_in_multiple` mode draw this family; each
 skips with the commands to run until its caches exist.
 
 - `multitask_sibling_cohort_ring_cosine`: `ring_cosine_same` of every cohort
@@ -968,6 +972,14 @@ skips with the commands to run until its caches exist.
   trials' common motion between two alphas, as a fraction of its panel
   (`_memory_sweep_legibility`), so the two representations and the endpoint
   figure can come from different networks.
+- `multitask_memory_cue_interp_long_stimulus_endpoint_stacked_2d`
+  (`memory_cue_interp_stacked`): a compact view of the same sweep, two panels
+  one under the other in the footprint of ONE panel of the `2d` figures (the
+  same width, about half the height each): the hidden state's panel above
+  W ⊙ M's, each the stimulus PC of that representation's `2d` figure (its top
+  panel; `_MEMORY_CUE_STACK_PANELS` selects the rule PC instead). Runs,
+  planes and drawing are those of the `2d` figures, so a panel is the same
+  data at another aspect; the y label names the representation and the PC.
 
 On the 25 L2 = 1e-4 runs (caches and cohort summary of 2026-11-16, every
 stage on ring 1; medians with quartiles) every endpoint settled and the

@@ -863,6 +863,52 @@ class FigureTests(unittest.TestCase):
                           "departure from the common motion 0.00 of a panel",
                           call.kwargs["extra"])
 
+    def test_stacked_sweep_figure_fits_two_panels_in_one_panel_of_the_2d_figure(self):
+        def box(axis):
+            figure = axis.figure
+            figure.canvas.draw()
+            extent = axis.get_window_extent().transformed(figure.dpi_scale_trans.inverted())
+            return extent.x0, extent.y0, extent.width, extent.height
+
+        save, _ = self._render_memory(paper_plot.plot_multitask_memory_cue_interp_stacked,
+                                      self.MEMORY_CACHES)
+        save.assert_called_once()
+        figure, path = save.call_args.args[:2]
+        self.assertEqual(
+            path.name, "multitask_memory_cue_interp_long_stimulus_endpoint_stacked_2d.png")
+        top, bottom = figure.axes
+        # The hidden state above W * M, each on the stimulus PC of its plane.
+        self.assertEqual(top.get_ylabel(), "Hidden\nStimulus PC3")
+        self.assertEqual(bottom.get_ylabel(), "W $\\odot$ M\nStimulus PC3")
+        self.assertEqual(top.get_title(), "MemoryPro stimulus\n→ MemoryAnti cue")
+        self.assertEqual(bottom.get_title(), "")
+        self.assertEqual((top.get_xlabel(), bottom.get_xlabel()), ("", r"Rule cue $\alpha$"))
+        # Only the bottom panel labels the shared alpha axis.
+        figure.canvas.draw()
+        self.assertFalse(any(label.get_visible() for label in top.get_xticklabels()))
+        self.assertEqual([label.get_text() for label in bottom.get_xticklabels()
+                          if label.get_visible()], ["0", "1"])
+        for axis in (top, bottom):
+            self.assertEqual(len(axis.lines), 8)               # one trial per direction
+            for line in axis.lines:
+                self.assertAlmostEqual(float(np.ptp(line.get_ydata())), 0.0)
+        # Together the two panels take one panel of the `2d` figure: its
+        # width each, its height between the bottom of one and the top of
+        # the other, shared equally less the gap.
+        side, gap = paper_plot._MEMORY_CUE_STACK_BOX_IN, paper_plot._MEMORY_CUE_STACK_GAP_IN
+        (top_x, top_y, top_w, top_h), (low_x, low_y, low_w, low_h) = box(top), box(bottom)
+        np.testing.assert_allclose((top_w, low_w), side, atol=1e-6)
+        np.testing.assert_allclose(top_x, low_x, atol=1e-6)
+        np.testing.assert_allclose((top_h, low_h), (side - gap) / 2, atol=1e-6)
+        np.testing.assert_allclose(top_y + top_h - low_y, side, atol=1e-6)
+        self.assertIn(_aname(8), save.call_args.kwargs["extra"])   # the `2d` figures' run
+        # The constant is the panel box of the `2d` figure.
+        save, _ = self._render_memory(paper_plot.plot_multitask_memory_cue_interp,
+                                      self.MEMORY_CACHES)
+        reference = next(call.args[0] for call in save.call_args_list
+                         if call.args[1].name.endswith("_2d.png"))
+        np.testing.assert_allclose(box(reference.axes[0])[2:], side, atol=0.02)
+
     def test_memory_figures_break_ties_by_seed_and_skip_without_a_cache(self):
         same = {8: (0.1, 0.0, True), 5: (0.1, 0.0, True)}
         for function in (paper_plot.plot_multitask_memory_stimulus_endpoints,
@@ -910,6 +956,8 @@ class FigureTests(unittest.TestCase):
         self.assertIs(mode["memory_stimulus_endpoints"],
                       paper_plot.plot_multitask_memory_stimulus_endpoints)
         self.assertIs(mode["memory_cue_interp"], paper_plot.plot_multitask_memory_cue_interp)
+        self.assertIs(mode["memory_cue_interp_stacked"],
+                      paper_plot.plot_multitask_memory_cue_interp_stacked)
 
 
 if __name__ == "__main__":

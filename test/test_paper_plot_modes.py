@@ -552,6 +552,10 @@ class PaperPlotModeTests(unittest.TestCase):
                     self.assertAlmostEqual(box.width, box.height, places=2)
                     self.assertGreater(box.width, 1.5)
                     self.assertLess(box.width, 1.75)
+                    # The stacked untrained-vs-trained figure takes about this
+                    # box (tight_layout moves it a little with the tick labels).
+                    self.assertAlmostEqual(box.width, paper_plot._STATE_SPACE_STACK_BOX_IN,
+                                           delta=0.1)
 
     @staticmethod
     def _untrained_cache(untrained=True):
@@ -1043,7 +1047,7 @@ class PaperPlotModeTests(unittest.TestCase):
             (plot or paper_plot.plot_state_space_category_vs_untrained)()
         return save_fig, output
 
-    def test_state_space_category_vs_untrained_l2e4_is_a_plain_grey_scatter(self):
+    def test_state_space_category_vs_untrained_l2e4_is_a_plain_stacked_grey_scatter(self):
         plot = paper_plot.plot_state_space_category_vs_untrained_l2e4
         save_fig, _ = self._draw_category_vs_untrained(self._structure_with_untrained(),
                                                        plot=plot)
@@ -1051,17 +1055,19 @@ class PaperPlotModeTests(unittest.TestCase):
         self.addCleanup(paper_plot.plt.close, figure)
         self.assertEqual(Path(save_fig.call_args.args[1]).name,
                          "multitask_state_space_category_vs_untrained_l2e4.png")
-        # both representations, as in the five-column figure
-        self.assertEqual([axis.get_title() for axis in figure.axes],
+        # the hidden state above the effective modulation, each named inside
+        # its axes; no panel titles
+        top, bottom = figure.axes
+        self.assertEqual([axis.texts[0].get_text() for axis in figure.axes],
                          ["Hidden state", "Eff. modulation"])
+        self.assertEqual([axis.get_title() for axis in figure.axes], ["", ""])
         grey = paper_plot.mpl.colors.to_rgb(paper_plot._LESION_POINT_COLOR)
         for axis in figure.axes:
             # the untrained networks and the L2 = 1e-4 cohort only, with no
             # counts under the ticks and no x label
-            self.assertEqual([label.get_text() for label in axis.get_xticklabels()],
-                             ["Untrained", "$L_2 = 10^{-4}$"])
             np.testing.assert_allclose(axis.get_xticks(), [0.0, 1.0])
             self.assertEqual(axis.get_xlabel(), "")
+            self.assertEqual(axis.get_ylabel(), "")          # one label for the stack
             # one collection of points per column, every point the same grey
             # without an outline: no network is marked as significant
             points = [collection for collection in axis.collections
@@ -1078,21 +1084,38 @@ class PaperPlotModeTests(unittest.TestCase):
             np.testing.assert_allclose(
                 [collection.get_segments()[0][0][1] for collection in medians], [0.001, 0.2])
             self.assertEqual(len(axis.collections), len(points) + len(medians))
-            self.assertEqual(len(axis.texts), 0)
+            self.assertEqual(len(axis.texts), 1)
             self.assertFalse(any(np.allclose(line.get_xdata(), [0.75, 0.75])
                                  for line in axis.lines))
+        # shared axes: the column labels under the bottom panel only, one y
+        # scale and one y label
+        figure.canvas.draw()
+        self.assertFalse(any(label.get_visible() for label in top.get_xticklabels()))
+        self.assertEqual([label.get_text() for label in bottom.get_xticklabels()
+                          if label.get_visible()], ["Untrained", "$L_2 = 10^{-4}$"])
+        self.assertEqual(top.get_ylim(), bottom.get_ylim())
+        self.assertEqual([text.get_text() for text in figure.texts], ["Category separation S"])
         self.assertEqual([text.get_text() for text in figure.legends[0].get_texts()],
                          ["median over networks"])
-        self.assertLess(figure.get_size_inches()[0], 5.6)
-        low, high = figure.axes[0].get_ylim()
-        self.assertLessEqual(
-            len([tick for tick in figure.axes[0].get_yticks() if low <= tick <= high]),
-            paper_plot._STAT_SCATTER_MAX_TICKS + 1)
+        # sparse round ticks: at most two intervals on the short panels
+        low, high = top.get_ylim()
+        self.assertLessEqual(len([tick for tick in top.get_yticks() if low <= tick <= high]), 3)
+        # together the two panels take one panel of the context-end PCA
+        # figures: its width each, its height from the bottom of one to the
+        # top of the other
+        side, gap = paper_plot._STATE_SPACE_STACK_BOX_IN, paper_plot._STATE_SPACE_STACK_GAP_IN
+        boxes = [axis.get_window_extent().transformed(figure.dpi_scale_trans.inverted())
+                 for axis in (top, bottom)]
+        np.testing.assert_allclose([box.width for box in boxes], side, atol=1e-6)
+        np.testing.assert_allclose([box.height for box in boxes], (side - gap) / 2, atol=1e-6)
+        np.testing.assert_allclose(boxes[0].y1 - boxes[1].y0, side, atol=1e-6)
+        np.testing.assert_allclose(boxes[0].x0, boxes[1].x0, atol=1e-6)
         # the comparison with the untrained networks stays in the save message
         expected = paper_plot._short_p(paper_plot._mann_whitney_p([0.2, 0.2], [0.0, 0.002]))
         extra = save_fig.call_args.kwargs["extra"]
-        self.assertIn("hidden: untrained n=2 median S=0.001, L2 1e-04 n=2 median S=0.200; "
-                      f"Mann-Whitney {expected}", extra)
+        for key in ("hidden", "eff_mod"):
+            self.assertIn(f"{key}: untrained n=2 median S=0.001, L2 1e-04 n=2 median S=0.200; "
+                          f"Mann-Whitney {expected}", extra)
         self.assertNotIn("L2 1e-02", extra)
         self.assertIs(paper_plot.FIGURES_BY_MODE["state_space"]
                       ["state_space_category_vs_untrained_l2e4"], plot)
