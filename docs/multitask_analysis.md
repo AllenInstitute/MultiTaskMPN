@@ -224,6 +224,61 @@ scripts and the lesion test sets generate their trials as before: they draw
 the modality per trial (`mode_input="random_batch"`), so they never had one
 modality per task.
 
+### How the problem showed, and what the old caches hold
+
+The symptom was a result that followed the order of the seeds: whether
+MemoryPro's and MemoryAnti's stimulus rows shared a row cluster was the same
+for every network within a block of consecutive seeds and changed between
+blocks. A property of 25 independently trained networks does not do that;
+the blocks are the four `run_pipeline.py` processes that clustered the
+L2 = 1e-4 cohort (the cache times show them), each with one generator seed
+and so one evaluation trial set:
+
+| Process (seeds) | MemoryPro ring | MemoryAnti ring | input | hidden | modulation | \|W\|-weighted modulation |
+|---|---|---|---|---|---|---|
+| 11 | 1 | 2 | apart | apart | apart | together |
+| 40 to 303 (8 runs) | 2 | 2 | together | together | apart | apart |
+| 379 to 692 (8 runs) | 2 | 2 | together | together | together | together |
+| 728 to 921 (8 runs) | 2 | 1 | apart | apart | apart | together in 2 of 8 (802, 921) |
+
+- **Input and hidden follow the ring exactly**: together when the two tasks
+  drew the same ring, apart otherwise, in all four processes. The stimulus
+  rings drive different input units, so a task's stimulus row carries the
+  signature of the ring its 50 trials used. In seed 749 the two input
+  clusters of the first-stimulus rows are simply the ring-2 tasks and the
+  ring-1 tasks (with DelayDM1's and DelayDM2's second stimuli, which
+  `modality_diff` puts on the other ring).
+- **Modulation needs the same ring but not only that**: seeds 40 to 303 drew
+  the same ring for both tasks and still separate them, seeds 379 to 692 do
+  not. The pattern is again constant within a process, so it comes from the
+  trial set too, by something other than the ring. That was not identified;
+  the per-task period lengths, also one draw per task and process, are a
+  candidate, since they set how much modulation accumulates. The
+  \|W\|-weighted variant is the only one that differs between networks of
+  one process.
+- **How the ring of a cached run was read**: correlate a stimulus row of the
+  saved `input_unnormalized` features with the summed squared input weights
+  of each ring, `W_initial_linear[:, 2:4]**2` and `[:, 4:6]**2` (the rings
+  are channels 2-3 and 4-5 after the two fixation channels). The task's own
+  ring gives about 0.98, the other about 0.66; DelayDM1 and DelayDM2, whose
+  rings are fixed, come out as 1 and 2. Eleven runs covering the four
+  processes were read this way; the others share their process's trials.
+- **What it did not decide**: the sign of the OM-vs-lesion association. Its
+  Spearman rho is negative in all 25 runs and its median is -0.35, -0.22,
+  -0.27 and -0.28 in the four processes; the spread within one process
+  (-0.06 to -0.40 on identical trials) exceeds the spread between them. The
+  lesion effects themselves were always measured on test sets with both
+  rings.
+
+What the change of 2026-11-15 leaves as it was: each task's period lengths
+are still one draw for its 50 trials (the per-period slicing needs one
+timing per task). They now differ from network to network instead of being
+shared by a process, so they add scatter across a cohort instead of a common
+offset, but a single network's row features still reflect one timing per
+task. A general rule from this: a per-network result that is constant across
+the networks of one process, or that changes with the order they were run
+in, points at the shared evaluation set before it points at the networks.
+
 ## Figures
 
 The `lesion` figure mode contains `lesion_heatmap`, `lesion_cluster_sizes`,
