@@ -1,9 +1,11 @@
 """Tests for the plastic layer's feedback and saturation analysis."""
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import _bootstrap  # noqa: F401
 import numpy as np
@@ -149,6 +151,30 @@ class SummaryTests(unittest.TestCase):
         trial.epochs["go1"] = (np.array([10, 11]), None)
         with self.assertRaises(ValueError):
             feedback.epoch_bounds(trial)
+
+
+class EvaluationTrialTests(unittest.TestCase):
+    def test_trials_are_seeded_and_hold_both_stimulus_modalities(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / f"param_{feedback.run_name(7, 'L21e4')}_param.json").write_text(
+                json.dumps({"task_params": {}, "train_params": {}, "net_params": {}}))
+            converted = {"rules": ["delaygo", "delayanti"], "hp": {}}
+            with patch.object(feedback, "CHECKPOINT_DIR", root), \
+                    patch.object(feedback.mpn_tasks, "convert_and_init_multitask_params",
+                                 return_value=(converted, {}, {})), \
+                    patch.object(feedback.mpn_tasks, "generate_trials_wrap",
+                                 return_value=(("x", "y", "m"), (None, ["trial"], [0, 1]))
+                                 ) as generate:
+                result = feedback._evaluation_trials(7, "L21e4", trial_seed=3)
+        self.assertEqual(result[:5], (converted, "x", "y", "m", ["trial"]))
+        np.testing.assert_array_equal(
+            converted["hp"]["rng"].rand(4), np.random.RandomState(3).rand(4))
+        self.assertEqual(feedback.TRIALS_PER_TASK % 2, 0)
+        generate.assert_called_once_with(
+            converted, feedback.TRIALS_PER_TASK, rules=["delaygo", "delayanti"],
+            mode_input="random", device="cpu", verbose=False, long_all=False,
+            balanced_stimulus_modalities=True)
 
 
 class NamingTests(unittest.TestCase):

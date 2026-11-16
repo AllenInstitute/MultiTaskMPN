@@ -30,9 +30,12 @@ discards. How much the cue changes the features themselves is the
 correlation of each row with the same row of the other condition, and the
 ratio of the summed unnormalized features.
 
-mode="random" draws each task's stimulus modalities once per batch, so all
-trials of a task share them. The script records the modality of each task's
-first stimulus, and --trial-seed draws another batch, with other draws.
+The evaluation trials give a task whose stimulus may come on either ring
+both, on half of its trials each (modulation_feedback._evaluation_trials;
+until 2026-11-15 mode="random" drew one modality per task for the whole
+batch, and --trial-seed was the way to check a result against that draw).
+The script records the modality of each task's first stimulus ("1/2" for
+such a task), and --trial-seed draws another batch.
 
 Writes multiple_tasks_diagnosis/rule_cue_ablation_{name}[_trials{s}].{pkl,png},
 with name the run's aname, plus _init{k} for an untrained network, and the
@@ -74,8 +77,8 @@ REPRESENTATIONS = {"input": "input1", "hidden": "hidden1", "modulation": "M1"}
 CONDITIONS = {"cue": "Rule cue", "no_cue": "No rule cue"}
 PAIR_KINDS = {"same_task": "Same task", "same_period": "Same period", "other": "Other"}
 FORWARD_CHUNK = 25
-# A ring counts as the stimulus modality when its mean |input| is this many
-# times the other ring's; otherwise the stimulus is in "both".
+# A ring counts as a trial's stimulus modality when its mean |input| is this
+# many times the other ring's; otherwise the trial's stimulus is in "both".
 MODALITY_RATIO = 5.0
 
 
@@ -127,19 +130,27 @@ def ring_channels(hp):
 
 
 def first_stimulus_modality(inputs, rule_indices, trials, rings):
-    """Per rule index, the modality of its trials' first stimulus ("1", "2" or
-    "both"), from the mean |input| of each ring over the stim1 epoch, or go1
-    for a task whose stimulus comes with the response (ReactPro/Anti)."""
+    """Per rule index, the modality of its trials' first stimulus: "1" or "2"
+    when every trial shows it on that ring alone, "1/2" when every trial
+    shows it on one ring but not all on the same (a task with a free modality
+    on the balanced evaluation trials), and "both" otherwise (the stimulus
+    is on both rings within a trial). Each trial is judged from the mean
+    |input| of each ring over the stim1 epoch, or go1 for a task whose
+    stimulus comes with the response (ReactPro/Anti)."""
     modality = {}
     for rule_index, trial in enumerate(trials):
         epoch = "stim1" if "stim1" in trial.epochs else "go1"
         start, end = trial_epoch_bounds(trial, epoch)
         window = inputs[rule_indices == rule_index, start:end]
-        energy = [float(window[..., ring].abs().mean()) for ring in rings]
-        if energy[0] > MODALITY_RATIO * energy[1]:
+        first, second = (window[..., ring].abs().mean(dim=(1, 2)) for ring in rings)
+        on_first = first > MODALITY_RATIO * second
+        on_second = second > MODALITY_RATIO * first
+        if bool(on_first.all()):
             modality[rule_index] = "1"
-        elif energy[1] > MODALITY_RATIO * energy[0]:
+        elif bool(on_second.all()):
             modality[rule_index] = "2"
+        elif bool((on_first | on_second).all()):
+            modality[rule_index] = "1/2"
         else:
             modality[rule_index] = "both"
     return modality
@@ -406,8 +417,8 @@ def parse_args(argv=None):
                              "with this init seed, instead of the trained one.")
     parser.add_argument("--trial-seed", type=int, default=feedback.EVALUATION_SEED,
                         help="Seed of the evaluation trials (default "
-                             f"{feedback.EVALUATION_SEED}); another seed draws other "
-                             "stimulus modalities.")
+                             f"{feedback.EVALUATION_SEED}); another seed draws another "
+                             "batch.")
     return parser.parse_args(argv)
 
 

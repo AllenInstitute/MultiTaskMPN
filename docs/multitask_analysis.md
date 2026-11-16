@@ -216,9 +216,13 @@ Every entry of the two cluster caches records `evaluation_trial_seed`,
 nothing checks for the fields, since the old results are to be deleted and
 the pipeline rerun. The same change moved the multisensory tasks' modality
 split from the global `np.random` state to the task generator, which a
-seeded trial set needs to be reproducible. The option is opt-in: the
-training scripts, the lesions and the other analyses generate their trials
-as before.
+seeded trial set needs to be reproducible. The option is opt-in. Since the
+same date the state-space evaluation trials (see
+[state_space.md](state_space.md)) and those of `modulation_feedback.py` and
+`rule_cue_ablation.py` use it too, with their own fixed seeds. The training
+scripts and the lesion test sets generate their trials as before: they draw
+the modality per trial (`mode_input="random_batch"`), so they never had one
+modality per task.
 
 ## Figures
 
@@ -1821,7 +1825,8 @@ python multiple_task/modulation_feedback.py --feature L21e4 --seed all
 ```
 
 The script steps the network through the clustering analysis's evaluation
-trials (50 per task, `mode_input="random"`, `long_all=False`), about a minute
+trials (50 per task, `mode_input="random"`, `long_all=False`, both stimulus
+modalities per task since 2026-11-15, drawn with the script's own seed), about a minute
 per network on a CPU, and records at every step mu_i of every post neuron and
 the share of synapses clipped to each bound. A finite-difference check
 through the real network step, in double precision, comes first: one step's
@@ -1859,8 +1864,8 @@ grouping for input/hidden and task grouping for modulation; this pattern
 needs confirmation with trial-time features. The persistent rule cue can
 change stimulus responses and accumulated modulation. The script runs one network, trained or untrained
 (`--untrained-init-seed`, `network_loading.build_network`), on the evaluation
-trials of `modulation_feedback.py` (50 per task, `mode_input="random"`, trial
-seed 0) twice, once as they are and once with every rule-cue channel set to
+trials of `modulation_feedback.py` (50 per task, `mode_input="random"`, both
+stimulus modalities per task since 2026-11-15, trial seed 0) twice, once as they are and once with every rule-cue channel set to
 zero (the cue and its input noise), and computes the input, hidden and
 modulation features of both as the clustering does: per task and period, the
 variance directly across trials and time, with no S1-bin averaging
@@ -1873,7 +1878,7 @@ trial end; padding is excluded. Rule-cue results are now version 3 with a
 ```bash
 python multiple_task/rule_cue_ablation.py --feature L21e4 --seed 749
 python multiple_task/rule_cue_ablation.py --feature L21e4 --seed 749 --untrained-init-seed 0
-# another evaluation batch, with other stimulus-modality draws
+# another evaluation batch
 python multiple_task/rule_cue_ablation.py --feature L21e4 --seed 749 --untrained-init-seed 0 --trial-seed 2
 ```
 
@@ -1887,11 +1892,13 @@ grouping is mostly row magnitude (no input feature varies in the memory
 periods, so those rows are zero), which a correlation discards. How much the
 cue changes the features themselves is the correlation of each row with the
 same row of the other condition and the ratio of the summed unnormalized
-features (no cue / cue). `mode="random"` draws each task's stimulus
-modalities once per batch, so all trials of a task share them; the script
-records the modality of each task's first stimulus, and `--trial-seed` draws
-another batch with other draws, so a result can be checked against the
-modality draw. It writes
+features (no cue / cue). The script records the modality of each task's
+first stimulus: "1" or "2", "both" for a stimulus on both rings within a
+trial, and "1/2" for a task with a free modality, which the evaluation
+trials show on each ring on half of its trials since 2026-11-15. Before,
+`mode="random"` drew one modality per task for the whole batch, and
+`--trial-seed`, which draws another batch, was the way to check a result
+against that draw. It writes
 `multiple_tasks_diagnosis/rule_cue_ablation_<aname>[_init<k>][_trials<s>].{pkl,png}`
 (result version 3): the distance matrices and pair means per condition and
 representation, the matched-row correlations, the feature ratios and the

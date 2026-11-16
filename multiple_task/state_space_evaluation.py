@@ -36,7 +36,8 @@ TARGET_FEATURE_REG_LAMBDAS = {
 STATE_SPACE_DIR = Path("state_space")
 NOISE_LEVEL = 0.01
 
-# Evaluation trials per task (one batch of every rule).
+# Evaluation trials per task (one batch of every rule; even, so the two
+# stimulus modalities split it equally).
 TRIALS_PER_RULE = 50
 
 # Untrained control (eval_untrained): a fresh initialization of a run's
@@ -155,7 +156,13 @@ def prepare_evaluation(netpathname, untrained_init_seed=None, evaluation_seed=EV
     with ``evaluation_seed``: TRIALS_PER_RULE per task, input noise
     NOISE_LEVEL, every task's Context aligned to ``context_ms`` (default
     FIXED_FIXATION_MS; rounded down to whole steps, see context_steps; the
-    trials do not depend on the network). Returns a dict: the run's
+    trials do not depend on the network). A task whose stimulus may come on
+    either ring gets both, on half of its trials each
+    (``balanced_stimulus_modalities``): the "random" mode alone draws one
+    modality per task for all its trials, the same in every network at one
+    seed, and the first stimulus step of two tasks then differs by 10 to 24
+    degrees more when they happened to draw different rings (docs/state_space.md).
+    Returns a dict: the run's
     identifiers (``aname``, ``hidden_size``, ``l2_info``), ``model``,
     ``state_dict``, the converted ``task_params``, the trial tensors
     ``inputs``, ``outputs`` and ``masks`` on the CPU, the ``trials`` objects,
@@ -213,6 +220,7 @@ def prepare_evaluation(netpathname, untrained_init_seed=None, evaluation_seed=EV
         device="cpu",
         verbose=False,
         fixed_fixation_steps=fixed_fixation_steps,
+        balanced_stimulus_modalities=True,
     )
     test_input, test_output, test_mask = test_data
     _, test_trials, test_rule_idxs = test_trials_extra
@@ -247,6 +255,7 @@ def prepare_evaluation(netpathname, untrained_init_seed=None, evaluation_seed=EV
         "dt_ms": dt_ms,
         "fixed_fixation_steps": fixed_fixation_steps,
         "evaluation_seed": evaluation_seed,
+        "balanced_stimulus_modalities": True,
     }
 
 

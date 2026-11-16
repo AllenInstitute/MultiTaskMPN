@@ -27,8 +27,10 @@ takes only eta h_i x_j > 1 - lam = 0.01.
 
 For one run, trained or untrained (--untrained-init-seed,
 network_loading.build_network), this script steps the network through the
-evaluation trials of the clustering analysis (multiple_task_analysis.py: 50
-trials per task, mode_input="random", long_all=False) and records at every
+kind of evaluation trials the clustering analysis uses
+(multiple_task_analysis.py: 50 trials per task, mode_input="random",
+long_all=False, both stimulus modalities per task; drawn here with this
+script's own seed, EVALUATION_SEED) and records at every
 step mu_i of every post neuron and the share of synapses clipped to each
 bound, without keeping the M trajectory. mu_i is left out (NaN) for a row
 whose synapses are all clipped, which has no mode left. A finite-difference
@@ -482,7 +484,9 @@ def print_result(payload):
 def _evaluation_trials(seed, feature, trial_seed=EVALUATION_SEED):
     """The run's config and its evaluation trials, drawn with `trial_seed`:
     (task_params_c, inputs, outputs, masks, trials per task, task index per
-    trial)."""
+    trial). A task whose stimulus may come on either ring gets both, on half
+    of its trials each (`balanced_stimulus_modalities`), as in the clustering
+    analysis; rule_cue_ablation.py reads its trials from here too."""
     with (CHECKPOINT_DIR / f"param_{run_name(seed, feature)}_param.json").open() as stream:
         raw = json.load(stream)
     np.random.seed(trial_seed)
@@ -493,7 +497,7 @@ def _evaluation_trials(seed, feature, trial_seed=EVALUATION_SEED):
     task_params_c["hp"]["rng"] = np.random.RandomState(trial_seed)
     (inputs, outputs, masks), (_, trials, rule_indices) = mpn_tasks.generate_trials_wrap(
         task_params_c, TRIALS_PER_TASK, rules=task_params_c["rules"], mode_input="random",
-        device="cpu", verbose=False, long_all=False)
+        device="cpu", verbose=False, long_all=False, balanced_stimulus_modalities=True)
     return task_params_c, inputs, outputs, masks, trials, np.asarray(rule_indices)
 
 

@@ -38,6 +38,18 @@ class RuleCueTest(unittest.TestCase):
         modality = ablation.first_stimulus_modality(inputs, np.array([0, 1, 2]), trials, rings)
         self.assertEqual(modality, {0: "1", 1: "2", 2: "both"})
 
+    def test_first_stimulus_modality_is_judged_trial_by_trial(self):
+        rings = ablation.ring_channels({"fixate_off": True, "rule_start": 6, "num_ring": 2})
+        inputs = torch.zeros(4, 6, 6)
+        inputs[0, 2:4, 2:4] = 1.0   # rule 0, trial 1: ring 1
+        inputs[1, 2:4, 4:6] = 1.0   # rule 0, trial 2: ring 2 (balanced modalities)
+        inputs[2, 2:4, 2:4] = 1.0   # rule 1, trial 1: ring 1
+        inputs[3, 2:4, 2:6] = 1.0   # rule 1, trial 2: both rings at once
+        trials = [SimpleNamespace(tdim=6, epochs={"stim1": (2, 4)})] * 2
+        modality = ablation.first_stimulus_modality(
+            inputs, np.array([0, 0, 1, 1]), trials, rings)
+        self.assertEqual(modality, {0: "1/2", 1: "both"})
+
 
 class RowWindowsTest(unittest.TestCase):
     def test_rows_are_period_major_and_skip_missing_epochs(self):

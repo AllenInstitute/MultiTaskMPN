@@ -75,6 +75,12 @@ class ContextLengthSettingTests(unittest.TestCase):
                     root / f"savednet_{ANAME}.pt", device=torch.device("cpu"), context_ms=240)
         self.assertEqual(generate.call_args.kwargs["fixed_fixation_steps"], 6)
         self.assertEqual(evaluation["fixed_fixation_steps"], 6)
+        # One timing per task, and both stimulus modalities for the tasks
+        # whose stimulus may come on either ring.
+        self.assertEqual(generate.call_args.kwargs["mode_input"], "random")
+        self.assertIs(generate.call_args.kwargs["balanced_stimulus_modalities"], True)
+        self.assertIs(evaluation["balanced_stimulus_modalities"], True)
+        self.assertEqual(evaluation_utils.TRIALS_PER_RULE % 2, 0)
 
 
 def _results(length, offset=0.0, n=2):

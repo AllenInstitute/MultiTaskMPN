@@ -114,6 +114,59 @@ analyzes only the named checkpoints and merges their entries into the results
 pickle of `DIR` (default `state_space/`) without clearing anything, which is
 how one run is tested in a scratch directory.
 
+**Stimulus modality of the evaluation trials (2026-11-15).** The tasks of
+the go, matching and category families may show their stimulus on either
+input ring. The "random" mode of the task generator, which the state-space
+trials need for its one timing per task, drew ONE modality per task for all
+50 trials, and with the common evaluation seed (42) the same one in every
+network: DelayPro, DelayAnti, ReactAnti, MemoryAnti and DMCGo on ring 1,
+ReactPro, MemoryPro, the two matching tasks and DMCNoGo on ring 2. The
+Context-end states and their PCA do not depend on it (no stimulus has been
+shown), but the first stimulus step does. In the 25 L2 = 1e-4 runs of the
+caches made before this date (medians over the runs; the 66 pairs of the
+twelve tasks with one ring), task pairs that drew different rings differ by
+10 to 24 degrees more than pairs that drew the same one, at equal
+Context-end distances:
+
+| | angle, same ring (30 pairs) | angle, different rings (36 pairs) | distance, same / different |
+|---|---|---|---|
+| hidden | 18.7 | 28.1 | 1.98 / 2.08 |
+| M | 50.4 | 74.4 | 82.0 / 82.4 |
+| W ⊙ M | 46.7 | 65.6 | 4.31 / 4.50 |
+
+That term has nothing to do with the tasks' initial conditions and does not
+average out over networks, so it lowers the distance-angle correlation: r is
+0.32 to 0.40 over all 105 task pairs and 0.81 to 0.84 over the 30 same-ring
+pairs alone (a subset, not an estimate of the corrected value). Two remedies
+were considered:
+
+1. **Both modalities per task (implemented).**
+   `state_space_evaluation.prepare_evaluation` passes
+   `generate_trials_wrap(balanced_stimulus_modalities=True)`: every task with
+   a free modality shows each ring on half of its trials, with the timing and
+   the seed unchanged. A task pair's angle is then the average over same-ring
+   and cross-ring trial pairs in fixed proportion, so no pair is favored by a
+   draw. The angle still contains the cross-ring trial pairs, an input
+   difference and not a state difference, now as a level common to the pairs
+   of free-modality tasks.
+2. **Angles between trials of one modality only (not implemented).** The
+   distance-angle average already pairs trials by stimulus index; it would
+   also require the same ring. That removes the cross-modal input difference
+   from the angle of every pair of free-modality tasks and is the cleaner
+   comparison. It changes the definition of the statistic, and pairs whose
+   rules fix different rings (DelayDM1 with DelayDM2) have no same-ring
+   trials and would need the cross-ring angle kept or their own treatment.
+
+Every state-space analysis reads these trials (shift and its timecourse,
+the Context-length sweep, structure, the lesion link, the transplant), so
+all state-space caches made before 2026-11-15 come from the one-modality
+trials and are to be regenerated together; nothing marks or checks it. The
+transplant experiment holds the input fixed by construction, so its angles
+never contained the modality term; only its trial set changes.
+`modulation_feedback.py` and `rule_cue_ablation.py`, which draw the
+clustering analysis's kind of trials, balance the modalities since the same
+date.
+
 **Multi-step direction analysis.** To supplement aligned results without
 recomputing PCA or deleting structure/lesion caches:
 
