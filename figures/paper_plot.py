@@ -4802,15 +4802,21 @@ _OVERMEMBERSHIP_MARGIN_MIN_DOUBLINGS = 1.0
 # it, so a disc spilling over its ring is enrichment and one inside it
 # depletion. The cells are those of the input and hidden clusters of the
 # example's OVERMEMBERSHIP_CIRCLE_N_BLOCKS most enriched and most depleted
-# well-supported blocks. One grey, no color: the two sizes carry the ratio.
+# well-supported blocks. The circles are one grey with no color scale: the
+# two sizes carry the ratio. The only color is the frame of the deciding
+# block, in the color the block maps give that block's OM, which for the
+# first example is the color of the OM-vs-lesion scatter's "Example block",
+# so the two figures point at one block by one color.
 OVERMEMBERSHIP_CIRCLE_N_BLOCKS = 3
 _OM_CIRCLE_FIGSIZE = (2.5, 2.5)
 _OM_CIRCLE_FILL = "0.72"
+_OM_CIRCLE_FRAME_LINEWIDTH = 1.3
 # Radius of the largest disc of the figures, in cells; the ring radius
 # follows from it, shared by the examples.
 _OM_CIRCLE_MAX_RADIUS = 0.46
-_OM_CIRCLE_LEGEND_FIGSIZE = (2.2, 0.95)
-# (observed / expected, label) of the legend figure's three examples.
+_OM_CIRCLE_LEGEND_FIGSIZE = (1.45, 1.95)
+# (observed / expected, label) of the legend figure's three examples, drawn
+# one under the other with the label beside each.
 _OM_CIRCLE_LEGEND_RATIOS = ((0.5, "half"), (1.0, "as expected"), (2.0, "twice"))
 
 
@@ -4992,21 +4998,24 @@ def _om_circle_patches(ax, center, ratio, ring_radius):
                                     linewidth=0.7, zorder=3))
 
 
-def _plot_om_circle_map(ratio, shown, ring_radius, deciding, title, out_path, extra=""):
+def _plot_om_circle_map(ratio, shown, ring_radius, deciding, title, out_path, extra="",
+                        frame_color="k"):
     """The circle map of one synapse cluster: `ratio` (observed/expected) and
     `shown` are (inputs, hiddens) over the selected clusters in their drawn
     order, x the input (pre) cluster, y the hidden (post) cluster. Each shown
     block is drawn by _om_circle_patches with one `ring_radius`; a block
     that is not shown (too few expected synapses) stays empty, which no
     drawn block does, since even one without a synapse keeps its ring. The
-    `deciding` block (input, hidden) is framed. The axes carry no cluster
-    names; the caller's saved message lists them."""
+    `deciding` block (input, hidden) is framed in `frame_color` (the caller
+    passes the block maps' color of that block's OM). The axes carry no
+    cluster names; the caller's saved message lists them."""
     n_in, n_hid = ratio.shape
     fig, ax = plt.subplots(figsize=_OM_CIRCLE_FIGSIZE)
     for i, j in zip(*np.nonzero(shown)):
         _om_circle_patches(ax, (i + 0.5, j + 0.5), ratio[i, j], ring_radius)
     ax.add_patch(mpl.patches.Rectangle((deciding[0] + 0.02, deciding[1] + 0.02), 0.96, 0.96,
-                                       facecolor="none", edgecolor="k", linewidth=0.9, zorder=4))
+                                       facecolor="none", edgecolor=frame_color,
+                                       linewidth=_OM_CIRCLE_FRAME_LINEWIDTH, zorder=4))
     ax.set_xlim(0, n_in)
     ax.set_ylim(n_hid, 0)
     ax.set_aspect("equal")
@@ -5022,18 +5031,20 @@ def _plot_om_circle_map(ratio, shown, ring_radius, deciding, title, out_path, ex
 
 def _save_om_circle_legend(out_path):
     """The circle maps' key as its own small figure (only when legends are
-    on): the two circles at _OM_CIRCLE_LEGEND_RATIOS."""
+    on): the circles at _OM_CIRCLE_LEGEND_RATIOS one under the other, each
+    with its label to the right, under the line that names ring and disc."""
     if not SHOW_LEGEND:
         return
+    n_rows = len(_OM_CIRCLE_LEGEND_RATIOS)
     fig, ax = plt.subplots(figsize=_OM_CIRCLE_LEGEND_FIGSIZE)
     ring_radius = _OM_CIRCLE_MAX_RADIUS / np.sqrt(max(ratio for ratio, _ in _OM_CIRCLE_LEGEND_RATIOS))
     for position, (ratio, label) in enumerate(_OM_CIRCLE_LEGEND_RATIOS):
-        _om_circle_patches(ax, (position + 0.5, 0.5), ratio, ring_radius)
-        ax.text(position + 0.5, 1.05, label, ha="center", va="top", fontsize=6)
-    ax.text(len(_OM_CIRCLE_LEGEND_RATIOS) / 2, -0.08,
-            "ring: expected synapses; disc: observed (area)", ha="center", va="bottom", fontsize=6)
-    ax.set_xlim(0, len(_OM_CIRCLE_LEGEND_RATIOS))
-    ax.set_ylim(1.3, -0.3)
+        _om_circle_patches(ax, (0.5, position + 0.5), ratio, ring_radius)
+        ax.text(1.15, position + 0.5, label, ha="left", va="center", fontsize=6)
+    ax.text(0.0, -0.15, "ring: expected synapses\ndisc: observed (area)", ha="left", va="bottom",
+            fontsize=6)
+    ax.set_xlim(0, 2.9)
+    ax.set_ylim(n_rows + 0.05, -0.9)
     ax.set_aspect("equal")
     ax.axis("off")
     _save_fig(fig, out_path, extra="  (key of overmembership_examples_circles)")
@@ -5257,8 +5268,10 @@ def plot_overmembership_examples():
     example's OVERMEMBERSHIP_CIRCLE_N_BLOCKS most enriched and most depleted
     well-supported blocks (_om_circle_clusters), in the block map's axis
     order; a cell below the ranking threshold stays empty and the deciding
-    block is framed. These are the example's most extreme blocks, a
-    fraction of its synapses that the saved message states; the key is
+    block is framed in the block maps' color of its OM (for example 1 the
+    color of the scatter's example block, the same block). These are the
+    example's most extreme blocks, a fraction of its synapses that the saved
+    message states; the key, its three circles one under the other, is
     saved as `overmembership_examples_circles_legend` when legends are on.
 
     `overmembership_examples_overview` places the examples among the other
@@ -5357,6 +5370,9 @@ def plot_overmembership_examples():
     largest = max((ratios[index][np.ix_(rows, cols)][supported[index][np.ix_(rows, cols)]].max()
                    for _, index, _, rows, cols in circle_maps), default=1.0)
     ring_radius = _OM_CIRCLE_MAX_RADIUS / np.sqrt(max(1.0, float(largest)))
+    # The frame of each deciding block takes the block maps' color of its OM;
+    # for example 1 that is the color of the scatter's "Example block".
+    frame_cmap, frame_norm = _om_block_cmap_norm(vmax)
     for rank, cluster_index, top, rows, cols in circle_maps:
         grid = np.ix_(rows, cols)
         shown = supported[cluster_index][grid]
@@ -5366,6 +5382,8 @@ def plot_overmembership_examples():
             drawn_ratio, shown, ring_radius, (rows.index(top[0]), cols.index(top[1])),
             f"Synapse cluster C{cluster_ids[cluster_index]}",
             _multitask_out(f"overmembership_examples_circles_{rank}.png"),
+            frame_color=frame_cmap(frame_norm(
+                float(ratios[cluster_index][top[0], top[1]]) - 1.0)),
             extra=(f"  ({ANAME}) example {rank}: synapse cluster C{cluster_ids[cluster_index]}, "
                    f"the clusters of its {OVERMEMBERSHIP_CIRCLE_N_BLOCKS} most enriched and "
                    f"{OVERMEMBERSHIP_CIRCLE_N_BLOCKS} most depleted blocks expecting >= "
@@ -5375,7 +5393,7 @@ def plot_overmembership_examples():
                    f"{drawn_observed / observed[cluster_index].sum():.0%} of the cluster's "
                    f"synapses; ring: expected count, disc area: observed/expected "
                    f"({drawn_ratio[shown].min():.2f} to {drawn_ratio[shown].max():.2f}); "
-                   f"framed: deciding block"))
+                   f"framed in its block-map color: deciding block"))
     if circle_maps:
         _save_om_circle_legend(_multitask_out("overmembership_examples_circles_legend.png"))
     # Every ranked cluster, by size and by the peak OM that ranks it. A
@@ -5841,6 +5859,8 @@ def plot_om_vs_lesion():
     overmembership_examples_supported_1 (its most enriched supported block) is
     one of the scatter's points; it is drawn on top in the color the
     examples' block maps give its OM, with a black ring (_om_scatter_highlight).
+    Each panel has the axes box of the single-panel lesion scatters
+    (_LESION_SCATTER_BOX_INCHES; the figure is sized to hold them).
     """
     _ensure_out_dir()
     run_dir, aname = _om_scatter_run()
@@ -5889,7 +5909,9 @@ def plot_om_vs_lesion():
         print(f"  om_vs_lesion_scatter [{saved['mode']}, {side}]: Spearman rho={rho:.3f}, "
               f"p_perm={p_perm:.3f} ({panel['n_perm']} saved permutations, "
               f"{panel['n_clusters']} clusters, {valid.sum()} points)")
-    fig.tight_layout()
+    # The two panels at the axes box of the single-panel lesion scatters;
+    # their statistics legend is taller, so tight_layout alone leaves less.
+    _fit_axes_boxes(fig, list(axes), _LESION_SCATTER_BOX_INCHES)
     out_path = _multitask_out("om_vs_lesion_scatter.png")
     run_note = ("" if aname == LESION_ANAME else
                 f"; the OM examples' run, not the lesion example {LESION_ANAME}")
@@ -8345,6 +8367,31 @@ CLUSTER_CORR_Y_DEFINITION = "one_minus_pearson_corr_of_z_scored_effect_profiles"
 # as wide but taller.
 _LESION_SCATTER_FIGSIZE = (2.5, 2.5)
 _TASK_SPECIFICITY_FIGSIZE = (2.5, 3.0)
+# Side of the square axes box of those scatters, in inches: the box
+# tight_layout gives a single panel of _LESION_SCATTER_FIGSIZE with a two-line
+# y label (the single-run causal scatters). Panels that tight_layout would
+# size differently are brought to it, so the figures can be composed at one
+# scale: the seeds dot plot sets the box (no legend on top would enlarge it),
+# the two-panel OM scatter grows its figure (_fit_axes_boxes; its taller
+# statistics legend would shrink it). test_causal_vs_activity_figures checks
+# the constant against the scatters.
+_LESION_SCATTER_BOX_INCHES = 1.49
+
+
+def _fit_axes_boxes(fig, axes, side):
+    """Lay out `fig` (tight_layout) with the square boxes of `axes`, one row
+    of equal panels, `side` inches wide: the figure grows or shrinks by the
+    difference, once per panel in width and once in height, so the labels
+    and legends keep their room and only the boxes change."""
+    for _ in range(4):
+        fig.tight_layout()
+        fig.draw_without_rendering()          # applies the square box aspect
+        width, height = fig.get_size_inches()
+        box = axes[0].get_position()
+        delta = side - min(box.width * width, box.height * height)
+        if abs(delta) < 1e-3:
+            break
+        fig.set_size_inches(width + len(axes) * delta, height + delta)
 
 
 def _seeds_legend(ax, handles, n_runs, note=None):
@@ -8837,11 +8884,8 @@ _CAUSAL_SEEDS_JITTER = 0.15        # max horizontal spread of a column's points
 _CAUSAL_SEEDS_MEDIAN_HALF_WIDTH = 0.27
 _CAUSAL_SEEDS_POINT_SIZE = 20
 _CAUSAL_SEEDS_LEGEND_FIGSIZE = (1.6, 0.7)
-# Side of the panel's square axes box, in inches: the box tight_layout gives
-# the single-run causal scatters at _LESION_SCATTER_FIGSIZE (their statistics
-# legend takes the top), so the seeds panel beside them is drawn at one scale.
-# test_causal_vs_activity_figures checks the two still agree.
-_CAUSAL_SEEDS_BOX_INCHES = 1.49
+# The panel's square axes box is the scatters' (_LESION_SCATTER_BOX_INCHES),
+# so the seeds panel beside them is drawn at one scale.
 _CAUSAL_SEEDS_BOX_ORIGIN = (0.3, 0.2)    # lower-left corner, figure fraction
 
 
@@ -8956,7 +9000,7 @@ def plot_causal_vs_activity_seeds():
     ax.set_xticklabels([side.capitalize() for side in sides],
                        fontsize=_STAT_SCATTER_TICK_FONTSIZE)
     ax.set_xlim(-0.55, max(_CAUSAL_SEEDS_POSITIONS[side] for side in sides) + 0.55)
-    ax.set_ylabel(r"Task-level Mantel $\rho$" + "\n(activity vs lesion similarity)", fontsize=7)
+    ax.set_ylabel(r"Task-level Mantel $\rho$" + "\n(activity vs lesion similarity)", fontsize=8)
     ax.spines[["top", "right"]].set_visible(False)
     ax.tick_params(axis="y", labelsize=_STAT_SCATTER_TICK_FONTSIZE)
     # A fixed square box instead of tight_layout, which would hand this panel
@@ -8964,7 +9008,7 @@ def plot_causal_vs_activity_seeds():
     # cropped to its content, so the margins only have to hold the labels.
     width, height = _LESION_SCATTER_FIGSIZE
     ax.set_position([*_CAUSAL_SEEDS_BOX_ORIGIN,
-                     _CAUSAL_SEEDS_BOX_INCHES / width, _CAUSAL_SEEDS_BOX_INCHES / height])
+                     _LESION_SCATTER_BOX_INCHES / width, _LESION_SCATTER_BOX_INCHES / height])
     _save_causal_seeds_legend(_multitask_out("causal_vs_activity_seeds_legend.png"))
     _save_fig(fig, _multitask_out("causal_vs_activity_seeds.png"),
               extra="  " + ", ".join(

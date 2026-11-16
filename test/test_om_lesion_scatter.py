@@ -238,6 +238,15 @@ class OmLesionScatterTests(unittest.TestCase):
                 corr = entry["profile_correlation"]
                 right = figure.axes[1]
                 self.assertIn("Pearson r", right.get_ylabel())
+                # Both panels have the axes box of the single-panel lesion
+                # scatters, so the figures compose at one scale.
+                figure.canvas.draw()
+                for panel_axis in figure.axes:
+                    extent = panel_axis.get_window_extent().transformed(
+                        figure.dpi_scale_trans.inverted())
+                    np.testing.assert_allclose(
+                        (extent.width, extent.height),
+                        paper_plot._LESION_SCATTER_BOX_INCHES, atol=0.01)
                 self.assertLess(right.get_ylim()[0], -1)
                 self.assertGreater(right.get_ylim()[1], 1)
                 np.testing.assert_allclose(right.collections[0].get_offsets(),

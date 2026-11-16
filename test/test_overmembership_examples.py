@@ -359,6 +359,15 @@ class OvermembershipExampleTests(unittest.TestCase):
             else:
                 self.assertIsNone(cells[center][1])     # a ring alone: no synapse
         np.testing.assert_allclose(frame, (0.02, 0.02))  # the deciding block, C4 x C2
+        # Framed in the block maps' color of its OM (8 - 1, the red end of the
+        # examples' scale), the color the OM-vs-lesion scatter gives its
+        # example block.
+        rectangle, = [patch_ for patch_ in axis.patches
+                      if isinstance(patch_, paper_plot.mpl.patches.Rectangle)]
+        cmap, norm = paper_plot._om_block_cmap_norm(7.0)
+        np.testing.assert_allclose(rectangle.get_edgecolor(), cmap(norm(7.0)))
+        self.assertFalse(np.allclose(rectangle.get_edgecolor()[:3], 0.0))   # not black
+        self.assertEqual(rectangle.get_facecolor()[3], 0.0)
         extra = first.kwargs["extra"]
         self.assertIn("example 1: synapse cluster C3", extra)
         self.assertIn("3 most enriched and 3 most depleted blocks expecting >= 5 synapses: "
@@ -374,13 +383,21 @@ class OvermembershipExampleTests(unittest.TestCase):
         # The key: three examples of the two circles, saved with the legends.
         key = saved["multitask_overmembership_examples_circles_legend.png"].args[0].axes[0]
         key_cells, key_discs = {}, []
+        # One under the other: one column, three rows, the label to the right.
+        self.assertEqual({round(float(patch_.center[0]), 6) for patch_ in key.patches}, {0.5})
         for patch_ in key.patches:
-            key_cells.setdefault(round(float(patch_.center[0]), 6), []).append(float(patch_.radius))
+            key_cells.setdefault(round(float(patch_.center[1]), 6), []).append(float(patch_.radius))
         self.assertEqual(sorted(key_cells), [0.5, 1.5, 2.5])
         for (ratio, label), radii in zip(paper_plot._OM_CIRCLE_LEGEND_RATIOS, key_cells.values()):
             self.assertAlmostEqual(min(radii) / max(radii), np.sqrt(min(ratio, 1 / ratio)))
             key_discs.append(label)
         self.assertEqual([text.get_text() for text in key.texts][:3], key_discs)
+        for row, text in enumerate(key.texts[:3]):
+            self.assertEqual(text.get_position(), (1.15, row + 0.5))
+            self.assertEqual(text.get_ha(), "left")
+        width, height = saved["multitask_overmembership_examples_circles_legend.png"].args[0] \
+            .get_size_inches()
+        self.assertGreater(height, width)               # a tall key
 
     def test_overview_places_the_examples_among_all_ranked_clusters(self):
         """One column per cluster with a well-supported block, at its

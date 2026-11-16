@@ -213,6 +213,12 @@ class CausalVsActivityFigureTests(unittest.TestCase):
         reference = scatter["multitask_causal_vs_activity_tasks_hidden.png"]
         np.testing.assert_allclose(panel.get_size_inches(), reference.get_size_inches())
         np.testing.assert_allclose(box(panel), box(reference), atol=0.01)
+        # The shared box constant is the box tight_layout gives the scatters.
+        np.testing.assert_allclose(box(reference), paper_plot._LESION_SCATTER_BOX_INCHES,
+                                   atol=0.01)
+        # Axis labels at the scatters' 8 pt.
+        self.assertEqual(panel.axes[0].yaxis.label.get_fontsize(), 8)
+        self.assertEqual(reference.axes[0].yaxis.label.get_fontsize(), 8)
         self.assertEqual(set(bare), {"multitask_causal_vs_activity_seeds.png"})
 
     def test_modulation_side_gets_its_own_figure_and_rejects_another_lesion_mode(self):

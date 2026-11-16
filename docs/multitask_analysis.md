@@ -438,13 +438,16 @@ bars. The cells are those of the input and hidden clusters of the example's
 three most enriched and three most depleted well-supported blocks
 (`OVERMEMBERSHIP_CIRCLE_N_BLOCKS`, `paper_plot._om_circle_clusters`), in the
 block map's axis order; a cell expecting fewer than five synapses stays empty,
-and the deciding block is framed. In the L21e4 run that is a 5 × 5 grid for C3
+and the deciding block is framed in the block maps' color of its OM, the one
+color of the figure: for the first example it is the color of the
+OM-vs-lesion scatter's "Example block", which is the same block. In the L21e4 run that is a 5 × 5 grid for C3
 (21 blocks drawn, holding 19% of its synapses, ratios 0 to 3.86) and a 3 × 5
 grid for C11, whose three most enriched blocks share one input cluster (12
 drawn, 16%, ratios 0.01 to 3.75). The blocks are the most extreme ones by
 construction, so the figure must not be read as where the cluster's synapses
 are; the saved message states the selection and the share. The key is
-`overmembership_examples_circles_legend` (saved with the legends).
+`overmembership_examples_circles_legend` (saved with the legends): the three
+example circles one under the other, each with its label to the right.
 
 `overmembership_examples_overview` shows where the examples stand among the
 synapse clusters: one column per cluster with a well-supported block, at its
@@ -475,7 +478,10 @@ well-supported blocks sit, not whether a cluster is enriched overall; and
 nothing here is tested. A figure caption should call the examples the most
 enriched ones.
 
-The OM-versus-lesion-profile figure has two panels with the same OM x axis.
+The OM-versus-lesion-profile figure has two panels with the same OM x axis,
+each with the square axes box of the single-panel lesion scatters (1.49 in,
+`_LESION_SCATTER_BOX_INCHES`; the figure grows to hold them,
+`_fit_axes_boxes`), so it composes with them at one scale.
 The left panel retains task-profile L1/T distance, which includes differences
 in overall damage. The right panel uses Pearson correlation between the two
 random-minus-lesion task vectors, subtracting each vector's task mean and
