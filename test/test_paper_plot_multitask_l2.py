@@ -129,15 +129,16 @@ class MultitaskL2ControlTests(unittest.TestCase):
             os.chdir(previous_cwd)
 
     def test_import_resolves_both_categories_from_the_default_cohort(self):
-        clustering = aname(86)
-        lesion = aname(196)
+        """The default cohort is L2 = 1e-4, the training script's default setting."""
+        clustering = aname(196, "1e4")
+        lesion = aname(921, "1e4")
         write_cache(self.root / "multiple_tasks_analysis", clustering, "cluster_info")
-        write_cache(self.root / "multiple_tasks_analysis", aname(196, "1e4"), "cluster_info")
+        write_cache(self.root / "multiple_tasks_analysis", aname(86), "cluster_info")
         write_cache(self.root / "multiple_tasks_perf", lesion)
         write_cache(self.root / "multiple_tasks_norm", lesion, "normalized_lesion_effects")
-        write_cache(self.root / "multiple_tasks_norm", aname(921, "1e4"), "normalized_lesion_effects")
+        write_cache(self.root / "multiple_tasks_norm", aname(196), "normalized_lesion_effects")
         module = self.load_module()
-        self.assertEqual(module.MULTITASK_L2, "1e3")
+        self.assertEqual(module.MULTITASK_L2, "1e4")
         self.assertEqual(module.ANAME, clustering)
         self.assertEqual(module.LESION_ANAME, lesion)
         self.assertEqual(module.DATA_DIR, Path("multiple_tasks_analysis") / clustering)
@@ -152,13 +153,13 @@ class MultitaskL2ControlTests(unittest.TestCase):
                              {"variance_method": "trial_time", "source": lesion})
             self.assertEqual([d.name for d in module._find_experiment_dirs()], [clustering])
             self.assertEqual([d.name for d in module._sibling_run_dirs()], [lesion])
-            module._set_multitask_l2("1e4")
+            module._set_multitask_l2("1e3")
         finally:
             os.chdir(previous_cwd)
-        self.assertEqual(module.MULTITASK_L2, "1e4")
-        self.assertEqual(module.ANAME, aname(196, "1e4"))
-        self.assertEqual(module.LESION_ANAME, aname(921, "1e4"))
-        self.assertEqual(module.LESION_NORM_DIR, Path("multiple_tasks_norm") / aname(921, "1e4"))
+        self.assertEqual(module.MULTITASK_L2, "1e3")
+        self.assertEqual(module.ANAME, aname(86))
+        self.assertEqual(module.LESION_ANAME, aname(196))
+        self.assertEqual(module.LESION_NORM_DIR, Path("multiple_tasks_norm") / aname(196))
 
     def test_both_categories_always_share_the_selected_cohort(self):
         """Whatever seeds are cached, clustering and lesion runs come from one L2."""
@@ -233,9 +234,11 @@ class MultitaskL2ControlTests(unittest.TestCase):
         modes = {mode: {name: Mock(name=name) for name in group}
                  for mode, group in paper_plot.FIGURES_BY_MODE.items()}
         figures = {name: fn for group in modes.values() for name, fn in group.items()}
+        other = next(l2 for l2 in paper_plot.MULTITASK_L2_CHOICES
+                     if l2 != paper_plot.MULTITASK_L2)
         cases = ((["lesion"], [], []),
                  (["--multitask-l2", paper_plot.MULTITASK_L2, "lesion"], [], []),
-                 (["--multitask-l2", "1e4", "lesion"], ["1e4"], []),
+                 (["--multitask-l2", other, "lesion"], [other], []),
                  (["--control-pool", "all", "lesion"], [], []),
                  # Another pool re-resolves the lesion run under its cache root.
                  (["--control-pool", "responsive", "lesion"], [paper_plot.MULTITASK_L2],

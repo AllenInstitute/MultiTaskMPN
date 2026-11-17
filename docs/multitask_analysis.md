@@ -158,7 +158,7 @@ same default network architecture and modulation bounds. The feature tags are
 `L21e4lam0.9`; their saved `m_time_scale` values must be 400000, 40000, 4000,
 2000, 800 and 400 ms respectively. The lambda = 0.999 and 0.98 cohorts were
 added on 2026-11-10 and 0.9999 (`--m-time-scale 400000`) on 2026-11-11.
-At 0.999 (the script's `M_TIME_SCALE = 40000`) the time constant is 40 s, far
+At 0.999 (`--m-time-scale 40000`; the script's own default is 4000 ms, the L21e4 setting, again since 2026-11-17) the time constant is 40 s, far
 longer than a trial, so M barely decays within one (M is reset at every trial
 onset, so nothing carries between trials at any retention). Train another
 retention without editing the script, e.g.
@@ -366,8 +366,10 @@ under `--control-pool`, see [Activity-matched controls](#activity-matched-contro
 
 The `multiple_tasks` and `lesion` figures read one L2 cohort of the
 `everything_seed*_L2<l2>+hidden300+batch128+angle` runs, selected by
-`MULTITASK_L2` in `paper_plot.py` (currently `1e3`) or per invocation with
-`python figures/paper_plot.py --multitask-l2 1e4 multiple_tasks lesion`. The aggregate
+`MULTITASK_L2` in `paper_plot.py` (`1e4`, the training default, since
+2026-11-17; `1e3` before) or per invocation with
+`python figures/paper_plot.py --multitask-l2 1e3 multiple_tasks lesion`. The
+commands below that pass `--multitask-l2 1e4` name the default explicitly. The aggregate
 figures (overmembership, `cluster_corr_vs_lesion_seeds`, `om_vs_lesion_seeds`,
 `plasticity_share_cohort_violin`,
 `causal_vs_activity_seeds`, `task_specificity_seeds`,

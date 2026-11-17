@@ -459,7 +459,9 @@ class TaskSharingCohortTests(TaskSpecificityFigureTests):
         for seed, (hidden, modulation, p_rule) in specs.items():
             aname = re.sub(r"seed\d+", f"seed{seed}", paper_plot.LESION_ANAME)
             run_dir = base / aname
-            run_dir.mkdir()
+            # The designated run (paper_plot.LESION_ANAME, resolved from the real
+            # caches at import) may be one of these seeds; its folder then exists.
+            run_dir.mkdir(exist_ok=True)
             with (run_dir / f"task_specificity_{aname}.pkl").open("wb") as f:
                 pickle.dump(self.run_cache(aname, hidden, modulation, p_rule), f)
 

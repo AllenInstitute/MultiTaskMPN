@@ -18,9 +18,13 @@ class PretrainingAnalysisPipelineTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.log_dir = Path(directory.name)
         real_tee = pipeline.tee_output
-        self.logger = self.enterContext(patch.object(
+        # start/addCleanup instead of TestCase.enterContext, which needs
+        # Python 3.11; the project environment runs 3.9.
+        patcher = patch.object(
             pipeline, "tee_output",
-            side_effect=lambda name, log_dir: real_tee(name, log_dir=self.log_dir)))
+            side_effect=lambda name, log_dir: real_tee(name, log_dir=self.log_dir))
+        self.logger = patcher.start()
+        self.addCleanup(patcher.stop)
 
     def read_log(self):
         paths = list(self.log_dir.glob("pretraining_analysis_pipeline_*.log"))

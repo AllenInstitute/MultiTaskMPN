@@ -25,10 +25,11 @@ Usage:
     python figures/paper_plot.py one_task              # only the one-task figures
     python figures/paper_plot.py multiple_tasks        # clustering and network structure
     python figures/paper_plot.py lesion                # only the lesion figures
-    python figures/paper_plot.py --multitask-l2 1e4 multiple_tasks lesion
-                                                        # both from the L2=1e-4 cohort
-                                                        # (default cohort: MULTITASK_L2)
-    python figures/paper_plot.py lesion --multitask-l2 1e4 --control-pool responsive
+    python figures/paper_plot.py --multitask-l2 1e3 multiple_tasks lesion
+                                                        # both from the L2=1e-3 cohort
+                                                        # (default cohort: MULTITASK_L2,
+                                                        # the L2=1e-4 default setting)
+    python figures/paper_plot.py lesion --control-pool responsive
                                                         # lesion figures from the
                                                         # activity-matched controls,
                                                         # into paper_plot_responsive/
@@ -213,8 +214,10 @@ OUT_DIR = Path(_OUT_DIR_NAME)
 # ── Multi-task (one full multi-task network) ──
 # The `multiple_tasks` (clustering) and `lesion` figures read ONE L2 cohort of
 # the multi-task runs, everything_seed{seed}_L2{l2}+hidden300+batch128+angle.
-# MULTITASK_L2 is the control: change it here, or pass `--multitask-l2 1e4` on
-# the command line. Everything below follows it:
+# MULTITASK_L2 is the control: change it here, or pass `--multitask-l2 1e3` on
+# the command line. The default is 1e4, the training script's default setting
+# (L21e4, the cohort the paper's multi-task figures describe; it was 1e3
+# until 2026-11-17). Everything below follows it:
 #   * the aggregate figures (overmembership, the `*_seeds` figures) summarize
 #     every cached seed of that cohort (`_find_experiment_dirs`,
 #     `_sibling_run_dirs`);
@@ -223,7 +226,7 @@ OUT_DIR = Path(_OUT_DIR_NAME)
 #     the cached seed with the most complete caches (ties: lowest seed). Each
 #     category resolves once, so related figures never mix runs, and a run
 #     is never taken from another L2 cohort.
-MULTITASK_L2 = "1e3"
+MULTITASK_L2 = "1e4"
 MULTITASK_L2_CHOICES = ("1e3", "1e4")
 _MULTITASK_RUN_SUFFIX = "+hidden300+batch128+angle"
 MULTITASK_ANALYSIS_ROOT = Path("multiple_tasks_analysis")

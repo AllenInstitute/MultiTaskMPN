@@ -125,7 +125,9 @@ class PlasticityShareCohortTests(PlasticityShareFigureTests):
             cache["task_median_share"] = np.array([np.nanmedian(row) if np.isfinite(row).any()
                                                    else np.nan for row in cache["share"]])
             run_dir = base / aname
-            run_dir.mkdir()
+            # The designated run (paper_plot.LESION_ANAME, resolved from the real
+            # caches at import) may be one of these seeds; its folder then exists.
+            run_dir.mkdir(exist_ok=True)
             with (run_dir / f"plasticity_share_var-weighted-unnormalized_{aname}.pkl").open("wb") as f:
                 pickle.dump(cache, f)
 

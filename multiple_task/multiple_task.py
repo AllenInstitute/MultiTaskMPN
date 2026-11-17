@@ -122,12 +122,14 @@ M_BOUNDS = (-1.0, 1.0)
 # 40000 ms -> L21e4lam0.999;
 # 2000 ms -> L21e4lam0.98; 800 ms -> L21e4lam0.95; 400 ms -> L21e4lam0.9, or
 # L21e4mb2lam0.9 with bounds (-2, 2)), so such runs never share a name, or an
-# exact --feature filter, with the lambda = 0.99 cohorts. The current value
-# trains the lambda = 0.999 cohort: a 40 s time constant, far longer than a
-# trial, so M barely decays within one. --m-time-scale overrides it for one
-# invocation, so another retention is trained without editing this file.
+# exact --feature filter, with the lambda = 0.99 cohorts. The value here is
+# the default setting, 4000 ms: a run without arguments grows the L21e4
+# cohort every analysis reads by default (it was 40000 from 2026-11-10 to
+# 2026-11-17, while the lambda = 0.999 cohort was trained). --m-time-scale
+# overrides it for one invocation, so another retention is trained without
+# editing this file (e.g. --m-time-scale 40000 for lambda = 0.999).
 DT_MS = 40
-M_TIME_SCALE = 40000
+M_TIME_SCALE = 4000
 LEGACY_M_LAMBDA = 0.99
 train = True                    # whether or not to train the network
 verbose = True
