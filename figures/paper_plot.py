@@ -50,7 +50,10 @@ Usage:
                                                         # (other figures are kept;
                                                         # a mode run clears the folder)
 """
+import json
 import pickle
+import re
+
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -293,7 +296,6 @@ def _cached_multitask_seeds(l2, roots):
     least one pickle carrying its name (legacy spellings included); empty
     directories and pickles of other runs do not count.
     """
-    import re
 
     seed_pattern = re.compile(
         r"everything_seed(\d+)_" + re.escape(f"{multitask_feature(l2)}{_MULTITASK_RUN_SUFFIX}"))
@@ -337,7 +339,6 @@ def multitask_cohort_of(aname):
     """Cohort tag of a multi-task run name ('L21e3' for
     everything_seed86_L21e3+hidden300+batch128+angle), or None when the name
     is not a run of this run family."""
-    import re
 
     match = re.fullmatch(r"everything_seed\d+_(L2[^+]*)" + re.escape(_MULTITASK_RUN_SUFFIX),
                          str(aname))
@@ -484,8 +485,7 @@ ONETASK_RNN_ANAME = "delaygo_seed459_rnnL21e4+hidden200+batch128+angle"
 def _twotask_seed_tag():
     """Seed substring of TWOTASK_ANAME (e.g. 'seed894'), for figure filenames.
     Falls back to the full aname if no 'seed<N>' token is present."""
-    import re as _re
-    m = _re.search(r"seed\d+", TWOTASK_ANAME)
+    m = re.search(r"seed\d+", TWOTASK_ANAME)
     return m.group(0) if m else TWOTASK_ANAME
 
 
@@ -494,10 +494,9 @@ def _read_twotask_n_stim(default=8):
     read from its saved param json; used only for the dashed trained-direction
     guide lines in the interp / stability figures. Falls back to `default`."""
     try:
-        import json as _json
         p = TWOTASKS_DIR / TWOTASK_ANAME / f"param_{TWOTASK_ANAME}_param.json"
         if p.exists():
-            cfg = _json.load(open(p))
+            cfg = json.load(open(p))
             return int(cfg.get("task_params", {}).get("n_eachring", default))
     except Exception:
         pass
@@ -509,10 +508,9 @@ def _read_twotask_dt(default=40):
     saved param json (see SCHEME.md); used to relabel step-index x-axes in ms.
     Falls back to `default`."""
     try:
-        import json as _json
         p = TWOTASKS_DIR / TWOTASK_ANAME / f"param_{TWOTASK_ANAME}_param.json"
         if p.exists():
-            cfg = _json.load(open(p))
+            cfg = json.load(open(p))
             return int(cfg.get("task_params", {}).get("dt", default))
     except Exception:
         pass
@@ -550,10 +548,9 @@ c_vals = [
 # separate and read per-figure from the pickle's own `stim`/`angles`.
 def _read_onetask_n_stim(default=8):
     try:
-        import json as _json
         p = ONETASK_DIR / f"param_{ONETASK_ANAME}_param.json"
         if p.exists():
-            cfg = _json.load(open(p))
+            cfg = json.load(open(p))
             return int(cfg.get("task_params", {}).get("n_eachring", default))
     except Exception:
         pass
@@ -568,10 +565,9 @@ def _read_onetask_dt(default=40):
     saved param json (see SCHEME.md). Used to relabel step-index x-axes in ms for
     figures whose pickle predates the saved `dt` (e.g. the onetask_show traces)."""
     try:
-        import json as _json
         p = ONETASK_DIR / f"param_{ONETASK_ANAME}_param.json"
         if p.exists():
-            cfg = _json.load(open(p))
+            cfg = json.load(open(p))
             return int(cfg.get("task_params", {}).get("dt", default))
     except Exception:
         pass
@@ -1236,6 +1232,31 @@ def _add_period_strip(ax, spans, xmax, height=0.05, pad=0.02):
     return strip
 
 
+def _decorate_clustered_heatmap(ax, ordered_names, rl, cl, rbreaks, cbreaks):
+    """Everything the clustered task-variance heatmaps draw around the cells,
+    shared by the input/hidden and the modulation figures: cluster boundary
+    lines, the task-period row labels on their phase colors, no column ticks,
+    and the column and row cluster strips. `ordered_names` are the row names
+    in drawn order; `rl` / `cl` the row / column cluster labels in that order
+    and `rbreaks` / `cbreaks` their boundaries."""
+    for rb in rbreaks:
+        ax.axhline(rb, color="0.6", lw=0.5, zorder=3, alpha=0.6)
+    for cb in cbreaks:
+        ax.axvline(cb, color="0.6", lw=0.5, zorder=3, alpha=0.6)
+
+    display_names = [_task_display_name(nm) for nm in ordered_names]
+    ax.set_yticks(np.arange(len(ordered_names)) + 0.5)
+    ax.set_yticklabels(display_names, rotation=0, ha="right", va="center", fontsize=6)
+    _color_phase_ticklabels(ax, ordered_names, axis="y")
+
+    ax.set_xticks([])
+
+    # Column-cluster grouping strip beneath the x-axis
+    _add_col_cluster_strip(ax, cl, cbreaks)
+    # Row-cluster grouping strip to the right of the y-axis
+    _add_row_cluster_strip(ax, rl, rbreaks)
+
+
 def _plot_clustered_variance(
     cell_vars, result, tb_break_name,
     cmap=_MULTITASK_HEATMAP_CMAP,
@@ -1290,23 +1311,7 @@ def _plot_clustered_variance(
     # its own figure (plot_multitask_heatmap_colorbar) instead of three times here.
     sns.heatmap(ordered, ax=ax, cmap=cmap, vmin=vmin, vmax=vmax, cbar=False)
 
-    for rb in rbreaks:
-        ax.axhline(rb, color="0.6", lw=0.5, zorder=3, alpha=0.6)
-    for cb in cbreaks:
-        ax.axvline(cb, color="0.6", lw=0.5, zorder=3, alpha=0.6)
-
-    ordered_names = tb_break_name[row_order]
-    display_names = [_task_display_name(nm) for nm in ordered_names]
-    ax.set_yticks(np.arange(len(ordered_names)) + 0.5)
-    ax.set_yticklabels(display_names, rotation=0, ha="right", va="center", fontsize=6)
-    _color_phase_ticklabels(ax, ordered_names, axis="y")
-
-    ax.set_xticks([])
-
-    # Column-cluster grouping strip beneath the x-axis
-    _add_col_cluster_strip(ax, cl, cbreaks)
-    # Row-cluster grouping strip to the right of the y-axis
-    _add_row_cluster_strip(ax, rl, rbreaks)
+    _decorate_clustered_heatmap(ax, tb_break_name[row_order], rl, cl, rbreaks, cbreaks)
 
     fig.tight_layout()
     return fig, ax
@@ -1416,23 +1421,7 @@ def _draw_clustered_modulation(mod_data, G_index, norm, out_filename):
     # abs_weighted colorbar exported by plot_clustered_modulation_abs_weighted.
     sns.heatmap(ordered, ax=ax, cmap=_MULTITASK_HEATMAP_CMAP, norm=norm, cbar=False)
 
-    for rb in rbreaks:
-        ax.axhline(rb, color="0.6", lw=0.5, zorder=3, alpha=0.6)
-    for cb in cbreaks:
-        ax.axvline(cb, color="0.6", lw=0.5, zorder=3, alpha=0.6)
-
-    ordered_names = tb_break_name[row_order]
-    display_names = [_task_display_name(nm) for nm in ordered_names]
-    ax.set_yticks(np.arange(len(ordered_names)) + 0.5)
-    ax.set_yticklabels(display_names, rotation=0, ha="right", va="center", fontsize=6)
-    _color_phase_ticklabels(ax, ordered_names, axis="y")
-
-    ax.set_xticks([])
-
-    # Column-cluster grouping strip beneath the x-axis
-    _add_col_cluster_strip(ax, cl, cbreaks)
-    # Row-cluster grouping strip to the right of the y-axis
-    _add_row_cluster_strip(ax, rl, rbreaks)
+    _decorate_clustered_heatmap(ax, tb_break_name[row_order], rl, cl, rbreaks, cbreaks)
 
     fig.tight_layout()
     _save_fig(fig, _multitask_out(out_filename))
@@ -1537,12 +1526,11 @@ _MODULATION_BOUND_SPECS = (
 
 def _performance_feature_tag(model_name, result):
     """Return a performance entry's full feature tag, with legacy fallback."""
-    import re as _re
 
     feature = result.get("feature")
     if feature is not None:
         return feature
-    match = _re.search(r"_(L2[^+]*)\+hidden\d+", model_name)
+    match = re.search(r"_(L2[^+]*)\+hidden\d+", model_name)
     return match.group(1) if match else None
 
 
@@ -1845,11 +1833,10 @@ def _l2_accuracy_groups(result_dict, *, per_task=False):
     regularization-strength comparison. Missing or invalid task scores are
     left out rather than replaced (_task_accuracies_percent).
     """
-    import re as _re
 
     groups = {}
     for model_name, result in result_dict.items():
-        if not _re.fullmatch(r"L2\d+(?:\.\d+)?e\d+",
+        if not re.fullmatch(r"L2\d+(?:\.\d+)?e\d+",
                              _performance_feature_tag(model_name, result) or ""):
             continue
         strength = float(result["l2_info"])
@@ -1866,14 +1853,13 @@ def _load_l2_accuracy_groups(per_task):
     """The L2 groups of the saved performance results, with the default
     strength's key (None when it has no runs) and the printed column names;
     None, with the reason printed, when there is nothing to plot."""
-    import json as _json
 
     _ensure_out_dir()
     if not PERF_RESULT_PATH.exists():
         print(f"  Skipped: {PERF_RESULT_PATH} not found. Run multiple_task_performance.py first.")
         return None
     with open(PERF_RESULT_PATH) as f:
-        groups = _l2_accuracy_groups(_json.load(f), per_task=per_task)
+        groups = _l2_accuracy_groups(json.load(f), per_task=per_task)
     if not any(groups.values()):
         print("  Skipped: no Tanh performance results with a bare L2 feature tag.")
         return None
@@ -1965,8 +1951,6 @@ def _modulation_bound_accuracy_groups(
     A regular run (_regular_multitask_config) has the unadorned ``L21eX``
     feature (historical mb1) or only the ``mb2`` suffix.
     """
-    import json as _json
-    import re as _re
 
     groups = {
         strength: {
@@ -1982,13 +1966,13 @@ def _modulation_bound_accuracy_groups(
 
     for model_name, result in result_dict.items():
         feature = _performance_feature_tag(model_name, result) or ""
-        match = _re.fullmatch(r"L21e([2345])(mb2)?", feature)
+        match = re.fullmatch(r"L21e([2345])(mb2)?", feature)
         if match is None:
             continue
         config_path = config_dir / f"param_{model_name}_param.json"
         try:
             with config_path.open() as handle:
-                config = _json.load(handle)
+                config = json.load(handle)
             regular = _regular_multitask_config(config)
             if regular is None:
                 continue
@@ -2029,7 +2013,6 @@ def plot_modulation_bound_accuracy():
     A bracket over each pair carries the mark of the two-sided Mann-Whitney U
     test of mb2 against mb1 at that strength, Holm-adjusted over the
     strengths; the exact p values are printed."""
-    import json as _json
 
     _ensure_out_dir()
     if not PERF_RESULT_PATH.exists():
@@ -2037,7 +2020,7 @@ def plot_modulation_bound_accuracy():
               "multiple_task_performance.py first.")
         return
     with PERF_RESULT_PATH.open() as handle:
-        result_dict = _json.load(handle)
+        result_dict = json.load(handle)
     groups = _modulation_bound_accuracy_groups(result_dict)
     if not any(
             values
@@ -2139,14 +2122,13 @@ def plot_l2e4_activation_accuracy():
     denotes the default Tanh activation, against which every other
     activation is tested (_plot_accuracy_columns).
     """
-    import json as _json
     _ensure_out_dir()
     if not PERF_RESULT_PATH.exists():
         print(f"  Skipped: {PERF_RESULT_PATH} not found. Run multiple_task_performance.py first.")
         return
 
     with open(PERF_RESULT_PATH) as f:
-        result_dict = _json.load(f)
+        result_dict = json.load(f)
 
     # Categorical distinction → c_vals (SCHEME.md); Tanh keeps the same blue
     # as the tanh points in plot_l2_vs_accuracy (c_vals[1]).
@@ -2208,7 +2190,6 @@ _ACTIVATION_DIAGNOSIS_SPECS = (
 
 def _load_activation_diagnosis_records():
     """Load per-checkpoint records produced by activation_function_diagnosis."""
-    import json as _json
 
     if not ACTIVATION_DIAGNOSIS_PATH.exists():
         print(
@@ -2217,7 +2198,7 @@ def _load_activation_diagnosis_records():
         )
         return None
     with ACTIVATION_DIAGNOSIS_PATH.open() as stream:
-        data = _json.load(stream)
+        data = json.load(stream)
     records = data.get("records", [])
     if not records:
         print(f"  Skipped: no model records in {ACTIVATION_DIAGNOSIS_PATH}.")
@@ -2441,14 +2422,13 @@ def _projection_accuracy_groups(result_dict, config_dir=Path("multiple_tasks"), 
     per_task returns dimension -> task name -> accuracy list; missing or invalid
     task scores are omitted rather than replaced by overall accuracy or zero.
     """
-    import json as _json
 
     accuracies = {}
     for model_name, result in result_dict.items():
         config_path = config_dir / f"param_{model_name}_param.json"
         try:
             with config_path.open() as handle:
-                config = _json.load(handle)
+                config = json.load(handle)
             net_params = config["net_params"]
             train_params = config["train_params"]
             hidden_dims = net_params["n_neurons"][1:-1]
@@ -2609,14 +2589,13 @@ def _plot_dimension_task_accuracy(*, vary_hidden):
     labeled by the actual dimensions (see _plot_task_accuracy_columns), each
     width marked with its test against the default 300
     (_task_reference_tests)."""
-    import json as _json
 
     _ensure_out_dir()
     if not PERF_RESULT_PATH.exists():
         print(f"  Skipped: {PERF_RESULT_PATH} not found. Run multiple_task_performance.py first.")
         return
     with PERF_RESULT_PATH.open() as handle:
-        result_dict = _json.load(handle)
+        result_dict = json.load(handle)
     groups = _projection_accuracy_groups(result_dict, vary_hidden=vary_hidden, per_task=True)
     if not any(groups.values()):
         print("  Skipped: no metadata-matched per-task accuracies; rerun multiple_task_performance.py.")
@@ -2635,14 +2614,13 @@ def _plot_dimension_accuracy(*, vary_hidden):
     """Render either width sweep at index positions labeled by actual
     dimensions, each width marked with its test against the default 300
     (_plot_accuracy_columns)."""
-    import json as _json
     _ensure_out_dir()
     if not PERF_RESULT_PATH.exists():
         print(f"  Skipped: {PERF_RESULT_PATH} not found. Run multiple_task_performance.py first.")
         return
 
     with open(PERF_RESULT_PATH) as f:
-        result_dict = _json.load(f)
+        result_dict = json.load(f)
 
     accuracies = _projection_accuracy_groups(result_dict, vary_hidden=vary_hidden)
     dimension_name = "hidden" if vary_hidden else "projection"
@@ -2701,7 +2679,6 @@ def _retention_accuracy_groups(result_dict, config_dir=Path("multiple_tasks"), *
     default M bounds. A config whose m_time_scale disagrees with its tag is
     reported and skipped rather than trusted either way.
     """
-    import json as _json
 
     expected_time_scale = {tag: time_scale for tag, time_scale, _ in _RETENTION_SPECS}
     groups = {tag: ({} if per_task else []) for tag in expected_time_scale}
@@ -2712,7 +2689,7 @@ def _retention_accuracy_groups(result_dict, config_dir=Path("multiple_tasks"), *
         config_path = config_dir / f"param_{model_name}_param.json"
         try:
             with config_path.open() as handle:
-                regular = _regular_multitask_config(_json.load(handle))
+                regular = _regular_multitask_config(json.load(handle))
             if (regular is None
                     or not np.isclose(regular["l2"], RETENTION_L2_STRENGTH, rtol=1e-9, atol=0)
                     or regular["bounds"] != (-1.0, 1.0)):
@@ -2752,14 +2729,13 @@ def _retention_reference():
 def _load_retention_groups(per_task):
     """The retention groups of the saved performance results, or None (with
     the reason printed) when there is nothing to plot."""
-    import json as _json
 
     _ensure_out_dir()
     if not PERF_RESULT_PATH.exists():
         print(f"  Skipped: {PERF_RESULT_PATH} not found. Run multiple_task_performance.py first.")
         return None
     with PERF_RESULT_PATH.open() as handle:
-        result_dict = _json.load(handle)
+        result_dict = json.load(handle)
     groups = _retention_accuracy_groups(result_dict, per_task=per_task)
     if not any(groups.values()):
         print("  Skipped: no metadata-matched regular L2 = 1e-4 accuracies at "
@@ -3150,7 +3126,6 @@ def _run_configuration(aname):
     everything_seed202_L21e4+hidden300+batch128+angle both give
     everything_L21e4+hidden300+batch128+angle), shared by every run of one
     setting. A name without a seed is its own setting."""
-    import re
     return re.sub(r"_seed\d+_", "_", aname, count=1)
 
 
@@ -3534,11 +3509,7 @@ def plot_state_space_r_values():
     axs[0].set_yticks(np.arange(0.0, 1.01, 0.2))
 
     handles = [
-        mpl.lines.Line2D([], [], marker="o", linestyle="none", color="k", markersize=4,
-                         label=f"permutation p < {_STATE_SPACE_SIGNIFICANCE}"),
-        mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
-                         markeredgecolor="k", markersize=4,
-                         label=rf"p $\geq$ {_STATE_SPACE_SIGNIFICANCE}"),
+        *_significance_legend_handles("k", markersize=4),
         mpl.patches.Patch(facecolor="white", edgecolor="k", hatch=_STATE_SPACE_HEBB_HATCH,
                           label=r"- decay: $M[t] - \lambda M[t-1]$, the linear decay removed (clipping kept)"),
     ]
@@ -3618,11 +3589,7 @@ def plot_state_space_transplant_r_values():
     axs[0].set_ylim(min(0.0, lowest - 0.05), _R_VALUE_YLIM_TOP)
     axs[0].set_yticks(np.arange(0.0, 1.01, 0.2))
     handles = [
-        mpl.lines.Line2D([], [], marker="o", linestyle="none", color="k", markersize=4,
-                         label=f"permutation p < {_STATE_SPACE_SIGNIFICANCE}"),
-        mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
-                         markeredgecolor="k", markersize=4,
-                         label=rf"p $\geq$ {_STATE_SPACE_SIGNIFICANCE}"),
+        *_significance_legend_handles("k", markersize=4),
     ]
     _state_space_figure_legend(fig, handles + _r_value_test_legend_handles(tests), ncol=2,
                                top=0.88)
@@ -4033,12 +4000,13 @@ def _significance_marker(ax, x, y, significant, size=32, color=_SCATTER_POINT_CO
                edgecolors=color if significant else hollow_edge, linewidths=0.6)
 
 
-def _significance_legend_handles(color=_SCATTER_POINT_COLOR, hollow_edge="k"):
+def _significance_legend_handles(color=_SCATTER_POINT_COLOR, hollow_edge="k", markersize=5):
     """Legend entries matching _significance_marker with the same colors."""
     filled = mpl.lines.Line2D([], [], marker="o", linestyle="none", color=color,
-                              markersize=5, label=f"permutation p < {_STATE_SPACE_SIGNIFICANCE}")
+                              markersize=markersize,
+                              label=f"permutation p < {_STATE_SPACE_SIGNIFICANCE}")
     hollow = mpl.lines.Line2D([], [], marker="o", linestyle="none", markerfacecolor="white",
-                              markeredgecolor=hollow_edge, markersize=5,
+                              markeredgecolor=hollow_edge, markersize=markersize,
                               label=rf"p $\geq$ {_STATE_SPACE_SIGNIFICANCE}")
     return [filled, hollow]
 
@@ -4662,10 +4630,9 @@ def _find_experiment_dirs():
     """Return all experiment subfolders under multiple_tasks_analysis/ matching
     the same feature/hidden/batch signature as ANAME (any seed), i.e. every
     analyzed run of the selected MULTITASK_L2 cohort."""
-    import re as _re
     _check_same_cohort(MULTITASK_L2, multiple_tasks=ANAME)
     # ANAME = everything_seed{seed}_{feature}+hidden{h}+batch{b}+angle
-    m = _re.match(r"everything_seed\d+_(.+)$", ANAME)
+    m = re.match(r"everything_seed\d+_(.+)$", ANAME)
     suffix = m.group(1) if m else ""
     dirs = sorted(DATA_DIR.parent.glob(f"everything_seed*_{suffix}"))
     return [d for d in dirs if d.is_dir()]
@@ -6923,7 +6890,6 @@ def plot_input_weight_correlation():
     stimulus channels and the 15 task indicators.
     """
     import torch
-    import json as _json
 
     _ensure_out_dir()
 
@@ -6938,7 +6904,7 @@ def plot_input_weight_correlation():
     input_W = ckpt["state_dict"]["W_initial_linear.weight"].numpy()
 
     with open(param_path) as f:
-        cfg = _json.load(f)
+        cfg = json.load(f)
     rules = cfg["task_params"]["rules"]
 
     # Transform raw rule names to their display/session names; stimulus-channel
@@ -7386,7 +7352,6 @@ def plot_row_cluster_period_pairs():
 def _untrained_provenance(experiments):
     """'seed 749 config, init 0, 1, 2' from the untrained networks' names
     ({aname}_init{k}), or '' when the names do not carry them."""
-    import re
 
     configs = sorted({int(match.group(1)) for name in experiments
                       if (match := re.search(r"_seed(\d+)_", name))})
@@ -8781,10 +8746,9 @@ def plot_cluster_corr_vs_lesion_seeds():
 def _sibling_run_dirs():
     """Directories of LESION_ANAME's sibling runs (same feature, any seed),
     i.e. every post-processed run of the selected MULTITASK_L2 cohort."""
-    import re as _re
 
     _check_same_cohort(MULTITASK_L2, lesion=LESION_ANAME)
-    pattern = _re.sub(r"seed\d+", "seed*", LESION_ANAME)
+    pattern = re.sub(r"seed\d+", "seed*", LESION_ANAME)
     return sorted(LESION_NORM_DIR.parent.glob(pattern))
 
 
@@ -9753,10 +9717,9 @@ def _pretraining_result_pkls():
 
 def _pretraining_ruleset_from_result_name(filename):
     """Extract the stage-1 ruleset from a configured pretraining result filename."""
-    import re as _re
 
-    pattern = rf"(.+)_dmpn_seed\d+_{_re.escape(PRETRAINING_ADDON_NAME)}_result\.pkl"
-    match = _re.match(pattern, filename)
+    pattern = rf"(.+)_dmpn_seed\d+_{re.escape(PRETRAINING_ADDON_NAME)}_result\.pkl"
+    match = re.match(pattern, filename)
     return match.group(1) if match else None
 
 
@@ -9881,8 +9844,6 @@ def plot_backbone_probe():
     permutation test compares the relevant and irrelevant motif means, assuming
     exchangeability under the null; random initializations are not replicates.
     """
-    import json
-    import re as _re
     from scipy.stats import permutation_test
 
     groups = {
@@ -9891,9 +9852,9 @@ def plot_backbone_probe():
             _PRETRAINING_RULESET_STYLES).items()
     }
     values = {ruleset: [] for ruleset in groups}
-    pattern = _re.compile(
-        rf"backbone_probe_({'|'.join(map(_re.escape, groups))})_dmpn_seed\d+_"
-        rf"{_re.escape(PRETRAINING_ADDON_NAME)}\.json")
+    pattern = re.compile(
+        rf"backbone_probe_({'|'.join(map(re.escape, groups))})_dmpn_seed\d+_"
+        rf"{re.escape(PRETRAINING_ADDON_NAME)}\.json")
     paths = sorted(PRETRAINING_ANALYSIS_DIR.glob(
         f"backbone_probe_*_dmpn_seed*_{PRETRAINING_ADDON_NAME}.json"))
     for path in paths:
@@ -13868,7 +13829,6 @@ def _sibling_run_ranking(family):
     """Score every cached SIBLING_L2 run of `family` and rank them for every
     figure and representation (`_sibling_run_rank_key`). Runs that cannot be
     scored are listed with the reason."""
-    import re
 
     pattern = re.compile(r"everything_seed(\d+)_" + re.escape(
         f"{multitask_feature(SIBLING_L2)}{_MULTITASK_RUN_SUFFIX}"))
@@ -13977,11 +13937,10 @@ def _select_sibling_runs(family):
 def _multitask_sibling_hint(family, method="gradient", aname=None):
     """Reconstruct the upstream command for one sibling run: `aname`, or by
     default the family's pinned run (a generic hint when none is pinned)."""
-    import re as _re
 
     if aname is None:
         aname = _pinned_sibling_aname(family) or ""
-    match = _re.fullmatch(
+    match = re.fullmatch(
         r"everything_seed(\d+)_(.+)\+hidden\d+\+batch\d+\+angle", aname)
     if match is None:
         return "Run multiple_task/sibling_fixed_point_analysis.py first."
@@ -15697,7 +15656,6 @@ def _memory_best_run(cache_name, score, metric):
     `metric` names the score in the saved message, with one `{}` field for
     its magnitude. None, with the commands to run, when no run can be
     scored."""
-    import re
 
     feature = multitask_feature(SIBLING_L2)
     pattern = re.compile(rf"everything_seed(\d+)_{re.escape(feature)}\+.*")
@@ -16045,6 +16003,43 @@ def plot_two_task_interp_fixed_points(period="longdelay"):
             n_trained=TWOTASK_N_STIM, period=period, src_name=pkl_path.name)
 
 
+def _interp_alpha_fp_projection(d, rep_key, basis):
+    """The data both alpha fixed-point renderers draw, prepared once so the 3D
+    figure and its 2D view cannot drift apart: (results, periods, alphas,
+    proj_by_period, n_stim, lim), or None with a "Skipped" message when the
+    interp pickle lacks `rep_key`.
+
+    Panels are ordered canonically Context -> Stimulus -> Delay -> Response
+    (the pickle stores them delay/response/stimulus/fixation; any other
+    period follows in pickle order) and the `_TWOTASK_FP_3D_SKIP_PANELS`
+    periods are dropped. `proj_by_period[period]` is (n_alpha, n_stim, 2) in
+    the shared `basis`, and `lim` the symmetric PC limit shared by the panels
+    so they are comparable."""
+    results = d.get("results", {})
+    canonical = ["longfixation", "longstimulus", "longdelay", "longresponse"]
+    periods = ([v for v in canonical if v in results]
+               + [v for v in results if v not in canonical])
+    periods = [v for v in periods
+               if not any(skip in v.lower() for skip in _TWOTASK_FP_3D_SKIP_PANELS)]
+    if not periods or any(results[v].get(rep_key) is None for v in periods):
+        print(f"  Skipped '{rep_key}': not in interp pickle "
+              f"(re-run two_task_analysis.py).")
+        return None
+    alphas = np.asarray(d["alphas"], dtype=float)
+
+    def project(arr):
+        # arr: (n_alpha, n_stim, feat) -> (n_alpha, n_stim, 2) in the shared basis.
+        a = np.asarray(arr, dtype=float)
+        na, ns = a.shape[0], a.shape[1]
+        return basis.transform(a.reshape(na * ns, -1)).reshape(na, ns, 2)
+
+    proj_by_period = {v: project(results[v][rep_key]) for v in periods}
+    n_stim = proj_by_period[periods[0]].shape[1]
+    lim = max(np.abs(np.concatenate([p.reshape(-1, 2) for p in proj_by_period.values()])).max()
+              * 1.08, 1e-9)
+    return results, periods, alphas, proj_by_period, n_stim, lim
+
+
 def _render_interp_alpha_fp_3d(d, rep_key, out_path, basis):
     """3D figure of the TASK-INTERPOLATION fixed points: one panel per trial
     period, x = interpolation level alpha (pro<->anti), y/z = the two PCs of the
@@ -16062,32 +16057,10 @@ def _render_interp_alpha_fp_3d(d, rep_key, out_path, basis):
     PC limits."""
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (enables 3d projection)
     _ensure_out_dir()
-    results = d.get("results", {})
-    # Order panels canonically Context -> Stimulus -> Delay -> Response
-    # (the pickle stores them delay/response/stimulus/fixation); any period not in
-    # the canonical list is appended after, in pickle order.
-    _CANON = ["longfixation", "longstimulus", "longdelay", "longresponse"]
-    periods = ([v for v in _CANON if v in results]
-               + [v for v in results if v not in _CANON])
-    periods = [v for v in periods
-               if not any(skip in v.lower() for skip in _TWOTASK_FP_3D_SKIP_PANELS)]
-    if not periods or any(results[v].get(rep_key) is None for v in periods):
-        print(f"  Skipped '{rep_key}': not in interp pickle "
-              f"(re-run two_task_analysis.py).")
+    prepared = _interp_alpha_fp_projection(d, rep_key, basis)
+    if prepared is None:
         return
-    alphas = np.asarray(d["alphas"], dtype=float)
-
-    def _proj(arr):
-        # arr: (n_alpha, n_stim, feat) -> (n_alpha, n_stim, 2) in the shared basis.
-        a = np.asarray(arr, dtype=float)
-        na, ns = a.shape[0], a.shape[1]
-        return basis.transform(a.reshape(na * ns, -1)).reshape(na, ns, 2)
-
-    proj_by_period = {v: _proj(results[v][rep_key]) for v in periods}
-    n_stim = proj_by_period[periods[0]].shape[1]
-    # Shared symmetric PC limits across periods so panels are comparable.
-    lim = max(np.abs(np.concatenate([p.reshape(-1, 2) for p in proj_by_period.values()])).max()
-              * 1.08, 1e-9)
+    results, periods, alphas, proj_by_period, n_stim, lim = prepared
 
     # TRIAL PERIOD runs down y — one panel per row, named by a rotated label to the
     # left of the panel, exactly as in the transposed grad fixed-point 3D figure, so
@@ -16196,29 +16169,10 @@ def _render_interp_alpha_fp_2d(d, rep_key, out_path, basis, pc=0):
     unreadable), since reading that coordinate is the point of this view.
     """
     _ensure_out_dir()
-    results = d.get("results", {})
-    _CANON = ["longfixation", "longstimulus", "longdelay", "longresponse"]
-    periods = ([v for v in _CANON if v in results]
-               + [v for v in results if v not in _CANON])
-    periods = [v for v in periods
-               if not any(skip in v.lower() for skip in _TWOTASK_FP_3D_SKIP_PANELS)]
-    if not periods or any(results[v].get(rep_key) is None for v in periods):
-        print(f"  Skipped '{rep_key}': not in interp pickle "
-              f"(re-run two_task_analysis.py).")
+    prepared = _interp_alpha_fp_projection(d, rep_key, basis)
+    if prepared is None:
         return
-    alphas = np.asarray(d["alphas"], dtype=float)
-
-    def _proj(arr):
-        # arr: (n_alpha, n_stim, feat) -> (n_alpha, n_stim, 2) in the shared basis.
-        a = np.asarray(arr, dtype=float)
-        na, ns = a.shape[0], a.shape[1]
-        return basis.transform(a.reshape(na * ns, -1)).reshape(na, ns, 2)
-
-    proj_by_period = {v: _proj(results[v][rep_key]) for v in periods}
-    n_stim = proj_by_period[periods[0]].shape[1]
-    lim = max(np.abs(np.concatenate([p.reshape(-1, 2)
-                                     for p in proj_by_period.values()])).max()
-              * 1.08, 1e-9)
+    results, periods, alphas, proj_by_period, n_stim, lim = prepared
 
     n_rows = len(periods)
     # Sized to match the 3D figure AS SAVED, which is not the same as matching
@@ -17166,8 +17120,7 @@ def plot_two_task_attractor_first():
         print("  Skipped: attractor_first pickle missing expected entries.")
         return
 
-    import re as _re
-    m = _re.search(r"seed\d+", aname)
+    m = re.search(r"seed\d+", aname)
     seed_tag = m.group(0) if m else aname
 
     # ── Figure 1: over-learning (cosine similarity vs iteration) ──────────────
