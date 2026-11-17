@@ -87,11 +87,41 @@ def task_variance_period_numpy(h, *, ddof=0):
     ``h`` has shape (trials, time, units), already sliced to the task's actual
     epoch. Each trial retains its complete stimulus condition. Time variation
     contributes to the variance, including variation common to all trials.
+    For trials that share one epoch window; task_variance_trial_windows is
+    the per-trial-window form the clustering analysis uses.
     """
     h = np.asarray(h)
     if h.ndim != 3 or h.shape[0] == 0 or h.shape[1] == 0:
         raise ValueError("Expected a nonempty (trials, time, units) epoch")
     return np.var(h, axis=(0, 1), dtype=np.float64, ddof=ddof)
+
+
+def task_variance_trial_windows(h, starts, ends, *, trials=None, ddof=0):
+    """Per-unit variance across trials AND time when every trial has its own
+    epoch window.
+
+    ``h`` is (trials, time, units); trial ``i`` contributes the samples
+    ``h[i, starts[i]:ends[i]]`` and all of them are pooled into one
+    variance, so trials with longer epochs contribute more samples, as in
+    the generator's trial distribution. With every window equal this is
+    task_variance_period_numpy of that slice. ``trials`` selects rows of
+    ``h`` (the trials of one task), in the order of ``starts`` and ``ends``;
+    only the windows are copied, never the task's whole block. A trial with
+    an empty window contributes nothing; no sample at all is an error.
+    """
+    h = np.asarray(h)
+    if h.ndim != 3:
+        raise ValueError("Expected (trials, time, units)")
+    rows = np.arange(h.shape[0]) if trials is None else np.asarray(trials, dtype=int)
+    starts, ends = np.asarray(starts, dtype=int), np.asarray(ends, dtype=int)
+    if not (rows.shape == starts.shape == ends.shape) or rows.ndim != 1:
+        raise ValueError("trials, starts and ends must be 1-D and of one length")
+    if np.any(starts < 0) or np.any(ends > h.shape[1]) or np.any(starts > ends):
+        raise ValueError("an epoch window lies outside the recorded steps")
+    samples = [h[row, start:end] for row, start, end in zip(rows, starts, ends) if end > start]
+    if not samples:
+        raise ValueError("Expected at least one (trial, time) sample in the epoch")
+    return np.var(np.concatenate(samples, axis=0), axis=0, dtype=np.float64, ddof=ddof)
 
 
 def find_task(task_params, test_input_np, shift_index):

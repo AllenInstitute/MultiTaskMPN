@@ -189,10 +189,9 @@ The marks follow [the convention of every accuracy figure](#accuracy-figures-tes
 ## Evaluation trials of the clustering
 
 `multiple_task_analysis.py` records the activity it clusters on its own
-evaluation trials, 50 per task with one timing per task
-(`generate_evaluation_trials`; `mode_input="random"`, the scalar timing the
-per-period slicing needs). Since 2026-11-15 two things keep that trial set
-from deciding the result:
+evaluation trials, 50 per task (`generate_evaluation_trials`). Three things
+keep that trial set from deciding the result, the first two since
+2026-11-15 and the third since 2026-11-16:
 
 - **One seed per network.** The task generator is reseeded with
   `evaluation_trial_seed(seed, untrained_init_seed)`, a function of the run's
@@ -209,20 +208,34 @@ from deciding the result:
   modality per task for all 50 trials, and the stimulus rows of the input and
   hidden features grouped by that draw. The integration tasks keep the
   modality their rule defines.
+- **Per-trial timing.** Every trial draws its own period lengths from the
+  ranges the networks were trained and lesioned with
+  (`mode_input="random_batch"`, the mode of the training batches and the
+  lesion test sets), so a task's 50 trials average over the timing. A
+  period then has one window per trial (`trial_epoch_windows`), and its
+  variance pools every trial's own window
+  (`helper.task_variance_trial_windows`, through `period_variance`): the
+  variance across trials and time as before, with longer periods
+  contributing more samples and no padding beyond a trial's own end. Before,
+  the "random" mode drew one timing per task for all its trials; see
+  [below](#one-timing-per-task-and-why-it-was-replaced).
 
 Every entry of the two cluster caches records `evaluation_trial_seed`,
-`evaluation_trials_per_task` and `balanced_stimulus_modalities` beside its
-`variance_method`. Caches without them come from the earlier trial sets;
+`evaluation_trials_per_task`, `evaluation_timing` (`"per_trial"`) and
+`balanced_stimulus_modalities` beside its `variance_method`. Caches without them come from the earlier trial sets;
 nothing checks for the fields, since the old results are to be deleted and
 the pipeline rerun. The same change moved the multisensory tasks' modality
 split from the global `np.random` state to the task generator, which a
 seeded trial set needs to be reproducible. The option is opt-in. Since the
 same date the state-space evaluation trials (see
-[state_space.md](state_space.md)) and those of `modulation_feedback.py` and
-`rule_cue_ablation.py` use it too, with their own fixed seeds. The training
-scripts and the lesion test sets generate their trials as before: they draw
-the modality per trial (`mode_input="random_batch"`), so they never had one
-modality per task.
+[state_space.md](state_space.md)) and those of `modulation_feedback.py` use
+it too, with their own fixed seeds; both keep one timing per task, which
+their per-epoch and aligned-step readouts need. `rule_cue_ablation.py`
+draws the clustering's own trials (`generate_evaluation_trials` with the
+network's clustering seed; `--trial-seed` draws another batch). The training scripts and the
+lesion test sets generate their trials as before: they draw the modality
+per trial (`mode_input="random_batch"`), so they never had one modality per
+task, only an inexact balance.
 
 ### How the problem showed, and what the old caches hold
 
@@ -253,7 +266,9 @@ and so one evaluation trial set:
   not. The pattern is again constant within a process, so it comes from the
   trial set too, by something other than the ring. That was not identified;
   the per-task period lengths, also one draw per task and process, are a
-  candidate, since they set how much modulation accumulates. The
+  candidate, since they set how much modulation accumulates (and they do
+  move the modulation rows, see
+  [below](#one-timing-per-task-and-why-it-was-replaced)). The
   \|W\|-weighted variant is the only one that differs between networks of
   one process.
 - **How the ring of a cached run was read**: correlate a stimulus row of the
@@ -270,14 +285,52 @@ and so one evaluation trial set:
   lesion effects themselves were always measured on test sets with both
   rings.
 
-What the change of 2026-11-15 leaves as it was: each task's period lengths
-are still one draw for its 50 trials (the per-period slicing needs one
-timing per task). They now differ from network to network instead of being
-shared by a process, so they add scatter across a cohort instead of a common
-offset, but a single network's row features still reflect one timing per
-task. A general rule from this: a per-network result that is constant across
-the networks of one process, or that changes with the order they were run
-in, points at the shared evaluation set before it points at the networks.
+A general rule from this: a per-network result that is constant across the
+networks of one process, or that changes with the order they were run in,
+points at the shared evaluation set before it points at the networks.
+
+### One timing per task, and why it was replaced
+
+The change of 2026-11-15 left each task's period lengths as one draw for its
+50 trials (`mode_input="random"`, whose scalar timing let a period be one
+slice of the batch). The stimulus and memory periods range from 200 to
+1600 ms, so the same period of the same task could be several times longer
+in one trial set than in another, and the modulation accumulates over the
+trial. Measured on one network (seed 427, L2 = 1e-4) with two trial sets:
+the distance between the same row's normalized features in the two sets,
+divided by the mean distance between two different rows of one set, and the
+share of rows whose nearest row of the other set is itself.
+
+| Timing of the evaluation trials | Trials per task | Modulation: median, 90th percentile, nearest is itself | Hidden: median, nearest is itself |
+|---|---|---|---|
+| one draw per task (until 2026-11-16) | 50 | 0.55, 1.04, 47% | 0.20, 60% |
+| one draw per task | 200 | 0.48, 0.87, 53% | 0.13, 67% |
+| every period at its longest (`long_all=True`) | 50 | 0.22, 0.31, 100% | 0.16, 86% |
+| every period at its longest | 200 | 0.14, 0.17, 100% | 0.09, 90% |
+| **per trial (current)** | 50 | 0.28, 0.37, 100% | 0.20, 84% |
+| per trial, prototype with unbalanced modalities | 100 | 0.19, 0.25, 98% | 0.16, 96% |
+| per trial, same prototype | 200 | 0.14, 0.18, 100% | 0.12, 92% |
+
+- With one draw per task about half of the modulation rows were closer to
+  another row than to themselves in a second trial set, and four times as
+  many trials did not help: the draw of the timing, not the number of
+  trials, decided the row.
+- Fixing every period at one length removes that, and so does drawing the
+  timing per trial, at the same 50 trials. Per-trial timing was chosen
+  because it is the distribution the networks were trained and lesioned
+  with; the fixed lengths of `long_all=True` (used before the "random" mode)
+  describe the longest trials only.
+- The input rows are stable in every setting (median 0.1 to 0.25); their
+  nearest-row share is uninformative, since many input rows are nearly
+  identical (the memory periods carry no stimulus).
+- The whole evaluation set is 750 trials padded to the longest one (133
+  steps for seed 427); its modulation trajectory took 33 GiB and the
+  per-period variances about a minute on a CPU.
+
+`modulation_feedback.py` and the state-space evaluation keep one timing per
+task, since they read aligned steps (per-epoch quantiles, the step after
+the Context period); their trial seeds are fixed, so their timing is one
+fixed set for every network.
 
 ## Figures
 
@@ -1068,7 +1121,9 @@ so `weighted` caches clustered before and after the change compare.
 
 **Memory.** `multiple_task_analysis.py` holds the recorded M trajectory once,
 750 trials x T steps x 300 x 300 float32 (T is the longest evaluation trial,
-which varies from run to run: 24 GiB at T = 96, 32 GiB at T = 126), plus the
+which varies from run to run: 24 GiB at T = 96, 32 GiB at T = 126; with the
+per-trial timing of 2026-11-16 it is close to the longest possible trial in
+every run, 33 GiB at T = 133 for seed 427), plus the
 clustering's working memory. `record_tracked_states` writes every chunk of the
 forward pass into one preallocated array. Before 2026-10-27 the script also
 held the concatenated chunks and the weighted copy, two to three trajectories
@@ -1263,8 +1318,11 @@ permutation settings and FDR family under `permutation`.
 
 Result **version 6** retains these statistical checks and requires
 `variance_method="trial_time"`: variance is computed directly across trials
-and time, without first averaging trials in S1 direction bins. Each epoch
-ends at its own task's actual trial endpoint, excluding padded timesteps.
+and time, without first averaging trials in S1 direction bins. Each trial
+contributes its own window of the epoch, which ends at that trial's own
+endpoint at the latest, so padded timesteps are excluded (since 2026-11-16
+every evaluation trial has its own timing; before, a task's trials shared
+one window).
 Input, hidden and modulation use the same definition; column normalization
 and clustering settings are unchanged. Derived overmembership, lesion and
 lesion-postprocessing caches also carry the estimator marker; readers reject
@@ -1889,9 +1947,10 @@ python multiple_task/modulation_feedback.py --feature L21e4 --seed 749 --untrain
 python multiple_task/modulation_feedback.py --feature L21e4 --seed all
 ```
 
-The script steps the network through the clustering analysis's evaluation
-trials (50 per task, `mode_input="random"`, `long_all=False`, both stimulus
-modalities per task since 2026-11-15, drawn with the script's own seed), about a minute
+The script steps the network through its own evaluation trials (50 per
+task, `mode_input="random"`, `long_all=False`: one timing per task, which
+its per-period summaries need, unlike the clustering's per-trial timing;
+both stimulus modalities per task since 2026-11-15; the script's own seed), about a minute
 per network on a CPU, and records at every step mu_i of every post neuron and
 the share of synapses clipped to each bound. A finite-difference check
 through the real network step, in double precision, comes first: one step's
@@ -1928,17 +1987,23 @@ task/period organization. Earlier S1-conditioned analyses suggested period
 grouping for input/hidden and task grouping for modulation; this pattern
 needs confirmation with trial-time features. The persistent rule cue can
 change stimulus responses and accumulated modulation. The script runs one network, trained or untrained
-(`--untrained-init-seed`, `network_loading.build_network`), on the evaluation
-trials of `modulation_feedback.py` (50 per task, `mode_input="random"`, both
-stimulus modalities per task since 2026-11-15, trial seed 0) twice, once as they are and once with every rule-cue channel set to
+(`--untrained-init-seed`, `network_loading.build_network`), on the
+clustering's kind of evaluation trials
+(`multiple_task_analysis.generate_evaluation_trials`: 50 per task, per-trial
+timing and both stimulus modalities per task; drawn with the network's own
+clustering seed unless `--trial-seed` is given, so by default they are the
+very trials the network's cluster caches come from; until 2026-11-16 the
+default was seed 0 for every network) twice, once as they are and once with every rule-cue channel set to
 zero (the cue and its input noise), and computes the input, hidden and
 modulation features of both as the clustering does: per task and period, the
-variance directly across trials and time, with no S1-bin averaging
-(`helper.task_variance_period_numpy`), each column divided by its maximum
+variance directly across trials and time, with no S1-bin averaging, each
+trial inside its own window of the period
+(`helper.task_variance_trial_windows`), each column divided by its maximum
 over the rows (the `_normalized` features of the heatmaps), the rows in the
-clustering's period-major order and windows. Epochs stop at each task's real
-trial end; padding is excluded. Rule-cue results are now version 3 with a
-`variance_method="trial_time"` marker and must be regenerated as well.
+clustering's period-major order. Windows stop at each trial's own end;
+padding is excluded. Rule-cue results carry a
+`variance_method="trial_time"` marker (version 3; version 4 since the
+per-trial timing of 2026-11-16) and must be regenerated as well.
 
 ```bash
 python multiple_task/rule_cue_ablation.py --feature L21e4 --seed 749
@@ -1963,9 +2028,12 @@ trial, and "1/2" for a task with a free modality, which the evaluation
 trials show on each ring on half of its trials since 2026-11-15. Before,
 `mode="random"` drew one modality per task for the whole batch, and
 `--trial-seed`, which draws another batch, was the way to check a result
-against that draw. It writes
+against that draw. Since 2026-11-16 the trials are the clustering's own
+kind (`multiple_task_analysis.generate_evaluation_trials`: per-trial
+timing, each period's variance pooled over every trial's own window). It writes
 `multiple_tasks_diagnosis/rule_cue_ablation_<aname>[_init<k>][_trials<s>].{pkl,png}`
-(result version 3): the distance matrices and pair means per condition and
+(result version 4; `windows` holds per-trial start and end arrays): the
+distance matrices and pair means per condition and
 representation, the matched-row correlations, the feature ratios and the
 features themselves.
 

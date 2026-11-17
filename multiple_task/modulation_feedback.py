@@ -27,10 +27,11 @@ takes only eta h_i x_j > 1 - lam = 0.01.
 
 For one run, trained or untrained (--untrained-init-seed,
 network_loading.build_network), this script steps the network through the
-kind of evaluation trials the clustering analysis uses
-(multiple_task_analysis.py: 50 trials per task, mode_input="random",
-long_all=False, both stimulus modalities per task; drawn here with this
-script's own seed, EVALUATION_SEED) and records at every
+evaluation trials (50 trials per task, mode_input="random", long_all=False,
+both stimulus modalities per task, this script's own seed EVALUATION_SEED;
+one timing per task, which the per-epoch summaries below need, unlike the
+clustering analysis, whose trials have per-trial timing since 2026-11-16)
+and records at every
 step mu_i of every post neuron and the share of synapses clipped to each
 bound, without keeping the M trajectory. mu_i is left out (NaN) for a row
 whose synapses are all clipped, which has no mode left. A finite-difference
@@ -485,8 +486,9 @@ def _evaluation_trials(seed, feature, trial_seed=EVALUATION_SEED):
     """The run's config and its evaluation trials, drawn with `trial_seed`:
     (task_params_c, inputs, outputs, masks, trials per task, task index per
     trial). A task whose stimulus may come on either ring gets both, on half
-    of its trials each (`balanced_stimulus_modalities`), as in the clustering
-    analysis; rule_cue_ablation.py reads its trials from here too."""
+    of its trials each (`balanced_stimulus_modalities`). The timing is one
+    draw per task ("random" mode): every trial of a task shares its epoch
+    bounds, which `epoch_bounds` relies on."""
     with (CHECKPOINT_DIR / f"param_{run_name(seed, feature)}_param.json").open() as stream:
         raw = json.load(stream)
     np.random.seed(trial_seed)

@@ -164,9 +164,12 @@ all state-space caches made before 2026-11-15 come from the one-modality
 trials and are to be regenerated together; nothing marks or checks it. The
 transplant experiment holds the input fixed by construction, so its angles
 never contained the modality term; only its trial set changes.
-`modulation_feedback.py` and `rule_cue_ablation.py`, which draw the
-clustering analysis's kind of trials, balance the modalities since the same
-date.
+`modulation_feedback.py` balances the modalities since the same date, and
+so does `rule_cue_ablation.py`, which draws the clustering analysis's own
+evaluation trials. The clustering's trials also have per-trial timing since
+2026-11-16 (see [multitask_analysis.md](multitask_analysis.md#evaluation-trials-of-the-clustering));
+the state-space trials keep one timing per task, drawn with their fixed
+seed, because the analysis reads aligned steps.
 
 **Multi-step direction analysis.** To supplement aligned results without
 recomputing PCA or deleting structure/lesion caches:

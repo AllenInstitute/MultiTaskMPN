@@ -7,16 +7,19 @@ period conditions. Earlier S1-conditioned analyses suggested period grouping
 for input/hidden and task grouping for modulation. This pattern needs to be
 rechecked with trial_time features. The rule cue persists through the trial
 and can change stimulus responses and accumulated modulation. This script
-tests the cue's contribution directly. It runs one network on the evaluation trials of
-modulation_feedback.py twice, once as they are and once with every rule-cue
-channel set to zero (the cue and its input noise), and computes the input,
-hidden and modulation features of both as the clustering does: per task and
-period, the variance across trials and time without stimulus averaging
-(helper.task_variance_period_numpy), each column
-then divided by its maximum over the rows (the "_normalized" features of the
-heatmaps). Rows follow the clustering's order (period-major) and windows; an
-epoch without an end (go1) stops at that task's actual trial end, as in the
-clustering.
+tests the cue's contribution directly. It runs one network on the clustering's
+evaluation trials (multiple_task_analysis.generate_evaluation_trials:
+per-trial timing, both stimulus modalities per task; by default drawn with
+the network's own clustering seed, evaluation_trial_seed, so they are the
+very trials its cluster caches come from) twice, once as they are
+and once with every rule-cue channel set to zero (the cue and its input
+noise), and computes the input, hidden and modulation features of both as the
+clustering does: per task and period, the variance across trials and time
+without stimulus averaging, each trial inside its own window of the period
+(helper.task_variance_trial_windows), each column then divided by its maximum
+over the rows (the "_normalized" features of the heatmaps). Rows follow the
+clustering's order (period-major) and windows; an epoch without an end (go1)
+stops at that trial's own end, as in the clustering.
 
 The readout needs no clustering. It uses the clustering's metric, the
 Euclidean distance between two rows, divided by its mean over every two rows
@@ -31,11 +34,12 @@ correlation of each row with the same row of the other condition, and the
 ratio of the summed unnormalized features.
 
 The evaluation trials give a task whose stimulus may come on either ring
-both, on half of its trials each (modulation_feedback._evaluation_trials;
-until 2026-11-15 mode="random" drew one modality per task for the whole
-batch, and --trial-seed was the way to check a result against that draw).
-The script records the modality of each task's first stimulus ("1/2" for
-such a task), and --trial-seed draws another batch.
+both, on half of its trials each (until 2026-11-15 mode="random" drew one
+modality per task for the whole batch, and until 2026-11-16 one timing per
+task; --trial-seed was the way to check a result against those draws). The
+script records the modality of each task's first stimulus ("1/2" for such a
+task), and --trial-seed draws another batch of the same kind (until
+2026-11-16 the default batch was seed 0 for every network).
 
 Writes multiple_tasks_diagnosis/rule_cue_ablation_{name}[_trials{s}].{pkl,png},
 with name the run's aname, plus _init{k} for an untrained network, and the
@@ -49,6 +53,7 @@ Usage:
     python multiple_task/rule_cue_ablation.py --feature L21e4 --seed 749
 """
 import argparse
+import json
 import pickle
 import time
 
@@ -61,7 +66,8 @@ import matplotlib.pyplot as plt
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import helper
-from core.task_variance import VARIANCE_METHOD, trial_epoch_bounds
+import mpn_tasks
+from core.task_variance import VARIANCE_METHOD, trial_epoch_windows
 from network_loading import build_network
 from run_logging import tee_output
 import multiple_task_analysis
@@ -69,7 +75,8 @@ import multiple_task_diagnosis as diag
 import modulation_feedback as feedback
 
 OUT_DIR = diag.OUT_DIR
-RESULT_VERSION = 3
+# 4: per-trial timing; `windows` holds per-trial (starts, ends) arrays.
+RESULT_VERSION = 4
 # The clustering's periods, in its row order (multiple_task_analysis.py).
 PHASES = ("stim1", "stim2", "delay1", "delay2", "go1")
 # Representation -> key of the network's track_states record.
@@ -82,12 +89,22 @@ FORWARD_CHUNK = 25
 MODALITY_RATIO = 5.0
 
 
-def result_stem(seed, feature, untrained_init_seed=None, trial_seed=feedback.EVALUATION_SEED):
+def resolve_trial_seed(seed, untrained_init_seed=None, trial_seed=None):
+    """The seed of the evaluation trials: `trial_seed` when given, else the
+    network's own clustering seed (multiple_task_analysis.evaluation_trial_seed),
+    which reproduces the trials its cluster caches were computed on."""
+    if trial_seed is not None:
+        return int(trial_seed)
+    return multiple_task_analysis.evaluation_trial_seed(seed, untrained_init_seed)
+
+
+def result_stem(seed, feature, untrained_init_seed=None, trial_seed=None):
     """rule_cue_ablation_ + the run's aname, plus _init{k} for an untrained
-    network and _trials{s} for a trial seed other than the default."""
+    network and _trials{s} for an explicit trial seed (None: the network's
+    own clustering trials, no suffix)."""
     name, _ = multiple_task_analysis.output_names(
         seed, "everything", f"{feature}{feedback.RUN_SUFFIX}", untrained_init_seed)
-    suffix = "" if trial_seed == feedback.EVALUATION_SEED else f"_trials{trial_seed}"
+    suffix = "" if trial_seed is None else f"_trials{trial_seed}"
     return f"rule_cue_ablation_{name}{suffix}"
 
 
@@ -135,14 +152,17 @@ def first_stimulus_modality(inputs, rule_indices, trials, rings):
     shows it on one ring but not all on the same (a task with a free modality
     on the balanced evaluation trials), and "both" otherwise (the stimulus
     is on both rings within a trial). Each trial is judged from the mean
-    |input| of each ring over the stim1 epoch, or go1 for a task whose
+    |input| of each ring over its own stim1 window, or go1 for a task whose
     stimulus comes with the response (ReactPro/Anti)."""
     modality = {}
     for rule_index, trial in enumerate(trials):
         epoch = "stim1" if "stim1" in trial.epochs else "go1"
-        start, end = trial_epoch_bounds(trial, epoch)
-        window = inputs[rule_indices == rule_index, start:end]
-        first, second = (window[..., ring].abs().mean(dim=(1, 2)) for ring in rings)
+        starts, ends = trial_epoch_windows(trial, epoch)
+        rows = np.flatnonzero(np.asarray(rule_indices) == rule_index)
+        first, second = (
+            torch.stack([inputs[row, start:end, ring].abs().mean()
+                         for row, start, end in zip(rows, starts, ends)])
+            for ring in rings)
         on_first = first > MODALITY_RATIO * second
         on_second = second > MODALITY_RATIO * first
         if bool(on_first.all()):
@@ -159,24 +179,25 @@ def first_stimulus_modality(inputs, rule_indices, trials, rings):
 # ─── Features ────────────────────────────────────────────────────────────────
 
 def row_windows(trials):
-    """(rule index, phase, (start, end)) of every row, period-major as in the
-    clustering; `trials` holds one trial object per rule, in rule order.
-    Windows exclude padding beyond each task's actual trial end."""
-    return [(rule_index, phase, trial_epoch_bounds(trial, phase))
+    """(rule index, phase, (starts, ends)) of every row, period-major as in
+    the clustering; `trials` holds one trial batch per rule, in rule order,
+    and the windows are per trial of that batch (`trial_epoch_windows`).
+    They exclude the padding beyond each trial's own end."""
+    return [(rule_index, phase, trial_epoch_windows(trial, phase))
             for phase in PHASES
             for rule_index, trial in enumerate(trials) if phase in trial.epochs]
 
 
 def task_features(model, inputs, windows):
     """{representation: (len(windows), columns)} variance features of one
-    task's trials, one row per (start, end) window."""
+    task's trials, one row per (starts, ends) pair of per-trial windows."""
     _, states = multiple_task_analysis.record_tracked_states(model, inputs, FORWARD_CHUNK)
     features = {}
     for name, key in REPRESENTATIONS.items():
         values = states.pop(key)
         values = values.reshape(*values.shape[:2], -1)
-        features[name] = np.stack([helper.task_variance_period_numpy(values[:, start:end])
-                                   for start, end in windows])
+        features[name] = np.stack([helper.task_variance_trial_windows(values, starts, ends)
+                                   for starts, ends in windows])
         del values
     return features
 
@@ -339,10 +360,25 @@ def print_result(payload):
 
 # ─── One run ─────────────────────────────────────────────────────────────────
 
-def analyze_run(seed, feature, untrained_init_seed=None, trial_seed=feedback.EVALUATION_SEED,
-                device=None):
+def evaluation_trials(seed, feature, trial_seed):
+    """(task_params_c, inputs, one trial batch per rule, rule index per
+    trial) of the run's config: the clustering's kind of evaluation trials
+    (per-trial timing, both stimulus modalities per task), drawn with
+    `trial_seed` (see resolve_trial_seed)."""
+    with (feedback.CHECKPOINT_DIR
+          / f"param_{feedback.run_name(seed, feature)}_param.json").open() as stream:
+        raw = json.load(stream)
+    task_params_c, _, _ = mpn_tasks.convert_and_init_multitask_params(
+        (raw["task_params"], raw["train_params"], raw["net_params"]))
+    (inputs, _, _), (_, trials, rule_indices) = (
+        multiple_task_analysis.generate_evaluation_trials(task_params_c, trial_seed))
+    return task_params_c, inputs, trials, np.asarray(rule_indices)
+
+
+def analyze_run(seed, feature, untrained_init_seed=None, trial_seed=None, device=None):
     """Compute the features of one network with and without the rule cue,
-    compare them, and save the result and the figure."""
+    compare them, and save the result and the figure. `trial_seed` None
+    draws the network's own clustering trials (resolve_trial_seed)."""
     start_time = time.time()
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(
@@ -352,8 +388,9 @@ def analyze_run(seed, feature, untrained_init_seed=None, trial_seed=feedback.EVA
     model.to(device).eval()
     lam, eta = feedback.layer_rates(feedback.plastic_layer(model))
 
-    task_params_c, inputs, _, _, trials, rule_indices = feedback._evaluation_trials(
-        seed, feature, trial_seed)
+    stem = result_stem(seed, feature, untrained_init_seed, trial_seed)
+    trial_seed = resolve_trial_seed(seed, untrained_init_seed, trial_seed)
+    task_params_c, inputs, trials, rule_indices = evaluation_trials(seed, feature, trial_seed)
     rules = list(task_params_c["rules"])
     channels = rule_channels(task_params_c, inputs.shape[-1])
     check_rule_cue(inputs, rule_indices, channels)
@@ -370,7 +407,6 @@ def analyze_run(seed, feature, untrained_init_seed=None, trial_seed=feedback.EVA
     row_phases = [window[1] for window in windows]
     distance, means, matched, total_ratio = summarize(features, row_tasks, row_phases)
 
-    stem = result_stem(seed, feature, untrained_init_seed, trial_seed)
     payload = {
         "version": RESULT_VERSION,
         "variance_method": VARIANCE_METHOD,
@@ -381,7 +417,8 @@ def analyze_run(seed, feature, untrained_init_seed=None, trial_seed=feedback.EVA
         "trial_seed": trial_seed,
         "lam": lam,
         "eta": eta,
-        "n_trials_per_task": feedback.TRIALS_PER_TASK,
+        "n_trials_per_task": multiple_task_analysis.EVALUATION_TRIALS_PER_TASK,
+        "evaluation_timing": "per_trial",
         "rules": rules,
         "modality": modality,
         "rule_channels": (channels.start, channels.stop),
@@ -415,10 +452,10 @@ def parse_args(argv=None):
     parser.add_argument("--untrained-init-seed", type=int, default=None,
                         help="Analyze an untrained network of the run's config, drawn "
                              "with this init seed, instead of the trained one.")
-    parser.add_argument("--trial-seed", type=int, default=feedback.EVALUATION_SEED,
-                        help="Seed of the evaluation trials (default "
-                             f"{feedback.EVALUATION_SEED}); another seed draws another "
-                             "batch.")
+    parser.add_argument("--trial-seed", type=int, default=None,
+                        help="Seed of the evaluation trials. Default: the network's own "
+                             "clustering seed, i.e. the trials its cluster caches were "
+                             "computed on; a value draws another batch of the same kind.")
     return parser.parse_args(argv)
 
 

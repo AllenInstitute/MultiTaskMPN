@@ -15,7 +15,11 @@ NEURON_VARIANTS = ("input_normalized", "input_unnormalized",
 
 
 def trial_epoch_bounds(trial, phase):
-    """Aligned (start, end) indices within this task's actual trial length."""
+    """Aligned (start, end) indices within this task's actual trial length.
+
+    For a batch whose trials share one timing. The clustering analysis uses
+    trial_epoch_windows since its trials have per-trial timing (2026-11-16);
+    this stays for test/variance_conditioning_check.py."""
     def scalar(value):
         values = np.asarray(value)
         if values.size == 0 or not np.all(values == values.flat[0]):
@@ -29,6 +33,34 @@ def trial_epoch_bounds(trial, phase):
     if not 0 <= start <= end <= length:
         raise ValueError(f"{phase}: epoch {(start, end)} exceeds trial length {length}")
     return start, end
+
+
+def trial_epoch_windows(trial, phase):
+    """Per-trial (starts, ends) index arrays of `phase`, each window within
+    its own trial's length.
+
+    For a batch whose trials have their own timing (the generator's
+    'random_batch' mode): epoch edges and the trial length may be scalars or
+    one value per trial, a missing start is the trial's first step and a
+    missing end its own last one, never the padded end of the batch. The
+    arrays have one entry per trial of the batch, in batch order."""
+    n_trials = int(trial.batch_size)
+
+    def per_trial(value, name):
+        values = np.asarray(value)
+        if values.ndim == 0:
+            return np.full(n_trials, int(values), dtype=int)
+        if values.shape != (n_trials,):
+            raise ValueError(f"{phase}: {name} has {values.shape}, expected {n_trials} trials")
+        return values.astype(int)
+
+    lengths = per_trial(trial.tdim, "trial length")
+    start, end = trial.epochs[phase]
+    starts = np.zeros(n_trials, dtype=int) if start is None else per_trial(start, "start")
+    ends = lengths.copy() if end is None else per_trial(end, "end")
+    if not np.all((0 <= starts) & (starts <= ends) & (ends <= lengths)):
+        raise ValueError(f"{phase}: an epoch window exceeds its trial's length")
+    return starts, ends
 
 
 def variance_cache_is_current(payload, required_keys=()):

@@ -11,11 +11,13 @@ This module owns the following analyses:
      plus the end-to-end pathway W_out @ W_mod @ W_in and its SVD spectrum.
   2. Task-period VARIANCE — per-rule, per-period variance across trials and
      time of input, hidden and modulation activity, without S1 averaging.
-     Epochs exclude padding beyond each task's actual trial endpoint. The
-     trials are the network's own evaluation set (`generate_evaluation_trials`):
-     seeded per network, so a rerun reproduces it and no two networks share
-     one, and with both stimulus modalities on half of the trials of every
-     task whose stimulus may come on either ring.
+     Every trial has its own period lengths, so a period's variance pools
+     each trial's own window (`period_variance`), which excludes the padding
+     beyond that trial's end. The trials are the network's own evaluation
+     set (`generate_evaluation_trials`): seeded per network, so a rerun
+     reproduces it and no two networks share one, with per-trial timing
+     from the training ranges and both stimulus modalities on half of the
+     trials of every task whose stimulus may come on either ring.
   3. Hierarchical clustering of those matrices along both axes (task conditions
      and neurons / modulation synapses), k chosen by silhouette within a
      tolerance band. Modulation synapses are clustered under five feature
@@ -94,7 +96,7 @@ import torch
 
 import _bootstrap  # noqa: F401  -- prepends repo-root/core to sys.path
 import helper
-from core.task_variance import VARIANCE_METHOD, trial_epoch_bounds
+from core.task_variance import VARIANCE_METHOD, trial_epoch_windows
 import clustering
 import clustering_metric
 import color_func
@@ -229,26 +231,29 @@ def generate_evaluation_trials(task_params_c, trial_seed, n_per_task=EVALUATION_
     """The trials every analysis of this module reads (activity recording,
     task variance, clustering): `n_per_task` trials of every rule.
 
-    mode_input="random" is required: the per-period variance slices every
-    trial of a rule with that rule's single epoch boundaries, so all trials
-    of a rule must share one timing. The timing is drawn from the "normal"
-    period ranges the network was trained and lesioned with (long_all=False;
-    long_all=True, used earlier, fixed every period at the top of its
-    training range instead).
-
-    Two things keep the trial set from deciding the result:
+    Three things keep the trial set from deciding the result:
+    - Per-trial timing (mode_input="random_batch"): every trial draws its own
+      period lengths from the "normal" ranges the network was trained and
+      lesioned with, so a task's 50 trials average over the timing. The
+      "random" mode used until 2026-11-16 drew ONE timing per task for all
+      its trials; a stimulus or memory period could then differ four- to
+      sevenfold between two trial sets, and since the modulation accumulates
+      over the trial, only 47% of a network's modulation rows were closest
+      to themselves across two sets (100% with per-trial timing, measured on
+      seed 427; docs/multitask_analysis.md). Fixing every period at one
+      length (long_all=True, used earlier still) is as stable but describes
+      the longest trials only.
     - The generator is reseeded with `trial_seed` (`evaluation_trial_seed`).
       `mpn_tasks` otherwise seeds it once per process at import, so every
       network analyzed by one pipeline process saw the same trials and a
       rerun saw other ones.
     - `balanced_stimulus_modalities`: a rule whose stimulus may come on
-      either ring gets both, on half of its trials each. The "random" mode
-      alone draws one modality per rule for all its trials, and the stimulus
-      rows of the input and hidden features then group by that draw (two
-      tasks' rows alike when they drew the same ring) instead of by task.
+      either ring gets both, on exactly half of its trials each.
 
-    Returns generate_trials_wrap's ((inputs, labels, masks), (seq_lens,
-    trials, rule_idxs)), on the CPU.
+    The periods of a rule therefore have one window per trial
+    (`core.task_variance.trial_epoch_windows`), and the task variance pools
+    them (`period_variance`). Returns generate_trials_wrap's ((inputs,
+    labels, masks), (seq_lens, trials, rule_idxs)), on the CPU.
     """
     task_params_c['hp']['batch_size_train'] = n_per_task
     task_params_c['hp']['seed'] = int(trial_seed)
@@ -257,12 +262,28 @@ def generate_evaluation_trials(task_params_c, trial_seed, n_per_task=EVALUATION_
         task_params_c,
         n_per_task,
         rules=task_params_c['rules'],
-        mode_input="random",
+        mode_input="random_batch",
         device="cpu",
         verbose=False,
-        long_all=False,
         balanced_stimulus_modalities=True,
     )
+
+
+def period_variance(values, test_task, rule_idx, windows):
+    """The variance feature of one (task, period) row: per unit, the variance
+    across the trials of rule `rule_idx` and across time, each trial inside
+    its own window of the period.
+
+    `values` is (trials, time, units) for every trial of the evaluation set,
+    `test_task` each trial's rule index, and `windows` the period's
+    per-trial (starts, ends) in the rule's own trial order
+    (`trial_epoch_windows`; the evaluation set keeps each rule's trials in
+    that order). Trial averages are not taken first: stimulus conditions and
+    time both contribute (`helper.task_variance_trial_windows`).
+    """
+    starts, ends = windows
+    return helper.task_variance_trial_windows(
+        values, starts, ends, trials=np.flatnonzero(np.asarray(test_task) == rule_idx))
 
 
 def record_tracked_states(model, inputs, chunk_size):
@@ -316,8 +337,10 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
     aname = f"{task}_seed{seed}_{feature}+hidden{hidden}+batch{batch}{accfeature}"
     out_path_name = "multiple_tasks/" + f"param_{aname}_result.npz"
     out_path = Path(out_path_name)
-    # The npz is read only for metadata (rules_epochs, hyp_dict, ...); activity
-    # (xs/hs/Ms_orig) is regenerated below by a fresh forward pass.
+    # The npz is read only for metadata (hyp_dict, all_rules, ...); activity
+    # (xs/hs/Ms_orig) is regenerated below by a fresh forward pass on the
+    # evaluation trials, which also replaces the npz's rules_epochs and
+    # test_task (those describe the training script's own test batch).
     reevaluate = True
 
     size_bytes = out_path.stat().st_size  
@@ -630,16 +653,18 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
     )
 
     if reevaluate:
-        # The network's own evaluation trials: seeded per network and with
-        # both stimulus modalities per task (generate_evaluation_trials).
+        # The network's own evaluation trials: seeded per network, per-trial
+        # timing and both stimulus modalities per task
+        # (generate_evaluation_trials).
         trial_seed = evaluation_trial_seed(seed, untrained_init_seed)
         print(f"evaluation trials: seed {trial_seed}, {EVALUATION_TRIALS_PER_TASK} per task, "
-              "stimulus modalities balanced")
+              "per-trial timing, stimulus modalities balanced")
         test_data, test_trials_extra = generate_evaluation_trials(task_params_c, trial_seed)
         # Saved in every cluster entry, beside its variance method.
         evaluation_provenance = {
             "evaluation_trial_seed": trial_seed,
             "evaluation_trials_per_task": EVALUATION_TRIALS_PER_TASK,
+            "evaluation_timing": "per_trial",
             "balanced_stimulus_modalities": True,
         }
 
@@ -721,9 +746,11 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
         
         all_rules = np.array(task_params["rules"])
         
-        # A missing endpoint means this task's end, not the padded batch end.
+        # Per-trial (starts, ends) of every period: each trial has its own
+        # timing, and a missing endpoint is that trial's own end, not the
+        # padded end of the batch.
         rules_epochs = {
-            rule: {phase: trial_epoch_bounds(trial, phase) for phase in trial.epochs}
+            rule: {phase: trial_epoch_windows(trial, phase) for phase in trial.epochs}
             for rule, trial in zip(task_params["rules"], test_trials)
         }
         
@@ -826,8 +853,7 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
             # print(f"tb_break_name[el]: {tb_break_name[el]}")
             
             if len(clustering_data.shape) == 3: # input or hidden 
-                rule_cluster = clustering_data[test_task == rule_idx, period_time[0]:period_time[1], :]
-                varval = helper.task_variance_period_numpy(rule_cluster)
+                varval = period_variance(clustering_data, test_task, rule_idx, period_time)
                 cell_vars_rules.append(varval) 
             else:
                 # Only el == 0 reaches here: the reshape below turns the 4D
@@ -839,9 +865,7 @@ def main(seed, feature, clean=True, untrained_init_seed=None):
                 clustering_data_old = clustering_data
                 if "all" in clustering_name: # modulation
                     clustering_data = clustering_data.reshape(clustering_data.shape[0], clustering_data.shape[1], -1)
-                    rule_cluster = clustering_data[test_task == rule_idx, 
-                                                   period_time[0]:period_time[1], :]
-                    varval = helper.task_variance_period_numpy(rule_cluster)
+                    varval = period_variance(clustering_data, test_task, rule_idx, period_time)
                     cell_vars_rules.append(varval) 
                         
         cell_vars_rules = np.array(cell_vars_rules)    

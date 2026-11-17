@@ -257,8 +257,8 @@ LESION_NORM_ROOT = norm_root(LESION_CONTROL_POOL)
 # where both tasks drew modality 2); seed 749, the example until 2026-11-14,
 # drew different modalities for the two tasks and separates them.
 # multiple_task_analysis.generate_evaluation_trials now gives every task both
-# modalities and every network its own seeded trials, so revisit this choice
-# once the cohort is reclustered.
+# modalities, every trial its own timing and every network its own seeded
+# trials, so revisit this choice once the cohort is reclustered.
 # EXCEPTION: the OM-vs-lesion scatter is a lesion figure drawn from the
 # clustering example (seed 427), not the lesion example (seed 921), so that it
 # shares a network with the OM example panels; see _om_scatter_run.

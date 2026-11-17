@@ -1,6 +1,15 @@
 """Manual, data-dependent comparison of two task-period variance definitions.
 
-Uses identical fresh production-style trials for both estimators and both
+HISTORICAL TRIAL SETTING: its trials are those of the clustering analysis as
+it was until 2026-11-16 (mode "random": one timing and one stimulus modality
+per task, the script's own seed), not the current evaluation trials
+(per-trial timing, balanced modalities, one seed per network; see
+multiple_task_analysis.generate_evaluation_trials). The comparison of the
+two estimators stands on its own; it and the saved ``*_result.json`` reports
+do not describe the current trial set. core.task_variance.trial_epoch_bounds
+and helper.task_variance_period_numpy are kept for this script.
+
+Uses identical fresh trials for both estimators and both
 networks; never rewrites clustering caches. This isolates S1 conditioning,
 not all differences from Driscoll et al.'s evaluation trial design. Streams
 moments to avoid retaining full modulation trajectories. The historical

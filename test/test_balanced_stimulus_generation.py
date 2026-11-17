@@ -8,6 +8,7 @@ import numpy as np
 
 import _bootstrap  # noqa: F401
 import mpn_tasks
+from core.task_variance import trial_epoch_windows
 
 
 def _config(seed=17):
@@ -77,20 +78,34 @@ def _ring_of(trial, window):
 
 # name -> (generator call taking **kwargs, epoch of the first stimulus)
 FREE_MODALITY_TASKS = {
-    "delaygo": (lambda config, **kw: mpn_tasks.delaygo_(
-        config, "random", False, True, True, "normal", "normal", "normal", "normal", False,
+    "delaygo": (lambda config, mode="random", **kw: mpn_tasks.delaygo_(
+        config, mode, False, True, True, "normal", "normal", "normal", "normal", False,
         **kw), "stim1"),
-    "reactgo": (lambda config, **kw: mpn_tasks.reactgo_(
-        config, "random", False, False, **kw), "go1"),
-    "fdgo": (lambda config, **kw: mpn_tasks.fdgo_(
-        config, "random", True, "normal", "normal", "normal", False, **kw), "stim1"),
-    "dms": (lambda config, **kw: mpn_tasks.dms_(
-        config, "random", 0, True, True, "normal", "normal", "normal", "normal", False,
+    "reactgo": (lambda config, mode="random", **kw: mpn_tasks.reactgo_(
+        config, mode, False, False, **kw), "go1"),
+    "fdgo": (lambda config, mode="random", **kw: mpn_tasks.fdgo_(
+        config, mode, True, "normal", "normal", "normal", False, **kw), "stim1"),
+    "dms": (lambda config, mode="random", **kw: mpn_tasks.dms_(
+        config, mode, 0, True, True, "normal", "normal", "normal", "normal", False,
         **kw), "stim1"),
-    "dmc": (lambda config, **kw: mpn_tasks.dmc_(
-        config, "random", 1, True, True, "normal", "normal", "normal", "normal", False,
+    "dmc": (lambda config, mode="random", **kw: mpn_tasks.dmc_(
+        config, mode, 1, True, True, "normal", "normal", "normal", "normal", False,
         **kw), "stim1"),
 }
+
+
+def _trial_rings(trial, epoch):
+    """Per-trial modality of the stimulus in `epoch` when every trial has
+    its own timing: each trial read inside its own window."""
+    starts, ends = trial_epoch_windows(trial, epoch)
+    rings = []
+    for index, (start, end) in enumerate(zip(starts, ends)):
+        shown = np.abs(trial.x[start:end, index]).max(axis=0)
+        on_ring = [shown[N_FIXATE + ring * RING_WIDTH:N_FIXATE + (ring + 1) * RING_WIDTH].max() > 0
+                   for ring in (0, 1)]
+        assert sum(on_ring) == 1, "each trial shows exactly one ring"
+        rings.append(1 + on_ring.index(True))
+    return np.array(rings)
 
 
 class BalancedStimulusModalityTests(unittest.TestCase):
@@ -116,6 +131,22 @@ class BalancedStimulusModalityTests(unittest.TestCase):
                 for start, stop in trial.epochs.values():
                     self.assertEqual(np.ndim(start), 0)
                     self.assertEqual(np.ndim(stop), 0)
+
+    def test_per_trial_timing_takes_the_same_exact_balance(self):
+        """'random_batch' draws the ring per trial, balanced only on average;
+        the option makes it exact while every trial keeps its own timing."""
+        for name, (generate, epoch) in FREE_MODALITY_TASKS.items():
+            with self.subTest(task=name):
+                trial = generate(_config(), "random_batch", batch_size=32,
+                                 balanced_stimulus_modalities=True)
+                self.assertEqual(np.shape(trial.tdim), (32,))
+                self.assertGreater(np.unique(trial.tdim).size, 1)
+                rings = _trial_rings(trial, epoch)
+                np.testing.assert_array_equal(np.bincount(rings, minlength=3), [0, 16, 16])
+                if name in ("dms", "dmc"):          # the second stimulus: the other ring
+                    np.testing.assert_array_equal(_trial_rings(trial, "go1"), 3 - rings)
+                free = generate(_config(), "random_batch", batch_size=32)
+                self.assertEqual(set(np.unique(_trial_rings(free, epoch))), {1, 2})
 
     def test_without_the_option_a_batch_keeps_its_single_modality(self):
         for name, (generate, epoch) in FREE_MODALITY_TASKS.items():
@@ -145,13 +176,13 @@ class BalancedStimulusModalityTests(unittest.TestCase):
             np.testing.assert_array_equal(
                 _ring_of(trial, trial.epochs["stim1"]), np.full(32, stim_mod))
 
-    def test_the_wrapper_option_is_opt_in_and_needs_the_random_mode(self):
+    def test_the_wrapper_option_is_opt_in_and_needs_a_drawn_mode(self):
         parameter = inspect.signature(
             mpn_tasks.generate_trials_wrap).parameters["balanced_stimulus_modalities"]
         self.assertFalse(parameter.default)
-        with self.assertRaisesRegex(ValueError, "mode_input='random'"):
+        with self.assertRaisesRegex(ValueError, "'random' or 'random_batch'"):
             mpn_tasks.generate_trials_wrap(
-                {"rules": ["delaygo"]}, 4, rules=["delaygo"], mode_input="random_batch",
+                {"rules": ["delaygo"]}, 4, rules=["delaygo"], mode_input="test",
                 balanced_stimulus_modalities=True)
 
 
@@ -189,7 +220,7 @@ class PinnedStimulusModalityTests(unittest.TestCase):
     def test_the_pin_comes_from_the_task_parameters_and_is_validated(self):
         for value, mode, balanced, message in (
                 (3, "random", False, "must be 1 or 2"),
-                (1, "random_batch", False, "requires mode_input='random'"),
+                (1, "test", False, "requires mode_input 'random' or 'random_batch'"),
                 (1, "random", True, "excludes balanced")):
             with self.subTest(value=value, mode=mode, balanced=balanced):
                 with self.assertRaisesRegex(ValueError, message):

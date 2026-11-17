@@ -11,7 +11,8 @@ import _bootstrap  # noqa: F401
 import numpy as np
 import helper
 from core.task_variance import (VARIANCE_METHOD, NEURON_VARIANTS, LESION_MODULATION_TYPES,
-                                trial_epoch_bounds, variance_cache_is_current,
+                                trial_epoch_bounds, trial_epoch_windows,
+                                variance_cache_is_current,
                                 require_current_variance, cluster_caches_current)
 
 
@@ -42,6 +43,58 @@ class TaskVarianceTests(unittest.TestCase):
         for shape in ((0, 2, 3), (2, 0, 3), (2, 3), (2, 3, 4, 5)):
             with self.subTest(shape=shape), self.assertRaises(ValueError):
                 helper.task_variance_period_numpy(np.zeros(shape))
+
+
+class TrialWindowTests(unittest.TestCase):
+    """Per-trial timing: each trial has its own window of a period."""
+
+    def test_windows_follow_each_trial_and_stop_at_its_own_end(self):
+        trial = SimpleNamespace(batch_size=3, tdim=np.array([6, 4, 5]), epochs={
+            "fix1": (None, np.array([2, 1, 2])), "go1": (np.array([4, 2, 3]), None),
+            "stim1": (2, 3)})
+        np.testing.assert_array_equal(trial_epoch_windows(trial, "fix1"), ([0, 0, 0], [2, 1, 2]))
+        np.testing.assert_array_equal(trial_epoch_windows(trial, "go1"), ([4, 2, 3], [6, 4, 5]))
+        np.testing.assert_array_equal(trial_epoch_windows(trial, "stim1"), ([2, 2, 2], [3, 3, 3]))
+        # Aligned batches (scalar length and edges) give the same window per trial.
+        aligned = SimpleNamespace(batch_size=2, tdim=7, epochs={"go1": (3, None)})
+        np.testing.assert_array_equal(trial_epoch_windows(aligned, "go1"), ([3, 3], [7, 7]))
+        trial.epochs["go1"] = (np.array([4, 5, 3]), None)          # starts after trial 2 ends
+        with self.assertRaisesRegex(ValueError, "exceeds its trial's length"):
+            trial_epoch_windows(trial, "go1")
+        trial.epochs["go1"] = (np.array([4, 2]), None)
+        with self.assertRaisesRegex(ValueError, "expected 3 trials"):
+            trial_epoch_windows(trial, "go1")
+
+    def test_pooled_variance_uses_each_trials_own_window(self):
+        rng = np.random.default_rng(0)
+        h = rng.normal(size=(4, 9, 3))
+        starts, ends = np.array([1, 2, 0, 5]), np.array([4, 2, 6, 9])   # trial 2: empty
+        pooled = np.concatenate([h[0, 1:4], h[2, 0:6], h[3, 5:9]])
+        np.testing.assert_allclose(
+            helper.task_variance_trial_windows(h, starts, ends), pooled.var(axis=0))
+        np.testing.assert_allclose(
+            helper.task_variance_trial_windows(h, starts, ends, ddof=1), pooled.var(axis=0, ddof=1))
+        # With one window for every trial it is the aligned estimator.
+        np.testing.assert_allclose(
+            helper.task_variance_trial_windows(h, np.full(4, 2), np.full(4, 7)),
+            helper.task_variance_period_numpy(h[:, 2:7]))
+        # `trials` picks one task's rows out of the whole evaluation set.
+        np.testing.assert_allclose(
+            helper.task_variance_trial_windows(h, [1, 5], [4, 9], trials=[0, 3]),
+            np.concatenate([h[0, 1:4], h[3, 5:9]]).var(axis=0))
+        # Padding beyond a trial's end never enters.
+        padded = np.array([[0., 0., 1., 3., 1000., 1000.], [0., 0., 3., 1000., 1000., 1000.]])[..., None]
+        np.testing.assert_array_equal(
+            helper.task_variance_trial_windows(padded, [2, 2], [4, 3]), [8. / 9.])
+
+    def test_pooled_variance_rejects_bad_windows(self):
+        h = np.zeros((2, 5, 1))
+        for starts, ends, message in (([0, 0], [6, 2], "outside the recorded steps"),
+                                      ([3, 0], [2, 2], "outside the recorded steps"),
+                                      ([1, 2], [1, 2], "at least one"),
+                                      ([0], [2], "one length")):
+            with self.assertRaisesRegex(ValueError, message):
+                helper.task_variance_trial_windows(h, starts, ends)
 
 
 class EpochBoundsTests(unittest.TestCase):

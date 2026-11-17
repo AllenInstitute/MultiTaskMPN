@@ -32,9 +32,10 @@ class RuleCueTest(unittest.TestCase):
         inputs[0, 2:4, 2:4] = 1.0   # rule 0: ring 1 in stim1
         inputs[1, 4:, 4:6] = 1.0    # rule 1: ring 2 in go1 (no stim1)
         inputs[2, 2:4, 2:6] = 1.0   # rule 2: both rings in stim1
-        trials = [SimpleNamespace(tdim=6, epochs={"stim1": (2, 4), "go1": (4, None)}),
-                  SimpleNamespace(tdim=6, epochs={"go1": (4, None)}),
-                  SimpleNamespace(tdim=6, epochs={"stim1": (2, 4), "go1": (4, None)})]
+        trials = [SimpleNamespace(batch_size=1, tdim=6, epochs={"stim1": (2, 4), "go1": (4, None)}),
+                  SimpleNamespace(batch_size=1, tdim=6, epochs={"go1": (4, None)}),
+                  SimpleNamespace(batch_size=1, tdim=6,
+                                  epochs={"stim1": (2, 4), "go1": (4, None)})]
         modality = ablation.first_stimulus_modality(inputs, np.array([0, 1, 2]), trials, rings)
         self.assertEqual(modality, {0: "1", 1: "2", 2: "both"})
 
@@ -42,35 +43,80 @@ class RuleCueTest(unittest.TestCase):
         rings = ablation.ring_channels({"fixate_off": True, "rule_start": 6, "num_ring": 2})
         inputs = torch.zeros(4, 6, 6)
         inputs[0, 2:4, 2:4] = 1.0   # rule 0, trial 1: ring 1
-        inputs[1, 2:4, 4:6] = 1.0   # rule 0, trial 2: ring 2 (balanced modalities)
+        inputs[1, 3:5, 4:6] = 1.0   # rule 0, trial 2: ring 2, in its own later window
+        inputs[1, 1:3, 2:4] = 1.0   # ... ring 1 carries input only outside that window
         inputs[2, 2:4, 2:4] = 1.0   # rule 1, trial 1: ring 1
         inputs[3, 2:4, 2:6] = 1.0   # rule 1, trial 2: both rings at once
-        trials = [SimpleNamespace(tdim=6, epochs={"stim1": (2, 4)})] * 2
+        trials = [SimpleNamespace(batch_size=2, tdim=6,
+                                  epochs={"stim1": (np.array([2, 3]), np.array([4, 5]))}),
+                  SimpleNamespace(batch_size=2, tdim=6, epochs={"stim1": (2, 4)})]
         modality = ablation.first_stimulus_modality(
             inputs, np.array([0, 0, 1, 1]), trials, rings)
         self.assertEqual(modality, {0: "1/2", 1: "both"})
 
 
 class RowWindowsTest(unittest.TestCase):
-    def test_rows_are_period_major_and_skip_missing_epochs(self):
+    def test_rows_are_period_major_with_per_trial_windows(self):
         trials = [
-            SimpleNamespace(tdim=15, epochs={"fix1": (None, 5), "stim1": (5, 10), "go1": (10, None)}),
-            SimpleNamespace(tdim=8, epochs={"fix1": (None, 5), "go1": (np.array([5, 5]), None)}),
+            SimpleNamespace(batch_size=2, tdim=np.array([15, 12]), epochs={
+                "fix1": (None, 5), "stim1": (5, np.array([10, 8])),
+                "go1": (np.array([10, 8]), None)}),
+            SimpleNamespace(batch_size=2, tdim=8, epochs={"fix1": (None, 5),
+                                                          "go1": (np.array([5, 6]), None)}),
         ]
-        self.assertEqual(ablation.row_windows(trials),
-                         [(0, "stim1", (5, 10)), (0, "go1", (10, 15)), (1, "go1", (5, 8))])
+        rows = ablation.row_windows(trials)
+        self.assertEqual([(rule, phase) for rule, phase, _ in rows],
+                         [(0, "stim1"), (0, "go1"), (1, "go1")])
+        for (_, _, window), expected in zip(rows, (([5, 5], [10, 8]), ([10, 8], [15, 12]),
+                                                   ([5, 6], [8, 8]))):
+            np.testing.assert_array_equal(window, expected)
 
     def test_features_preserve_trial_variance_and_exclude_padding(self):
+        # Trial 1 ends at step 4, trial 2 at step 3: what follows is padding.
         values = np.array([[0., 0., 1., 3., 1000., 1000.],
-                           [0., 0., 3., 1., 1000., 1000.]])[..., None]
+                           [0., 0., 3., 1000., 1000., 1000.]])[..., None]
         states = {"input1": values, "hidden1": 2 * values, "M1": values[..., None]}
-        trial = SimpleNamespace(tdim=4, epochs={"go1": (2, None)})
+        trial = SimpleNamespace(batch_size=2, tdim=np.array([4, 3]), epochs={"go1": (2, None)})
         windows = [window for _, _, window in ablation.row_windows([trial])]
         with patch.object(ablation.multiple_task_analysis, "record_tracked_states",
                           return_value=(None, states)):
             features = ablation.task_features(None, None, windows)
-        for name, expected in (("input", 1.), ("hidden", 4.), ("modulation", 1.)):
-            np.testing.assert_array_equal(features[name], [[expected]])
+        pooled = np.var([1., 3., 3.])
+        for name, scale in (("input", 1.), ("hidden", 4.), ("modulation", 1.)):
+            np.testing.assert_allclose(features[name], [[scale * pooled]])
+
+    def test_default_trial_seed_is_the_networks_clustering_seed(self):
+        own = ablation.multiple_task_analysis.evaluation_trial_seed
+        self.assertEqual(ablation.resolve_trial_seed(427), own(427))
+        self.assertEqual(ablation.resolve_trial_seed(427, 3), own(427, 3))
+        self.assertNotEqual(ablation.resolve_trial_seed(427), ablation.resolve_trial_seed(749))
+        self.assertEqual(ablation.resolve_trial_seed(427, 3, trial_seed=2), 2)
+        # Only an explicit trial seed is named in the result file.
+        default = ablation.result_stem(427, "L21e4")
+        self.assertFalse(default.endswith(f"_trials{own(427)}"))
+        self.assertEqual(ablation.result_stem(427, "L21e4", trial_seed=0), default + "_trials0")
+        self.assertIsNone(ablation.parse_args(["--seed", "427"]).trial_seed)
+
+    def test_trials_are_the_clustering_evaluation_trials(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            name = ablation.feedback.run_name(7, "L21e4")
+            (root / f"param_{name}_param.json").write_text(
+                json.dumps({"task_params": {}, "train_params": {}, "net_params": {}}))
+            converted = {"rules": ["delaygo"], "hp": {}}
+            with patch.object(ablation.feedback, "CHECKPOINT_DIR", root), \
+                    patch.object(ablation.mpn_tasks, "convert_and_init_multitask_params",
+                                 return_value=(converted, {}, {})), \
+                    patch.object(ablation.multiple_task_analysis, "generate_evaluation_trials",
+                                 return_value=(("x", "y", "m"), (None, ["trial"], [0, 0]))
+                                 ) as generate:
+                result = ablation.evaluation_trials(7, "L21e4", trial_seed=3)
+        generate.assert_called_once_with(converted, 3)
+        self.assertEqual(result[:3], (converted, "x", ["trial"]))
+        np.testing.assert_array_equal(result[3], [0, 0])
 
 
 class ReadoutTest(unittest.TestCase):
